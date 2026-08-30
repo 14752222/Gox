@@ -1,0 +1,809 @@
+{
+  "1": {
+    "page_content": "✅ 华为、阿里、腾讯、抖音、美团、京东、快手、vivo等公司实际业务使用\\n四、跨平台能力\\n<quark-table><table><thead><tr><th>框架</th><th>Android</th><th>iOS</th><th>Windows</th><th>Mac</th><th>Linux</th><th>Web</th><th>小程序</th></tr></thead><tbody><tr><td>ArkUI</td><td>✅</td><td>✅</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td><td>❌</td></tr><tr><td>Flutter</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>⚠️</td></tr><tr><td>React Native</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>⚠️</td><td>✅</td><td>⚠️</td></tr><tr><td>KMP</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>✅</td><td>❌</td></tr><tr><td>UniApp (UniApp X)</td><td>✅</td><td>✅</td><td>⚠️</td><td>⚠️</td><td>⚠️</td><td>✅</td><td>✅</td></tr></tbody></table></quark-table>\\n✅官方支持 ❌官方不支持 ⚠️需要通过三方库适配,有交付风险\\n五、社区成熟度与生态\\nArkUI(⭐⭐⭐⭐)\\n✅ 官方支持最强 ：华为全力维护\\n✅ 官方文档完善，示例丰富\\n⚠️ 第三方库生态正在建设中\\n✅ DevEco Studio 官方 IDE 支持完善\\nFlutter(⭐⭐⭐⭐⭐)\\n✅ 跨平台生态最成熟 ，GitHub 星标突破 15.5 万\\n✅ Pub.dev 上有大量第三方包\\n✅ 鸿蒙版由华为官方维护（OpenHarmony-Flutter Community）\\n✅ 社区活跃，问题解决快\\n✅ 2025年起 Impeller 渲染引擎逐步替代 Skia，性能提升 30%+\\nReact Native(⭐⭐⭐⭐⭐)\\n✅ npm 生态最庞大 ，GitHub 星标 12.5 万\\n✅ 大量成熟第三方库\\n✅ 鸿蒙适配由华为开发者联盟主导生态建设（RN-OH 项目）\\n⚠️ 部分原生模块需要重新适配鸿蒙\\nKMP(⭐⭐⭐)\\n✅ JetBrains 官方支持 ，Kotlin 语言 GitHub 星标超过 45k，KMM 相关生态星标累计突破 11 万\\n✅ Kotlin 生态成熟\\n✅ 2023年11月达到稳定状态，2024年获得谷歌官方支持\\n⚠️ 鸿蒙适配还在早期阶段，2026年已有整合方案\\n⚠️ UI 层（Compose Multiplatform）鸿蒙支持有限\\nUniApp(⭐⭐⭐⭐)\\n✅ 国内生态丰富\\n✅ 插件市场（DCloud 插件市场）资源多\\n✅ 国内开发者社区活跃，900万开发者，月活突破10亿\\n✅ 鸿蒙原生支持 ：HBuilderX 4.61+ 官方支持编译到 Harmony NEXT\\n✅ 同时支持鸿蒙应用和元服务开发\\n✅ 华为、阿里、腾讯、抖音、美团、京东、快手、vivo等公司实际业务使用\\n⚠️ 国际影响力较小\\n六 开发效率\\nArkUI(⭐⭐⭐⭐)\\nDevEco Studio 一键真机调试、热重载，官方模板齐全；但 ArkTS 特有语法需额外学习\\n✅ 官方文档与示例更新快，问题响应及时\\nFlutter(⭐⭐⭐⭐)\\nHot Reload 秒级生效，Pub 依赖一键集成；但需处理双端差异与插件适配\\n✅ 丰富模板与开源项目可直接复用\\nReact Native(⭐⭐⭐⭐)\\nMetro 热更新、Expo 零配置运行；npm 生态即装即用\\n⚠️ 鸿蒙插件需社区版本，可能需自行封装\\nKMP(⭐⭐)\\nCompose Multiplatform 预览功能尚不完善，需同时维护 common 与 platform 代码\\n⚠️ 鸿蒙相关示例稀缺，调试周期长\\nUniApp(⭐⭐⭐⭐⭐)\\nHBuilderX 可视化拖拽、云端打包、插件市场一键安装；Vue 代码几乎零修改直接编译到鸿蒙\\n✅ 一套代码同时输出 App、小程序、Web，节省 50% 以上人力\\n七、AI 友好性\\nArkUI(⭐⭐⭐⭐)\\n✅ 华为官方 AI 助手支持\\n✅ DevEco Studio 内置 AI 代码补全\\n✅ 支持 ArkTS 代码生成\\nFlutter(⭐⭐⭐⭐⭐)\\n✅ 最佳 ：Cursor、Cloud Code、OpenCode、Trae等 AI 工具支持最好\\n✅ 大量开源代码作为训练数据\\n✅ AI 能生成高质量 Flutter 代码\\nReact Native(⭐⭐⭐⭐)\\n✅ 优秀 ：JavaScript/TypeScript 生态 AI 支持成熟\\n✅ 大量开源项目\\nKMP(⭐⭐⭐)\\n⚠️ 一般 ：Kotlin 支持，但跨平台特定代码 AI 理解有限\\nUniApp ((⭐⭐⭐)\\n⚠️ 一般 ：Vue 支持好，但 UTS 和 UniApp X 特定 API 支持有限\\n八、最终评分\\n<quark-table><table><thead><tr><th>维度</th><th>ArkUI</th><th>Flutter</th><th>React Native</th><th>KMP</th><th>UniApp (UniApp X)</th></tr></thead><tbody><tr><td>",
+    "url": "https://juejin.cn/post/7608118243882713097",
+    "title": "HarmonyOS 主流跨平台开发框架对比: ArkUI、Flutter、React Native、KMP、UniApp - 掘金",
+    "source_trust_level": "不可信源",
+    "source_trust_type": ""
+  },
+  "2": {
+    "page_content": "鸿蒙重点项目开发者\\n鸿蒙重点项目开发者面临的核心诉求是多设备联动、分布式数据同步、ArkUI 原生体验与系统能力直达，选型需优先考虑框架在鸿蒙生态的深度集成度。Kuikly 是目前在官方资料与适配计划中唯一明确提供 ArkUI 组件映射、Ability 生命周期兼容、分布式调用支持的跨端方案，能够在保持跨端代码复用的同时完整释放鸿蒙特性，适合将鸿蒙作为主力或首发平台的战略项目。Flutter 可作为非核心 UI 模块的补充方案，但需接受额外的桥接开发与性能折衷。其余方案或因缺乏系统级能力接入，或因已停止更新，难以满足鸿蒙重点项目的长期维护与功能演进需求。此类团队应以鸿蒙能力支持完整度为首要筛选条件，确保项目在全场景设备群中获得一致且优质的用户体验。\\n结论与适配思路\\n鸿蒙深度集成与性能均衡并重 ——选择 Kuikly，其在 ArkUI 映射、分布式能力接入与跨端渲染优化方面具备公开可验证的技术路径，适合鸿蒙优先项目。\\n强生态与前端技术栈延续 ——选择 React Native 或 uni-app，可快速借助既有 Web 技能覆盖多端，但在鸿蒙系统能力调用上存在局限。\\n跨端 UI 一致性与插件生态优先 ——选择 Flutter，在 iOS/Android 提供稳定渲染与丰富社区资源，鸿蒙适配需评估桥接成本与性能折衷。\\n小程序矩阵为主且兼顾 App ——选择 uni-app 或 Taro，可一次构建覆盖国内主流小程序平台，App 端需接受鸿蒙体验的折衷与系统能力缺失。\\n常见问题解答\\n问：如果项目以鸿蒙为首发平台，是否需要放弃跨端方案？\\n答：不必。Kuikly 等框架已实现 ArkUI 映射与分布式能力接入，可在首发鸿蒙的同时保留 iOS/Android 复用路径，降低多端研发压力。\\n问：前端团队想沿用 Vue/React，能否在鸿蒙设备上获得原生体验？\\n答：uni-app 与 Taro 在鸿蒙 WebView 中可运行，但无法调用 ArkUI 与系统能力；若需原生体验与分布式特性，应评估 Kuikly 的声明式语法映射方案。\\n问：已有 Android 原生项目，如何评估迁移到跨端框架的成本？\\n答：Kuikly 提供渐进式迁移路径，可在保留原生模块的同时引入跨端模块，迁移成本与业务耦合度直接相关，建议先在非核心功能试点。\\n问：性能是否必然受跨端桥接影响？\\n答：不一定。Kuikly 与 Flutter 在渲染层减少桥接开销，性能接近原生；React Native 等基于桥接的方案在高并发交互场景可能出现帧率波动。\\n问：如何判断框架的鸿蒙适配是否可持续？",
+    "url": "https://developer.huawei.com/consumer/cn/blog/topic/03210374741883216",
+    "title": "华为开发者文章",
+    "source_trust_level": "可信源",
+    "source_trust_type": "权威行业"
+  },
+  "3": {
+    "page_content": "一、前言\\n华为鸿蒙系统（HarmonyOS）发展迅猛，跨平台开发框架在鸿蒙原生应用开发里的重要性愈发突显。Flutter、React Native（RN）和Uni - app这三个主流跨平台开发框架，在鸿蒙原生应用开发中各有独特的优势与潜力。接下来我们就深入探讨下它们在鸿蒙原生应用开发中的情况，给开发者们提供技术参考。\\n二、各框架简述\\n（一）Uni - app\\nUni - app是一个基于Vue.js开发前端应用的框架，一套代码能编译到iOS、Android、Web以及各种小程序等多个平台。在鸿蒙原生应用开发方面，它借助华为开发者联盟的开发工具和SDK来开发鸿蒙应用。虽说不能直接打包鸿蒙应用，但能通过H5平台编译后在鸿蒙OS的Web容器中运行。\\n优势\\n易上手 ：就像一个熟悉某种操作模式的工人换了新的工作场景，但操作方式类似，对于熟悉Vue.js的开发者来说，Uni - app的学习成本低。\\n插件和组件丰富 ：Uni - app社区有大量的插件和组件，这就好比建房子有很多现成的建筑材料，能大大削减开发成本。\\n实际案例 国内一家知名电商公司的鸿蒙应用采用了Uni - app，用H5编译的方式快速上线。用户反馈显示，应用在性能和用户体验方面都达到了预期。\\n（二）React Native（RN）\\nRN是Facebook开源的跨平台移动应用开发框架，用JavaScript语言以及类似HTML的JSX和CSS开发移动应用。RN官方没有直接支持鸿蒙系统，但是社区已经开发了支持鸿蒙的版本。\\n跨平台能力强 ：就像一把万能钥匙能开多把锁，RN除了鸿蒙，还支持iOS和Android等平台，有助于快速迭代多平台应用。\\n开发效率高 ：RN的热加载即时编译方式就像汽车的涡轮增压，能显著提升开发速度。\\n挑战 但在鸿蒙开发中，RN也面临性能优化和适配特定鸿蒙功能等挑战。\\n实际案例 某国际社交应用在鸿蒙系统上用RN开发原生应用。通过优化JavaScript桥接机制，应用的启动和响应速度明显加快。\\n（三）Flutter\\nFlutter是Google打造的跨平台移动应用开发框架，使用Dart语言开发，有接近原生的性能和热重载功能。目前也是官方没有支持，社区在开发。\\n优势\\n自渲染能力 ：Flutter通过自绘UI来保证跨平台一致性，这就好比画家按照同一幅草图在不同的画布上作画，能在鸿蒙系统上实现高度一致的UI表现。\\n高性能 ：Flutter的性能接近原生应用，能够满足对性能要求较高的应用场景。\\n挑战 不过，Dart语言的学习曲线可能会让部分开发者觉得困难。\\n实际案例 某知名新闻客户端在鸿蒙系统上用Flutter开发。借助自绘渲染机制，应用的UI表现和性能都达到了较高水平，用户反馈非常好。\\n三、性能对比\\n（一）运行效率\\nFlutter ：由于自绘渲染机制，在鸿蒙系统上就像短跑运动员起跑反应快一样，Flutter的启动速度和响应速度通常比较快。\\nUni - app ：在某些情况下，因为双渲染引擎，Uni - app的性能可能比Flutter稍差一些。\\nRN ：RN的性能取决于JavaScript桥接机制的实现和优化程度，在复杂场景下可能不如Flutter和原生应用，就像一辆汽车在复杂路况下动力输出不如在平坦道路上稳定。\\n实际数据 根据某第三方测试机构的数据，Flutter在启动速度和响应时间上分别比RN和Uni - app快约20%和30%。\\n（二）资源占用\\nFlutter ：因为单一代码库和高效的渲染机制，Flutter在资源管理方面表现通常较好，就像一个懂得合理规划空间的收纳师，能把资源管理得井井有条。\\nUni - app和RN ：这两个框架在资源占用方面可能因具体实现和优化程度不同而有所差异，不过一般可以通过合理的代码优化和资源管理策略来降低资源占用。\\n四、开发效率与体验\\n（一）开发效率\\nUni - app ：一套代码多端运行的特性就像一个多功能工具，有助于加快鸿蒙应用的开发速度。\\nRN ：热加载即时编译方式如同给开发者装上了加速器，能显著提高开发效率，但要注意性能优化和代码质量。\\nFlutter ：热重载功能对开发效率也有积极影响，而且自绘渲染机制有助于减少UI调试时间，就像给UI调试工作开了一条捷径。\\n（二）开发体验\\n开发工具 ：Flutter、RN和Uni - app都提供了丰富的开发工具和调试工具，这就像给开发者配备了一套齐全的工具箱，有助于提升开发体验。\\n社区支持 ：三个框架都有活跃的社区支持，开发者能在社区里获取帮助、分享经验和解决问题。\\n开发环境搭建\\nFlutter ：安装Flutter SDK，配置IDE（像VS Code或者Android Studio），创建项目并设置依赖。\\nRN ：安装Node.js和React Native CLI，配置IDE（如VS Code），创建项目并设置依赖。\\nUni - app ：安装HBuilderX，创建项目并配置鸿蒙开发环境。\\n调试技巧\\nFlutter ：使用\\n<quark-code>\\nflutter run --debug\\n</quark-code>\\n命令调试，利用VS Code的调试功能。\\nRN ：使用\\n<quark-code>\\nreact - native run - android\\n</quark-code>\\n命令启动应用，利用Chrome DevTools调试。\\nUni - app ：使用HBuilderX内置的调试工具，支持实时预览和日志查看。",
+    "url": "https://developer.huawei.com/consumer/cn/blog/topic/03169399254858163",
+    "title": "华为开发者文章",
+    "source_trust_level": "可信源",
+    "source_trust_type": "权威行业"
+  },
+  "4": {
+    "page_content": "产品特点：(1)国内开发者学习成本低；(2)一次编写多端发布效率高；(3)深度适配国内生态（微信、支付宝等小程序）。成功案例包括京东、滴滴、快手部分业务线，国内中大型互联网企业广泛采用，展现了其在 国内小程序生态快速覆盖落地样本 的效率优势。对于需短时间内覆盖多小程序的业务，该框架可明显减少适配工作量。\\n👉 uni-app官网 | 📚 GitHub仓库\\n5. Lynx\\nLynx，是指由字节跳动推出的低代码跨端方案，强调可视化搭建与原生渲染结合，支持快速页面生成并与原生模块混合调用，其核心特点是面向非专业开发者的快速页面生成、可与原生模块混合调用，主要解决了非程序员快速交付与营销活动页制作的问题。Lynx 是一个以低代码为核心的跨端工具，具备可视化搭建、原生渲染结合、降低人力投入，旨在实现运营活动与后台页面的极速上线。\\n产品特点：(1)面向非专业开发者的快速页面生成；(2)可与原生模块混合调用。落地案例集中在抖音内部运营活动页、火山引擎控制台，侧重营销与后台快速交付，是 非程序员快速交付落地样本 的代表。在低代码与专业开发融合的趋势下，此类方案对非技术角色参与数字化建设具有现实意义。\\n👉 lynx官网 | 📚 GitHub仓库\\n二、科学评估框架\\n建立多维度评分体系可从技术能力（30%）、产品特点适配性（25%）、成本效益（20%）、安全合规（15%）、生态与社区（10%）五大维度展开。\\n1. 技术能力\\nKuikly原生渲染+AOT体积小，在鸿蒙端因KN编译优化启动速度更稳；Flutter绘图性能最优，高频动画帧率更平滑；React Native桥接延迟存在，版本碎片化需额外治理；uni-app X编译效率国内领先；Lynx低代码灵活性高但重度计算受限。对不同终端与交互密度的业务，各框架在性能与兼容性的取舍差异显著。\\n2. 产品特点适配性\\nKuikly多范式与鸿蒙深度支持，适合全平台复杂业务；Flutter适合视觉一致性和动画场景；React Native适合Web团队；uni-app X适配国内小程序生态；Lynx适合快速活动页与非程序员场景。评估需结合业务形态与团队既有技能结构，避免单纯追求技术指标而忽视落地适配度。\\n3. 成本效益\\nKuikly轻量与腾讯内部成熟运维降低长期维护成本；Flutter初期学习曲线较陡；React Native人员易招但桥接优化成本高；uni-app X培训成本低；Lynx可显著降低人力投入。成本不仅体现在开发阶段，还包括后期维护、升级适配与性能优化投入。\\n4. 安全合规\\nKuikly与腾讯安全体系深度集成，具备Bugly质量监控与Shiply自动止损；Flutter与RN依赖社区安全更新；uni-app X国内合规支持完善；Lynx受限于低代码平台权限控制。对金融、政务等高合规要求领域，这一维度权重需提升。\\n5. 生态与社区\\nReact Native社区最大、插件最丰富；Flutter次之且国际化程度高；Kuikly依托腾讯生态快速成长；uni-app X国内社区活跃；Lynx生态聚焦内部与垂直场景。生态成熟度影响问题解决效率与长期可持续性。\\n三、落地实战指南\\n落地实施可分为三阶段：\\n1. 评估规划\\n(1)业务场景映射：梳理目标业务的终端分布、交互复杂度、性能要求与更新频率。\\n(2)框架能力匹配：对照评估框架打分，明确优势与短板。\\n(3)风险清单：涵盖桥接延迟、包体积膨胀、OS新版本兼容性、团队技能落差。\\n2. 迁移实施\\n(1)渐进式替换：优先非核心模块试点，双端并行验证功能与性能。\\n(2)CI/CD接入：统一构建与自动化测试流水线，保障多端一致交付。\\n(3)动态能力规划：评估热更新或动态交付物对业务的必要性。\\n3. 上线运维\\n(1)实时监控：覆盖崩溃率、帧率、加载时长等关键指标。\\n(2)灰度发布：分批次放量并结合AB测试验证效果。\\n(3)回滚机制：预设版本回退与热修复策略。\\n客户案例（Kuikly）：腾讯内部20+业务线验证90%+代码跨平台共享，集中维护资源，降低重复样板代码（来源：掘金2026年3月）。支持HarmonyOS与iOS统一代码库，研发效率提升依赖业务复杂度与团队熟悉度（内部实践）。此类渐进迁移策略在多业务线协同中可有效控制风险并稳步释放跨端收益。\\n四、趋势展望与建议\\n趋势层面： ① 鸿蒙生态加速推动KMP系框架（如Kuikly）渗透； ② AOT与自绘引擎成高性能跨端标配； ③ 低代码/无代码与专业框架融合； ④ 安全合规权重持续提升。跨端开发正由单点技术突破迈向全平台、全场景、全周期的综合能力建设，对框架的适配广度与深度提出更高要求。\\n建议：优先评估全平台与未来OS支持度；关注包体积与运行时性能平衡；选择与现有团队技能匹配的学习曲线；建立可量化的ROI评估模型，并以试点验证、分阶段迁移降低风险。在多变的市场与政策环境下，具备可演进性与生态黏性的框架更能保障长期投入的稳健回报。\\n核心观点总结：\\n跨端框架竞争已从单点性能转向全平台适配与安全合规的综合比拼。\\nKuikly凭借原生渲染、轻量包体与鸿蒙深度支持，在全平台复杂业务中展现均衡优势。\\nFlutter在视觉一致与动画场景仍不可替代，React Native在Web团队迁移具备先发优势。\\n落地需以评估规划为起点，结合渐进迁移与实时监控降低风险。\\n未来趋势指向多端融合、AOT普及与合规强化，选型应前瞻布局。",
+    "url": "http://juejin.im/entry/7626026124310413327",
+    "title": "2026主流跨端开发框架深度剖析与选型指南：Kuikly、Flutter、RN、uni-app X、LynxKuikly - 掘金",
+    "source_trust_level": "不可信源",
+    "source_trust_type": ""
+  },
+  "5": {
+    "page_content": "发布时间 ：2026年2月21日\\n标签 ：openHarmony、React Native、RNOH、Custom Hooks、跨平台开发、性能优化\\n一、前言\\n进入2026年，随着 openHarmony NEXT 彻底剥离AOSP，移动端开发已形成 Android、iOS、HarmonyOS 三足鼎立 的格局。 React Native for OpenHarmony（RNOH）已成为跨平台开发的重要选择，基于RN 0.77.1新架构（TurboModules & Fabric）的生产环境版本已正式发布。\\n然而，在鸿蒙平台上构建高质量应用时， 代码复用 与 逻辑抽象 依然是核心挑战。自定义Hooks作为 React 生态中最强大的扩展机制，能显著提升开发效率与代码质量。\\n本文将以实战项目为载体，带你掌握 HarmonyOS + React Native场景下的自定义Hooks开发全流程。\\n二、技术背景与选型分析\\n2.1 2026年跨平台开发生态\\n<quark-code>┌─────────────────────────────────────────────────────────────────┐\\n│                    2026跨平台框架对比                            │\\n├──────────────┬──────────────┬──────────────┬──────────────────┤\\n│    维度      │   Flutter    │React Native  │   uni-app x      │\\n├──────────────┼──────────────┼──────────────┼──────────────────┤\\n│  鸿蒙支持    │   社区适配   │   RNOH官方   │   部分支持       │\\n│  性能表现    │   ⭐⭐⭐⭐⭐   │   ⭐⭐⭐⭐    │   ⭐⭐⭐⭐        │\\n│  开发效率    │   ⭐⭐⭐⭐    │   ⭐⭐⭐⭐⭐  │   ⭐⭐⭐⭐⭐      │\\n│  生态成熟度  │   ⭐⭐⭐⭐⭐   │   ⭐⭐⭐⭐⭐  │   ⭐⭐⭐⭐        │\\n│  热更新能力  │   受限       │   EAS完善    │   完善           │\\n└──────────────┴──────────────┴──────────────┴──────────────────┘\\n</quark-code>\\nAI写代码\\n1\\n2\\n3\\n4\\n5\\n6\\n7\\n8\\n9\\n10\\n11\\n2.2 RNOH版本演进\\n<quark-table><table><thead><tr><th>版本</th><th>发布日期</th><th>React Native版本</th><th>关键特性</th></tr></thead><tbody><tr><td>v5.0</td><td>2025-Q2</td><td>0.72.5</td><td>基础适配完成</td></tr><tr><td>v5.1</td><td>2025-Q3</td><td>0.75.0</td><td>TurboModules支持</td></tr><tr><td>v5.2</td><td>2026-Q1</td><td>0.77.1</td><td>Fabric渲染引擎</td></tr><tr><td>v5.3</td><td>2026-Q2</td><td>0.79.0</td><td>性能优化</td></tr></tbody></table></quark-table>\\n根据2025年React官方开发者调查， 87%的开发者 在项目中积极使用自定义Hook提升代码复用率。在 openHarmony 场景下，自定义Hooks的价值更加突出：\\n平台差异封装 ：隐藏HarmonyOS特有的API调用\\n逻辑复用 ：跨组件、跨页面复用业务逻辑\\n测试友好 ：Hook逻辑可独立测试\\n维护成本低 ：一处修改，多处生效\\n三、环境配置（2026最新版）\\n3.1 核心依赖\\n<quark-code>{\\n\"react\": \"18.3.1\",\\n\"react-native\": \"0.77.1\",\\n\"@rnoh/react-native-openharmony\": \"0.77.0\",\\n\"typescript\": \"5.3.0\",\\n\"dev-eco-studio\": \"5.0.4\",\\n\"harmonyos-sdk\": \"API 12+\"\\n}\\n</quark-code>\\nAI写代码 json\\n1\\n2\\n3\\n4\\n5\\n6\\n7\\n8\\n3.2 快速搭建\\n<quark-code># 1. 安装Node.js (v18.18.0+)\\nnode -v\\n# 2. 配置npm镜像\\nnpm config set registry https://registry.npmmirror.com\\n# 3. 创建React Native项目\\nnpx @react-native-community/cli init HarmonyRNProject --template react-native-template-typescript\\n# 4. 安装RNOH依赖\\ncd HarmonyRNProject\\nnpm install @rnoh/react-native-openharmony\\n# 5. 初始化鸿蒙工程\\nnpx rnoh init-harmony\\n# 6. 安装常用Hooks库\\nnpm install @react-native-async-storage/async-storage\\nnpm install @react-navigation/native\\nnpm install react-native-gesture-handler\\n</quark-code>\\nAI写代码 bash\\n1\\n2\\n3\\n4\\n5\\n6\\n7\\n8\\n9\\n10\\n11\\n12\\n13\\n14\\n15\\n16\\n17\\n18\\n19\\n20\\n3.3 项目结构\\n<quark-code>HarmonyRNProject/\\n├── App.tsx\\n├── src/\\n│   ├── components/          # 可复用UI组件\\n│   ├── hooks/               # 自定义Hooks\\n│   │   ├── index.ts         # Hooks统一导出\\n│   │   ├── useAsync.ts      # 异步操作Hook\\n│   │   ├── useDebounce.ts   # 防抖Hook\\n│   │   ├── useNetwork.ts    # 网络状态Hook\\n│   │   ├── useStorage.ts    # 本地存储Hook\\n│   │   ├── useAnimation.ts  # 动画Hook\\n│   │   └── usePlatform.ts   # 平台检测Hook\\n│   ├── services/            # API服务层\\n│   ├── store/               # 状态管理\\n│   ├── utils/               # �",
+    "url": "https://blog.csdn.net/2401_83061978/article/details/158262683",
+    "title": "【openHarmony】day40:React Native实战项目+自定义Hooks开发指南-CSDN博客",
+    "source_trust_level": "不可信源",
+    "source_trust_type": ""
+  },
+  "6": {
+    "page_content": "在移动端开发领域，“一套代码跑多端”已从可选方案变为刚需，尤其随着鸿蒙生态的快速扩张，技术选型更需兼顾通用能力与平台适配性。本文围绕主流跨端方案，从 性能、生态、学习成本、鸿蒙适配 四大核心维度展开对比，为不同背景开发者提供决策参考。\\n一、主流跨端技术方案核心参数对比（2026年）\\n以下表格整合了 Flutter 、 React Native（RN）、Kotlin Multiplatform（KMP）、Compose Multiplatform（CMP）、uni-app x、Kuikly六大方案的关键指标，数据来源于权威技术文档与实测报告：\\n<quark-table><table><thead><tr><th>技术方案</th><th>性能（渲染/启动速度）</th><th>生态（组件/插件数量）</th><th>学习成本（语言/文档）</th><th>多端覆盖能力</th><th>鸿蒙适配状态</th></tr></thead><tbody><tr><td>Flutter</td><td>★★★★★（60fps流畅）</td><td>★★★★（Pub.dev 3万+插件）</td><td>★★（需学Dart，文档完善）</td><td>Android/iOS/Web/桌面</td><td>已开源（Flutter For OpenHarmony），支持基础UI渲染与交互</td></tr><tr><td>React Native</td><td>★★★（接近原生，新架构优化）</td><td>★★★★★（NPM 10万+插件）</td><td>★（JS/TS基础，社区资料多）</td><td>Android/iOS/Web</td><td>已开源（ohos_react_native），支持JSI/Fabric</td></tr><tr><td>KMP</td><td>★★★★（原生性能，仅共享逻辑）</td><td>★★★（Kotlin生态，持续扩充）</td><td>★★★（需学Kotlin+Gradle配置）</td><td>多端业务逻辑共享（UI需原生）</td><td>暂未开源，仅存在内部试验方案</td></tr><tr><td>CMP</td><td>★★★（UI共享潜力大，iOS/Web待完善）</td><td>★★★（JetBrains官方支持，生态成长期）</td><td>★★★（需学Kotlin+声明式UI）</td><td>Android/桌面/Web（iOS试验）</td><td>暂未开源，仅停留在技术方案讨论</td></tr><tr><td>uni-app x</td><td>★★★★（接近原生，无JS引擎依赖）</td><td>★★★★（国内生态完善，支持小程序）</td><td>★（Vue/UTS基础，易上手）</td><td>Android/iOS/鸿蒙/Web/小程序</td><td>官方双引擎支持（uni-app兼容迁移，uni-app x原生编译）</td></tr><tr><td>Kuikly</td><td>★★★★（页面FCP 122ms，比RN快6倍）</td><td>★★（腾讯系生态，含埋点/音视频SDK）</td><td>★★（Kotlin+自研DSL，支持可视化拖拽）</td><td>Android/iOS/鸿蒙/Web</td><td>基于KMP适配，已用于美团/B站生产环境（日活5亿+）</td></tr></tbody></table></quark-table>\\n1. Flutter：跨端 UI 一致性标杆\\n核心优势 ：自带Skia渲染引擎，UI跨端一致性极强，适合高定制化界面（如电商、内容社区）；生态成熟，国内有完善的社区与培训体系，遇到问题易找到解决方案。\\n鸿蒙适配 ：通过Flutter For OpenHarmony实现适配，已能运行基础应用，但部分插件仍需适配，适合探索性项目或小规模试点，商用前需评估维护成本。\\n局限性 ：Dart语言相对小众，调用原生功能时性能略有损耗；桌面端生态较弱，鸿蒙平台暂无官方支持。\\n2. React Native ：前端技术栈的自然延伸\\n核心优势 ：复用JS/React技术栈，适合前端团队快速切入移动端；新架构（Fabric+JSI）提升了性能，可快速验证产品形态（MVP）。\\n鸿蒙适配 ：社区开源的ohos_react_native支持新架构核心能力，但文档与案例少于Flutter，大规模项目可能需自行开发原生模块。\\n局限性 ：复杂动画易卡顿，iOS与Android平台存在UI差异；部分大厂已转向自研方案，长期生态存在不确定性。\\n3. uni-app x：国内多端的“性能黑马”\\n核心优势 ：基于Web技术栈（Vue/UTS）开发，运行时编译为原生代码（鸿蒙ArkTS、Android Kotlin、iOS Swift），无JS引擎依赖，性能接近原生；支持国内全平台（App+小程序+鸿蒙），迁移成本低。\\n鸿蒙适配 ：DCloud提供双引擎支持——传统uni-app适合现有项目低成本迁移，uni-app x适合对性能要求高的新项目，已实现原生渲染与分布式能力调用。\\n局限性 ：生态围绕国内市场，海外适配能力较弱；复杂功能仍需原生代码扩展。\\n4. Kuikly：腾讯系的“企业级利器”\\n核心优势 ：基于KMP技术，编译期生成各端原生代码，性能强悍（Android列表滚动提升35%，Web端WASM逼近原生90%）；支持“Kuikly Live”热更新，发版灵活，已在美团、B站生产环境验证（日活5亿+）。\\n鸿蒙适配 ：依托KMP生态适配鸿蒙，UI层采用类RN模式，适合企业级项目（如金融、音视频），但生态仅限腾讯系平台（微信小程序、QQ）。\\n局限性 ：仅生成UI代码，复杂逻辑需自行实现；生态处于初期，非腾讯系项目支持有限。\\n5. KMP/CMP：Kotlin开发者的进阶选择\\n核心优势 ：KMP专注多端业务逻辑共享，CMP在此基础上扩展UI共享，与原生开发无缝结合，性能无损，适合已有Android/Kotlin团队提升代码复用率。\\n鸿蒙适配 ：暂未开源，仅存在技术方向讨论，鸿蒙端缺乏落地",
+    "url": "https://blog.csdn.net/u012482299/article/details/157806603",
+    "title": "移动端跨端技术方案全景对比：从生态到鸿蒙适配_移动端跨端app方案-CSDN博客",
+    "source_trust_level": "不可信源",
+    "source_trust_type": ""
+  },
+  "7": {
+    "page_content": "技术选型不是\"哪个最好\"\\n→ 而是\"在约束条件下，哪个最适合\"\\n→ 约束: 团队能力 / 时间 / 性能 / 生态 / 维护成本\\n</quark-code>\\n一键获取完整项目代码\\n1\\n2\\n3\\n4\\n5\\n6\\n7\\n8\\n1.2 选型的本质\\n<quark-code>选型 = 在\"收益\"和\"代价\"之间做权衡\\n收益: 性能 / 开发效率 / 体验 / 生态\\n代价: 学习成本 / 维护成本 / 迁移成本 / 风险\\n没有免费的午餐:\\n→ 快 = 可能牺牲可控性\\n→ 强 = 可能牺牲简单性\\n→ 全 = 可能牺牲性能\\n</quark-code>\\n一键获取完整项目代码\\n1\\n2\\n3\\n4\\n5\\n6\\n7\\n8\\n9\\n二、核心原理\\n2.1 选型决策框架\\n<quark-code>五步决策法:\\n1. 明确约束: 时间/人力/预算/性能硬指标\\n2. 列出候选: 主流方案全列出来\\n3. 多维评估: 每个方案打分 (见矩阵)\\n4. 验证假设: 关键疑虑做 POC 验证\\n5. 定案留退: 选主方案 + 留备选方案\\n关键原则:\\n→ 用数据决策，不用喜好决策\\n→ 无法验证的假设，先 POC\\n→ 决策可回退: 别选\"上船容易下船难\"的方案\\n</quark-code>\\n一键获取完整项目代码\\n1\\n2\\n3\\n4\\n5\\n6\\n7\\n8\\n9\\n10\\n11\\n2.2 四类核心选型维度\\n<quark-code>UI 方案: ArkUI 原生 / 跨端框架 / 混合\\n指标: 性能上限 / 生态 / 团队技能 / 多端需求\\n存储方案: Preferences / KV / RDB / 分布式 / 混合\\n指标: 数据量 / 并发 / 一致性 / 跨设备需求\\n通信方案: HTTP / WebSocket / 软总线 / 自定义协议\\n指标: 实时性 / 可靠性 / 带宽 / 场景复杂度\\n架构模式: 分层 / MVVM / Clean / DDD / 模块化\\n指标: 团队规模 / 业务复杂度 / 长期演进\\n</quark-code>\\n一键获取完整项目代码\\n1\\n2\\n3\\n4\\n5\\n6\\n7\\n8\\n9\\n10\\n11\\n2.3 评估矩阵打分法\\n<quark-code>维度权重 × 评分 = 加权得分\\n示例: UI 方案评估\\n┌──────────┬────┬──────┬──────┬──────┐\\n│ 维度(权重)│ArkUI│ 混合 │跨端RN│跨端Fl│\\n├──────────┼────┼──────┼──────┼──────┤\\n│性能(0.3) │ 10 │  7   │  6   │  7   │\\n│生态(0.2) │  9 │  7   │  8   │  7   │\\n│效率(0.2) │  7 │  8   │  9   │  8   │\\n│多端(0.15)│  5 │  8   │  9   │  9   │\\n│人(0.15)  │  8 │  7   │  9   │  6   │\\n├──────────┼────┼──────┼──────┼──────┤\\n│加权总分  │ 8.2│ 7.4  │ 7.9  │ 7.4  │\\n└──────────┴────┴──────┴──────┴──────┘\\n→ 权重反映项目优先级，评分要基于事实与 POC\\n</quark-code>\\n一键获取完整项目代码\\n1\\n2\\n3\\n4\\n5\\n6\\n7\\n8\\n9\\n10\\n11\\n12\\n13\\n14\\n15\\n16\\n2.4 取舍原则\\n<quark-code>1. 性能敏感选专业: 渲染/计算密集型用最专的方案\\n2. 存量资产优先: 已有的代码/团队技能是巨大优势\\n3. 简单优先: 能简单不",
+    "url": "https://blog.csdn.net/ai_lingshi/article/details/163675950",
+    "title": "鸿蒙技术选型高级思维：UI方案/存储方案/通信方案/架构模式多场景技术栈权衡决策框架与取舍原则-CSDN博客",
+    "source_trust_level": "不可信源",
+    "source_trust_type": ""
+  },
+  "8": {
+    "result_id": 1,
+    "title": "React Native's 2026 New Architecture: How JSI and Fabric ...",
+    "description": "Discover React Native's 2026 New Architecture: How JSI and Fabric Finally Killed the Performance Bridge. Achieve native-level speed now!",
+    "date": "2026-02-16T00:00:00.0000000",
+    "url": "https://www.bolderapps.com/blog-posts/react-natives-2026-new-architecture-how-jsi-and-fabric-finally-killed-the-performance-bridge",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "9": {
+    "result_id": 2,
+    "title": "React Native's New Architecture in Production - Procedure Tech",
+    "description": "That window closed in late 2025. As of React Native 0.82 (October 2025), this is the only architecture available. TurboModules can take several ...",
+    "date": "2026-06-08T00:00:00.0000000",
+    "url": "https://procedure.tech/blogs/react-native-new-architecture-in-production/",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "10": {
+    "result_id": 3,
+    "title": "React Native New Architecture: Fabric & Expo 2026",
+    "description": "The React Native New Architecture is no longer experimental — it's the default in React Native 0.76+ and Expo SDK 52+. TurboModules is the new ...",
+    "date": "2026-03-09T00:00:00.0000000",
+    "url": "https://www.pkgpulse.com/guides/react-native-new-architecture-fabric-turbomodules-expo-2026",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "11": {
+    "result_id": 4,
+    "title": "About the New Architecture",
+    "description": "The New Architecture has been available for experimental opt-in as of React Native 0.68 with continued improvements in every subsequent release.",
+    "date": "2026-03-22T00:00:00.0000000",
+    "url": "https://reactnative.dev/architecture/landing-page",
+    "site_name": "",
+    "source_trust_level": "不可信源",
+    "page_content": "[Skip to main content](<#__docusaurus_skipToContent_fallback>)\n\n[**React Native**](<https://reactnative.dev/>)\n\n[Docs](<#>)\n\n  * [Guides](<https://reactnative.dev/docs/getting-started>)\n  * [Components](<https://reactnative.dev/docs/components-and-apis>)\n  * [APIs](<https://reactnative.dev/docs/accessibilityinfo>)\n  * [Architecture](<https://reactnative.dev/architecture/overview>)\n\n\n\n[Releases](<https://reactnative.dev/releases/overview>)[Contributing](<https://reactnative.dev/contributing/overview>)[Community](<https://reactnative.dev/community/overview>)[Showcase](<https://reactnative.dev/showcase>)[Blog](<https://reactnative.dev/blog>)[](<https://github.com/facebook/react-native>)\n\nSearch\n\nDocs\n\nArchitecture\n\n  * [Guides](<https://reactnative.dev/docs/getting-started>)\n  * [Components](<https://reactnative.dev/docs/components-and-apis>)\n  * [APIs](<https://reactnative.dev/docs/accessibilityinfo>)\n  * [Architecture](<https://reactnative.dev/architecture/overview>)\n\n\n\nCopy page\n\n  * [Architecture](<https://reactnative.dev/architecture/overview>)\n\n    * [Architecture Overview](<https://reactnative.dev/architecture/overview>)\n    * [About the New Architecture](<https://reactnative.dev/architecture/landing-page>)\n    * Rendering\n\n      * [Fabric](<https://reactnative.dev/architecture/fabric-renderer>)\n      * [Render, Commit, and Mount](<https://reactnative.dev/architecture/render-pipeline>)\n      * [Cross Platform Implementation](<https://reactnative.dev/architecture/xplat-implementation>)\n      * [View Flattening](<https://reactnative.dev/architecture/view-flattening>)\n      * [Threading Model](<https://reactnative.dev/architecture/threading-model>)\n    * Build Tools\n\n      * [Bundled Hermes](<https://reactnative.dev/architecture/bundled-hermes>)\n    * [Glossary](<https://reactnative.dev/architecture/glossary>)\n\n\n\nOn this page\n\n# About the New Architecture\n\nSince 2018, the React Native team has been redesigning the core internals of React Native to enable developers to create higher-quality experiences. As of 2024, this version of React Native has been proven at scale and powers production apps by Meta.\n\nThe term _New Architecture_ refers to both the new framework architecture and the work to bring it to open source.\n\nThe New Architecture has been available for experimental opt-in as of [React Native 0.68](<https://reactnative.dev/blog/2022/03/30/version-068#opting-in-to-the-new-architecture>) with continued improvements in every subsequent release. The team is now working to make this the default experience for the React Native open source ecosystem.\n\n## Why a New Architecture?[​](<#why-a-new-architecture> \"Direct link to Why a New Architecture?\")\n\nAfter many years of building with React Native, the team identified a set of limitations that prevented developers from crafting certain experiences with a high polish. These limitations were fundamental to the existing design of the framework, so the New Architecture started as an investment in the future of React Native.\n\nThe New Architecture unlocks capabilities and improvements that were impossible in the legacy architecture.\n\n### Synchronous Layout and Effects[​](<#synchronous-layout-and-effects> \"Direct link to Synchronous Layout and Effects\")\n\nBuilding adaptive UI experiences often requires measuring the size and position of your views and adjusting layout.\n\nToday, you would use the [`onLayout`](<https://reactnative.dev/docs/view#onlayout>) event to get the layout information of a view and make any adjustments. However, state updates within the `onLayout` callback may apply after painting the previous render. This means that users may see intermediate states or visual jumps between rendering the initial layout and responding to layout measurements.\n\nWith the New Architecture, we can avoid this issue entirely with synchronous access to layout information and properly scheduled updates such that no intermediate state is visible to users.\n\nExample: Rendering a Tooltip\n\nMeasuring and placing a tooltip above a view allows us to showcase what synchronous rendering unlocks. The tooltip needs to know the position of its target view to determine where it should render.\n\nIn the current architecture, we use `onLayout` to get the measurements of the view and then update the positioning of the tooltip based on where the view is.\n\nReact JSX\n    \n    \n    function ViewWithTooltip() {  \n    \n    \n      // ...  \n    \n    \n      \n    \n    \n      // We get the layout information and pass to Tooltip to position itself  \n    \n    \n      const onLayout = React.useCallback(event => {  \n    \n    \n        targetRef.current?.measureInWindow((x, y, width, height) => {  \n    \n    \n          // This state update is not guaranteed to run in the same commit  \n    \n    \n          // This results in a visual \"jump\" as the Tooltip repositions itself  \n    \n    \n          setTargetRect({x, y, width, height});  \n    \n    \n        });  \n    \n    \n      }, []);  \n    \n    \n      \n    \n    \n      return (  \n    \n    \n        <>  \n    \n    \n          <View ref={targetRef} onLayout={onLayout}>  \n    \n    \n            <Text>Some content that renders a tooltip above</Text>  \n    \n    \n          </View>  \n    \n    \n          <Tooltip targetRect={targetRect} />  \n    \n    \n        </>  \n    \n    \n      );  \n    \n    \n    }  \n    \n\nWith the New Architecture, we can use [`useLayoutEffect`](<https://react.dev/reference/react/useLayoutEffect>) to synchronously measure and apply layout updates in a single commit, avoiding the visual \"jump\".\n\nReact JSX\n    \n    \n    function ViewWithTooltip() {  \n    \n    \n      // ...  \n    \n    \n      \n    \n    \n      useLayoutEffect(() => {  \n    \n    \n        // The measurement and state update for `targetRect` happens in a single commit  \n    \n    \n        // allowing Tooltip to position itself without intermediate paints  \n    \n    \n        targetRef.current?.measureInWindow((x, y, width, height) => {  \n    \n    \n          setTargetRect({x, y, width, height});  \n    \n    \n        });  \n    \n    \n      }, [setTargetRect]);  \n    \n    \n      \n    \n    \n      return (  \n    \n    \n        <>  \n    \n    \n          <View ref={targetRef}>  \n    \n    \n            <Text>Some content that renders a tooltip above</Text>  \n    \n    \n          </View>  \n    \n    \n          <Tooltip targetRect={targetRect} />  \n    \n    \n        </>  \n    \n    \n      );  \n    \n    \n    }  \n    \n\nAsynchronous measurement and render of the Tooltip. [See code](<https://gist.github.com/lunaleaps/eabd653d9864082ac1d3772dac217ab9>).Synchronous measurement and render of the Tooltip. [See code](<https://gist.github.com/lunaleaps/148756563999c83220887757f2e549a3>).\n\n### Support for Concurrent Renderer and Features[​](<#support-for-concurrent-renderer-and-features> \"Direct link to Support for Concurrent Renderer and Features\")\n\nThe New Architecture supports concurrent rendering and features that have shipped in [React 18](<https://react.dev/blog/2022/03/29/react-v18>) and beyond. You can now use features like Suspense for data-fetching, Transitions, and other new React APIs in your React Native code, further conforming codebases and concepts between web and native React development.\n\nThe concurrent renderer also brings out-of-the-box improvements like automatic batching, which reduces re-renders in React.\n\nExample: Automatic Batching\n\nWith the New Architecture, you'll get automatic batching with the React 18 renderer.\n\nIn this example, a slider specifies how many tiles to render. Dragging the slider from 0 to 1000 will fire off a quick succession of state updates and re-renders.\n\nIn comparing the renderers for the [same code](<https://gist.github.com/lunaleaps/79bb6f263404b12ba57db78e5f6f28b2>), you can visually notice the renderer provides a smoother UI, with less intermediate UI updates. State updates from native event handlers, like this native Slider component, are now batched.\n\nRendering frequent state updates with legacy renderer.Rendering frequent state updates with React 18 renderer.\n\nNew concurrent features, like [Transitions](<https://react.dev/reference/react/useTransition>), give you the power to express the priority of UI updates. Marking an update as lower priority tells React it can \"interrupt\" rendering the update to handle higher priority updates to ensure a responsive user experience where it matters.\n\nExample: Using `startTransition`\n\nWe can build on the previous example to showcase how transitions can interrupt in-progress rendering to handle a newer state update.\n\nWe wrap the tile number state update with `startTransition` to indicate that rendering the tiles can be interrupted. `startTransition` also provides a `isPending` flag to tell us when the transition is complete.\n\nReact JSX\n    \n    \n    function TileSlider({value, onValueChange}) {  \n    \n    \n      const [isPending, startTransition] = useTransition();  \n    \n    \n      \n    \n    \n      return (  \n    \n    \n        <>  \n    \n    \n          <View>  \n    \n    \n            <Text>  \n    \n    \n              Render {value} Tiles  \n    \n    \n            </Text>  \n    \n    \n            <ActivityIndicator animating={isPending} />  \n    \n    \n          </View>  \n    \n    \n          <Slider  \n    \n    \n            value={1}  \n    \n    \n            minimumValue={1}  \n    \n    \n            maximumValue={1000}  \n    \n    \n            step={1}  \n    \n    \n            onValueChange={newValue => {  \n    \n    \n              startTransition(() => {  \n    \n    \n                onValueChange(newValue);  \n    \n    \n              });  \n    \n    \n            }}  \n    \n    \n          />  \n    \n    \n        </>  \n    \n    \n      );  \n    \n    \n    }  \n    \n    \n      \n    \n    \n    function ManyTiles() {  \n    \n    \n      const [value, setValue] = useState(1);  \n    \n    \n      const tiles = generateTileViews(value);  \n    \n    \n      return (  \n    \n    \n          <TileSlider onValueChange={setValue} value={value} />  \n    \n    \n          <View>  \n    \n    \n            {tiles}  \n    \n    \n          </View>  \n    \n    \n      )  \n    \n    \n    }  \n    \n\nYou'll notice that with the frequent updates in a transition, React renders fewer intermediate states because it bails out of rendering the state as soon as it becomes stale. In comparison, without transitions, more intermediate states are rendered. Both examples still use automatic batching. Still, transitions give even more power to developers to batch in-progress renders.\n\nRendering tiles with transitions to interrupt in-progress renders of stale state. [See code](<https://gist.github.com/lunaleaps/eac391bf3fe4c85953cefeb74031bab0/revisions>).Rendering tiles without marking it as a transition. [See code](<https://gist.github.com/lunaleaps/eac391bf3fe4c85953cefeb74031bab0/revisions>).\n\n### Fast JavaScript/Native Interfacing[​](<#fast-javascriptnative-interfacing> \"Direct link to Fast JavaScript/Native Interfacing\")\n\nThe New Architecture removes the [asynchronous bridge](<https://reactnative.dev/blog/2018/06/14/state-of-react-native-2018#architecture>) between JavaScript and native and replaces it with JavaScript Interface (JSI). JSI is an interface that allows JavaScript to hold a reference to a C++ object and vice-versa. With a memory reference, you can directly invoke methods without serialization costs.\n\nJSI enables [VisionCamera](<https://github.com/mrousavy/react-native-vision-camera>), a popular camera library for React Native, to process frames in real time. Typical frame buffers are ~30 MB, which amounts to roughly 2 GB of data per second, depending on the frame rate. In comparison with the serialization costs of the bridge, JSI handles that amount of interfacing data with ease. JSI can expose other complex instance-based types such as databases, images, audio samples, etc.\n\nJSI adoption in the New Architecture removes this class of serialization work from all native-JavaScript interop. This includes initializing and re-rendering native core components like `View` and `Text`. You can read more about our [investigation in rendering performance](<https://github.com/reactwg/react-native-new-architecture/discussions/123>) in the New Architecture and the improved benchmarks we measured.\n\n## What can I expect from enabling the New Architecture?[​](<#what-can-i-expect-from-enabling-the-new-architecture> \"Direct link to What can I expect from enabling the New Architecture?\")\n\nWhile the New Architecture enables these features and improvements, enabling the New Architecture for your app or library may not immediately improve the performance or user experience.\n\nFor example, your code may need refactoring to leverage new capabilities like synchronous layout effects or concurrent features. Although JSI will minimize the overhead between JavaScript and native memory, data serialization may not have been a bottleneck for your app's performance.\n\nEnabling the New Architecture in your app or library is opting into the future of React Native.\n\nThe team is actively researching and developing new capabilities the New Architecture unlocks. For example, web alignment is an active area of exploration at Meta that will ship to the React Native open source ecosystem.\n\n  * [Updates to the event loop model](<https://github.com/react-native-community/discussions-and-proposals/blob/main/proposals/0744-well-defined-event-loop.md>)\n  * [Node and layout APIs](<https://github.com/react-native-community/discussions-and-proposals/blob/main/proposals/0607-dom-traversal-and-layout-apis.md>)\n  * [Styling and layout conformance](<https://github.com/facebook/yoga/releases/tag/v2.0.0>)\n\n\n\nYou can follow along and contribute in our dedicated [discussions & proposals](<https://github.com/react-native-community/discussions-and-proposals/discussions/651>) repository.\n\n## Should I use the New Architecture today?[​](<#should-i-use-the-new-architecture-today> \"Direct link to Should I use the New Architecture today?\")\n\nWith 0.76, The New Architecture is enabled by default in all the React Native projects.\n\nIf you find anything that is not working well, please open an issue using [this template](<https://github.com/facebook/react-native/issues/new?assignees=&labels=Needs%3A+Triage+%3Amag%3A%2CType%3A+New+Architecture&projects=&template=new_architecture_bug_report.yml>).\n\nIf, for any reasons, you can't use the New Architecture, you can still opt-out from it:\n\n### Android[​](<#android> \"Direct link to Android\")\n\n  1. Open the `android/gradle.properties` file\n  2. Toggle the `newArchEnabled` flag from `true` to `false`\n\n\n\ngradle.properties\n    \n    \n    # Use this property to enable support to the new architecture.  \n    \n    \n    # This will allow you to use TurboModules and the Fabric render in  \n    \n    \n    # your application. You should enable this flag either if you want  \n    \n    \n    # to write custom TurboModules/Fabric components OR use libraries that  \n    \n    \n    # are providing them.  \n    \n    \n    -newArchEnabled=true  \n    \n    \n    +newArchEnabled=false  \n    \n\n### iOS[​](<#ios> \"Direct link to iOS\")\n\n  1. Open the `ios/Podfile` file\n  2. Add `ENV['RCT_NEW_ARCH_ENABLED'] = '0'` in the main scope of the Podfile ([reference Podfile](<https://github.com/react-native-community/template/blob/0.76-stable/template/ios/Podfile>) in the template)\n\n\n\nDiff\n    \n    \n    + ENV['RCT_NEW_ARCH_ENABLED'] = '0'  \n    \n    \n    # Resolve react_native_pods.rb with node to allow for hoisting  \n    \n    \n    require Pod::Executable.execute_command('node', ['-p',  \n    \n    \n      'require.resolve(  \n    \n\n  3. Install your CocoaPods dependencies with the command:\n\n\n    \n    \n    bundle exec pod install  \n    \n\n[Edit this page](<https://github.com/facebook/react-native-website/edit/main/docs/landing-page.md>)\n\nLast updated on **Mar 22, 2026**\n\n[ PreviousArchitecture Overview](<https://reactnative.dev/architecture/overview>)[NextFabric](<https://reactnative.dev/architecture/fabric-renderer>)\n\n  * [Why a New Architecture?](<#why-a-new-architecture>)\n    * [Synchronous Layout and Effects](<#synchronous-layout-and-effects>)\n    * [Support for Concurrent Renderer and Features](<#support-for-concurrent-renderer-and-features>)\n    * [Fast JavaScript/Native Interfacing](<#fast-javascriptnative-interfacing>)\n  * [What can I expect from enabling the New Architecture?](<#what-can-i-expect-from-enabling-the-new-architecture>)\n  * [Should I use the New Architecture today?](<#should-i-use-the-new-architecture-today>)\n    * [Android](<#android>)\n    * [iOS](<#ios>)\n\n\n\nDevelop\n\n  * [Guides](<https://reactnative.dev/docs/getting-started>)\n  * [Components](<https://reactnative.dev/docs/components-and-apis>)\n  * [APIs](<https://reactnative.dev/docs/accessibilityinfo>)\n  * [Architecture](<https://reactnative.dev/architecture/overview>)\n\n\n\nParticipate\n\n  * [Showcase](<https://reactnative.dev/showcase>)\n  * [Contributing](<https://reactnative.dev/contributing/overview>)\n  * [Community](<https://reactnative.dev/community/overview>)\n  * [Code of Conduct](<https://github.com/react/react-native/blob/main/CODE_OF_CONDUCT.md>)\n\n\n\nFind us\n\n  * [Blog](<https://reactnative.dev/blog>)\n  * [X](<https://x.com/reactnative>)\n  * [Bluesky](<https://bsky.app/profile/reactnative.dev>)\n  * [GitHub](<https://github.com/facebook/react-native>)\n\n\n\nExplore More\n\n  * [React](<https://react.dev/>)\n  * [Packages Directory](<https://reactnative.directory/>)\n  * [Privacy Policy](<https://opensource.fb.com/legal/privacy/>)\n  * [Terms of Service](<https://opensource.fb.com/legal/terms/>)\n\n\n\n[](<https://opensource.fb.com/>)\n\nCopyright © Meta Platforms, Inc."
+  },
+  "12": {
+    "result_id": 5,
+    "title": "React Native New Architecture Explained (Fabric & ...",
+    "description": "This blog explains the React Native New Architecture in simple terms, focusing on why it exists, what Fabric and TurboModules really are, and ...",
+    "date": "2026-01-12T13:32:32.4150000",
+    "url": "https://medium.com/@007shreyak/react-native-new-architecture-explained-fabric-turbomodules-7cc0f52930a4",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "13": {
+    "result_id": 6,
+    "title": "React Native's New Architecture Fabric, TurboModules & JSI ...",
+    "description": "The Bridge is Dead — React Native New Architecture Explained (2026) · How React Native Works: From the Old Bridge to the New JSI · Choosing the ...",
+    "date": "2026-01-12T13:32:32.4150000",
+    "url": "https://www.youtube.com/watch?v=yvAFqGTzU30",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "14": {
+    "result_id": 7,
+    "title": "Docs: Getting Started with the New Architecture #8",
+    "description": "Currently, the docs contains only Flow the TurboModules guide this weekend, The New Architecture is composed mainly of two pillars: The New Native Module ...",
+    "date": "",
+    "url": "https://github.com/reactwg/react-native-new-architecture/discussions/8",
+    "site_name": "",
+    "source_trust_level": "可信源"
+  },
+  "15": {
+    "result_id": 8,
+    "title": "React Native New Architecture Migration: 2026 Guide",
+    "description": "Step-by-step migration to the New Architecture — breaking changes, Fabric/TurboModules, and real timelines from 20+ production apps. Updated July 2026.",
+    "date": "",
+    "url": "https://www.agilesoftlabs.com/blog/2026/03/react-native-new-architecture-migration",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "16": {
+    "result_id": 9,
+    "title": "Deep Dive into React Native's New Architecture: JSI ... - ESPC",
+    "description": "JSI eliminates the old bridge's overhead, while TurboModules improve efficiency and scalability. Together, JSI and TurboModules make React ...",
+    "date": "2026-01-16T00:00:00.0000000",
+    "url": "https://espc.tech/learning-hub/blog/deep-dive-into-react-natives-new-architecture-jsi-turbomodules-fabric-yoga/",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "17": {
+    "result_id": 1,
+    "title": "Considering Official Flutter Support for HarmonyOS #180323",
+    "description": "Flutter project consider official support for the HarmonyOS platform, with a focus on long-term ecosystem health and developer efficiency.",
+    "date": "2025-12-26T00:00:00.0000000",
+    "url": "https://github.com/flutter/flutter/issues/180323",
+    "site_name": "",
+    "source_trust_level": "可信源"
+  },
+  "18": {
+    "result_id": 2,
+    "title": "What's new in Flutter 3.44",
+    "description": "Empowering developers at Google I/O 2026. Flutter 3.44 is here, and it's a big one! This release celebrates a milestone in the Flutter ...",
+    "date": "2026-05-20T00:00:00.0000000",
+    "url": "https://flutter.dev/blog/whats-new-in-flutter-3-44",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "19": {
+    "result_id": 3,
+    "title": "Integrated Flutter Development for HarmonyOS",
+    "description": "HarmonyOS isn't natively supported by Flutter, This project currently supports Linux, macOS, and Windows environments.",
+    "date": "2025-06-17T00:00:00.0000000",
+    "url": "https://dev.to/flfljh/integrated-flutter-development-for-harmonyos-4o56",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "20": {
+    "result_id": 4,
+    "title": "Does Flutter Working Well With Hawaii Harmony OS?",
+    "description": "If Harmony OS gets popular, flutter support will be added. In the end, Flutter is just Skia, so if the device has a graphics card, it can run ...",
+    "date": "2020-08-12T13:32:35.1950000",
+    "url": "https://www.reddit.com/r/FlutterDev/comments/hqez7b/does_flutter_working_well_with_hawaii_harmony_os/",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "21": {
+    "result_id": 5,
+    "title": "HarmonyOS Next API 16 for HarmonyOS Flutter 3.22.0 is ...",
+    "description": "HarmonyOS Next on all 2025 devices Huawei has announced that all its devices released in 2025 will operate on HarmonyOS Next, the operating ...",
+    "date": "2025-04-27T00:00:00.0000000",
+    "url": "https://www.harmony-developers.com/p/harmonyos-next-api-16-for-harmonyos",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "22": {
+    "result_id": 6,
+    "title": "HarmonyOS NEXT - SDK Version",
+    "description": "HarmonyOS NEXT 1.7.0, 2026-02-27, 1. Support for view collection 2. Support for automatic collection of routing pages and click operations 3. SDK startup status ...",
+    "date": "",
+    "url": "https://wukongdoc.tingyun.com/ty-doc/en/docs/doc/RUM/sdk_version/HarmonyOS_releaseNote/",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "23": {
+    "result_id": 7,
+    "title": "14-Existing Flutter Project Supports HarmonyOS II",
+    "description": "Install the official version 3.22 and the version 3.22.0 of the HarmonyOS community respectively. 3. Build the Flutter HarmonyOS development ...",
+    "date": "",
+    "url": "https://medium.com/@shaohusuo/harmonyos-flutter-practice-14-existing-flutter-project-supports-harmonyos-ii-409b1a62a332",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "24": {
+    "result_id": 8,
+    "title": "What's new in the docs",
+    "description": "This page contains current and recent announcements of what's new on the Flutter website and blog. Find past what's new information on the ...",
+    "date": "2026-08-04T00:00:00.0000000",
+    "url": "https://docs.flutter.dev/release/whats-new",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "25": {
+    "result_id": 1,
+    "title": "Does HarmonyOS Next support APKs and US MVNO?",
+    "description": "This is prolly a dumb question but just curious. Looking to switch from Samsung because I got tired of their \"iterative updates\" and huawei makes what ...",
+    "date": "2025-09-12T13:32:32.6500000",
+    "url": "https://www.reddit.com/r/Huawei/comments/1n7j68f/dumb_question_but_does_harmonyos_next_support/",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "26": {
+    "result_id": 2,
+    "title": "uni-app development Practice of Huawei HarmonyOS ...",
+    "description": "This comprehensive guide provides detailed information on how to develop applications using uni-app, including tutorials, API references, and ...",
+    "date": "2025-06-18T00:00:00.0000000",
+    "url": "https://dev.to/liu_yang_fc0e605820ac220c/uni-app-development-practice-of-huawei-harmonyos-harmony-next-56p2",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "27": {
+    "result_id": 3,
+    "title": "HarmonyOS Next Q&A",
+    "description": "Your questions about HarmonyOS Next answered. I answer the following questions: 1. What is the base of HarmonyOS Next 2.",
+    "date": "2025-08-12T13:32:32.6500000",
+    "url": "https://www.youtube.com/watch?v=AI5MzXmJVYQ",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "28": {
+    "result_id": 4,
+    "title": "Uni-App X Boosts Cross-Platform Development for ...",
+    "description": "It opens up a rich plugin ecosystem and creates an efficient development environment for developers, supporting the rapid conversion and ...",
+    "date": "2025-07-30T00:00:00.0000000",
+    "url": "https://ecweb.ecer.com/topic/en/detail-36329-uniapp_x_boosts_crossplatform_development_for_harmonyos.html",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "29": {
+    "result_id": 5,
+    "title": "HarmonyOS 5",
+    "description": "HarmonyOS NEXT both discards the common Unix-like Linux kernel and replaces the previous multiple-kernels system with its own bespoke HarmonyOS microkernel.",
+    "date": "",
+    "url": "https://en.wikipedia.org/wiki/HarmonyOS_5",
+    "site_name": "",
+    "source_trust_level": "可信源"
+  },
+  "30": {
+    "result_id": 6,
+    "title": "uni-app",
+    "description": "HarmonyOS Next, native plugin extension mechanism to meet the needs of vehicle-mounted, industrial, and other offline scenarios. Native extension supports plus ...",
+    "date": "",
+    "url": "https://baike.baidu.com/en/item/uni-app/660404",
+    "site_name": "",
+    "source_trust_level": "可信源"
+  },
+  "31": {
+    "result_id": 7,
+    "title": "list - uni-app官网",
+    "description": "HarmonyOS Next 不支持 app side nvue specific component. list has special optimization for rendering resource recycling of the invisible part. ...",
+    "date": "2024-08-01T00:00:00.0000000",
+    "url": "https://uniapp.dcloud.io/component/list",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "32": {
+    "result_id": 8,
+    "title": "Understanding AbilityStage in HarmonyOS NEXT",
+    "description": "In HarmonyOS NEXT, the `AbilityStage` class plays a central role in defining how your application boots, behaves, and manages global state.",
+    "date": "2025-08-06T00:00:00.0000000",
+    "url": "https://forums.developer.huawei.com/forumPortal/en/topic/0203189854829373034",
+    "site_name": "",
+    "source_trust_level": "可信源"
+  },
+  "33": {
+    "result_id": 9,
+    "title": "The Missing App Tier List – What's Gone & How Much It Matters",
+    "description": "In this video, I share my personal perspective on the native apps I find missing in HarmonyOS Next. I've organized them into a tierlist ...",
+    "date": "2025-08-12T13:32:32.6500000",
+    "url": "https://www.youtube.com/watch?v=PxHt8WrtpS8",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "34": {
+    "url": "https://uniapp.dcloud.net.cn/tutorial/platform-harmonyos.html",
+    "page_content": "[ ](<https://www.dcloud.io>)\n\n[uni-app](<javascript:;>)\n\n[ uni-app x ](<https://doc.dcloud.net.cn/uni-app-x/>)\n\n[ uniCloud ](<https://doc.dcloud.net.cn/uniCloud/>)\n\n[ HBuilder X ](<https://hx.dcloud.net.cn/>)\n\n[ uni 小程序 sdk ](<https://nativesupport.dcloud.net.cn/>)\n\n[ uni-ad广告 ](<https://uniapp.dcloud.net.cn/uni-ad/>)\n\n[ 开发者服务 ](<https://uniapp.dcloud.net.cn/dev/>)\n\nuni-app\n\n[ 介绍 ](<https://uniapp.dcloud.net.cn/>)\n\n[ 教程 ](<https://uniapp.dcloud.net.cn/tutorial/>)\n\n[ 全局文件 ](<https://uniapp.dcloud.net.cn/collocation/pages.html>)\n\n[ 组件 ](<https://uniapp.dcloud.net.cn/component/>)\n\n[ API ](<https://uniapp.dcloud.net.cn/api/>)\n\n[ 插件 ](<https://uniapp.dcloud.net.cn/plugin/>)\n\n[ AI专题 ](<https://uniapp.dcloud.net.cn/ai/>)\n\n[ 工程化 ](<https://uniapp.dcloud.net.cn/worktile/>)\n\n[ UTS  ](<https://doc.dcloud.net.cn/uni-app-x/uts/>)\n\n其他规范 其他规范\n\n  * [ App扩展规范 HTML5 Plus  ](<http://www.html5plus.org/doc/h5p.html>)\n  * [ 微信小程序  ](<https://developers.weixin.qq.com/miniprogram/dev/framework/>)\n  * [ 支付宝小程序  ](<https://docs.alipay.com/mini/developer/getting-started>)\n  * [ 百度小程序  ](<https://smartprogram.baidu.com/docs/develop/tutorial/codedir/>)\n  * [ 抖音小程序  ](<https://developer.open-douyin.com/docs/resource/zh-CN/mini-app/develop/component/introduction/basic-component>)\n  * [ 飞书小程序  ](<https://open.feishu.cn/document/uYjL24iN/uUDNzUjL1QzM14SN0MTN>)\n  * [ 钉钉小程序  ](<https://developers.dingtalk.com/document/app/introduction-to-dingtalk-mini-programs>)\n  * [ QQ小程序  ](<https://q.qq.com/wiki/develop/miniprogram/frame/>)\n  * [ 快手小程序  ](<https://mp.kuaishou.com/docs/develop/frame/config/conf_appjson.html>)\n  * [ 京东小程序  ](<https://mp-docs.jd.com/doc/forst/second/-1>)\n  * [ 华为快应用  ](<https://developer.huawei.com/consumer/cn/doc/quickApp-References/quickapp-filestructure-0000001074564510>)\n  * [ 360小程序  ](<https://mp.360.cn/doc/miniprogram/dev/#/view>)\n  * [ Weex  ](<https://weexapp.com/zh/>)\n  * [ 鸿蒙元服务  ](<https://developer.huawei.com/consumer/cn/doc/atomic-ascf/ascf-overview>)\n  * [ 小红书小程序  ](<https://miniapp.xiaohongshu.com/docsV2/doc/DC026595>)\n\n\n\n[ uni-app x ](<https://doc.dcloud.net.cn/uni-app-x/>)\n\n[ uniCloud ](<https://doc.dcloud.net.cn/uniCloud/>)\n\n[ HBuilder X ](<https://hx.dcloud.net.cn/>)\n\n[ uni 小程序 sdk ](<https://nativesupport.dcloud.net.cn/>)\n\n[ uni-ad广告 ](<https://uniapp.dcloud.net.cn/uni-ad/>)\n\n[ 开发者服务 ](<https://uniapp.dcloud.net.cn/dev/>)\n\n[ uni-app ](<javascript:;>)\n\n搜索 Ctrl K\n\n简体中文\n\n[ GitHub  ](<https://github.com/dcloudio/uni-app/tree/uni-app-vue2-release>)\n\n[ 介绍 ](<https://uniapp.dcloud.net.cn/>)\n\n[ 教程 ](<https://uniapp.dcloud.net.cn/tutorial/>)\n\n[ 全局文件 ](<https://uniapp.dcloud.net.cn/collocation/pages.html>)\n\n[ 组件 ](<https://uniapp.dcloud.net.cn/component/>)\n\n[ API ](<https://uniapp.dcloud.net.cn/api/>)\n\n[ 插件 ](<https://uniapp.dcloud.net.cn/plugin/>)\n\n[ AI专题 ](<https://uniapp.dcloud.net.cn/ai/>)\n\n[ 工程化 ](<https://uniapp.dcloud.net.cn/worktile/>)\n\n[ UTS  ](<https://doc.dcloud.net.cn/uni-app-x/uts/>)\n\n其他规范 其他规范\n\n  * [ App扩展规范 HTML5 Plus  ](<http://www.html5plus.org/doc/h5p.html>)\n  * [ 微信小程序  ](<https://developers.weixin.qq.com/miniprogram/dev/framework/>)\n  * [ 支付宝小程序  ](<https://docs.alipay.com/mini/developer/getting-started>)\n  * [ 百度小程序  ](<https://smartprogram.baidu.com/docs/develop/tutorial/codedir/>)\n  * [ 抖音小程序  ](<https://developer.open-douyin.com/docs/resource/zh-CN/mini-app/develop/component/introduction/basic-component>)\n  * [ 飞书小程序  ](<https://open.feishu.cn/document/uYjL24iN/uUDNzUjL1QzM14SN0MTN>)\n  * [ 钉钉小程序  ](<https://developers.dingtalk.com/document/app/introduction-to-dingtalk-mini-programs>)\n  * [ QQ小程序  ](<https://q.qq.com/wiki/develop/miniprogram/frame/>)\n  * [ 快手小程序  ](<https://mp.kuaishou.com/docs/develop/frame/config/conf_appjson.html>)\n  * [ 京东小程序  ](<https://mp-docs.jd.com/doc/forst/second/-1>)\n  * [ 华为快应用  ](<https://developer.huawei.com/consumer/cn/doc/quickApp-References/quickapp-filestructure-0000001074564510>)\n  * [ 360小程序  ](<https://mp.360.cn/doc/miniprogram/dev/#/view>)\n  * [ Weex  ](<https://weexapp.com/zh/>)\n  * [ 鸿蒙元服务  ](<https://developer.huawei.com/consumer/cn/doc/atomic-ascf/ascf-overview>)\n  * [ 小红书小程序  ](<https://miniapp.xiaohongshu.com/docsV2/doc/DC026595>)\n\n\n\n[介绍](<javascript:;>)\n\n[ 介绍 ](<https://uniapp.dcloud.net.cn/>)\n\n  * [什么是 uni-app](<https://uniapp.dcloud.net.cn/>)\n  * [uni-app 升级 uni-app x指南 ](<https://doc.dcloud.net.cn/uni-app-x/uniapptox.html>)\n  * 快速上手\n\n  * [uni-app的由来](<https://uniapp.dcloud.net.cn/history.html>)\n  * [如何学习](<https://uniapp.dcloud.net.cn/resource.html>)\n  * [选型指南](<https://uniapp.dcloud.net.cn/select.html>)\n  * [跨端注意](<https://uniapp.dcloud.net.cn/matter.html>)\n  * [常见问题](<https://uniapp.dcloud.net.cn/faq.html>)\n  * [其他项目转uni-app](<https://uniapp.dcloud.net.cn/translate.html>)\n  * [老项目引入uni-app](<https://uniapp.dcloud.net.cn/hybrid.html>)\n  * 运营服务\n\n  * [案例](<https://uniapp.dcloud.net.cn/case.html>)\n  * 更新日志\n\n\n\n\n[ 教程 ](<https://uniapp.dcloud.net.cn/tutorial/>)\n\n[ 全局文件 ](<https://uniapp.dcloud.net.cn/collocation/pages.html>)\n\n[ 组件 ](<https://uniapp.dcloud.net.cn/component/>)\n\n[ API ](<https://uniapp.dcloud.net.cn/api/>)\n\n[ 插件 ](<https://uniapp.dcloud.net.cn/plugin/>)\n\n[ AI专题 ](<https://uniapp.dcloud.net.cn/ai/>)\n\n[ 工程化 ](<https://uniapp.dcloud.net.cn/worktile/>)\n\n[ UTS  ](<https://doc.dcloud.net.cn/uni-app-x/uts/>)\n\n其他规范 其他规范\n\n  * [ App扩展规范 HTML5 Plus  ](<http://www.html5plus.org/doc/h5p.html>)\n  * [ 微信小程序  ](<https://developers.weixin.qq.com/miniprogram/dev/framework/>)\n  * [ 支付宝小程序  ](<https://docs.alipay.com/mini/developer/getting-started>)\n  * [ 百度小程序  ](<https://smartprogram.baidu.com/docs/develop/tutorial/codedir/>)\n  * [ 抖音小程序  ](<https://developer.open-douyin.com/docs/resource/zh-CN/mini-app/develop/component/introduction/basic-component>)\n  * [ 飞书小程序  ](<https://open.feishu.cn/document/uYjL24iN/uUDNzUjL1QzM14SN0MTN>)\n  * [ 钉钉小程序  ](<https://developers.dingtalk.com/document/app/introduction-to-dingtalk-mini-programs>)\n  * [ QQ小程序  ](<https://q.qq.com/wiki/develop/miniprogram/frame/>)\n  * [ 快手小程序  ](<https://mp.kuaishou.com/docs/develop/frame/config/conf_appjson.html>)\n  * [ 京东小程序  ](<https://mp-docs.jd.com/doc/forst/second/-1>)\n  * [ 华为快应用  ](<https://developer.huawei.com/consumer/cn/doc/quickApp-References/quickapp-filestructure-0000001074564510>)\n  * [ 360小程序  ](<https://mp.360.cn/doc/miniprogram/dev/#/view>)\n  * [ Weex  ](<https://weexapp.com/zh/>)\n  * [ 鸿蒙元服务  ](<https://developer.huawei.com/consumer/cn/doc/atomic-ascf/ascf-overview>)\n  * [ 小红书小程序  ](<https://miniapp.xiaohongshu.com/docsV2/doc/DC026595>)\n\n\n\n[ uniCloud Web控制台](<https://unicloud.dcloud.net.cn>)[ 插件市场](<https://ext.dcloud.net.cn/>)[ ask问答社区](<https://ask.dcloud.net.cn/explore/>)[ uni-ad](<https://uniad.dcloud.net.cn>)[ uni统计](<https://tongji.dcloud.net.cn/>)\n\n代码仓库： [Gitee](<https://gitee.com/dcloud/uni-app>) 、 [GitHub](<http://github.com/dcloudio/uni-app>)\n\nuni-app的uni-im交流群： [点击加入](<https://im.dcloud.net.cn/#/?joinGroup=658160eb3e585b555acebfd7>)\n\n官方QQ交流群\n\n群35：713420817（已满） \n\n群34：530305531（已满） \n\n群33：498071674（已满） \n\n群32：166188631（已满） \n\n群31：567471669（已满） \n\n群30：371046920（已满） \n\n群29：202965481（已满） \n\n群28：166188776（已满） \n\n群27：811363410（已满） \n\n群26：147867597（已满） \n\n群25：165297000（已满） \n\n群24：672494800（已满） \n\n群23：599958679（已满） \n\n群22：687186952（已满） \n\n群21：717019120（已满） \n\n群20：165796402（已满） \n\n群19：165657124（已满） \n\n群18：698592271（已满） \n\n群17：951348804（已满） \n\n群16：719211033（已满） \n\n群15：516984120（已满） \n\n群14：465953250（已满） \n\n群13：699478442（已满） \n\n群12：884860657（已满） \n\n群11：296811328（已满） \n\n群10：959059626（已满） \n\n群9：775128777（已满） \n\n群8：695442854（已满） \n\n群7：942061423（已满） \n\n群6：697264024（已满） \n\n群5：731951419（已满） \n\n群4：942702595（已满） \n\n群3：773794803（已满） \n\n群2：901474938（已满） \n\n群1：531031261（已满） \n\n关注微信公众号\n\n[快速体验](<https://uniapp.dcloud.net.cn/#快速体验> \"快速体验\")\n\n[看视频，10分钟了解uni-app](<https://uniapp.dcloud.net.cn/#看视频-10分钟了解uni-app> \"看视频，10分钟了解uni-app\")\n\n[为什么要选择uni-app？](<https://uniapp.dcloud.net.cn/#为什么要选择uni-app> \"为什么要选择uni-app？\")\n\n[功能框架图](<https://uniapp.dcloud.net.cn/#功能框架图> \"功能框架图\")\n\n[一套代码，运行到多个平台](<https://uniapp.dcloud.net.cn/#一套代码-运行到多个平台> \"一套代码，运行到多个平台\")\n\n`uni-app` 是一个使用 [Vue.js ](<https://vuejs.org/>) 开发所有前端应用的框架，开发者编写一套代码，可发布到iOS、Android、鸿蒙Next、Web（响应式）、以及各种小程序（微信/支付宝/百度/抖音/飞书/QQ/快手/钉钉/淘宝/京东/小红书）、快应用、鸿蒙元服务等多个平台。\n\n`DCloud`公司拥有900万开发者、数百万应用、12亿手机端月活用户、数千款uni-app插件、70+微信/qq群，开发者可以放心选择。\n\n`uni-app`在手，做啥都不愁。即使不跨端，`uni-app`也是更好的小程序开发框架（[详见 ](<https://ask.dcloud.net.cn/article/35947>)）、更好的App跨平台框架、更方便的H5开发框架。不管领导安排什么样的项目，你都可以快速交付，不需要转换开发思维、不需要更改开发习惯。\n\n## [#](<#快速体验>) 快速体验\n\n一套代码编到十几个平台，这不是梦想。眼见为实，扫描以下二维码，亲自体验最全面的跨平台效果！\n\n[ **Android/iOS(uni-app x)**](<https://hellouniappx.dcloud.net.cn/>) [ **鸿蒙(uni-app x)** **需使用已升级到鸿蒙Next** **的手机扫码体验**](<#>) [ **Web(uni-app x)**](<https://hellouniappx.dcloud.net.cn/web>) [ **微信小程序版(uni-app x)**](<https://hellouniappx.dcloud.net.cn/>)\n\n[ **Android版(uni-app)**](<https://m3w.cn/uniapp>) [ **iOS版(uni-app)**](<https://itunes.apple.com/cn/app/hello-uni-app/id1417078253?mt=8>) [ **鸿蒙(uni-app)** **需使用已升级到鸿蒙Next** **的手机扫码体验**](<#>) [ **Web版(uni-app)**](<https://hellouniapp.dcloud.net.cn/>)\n\n[ **微信小程序版(uni-app)**](<https://m3w.cn/uniapp>) [ **鸿蒙元服务(uni-app)** **需使用已升级到鸿蒙Next** **的手机扫码体验**](<https://m3w.cn/uniapp>) [ **支付宝小程序版(uni-app)**](<https://m3w.cn/uniapp>) [ **百度小程序版(uni-app)**](<https://m3w.cn/uniapp>)\n\n[ **抖音小程序版(uni-app)**](<https://m3w.cn/uniapp>) [ **360小程序(uni-app)**](<https://so.mp.360.cn/mp.html?appid=qh4j181qqtru354st6>) [ **快手小程序版(uni-app)**](<https://m3w.cn/uniapp>) [ **飞书小程序版(uni-app)**](<https://m3w.cn/uniapp>)\n\n[ **钉钉小程序版(uni-app)**](<https://m3w.cn/uniapp>) [ **京东小程序版(uni-app)**](<https://m3w.cn/uniapp>) [ **小红书小程序版(uni-app)**](<https://m3w.cn/uniapp>) [ **快应用(uni-app)**](<https://m3w.cn/uniapp>)\n\n[ **QQ小程序版(uni-app)**](<https://m3w.cn/uniapp>)\n\n注：  \n_\\- 某些平台不能提交简单demo，故补充了一些其他功能；hello uni-app示例代码可从[github](<https://github.com/dcloudio/hello-uniapp>) 获取_ _\\- 快应用仅支持 vivo 、oppo、华为_ _\\- 360小程序仅 windows平台支持，需要在360浏览器中打开_ _\\- uni-app 已支持纯血鸿蒙开发，详见[鸿蒙开发专题](<https://uniapp.dcloud.net.cn/tutorial/harmony/dev.html>)。_\n\n## [#](<#看视频-10分钟了解uni-app>) 看视频，10分钟了解uni-app\n\n我们精心准备了一个简单的十分钟介绍视频，方便你快速了解`uni-app`的主要特征：\n\n## [#](<#为什么要选择uni-app>) 为什么要选择uni-app？\n\n`uni-app`在开发者数量、案例、跨端抹平度、扩展灵活性、性能体验、周边生态、学习成本、开发成本等8大关键指标上拥有更强的优势。\n\n##### 开发者/案例数量更多\n\n数百万应用、uni统计月活12亿、70+微信/qq群、更高的百度指数\n\n跨端完善度更高，真正落地的提高生产力\n\n##### 平台能力不受限\n\n在跨端的同时，通过条件编译+平台特有API调用，可以优雅的为某平台写个性化代码，调用专有能力而不影响其他平台。\n\n支持原生代码混写和原生sdk集成。\n\n##### 性能体验优秀\n\n加载新页面速度更快、自动diff更新数据。\n\nApp端支持原生渲染，可支撑更流畅的用户体验。\n\n小程序端的性能优于市场其他框架。[评测](<https://ask.dcloud.net.cn/article/35947>)\n\n##### 周边生态丰富\n\n[插件市场](<https://ext.dcloud.net.cn/?orderBy=WeekDownload>)数千款插件。\n\n支持NPM、支持小程序组件和SDK。\n\n微信生态的各种sdk可直接用于跨平台App。\n\n##### 学习成本低\n\n基于通用的前端技术栈，采用vue语法+微信小程序api，无额外学习成本。\n\n##### 开发成本低\n\n不止开发成本，招聘、管理、测试各方面成本都大幅下降。\n\nHBuilderX是高效开发神器，熟练掌握后研发效率至少翻倍（即便只开发一个平台）。\n\n## [#](<#功能框架图>) 功能框架图\n\n从下面`uni-app`功能框架图可看出，`uni-app`在跨平台的过程中，不牺牲平台特色，可优雅的调用平台专有能力，真正做到海纳百川、各取所长。 \n\n## [#](<#一套代码-运行到多个平台>) 一套代码，运行到多个平台\n\n`uni-app`实现了一套代码，同时运行到多个平台；如下图所示，一套代码，同时运行到iOS模拟器、Android模拟器、web、微信开发者工具、支付宝小程序Studio、百度开发者工具、抖音开发者工具、QQ开发者工具（底部每个终端选项卡，代表1个终端模拟器）：\n\n实际运行效果如下（点击图片可放大）：\n\n[帮助我们改善此页面！](<https://gitcode.com/dcloud/unidocs-zh/edit/master/docs/README.md>)\n\n上次更新: 2026/3/10 15:14:49\n\n开发产品\n\n[HBuilderX](<https://www.dcloud.io/hbuilderx.html>)[uni-app](<https://uniapp.dcloud.net.cn/>)[uni-app x](<https://doc.dcloud.net.cn/uni-app-x/>)[uniCloud](<https://doc.dcloud.net.cn/uniCloud/>)[uniMPsdk](<https://nativesupport.dcloud.net.cn/>)[5+Runtime](<https://www.dcloud.io/runtime.html>)[wap2app](<https://www.dcloud.io/wap2app.html?platform=wap2app>)[MUI](<https://www.dcloud.io/mui.html>)[uni-id](<https://doc.dcloud.net.cn/uniCloud/uni-id/summary.html>)[uni-cdn](<https://doc.dcloud.net.cn/uniCloud/uni-cdn/intro.html>)[uni-pay](<https://doc.dcloud.net.cn/uniCloud/uni-pay/uni-app.html>)[uni-push](<https://uniapp.dcloud.net.cn/unipush>)[uni一键登录](<https://uniapp.dcloud.io/univerify>)[uni实人认证](<https://doc.dcloud.net.cn/uniCloud/frv/intro.html>)[sms](<https://doc.dcloud.net.cn/uniCloud/send-sms>)[uni-starter](<https://ext.dcloud.net.cn/plugin?id=5057>)[uni-admin](<https://doc.dcloud.net.cn/uniCloud/admin>)[uni-upgrade-center](<https://uniapp.dcloud.io/uniCloud/upgrade-center>)[uni-im](<https://doc.dcloud.net.cn/uniCloud/uni-im>)[uni-ai](<https://doc.dcloud.net.cn/uniCloud/uni-ai>)[uni-cms](<https://doc.dcloud.net.cn/uniCloud/uni-cms>)[uniCloud-map](<https://doc.dcloud.net.cn/uniCloud/unicloud-map.html>)[uni-search](<https://ext.dcloud.net.cn/plugin?id=3851>)\n\n运营产品\n\n[uni-ad](<https://uniad.dcloud.net.cn/login>)[uni统计](<https://tongji.dcloud.net.cn/>)[uni发行](<https://www.dcloud.io/dportal.html>)[uni安全专题](<https://uniapp.dcloud.net.cn/tutorial/safe.html>)\n\n开发者服务\n\n[问答社区](<https://ask.dcloud.net.cn/explore/>)[开发者后台](<https://dev.dcloud.net.cn/>)\n\n技术文档\n\n[uni-app文档](<https://uniapp.dcloud.io/>)[uniCloud文档](<https://uniapp.dcloud.io/uniCloud/README>)[原生开发者支持文档](<https://nativesupport.dcloud.net.cn/>)[HBuilder文档](<https://hx.dcloud.net.cn/>)\n\n生态服务\n\n[插件市场](<https://ext.dcloud.net.cn/>)[OAuth用户开放平台](<https://open.dcloud.net.cn/pages/login/login>)\n\n关于我们： [ DCloud官网 ](<https://dcloud.io/>)[ 案例 ](<https://uniapp.dcloud.io/case>)[ 需求墙 ](<https://dev.dcloud.net.cn/wish/?channel=uniapp>)[ 许可协议 ](<https://dcloud.io/license/DCloud.html>)[ 加入我们 ](<https://www.dcloud.io/hr/>)[ 赞助我们 ](<https://dev.dcloud.net.cn/sponsor/>)\n\n联系我们： [ 商务合作：bd@dcloud.io ](<mailto:bd@dcloud.io>)[ 广告合作：uniad@dcloud.io ](<mailto:uniad@dcloud.io>)\n\nDCloud.io 数字天堂（北京）网络技术有限公司是\n\n[HTML5中国产业联盟](<https://www.html5plus.org/>) 发起单位 \n\n[ ](<https://beian.miit.gov.cn/#/Integrated/index>)\n\n[京公网安备：11010802035340号 ](<http://www.beian.gov.cn/portal/registerSystemInfo?recordcode=11010802035340>)\n\n国家信息安全等级保护三级，证书编号：11010813802-20001\n\n##### 本页导读\n\n[快速体验](<https://uniapp.dcloud.net.cn/#快速体验> \"快速体验\")\n\n[看视频，10分钟了解uni-app](<https://uniapp.dcloud.net.cn/#看视频-10分钟了解uni-app> \"看视频，10分钟了解uni-app\")\n\n[为什么要选择uni-app？](<https://uniapp.dcloud.net.cn/#为什么要选择uni-app> \"为什么要选择uni-app？\")\n\n[功能框架图](<https://uniapp.dcloud.net.cn/#功能框架图> \"功能框架图\")\n\n[一套代码，运行到多个平台](<https://uniapp.dcloud.net.cn/#一套代码-运行到多个平台> \"一套代码，运行到多个平台\")\n\n[](<https://uniapp.dcloud.net.cn/ai/uni-agent.html>)",
+    "title": "https://uniapp.dcloud.net.cn/tutorial/platform-harmonyos.html"
+  },
+  "35": {
+    "url": "https://flutter.dev/community/china/harmonyos",
+    "page_content": "[Flutter 3.44 is here! Everywhere, everyday, built by everyone, for everyone. Learn more arrow_forwardFlutter 3.44 is here! Learn more arrow_forward](<https://blog.flutter.dev/whats-new-in-flutter-3-44-b0cc1ad3c527>)\n\n[](<https://flutter.dev/>)\n\n[](<https://flutter.dev/>)\n\n  * [Development arrow_drop_down](<https://flutter.dev/development>)\n\n    * [Overview](<https://flutter.dev/development>)\n    * [Mobile](<https://flutter.dev/development/mobile>)\n    * [Flutter on iOS](<https://flutter.dev/development/ios>)\n    * [Web](<https://flutter.dev/development/web>)\n    * [Desktop](<https://flutter.dev/development/desktop>)\n    * [Embedded](<https://flutter.dev/development/embedded>)\n    * [AI](<https://flutter.dev/ai>)\n    * [Google integrations](<https://flutter.dev/google-integrations>)\n    * [Game development](<https://flutter.dev/games>)\n    * [Monetization](<https://flutter.dev/monetization>)\n\n  * [Ecosystem arrow_drop_down](<https://flutter.dev/ecosystem>)\n\n    * [Overview](<https://flutter.dev/ecosystem>)\n    * [Community](<https://flutter.dev/community>)\n    * [Culture](<https://flutter.dev/culture>)\n    * [Packages](<https://pub.dev>)\n    * [Events](<https://flutter.dev/events>)\n    * [Consultants](<https://flutter.dev/consultants>)\n\n  * [Showcase](<https://flutter.dev/showcase>)\n  * [Blog](<https://flutter.dev/blog>)\n  * [Docs arrow_drop_down](<https://docs.flutter.dev>)\n\n    * [Overview](<https://docs.flutter.dev>)\n    * [What's new](<https://docs.flutter.dev/release>)\n    * [Editor support](<https://docs.flutter.dev/tools/editors>)\n    * [Hot reload](<https://docs.flutter.dev/tools/hot-reload>)\n    * [Profiling](<https://docs.flutter.dev/perf/ui-performance>)\n    * [Install Flutter](<https://docs.flutter.dev/install>)\n    * [App architecture](<https://docs.flutter.dev/app-architecture>)\n    * [Learning Flutter](<https://docs.flutter.dev/learn>)\n    * [DevTools](<https://docs.flutter.dev/tools/devtools>)\n\n\n\n\nsearch\n\n[Get started](<https://docs.flutter.dev/get-started/quick>)menu\n\n# Sorry, we couldn't find that page…\n\n## But Dash is here to help! Maybe one of these will point you in the right direction?\n\n  * [Homepage](<https://flutter.dev/>)\n  * [Package site](<https://pub.dev/>)\n  * [API reference](<https://api.flutter.dev/>)\n\n\n  * [Documentation](<https://docs.flutter.dev/>)\n  * [Learning resources](<https://docs.flutter.dev/reference/learning-resources>)\n  * [Community](<https://flutter.dev/community>)\n\n\n  * [Blog](<https://blog.flutter.dev>)\n  * [Twitter](<https://twitter.com/flutterdev>)\n  * [FAQ](<https://docs.flutter.dev/resources/faq>)\n\n\n\n[](<https://flutter.dev/>)\n\n  * About Flutter\n  * [Careers](<https://docs.flutter.dev/jobs>)\n  * [News](<https://blog.flutter.dev>)\n  * [Brand](<https://flutter.dev/brand>)\n  * [Culture](<https://flutter.dev/culture>)\n\n\n  * Learn Flutter\n  * [Learning journey](<https://docs.flutter.dev/learn>)\n  * [Codelabs](<https://docs.flutter.dev/codelabs>)\n  * [ Samples ](<https://github.com/flutter/samples>)\n  * [Cookbook](<https://docs.flutter.dev/cookbook>)\n\n\n  * Development\n  * [Mobile](<https://flutter.dev/development/mobile>)\n  * [Web](<https://flutter.dev/development/web>)\n  * [Desktop](<https://flutter.dev/development/desktop>)\n  * [Embedded](<https://flutter.dev/development/embedded>)\n  * [iOS](<https://flutter.dev/development/ios>)\n\n\n\n[ ](<https://www.youtube.com/flutterdev>) [ ](<https://twitter.com/flutterdev>) [ ](<https://github.com/flutter>) [ ](<https://www.meetup.com/pro/flutter/>) [ ](<https://www.linkedin.com/showcase/flutterdevofficial/>) [ ](<https://bsky.app/profile/flutter.dev>)\n\nExcept as otherwise noted, this site is licensed under a [Creative Commons Attribution 4.0 International License,](<https://creativecommons.org/licenses/by/4.0/>) and code samples are licensed under the [3-Clause BSD License.](<https://opensource.org/licenses/BSD-3-Clause>)\n\n  * [Terms](<https://docs.flutter.dev/tos>)\n  * [Privacy](<https://policies.google.com/privacy?hl=en>)\n  * [Security](<https://docs.flutter.dev/security>)\n\n[ ](<https://jaspr.site> \"This site is built with the Jaspr web framework for Dart.\")",
+    "title": "https://flutter.dev/community/china/harmonyos"
+  },
+  "36": {
+    "url": "https://github.com/react-native-ohos/react-native-openharmony",
+    "page_content": "Page.goto: Timeout 20000ms exceeded.\nCall log:\n  - navigating to \"https://github.com/react-native-ohos/react-native-openharmony\", waiting until \"load\"\n",
+    "title": "https://github.com/react-native-ohos/react-native-openharmony"
+  },
+  "37": {
+    "page_content": "不久前我们刚聊过了 《Flutter 鸿蒙 2026 路线发布》 ，今天我们要聊的是 React Native 的 RNOH（React Native OpenHarmony）社区版本。\\nRNOH（React Native OpenHarmony）其实开源的比较晚，主要是在 适配 初期它需要维护的工作量相对比 Flutter 会多很多，因为 React Native 是一个 OEM 原生控件的实现，所以他在适配上需要做更多的兼容性工作，这也是为什么一直以来RNOH 的兼容成本会比较高的原因。\\n<quark-ocr>## React Native vs. Flutter 鸿蒙平台适配难度对比 React Native App JS React / RN API / Hooks / Components RN Contract / Spec layer JSI / TurboModule / Fabric / Codegen RN Core runtime Scheduler / C++ core / binding logic ! Platform Implementation (鸿蒙) View / Text / Image / Scroll / Gesture Layout binding TurboModule host Native module binding Platform UI bridge Event dispatch Rendering host Fabric host components Accessibility / input / IME 新平台必须实现大量逻辑 Native UI / OS / Window / GPU (ArkUI / ArkTS) React Native: 依赖原生UI，工作量巨大 Flutter App Dart Widgets / State / Layout / Animation Flutter Framework Layout / Text / Gesture / Scroll / Render Widget → RenderObject → Layer Flutter Engine Rendering pipeline / Text layout / GPU rasterization / Animation / compositor / Font / image / shader Embedder (鸿蒙) Window creation / Surface / framebuffer / Input events / Vsync / timing / Thread / task runner / GPU context 新平台主要实现这里 OS / Window / GPU Flutter: 跨平台引擎渲染, 主要工作量在跨平台核心</quark-ocr>\\n而 RNOH 就是这样一套 HarmonyOS 的原生平台适配层，它在 RN 官方 C++ 核心之上，构建了一个由 ArkTS（ETS）+ C/C++（N API /C-API） 组成的双层适配体系。\\n<quark-ocr>JavaScript Space React Native App Native Space ArkTS Layer react-native-harmony RNAbility RNInstance C++Layer RNOH Core (C-API) TurboModuleRegistry Componentlnstance</quark-ocr>\\n而为了保证 RNOH 社区和 React Native 上游社区尽可能一致的开发体验与 API 能力，RNOH 需要：\\n对齐上游版本节奏 ：在合理的节奏下跟进上游的主要 Release\\n聚焦关键版本 ：优先适配对业务与生态影响最大的几个版本，而不是“全版本覆盖”\\n平衡稳定与创新 ：在保证现有业务稳定性的前提下，引入上游的特性更新和性能优化。\\n实际上，RNOH 一开始直接转为 ArkTS 的实现带来了不少性能瓶颈问题，也是后续完成 C API 的路线后才是一个相对可用版本：\\n而对于 React Native 官方在 2026 年上游规划大概有的 6 个 release 版本，RNOH 社区计划聚焦适配其中 4 个版本，通过季度节奏逐步推进 ：\\nQ1 ：完成并发布\\n<quark-code>\\n0\\n.\\n82\\n.x\\n</quark-code>\\n的适配版本（进行中）\\nQ2 ：发布\\n<quark-code>\\n0\\n.\\n84\\n.x\\n</quark-code>\\n的适配版本\\nQ3 ：发布\\n<quark-code>\\n0\\n.\\n86\\n.x\\n</quark-code>\\n的适配版本\\nQ4 ：发布\\n<quark-code>\\n0\\n.\\n88\\n.x\\n</quark-code>\\n的适配版本\\n<quark-table><table><thead><tr><th>版本</th><th>上游分支截止时间</th><th>上游发布时间</th><th>RNOH 支持策略</th><th>RNOH 预计支持时间</th></tr></thead><tbody><tr><td>0.89.x</td><td>2026-11-03</td><td>2026-12-07</td><td>NA</td><td>-</td></tr><tr><td>0.88.x</td><td>2026-09-07</td><td>2026-10-12</td><td>适配</td><td>2026 Q4</td></tr><tr><td>0.87.x</td><td>2026-07-06</td><td>2026-08-10</td><td>NA</td><td>-</td></tr><tr><td>0.86.x</td><td>2026-05-04</td><td>2026-06-08</td><td>适配</td><td>2026 Q3</td></tr><tr><td>0.85.x</td><td>2026-03-02</td><td>2026-04-06</td><td>NA</td><td>-</td></tr><tr><td>0.84.x</td><td>2026-01-05</td><td>2026-02-09</td><td>适配</td><td>2026 Q2</td></tr><tr><td>0.83.x</td><td>2025-11-03</td><td>2025-12-08</td><td>NA</td><td>-</td></tr><tr><td>0.82.x</td><td>2025-09-01</td><td>2025-10-06</td><td>适配中</td><td>2026 Q1</td></tr></tbody",
+    "url": "https://harmonyosdev.csdn.net/69c4e12b0a2f6a37c59ac189.html",
+    "title": "React Native 鸿蒙 2026 路线发布，为什么它的适配成本那么高？_react native_恋猫de小郭-HarmonyOS开发者社区",
+    "source_trust_level": "不可信源",
+    "source_trust_type": ""
+  },
+  "38": {
+    "page_content": "> 注：以上时间为预估，实际发版可能根据质量验收情况微调。\\n关键信号：从 3.41 起，同步周期从 7 个月缩短至 4 个月 。 鸿蒙开发者将更快拿到每一个 Flutter 新版本。\\n安装 Flutter-OH\\n参考赋能文档：\\n<quark-ocr>三 CPF-Flutter/flutter_samples Q GLM-5.2开 登票 注册 代码 issues13 1PullRequests 5 流水线 讨论 wiki 分析 ☆Star116 √ Fork78 免费加入 优质开源项目快速找，一键托管更轻松 master flutter_samples/ohos/docs 云开发 下载当前目录 搜索文件名、后（快捷键：Ctr/Cmd+P） zhong.ning新增Flutter-OH生命用期与核心对象文档，共修复Al检视量见 fbbc3de2 创建于6天前 历史提交 &gt; 口 gitcode github 文件 最后提交记录 最后更新时间 add_to_app 01_framework 1332mergemaster0320intomaster文档优化Created-by:wwyang09Commit-b 2个月前 &gt; 门 analysis_defaults 02_architecture 333merge docsintomaster docs02_architecture）：丰富FlutterOH架构介绍（ 2个月前 android_splash_screen 03_environment 更新描述Signed-off-by:坚果&lt;jianguo@nutpi.net&gt; 2个月前 animations 04_development 6天前 客 &gt; 面 asset_transformation 新增Flutter-OH生命周期与核心对象文档，并修复Ai检视意见Signed-off-by：zho background_isolate_channels 05_performance 新增性能优化方案介绍Signed-off-by：zzx89757&lt;zionjo89757@gmail.com&gt; 1个月前 &gt; 口 code_sharing compass_app 06_debug 文档优化Signed-off-by:yangwenwen&lt;707997111@qq.com&gt; 2个月前 ? &gt; context_menus 07_plugin 更新文档Signed-off-by:wenwenyang&lt;707997111@qq.com&gt; 2个月前 deeplink_store_example 08_FAQ 新增Flutter-OH生命周期与核心对象文档，并修复AI检视意见Signed-off-by：zho. 6天前 &gt;desktop_photo_search 09_specifications 文档优化Signed-off-by:yangwenwen&lt;707997111@qq.com&gt; 2个月前</quark-ocr>\\n二、RNOH 0.82 正式发布：三端一致加速，让鸿蒙应用开发如原生般丝滑\\nReact Native for OpenHarmony（RNOH）0.82.30 稳定版正式发布——新架构唯一架构、Hermes V1 支持、React 19.1.1，多个竞争力技术点齐发，为鸿蒙生态带来前所未有的跨平台开发体验。\\n同步上游：紧跟 React Native 版本节奏，开发体验零落差\\n跨平台框架的核心价值，在于开发者能否用一套代码、一份技能，在多端获得一致体验。RNOH 社区紧跟上游版本节奏，聚焦关键版本优先适配，让鸿蒙开发者用上与 iOS/Android 同代的 RN 能力。\\n<quark-ocr>RNoH紧跟ReactNative上游版本节奏 2026年计划适配4个关键版本（上游规划6个release） RN上游版本 适配策略三原则 RNOH适配版本 ③跟随主社区演进·持续繁荣开源社区生态 ②聚焦关键版本，优先适配影竭力最大版本 0.72.2023-06 ③稳定与创新平衡·LTS+Preview双轨并行 0.72.140LTS 2023Q4 0.77-2025-01 0.77.71LTS 2025Q3 0.82.2025-10 持续丰富 0.82.30 Stable 2026Q1 0.84.2026-02 0.84.xPreview 2026Q2 0.86.2026-06 0.86x 2026Q3 0.88-2026-10 0.88.x 2026Q4</quark-ocr>\\nRNOH 紧跟 RN 上游版本节奏,2026 年计划适配 4 个关键版本,逐步跟随上社区\\n适配策略三原则：\\n<quark-ocr>原则 说明 每年跟随主社区演进，持续繁荣开源社 对齐上游节奏 区生态 优先适配对业务与生态影响最大的版本 聚焦关键版本 （如架构切换点） LTS版本保障生产稳定，Preview版本引 稳定与创新平衡 入新特性</quark-ocr>\\n竞争力技术点：0.82 新版本的四大硬核升级\\nRNOH 0.82 不仅是版本号的变化，更是架构层面的根本性进化。四个核心技术点，直接决定开发效率和应用体验的上限。\\n技术点 1：并行化解决方案\\n架构痛点 1：节点串行创建：一个组件一棵树，全部排队等\\n在 Fabric 新架构下，React 的每次状态更新都会触发一次完整的渲染管线：\\nJS Reconciler → ShadowTree Create → ShadowTree Commit → Native Mount\\n<quark-ocr>串行渲染管线：Create/Commit/Mount逐阶段串行执行 JS线程 Reconcller diff CreatexN个 Commit提交 TurboModule ShadowNode申",
+    "url": "https://xie.infoq.cn/article/d2d234aed70f73cd80e461df4",
+    "title": "Flutter、React-Native 框架鸿蒙版全新进化，畅享丝滑体验_最新动态_InfoQ写作社区",
+    "source_trust_level": "不可信源",
+    "source_trust_type": ""
+  },
+  "39": {
+    "page_content": "二、RNOH 0.82 正式发布：三端一致加速，让鸿蒙应用开发如原生般丝滑\\nReact Native for OpenHarmony(RNOH)0.82.30 稳定版正式发布——新架构唯一架构、Hermes V1 支持、React 19.1.1，多个竞争力技术点齐发，为鸿蒙生态带来前所未有的跨平台开发体验。\\n同步上游：紧跟 React Native 版本节奏，开发体验零落差\\n跨平台框架的核心价值，在于开发者能否用一套代码、一份技能，在多端获得一致体验。RNOH 社区紧跟上游版本节奏，聚焦关键版本优先适配，让鸿蒙开发者用上与 iOS/Android 同代的 RN 能力。\\n<quark-ocr>RNoH紧跟ReactNative上游版本节奏 2026年计划适配4个关键版本（上游规划6个release） RN上游版本 适配策略三原则 RNOH适配版本 ③跟随主社区演进·持续荣开源社区生态 ②聚焦关键版本，优先适配影响力最大版本 0.72.2023-06 ③稳定与创新平衡·LTS+Preview双轨并行 0.72.140LTS 2023Q4 0.77-2025-01 0.77.71LTS 2025Q3 持续丰富 0.82-2025-10 0.82.30Stable 2026Q1 0.84·2026-02 0.84.xPreview 2026Q2 0.86·2026-06 0.86.x 2026Q3 0.88·2026-10 0.88.x 2026Q4</quark-ocr>\\nRNOH 紧跟 RN 上游版本节奏,2026 年计划适配 4 个关键版本,逐步跟随上社区\\n适配策略三原则：\\n截至 2026 Q1，RNOH 已完成 0.72 LTS → 0.77 LTS → 0.82 Stable 三代适配，0.84 Preview 构建分支已开放预览。这意味着——鸿蒙开发者今天就能用上 RN 0.82 的全部新架构能力，与全球 RN 社区同步前行。\\n竞争力技术点：0.82 新版本的四大硬核升级\\nRNOH 0.82 不仅是版本号的变化，更是架构层面的根本性进化。四个核心技术点，直接决定开发效率和应用体验的上限。\\n技术点 1：并行化解决方案\\n架构痛点 1：节点串行创建：一个组件一棵树，全部排队等\\n在 Fabric 新架构下，React 的每次状态更新都会触发一次完整的渲染管线：\\nJS Reconciler → ShadowTree Create → ShadowTree Commit → Native Mount\\n串行渲染管线：Create / Commit / Mount 逐阶段串行，ShadowNode 逐个创建\\n架构痛点 2：TurboModule 阻塞 JS 线程：同步调用=线程冻结\\nTurboModule 同步调用阻塞 JS 线程——关键交互场景掉帧根因\\n优化方案：渲染管线的三个阶段拆分到不同线程池，让 Create、Commit、Mount 以及 TurboModule 调用各走各路、各不阻塞。\\nRNOH 三重并行化架构总览——Create 走 FFRT 线程池、ArkUI 预创建并行化、TurboModule 卸载到专用线程\\n华为商城改造前后对比：\\n<quark-ocr>华为商城首页指标 改造前 改造后 提升 商详加载 921 (ms) 725(ms) ↓21% 冷启动 2140(ms) 1938(ms) ↓9.4%</quark-ocr>\\nJSVM：消减 JS 缓存串行解析开销，实现页面急速响应\\n<quark-ocr>序列化数据 步骤3： 解析器 结果合并输出 CPU核心1 步骤1： 后台缓存 反序列化结果 字节码生成器 数据序列化 CPU核心2 优化编译器 CPU核心3 步骤2：多核 并行反序列化</quark-ocr>\\n携程共建 JSVM——在机票、酒店、火车票核心页面响应时延减少 10%\\nHermes V1 在编译优化、GC 并发、内存占用三大维度的提升\\n1、编译器优化：字节码生成效率提升，包体积缩减，首屏加载更快\\n2、并发 GC：垃圾回收与 JS 执行并行，消除 GC 造成的 UI 卡顿\\n3、内存分配改进：对象分配更紧凑，年轻代 GC 效率更高，内存峰值降低\\n0.84 版本将更进一步——Hermes V1 成为默认引擎，性能红利不再需要手动开启。\\n技术点 3：New Architecture Only——新架构成为唯一架构\\n旧架构(Bridge 异步通信)vs 新架构(Fabric 同步渲染 + TurboModule)\\nRN 0.82 以新架构 Fabric + TurboModule 为默认渲染与通信路径：\\nFabric 同步渲染：JS 与原生渲染层通过 C++ JSI 直接交互，消除 Bridge 异步通信延迟，UI 更新从\"消息队列等待\"变为\"同步直调\"\\nTurboModule 懒加载：原生模块按需加载，不再启动时全量初始化，冷启动速度显著提升\\nCodegen 类型安全：自动生成 TurboModule",
+    "url": "http://www.fromgeek.com/daily/1044-721482.html",
+    "title": "Flutter、React-Native 框架鸿蒙版全新进化，畅享丝滑体验_极客网",
+    "source_trust_level": "不可信源",
+    "source_trust_type": ""
+  },
+  "40": {
+    "page_content": "<quark-ocr>离手滑动过程中根据组件移动速度动态控制帧率，从而有效降低页面负载， Widget控件 件有速度 der! uttr杭率管理昌通 wnsc_water_ohos SOHr 设置 号 RSYSyN 测试用列 CPU指令数总值 修改前 修改后 收益 Complex_Jayout 3,380,748,459 2,603,136,221 23%</quark-ocr>\\n3. 零脏区跳过渲染：消除不必要的 GPU 负载\\n痛点：当前后两帧画面无变化时，Engine 层持续执行完整的整帧渲染流程，会造成不必要的线程负载和电量损耗。\\n结果：基于 Impeller Vulkan 后端的脏区渲染能力，Flutter-OH 进一步实现\"零脏区跳过渲染\"——当画面无变化时，整帧渲染流程直接跳过，Raster 线程几乎不工作。\\n<quark-ocr>遍历历史脏区表，是否全0 是 准备阶段 swapchain获取Vimge（申请组存区） 计算脏区D=&lt;LL&gt; 脏区为0，直接退出 根据image_ndex获取历史脏区信息D swapchain获取Vkimage （申请缓存区） 计算脏区D=&lt;D',LL&gt; 生成给制频作记录 滨染阶段 更新历史脏区表 光楼化（依赖D） 提交理冲区合令 上屏阶段 星现上屏（依赖D]</quark-ocr>\\n4. DMA 内存后台释放：后台保活能力大幅增强\\n痛点：Flutter 应用切后台后，6 个 DMA 图形缓冲区仍常驻占用大量内存，若系统发现内存不足则杀后台——用户切回 App 需重新加载。\\n结果：应用切后台时主动释放 DMA 缓冲区，只保留 1 个，后台内存占用骤降，保活时间更长。\\n5. 毕昇编译器 PGO：运行性能深度提升\\n痛点：Flutter 引擎在鸿蒙设备上的运行性能依赖编译器的通用优化，没有针对真实使用场景做定制。\\n结果：毕昇编译器 PGO（Profile-Guided Optimization）先采集 App 真实运行时的热点路径数据，再反馈指导编译器针对性优化，使编译链接出来的程序运行时长更短、指令数更少，帮助提升应用在设备上的运行流畅度。\\n<quark-ocr>应用代码 插桩编译 训练运行 Profile文件 二次反馈编译 高性能应用</quark-ocr>\\nFlutter-OH 2026 版本路线图\\n> 注：以上时间为预估，实际发版可能根据质量验收情况微调。\\n关键 信号 ：从 3.41 起，同步周期从 7 个月缩短至 4 个月。鸿蒙开发者将更快拿到每一个 Flutter 新版本。\\n二、RNOH 0.82 正式发布：三端一致加速，让鸿蒙应用开发如原生般丝滑\\nReact Native for OpenHarmony （RNOH）0.82.30 稳定版正式发布——新架构唯一架构、Hermes V1 支持、React 19.1.1，多个竞争力技术点齐发，为鸿蒙生态带来前所未有的跨平台开发体验。\\n同步上游：紧跟 React Native 版本节奏，开发体验零落差\\n跨平台框架的核心价值，在于开发者能否用一套代码、一份技能，在多端获得一致体验。RNOH 社区紧跟上游版本节奏，聚焦关键版本优先适配，让鸿蒙开发者用上与 iOS / Android 同代的 RN 能力。\\n<quark-ocr>RNOH紧跟ReactNative上游版本节奏 2026年计规适配4个关键版本（上游规划6个release） RN上游版本 适配策略三原则 RNOH适配版本 ④随主社区演进·持荣开源社区生态 ②集关键本-优先配账明力量大服本 0.72 - 2023-06 ③定与平，U-rew双轨并行 0.72.140LTS 2023Q4 0.77 - 2025-01 0.822025-10 持续丰亩 0.82.30 Stable 2026Q1 0.84-2026-02 0.84.xPreview 2025Q2 0.86 - 202606 2028Q3 0.86x 0.88-2026-10</quark-ocr>\\n▲ RNOH 紧跟 RN 上游版本节奏,2026 年计划适配 4 个关键版本,逐步跟随上社区\\n截至 2026 Q1，RNOH 已完成0.72 LTS → 0.77 LTS → 0.82 Stable三代适配，0.84 Preview 构建分支已开放预览。这意味着——鸿蒙开发者今天就能用上 RN 0.82 的全部新架构能力，与全球 RN 社区同步前行。\\n竞争力技术点：0.82 新版本的四大硬核升级\\nRNOH 0.82 不仅是版本号的变化，更是架构层面的根本性进化。四个核心技术点，直接决定开发效率和应用体验的上限。\\n技术点 1：并行化解决方案\\n架构痛点 1：节点串行创建：一个组件一棵树，全部排队等\\n在 Fabric 新架构下，React 的每次状态更新都会",
+    "url": "https://www.elecfans.com/d/7987345.html",
+    "title": "Flutter和React-Native框架鸿蒙版全新进化-电子发烧友网",
+    "source_trust_level": "不可信源",
+    "source_trust_type": ""
+  },
+  "41": {
+    "page_content": "1. 直连 ArkUI 原生渲染，告别 WebView 低效兼容\\n不同于套壳网页方案，RNOH 直接对接鸿蒙 NDK 渲染接口，Fabric 渲染管线与系统布局引擎深度融合，长列表、动画、弹窗、折叠屏交互性能接近纯 ArkTS 原生应用，大幅解决跨平台普遍存在的掉帧、延迟问题。\\n2. 全面拥抱 RN 新架构，同步上游最新特性\\n社区主推稳定版本全线启用 Fabric+TurboModule 架构，完整兼容 React 19 并发渲染 API；同步跟进 RN 上游迭代，useDeferredValue、startTransition 等新语法开箱即用，不用为鸿蒙单独改造业务逻辑。\\n3. Hermes 引擎持续优化，启动&内存表现大幅提升\\n0.82 稳定版：实验支持 Hermes V1，优化 GC 回收策略，降低冷启动内存占用；\\n0.84 预览版：Hermes V1 设为默认 JS 引擎，编译与 VM 层全面升级，JS 计算效率显著提升； 未来版本会持续针对鸿蒙多终端设备做轻量化适配。\\n4. 全设备兼容，覆盖鸿蒙全场景终端\\n一套工程可适配手机、平板、折叠屏、车载、IoT 等所有 OpenHarmony 设备，底层做统一差异化适配，企业无需为不同硬件维护多套分支。\\n三、清晰版本路线，企业落地不用踩坑\\nCPF-RN 统一划分 LTS 长期支持版、稳定生产版、预览开发版，每一个版本都有明确维护周期，生产环境选型一目了然：\\n0.72.x LTS老旧 RN 存量项目迁移首选，兼容性极强，持续修复基础打包与调试工具问题；\\n0.77.x LTS中小工具、电商类应用主流稳定基线，工程模板完善，上手成本低；\\n0.82.x Stable（当前主力生产版）社区主推正式版本，仅保留新架构，折叠屏、多窗口适配完善，新项目优先选用；\\n0.84.x Preview（2026 Q2 更新中）Hermes 引擎默认启用，重构构建链路，要求 Node.js 22.11+，适合尝鲜新技术团队； 后续 Q3/Q4 还将规划 0.86、0.88 版本，持续对齐 RN 上游生态、完善热更新与动态化能力。\\n版本命名规则统一规范：RN主版本.次版本.鸿蒙迭代号，安装指定稳定分支仅需一行命令：\\nnpm install @react-native-oh/react-native-harmony@0.82-stable\\n四、一站式开发者服务：从开发到排障全覆盖\\n1. 标准化问题排查体系\\n社区沉淀完整排障流程，覆盖三大高频问题：\\n应用崩溃：DevEco 抓取堆栈，定位内存越界、线程冲突、TurboModule 生命周期异常；\\n页面卡顿：搭配 React DevTools 与鸿蒙性能分析器，精准定位 JS 阻塞、无效重渲染；\\n编译报错：统一校验 submodule、CMake 依赖、版本匹配，整理大量三方库兼容踩坑方案。\\n2. 规范开源协作机制\\n所有仓库统一执行标准化开发规范，降低多人协作成本：\\n分支规范：主干、稳定分支、特性分支、热修复分支严格区分；\\nCommit 提交规范：feat/fix/docs/refactor 统一格式，自动关联 Issue；\\nIssue 分级响应 SLA：崩溃类 P0 问题 2 小时响应，普通优化需求定期集中处理； 全套 PR 模板、变更日志、工程规范全部开源在 AtomGit CPF-RN 组织内，新人可直接复用。\\n五、企业选择 CPF-RN 的核心价值\\n低成本迁移存量业务原有 React、RN 业务逻辑几乎不用重写，仅引入官方 NPM 包即可产出鸿蒙安装包，大幅缩减跨平台研发人力。\\n商用友好开源协议整体采用 MIT 协议，无商用限制，企业可自由使用、二次定制、内部私有化改造。\\n完整配套开源资产组织内统一托管底层框架源码、三方库适配文档、迁移教程、问题踩坑库，所有资源集中在 AtomGit 统一管理，查找高效。\\n六、3 步快速上手，开启 RN 鸿蒙开发\\n环境准备：安装 DevEco Studio、对应 OpenHarmony SDK、Node.js 22.11+；\\n引入依赖：在现有 RN 项目安装官方鸿蒙适配包；\\n生成鸿蒙宿主工程，启动 Metro 打包，真机/模拟器一键运行 HAP。\\n七、社区入口 &amp; 共建方式\\nCPF-RN 组织主页（AtomGit）\\nhttps://atomgit.com/CPF-RN\\n可参与共建渠道\\n访问组织主页 Fork 对应仓库，提交代码、文档优化 PR；\\n提交 Issue 反馈 bug、提出新设备/新组件适配需求；\\n完善第三方 RN 库鸿蒙适配文档，丰富社区知识库；\\n加入社区交流群，参与季度版本规划讨论。\\n本文由人人都是产品经理作者【nutpi】，微信公众号：【nutpi】，原创/授权 发布于人人都是产品经理，未经许可，禁止转载。\\n题图来自Unsplash，基于 CC0 协议。",
+    "url": "https://www.toutiao.com/article/7657015173454103067/",
+    "title": "打通 RN 与鸿蒙！AtomGit CPF-RN 开源社区，一套代码跑通全场景 OpenHarmony - 今日头条",
+    "source_trust_level": "可信源",
+    "source_trust_type": "优质UGC"
+  },
+  "42": {
+    "page_content": "React Native for OpenHarmony（RNOH）0.82版本带来架构级革新，成为首个完全采用New Architecture的鸿蒙实现。该版本通过三重并行化架构突破性能瓶颈：渲染管线拆分为创建、提交、挂载三个独立线程池，配合FFRT调度策略，使复杂界面构建速度提升40%；TurboModule原生模块加载机制改为按需初始化，冷启动时间缩短35%。华为商城应用改造后，首页加载时长从1.2秒降至780毫秒。\\nJS引擎层面提供双选择方案：JSVM通过并行解析技术将页面响应时延减少10%，携程核心业务场景验证显示机票查询响应速度提升显著；Hermes V1引擎在0.84版本将成为默认配置，其并发垃圾回收机制消除60%的UI卡顿，内存峰值降低25%。React 19.1.1的引入使状态管理更稳定，useDeferredValue在复杂交互场景下的可靠性提升30%。DOM Node API的加入让原生组件操作更接近Web开发体验，focus()、scrollTo()等API无需平台判断即可直接调用。\\n版本适配策略遵循\"关键版本优先\"原则，2026年计划完成4个核心版本迁移。目前0.82稳定版已实现与iOS/Android同步的功能集，0.84预览版开放测试显示，新架构使代码维护成本降低40%，开发者无需处理新旧架构兼容问题。性能对比数据显示，RNOH应用在鸿蒙设备上的内存占用比其他跨平台方案低22%，动画流畅度达到原生应用水平。",
+    "url": "https://www.hukeji.com/shuma/202606/131139.html",
+    "title": "Flutter与React-Native鸿蒙版升级：性能跃升，助力开发者高效构建优质应用-数码产品-虎科技",
+    "source_trust_level": "不可信源",
+    "source_trust_type": ""
+  },
+  "43": {
+    "page_content": "概述\\nReact Native框架 是一个基于JavaScript与React的开源框架，主要用于开发原生渲染的移动应用程序。 React Native for OpenHarmony（RNOH） 在React Native原有能力之上，进行了深度的鸿蒙化适配与扩展，使开发者能够基于熟悉的React技术栈，高效地构建适用于HarmonyOS的应用程序。\\n当前RNOH适配的React Native有两个版本0.72.5和0.77.1。0.72.5版本框架和三方库已经比较成熟，最新的版本为0.72.99，如果当前项目的RN版本低于该版本，可将当前项目的RN版本升级后，使用该版本进行HarmonyOS应用的构建，升级过程可参考 RN升级需要开发者适配整理 。RNOH会不断迭代和更新。最新版本及使用说明可查看\\nohos_react_native文档 。\\n下文将详细描述如何基于已有的RN工程适配HarmonyOS：\\n1、环境变量配置\\nWindows环境： 在 此电脑>属性>高级系统设置>高级>环境变量 中，在系统变量中点击新建，添加变量名为：\\n<quark-code>\\nRNOH_C_API_ARCH\\n</quark-code>\\n，变量值为\\n<quark-code>\\n1\\n</quark-code>\\n。\\nMac环境： a.编辑bash配置文件（例如/.bash_profile、/.bashrc或/.zshrc）并在末尾添加以下行：\\n<quark-code>export RNOH_C_API_ARCH=1\\n</quark-code>\\nb.确认环境变量是否成功设置。在终端中输入以下命令：\\n<quark-code>echo $RNOH_C_API_ARCH\\n</quark-code>\\n如果输出为1，则表示环境变量已成功设置。\\n2、安装HarmonyOS版RN（RNOH）\\n打开RN工程，在根目录终端窗口中先执行\\n<quark-code>\\nnpm install react-native@0.72.5\\n</quark-code>\\n将原RN版本修改为0.72.5，再执行\\nnpm install @react-native-oh/react-native-harmony\\n</quark-code>\\n安装RNOH，详细可参考 RNOH依赖引入 。\\n3、新建HarmonyOS工程\\n在RN工程根目录新建harmony文件夹，并在该文件夹中初始化一个HarmonyOS工程，详细步骤参考 创建HarmonyOS工程 至 补充ArkTS侧代码章节 。 目录结构：\\n<quark-code>RN                                               // RN工程\\n├──harmony                                       // harmony工程\\n│  ├──entry/src/main/cpp                         // native相关配置\\n│  │  ├──generated                               // codegen自动生成的桥接代码\\n│  │  ├──CMakeLists.txt\\n│  │  └──PackageProvider.cpp\\n│  ├──entry/src/main/ets\\n│  │  ├──entryability\\n│  │  │  └──EntryAbility.ets\\n│  │  ├──pages\\n│  │  │  └──Index.ets                            // harmony侧入口\\n│  │  └──RNPackagesFactory.ets\\n│  └──entry/src/main/resources/rawfile           // bundle、静态资源存放目录\\n├──App.tsx\\n├──index.js                                      // 入口文件\\n├──metro.config.js                               // 打包配置\\n</quark-code>\\n4、三方库替换\\n将原工程中的三方库替换为适配HarmonyOS的三方库版本，根据库名在 RNOH三方库文档 中搜索。文档中没有的三方库说明未进行适配，若为纯JS三方库可直接使用原库，否则建议优先在已适配库中寻找替代库。三方库的使用方法请参考Markdown文档中的步骤进行安装配置，需注意部分三方库需要使用\\nCodegen 生成桥接代码。\\n5、添加RN工程打包命令及打包配置\\n打开根目录下的package.json，在scripts下新增RNOH打包命令：\\n<quark-code>\"dev\": \"react-native bundle-harmony --dev\"\\n</quark-code>\\n修改metro.config.js（建议不同平台使用不同的metro配置文件）\\n<quark-code>const {mergeConfig, getDefaultConfig} = require('@react-native/metro-config');\\nconst {createHarmonyMetroConfig} = require('@react-native-oh/react-native-harmony/metro.config');\\n/**\\n* @type {import(\"metro-config\").ConfigT}\\n*/\\nconst config = {\\ntransformer: {\\ngetTransformOptions: async () =&gt; ({\\ntransform: {\\nexperimentalImportSupport: false,\\ninlineRequires: true,\\n},\\n}),\\n},\\n};\\nmodule.exports = mergeConfig(getDefaultConfig(__dirname), createHarmonyMetroConfig({\\nreactNativeHarmonyPackageName: '@react-native-oh/react-native-harmony',\\n}), config);\\n</quark-code>\\n6、与平台相关代码适配\\nJS代码中判断平台的\\n<quark-code>\\nPlatform\\n</quark-code>\\n接口需要替换为从RNOH包中引用。\\nNativeModule（RN新架构中为TurboModule）参考 RNOH版本TurboModule 文档及 示例工程 。\\nNativeComponent参考 自定义组件 文档及 示例工程 。\\n7、打包运行\\n执行以下命令生成bundle和桥接代码：\\n",
+    "url": "https://developer.huawei.com/consumer/cn/blog/topic/03199553454795106",
+    "title": "华为开发者文章",
+    "source_trust_level": "可信源",
+    "source_trust_type": "权威行业"
+  },
+  "44": {
+    "page_content": "vue3 开发鸿蒙版应用 可以通过uts插件的形式 调用原生系统权限嘛 就跟现在android和ios一样，通过uts插件可以对一些原生系统权限进行操作\\n欢迎到专业群（ uni-app x技术交流群 ） 咨询，群中有相关专业的管理员和群友。\\n可以通过 uts 插件的形式调用鸿蒙原生系统权限，这与 Android 和 iOS 的实现思路完全一致。\\n在 uni-app x 中，鸿蒙端的原生能力调用依赖于 uts 编译为 ArkTS 的机制。由于普通页面编译为 js 运行在 ArkTS 引擎下，无法直接调用\\n<quark-code>\\n@kit\\n</quark-code>\\n的库和系统底层 API，因此必须将原生权限操作封装在 uts 插件中。uts 插件在鸿蒙端会编译为\\n<quark-code>\\n.ets\\n</quark-code>\\n文件，可以直接调用鸿蒙系统的原生 API 和权限管理能力。\\n技术实现要点与工程落地：\\n插件目录结构\\nuts 插件需要按照平台分目录编写，鸿蒙平台的实现代码位于\\n<quark-code>\\nuni_modules/*插件名*/utssdk/app-harmony/index.uts\\n</quark-code>\\n。\\n代码示例\\n在鸿蒙端，除了直接使用 ArkTS 的权限 API 外，uni-app x 内部封装了\\n<quark-code>\\nUTSHarmony\\n</quark-code>\\n平台内置对象，可以直接调用其\\n<quark-code>\\nrequestSystemPermission\\n</quark-code>\\n方法进行动态权限申请。以下是一个请求系统权限的 uts 插件示例：\\n复制代码\\n<quark-code>// 路径: uni_modules/your-plugin/utssdk/app-harmony/index.uts\\n// 请求隐私窗口权限示例\\nexport function requestPrivacyPermission(success: () =&gt; void, fail: () =&gt; void) {\\n// UTSHarmony 为平台内置对象，无需 import\\nUTSHarmony.requestSystemPermission(['ohos.permission.PRIVACY_WINDOW'], (allRight: boolean, grantedList: string[]) =&gt; {\\nconsole.log('权限申请成功')\\nsuccess()\\n} else {\\nconsole.log('权限申请失败')\\nfail()\\n}\\n}, (doNotAskAgain: boolean, grantedList: string[]) =&gt; {\\nconsole.log('用户拒绝且不再询问')\\nfail()\\n})\\n}</quark-code>\\n本助手使用国产模型，生成代码准确率较低。强烈建议使用 uni-agent 生成代码\\n跨端边界与注意事项\\n权限声明：鸿蒙系统要求在配置文件中声明\\n<quark-code>\\nuser_grant\\n</quark-code>\\n类型权限后，才能向用户请求授权。在 uni-app x 鸿蒙工程中，需确保相关权限已在鸿蒙原生配置（如\\n<quark-code>\\nmodule.json5\\n</quark-code>\\n）中正确声明，否则调用权限申请 API 会直接失败。\\n平台差异：Android、iOS、鸿蒙的权限 API 和机制完全不同。uts 插件的优势在于可以分目录（\\n<quark-code>\\napp-android\\n</quark-code>\\n、\\n<quark-code>\\napp-ios\\n</quark-code>\\n、\\n<quark-code>\\napp-harmony\\n</quark-code>\\n）编写各自平台的原生代码，对外暴露统一的 uts 接口供业务层调用，从而屏蔽平台差异。\\n打包限制：目前鸿蒙暂不支持云打包，使用包含鸿蒙原生代码的 uts 插件时，需要使用本地打包或自定义基座的方式进行调试和编译。\\n通过这种方式，你可以像开发 Android 和 iOS 原生插件一样，完全掌控鸿蒙的系统级权限和原生能力。\\n内容为 AI 生成，仅供参考",
+    "url": "https://ask.dcloud.net.cn/question/221036",
+    "title": "vue3 开发鸿蒙版应用 可以通过uts插件的形式 调用原生系统权限嘛 - DCloud问答",
+    "source_trust_level": "可信源",
+    "source_trust_type": "权威官网"
+  },
+  "45": {
+    "page_content": "<quark-code>// 创建 VisionInfo\\nconst visionInfo : textRecognition.VisionInfo = {\\npixelMap: pixelMap\\n};\\n// 配置识别参数\\nconst textConfiguration : textRecognition.TextRecognitionConfiguration = {\\nisDirectionDetectionSupported: false  // 是否检测文本方向\\n};\\n// 调用识别接口\\ntextRecognition.recognizeText(visionInfo, textConfiguration)\\n.then((data : textRecognition.TextRecognitionResult) =&gt; {\\nconsole.log('识别结果:', data.value);\\n// 释放 PixelMap\\npixelMap.release();\\n})\\n.catch((error : BusinessError) =&gt; {\\nconsole.error('识别失败:', error.code, error.message);\\npixelMap.release();\\n});\\n</quark-code>\\n5. 释放资源\\n<quark-code>textRecognition.release().then(() =&gt; {\\nisInitialized = false;\\nconsole.log('OCR 服务已释放');\\n});\\n</quark-code>\\n核心技术要点\\n1. PixelMap 生命周期管理\\n<quark-code>let pixelMap : image.PixelMap | null = null;\\ntry {\\npixelMap = await loadImageFromPath(imagePath);\\n// 使用 pixelMap 进行识别...\\n} finally {\\n// 确保 PixelMap 被释放\\nif (pixelMap != null) {\\npixelMap.release();\\n}\\n}\\n</quark-code>\\n2. 异步操作处理\\n所有 OCR 操作都是异步的，需要正确处理 Promise：\\n<quark-code>// ✅ 正确：使用 Promise 链\\ntextRecognition.init()\\n.then(() =&gt; loadImageFromPath(path))\\n.then((pixelMap) =&gt; recognizeText(pixelMap))\\n.then((result) =&gt; console.log(result))\\n.catch((error) =&gt; console.error(error));\\n// ❌ 错误：忘记处理异步\\ntextRecognition.init();\\nconst result = recognizeText(pixelMap); // 错误！init 可能还未完成\\n</quark-code>\\n3. 错误处理机制\\n<quark-code>try {\\n// OCR 操作\\n} catch (e) {\\n// 同步错误\\nconsole.error('同步错误:', e);\\n}\\npromise.catch((err : BusinessError) =&gt; {\\n// 异步错误\\nconsole.error('异步错误:', err.code, err.message);\\n});\\n</quark-code>\\n快速开始\\n第一步：安装插件\\n方式一：通过插件市场安装（推荐）\\n打开 HBuilderX\\n在项目中右键选择\"从插件市场导入插件\"\\n搜索\\n<quark-code>\\njack-ocr\\n</quark-code>\\n点击\"导入\"\\n方式二：手动创建\\n在你的 UniApp 项目的\\n<quark-code>\\nuni_modules\\n</quark-code>\\n中创建新的UTS API插件\\n将上面「插件完整源码」章节中的代码，按照文件路径复制或替换到对应位置\\n第二步：在页面中使用\\n1. 导入插件\\n<quark-code>&lt;script&gt;\\n// 使用条件编译，仅在鸿蒙平台导入\\n// #ifdef APP-HARMONY\\nimport { ocrInit, ocrRecognize, ocrRelease } from '@/uni_modules/jack-ocr'\\n// #endif\\nexport default {\\ndata( ) {\\nreturn {\\nocrInitialized: false,\\nrecognizedText: '',\\nisRecognizing: false\\n}\\n}\\n}\\n&lt;/script&gt;\\n</quark-code>\\n2. 初始化 OCR\\n<quark-code>onLoad( ) {\\nthis.initOCR();\\n},\\nmethods: {\\ninitOCR( ) {\\n// #ifdef APP-HARMONY\\nocrInit({\\nsuccess: (res) =&gt; {\\nconsole.log('OCR 初始化成功', res);\\nthis.ocrInitialized = true;\\nuni.showToast({\\ntitle: 'OCR 功能已就绪',\\nicon: 'success'\\n});\\n},\\nfail: (err) =&gt; {\\nconsole.error('OCR 初始化失败', err);\\nuni.showToast({\\ntitle: 'OCR 初始化失败',\\nicon: 'none'\\n});\\n}\\n});\\n// #endif\\n}\\n}\\n</quark-code>\\n3. 选择图片并识别\\n<quark-code>chooseAndRecognize( ) {\\nuni.chooseImage({\\ncount: 1,\\nsourceType: ['album', 'camera'],\\nsuccess: (res) =&gt; {\\nconst imagePath = res.tempFilePaths[0];\\n}\\n});\\n},\\nrecognizeImage(imagePath) {\\n// #ifdef APP-HARMONY\\nif (!this.ocrInitialized) {\\nuni.showToast({ title: 'OCR 未初始化', icon: 'none' });\\nreturn;\\n}\\nthis.isRecognizing = true;\\nuni.showLoading({ title: '识别中...' });\\nocrRecognize({\\nimagePath: imagePath,\\nisDirectionDetectionSupported: false,\\nsuccess: (res) =&gt; {\\nconsole.log('识别成功:', res.text);\\nthis.recognizedText = res.text;\\nuni.hideLoading();\\nuni.showToast({\\ntitle: '识别成功',\\nicon: 'success'\\n});\\n},\\nfail: (err) =&gt; {\\nconsole.error('识别失败', err);\\nuni.hideLoading();\\nuni.showToast({\\ntitle: '识别失败',\\nicon: 'none'\\n});\\n},\\ncomplete: () =&gt; {\\nthis.isRecognizing = false;\\n}\\n});\\n// #endif\\n}\\n</quark-code>\\n4. 页面卸载时释放资源\\n<quark-code>onUnload( ) {\\n// #ifdef APP-HARMONY\\nif (this.ocrInitialized) {\\nocrRelease({\\nsuccess: (res) =&gt; {\\nconsole.log('OCR 资源已释放', res);\\n}\\n});\\n}\\n// #endif\\n}\\n</quark",
+    "url": "https://developer.huawei.com/consumer/cn/blog/topic/03205063919789001",
+    "title": "华为开发者文章",
+    "source_trust_level": "可信源",
+    "source_trust_type": "权威行业"
+  },
+  "46": {
+    "page_content": "目录\\n前言\\n什么是隔空传送？ 应用场景\\njack-gestures-share 插件介绍 插件市场地址\\n为什么要封装这个插件？\\n技术架构 插件目录结构\\n核心 API 设计\\n插件完整源码 interface.uts（接口定义）\\nindex.uts（主要实现逻辑）\\nnative.uts（分享实现）\\n鸿蒙平台实现原理\\n快速开始 安装插件\\n在页面中使用\\n完整示例：宝宝成长卡片分享\\n使用注意事项\\n常见问题 FAQ\\n源码解析：核心实现要点\\n进阶技巧\\n实际应用案例：BabyOne 中的使用\\n前言\\n大家好！我是一名全栈开发者Jack，最近在开发一款名为 BabyOne 的母婴育儿应用。在开发过程中，我发现鸿蒙系统提供了一个非常酷炫的功能—— 隔空传送 （Gestures Share），用户只需通过简单的手势操作，就能将内容快速分享到附近的设备。\\n为了让更多开发者能够轻松使用这个功能，我封装了\\n<quark-code>\\njack-gestures-share\\n</quark-code>\\n插件，并将其发布到了 UniApp 插件市场。本文将详细介绍如何在 UniApp 项目中集成和使用鸿蒙隔空传送功能。\\n什么是隔空传送？\\n大家好，我是鸿蒙Jack。最近在做 BabyOne 宝宝成长助手的时候，想实现一个功能：用户生成宝宝名片后，可以直接在当前手机抓一抓，然后“丢”给朋友的手机，实现宝宝名片的快速分享。这就是鸿蒙的隔空传送分享功能。\\n应用场景\\n照片分享 ：快速将拍摄的照片分享给家人朋友\\n文档传输 ：快速传输文档、报告等文件\\n卡片分享 ：分享生日卡片、节日祝福等\\n育儿记录 ：在 BabyOne 中分享宝宝成长卡片、纪念日等\\njack-gestures-share 插件介绍\\n在我的 BabyOne 应用实际开发过程中，为了简化 UniApp 使用鸿蒙隔空传送功能的流程，我封装了\\n<quark-code>\\njack-gestures-share\\n</quark-code>\\n插件。这是一个基于 UTS 开发的插件， 完全开源 。\\n插件市场地址\\n插件已发布到 UniApp 插件市场，可以直接搜索安装：\\n🔗 插件市场地址 ： https://ext.dcloud.net.cn/plugin?name=jack-gestures-share\\n为什么要封装这个插件？\\n在开发 BabyOne 应用时，我需要实现宝宝成长卡片的分享功能。用户可以生成精美的卡片，然后通过隔空传送快速分享给家人。直接使用鸿蒙 API 存在以下问题：\\nAPI 复杂 ：需要处理窗口 ID、回调注册等复杂逻辑\\n平台差异 ：HarmonyOS 的 API 在 UniApp 中无法直接使用\\n生命周期管理 ：需要手动管理监听器的注册和注销\\n错误处理困难 ：需要处理各种异常情况\\n因此，我将功能封装成了\\n<quark-code>\\njack-gestures-share\\n</quark-code>\\n插件，大大简化了使用流程。\\n技术架构\\n插件目录结构\\n<quark-code>uni_modules/jack-gestures-share/\\n├── utssdk/\\n│   ├── interface.uts              # 接口定义\\n│   └── app-harmony/               # 鸿蒙平台实现\\n│       ├── index.uts              # 主要实现逻辑\\n│       └── native.uts             # 分享实现\\n├── package.json                   # 插件配置\\n├── readme.md                      # 使用文档\\n└── changelog.md                   # 更新日志\\n</quark-code>\\n核心 API 设计\\n插件提供了 2 个核心 API：\\n<quark-table><table><thead><tr><th>API</th><th>说明</th><th>返回值</th></tr></thead><tbody><tr><td>uni.registerGesturesShare(options)</td><td>注册隔空传送分享监听</td><td>void</td></tr><tr><td>uni.unregisterGesturesShare()</td><td>注销隔空传送分享监听</td><td>void</td></tr></tbody></table></quark-table>\\n插件完整源码\\n为了方便大家使用，这里提供\\n<quark-code>\\njack-gestures-share\\n</quark-code>\\n插件的完整源代码，可以直接复制到你的项目中使用。\\n1. utssdk/interface.uts（接口定义）\\n<quark-code>/**\\n* 隔空传送分享插件接口定义\\n*/\\n/**\\n* 注册隔空传送分享参数\\n*/\\nexport type RegisterGesturesShareOptions = {\\n/**\\n* 要分享的图片路径（本地临时文件路径）\\n*/\\nimagePath : string\\n/**\\n* 接口调用成功的回调函数\\n* @defaultValue null\\n*/\\nsuccess ?: RegisterGesturesShareSuccessCallback | null\\n/**\\n* 接口调用失败的回调函数\\n* @defaultValue null\\n*/\\nfail ?: RegisterGesturesShareFailCallback | null\\n/**\\n* 接口调用结束的回调函数（调用成功、失败都会执行）\\n* @defaultValue null\\n*/\\ncomplete ?: RegisterGesturesShareCompleteCallback | null\\n}\\n/**\\n* 注册成功回调结果\\n*/\\nexport type RegisterGesturesShareSuccess = {\\n/**\\n* 成功信息\\n*/\\nerrMsg : string\\n}\\n/**\\n* 注册失败回调结果\\n*/\\nexport type RegisterGesturesShare",
+    "url": "https://developer.huawei.com/consumer/cn/blog/topic/03204993420276036?ha_source=rrdscpjl&ha_sourceId=89000499",
+    "title": "华为开发者文章",
+    "source_trust_level": "可信源",
+    "source_trust_type": "权威行业"
+  },
+  "47": {
+    "page_content": "default {\\ndata() onLoad() {\\n},\\nmethods{\\nopenAppProductBtn() {\\nuni.openAppProduct({\\nsuccess: (res) =&gt; {\\nconsole.log('success: ', JSON.stringify(res));\\n},\\nfail: (err) =&gt; {\\nconsole.error('fail: ', JSON.stringify(err));\\n},\\ncomplete: (res) =&gt; {\\nconsole.log('complete: ', JSON.stringify(res));\\n}\\n});\\n}\\n}\\n}\\n&lt;/script&gt;\\n&lt;style&gt;\\n.content {\\ndisplay: flex;\\nflex-direction: column;\\nalign-items: center;\\njustify-content: center;\\n}\\n.button{\\nwidth: 100%;\\nmargin: 10px;\\n}\\n&lt;/style&gt;\\n</quark-code>\\n复制代码\\n方式二（使用import引入）\\n<quark-code>&lt;template&gt;\\n&lt;view class=\"content\"&gt;\\n&lt;button class=\"button\" @click=\"openAppProductBtn\"&gt;打开应用市场&lt;/button&gt;\\n&lt;/view&gt;\\n&lt;/template&gt;\\n&lt;script lang=\"uts\"&gt;\\nimport { openAppProduct } from \"@/uni_modules/xxx-openAppProduct\"\\nexport default {\\ndata() {\\nreturn {\\n}\\n},\\nonLoad() {\\n},\\nmethods: {\\nopenAppProductBtn() {\\nopenAppProduct({\\nsuccess: (res : any) =&gt; {\\nconsole.log('success: ', JSON.stringify(res));\\n},\\nfail: (err : any) =&gt; {\\nconsole.error('fail: ', JSON.stringify(err));\\n},\\ncomplete: (res : any) =&gt; {\\nconsole.log('complete: ', JSON.stringify(res));\\n}\\n});\\n}\\n}\\n}\\n&lt;/script&gt;\\n&lt;style&gt;\\n.content {\\ndisplay: flex;\\nflex-direction: column;\\nalign-items: center;\\njustify-content: center;\\n}\\n.button{\\nwidth: 100%;\\nmargin: 10px;\\n}\\n&lt;/style&gt;\\n</quark-code>\\n复制代码\\n点击 HBuilderX 上方【运行】菜单 - 运行到手机或模拟器 - 运行到鸿蒙\\n<quark-ocr>运行（ 友行 视图V 工具(I 帮助（Y） 运行到浏览器（B） 运行到内置浏览器（P） 运行到手机或模拟器（N） 运行 到AndroidApp基座（D） 运行到小程序模拟器(M） 运行 AndroidApp基座-指定页面（E）&gt; 运行到终端 &gt; 运行到 oSApp基座（G） uni-app自动化测试辅助插件 运行到 DSApp基座-指定页面（Z） 运行到鸿蒙（H） 显示Webview调试控制台（D） 制作自定义调试基座（P） Android模拟器端口设置（P） ADB路径设置（A）</quark-ocr>\\n注意：如果是新安装的 HBuilderX，【3】这里可能会只显示【下载真机运行插件】，点击它安装好插件才会看到这些菜单项。\\n鸿蒙 DevEco Studio 启动项目\\n# 使用uts调用鸿蒙第三方库的API\\n新增于HBuilderX 4.25\\n鸿蒙的包用法和 npm 包差不多，在鸿蒙项目里面用ohpm安装三方库后，在\\n<quark-code>\\n/uni_modules/uts插件名/utssdk/app-harmony/index.uts\\n</quark-code>\\n内即可直接 import\\n注意：只能在满足uts插件\\n<quark-code>\\n/uni_modules/*/utssdk/app-harmony/*.uts\\n</quark-code>\\n的文件下使用，无法直接在项目的pages中使用\\n具体使用流程：在项目的pages引入uts插件，uts插件内再引入鸿蒙第三方库调用\\n以调用\\n<quark-code>\\n@cashier_alipay/cashiersdk\\n</quark-code>\\n为例，代码如下\\n<quark-code>\\npage\\n</quark-code>\\n内代码\\n<quark-code>// 导入要使用的插件\\nimport { requestPayment } from \"@/uni_modules/test-alipay\";\\nrequestPayment({\\norderInfo: \"xxxx\"\\n});\\n</quark-code>\\n复制代码\\n<quark-code>\\n/uni_modules/*/utssdk/app-harmony/*.uts\\n</quark-code>\\n内的代码\\n<quark-code>import { Pay } from '@cashier_alipay/cashiersdk'\\nexport interface RequestPaymentOptions {\\norderInfo: string\\n}\\nexport function requestPayment(options : RequestPaymentOptions) {\\nreturn new Pay().pay(options.orderInfo, true)\\n}\\n</quark-code>\\n复制代码",
+    "url": "https://zh.uniapp.dcloud.io/tutorial/harmony/native-api.html",
+    "title": "调用鸿蒙原生API | uni-app官网",
+    "source_trust_level": "可信源",
+    "source_trust_type": "权威官网"
+  },
+  "48": {
+    "page_content": "├── wxcomponents                       存放小程序组件的目录，详见\\n├── license.md                         插件使用协议说明\\n├── package.json                       插件配置，必选(除此之外均`可选`)\\n├── readme.md                          插件文档\\n├── changelog.md                       插件更新日志\\n├── menu.json                          如果是uniCloud admin插件，可以通过menu.json注册动态菜单，详见 menu.json 配置\\n</quark-code>\\n也就是\\n<quark-code>\\nuni_modules\\n</quark-code>\\n目录下相当于复制一遍uni-app的项目结构。\\nTips\\n插件目录不支持pages.json、App.vue/uvue、main.js/uts、manifest.json、uni.scss文件，如果需要插件使用者修改这些文件内容，请在插件文档(readme.md)中详细说明。\\n插件目录支持\\n<quark-code>\\npages_init.json\\n</quark-code>\\n，可以方便注册页面到项目的pages.json中， 见下\\n在插件内部引用资源、跳转页面时，请尽量使用相对路径。\\n插件内components目录同样支持easycom规范，插件使用者可以直接在项目中使用插件内符合easycom规范的组件，当项目或插件内存在easycom组件冲突，编译时会给予提示，您可以通过修改组件目录及组件文件名称来解决冲突问题。\\n在HBuilderX中，\\n<quark-code>\\nuni_modules\\n</quark-code>\\n下如果包含了uniCloud目录的内容，会被以引用的方式，显示到主项目根目录下的uniCloud中。此时文件前的图标左下角会显示一个快捷方式箭头。\\n如下图，项目中有一个\\n<quark-code>\\nuni_modules\\n</quark-code>\\n名为\\n<quark-code>\\nuni-config-center\\n</quark-code>\\n，它下面包含了名为\\n<quark-code>\\nuni-config-center\\n</quark-code>\\n的公共模块。所以在项目根目录的公共模块目录common下，也会多出一个\\n<quark-code>\\nuni-config-center\\n</quark-code>\\n。\\n<quark-ocr>U helloco uniCloud-[阿里云：ali1] cloudfunctions common uni-config-center-[uni-config-center:uni-module] index.js package.json uni-id-common-[uni-id-common:uni-module] hellocf &gt; helloco &gt; hellojql database .hbuilderx &gt; .vite &gt; pages &gt; static uni_modules uni-config-center √ uniCloud cloudfunctions Y common uni-confg-center index.js []package.json MIchangelog.md []package.json Mreadme.md uni-id-common App.vue &lt;&gt;index.html main.js</quark-ocr>\\nHBuilderX 中打开配有引用图标指示的文件，会打开原始地址。\\n# uts插件\\n在uni_modules的utssdk目录，可以放置uts插件。\\nuts插件是非常重要的一种跨端插件 。它支持API插件和组件插件，可通过原生能力，封装后给uni-app(x)扩展API和组件。\\n在utssdk目录下，然后可以新建app-android、app-ios、app-harmony、web、mp-weixin等目录，每个目录下可以存放不同客户端平台的专用代码。\\n在app-android、app-ios、app-harmony目录，可以放置Android原生的aar、so库，iOS原生的framework，鸿蒙的har，也支持配置Android仓储、iOS的cocoapods、鸿蒙的ohpm。\\n在web和mp目录下，也支持放置npm库。\\n虽然utssdk目录下有这么多平台专用目录，但utssdk的根目录下可以放置一个\\n<quark-code>\\ninterface.uts\\n</quark-code>\\n的声明。这个文件统一了不同平台的接口，把不同平台的原生能力，转换为统一的API或组件，给前端开发者使用。\\n这是非常重要的设计，这也是uni-app区别于其他跨平台工具的重要特色。\\nuni.getBatteryInfo的插件和源码详见： https://ext.dcloud.net.cn/plugin?id=9295\\nuts插件开发的详细指南见： https://doc.dcloud.net.cn/uni-app-x/plugin/uts-plugin.html\\n注意事项\\n使用 import 导入uts插件时，仅支持导入到插件根目录，不支持导入插件内部的文件。\\n<quark-code>// 正确的写法\\nimport { test } from \"@/uni_modules/uts-osapi\";\\n// 错误的写法\\nimport { test } from \"@/uni_modules/uts-osapi/index.uts\";\\n</quark-code>\\n# HBuilderX中使用 uni_modules 插件\\n# 下载uni_modules插件\\n在 插件市场 查找uni_modules插件\\n在插件详情页,右侧会标明该插件是否支持uni_modules，点击\\n<quark-code>\\n使用 HBuilderX 导入插件\\n</quark-code>\\n<quark-ocr>支持uni_modules 插件 使用HBuilderX导入插件 注意：导入uni modules规范插件需要使用 3.1.0 以上版本的 HBuilderX 下载插件ZIP 示例 使用 HBuilderX导入示例项目 下载示例项目ZIP 赞赏（0）</quark-ocr>\\n选择要导入的uni-app项目\\n<quark-ocr>选择一个uni-app项目导入该插件 插件名称：uni_modules插件演示 插件版本：1.0.0 插件大小：1.1KB 项目列表 hello-uniapp 未关联uniCloud服务空间 取消 确定</quark-ocr>\\nTips\\nuni_modules支持组件easycom，使用者可以直接使用插件内符合easycom规范的组件\\n其他资源，如图片，js等，在项目中可以直接按目录结构引入即可使用，如：\\n<quark-code>import {test} from '@/uni_modules/xx-yy",
+    "url": "https://zh.uniapp.dcloud.io/plugin/uni_modules.html",
+    "title": "uni-app官网",
+    "source_trust_level": "可信源",
+    "source_trust_type": "权威官网"
+  },
+  "49": {
+    "page_content": "分类： uni-app\\n从零实现 uni-app 鸿蒙平台 TTS 插件：UTS 开发实践指南\\n随着移动应用的日益普及，文本转语音（TTS）功能已经成为提升用户体验的重要组成部分。在跨平台开发中，我们常常需要为不同平台提供一致的语音合成能力。\\nuni-app框架在安卓和IOS提供speech能力，但在鸿蒙（HarmonyOS）平台上，不提供speech支持。本文将详细介绍如何通过UTS技术开发一个鸿蒙平台的TTS插件，弥补这一功能空白，并学习如何实现跨平台接口的一致性。\\n一、项目概述\\n本项目将开发一个名为Lime TTS的基于UTS（Uni TypeScript）的文本转语音插件，主要目标是为uni-app在鸿蒙平台上提供语音合成能力。通过本项目的学习，我们将掌握如何使用UTS技术调用鸿蒙原生API，实现跨平台插件开发的核心技能。\\n二、项目目录结构\\n我们的Lime TTS项目采用标准的uni-app UTS插件结构，清晰地分离了接口定义和平台实现。这种结构设计有助于我们组织代码，并确保跨平台实现的一致性。项目的目录结构如下：\\n复制代码\\n<quark-code>uni_modules/\\n└── lime-tts/\\n├── changelog.md\\n├── package.json\\n├── readme.md\\n└── utssdk/\\n├── app-android/\\n│   ├── config.json\\n│   └── index.uts\\n├── app-harmony/\\n│   ├── config.json\\n│   └── index.uts\\n├── app-ios/\\n│   ├── config.json\\n│   └── index.uts\\n├── interface.uts\\n└── web/\\n└── index.uts</quark-code>\\nutssdk/interface.uts ：定义了插件的公共接口和类型，是插件的核心规范文件。\\nutssdk/app-harmony/index.uts ：鸿蒙平台的具体实现代码。\\n三、接口设计与定义\\n3.1 核心接口和类型设计\\nLime TTS 插件通过\\n<quark-code>\\nuni_modules/lime-tts/utssdk/interface.uts\\n</quark-code>\\n文件定义了一套完整的类型和接口规范，确保了良好的类型安全性和代码提示。\\n语音合成选项\\n复制代码\\n<quark-code>export type SpeakOptions = {\\n/**\\n* 语速\\n* 可选，支持范围 [0.5-2]，默认值为 1\\n*/\\nspeed ?: number;\\n/**\\n* 音量\\n* 可选，支持范围 [0-2]，默认值为 1\\n*/\\nvolume ?: number;\\n/**\\n* 音调\\n* 可选，支持范围 [0.5-2]，默认值为 1\\n*/\\npitch ?: number;\\n/**\\n* 语境，播放阿拉伯数字用的语种\\n* 可选，支持 \"zh-CN\" 中文与 \"en-US\" 英文，默认 \"zh-CN\"\\n*/\\nlanguage ?: Language;\\n// 其他配置项...\\n}</quark-code>\\n音色信息\\n复制代码\\n<quark-code>export type VoiceInfo = {\\nlanguage : Language;\\nperson : number;\\nname : string;\\ngender : 'male' | 'female';\\ndescription : string;\\nstatus : 'available' | 'downloadable' | 'unavailable';\\n}</quark-code>\\n语音状态\\n复制代码\\n<quark-code>export type SpeechStatus = 'idle' | 'speaking' | 'paused' | 'uninitialized';</quark-code>\\n3.2 主要功能接口\\n复制代码\\n<quark-code>export interface LimeTTS {\\n/**\\n* 朗读指定文本\\n* @param text 要朗读的文本\\n* @param options 可选参数，如语音ID、语速等\\n*/\\nspeak(text : string) : void;\\nspeak(text : string, options : SpeakOptions | null) : void;\\n/**\\n* 停止当前朗读\\n*/\\nstop() : void;\\n/**\\n* 暂停当前朗读\\n*/\\npause() : void;\\n/**\\n* 获取可用语音列表\\n*/\\ngetVoices() : Promise&lt;VoiceInfo[]&gt;;\\n/**\\n* 获取当前语音状态\\n*/\\ngetStatus() : SpeechStatus;\\n/**\\n* 销毁TTS实例，释放资源\\n*/\\ndestroy() : void;\\n/**\\n* 监听TTS事件\\n* @param event 事件类型\\n* @param callback 回调函数\\n*/\\non(event : 'start' | 'end' | 'error' | 'stop', callback : SpeechCallback) : void;\\noff(event : 'start' | 'end' | 'error' | 'stop') : void;\\noff(event : 'start' | 'end' | 'error' | 'stop', callback : SpeechCallback | null) : void;\\n}</quark-code>\\n四、鸿蒙平台实现详解\\n在本节中，我们将详细学习如何为鸿蒙平台实现TTS功能。我们将通过调用鸿蒙原生的\\n<quark-code>\\n@kit.CoreSpeechKit\\n</quark-code>\\n来实现语音合成，并遵循之前设计的接口规范。\\n4.0 模块导入\\n在鸿蒙平台实现中，首先需要导入鸿蒙系统提供的核心语音合成模块：\\n复制代码\\n<quark-code>// 导入鸿蒙语音合成相关模块\\nimport { textToSpeech } from '@kit.CoreSpeechKit';\\nimport { BusinessError } from '@kit.BasicServices",
+    "url": "https://ask.dcloud.net.cn/article/42196",
+    "title": "【鸿蒙征文】从零实现 uni-app 鸿蒙平台 TTS 插件：UTS 开发实践指南 - DCloud问答",
+    "source_trust_level": "可信源",
+    "source_trust_type": "通用权威"
+  },
+  "50": {
+    "result_id": 3,
+    "title": "HarmonyOS NEXT support: working Flutter-ohos port and ...",
+    "description": "I adapted the official Flutter mobile app to HarmonyOS NEXT. May 26, 2026). We don't have the capacity to maintain an official HarmonyOS ...",
+    "date": "2026-06-05T00:00:00.0000000",
+    "url": "https://github.com/lichess-org/mobile/issues/3278",
+    "site_name": "",
+    "source_trust_level": "可信源"
+  },
+  "51": {
+    "result_id": 6,
+    "title": "Flutter at Google I/O 2026 in 5 minutes",
+    "description": "Catch up on the biggest updates from Flutter at Google I/O 2026! From announcing Flutter 3.44 and Dart 3.12 to groundbreaking AI ...",
+    "date": "2026-06-12T13:33:53.7050000",
+    "url": "https://www.youtube.com/watch?v=vNwCw6uVyTg",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "52": {
+    "result_id": 8,
+    "title": "Flutter and WWDC 2026: What iOS 27 Means for Your App",
+    "description": "Flutter teams face real changes from WWDC 2026: In this article we focus on the announcements most likely to have an impact on Flutter,",
+    "date": "2026-06-12T00:00:00.0000000",
+    "url": "https://verygood.ventures/blog/wwdc-2026-through-a-flutter-lens/",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "53": {
+    "result_id": 9,
+    "title": "Based on Flutter 3.27.4 HarmonyOS Edition 0.1.0 version ...",
+    "description": "Fully supports the Flutter Channel communication mechanism exclusive to the HarmonyOS NEXT platform · Integrated Flutter Engine core engine ...",
+    "date": "2025-08-12T13:33:53.7050000",
+    "url": "https://livinginharmony.substack.com/p/based-on-flutter-3274-harmonyos-edition",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "54": {
+    "result_id": 1,
+    "title": "HarmonyOS UTS Plugin in Uniapp A Simple Example That ...",
+    "description": "This example demonstrates the basic process of developing UTS plugins for HarmonyOS. Although simple, it covers the key points of UTS plugin ...",
+    "date": "2025-06-30T00:00:00.0000000",
+    "url": "https://dev.to/lovehmos/harmonyos-uts-plugin-in-uniapp-a-simple-example-that-unlocks-real-progress-2lnp",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "55": {
+    "result_id": 2,
+    "title": "UTS 插件介绍",
+    "description": "uts插件，指利用uts语法，操作原生的API（包括手机os的api或三方sdk），并封装成一个uni_modules 插件，供前端调用。 uni-app中，是js来调用uts插件。（ ...",
+    "date": "2026-01-08T00:00:00.0000000",
+    "url": "https://doc.dcloud.net.cn/uni-app-x/plugin/uts-plugin.html",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "56": {
+    "result_id": 3,
+    "title": "How does uni-app embed Hongmeng native components?",
+    "description": "Starting from HBuilderX version 4.62, uni-app can be registered as a native component supported by WebView through uts plug-in, and supports ...",
+    "date": "2025-05-08T00:00:00.0000000",
+    "url": "https://forums.developer.huawei.com/forumPortal/en/topic/0201182087295368112",
+    "site_name": "",
+    "source_trust_level": "可信源"
+  },
+  "57": {
+    "result_id": 5,
+    "title": "uts for iOS - uni-app官网",
+    "description": "This article aims to help iOS developers get started with UTS quickly. Readers are required to have iOS native application development ...",
+    "date": "2023-12-14T00:00:00.0000000",
+    "url": "https://en.uniapp.dcloud.io/plugin/uts-for-ios.html",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "58": {
+    "result_id": 6,
+    "title": "UTS插件介绍",
+    "description": "uts插件与老版uni原生语言插件的区别 ; 开发环境, Android Studio/XCode, HBuilderX ; 打包方式, 外挂aar 等产出物, 编译时生成原生代码 ; js层调用方式, uni.",
+    "date": "",
+    "url": "https://github.com/dcloudio/uni-app/blob/uni-app-x/docs/plugin/uts-plugin.md",
+    "site_name": "",
+    "source_trust_level": "可信源"
+  },
+  "59": {
+    "result_id": 7,
+    "title": "uni-app",
+    "description": "Open uni-app Tencent Cloud Push Service (Push), click Download the plugin and import it into HBuilderX, and import the plugin into the ...",
+    "date": "2026-05-15T00:00:00.0000000",
+    "url": "https://www.tencentcloud.com/document/product/1047/60592",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "60": {
+    "result_id": 8,
+    "title": "uni-app for Harmony-腾讯云开发者社区",
+    "description": "uni-app 在Android 和iOS 平台，支持uts 插件和App 原生语言插件。目前App 原生语言插件已经停止维护。uts 插件是主推的扩展方式。 鸿蒙系统有很多原生API ...",
+    "date": "2024-08-27T00:00:00.0000000",
+    "url": "https://cloud.tencent.com/developer/article/2447946",
+    "site_name": "",
+    "source_trust_level": "可信源"
+  },
+  "61": {
+    "result_id": 9,
+    "title": "有问题，就会有答案",
+    "description": "uni-app x provides a good development experience when developing HarmonyOS applications: Hot refresh support：HBuilderX 4.41+ now supports hot updating after ...",
+    "date": "",
+    "url": "https://www.zhihu.com/en/article/1910364970354475186",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "62": {
+    "page_content": "UniApp X ：iOS 57，Android 55，HarmonyOS 51；掉帧次数分别为3、5、8\\n差异解析\\nKuikly，是指腾讯TDS Oteam推出的跨端框架，基于Kotlin MultiPlatform(KMP)构建，支持Android、iOS、HarmonyOS、Web(Beta)、小程序(Beta)、macOS(Alpha)六端，统一代码库，其核心特点是原生渲染生成平台二进制文件(.aar/.framework/.so)、轻量SDK、支持动态化编译交付，主要解决了多端适配与高频更新场景的性能瓶颈。其KMP逻辑跨平台叠加平台原生UI组件复用，避免自绘引擎额外绘制开销，使三端帧率更接近硬件极限。Flutter在iOS依托Skia可实现满帧，但在HarmonyOS需加载Dart VM与引擎，帧率明显下降。React Native因JS桥接与运行时加载，三端掉帧均较多。UniApp X在鸿蒙端因Vue到ArkTS转换限制，部分渲染指令冗余，帧率不及Kuikly。\\n小结结论\\nKuikly在电商详情页渲染稳定性与三端均衡性领先，适合高交互促销场景；Flutter在iOS表现佳但跨端一致性弱；React Native与UniApp X在HarmonyOS端性能折衷明显。\\n二、包体积增量：高频迭代下的隐形门槛\\n测试场景\\n构建同等电商首页模块（含导航、Banner、金刚区、猜你喜欢），统计集成框架后的APK/IPA/APP包体增量，关闭未使用资源压缩，保证功能完整。\\n数据呈现\\nKuikly ：Android增量约300KB（AOT模式），iOS约1.2MB\\nFlutter ：Android约12MB，iOS约15MB\\nReact Native ：Android约6MB，iOS约8MB\\nUniApp X ：Android约4MB，iOS约5MB\\n差异解析\\nKuikly的轻量SDK源于原生渲染与KMP共享逻辑，仅嵌入必要运行时与桥接代码，避免全引擎打包，高频推送场景下载转化率优势显著。Flutter与React Native需内置完整渲染引擎与桥接层，包体增幅大，对低端机型安装转化构成压力。UniApp X包体介于React Native与Kuikly之间，但需考虑鸿蒙端转换带来的潜在体积膨胀。\\n小结结论\\nKuikly在包体积控制上优势明显，适用于频繁全量推送或多渠道分发的电商业务；体积敏感场景应优先考量其轻量特性。\\n三、冷启动时间：秒开体验的决定因子\\n测试场景\\n在电商App首屏加载统一商品列表页，记录从点击图标到首帧稳定渲染的时间，重复10次取平均值，设备环境同渲染速度测试。\\n数据呈现\\nKuikly ：Android 420ms±20ms，iOS 390ms±15ms，HarmonyOS 410ms±18ms\\nFlutter ：Android 620ms±30ms，iOS 580ms±25ms，HarmonyOS 660ms±35ms\\nReact Native ：Android 780ms±40ms，iOS 720ms±35ms，HarmonyOS 810ms±45ms\\nUniApp X ：Android 590ms±28ms，iOS 550ms±22ms，HarmonyOS 630ms±30ms\\n差异解析\\nKuikly的原生渲染与AOT模式让启动路径贴近平台原生初始化流程，省去引擎预热与桥接耗时，较2025年优化约30%。某电商平台接入Kuikly后页面冷启动平均缩短30%，动态补丁生效速度提升40%。Flutter需初始化Dart VM与Skia，React Native需加载JS桥与运行时，HarmonyOS端还需额外兼容层，均拉慢启动。UniApp X在鸿蒙端因编译转换与运行时适配，启动延迟高于Android/iOS。\\n小结结论\\nKuikly在冷启动性能上全面领先，是电商秒开需求首选；Flutter与React Native适合对启动速度容忍度高的模块；UniApp X在鸿蒙端需评估延迟对转化的影响。\\n案例：某电商平台接入Kuikly后，动态补丁生效速度提升40%，活动页异常率下降至0.3%以下。跨端并行处理复杂业务逻辑场景，执行效率较单线程提升60%，订单并发计算耗时从220ms降至130ms。\\n测试场景\\n选取电商常用API（相机扫码、地理位置、推送、分享、支付）在三端进行调用成功率与异常率统计，并检测HarmonyOS Next特有API支持情况。\\n数据呈现\\nKuikly ：三端调用成功率均≥99.5%，HarmonyOS Next支持分布式任务调度与KV Store直调\\nUniApp X ：Android/iOS成功率≥98.8%，HarmonyOS Next部分Web特性与CSS属性受限，调用成功率96.2%\\nFlutter ：HarmonyOS Next部分新特性需定制插件，成功率约97%~98%\\nReact Native ：桥接模式导致部分新系统API调用延迟明显，成功率约96%~97%\\n差异解析\\nKuikly在HarmonyOS Next端直接支持Kotlin/Native编译与调试，可复用平台原生API，无需语法转换，减少兼容性风险。UniApp X因Vue到ArkTS转换存在语义损失，部分Web API需降级或替代实现，导致调用成功率下降。Flutter与React Native在HarmonyOS Next新特性支持上需额外插件或封装，适配成本高。\\n小结结论\\nKuikly在多端API兼容性与生态直通方面表现最佳，适合一次性覆盖六端电商业务的团队；UniApp X在鸿蒙端需预留兼容性测试成本。\\n五、选型决策树：基于团队规模的推荐方案\\n小型敏捷团队（≤10人，快速试错）\\n推荐： Kuikly\\n理由：统一代码库与轻量SDK降低学习与维护成本；动态化能力支持活动页快速迭代；与Shiply+Bugly联动实现发布闭环。\\n参考案例：初创电商团队3个月完成六端覆盖，版本迭代周期缩短50%。\\n中型成长团队（10~50人，兼顾体验与效率）\\n推荐： Kuikly + Avalonia UI组合\\n理由：Kuikly主攻高并发交易与营销页，Avalonia UI用于管理",
+    "url": "https://blog.csdn.net/2501_92406411/article/details/161664110",
+    "title": "2026电商跨端框架性能与动态更新能力选型指南-CSDN博客",
+    "source_trust_level": "不可信源",
+    "source_trust_type": ""
+  },
+  "63": {
+    "page_content": "（2）双渲染引擎支持\\n<quark-table><table><thead><tr><th>渲染方案</th><th>技术路径</th><th>特点</th></tr></thead><tbody><tr><td>Skia + OHNativeWindow</td><td>Flutter UI → Skia → OHNativeWindow → Vulkan Surface</td><td>成熟稳定，兼容性好</td></tr><tr><td>Impeller + ArkGraphics</td><td>Flutter UI → Impeller → ArkGraphics(Vulkan)</td><td>新一代引擎，针对鸿蒙深度优化</td></tr></tbody></table></quark-table>\\nSkia方案通过\\n<quark-code>\\nXComponent\\n</quark-code>\\n获取\\n<quark-code>\\nOHNativeWindow\\n</quark-code>\\n实例，转换为Vulkan Surface实现绘制；Impeller方案则直接调用ArkGraphics的Vulkan后端，性能更优但仅限新版本系统。\\n（3）混合开发支持\\nFlutter与ArkTS原生组件可通过 XComponent 实现混排：通过ArkUI C API将原生组件树附加到OH_NativeXComponent，Flutter将其作为PlatformView管理。\\n适用场景\\n已在Android/iOS端使用Flutter的企业，扩展鸿蒙平台成本低\\n对UI一致性要求高的应用（金融、工具类）\\n需要跨设备部署的应用（结合鸿蒙分布式能力）\\nSWOT分析\\n<quark-table><table><thead><tr><th>维度</th><th>分析</th></tr></thead><tbody><tr><td>优势</td><td>自绘引擎适配成本低，渲染性能高，热重载完善</td></tr><tr><td>劣势</td><td>官方支持缺失，依赖社区维护；鸿蒙特有能力需定制开发</td></tr><tr><td>机会</td><td>鸿蒙装机量增长带来需求；已有Flutter团队的迁移需求</td></tr><tr><td>威胁</td><td>华为原生ArkUI-X的替代压力；其他跨平台方案竞争</td></tr></tbody></table></quark-table>\\n3.2 React Native for OpenHarmony\\nReact Native for OpenHarmony（RNOH）是基于React Native框架对OpenHarmony平台的兼容扩展，开发者通过少量适配即可将RN应用迁移到鸿蒙。\\n技术特点\\nJavaScript桥接模式 ：通过JS引擎与原生组件通信，上层使用React组件模型\\n热重载机制成熟 ：前端开发体验良好\\n社区维护版本 ：由OpenHarmony SIG组织维护，已在30+社区应用中采用\\n性能表现\\n受JS与原生通信影响，RN的交互延迟相对较高（80-100ms），启动速度较慢（1000-1200ms）。但在UI渲染方面，TurboModule机制优化了原生代码调用性能。\\n适用场景\\n团队具备扎实的JavaScript/TypeScript和React技能\\n同时面向Web和移动平台的项目\\n需要快速将现有RN应用扩展到鸿蒙\\n3.3 uni-app x\\nuni-app x是DCloud推出的基于Vue语法的跨平台框架，一套代码可发布到iOS、Android、鸿蒙Next、Web及各种小程序平台。\\n核心优势\\n开发效率最高 ：Vue语法学习成本低，HBuilderX深度集成，代码复用率95%+\\n原生渲染性能 ：采用原生组件+原生渲染，逻辑层与视图层共享原生进程\\n生态丰富 ：5000+鸿蒙专用插件，50+知名企业已落地应用\\n性能数据\\n<quark-table><table><thead><tr><th>指标</th><th>表现</th></tr></thead><tbody><tr><td>冷启动速度</td><td>500-700ms</td></tr><tr><td>内存占用</td><td>80-100MB</td></tr><tr><td>渲染帧率</td><td>60fps</td></tr><tr><td>交互延迟</td><td>&lt;30ms</td></tr></tbody></table></quark-table>\\n3.4 Kuikly（腾讯KMP方案）\\nKuikly是基于Kotlin Multiplatform（KMP）技术构建的跨端框架，由腾讯自研并已全面适配鸿蒙5，于2025年9月开源。\\n技术架构\\nKotlin/Native编译 ：将Kotlin跨端层逻辑编译为鸿蒙上可高效运行的Native产物\\n原生OEM渲染 ：接近原生平台的执行性能\\n一码多端 ：一套代码同时输出鸿蒙、安卓、iOS、Web、小程序\\n性能表现\\nKuikly的性能在同类方案中领先：\\n页面FCP耗时仅122ms ，比React Native快6倍\\n内存占用仅60-80MB（中等应用场景）\\n交互延迟<20ms\\n应用案例\\n已在腾讯内部大规模应用，包括 QQ、腾讯新闻、QQ音乐、搜狗输入法、QQ浏览器、全民K歌、腾讯自选股 等超15款App，覆盖500多个业务页面。\\n3.5 Taro\\nTaro由京东凹凸实验室主导，是一个开放式跨端跨框架解决方案，支持使用React/Vue/Nerv开发小程序、H5、RN等多端应用。\\n鸿蒙适配进展\\nC-API版本 ：将渲染逻辑下沉至C++层，调用ArkUI C++ API，大幅提升渲染性能\\n应用案例 ：京东鸿蒙原生应用曾采用Taro开发，但兼容问题较多，目前团队正在转向原生开发\\n适用场景\\n前端技术栈团队（React/Vue）\\n已有Taro多端项目的扩展\\n需要快速覆盖小程序+App+鸿蒙的场景\\n3.6 Kotlin Multiplatform（KMP）\\nKMP是JetBrains推出的跨平台框架，通过共享核心业务逻辑、分离UI层的方式实现跨平台。\\n<",
+    "url": "https://youmoxiang.blog.csdn.net/article/details/162633021",
+    "title": "HarmonyOS 5 鸿蒙跨平台开发方案详解_原生鸿蒙app开发 技术栈-CSDN博客",
+    "source_trust_level": "不可信源",
+    "source_trust_type": ""
+  },
+  "64": {
+    "page_content": "跨端开发面临重大变革：华为鸿蒙NEXT将彻底抛弃AOSP，2026年起非原生应用或遭限流。文章对比Flutter、React Native和HarmonyOS三大方案，指出鸿蒙原生开发在性能、包体积和生态适配上的优势，强调技术选型需结合业务场景。建议现有项目逐步迁移至ArkTS，新项目直接采用鸿蒙原生开发以抢占生态红利。未来跨端竞争将转向深度融入平台生态的能力，而非单纯代码复用率。\\n你的团队还在用 React Native 写新 App？\\n华为应用市场已明确： 2026 年起，非 鸿蒙 原生应用将限流甚至拒审 。\\n而你的 Flutter 包，体积 60MB，在低端鸿蒙设备上启动要 3 秒——用户早已划走。\\n如果你正为“下一个三年该押注哪个跨端框架”而失眠，\\n这篇文章，可能决定你团队未来的技术命运 。\\n一、跨端开发的“黄金时代”正在终结\\n过去五年，Flutter 和 React Native 凭借“一套代码多端运行”的承诺，成为无数团队的首选。\\n但 2026 年，风向变了：\\n华为鸿蒙 NEXT 彻底抛弃 AOSP ，仅支持\\n<quark-code>\\n.hap\\n</quark-code>\\n原生包；\\n苹果收紧 JIT 限制 ，JS 引擎动态能力受限；\\n用户对性能敏感度飙升 ，60fps 成为底线而非上限；\\n企业要求“一次开发，覆盖手机/平板/车机/手表” 。\\n旧有跨端方案，正在遭遇 生态割裂、性能瓶颈、审核风险 三重夹击。\\n是时候重新评估： 谁才是真正的“下一代跨端王者”？\\n二、三大方案全景对比：不只是技术，更是战略\\n<quark-table><table><thead><tr><th>维度</th><th>Flutter</th><th>React Native</th><th>HarmonyOS (ArkTS)</th></tr></thead><tbody><tr><td>渲染方式</td><td>自绘引擎（Impeller）</td><td>原生控件桥接（JSI）</td><td>原生声明式 UI（ArkUI）</td></tr><tr><td>鸿蒙 NEXT 支持</td><td>社区移植 / 混合嵌入</td><td>桥接适配，性能损耗大</td><td>官方原生，深度集成</td></tr><tr><td>启动速度（鸿蒙手机）</td><td>2.3s</td><td>2.8s</td><td>1.4s</td></tr><tr><td>包体积（基础 App）</td><td>55–70MB</td><td>45–60MB</td><td>18–25MB</td></tr><tr><td>UI 一致性</td><td>⭐⭐⭐⭐⭐（像素级一致）</td><td>⭐⭐（平台差异明显）</td><td>⭐⭐⭐⭐（全场景统一设计语言）</td></tr><tr><td>热更新能力</td><td>官方不支持（有审核风险）</td><td>CodePush 成熟</td><td>华为 AppGallery Connect 支持</td></tr><tr><td>学习成本</td><td>需学 Dart + Widget 思维</td><td>前端友好（JS/TS）</td><td>需学 ArkTS（类 TS）</td></tr><tr><td>分布式能力</td><td>需自研插件</td><td>几乎无法实现</td><td>超级终端、设备协同开箱即用</td></tr></tbody></table></quark-table>\\n关键结论： 没有“最好”，只有“最适合你的业务阶段” 。\\n三、真实场景选型指南：别再凭感觉决策\\n场景一：ToC 电商 / 社交 App，强依赖热更新 + 已有 RN 技术栈\\n短期继续用 React Native，但必须规划鸿蒙迁移\\n利用现有 JS 生态快速迭代\\n通过 RN + 鸿蒙原生模块桥接 过渡\\n风险 ：长期看，鸿蒙原子化服务、卡片等新能力难以接入\\n场景二：金融 / 工具类 App，UI 一致性高 + 动画复杂\\n优先选 Flutter\\nImpeller 引擎解决卡顿问题，帧率稳定 60fps\\n双端视觉 100% 一致，设计师省心\\n但需注意 ：在鸿蒙 NEXT 上仍为“混合应用”，无法调用分布式软总线等核心能力\\n场景三：新项目 / 企业级应用，目标覆盖鸿蒙全场景（手机+平板+车机）\\n果断拥抱 HarmonyOS + ArkTS\\n华为提供 流量扶持 + 审核绿色通道\\n原生支持 原子化服务、服务卡片、跨设备流转\\n长期 ROI 最高 ：一次投入，享受鸿蒙生态红利 3–5 年\\n真实案例：某银行理财 App 用 uni-app x（编译到 ArkTS）重构后，\\n鸿蒙版上线时间缩短 70%\\n用户次日留存提升 12%（因启动更快、体验更原生）\\n四、鸿蒙 NEXT：不是“又一个 Android”，而是新操作系统\\n很多人误以为“鸿蒙 = 换皮 Android”，这是致命误区。\\nHarmonyOS NEXT 是独立内核、独立生态、独立分发体系的操作系统 ：\\n不兼容 APK\\n应用必须使用 ArkTS + ArkUI 开发\\n核心能力围绕 “超级终端” 构建（手机 → 平板 → 车机无缝协同）\\n这意味着：\\nReact Native 和 Flutter 无法直接上架纯血鸿蒙\\n即使通过 WebView 或混合模式嵌入，也会被标记为“非原生”， 失去推荐位和用户信任\\n华为官方表态：“ 原生应用 = 更高转化率 + 更低卸载率 ”\\n五、未来三年技术投资建议\\n<quark-table><table><thead><tr><th>团队类型</th><th>推荐策略</th></tr></thead><tbody><tr><td>已有 RN/Flutter 大型项目</td><td>维持双端，新增鸿蒙模块用 ArkTS 重写，逐步",
+    "url": "https://harmonyosdev.csdn.net/69b3d1290a2f6a37c597047b.html",
+    "title": "Flutter vs React Native vs HarmonyOS：谁更适合下一代跨端？2026 年技术选型终极指南_flutter_前进鸭h5-HarmonyOS开发者社区",
+    "source_trust_level": "不可信源",
+    "source_trust_type": ""
+  },
+  "65": {
+    "page_content": "2026年鸿蒙跨平台开发框架选型实战指南\\n站在2026年的技术节点回望，鸿蒙生态的爆发式增长已彻底改变了移动开发格局。当开发者面对 React Native 、 Flutter 和KuiklyUI这三个主流框架时，选择困难症往往不期而至——每个框架都在官方文档里宣称自己是最佳选择，但真实项目中的表现却千差万别。本文将用实测数据和真实案例，带你穿透营销话术，找到最适合鸿蒙项目的技术方案。\\n1. 性能对决：框架速度的真相\\n性能永远是开发者的首要考量。在鸿蒙NEXT系统上，我们对三个框架进行了基准测试：\\n<quark-table><table><thead><tr><th>测试场景</th><th>React Native</th><th>Flutter</th><th>KuiklyUI</th><th>原生鸿蒙</th></tr></thead><tbody><tr><td>列表滚动FPS</td><td>52</td><td>58</td><td>59</td><td>60</td></tr><tr><td>页面冷启动(ms)</td><td>1200</td><td>900</td><td>650</td><td>600</td></tr><tr><td>内存占用(MB)</td><td>185</td><td>160</td><td>140</td><td>130</td></tr></tbody></table></quark-table>\\n测试设备：华为Mate 80 Pro（HarmonyOS NEXT 5.0），数据为10次测试平均值\\nKuiklyUI 的6倍速度优势主要体现在复杂动画场景。其底层采用KMP（Kotlin Multiplatform） 架构 ，避免了JavaScript桥接带来的性能损耗。实际项目中，某电商App接入KuiklyUI后，商品详情页的渲染时间从RN的420ms降至68ms。\\nFlutte",
+    "url": "https://blog.csdn.net/weixin_42676824/article/details/159789976",
+    "title": "别再纠结了！2026年鸿蒙跨平台开发，React Native、Flutter、KuiklyUI到底怎么选？-CSDN博客",
+    "source_trust_level": "不可信源",
+    "source_trust_type": ""
+  },
+  "66": {
+    "page_content": "鸿蒙特有能力集成 ：提供分布式任务调度、跨设备拖拽等鸿蒙特色能力的标准化接入方式\\nHot Reload优化 ：针对鸿蒙模拟器和真机的Hot Reload稳定性和速度进行专项优化\\n混合工程（Add-to-App）支持 ：完善Flutter模块嵌入ArkUI原生应用的混合开发模式\\n四、Flutter vs React Native vs ArkUI：三大方案全面对比\\n4.1 核心维度对比\\n<quark-table><table><thead><tr><th>对比维度</th><th>Flutter ohos</th><th>React Native ohos</th><th>ArkUI (原生)</th></tr></thead><tbody><tr><td>渲染机制</td><td>自绘引擎(Skia/Impeller)</td><td>桥接原生组件</td><td>系统原生渲染</td></tr><tr><td>开发语言</td><td>Dart</td><td>JavaScript/TypeScript</td><td>ArkTS</td></tr><tr><td>跨端能力</td><td>Android/iOS/ohos/Web/桌面</td><td>Android/iOS/ohos</td><td>仅HarmonyOS</td></tr><tr><td>性能表现</td><td>接近原生(90%+)</td><td>复杂场景有损耗(80%-90%)</td><td>原生性能(100%)</td></tr><tr><td>包体积</td><td>较大(+8-15MB引擎)</td><td>中等(+5-10MB运行时)</td><td>最小</td></tr><tr><td>热更新</td><td>受限(Dart AOT编译)</td><td>支持(JS Bundle)</td><td>不支持</td></tr><tr><td>生态成熟度</td><td>社区版，持续完善中</td><td>社区适配，插件较少</td><td>官方支持，生态快速增长</td></tr><tr><td>学习曲线</td><td>中等(需学Dart)</td><td>较低(前端开发者友好)</td><td>中等(需学ArkTS)</td></tr><tr><td>鸿蒙特色能力</td><td>通过插件桥接</td><td>通过Native Module桥接</td><td>完整原生支持</td></tr><tr><td>多端代码复用率</td><td>85%-95%</td><td>75%-90%</td><td>0%(单端)</td></tr><tr><td>企业采用趋势</td><td>上升，大厂落地案例增多</td><td>稳定，观望者居多</td><td>强制性需求，持续增长</td></tr></tbody></table></quark-table>\\n4.2 性能实测对比分析\\n在实际项目中，三种方案的性能差异主要体现在以下场景：\\n列表滚动性能。 Flutter凭借自绘引擎在长列表场景下表现稳定，帧率波动小。ArkUI原生的LazyForEach组件在列表回收复用上有天然优势。React Native的列表性能在桥接开销下略逊一筹，尤其是复杂Cell的渲染场景。\\n动画流畅度。 Flutter的动画系统完全运行在GPU线程，与UI线程解耦，在复杂动画场景（如页面转场、粒子效果）中表现优异。ArkUI的动画系统同样流畅，且能更好地利用系统级动画能力。React Native的动画在Reanimated库的支持下有所改善，但跨桥通信的延迟在高频动画中仍可感知。\\n启动速度。 ArkUI原生应用启动速度最快，无额外运行时加载开销。Flutter应用需要加载Dart VM和引擎，冷启动时间增加200-400ms。React Native需要加载JS引擎和Bundle，冷启动开销与Flutter相当。\\n4.3 技术选型决策树\\n针对不同的项目类型，建议参考以下决策逻辑：\\n已有Flutter应用需要适配鸿蒙 → 优先选择Flutter ohos，代码复用率最高\\n已有React Native应用 → 评估鸿蒙适配的插件覆盖度，若关键插件缺失则考虑混合方案\\n新项目且仅面向国内市场 → ArkUI + Android原生各写一套，或采用跨端方案\\n新项目且面向全球市场 → Flutter跨全端的优势最明显\\n需要热更新能力 → React Native仍具优势，但需评估鸿蒙上的审核政策\\n重度使用系统特色能力（分布式、原子化服务） → ArkUI原生开发不可替代\\n5.1 uni-app鸿蒙适配的现状\\n在讨论跨端方案时，不能忽视uni-app在国内开发者群体中的广泛影响力。DCloud团队从2024年开始推进uni-app对HarmonyOS NEXT的适配，采用的技术路线与Flutter和React Native截然不同。\\nuni-app的鸿蒙适配基于ArkUI作为渲染层，将Vue语法编译为ArkTS代码，这种方案的优势在于渲染层完全走原生通道，无需额外的渲染引擎。对于已有uni-app项目的团队，迁移成本相对较低。\\n5.2 uni-app方案的优劣势\\n<quark-table><table><thead><tr><th>维度</th><th>uni-app 鸿蒙版</th></tr></thead><tbody><tr><td>跨端范围</td><td>Android/iOS/ohos/Web/小程序</td></tr><tr><td>渲染方式</td><td>编译为ArkUI原生组件</td></tr><tr><td>开发语言</td><td>Vue + JS/TS</td></tr><tr><td>小程序兼容</td><td>天然支持，核心优势</td></tr><tr><td>性能表现</td><td>接近原生（编译产物为ArkTS）</td></tr><tr><td>复杂交互能力</td><td>受限于抽象层，高度定制场景有瓶颈</td></tr><tr><td>适用团队</td><td>前端团队、小程序开发者</td></tr></tbody></table></quark-table>\\nuni-app方案的核心竞争力在于其对小程序生态的天然支持。如果项目需要同时覆盖微信小程序、支付宝小程序以及App端，uni-app的全端覆盖能力是其他方案难以匹敌的。\\n5.3 跨端方案的选择逻辑\\n当把Flutter、React Native、uni-app三个",
+    "url": "http://juejin.im/entry/7618424147358449710",
+    "title": "Flutter鸿蒙2026路线图解读：跨端开发的终局之战一、引言 2026年，移动开发领域迎来了一个无法回避的现实：鸿蒙 - 掘金",
+    "source_trust_level": "不可信源",
+    "source_trust_type": ""
+  },
+  "67": {
+    "page_content": "Flutter + OpenHarmony 性能优化终极指南：从 30 FPS 到 60 FPS 的实战跃迁\\n作者 ：晚霞的不甘\\n日期 ：2025年12月5日\\n标签 ：Flutter · OpenHarmony · 性能优化 · 帧率提升 · 内存管理 · 启动加速 · 鸿蒙生态\\n引言：流畅，是用户体验的底线\\n在 OpenHarmony 设备上，用户对性能的容忍度极低：\\n车机导航卡顿 → 可能引发安全事故\\n智慧屏动画掉帧 → 破坏沉浸感\\n手表应用启动慢 → 错过关键通知\\n然而，许多 Flutter + OH 应用仍停留在 30–45 FPS 的“可用但不流畅”状态。\\n60 FPS 不是奢侈品，而是基本要求 。\\n本文基于 100+ 真实项目性能调优经验 ，系统梳理从 启动速度、UI 渲染、内存占用到分布式通信 的全链路优化策略，助你实现 稳定 60 FPS、冷启 <1.5s、内存 <80MB 的生产级体验。\\n一、性能指标：先测量，再优化\\n关键指标与达标线（OpenHarmony 4.0+）\\n<quark-table><table><thead><tr><th>指标</th><th>优秀</th><th>及格</th><th>危险</th></tr></thead><tbody><tr><td>平均帧率</td><td>≥ 58 FPS</td><td>≥ 50 FPS</td><td>&lt; 45 FPS</td></tr><tr><td>冷启动时间</td><td>≤ 1.2s</td><td>≤ 1.8s</td><td>&gt; 2.5s</td></tr><tr><td>内存峰值</td><td>≤ 70MB</td><td>≤ 90MB</td><td>&gt; 120MB</td></tr><tr><td>主线程阻塞</td><td>0 次</td><td>≤ 1 次/分钟</td><td>频繁 ANR</td></tr></tbody></table></quark-table>\\n工具推荐 ：\\nDevEco Studio Profiler（CPU/GPU/Memory）\\nflutter run --profile\\n</quark-code>\\n+ Observatory\\n<quark-code>\\nhdc shell hidumper -s 100\\n</quark-code>\\n（系统级性能快照）\\n二、启动加速：让用户“秒进”应用\\n2.1 冷启动瓶颈分析\\n典型耗时环节：\\n<quark-code>[0–200ms]   OS 加载 HAP\\n[200–600ms] Flutter Engine 初始化\\n[600–1200ms] Dart isolate 启动 + 首帧 build\\n[1200ms+]   业务逻辑加载（网络/DB）</quark-code>\\n2.2 优化策略\\n✅ 1. 延迟初始化非核心服务\\n<quark-code>void main() {\\nrunApp(MyApp());\\n// 启动后异步初始化\\nFuture.microtask(() {\\ninitAnalytics();\\npreloadAssets(); // 非首屏资源\\n});\\n}</quark-code>\\n✅ 2. 预编译 AOT + 分包\\n在\\n<quark-code>\\nbuild-profile.json5\\n</quark-code>\\n中启用：\\n<quark-code>{\\n\"optimization\": {\\n\"enableAot\": true,\\n\"splitNativeLib\": true\\n}\\n}</quark-code>\\n减少首次加载的\\n<quark-code>\\n.so\\n</quark-code>\\n体积\\n✅ 3. 首屏最小化\\n首帧仅渲染骨架屏（Skeleton）\\n数据通过\\n<quark-code>\\nFutureBuilder\\n</quark-code>\\n异步加载\\n⏱️ 效果 ：冷启动从 2.1s → 1.3s（RK3568 设备）\\n三、UI 渲染优化：稳稳 60 FPS 的秘诀\\n3.1 避免不必要的 rebuild\\n❌ 反模式：在 build 中创建新对象\\n<quark-code>Widget build(BuildContext context) {\\nreturn ListView.builder(\\nitemBuilder: (ctx, i) =&gt; MyCard(widget.items[i]), // 每次都 new MyCard\\n);\\n}</quark-code>\\n✅ 正确做法：使用 <quark-code>\\nconst",
+    "url": "https://www.cnblogs.com/clnchanpin/p/19551377",
+    "title": "[鸿蒙2025领航者闯关]：Flutter + OpenHarmony 性能优化终极指南：从 30 FPS 到 60 FPS 的实战跃迁 - 详解 - clnchanpin - 博客园",
+    "source_trust_level": "不可信源",
+    "source_trust_type": ""
+  },
+  "68": {
+    "page_content": "return new Pay().pay(options.orderInfo, true);\\n}\\n</quark-code>\\n1.\\n2.\\n3.\\n4.\\n5.\\n6.\\n7.\\n8.\\n9.\\n复制\\nUTS 插件在这里起到了桥接层的作用——页面代码只感知到\\n<quark-code>\\nrequestPayment\\n</quark-code>\\n函数，不需要直接接触鸿蒙原生 API 或 ohpm 包。具体调用哪个 SDK、怎么初始化，都封装在插件内部。\\nUTS 插件架构总览\\n<quark-code>项目根目录/\\n├── pages/\\n│   └── index/\\n│       └── index.vue          # 调用方：import 或 uni.xxx 调用\\n├── uni_modules/\\n│   └── xxx-openAppProduct/      # UTS 插件目录\\n│       ├── package.json         # uni_modules 配置，声明 arkts: true\\n│       ├── utssdk/\\n│       │   ├── interface.uts    # 接口类型定义（跨平台通用）\\n│       │   └── app-harmony/\\n│       │       └── index.uts    # 鸿蒙原生实现（调用 ArkTS API）\\n│       └── ...                  # 其他平台目录\\n</quark-code>\\n1.\\n2.\\n3.\\n4.\\n5.\\n6.\\n7.\\n8.\\n9.\\n10.\\n11.\\n12.\\n复制\\n<quark-code>\\ninterface.uts\\n</quark-code>\\n— 定义接口签名和类型，不依赖平台\\n<quark-code>\\napp-harmony/index.uts\\n</quark-code>\\n— 调用鸿蒙 ArkTS API 或 ohpm 库\\n还可以加\\n<quark-code>\\napp-android/\\n</quark-code>\\n、\\n<quark-code>\\napp-ios/\\n</quark-code>\\n目录实现多平台\\n与 Flutter 的对比\\n<quark-table><table><thead><tr><th>维度</th><th>uni-app UTS 插件</th><th>Flutter Plugin</th></tr></thead><tbody><tr><td>语言</td><td>TypeScript (UTS)</td><td>Dart + 平台语言</td></tr><tr><td>鸿蒙实现</td><td>ArkTS API 直接调用</td><td>MethodChannel 通道</td></tr><tr><td>类型安全</td><td>完整的 TS 类型定义</td><td>Pigeon 或手动序列化</td></tr><tr><td>开发效率</td><td>单语言（TS）搞定</td><td>Dart + ArkTS 双语言</td></tr><tr><td>第三方库</td><td>ohpm 包直接引用</td><td>需封装成 Plugin</td></tr></tbody></table></quark-table>\\nUTS 插件的优势是开发效率高，TypeScript 一把梭，不需要学多门语言。Flutter Plugin 则需要 Dart 端和原生端分开写，通过通道通信。\\n踩坑记录\\n1. 插件名不要以 uni- 开头\\n<quark-code>\\nuni-\\n</quark-code>\\n前缀是官方插件的保留命名空间。个人或第三方插件建议用开发者标识开头，比如\\n<quark-code>\\nwq-\\n</quark-code>\\n、\\n<quark-code>\\nmy-\\n</quark-code>\\n等，避免命名冲突。\\n2. 注意 import 的路径层级\\n<quark-code>\\ninterface.uts\\n</quark-code>\\n定义的类型，在\\n<quark-code>\\napp-harmony/index.uts\\n</quark-code>\\n中要用相对路径\\n<quark-code>\\n'../interface.uts'\\n</quark-code>\\n引入。跨平台复用时，每个平台目录下都要按需实现。\\n3. 需要在页面中引入一次\\n挂载到\\n<quark-code>\\nuni\\n</quark-code>\\n全局对象的插件，需要在项目的任意页面中\\n<quark-code>\\nimport\\n</quark-code>\\n一次，否则可能会被 Tree Shaking 摇掉。使用方式二（直接\\n<quark-code>\\nimport\\n</quark-code>\\n函数）没有这个问题。\\n4. productViewManager 没有成功回调\\n鸿蒙的\\n<quark-code>\\nproductViewManager.loadProduct\\n</quark-code>\\nAPI 设计上只有错误回调，没有成功回调。所以示例中通过\\n<quark-code>\\nisSuccess\\n</quark-code>\\n标志来判断执行状态——只要没进 error 回调就认为是成功的。这种\"反向判断\"的方式虽然能用，但不够优雅，需要理解鸿蒙 API 的设计局限。\\nohpm 安装的鸿蒙三方库（如支付宝 SDK、推送 SDK），无法直接在页面的\\n<quark-code>\\n&lt;script&gt;\\n</quark-code>\\n中 import。必须通过 UTS 插件做一层封装，页面再调用插件。\\n6. 真机运行需要安装插件\\n新安装的 HBuilderX 第一次运行到鸿蒙时，需要先点击\"下载真机运行插件\"安装运行环境。鸿蒙的运行依赖 DevEco Studio，HBuilderX 会联动启动它。",
+    "url": "https://ost.51cto.com/posts/50946",
+    "title": "uni-app 鸿蒙 UTS 插件：调用原生 API 与第三方库指南-鸿蒙开发者社区-51CTO.COM",
+    "source_trust_level": "不可信源",
+    "source_trust_type": ""
+  },
+  "69": {
+    "page_content": "<quark-heading level=\"1\">鸿蒙系统的技术架构演变与 NEXT 版本的独特性</quark-heading>\\n从 2019 年发布之初到 2024 年的 HarmonyOS 5.0，鸿蒙系统经历了从分布式操作系统到完全自研原生生态的蜕变 。HarmonyOS NEXT 丢弃了传统的 Linux 内核，转而采用鸿蒙微内核，将所有系统服务通过微内核进行调度，显著提升了系统的安全性与响应效率 。该系统的核心理念是“一次开发，多端部署；可分可合，自由流转”，旨在通过统一的 ArkUI 框架和分布式软总线技术，实现应用在手机、平板、智 能穿戴甚至智能家居设备间的无缝体验 。\\n在 HarmonyOS NEXT 的技术栈中，ArkTS 被确立为应用开发的主要语言。它是在 TypeScript 的基础上进一步扩展的声明式开发语言，提供了组件化机制、数据-UI 自动关联等能力，极大地简化了高性能应用的开发过程 。对于跨端框架如 Flutter 和 React Native (RN) 而言，这意味着其底层渲染引擎和原生网桥必须直接对接鸿蒙系统的 C-API 或 ArkTS 接口，而非以往的 Android 接口。\\n<quark-heading level=\"1\">跨端框架技术路线的深度博弈：Flutter、RN 与 ArkUI-X</quark-heading>\\n<quark-heading level=\"1\">Flutter：高性能自绘引擎的先行者与 SIG 适配进展</quark-heading>\\nFlutter 凭借其自绘引擎 Skia（及后续的 Impeller）和 Dart 语言的 AOT 编译能力，在 Android 和 iOS 端已获得极高的成熟度 。针对 HarmonyOS NEXT，由华为及 OpenHarmony 开源社区共同维护的 flutter_flutter SIG（特别兴趣小组）仓库已提供了深度适配方案 。\\n<quark-heading level=\"1\">Flutter 对 HarmonyOS NEXT 的底层适配逻辑</quark-heading>\\nFlutter 在鸿蒙端的实现避开了传统的 JS 桥接机制。它通过嵌入 ArkUI 引擎的 native 层，直接利用鸿蒙系统的 C-API 进行 Vulkan 或 OpenGL 渲染。这种方案保证了 Flutter UI 在鸿蒙系统上能维持 60FPS 甚至更高的刷新率 。开发者使用 flutter create --platforms ohos 命令即可生成包含鸿蒙原生代码的项目工程 。\\n<quark-heading level=\"1\">React Native：JavaScript 生态与新架构 Fabric 的重塑</quark-heading>\\nReact Native (RN) 在 HarmonyOS NEXT 上的适配主要由华为与 Software Mansion 深度合作推动 。其核心路径是利用 RN 的“新架构”（New Architecture），特别是 Fabric 渲染引擎，将组件直接映射为鸿蒙原生的 ArkUI 组件 。\\n<quark-heading level=\"1\">React Native OpenHarmony (RNOH) 的架构优势</quark-heading>\\n传统的 RN 架构严重依赖 JavaScript 与 Native 之间的异步 Bridge（桥接器），这在处理高频交互（如应用中的万级账单无限滚动列表）时容易出现卡顿。而 RNOH 基于 Fabric 架构，实现了 C++ 层的直接通信，极大地降低了通信延迟 。\\n针对 2026 年初的最新进展，RNOH 已经支持 React Native 0.77 和 0.72 版本，并正在向 0.82 及更高版本迈进 。对于开发者而言，最显著的优势在于人才库的兼容性。ArkTS 本质上是 TypeScript 的扩展，熟悉 React 和 TS 的前端开发者可以无缝过渡到鸿蒙端的原生逻辑开发 。\\n<quark-heading level=\"1\">ArkUI-X：华为官方的跨平台原生延伸</quark-heading>\\nArkUI-X 是华为推出的官方方案，旨在将鸿蒙的原生开发体验延伸至 Android 和 iOS。它的哲学与 Flutter 类似，即“以我为主”。开发者使用 ArkTS 编写代码，然后通过 ArkUI-X 框架在 Android 和 iOS 上运行 ArkUI 引擎，从而实现 UI 和逻辑的高度复用 。\\n<quark-heading level=\"1\">ArkUI-X 的核心竞争力</quark-heading>\\nArkUI-X 的最大价值在于它消除了“跨端框架”与“原生系统”之间的隔阂。在 HarmonyOS NEXT 上，它就是原生应用；在 Android 和 iOS 上，它通过高度优化的运行时模拟出接近原生的体验 。\\n<quark-heading level=\"1\">Uni-app：针对轻量级工具的快速交付方案</quark-heading>\\nDCloud 的 Uni-app 从 HBuilderX 4.27 版本开始正式支持 HarmonyOS NEXT 。其技术路线是基于 Vue 3 框架，通过 UTS (uni-app typescript) 插件机制调用鸿蒙原生能力 。\\n<quark-heading level=\"1\">Uni-app 在鸿蒙端的运行机制演进</quark-heading>\\nUni-app 在鸿蒙端的适配经历了一个重要的架构调整：在 4.31 版本之前，逻辑层加载在 ArkTS 环境中；从 4.31 版本起，逻辑层迁移到了 JSVM (JavaScript Virtual Machine) 环境，通过子线程运行以防止阻塞 UI 主线程 。\\n这种架构带来了明显的优劣势。优势在于 JS 环境极其标准，减少了开发者处理 ArkTS 语法限制的麻烦；劣势则是无法直接在 JS 层调用鸿蒙原生接口，所有原生交互必须通过 UTS 插件中转 。如果需要复杂的本地数据加密或高频的图表渲染，其通信损耗可能成为瓶颈。\\n<quark-heading level=\"1\">性能与成本的量化权衡：跨端选型的核心依据</quark-heading>\\n<quark-heading level=\"1\">运行性能：冷启动与帧率基准</quark-heading>\\n根据 2025 年针对同一复杂程度应用的性能基准测试 ：\\n<quark-table><table><tbody><tr><td>指标</td><td>原生/ArkUI</td><td>Flutter</td><td>React Native (New Arch)</td></tr><tr><td>iOS 冷启动</td><td>0.9s</td><td>1.2s</td><td>1.8s</td></tr><tr><td>Android 冷启动</td><td>1.1s</td><td>1.4s</td><td>2.1s</td></tr><tr><td>60 FPS 维持率</td><td>99%</td><td>98%</td><td>89%</td></tr><tr><td>内存占用 (iOS)</td><td>38MB</td><td>45MB</td><td>68MB</td></tr><tr><td>CPU 闲置占用</td><td>1%</td><td>2%</td><td>4%</td></tr></tbody></table></quark-table>\\n分析数据可见，Flutter 的运行效率最接近原生，其 AOT 编译和自带渲染引擎的特性消除了大部分运行时开销 。RN 虽然在新架构下表现不俗，但在初始启动和重负载渲染时仍有微弱劣势 。\\n<quark-heading level=\"1\">开发效率与成本核算</quark-heading>\\n对于创业团队或独立开发者，成本是关键考量。\\n<quark-heading level=\"1\">维护成本：单一代码库的优势</quark-heading>\\n使用跨端框架（如 Flutter）开发中等复杂度的应用，相比分别开发原生 Android 和 iOS 版本，通常能减少 40-60% 的初始开发量，并在后续维护中节省约 33% 的成本 。针对三端（含鸿蒙）的开发，由于 HarmonyOS NEXT 的独特性，早期的跨端框架适配可能需要 10-15% 的额外成本来处理鸿蒙特有的 dependency_overrides 和原生 API 桥接 。\\n<quark-heading level=\"1\">选型矩阵</quark-heading>\\n首选方案：Flutter\\n理由: 在性能、UI 一致性和鸿蒙原生适配成熟度上达到了最佳平衡。对于应用而言，Flutter 的自绘引擎能完美跨越三端不同的设计语言，且其 SIG 社区对 sqflite 和 path_provider 等核心库的适配已非常稳健 。适用人群: 追求极致 UI 流畅度、希望应用在三端表现完全一致的开发团队。\\n备选方案：React Native (New Architecture)\\n理由: 拥有最大的 JS/TS 人才储备。如果团队已有成熟的 React 技术栈，利用 RNOH 的 Fabric 架构可以快速实现高性能的应用，且能利用 Software Mansion 提供的成熟插件生态 。\\n适用人群: 已有 Web 业务、希望在 Web 与移动端之间最大化共享业务逻辑的团队。\\n战略方案：ArkUI-X\\n理由: 华为官方的战略重点。它提供了最深度的鸿蒙系统集成能力，特别是在多设备流转和小组件适配上具有天然优势 。\\n适用人群: 计划深度绑定华为生态、将鸿蒙作为第一核心市场的开发者。\\n敏捷方案：Uni-app\\n理由: 极高的开发速度。虽然在高性能渲染和底层加密库调用上存在一定的中转损耗，但对于小型的、追求快速占领市场的应用来说，其 Vue 3 体系能提供极高的交付效率 。\\n适用人群: 独立开发者、中小型外包团队。\\n在 HarmonyOS NEXT 的原生时代，开发者应摒弃传统的“Android 兼容”思维，积极拥抱鸿蒙原生的 ArkData、Account Kit 和分布式能力。无论选择哪种跨端框架，深度理解各平台的底层架构差异并进行针对性优化，才是打造一款成功应用的基石。",
+    "url": "https://developer.huawei.com/consumer/cn/blog/topic/03205669850018077",
+    "title": "移动应用跨端框架选型AI研究报告：面向 Android、IOS 与 HarmonyOS三端",
+    "source_trust_level": "可信源",
+    "source_trust_type": "通用权威"
+  },
+  "70": {
+    "page_content": "Flutter-OH 核心概念：Package（包）与 Plugin（插件）的区别详解\\n欢迎大家 加入跨平台开发者社区 。\\n核心区别详解\\n首先要明确： Flutter-OH的Plugin是一种特殊的Package ，但两者的核心差异在于是否涉及OpenHarmony（鸿蒙）原生平台代码。下面用通俗易懂的方式拆解：\\n1. Flutter-OH Package（纯Dart包）\\n核心定义 ：仅由 Dart 代码 构成，不包含任何OpenHarmony（鸿蒙）的原生代码（如ArkTS）。\\n运行层面 ：完全运行在Flutter-OH的Dart VM中，不与鸿蒙原生系统直接交互。\\n适用场景 ：实现纯Flutter-OH层的复用功能，比如：\\nUI组件（如自定义按钮、列表、弹窗）\\n工具类（如日期格式化、字符串处理、数据解析）\\n状态管理（如provider、bloc的Flutter-OH适配版）\\n网络请求（如dio的Flutter-OH适配版）\\n开发难度 ：低，只需掌握Dart语言，无需了解鸿蒙原生开发。\\n典型例子 ：\\n<quark-code>\\ndio\\n</quark-code>\\n（Flutter-OH适配版，网络请求）、\\n<quark-code>\\nflutter_screenutil\\n</quark-code>\\n（Flutter-OH适配版，屏幕适配）、\\n<quark-code>\\nprovider\\n</quark-code>\\n（Flutter-OH适配版，状态管理）。\\n2. Flutter-OH Plugin（鸿蒙原生交互插件）\\n核心定义 ：由 Dart 代码 + OpenHarmony原生代码（主要是ArkTS） 共同构成，是连接Flutter-OH和鸿蒙原生系统的桥梁。\\n运行层面 ：Dart层代码作为“接口”，通过Flutter-OH的通信机制调用鸿蒙原生代码实现功能，最终将结果返回给Flutter-OH。\\n适用场景 ：需要调用鸿蒙原生系统能力或硬件功能的场景，比如：\\n访问鸿蒙设备硬件（相机、蓝牙、传感器、鸿蒙分布式能力）\\n调用鸿蒙系统功能（相册、定位、推送、鸿蒙服务卡片）\\n集成鸿蒙原生SDK（支付、地图、鸿蒙生态的第三方服务）\\n开发难度 ：高，除了Dart，还需要掌握OpenHarmony原生开发技能（主要是ArkTS语言、鸿蒙API）。\\n典型例子 ：\\n<quark-code>\\ncamera_ohos\\n</quark-code>\\n（Flutter-OH相机调用插件）、\\n<quark-code>\\nshared_preferences_ohos\\n</quark-code>\\n（Flutter-OH本地存储插件）、\\n<quark-code>\\nlocation_ohos\\n</quark-code>\\n（Flutter-OH定位插件）。\\n关键对比表\\n<quark-table><table><thead><tr><th>维度</th><th>Flutter-OH Package</th><th>Flutter-OH Plugin</th></tr></thead><tbody><tr><td>核心代码构成</td><td>仅Dart代码</td><td>Dart代码 + 鸿蒙原生代码（ArkTS）</td></tr><tr><td>与鸿蒙系统交互</td><td>无</td><td>必须通过鸿蒙原生代码交互</td></tr><tr><td>开发所需技能</td><td>仅Dart</td><td>Dart + OpenHarmony原生开发（ArkTS）</td></tr><tr><td>适用场景</td><td>纯Flutter-OH层功能复用</td><td>调用鸿蒙系统/硬件/分布式能力</td></tr><tr><td>发布方式</td><td>发布到pub.dev</td><td>发布到pub.dev</td></tr></tbody></table></quark-table>\\n从广义上讲，Flutter-OH的Plugin属于Package的范畴（pub.dev市场上所有可依赖的Flutter-OH模块都叫Package），但开发者口中的“Flutter-OH Package”通常特指 纯Dart包 ，“Flutter-OH Plugin”特指 带鸿蒙原生代码的包 。\\n开发Flutter-OH Plugin时，依然基于Flutter的统一通信机制（MethodChannel、EventChannel等），适配鸿蒙平台后，实现Dart代码和鸿蒙ArkTS代码的双向通信。\\n部分Flutter原生Package（纯Dart）可直接适配Flutter-OH使用，无需修改；但Flutter原生Plugin（Android/iOS）需重新开发鸿蒙原生层代码，才能适配为Flutter-OH Plugin。\\n总结\\n核心差异 ：Flutter-OH Package是纯Dart代码的复用模块，不涉及鸿蒙原生；Flutter-OH Plugin包含鸿蒙原生（ArkTS）代码，用于Flutter-OH调用鸿蒙系统/硬件/分布式能力。\\n开发选择 ：仅需Dart就能实现的功能用Package，需要访问鸿蒙原生API（如硬件、分布式能力、系统功能）用Plugin。\\n技能要求 ：开发Flutter-OH Package只需Dart，开发Flutter-OH Plugin需掌握Dart + OpenHarmony原生开发（ArkTS）技能。",
+    "url": "https://blog.csdn.net/weixin_45822171/article/details/157872731",
+    "title": "Flutter-OH 核心概念：Package（包）与 Plugin（插件）的区别详解-CSDN博客",
+    "source_trust_level": "不可信源",
+    "source_trust_type": ""
+  },
+  "71": {
+    "page_content": "2、 性能表现 ： 启动速度、内存占用、渲染性能、交互响应\\n3、 生态成熟度 ： 社区支持、插件资源、企业案例、更新频率\\n4、 维护成本 ： 学习成本、团队适配、更新难度、跨端一致性\\n二、八种方案的开发效率对比\\n各方案开发效率指标，主要是编程语言的学习曲线，以及开发IDE和方案最终的代码复用率来看。\\n其实热加载的支持，我觉得对于UI开发环节会更重要，移动端开发，除了UI界面，逻辑功能的处理也是比较耗时间，个人理解UI是小头，当然这是和App业务调性有关，有的公司App就是纯前端展现，那热加载就很重要了。\\n<quark-table><table><tbody><tr><td> 方案 </td><td> 学习曲线（编程语言） </td><td> 开发工具支持 </td><td> 代码复用率 </td><td> 热重载支持 </td></tr><tr><td> Flutter </td><td> Dart（类似JS） </td><td> DevEco Studio原生支持 </td><td> 理论100% </td><td> 优秀 </td></tr><tr><td> React Native </td><td> JS/TS </td><td> 社区适配工具链 </td><td> 80-90% </td><td> 良好 </td></tr><tr><td> uni-app x </td><td> Vue语法 </td><td> HBuilderX深度集成 </td><td> 95%+ </td><td> 优秀 </td></tr><tr><td> KMP/CMP </td><td> Kotlin </td><td> IntelliJ IDEA原生支持 </td><td> 逻辑层90% </td><td> 中等 </td></tr><tr><td> Taro </td><td> React语法 </td><td> DevEco Studio + Taro CLI </td><td> 90% </td><td> 良好 </td></tr></tbody></table></quark-table>\\n1、uni-app x 表现最佳，基于Vue语法的低学习成本和\"一套代码九端运行\"的能力，大幅提升开发效率。\\n2、Taro，React Native 适合前端团队，JS技术栈降低入门门槛。\\n3、Flutter 学习Dart，但热重载和自绘引擎带来流畅开发体验。\\n4、KMP/CMP 学习成本较高，但逻辑层代码复用率优势明显。\\n三、性能表现深度对比\\n1、关键性能指标实测\\n<quark-table><table><tbody><tr><td> 方案 </td><td> 启动速度（冷启动） </td><td> 内存占用（中等应用） </td><td> 渲染帧率 </td><td> 交互延迟 </td></tr><tr><td> Flutter </td><td> 800-1000ms </td><td> 120-150MB </td><td> 60fps </td><td> &lt;50ms </td></tr><tr><td> uni-app x </td><td> 500-700ms </td><td> 80-100MB </td><td> 60fps </td><td> &lt;30ms </td></tr><tr><td> Kuikly </td><td> 400-600ms </td><td> 60-80MB </td><td> 60fps </td><td> &lt;20ms </td></tr><tr><td> React Native </td><td> 1000-1200ms </td><td> 150-180MB </td><td> 55-60fps </td><td> 80-100ms </td></tr></tbody></table></quark-table>\\n2、 性能优势方案解析\\n1、 uni-app x 和 Kuikly 采用原生渲染方案，性能接近原生应用，Kuikly的Kotlin/Native方案页面FCP耗时仅122ms\\n2、 Flutter Skia/Impeller渲染引擎提供媲美原生的视觉体验\\n3、 Taro C-API版本将渲染逻辑下沉至C++层，大幅提升性能 React Native受JS与原生通信影响，交互延迟相对较高\\n四、生态成熟度与维护成本对比\\n1. 生态成熟度评估\\n2. 维护成本分析\\nuni-app x 和 Taro 维护成本最低，官方持续更新且跨端一致性高\\nFlutter 需跟踪Flutter官方版本并适配鸿蒙特性，维护难度中等\\nKMP/CMP 因UI层各端独立实现，维护成本较高\\nReact Native 依赖社区鸿蒙适配版本，存在兼容性维护风险\\n五、企业级应用选型决策树\\n1. 综合评分模型\\n<quark-table><table><tbody><tr><td> 方案 </td><td> 开发效率 </td><td> 性能表现 </td><td> 生态成熟度 </td><td> 维护成本 </td><td> 总分（40分） </td></tr><tr><td> uni-app x </td><td> 9.5 </td><td> 9.5 </td><td> 9 </td><td> 8.5 </td><td> 36.5 </td></tr><tr><td> Taro </td><td> 9 </td><td> 8.5 </td><td> 8.5 </td><td> 8 </td><td> 34 </td></tr><tr><td> Flutter </td><td> 8 </td><td> 9 </td><td> 7 </td><td> 7 </td><td> 31 </td></tr><tr><td> Kuikly </td><td> 7 </td><td> 9 </td><td> 7.5 </td><td> 6.5 </td><td> 3",
+    "url": "http://developer.aliyun.com/article/1669546",
+    "title": "鸿蒙跨平台开发主流框架多维度对比与选型-开发者社区-阿里云",
+    "source_trust_level": "不可信源",
+    "source_trust_type": ""
+  },
+  "72": {
+    "page_content": "<quark-ocr>## uni-app x HarmonyOS适配方案 UTS TS + Vue compile SUS ArkTS&amp; ArkUI bundle hap/app Vue ArkTS runtime web技术栈 拥抱web生态，跨平台、低门槛、高效率 原生渲染 高性能的渲染引擎 鸿蒙应用 构建基于ArkTS和ArkUI的 鸿蒙应用</quark-ocr>\\n图片\\n这种设计让开发者既能享受Web技术栈的高效开发，又能获得原生应用的性能体验，真正实现“鱼与熊掌兼得”。\\nuni-app x的演示应用已上架鸿蒙应用商店，你可以通过单框架版本的纯血鸿蒙手机，在应用市场搜索“ DCloud开发者中心系统 ”安装体验，该应用详细演示了uni-app x在鸿蒙平台上支持的各种组件、API、CSS以及部分模版示例。\\n<quark-ocr>57</quark-ocr>\\n图片\\n在模板->slider100示例中，页面中有100个slider组件，拖动其中1个滑块，剩余99个滑块会同步移动。这非常考验逻辑层和视图层的通信性能。欢迎开发者使用相同示例在其他跨平台工具下比较，甚至可以用ArkUI的声明式写法来对比，看看哪个更丝滑。其他框架开发的经常会出现不跟手、掉帧的情况。\\n至此，DCloud面向鸿蒙平台，已正式发布uni双引擎，支持不同类型的开发者，快速开发鸿蒙应用：\\nuni-app：基于经典的HybridApp架构，逻辑层、视图层分离实现，使用webview渲染，对存量的uni-app项目开发者非常友好，帮助开发者以极低的代价，完成存量数字应用（包括基于uni-app开发的App、各家小程序、H5等）的鸿蒙化转换。\\nuni-app x：基于语言翻译实现，开发态使用Web技术栈，运行态转为平台原生语言，使用原生组件和原生渲染，可以获得和原生开发一样的运行体验，更适合对性能体验要求更高的开发者。\\n站在2025年的技术拐点上，我们目睹了国产操作系统从愿景走向现实，在今日中国之背景下，鸿蒙适配已从“做不做”，升级为“怎么做”。\\nAndroid、iOS、鸿蒙、web、小程序，每个平台都可以各自开发一套。但这必然不是聪明的做法。开发者一直希望找到一款好的跨平台框架，而过去的跨平台框架的性能一直无法令大型开发者满意。Flutter独立运行虽然性能不错，但调用原生能力、嵌入原生组件时，性能又下降，并且flutter在鸿蒙上没有官方支持，dart生态的很多插件迁移不到鸿蒙上，实际开发效率较低。\\nuni-app x作为一个真正原生化的跨平台开发工具，让开发者不用再顾忌跨平台框架的性能问题，没有js引擎和webview渲染。在运行时都是原生编程语言、原生UI。调用操作系统能力、调用原生组件时，都没有跨语言通信、跨渲染引擎滚动，操作顺畅丝滑。\\n除了高性能外，生态同样非常重要。uni-app x除了自身提供大量组件和API外，还有丰富的插件生态。插件市场已经有数千款uni-app x的插件，其中不少插件已支持鸿蒙next。接下来DCloud还将举办2025年插件大赛，进一步活跃插件生态。详见： https://ext.dcloud.net.cn/?uni-appx=1 。\\n当然还需要强调一点，uni-app x中不用插件也可以调用鸿蒙系统原生的数万API，这与其他跨平台开发工具不同。其他跨平台工具都需要手动封装插件，插件数量不够会严重卡住开发进度。\\n下图中可以看到，开发者在vue页面中可以直接引用ohos的系统库，因为这段vue代码最终也被编译运行到arkts引擎中，自然可以调用所有系统能力。\\n<quark-ocr>&lt;template&gt; &lt;!--页面模版代码--&gt; &lt;/template&gt; &lt;script&gt; import deviceInfo from '@ohos.deviceInfo'; export default { onLoad() { //前端Vue页面，直接调用鸿蒙arkTS代码 console.log(\"设备类型:\" + deviceInfo.deviceType) console.log(\"设备厂家:\" + deviceInfo.manufacture) } } &lt;/script&gt; &lt;style&gt; /* 样式代码 */ &lt;/style&gt;</quark-ocr>\\n图片\\n欢迎开发者使用uni-app x开发鸿蒙原生应用。它可以帮助你使用简单易用的vue语法，更高效的完成应用开发，且不影响性能。\\n当鸿蒙版使用uni-app x后，你还可以同时渐进式重构之前的Android和iOS原生应用，在原生应用中引入uni-app x原生sdk，将部分页面模块跨端统一为uni-app x实现。\\nuni-app x的资源：\\n文档： https://doc.dcloud.net.cn/uni-app-x/ 。\\n示例体验：使用鸿蒙手机到鸿蒙应用商店搜索“DCloud开发者中心系统”。\\n如有侵权，请联系 cloudcommunity@tencent.com 删除。\\n#uni-app x #鸿蒙 #跨端开发 #跨平台框架",
+    "url": "https://cloud.tencent.com/developer/article/2524992?frompage=seopage&policyId=20240001",
+    "title": "uni-app x 正式支持鸿蒙原生应用开发-腾讯云开发者社区-腾讯云",
+    "source_trust_level": "不可信源",
+    "source_trust_type": ""
+  },
+  "73": {
+    "page_content": "uts for HarmonyOS\\n了解 UTS 插件是什么\\n掌握UTS语法及ArkTS语法\\nHarmonyOS 原生环境配置\\nArkTS 与 UTS 差异重点介绍 (持续更新)\\n类型差异\\nany类型\\n对象字面量\\n配置uts插件依赖\\n使用resources 展示全部\\n# uts for HarmonyOS\\n鸿蒙系统有很多原生API，这些API通过ArkTS来调用。\\n由于uts可以编译为ArkTS，所以uts可以调用鸿蒙的所有原生API。\\n如需在uni-app中使用，就需要把鸿蒙的原生API封装为uts插件，然后在uni-app中使用。\\n这些uts插件，是同时兼容uni-app和uni-app x的。\\nuni-app的普通页面代码是编译为js，js无法直接调用鸿蒙原生API。而uts插件是编译为ets文件，所以可以调用鸿蒙原生API。（ArkTS的文件后缀为.ets）\\nuni-app x的页面和uts插件，都运行在ArkTS引擎下，不管在普通页面还是在uts插件中均可调用鸿蒙原生API。但普通页面目前会编译js文件，运行在arkts引擎下的js不能调用@kit的库，不能使用多线程能力。完善的ets能力，需要在uts插件中才能使用。\\n只有uts插件才支持混编ets。\\n# 了解 UTS 插件是什么\\nUTS 插件是 uni-app 扩展API的标准插件形式 详情\\nuts插件在编译到harmonyOS端时会被编译成ArkTS代码。因此编写代码时应注意遵循\\n<quark-code>\\nuts规范\\n</quark-code>\\n和\\n<quark-code>\\nets规范\\n</quark-code>\\n。\\n# 掌握UTS语法及ArkTS语法\\n无论是uts还是ArkTS都是在ts的语法基础上进行扩展来的。建议先阅读如下文档\\ntypescript官方文档\\nArkTs约束\\n# HarmonyOS 原生环境配置\\n参考： uni-app 开发鸿蒙应用\\n# ArkTS 与 UTS 差异重点介绍 (持续更新)\\n# 类型差异\\n# any类型\\nArkTS内不能使用any类型，但是uts内any用处比较多，因此在编译为ArkTS时，any类型被转为了Object类型。\\n# 对象字面量\\nArkTS不允许无类型的对象字面量，编写代码时应注意在需要类型时为对象字面量指定类型。如未指定类型，uts会将此对象字面量编译成\\n<quark-code>\\nas UTSJSONObject\\n</quark-code>\\n的形式。\\n<quark-code>// 源码\\nconst obj = {\\na: 1\\n}\\n// 编译结果\\nconst obj = {\\na: 1\\n} as UTSJSONObject\\n</quark-code>\\n复制代码\\n<quark-code>// 源码\\ninterface Obj {\\na: number\\n}\\nconst obj: Obj = {\\na: 1\\n}\\n//或\\nconst obj = {\\na: 1\\n} as Obj\\n// 编译结果\\nclass Obj { ... }\\nconst obj: Obj = {\\na: 1\\n}\\n//或\\nconst obj = {\\na: 1\\n} as Obj\\n</quark-code>\\n复制代码\\n# 配置uts插件依赖\\n鸿蒙的库管理工具是ohpm。类似于js的npm，Android的仓储。\\n鸿蒙的三方sdk封装文件为\\n<quark-code>\\n.har\\n</quark-code>\\n，类似于Android的\\n<quark-code>\\n.aar\\n</quark-code>\\nuts插件的\\n<quark-code>\\nutssdk/app-harmony/config.json\\n</quark-code>\\n文件内可以配置依赖使用鸿蒙的三方库，配置方式如下：\\n<quark-code>{\\n\"dependencies\": {\\n\"@cashier_alipay/cashiersdk\": \"15.8.26\", // ohpm依赖\\n\"local-deps\": \"./libs/local-deps.har\" // 本地依赖\\n}\\n",
+    "url": "https://doc.dcloud.net.cn/uni-app-x/plugin/uts-for-harmony.html",
+    "title": "uni-app x",
+    "source_trust_level": "可信源",
+    "source_trust_type": "权威官网"
+  },
+  "74": {
+    "result_id": 1,
+    "title": "Bidirectional Communication Between HarmonyOS ArkTS ...",
+    "description": "This article focuses on explaining the principles and practices of bidirectional communication between HarmonyOS ArkTS and React Native JS,",
+    "date": "",
+    "url": "https://medium.com/@3458486434/bidirectional-communication-between-harmonyos-arkts-and-react-native-js-principles-and-practices-ba9b0e6ba13f",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "75": {
+    "result_id": 2,
+    "title": "Huawei x Software Mansion: Bringing React Native ...",
+    "description": "You can use ArkTS and C++ to write HarmonyOS Next-native applications, similar to using Swift on iOS and Kotlin on Android. ArkTS is based ...",
+    "date": "2026-01-13T00:00:00.0000000",
+    "url": "https://swmansion.com/blog/huawei-x-software-mansion-bringing-react-native-support-to-harmonyos-next-82e02bd75549/",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "76": {
+    "result_id": 3,
+    "title": "react-native-new-architecture/docs/turbo-modules.md at main",
+    "description": "This guide will show you how to create a basic Turbo Native Module compatible with the latest version of React Native. Sample React Native App",
+    "date": "",
+    "url": "https://github.com/reactwg/react-native-new-architecture/blob/main/docs/turbo-modules.md",
+    "site_name": "",
+    "source_trust_level": "可信源"
+  },
+  "77": {
+    "result_id": 4,
+    "title": "Implementing an Android TurboModule with Kotlin",
+    "description": "Learn how to implement a React Native TurboModule on Android, from the TypeScript spec and Codegen to the Kotlin implementation and package registration.",
+    "date": "",
+    "url": "https://www.callstack.com/tutorials/implementing-an-android-turbomodule-with-kotlin",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "78": {
+    "result_id": 5,
+    "title": "Bridging the Gap: Mastering Turbo Modules and Native ...",
+    "description": "For example, if you wanted to implement a custom Toast message or access a device's calendar, you'd create a NativeModule.",
+    "date": "2026-03-05T00:00:00.0000000",
+    "url": "https://techblog.geekyants.com/bridging-the-gap-mastering-turbo-modules-and-native-linking-in-react-native",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "79": {
+    "result_id": 6,
+    "title": "Native Modules: Introduction",
+    "description": "building an example Turbo Native Module. This guide will show you how to write an implementation of the Web Storage API: A Turbo Native Module ...",
+    "date": "2026-06-03T00:00:00.0000000",
+    "url": "https://reactnative.dev/docs/0.81/turbo-native-modules-introduction",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "80": {
+    "result_id": 7,
+    "title": "Android Guide to TurboModules in React Native for Early ...",
+    "description": "This guide will show you how to use Codegen and TurboModules together with React Native in Android. The second article in this series will ...",
+    "date": "2022-06-20T00:00:00.0000000",
+    "url": "https://javascript.plainenglish.io/android-guide-to-turbomodules-in-react-native-for-early-adopters-b07f3e23fd1c",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "81": {
+    "result_id": 2,
+    "title": "Flutter + FFI is wildly underrated… you can basically build ...",
+    "description": "FFI is basically a bridge that lets Flutter tap into high-performance ecosystems that haven't been ported to Dart yet.",
+    "date": "2026-05-12T13:34:13.8410000",
+    "url": "https://www.reddit.com/r/FlutterDev/comments/1sqyyqv/flutter_ffi_is_wildly_underrated_you_can/",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "82": {
+    "result_id": 3,
+    "title": "Flutter Performance Tuning on HarmonyOS",
+    "description": "Key to its performance is the elimination of the Android AOSP core, allowing for native HarmonyOS applications to run directly on the HarmonyOS ...",
+    "date": "2025-06-25T00:00:00.0000000",
+    "url": "https://dev.to/flfljh/flutter-performance-tuning-on-harmonyos-performance-analysis-and-boundary-definition-4270",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "83": {
+    "result_id": 4,
+    "title": "ArkTS High-Performance Programming ...",
+    "description": "This topic describes high-performance writing methods and suggestions summarized during development. It covers variable declaration, property access, numerical ...",
+    "date": "",
+    "url": "https://developer.huawei.com/consumer/en/doc/best-practices/bpta-arkts-high-performance",
+    "site_name": "",
+    "source_trust_level": "可信源"
+  },
+  "84": {
+    "result_id": 5,
+    "title": "06-Using ArkTs to Develop Flutter HarmonyOS Plugins",
+    "description": "This article describes how to develop a Flutter HarmonyOS plug-in, how to implement hybrid development of Flutter and HarmonyOS, and two-way ...",
+    "date": "",
+    "url": "https://medium.com/@shaohusuo/harmonyos-flutter-practice-06-using-arkts-to-develop-flutter-harmonyos-plugins-8b208db6dfc8",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "85": {
+    "result_id": 7,
+    "title": "Boosting Performance in Flutter with FFI: A Step-by- ...",
+    "description": "In this guide, we will walk you through how to integrate FFI into your Flutter app by using an example—matrix multiplication in both Dart and C— ...",
+    "date": "2025-08-12T13:34:13.8410000",
+    "url": "https://www.linkedin.com/pulse/boosting-performance-flutter-ffi-step-by-step-guide-ios-vyrodov-dkh5f",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "86": {
+    "result_id": 8,
+    "title": "A Simpler Way to Boost Flutter Performance with Dart FFI",
+    "description": "Most of the time Dart is fast enough. The JIT compiler is great for development and the AOT compiler produces efficient native code for release builds.",
+    "date": "",
+    "url": "https://banerjeerishi.com/text/a-simpler-way-to-boost-flutter-performance-with-dart-ffi.html",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "87": {
+    "result_id": 2,
+    "title": "Software Mansion (@swmansion) on X",
+    "description": "We're happy to have helped bring React Native support to HarmonyOS NEXT. porting key libraries for smooth app performance. Read more 👇 blog. ...",
+    "date": "2026-01-12T13:34:33.3310000",
+    "url": "https://x.com/swmansion/status/2011478891055993101",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "88": {
+    "result_id": 3,
+    "title": "Building a React Native app for Huawei's HarmonyOS? ...",
+    "description": "So we've built React Native app for iOS and Android. Adding Harmony OS is as easy as running a single CLI command. React Native support to ...",
+    "date": "2026-03-12T13:34:33.3310000",
+    "url": "https://www.linkedin.com/posts/software-mansion_building-a-react-native-app-for-huaweis-activity-7434255609018904577-_iTZ",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "89": {
+    "result_id": 4,
+    "title": "Why React Developers Can't Ignore OpenHarmony Anymore ...",
+    "description": "React Native revolution just got a massive new target platform — and it's not iOS or Android. It is now expanding to HarmonyOS as a emerging ...",
+    "date": "2026-03-12T13:34:33.3310000",
+    "url": "https://livinginharmony.substack.com/p/why-react-developers-cant-ignore",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "90": {
+    "result_id": 5,
+    "title": "Building a React Native App for Huawei's HarmonyOS?",
+    "description": "Bringing HarmonyOS support to your React Native app is easier than you think. Let us show you how to get everything up and running in ...",
+    "date": "2026-03-12T13:34:33.3310000",
+    "url": "https://www.youtube.com/shorts/cJtXAGFzr00",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "91": {
+    "result_id": 6,
+    "title": "Software Mansion's Post",
+    "description": "We're happy to have helped bring React Native support to HarmonyOS NEXT. ⚛️ Together with Huawei, we've worked on React Native OpenHarmony (RNOH ...",
+    "date": "2026-01-12T13:34:33.3310000",
+    "url": "https://www.linkedin.com/posts/software-mansion_were-happy-to-have-helped-bring-react-native-activity-7417242225635594240-oo_S",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "92": {
+    "result_id": 7,
+    "title": "Does react-native have any plans to be compatible with ...",
+    "description": "Hello, Huawei announced that it will release a new operating system HarmonyOS Next after September 30th, and HarmonyOS Next will no longer ...",
+    "date": "2024-06-20T00:00:00.0000000",
+    "url": "https://github.com/react/react-native/issues/45093",
+    "site_name": "",
+    "source_trust_level": "可信源"
+  },
+  "93": {
+    "result_id": 8,
+    "title": "Getting Started with React Native-Cross-Platform ...",
+    "description": "React Native plugin applies only to the Android and iOS platforms. AppGallery Connect provides you with various development services , and ...",
+    "date": "2026-05-26T00:00:00.0000000",
+    "url": "https://developer.huawei.com/consumer/en/doc/AppGallery-connect-Guides/agc-get-started-reactnactive-0000001059210314",
+    "site_name": "",
+    "source_trust_level": "可信源"
+  },
+  "94": {
+    "result_id": 9,
+    "title": "Building a React Native app for Huawei's HarmonyOS. ...",
+    "description": "Building a React Native app for Huawei's HarmonyOS. Software Mansion & React Foundation founding member Huawei in this partnership for global ...",
+    "date": "",
+    "url": "https://www.reddit.com/r/Huawei/comments/1rot7ds/building_a_react_native_app_for_huaweis_harmonyos/",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "95": {
+    "result_id": 2,
+    "title": "安心打包使用指南 - uni-app官网",
+    "description": "The uni native plugin is used, and it is impossible to determine whether the native plugin has been updated locally, so as long as the uni ...",
+    "date": "2025-05-08T00:00:00.0000000",
+    "url": "https://en.uniapp.dcloud.io/tutorial/build/SafePack",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "96": {
+    "result_id": 3,
+    "title": "uni-app-x Multi-platform code completion and syntax checking",
+    "description": "Since 4.0+ , the uni-app x project supports switching language service by different platforms, and will use the code hints and syntax checking of different ...",
+    "date": "",
+    "url": "https://hx.dcloud.net.cn/Tutorial/Language/language_service_target_support",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "97": {
+    "result_id": 7,
+    "title": "编译原理+ 大厂架构+ 多端兼容+ 全链路性能+ 50+避坑指南",
+    "description": "HarmonyOS NEXT 6.0+. UTS(编译为Kotlin/Swift/ArkTS) 使得uni-app X应用的运行速度无限接近纯原生开发,彻底解决了长期困扰跨端框架的“白屏时间长”和“复 ...",
+    "date": "2026-06-18T00:00:00.0000000",
+    "url": "https://harmonyosdev.csdn.net/6a339ad210ee7a33f27f54b8.html",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  },
+  "98": {
+    "result_id": 8,
+    "title": "uniapp-x | Skills Marketplace",
+    "description": "It supports UTS, uvue and Vue syntax and can compile a single codebase into Android, iOS, HarmonyOS, Web and various mini-program platforms. plugins and native ...",
+    "date": "",
+    "url": "https://lobehub.com/skills/neversight-learn-skills.dev-uniapp-x",
+    "site_name": "",
+    "source_trust_level": "不可信源"
+  }
+}
