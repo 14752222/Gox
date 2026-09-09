@@ -7,6 +7,11 @@
 // - Object: keys, values, entries, assign 等
 // - Array/String 原型方法
 // - Error 构造器
+// - fs: 文件读写 (同步 + 异步 Promise/callback)
+// - path: 路径拼接与解析
+// - http: HTTP 服务器 (createServer) 与客户端 (get/request)
+// - fetch: 全局 fetch (Promise 风格)
+// - process: argv/env/cwd/exit 等宿主信息
 //
 // SetupGlobals 将所有内建对象注入到全局环境中。
 package stdlib
@@ -19,6 +24,18 @@ import (
 // SetupGlobals 创建并返回带有所有标准库对象的全局环境。
 func SetupGlobals() *runtime.Environment {
 	env := runtime.NewEnvironment()
+
+	// ===== 原型对象 =====
+	// 必须先于构造器创建: 构造器需要 prototype 属性，
+	// 原型需要 constructor 反向引用。
+	arrayProto := setupArrayProto()
+	object.SetArrayProto(arrayProto)
+
+	stringProto := setupStringProto()
+	object.SetStringProto(stringProto)
+
+	numberProto := setupNumberProto()
+	object.SetNumberProto(numberProto)
 
 	// ===== console =====
 	console := setupConsole()
@@ -34,29 +51,34 @@ func SetupGlobals() *runtime.Environment {
 
 	// ===== Object =====
 	objectObj := setupObjectGlobal()
+	// Object.prototype 及其标准方法 (toString/hasOwnProperty/valueOf...)。
+	// 在此之前 Object 构造器没有 prototype 属性 —— Object.prototype.toString.call
+	// 这类反射写法全部失效。
+	setupObjectPrototype(objectObj)
 	env.Declare("Object", objectObj, false)
 
 	// ===== Array =====
 	arrayObj := setupArrayGlobal()
+	arrayObj.SetProperty("prototype", arrayProto)
+	arrayProto.SetProperty("constructor", arrayObj)
 	env.Declare("Array", arrayObj, false)
 
-	// ===== String =====
-	stringObj := setupStringGlobal()
-	env.Declare("String", stringObj, false)
-
-	// ===== Number =====
-	numberObj := setupNumberGlobal()
-	env.Declare("Number", numberObj, false)
-
-	// ===== Boolean =====
-	booleanObj := setupBooleanGlobal()
-	env.Declare("Boolean", booleanObj, false)
+	// 注意: String / Number / Boolean 三个构造器统一由 setupGlobalFunctions 注册。
+	// 早期版本在这里用 setupStringGlobal/setupNumberGlobal/setupBooleanGlobal
+	// 先注册一次，而 Environment.Declare 是覆盖写，导致前者注册的静态成员
+	// (Number.MAX_VALUE、Number.parseInt 等) 被后来的空壳对象覆盖丢失。
 
 	// ===== Error 类型 =====
 	setupErrorTypes(env)
 
 	// ===== Symbol =====
 	setupSymbolFunction(env)
+
+	// ===== BigInt (Temporal 的前置依赖) =====
+	setupBigInt(env)
+
+	// ===== Temporal (ES2027) =====
+	setupTemporal(env)
 
 	// ===== Map / Set / WeakMap / WeakSet =====
 	setupMapSet(env)
@@ -82,18 +104,14 @@ func SetupGlobals() *runtime.Environment {
 	// ===== Reflect / Proxy =====
 	setupReflectProxy(env)
 
-	// ===== 原型链设置 =====
-	// ArrayProto: 所有数组实例的原型
-	arrayProto := setupArrayProto()
-	object.SetArrayProto(arrayProto)
+	// ===== fs / path / http / process (宿主能力) =====
+	setupFS(env)
+	setupPath(env)
+	setupHTTP(env)
+	setupProcess(env)
 
-	// StringProto: 所有字符串实例的原型
-	stringProto := setupStringProto()
-	object.SetStringProto(stringProto)
-
-	// NumberProto: 所有数字实例的原型
-	numberProto := setupNumberProto()
-	object.SetNumberProto(numberProto)
+	// ===== TypedArray / ArrayBuffer / DataView =====
+	setupTypedArrays(env)
 
 	// ===== 全局函数 =====
 	setupGlobalFunctions(env)
@@ -101,5 +119,34 @@ func SetupGlobals() *runtime.Environment {
 	// ===== parseInt, parseFloat, isNaN, isFinite =====
 	setupNumberFunctions(env)
 
+	// ===== 构造器 prototype / constructor 反向引用 =====
+	// 构造器缺少 prototype 属性会导致 Array.prototype.map.call(...) 这类
+	// 通用调用、以及 Number.prototype / [].constructor 等反射访问全部失效。
+	// String/Number 构造器在 setupGlobalFunctions 中创建，故此处从环境取回。
+	attachPrototype(env, "String", stringProto)
+	attachPrototype(env, "Number", numberProto)
+
+	// ===== ES2025 Iterator / WeakRef / FinalizationRegistry / globalThis =====
+	env.Declare("Iterator", setupIteratorGlobal(), false)
+	setupWeakRefGlobals(env)
+	setupGlobalThis(env)
+
+	// ===== eval / AggregateError / Function.prototype =====
+	setupEvalAndMisc(env)
+
+	// ===== 响应式 (Dart GetX 风格 obs/computed/ever/once) =====
+	setupObs(env)
+
 	return env
+}
+
+// attachPrototype 为构造器挂上 prototype 属性，并在原型上设置 constructor
+// 反向引用。
+func attachPrototype(env *runtime.Environment, name string, proto *object.Object) {
+	v, ok := env.Get(name)
+	if !ok || v == nil {
+		return
+	}
+	v.SetProperty("prototype", proto)
+	proto.SetProperty("constructor", v)
 }

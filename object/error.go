@@ -6,6 +6,10 @@ import "fmt"
 type Error struct {
 	Message string
 	Name    string // "Error", "TypeError", "RangeError" 等
+	// Properties 存储附加属性。
+	// 用于 AggregateError.errors 等标准错误子类型的额外字段 ——
+	// 过去 SetProperty 是空实现，导致这些属性写入后被静默丢弃。
+	Properties map[string]Value
 }
 
 func (e *Error) Type() ObjectType { return ERROR_OBJ }
@@ -28,6 +32,8 @@ func (e *Error) GetProperty(name string) (Value, bool) {
 			n = "Error"
 		}
 		return NewString(n), true
+	case "stack":
+		return NewString(e.Inspect()), true
 	case "toString":
 		// 返回一个内建函数，调用时返回错误字符串
 		return &BuiltinFunction{
@@ -37,11 +43,21 @@ func (e *Error) GetProperty(name string) (Value, bool) {
 			},
 		}, true
 	}
+	if e.Properties != nil {
+		if v, ok := e.Properties[name]; ok {
+			return v, true
+		}
+	}
 	return nil, false
 }
 
+// SetProperty 写入附加属性 (如 AggregateError.errors)。
+// 内置的 name/message/stack 由 GetProperty 优先返回，不受影响。
 func (e *Error) SetProperty(name string, val Value) {
-	// Error 属性不可修改
+	if e.Properties == nil {
+		e.Properties = make(map[string]Value)
+	}
+	e.Properties[name] = val
 }
 
 // NewError 创建普通错误

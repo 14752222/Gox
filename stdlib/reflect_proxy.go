@@ -1,6 +1,8 @@
 package stdlib
 
 import (
+	"strconv"
+
 	"js-runtime/object"
 	"js-runtime/runtime"
 )
@@ -14,7 +16,8 @@ import (
 //   - Reflect.apply / construct
 //
 // Proxy: 包装目标对象，通过 handler 上的 trap 拦截操作。
-//   这里只负责创建代理。trap 的转发由 vm 包在属性访问/调用时完成。
+//
+//	这里只负责创建代理。trap 的转发由 vm 包在属性访问/调用时完成。
 func setupReflectProxy(env *runtime.Environment) {
 	// ===== Proxy =====
 	proxyFn := object.NewBuiltin("Proxy", func(args ...object.Value) object.Value {
@@ -60,12 +63,15 @@ func setupReflectProxy(env *runtime.Environment) {
 	// ===== Reflect =====
 	reflectObj := object.NewObject()
 
-	// Reflect.get(target, key, receiver?) — 简化: 直接读取目标属性
+	// Reflect.get(target, key, receiver?) — 读取目标属性
 	reflectObj.SetProperty("get", object.NewBuiltin("Reflect.get", func(args ...object.Value) object.Value {
-		if len(args) < 2 {
-			return object.UndefinedSingleton
+		target, errVal := reflectTargetArg(args, "Reflect.get")
+		if errVal != nil {
+			return errVal
 		}
-		target := args[0]
+		if len(args) < 2 {
+			return object.NewTypeError("Reflect.get: property key is required")
+		}
 		key := toPropKey(args[1])
 		// 代理通过 VM 转发 get trap；这里 Reflect 直接读取目标
 		if p, ok := target.(*object.Proxy); ok {
@@ -78,49 +84,83 @@ func setupReflectProxy(env *runtime.Environment) {
 		return val
 	}))
 
-	// Reflect.set(target, key, value, receiver?) — 直接写入目标属性
+	// Reflect.set(target, key, value, receiver?) — 写入目标属性
 	reflectObj.SetProperty("set", object.NewBuiltin("Reflect.set", func(args ...object.Value) object.Value {
-		if len(args) < 3 {
-			return object.NewBoolean(false)
+		target, errVal := reflectTargetArg(args, "Reflect.set")
+		if errVal != nil {
+			return errVal
 		}
-		target := args[0]
+		if len(args) < 3 {
+			return object.NewTypeError("Reflect.set: value is required")
+		}
 		key := toPropKey(args[1])
 		val := args[2]
 		if p, ok := target.(*object.Proxy); ok {
 			target = p.Target
 		}
-		// 检查是否可扩展 (简化: 直接设置)
+		// 不可写 / 不可扩展时必须返回 false，而不是无条件 true
+		if o, ok := target.(*object.Object); ok {
+			if desc, exists := o.Properties[key]; exists {
+				if !desc.Writable {
+					return object.FalseSingleton
+				}
+			} else if !o.Extensible {
+				return object.FalseSingleton
+			}
+		}
 		target.SetProperty(key, val)
 		return object.TrueSingleton
 	}))
 
 	// Reflect.has(target, key) — 检查属性是否存在 (含原型链)
 	reflectObj.SetProperty("has", object.NewBuiltin("Reflect.has", func(args ...object.Value) object.Value {
-		if len(args) < 2 {
-			return object.NewBoolean(false)
+		target, errVal := reflectTargetArg(args, "Reflect.has")
+		if errVal != nil {
+			return errVal
 		}
-		target := args[0]
+		if len(args) < 2 {
+			return object.NewTypeError("Reflect.has: property key is required")
+		}
 		key := toPropKey(args[1])
 		if p, ok := target.(*object.Proxy); ok {
 			target = p.Target
 		}
 		_, found := target.GetProperty(key)
+		// Array.GetProperty 对任意数字索引都返回 (undefined, true)，
+		// 会让 Reflect.has(arr, "999") 恒为 true。需按索引范围修正。
+		if found {
+			if arr, ok := target.(*object.Array); ok {
+				if idx, err := strconv.Atoi(key); err == nil {
+					found = idx >= 0 && idx < len(arr.Elements)
+				}
+			}
+		}
 		return object.NewBoolean(found)
 	}))
 
 	// Reflect.deleteProperty(target, key) — 删除自有属性
 	reflectObj.SetProperty("deleteProperty", object.NewBuiltin("Reflect.deleteProperty", func(args ...object.Value) object.Value {
-		if len(args) < 2 {
-			return object.NewBoolean(false)
+		target, errVal := reflectTargetArg(args, "Reflect.deleteProperty")
+		if errVal != nil {
+			return errVal
 		}
-		target := args[0]
+		if len(args) < 2 {
+			return object.NewTypeError("Reflect.deleteProperty: property key is required")
+		}
 		key := toPropKey(args[1])
 		if p, ok := target.(*object.Proxy); ok {
 			target = p.Target
 		}
-		// 简化: 从对象 Properties 中删除 (如支持)
-		if o, ok := target.(*object.Object); ok {
-			delete(o.Properties, key)
+		// 走 DeleteProperty 而不是直接 delete map: 后者会漏掉
+		// Object.InsertOrder 的清理，导致键重新加入后顺序错乱。
+		switch t := target.(type) {
+		case *object.Object:
+			return object.NewBoolean(t.DeleteProperty(key))
+		case *object.Array:
+			if idx, err := strconv.Atoi(key); err == nil &&
+				idx >= 0 && idx < len(t.Elements) {
+				t.Elements[idx] = object.UndefinedSingleton
+			}
 			return object.TrueSingleton
 		}
 		return object.TrueSingleton
@@ -182,7 +222,7 @@ func setupReflectProxy(env *runtime.Environment) {
 			}
 		case *object.Array:
 			for i := range t.Elements {
-				keys = append(keys, object.NewString(itoa(i)))
+				keys = append(keys, object.NewString(strconv.Itoa(i)))
 			}
 			keys = append(keys, object.NewString("length"))
 		default:
@@ -225,24 +265,56 @@ func setupReflectProxy(env *runtime.Environment) {
 		return object.CallFunction(fn, thisArg, callArgs...)
 	}))
 
-	// Reflect.construct(target, argsArray) — 以构造方式调用
+	// Reflect.construct(target, argsArray[, newTarget]) — 以构造方式调用
 	reflectObj.SetProperty("construct", object.NewBuiltin("Reflect.construct", func(args ...object.Value) object.Value {
-		if len(args) < 1 {
-			return object.UndefinedSingleton
+		if len(args) < 1 || !object.IsCallable(args[0]) {
+			return object.NewTypeError("Reflect.construct: target is not a constructor")
 		}
 		fn := args[0]
+
 		var ctorArgs []object.Value
 		if len(args) > 1 {
 			if arr, ok := args[1].(*object.Array); ok {
-				ctorArgs = arr.Elements
+				ctorArgs = append([]object.Value(nil), arr.Elements...)
 			}
 		}
-		// 简化: 调用 VM 的构造逻辑通过回调桥不可行，这里直接调用函数
-		// (对普通构造器，可退化为 Reflect.apply 的 this=新对象)
-		return object.CallFunction(fn, object.NewObject(), ctorArgs...)
+		// newTarget 省略时等于 target
+		newTarget := fn
+		if len(args) > 2 && args[2] != nil {
+			newTarget = args[2]
+		}
+
+		// 1) 创建新对象并绑定原型到 newTarget.prototype
+		// 旧实现直接 new Object()，丢失了原型绑定，且把构造器返回值
+		// 原样返回 (构造器不返回对象时应返回新对象)，导致结果为 undefined。
+		obj := object.NewObject()
+		if proto, found := newTarget.GetProperty("prototype"); found && proto != nil {
+			obj.Proto = proto
+		}
+
+		// 2) 以新对象为 this 调用构造器
+		result := object.CallFunction(fn, obj, ctorArgs...)
+		if cbErr := object.TakeCallbackError(); cbErr != nil {
+			return object.NewErrorWithName("Error", cbErr.Error())
+		}
+
+		// 3) 构造器返回对象时用返回值，否则用新创建的对象
+		if result != nil && object.IsObjectLike(result) {
+			return result
+		}
+		return obj
 	}))
 
 	env.Declare("Reflect", reflectObj, false)
+}
+
+// reflectTargetArg 校验 Reflect API 的 target 参数。
+// 规范: target 必须是对象，否则抛 TypeError (旧实现静默返回默认值)。
+func reflectTargetArg(args []object.Value, api string) (object.Value, object.Value) {
+	if len(args) < 1 || !object.IsObjectLike(args[0]) {
+		return nil, object.NewTypeError("%s called on non-object", api)
+	}
+	return args[0], nil
 }
 
 // toPropKey 将属性键值转为字符串。
@@ -256,27 +328,4 @@ func toPropKey(v object.Value) string {
 		return k.Inspect()
 	}
 	return v.Inspect()
-}
-
-// itoa 整数转字符串 (避免引入 strconv 造成不必要的依赖混乱)。
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	var buf [20]byte
-	i := len(buf)
-	for n > 0 {
-		i--
-		buf[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		buf[i] = '-'
-	}
-	return string(buf[i:])
 }

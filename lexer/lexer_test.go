@@ -190,9 +190,9 @@ func TestIncrementDecrement(t *testing.T) {
 
 func TestNumberFormats(t *testing.T) {
 	tests := []struct {
-		input    string
-		tokType  TokenType
-		literal  string
+		input   string
+		tokType TokenType
+		literal string
 	}{
 		{"42", INT_LITERAL, "42"},
 		{"3.14", FLOAT_LITERAL, "3.14"},
@@ -234,8 +234,8 @@ func TestTemplateLiteral(t *testing.T) {
 	input := "`Hello, ${name}! You are ${age} years old.`"
 
 	expected := []struct {
-		tokType  TokenType
-		literal  string
+		tokType TokenType
+		literal string
 	}{
 		{BACKTICK, "Hello, "}, // 模板首段: BACKTICK 类型
 		{DOLLAR_BRACE, "${"},
@@ -266,8 +266,8 @@ func TestTemplateLiteralWithBraces(t *testing.T) {
 	input := "`Result: ${{a: 1}.a}`"
 
 	expected := []struct {
-		tokType  TokenType
-		literal  string
+		tokType TokenType
+		literal string
 	}{
 		{BACKTICK, "Result: "}, // 模板首段: BACKTICK 类型
 		{DOLLAR_BRACE, "${"},
@@ -323,8 +323,8 @@ func TestComments(t *testing.T) {
 	`
 
 	expected := []struct {
-		tokType  TokenType
-		literal  string
+		tokType TokenType
+		literal string
 	}{
 		{LET, "let"},
 		{IDENTIFIER, "x"},
@@ -411,6 +411,64 @@ func TestSpreadRest(t *testing.T) {
 		if tok.Type != expectedType {
 			t.Fatalf("tests[%d] - expected %s, got %s (%q)",
 				i, expectedType, tok.Type, tok.Literal)
+		}
+	}
+}
+
+// 多字节字符必须作为一个整体 rune 被读取。
+// 逐字节读取会把 "😀" 的 4 个字节拆成 4 个非法码点，
+// 字符串字面量在词法阶段就被破坏，后续 UTF-16 语义全部失效。
+func TestMultibyteCharacters(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{`"世"`, "世"},     // 3 字节 BMP 字符
+		{`"😀"`, "😀"},     // 4 字节 astral 字符 (代理对)
+		{`"a世b"`, "a世b"}, // 多字节与非 ASCII 混排
+	}
+
+	for _, tt := range tests {
+		l := New(tt.input)
+		tok := l.NextToken()
+		if tok.Type != STRING_LITERAL {
+			t.Fatalf("input %s: expected STRING_LITERAL, got %s", tt.input, tok.Type)
+		}
+		if tok.Literal != tt.expected {
+			t.Fatalf("input %s: expected %q (%d bytes), got %q (%d bytes)",
+				tt.input, tt.expected, len(tt.expected), tok.Literal, len(tok.Literal))
+		}
+		// 长度按 rune 计，而非字节
+		if got := len([]rune(tok.Literal)); got != len([]rune(tt.expected)) {
+			t.Fatalf("input %s: expected %d runes, got %d",
+				tt.input, len([]rune(tt.expected)), got)
+		}
+	}
+}
+
+// 多字节字符后面的 token 必须能被正确识别
+// (readPosition 需要按 rune 宽度推进)。
+func TestMultibyteFollowedByToken(t *testing.T) {
+	l := New(`"世" + 1;`)
+
+	expected := []struct {
+		tokType TokenType
+		literal string
+	}{
+		{STRING_LITERAL, "世"},
+		{PLUS, "+"},
+		{INT_LITERAL, "1"},
+		{SEMICOLON, ";"},
+		{EOF, ""},
+	}
+
+	for i, tt := range expected {
+		tok := l.NextToken()
+		if tok.Type != tt.tokType {
+			t.Fatalf("tests[%d] - expected %s, got %s (%q)", i, tt.tokType, tok.Type, tok.Literal)
+		}
+		if tok.Literal != tt.literal {
+			t.Fatalf("tests[%d] - expected literal %q, got %q", i, tt.literal, tok.Literal)
 		}
 	}
 }

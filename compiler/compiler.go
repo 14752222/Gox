@@ -111,7 +111,33 @@ func (c *Compiler) NumLocals() int { return c.scope.NumLocals() }
 
 // Compile 编译一个 AST 程序。
 func (c *Compiler) Compile(program *ast.Program) error {
-	for _, stmt := range program.Statements {
+	return c.compileStatements(program.Statements)
+}
+
+// compileStatements 编译一个语句列表，并实现 ECMAScript 的函数声明提升。
+//
+// 函数声明在其所在作用域的顶部即完成绑定: 编译任何语句之前先把列表里的
+// function 声明编译好 (定义符号 + 创建函数对象)，其余语句按源码顺序编译，
+// 已提升的声明跳过以免重复创建。
+// 这样 `f(); function f(){}` 才能解析 —— 之前函数只在执行到声明语句时才
+// 绑定，声明之前的调用会报 ReferenceError。
+func (c *Compiler) compileStatements(stmts []ast.Statement) error {
+	hoisted := make(map[ast.Statement]bool)
+	for _, stmt := range stmts {
+		fd, ok := stmt.(*ast.FunctionDeclaration)
+		if !ok {
+			continue
+		}
+		if err := c.compileFunctionDeclaration(fd); err != nil {
+			return err
+		}
+		hoisted[stmt] = true
+	}
+
+	for _, stmt := range stmts {
+		if hoisted[stmt] {
+			continue
+		}
 		if err := c.compileStatement(stmt); err != nil {
 			return err
 		}
@@ -277,10 +303,8 @@ func (c *Compiler) compileBlockStatement(block *ast.BlockStatement) error {
 	prevScope := c.scope
 	c.scope = NewSymbolScope(prevScope)
 
-	for _, stmt := range block.Statements {
-		if err := c.compileStatement(stmt); err != nil {
-			return err
-		}
+	if err := c.compileStatements(block.Statements); err != nil {
+		return err
 	}
 
 	c.scope = prevScope
@@ -528,8 +552,8 @@ func (c *Compiler) compileForInStatement(stmt *ast.ForInStatement) error {
 
 	// 迭代结束: 清理栈 (正常终止路径)
 	c.emitter.PatchJump(endJump)
-	c.emitter.EmitNoOperand(bytecode.OP_POP) // 弹出 DUP 副本
-	c.emitter.EmitNoOperand(bytecode.OP_POP) // 弹出键值
+	c.emitter.EmitNoOperand(bytecode.OP_POP)        // 弹出 DUP 副本
+	c.emitter.EmitNoOperand(bytecode.OP_POP)        // 弹出键值
 	c.emitter.EmitNoOperand(bytecode.OP_FOR_IN_END) // 弹出迭代器状态
 
 	// 跳过 break 清理路径
@@ -576,10 +600,8 @@ func (c *Compiler) compileForStatement(stmt *ast.ForStatement) error {
 		c.emitter.EmitNoOperand(bytecode.OP_PUSH_SCOPE)
 		bodyScope := c.scope
 		c.scope = NewSymbolScope(bodyScope)
-		for _, s := range stmt.Body.Statements {
-			if err := c.compileStatement(s); err != nil {
-				return err
-			}
+		if err := c.compileStatements(stmt.Body.Statements); err != nil {
+			return err
 		}
 		c.scope = bodyScope
 		c.emitter.EmitNoOperand(bytecode.OP_POP_SCOPE)
@@ -611,10 +633,8 @@ func (c *Compiler) compileForStatement(stmt *ast.ForStatement) error {
 		c.emitter.EmitNoOperand(bytecode.OP_PUSH_SCOPE)
 		bodyScope := c.scope
 		c.scope = NewSymbolScope(bodyScope)
-		for _, s := range stmt.Body.Statements {
-			if err := c.compileStatement(s); err != nil {
-				return err
-			}
+		if err := c.compileStatements(stmt.Body.Statements); err != nil {
+			return err
 		}
 		c.scope = bodyScope
 		c.emitter.EmitNoOperand(bytecode.OP_POP_SCOPE)
@@ -693,7 +713,7 @@ func (c *Compiler) compileTryStatement(stmt *ast.TryStatement) error {
 			// 重新 push try with only finally (catchPC = 0xFFFF 表示无 catch)
 			catchFinally := c.emitter.EmitJump(bytecode.OP_PUSH_FINALLY)
 			c.emitter.PatchJump(finallyPC) // 回填 PUSH_FINALLY (try body 的)
-			finallyPC = catchFinally        // catch body 的 finally
+			finallyPC = catchFinally       // catch body 的 finally
 
 			// 弹出 catch 参数 (在栈上)
 			if stmt.CatchParam != nil {
@@ -761,9 +781,9 @@ func (c *Compiler) compileSwitchStatement(stmt *ast.SwitchStatement) error {
 	}
 
 	// 收集 case 跳转和 break 跳转
-	var caseJumps []int    // JUMP_IF_TRUE 的位置
-	var caseStarts []int   // 每个 case 体的起始位置
-	var defaultJump int    // 跳到 default 的位置
+	var caseJumps []int  // JUMP_IF_TRUE 的位置
+	var caseStarts []int // 每个 case 体的起始位置
+	var defaultJump int  // 跳到 default 的位置
 
 	// switch 本身是 break 目标 (case 体内的 break 作用于 switch, 而非外层循环)
 	ctx := c.pushControl(c.takePendingLabel(), false)
@@ -920,13 +940,13 @@ func isLoopStatement(s ast.Statement) bool {
 
 // compileClassDeclaration 编译 class 声明。
 // 指令序列:
-//   1. 编译 constructor 函数 → [ctor]
-//   2. 创建 prototype 对象 → [ctor, proto]
-//   3. 实例方法挂到 proto
-//   4. extends: proto.Proto = SuperClass.prototype
-//   5. ctor.prototype = proto
-//   6. 静态方法挂到 ctor
-//   7. 声明类名 (全局变量)
+//  1. 编译 constructor 函数 → [ctor]
+//  2. 创建 prototype 对象 → [ctor, proto]
+//  3. 实例方法挂到 proto
+//  4. extends: proto.Proto = SuperClass.prototype
+//  5. ctor.prototype = proto
+//  6. 静态方法挂到 ctor
+//  7. 声明类名 (全局变量)
 func (c *Compiler) compileClassDeclaration(node *ast.ClassDeclaration) error {
 	className := node.Name.Value
 
@@ -1063,10 +1083,8 @@ func (c *Compiler) compileClassConstructor(node *ast.ClassDeclaration, ctor *ast
 
 	// constructor 体
 	if ctor != nil {
-		for _, stmt := range ctor.Body.Statements {
-			if err := c.compileStatement(stmt); err != nil {
-				return nil, err
-			}
+		if err := c.compileStatements(ctor.Body.Statements); err != nil {
+			return nil, err
 		}
 	}
 	c.emitter.EmitNoOperand(bytecode.OP_RETURN_VOID)
@@ -1282,6 +1300,16 @@ func (c *Compiler) compileExpression(expr ast.Expression) error {
 		idx := c.constants.AddConstant(object.NewNumber(node.Value))
 		c.emitter.Emit(bytecode.OP_CONST, idx)
 		return nil
+	case *ast.BigIntLiteral:
+		// parser 已校验过合法性，此处不会失败；仍保留错误处理以防御
+		// 手工构造的 AST (如 eval 注入场景)。
+		v, ok := object.ParseBigIntLiteral(node.Raw)
+		if !ok {
+			return fmt.Errorf("invalid BigInt literal: %q", node.Raw)
+		}
+		idx := c.constants.AddConstant(object.NewBigInt(v))
+		c.emitter.Emit(bytecode.OP_CONST, idx)
+		return nil
 	case *ast.StringLiteral:
 		idx := c.constants.AddConstant(object.NewString(node.Value))
 		c.emitter.Emit(bytecode.OP_CONST, idx)
@@ -1386,6 +1414,14 @@ func (c *Compiler) isGlobalScope() bool {
 func (c *Compiler) emitGlobalLoad(name string) {
 	idx := c.constants.AddConstant(object.NewString(name))
 	c.emitter.Emit(bytecode.OP_LOAD_GLOBAL, idx)
+}
+
+// emitTypeOfGlobal 发射针对未绑定标识符的 typeof 指令。
+// 与 OP_LOAD_GLOBAL + OP_TYPEOF 的区别: 名字未定义时不抛 ReferenceError，
+// 而是得到 "undefined"。
+func (c *Compiler) emitTypeOfGlobal(name string) {
+	idx := c.constants.AddConstant(object.NewString(name))
+	c.emitter.Emit(bytecode.OP_TYPEOF_GLOBAL, idx)
 }
 
 // emitGlobalStore 发射全局变量存储指令 (按名字写全局环境, 值保留在栈上)。
@@ -1522,15 +1558,20 @@ func (c *Compiler) compileUnaryExpression(node *ast.UnaryExpression) error {
 			if err := c.compileExpression(node.Right); err != nil {
 				return err
 			}
-			// 一元正号: 转换为数字 (NOP for numbers)
+			// 一元正号: ToNumber。此前这里是编译期 NOP，导致 +"5" 仍是字符串，
+			// 也无法拒绝 BigInt (规范要求 +1n 抛 TypeError)，故改为运行时指令。
+			c.emitter.EmitNoOperand(bytecode.OP_TO_NUMBER)
 		case "typeof":
-			// typeof 未声明变量应返回 "undefined" 而不抛 ReferenceError
+			// typeof 未声明变量应返回 "undefined" 而不抛 ReferenceError。
+			// 注意: 不能因为编译期符号表里查不到就断定"未声明" —— 标准库的
+			// 全局对象 (Math/Number/Array/JSON/...) 是运行时注入到全局环境的，
+			// 编译期符号表一无所知。因此这里发射 OP_TYPEOF_GLOBAL，
+			// 由 VM 在运行时做非抛出的全局查找: 找到就返回真实类型的名字，
+			// 找不到才返回 "undefined"。
 			if ident, ok := node.Right.(*ast.Identifier); ok {
-				sym := c.scope.Resolve(ident.Value)
-				if sym == nil {
-					// 静态确定未声明: 直接产生 "undefined"
-					c.emitter.EmitNoOperand(bytecode.OP_UNDEFINED)
-					c.emitter.EmitNoOperand(bytecode.OP_TYPEOF)
+				isArguments := ident.Value == "arguments" && c.currentArgumentsSlot >= 0
+				if !isArguments && c.scope.Resolve(ident.Value) == nil {
+					c.emitTypeOfGlobal(ident.Value)
 					break
 				}
 			}
@@ -1654,37 +1695,62 @@ func (c *Compiler) compileAssignmentExpression(node *ast.AssignmentExpression) e
 
 	case *ast.MemberExpression:
 		if left.Computed {
-			// obj[key] = val
+			// obj[key] = val / obj[key] OP= val
 			if err := c.compileExpression(left.Object); err != nil {
 				return err
 			}
 			if err := c.compileExpression(left.Property); err != nil {
 				return err
 			}
-			if err := c.compileExpression(node.Right); err != nil {
-				return err
-			}
 			if node.Operator == "=" {
+				if err := c.compileExpression(node.Right); err != nil {
+					return err
+				}
 				// SET_INDEX: pops val, key, obj; pushes val → [val]
 				c.emitter.EmitNoOperand(bytecode.OP_SET_INDEX)
+				return nil
 			}
+			return c.emitCompoundMemberAssign(node)
 		} else {
-			// obj.prop = val (使用 SET_INDEX + 字符串键)
+			// obj.prop = val / obj.prop OP= val (使用 SET_INDEX + 字符串键)
 			if err := c.compileExpression(left.Object); err != nil {
 				return err
 			}
 			propName := left.Property.(*ast.Identifier).Value
 			idx := c.constants.AddConstant(object.NewString(propName))
 			c.emitter.Emit(bytecode.OP_CONST, idx) // [obj, "prop"]
-			if err := c.compileExpression(node.Right); err != nil {
-				return err
-			}
 			if node.Operator == "=" {
+				if err := c.compileExpression(node.Right); err != nil {
+					return err
+				}
 				// SET_INDEX: pops val, key, obj; pushes val → [val]
 				c.emitter.EmitNoOperand(bytecode.OP_SET_INDEX)
+				return nil
 			}
+			return c.emitCompoundMemberAssign(node)
 		}
 	}
+	return nil
+}
+
+// emitCompoundMemberAssign 发射成员复合赋值 (obj.k += v / obj[k] *= v)。
+//
+// 进入时栈上已有 [obj, key]。需要三样东西: 旧值、右值、以及写回用的 obj/key。
+// 由于 obj/key 已被压入，先用 OP_DUP2 各复制一份:
+//
+//	[obj, key] → DUP2 → [obj, key, obj, key] → GET_INDEX → [obj, key, old]
+//	→ 编译右值 → [obj, key, old, val] → OP → [obj, key, new] → SET_INDEX → [new]
+//
+// 这样 obj 与 key 各只求值一次 (obj[f()] += v 中 f 只调用一次)，
+// 且 SET_INDEX 之后栈顶就是赋值表达式的值，与简单赋值一致。
+func (c *Compiler) emitCompoundMemberAssign(node *ast.AssignmentExpression) error {
+	c.emitter.EmitNoOperand(bytecode.OP_DUP2)
+	c.emitter.EmitNoOperand(bytecode.OP_GET_INDEX)
+	if err := c.compileExpression(node.Right); err != nil {
+		return err
+	}
+	c.emitCompoundOp(node.Operator)
+	c.emitter.EmitNoOperand(bytecode.OP_SET_INDEX)
 	return nil
 }
 
@@ -1781,7 +1847,7 @@ func (c *Compiler) compileLogicalAssignment(node *ast.AssignmentExpression) erro
 
 		// 短路路径清理: [val, val] → [val]
 		c.emitter.PatchJump(skip)
-		c.emitter.EmitNoOperand(bytecode.OP_POP)      // [val, val] → [val]
+		c.emitter.EmitNoOperand(bytecode.OP_POP) // [val, val] → [val]
 		// 最终出口: 非短路路径 done2 与 短路路径都汇聚于此
 		c.emitter.PatchJump(done2)
 		return nil
@@ -1791,9 +1857,11 @@ func (c *Compiler) compileLogicalAssignment(node *ast.AssignmentExpression) erro
 
 // emitLogicalSkip 根据逻辑赋值运算符发射跳过赋值的跳转。
 // 短路条件:
-//   ||= : 当前值为真值 → 跳过
-//   &&= : 当前值为假值 → 跳过
-//   ??= : 当前值为非 nullish → 跳过
+//
+//	||= : 当前值为真值 → 跳过
+//	&&= : 当前值为假值 → 跳过
+//	??= : 当前值为非 nullish → 跳过
+//
 // 返回跳转指令位置 (调用方需 PatchJump)。
 func (c *Compiler) emitLogicalSkip(op string) int {
 	switch op {
@@ -1957,30 +2025,76 @@ func (c *Compiler) compileIncDec(target ast.Expression, isInc, isPrefix bool) er
 
 		if isPrefix {
 			// 前缀: ++i → 返回新值
-			// [old] → push 1 → [old, 1] → OP → [new] → DUP → [new, new] → STORE → [new]
+			// [old] → TO_NUMBER → [num] → push 1 → [num, 1] → OP → [new]
+			// → DUP → [new, new] → STORE → [new]
+			c.emitter.EmitNoOperand(bytecode.OP_TO_NUMBER)
 			c.emitter.Emit(bytecode.OP_INT, 1)
-			if isInc {
-				c.emitter.EmitNoOperand(bytecode.OP_ADD)
-			} else {
-				c.emitter.EmitNoOperand(bytecode.OP_SUB)
-			}
+			c.emitIncDecOp(isInc)
 			c.emitter.EmitNoOperand(bytecode.OP_DUP)
 			c.emitStore(sym)
 		} else {
 			// 后缀: i++ → 返回旧值
-			// [old] → DUP → [old, old] → push 1 → [old, old, 1] → OP → [old, new] → STORE → [old]
+			// [old] → DUP → [old, old] → TO_NUMBER → [old, num] → push 1
+			// → [old, num, 1] → OP → [old, new] → STORE → [old]
 			c.emitter.EmitNoOperand(bytecode.OP_DUP)
+			c.emitter.EmitNoOperand(bytecode.OP_TO_NUMBER)
 			c.emitter.Emit(bytecode.OP_INT, 1)
-			if isInc {
-				c.emitter.EmitNoOperand(bytecode.OP_ADD)
-			} else {
-				c.emitter.EmitNoOperand(bytecode.OP_SUB)
-			}
+			c.emitIncDecOp(isInc)
 			c.emitStore(sym)
 		}
 		return nil
 	}
+	// 成员: obj.k++ / obj[k]-- (含前缀与后缀)
+	if member, ok := target.(*ast.MemberExpression); ok {
+		if err := c.compileExpression(member.Object); err != nil {
+			return err
+		}
+		if member.Computed {
+			if err := c.compileExpression(member.Property); err != nil {
+				return err
+			}
+		} else {
+			ident, ok := member.Property.(*ast.Identifier)
+			if !ok {
+				return fmt.Errorf("++/--: unsupported member target")
+			}
+			idx := c.constants.AddConstant(object.NewString(ident.Value))
+			c.emitter.Emit(bytecode.OP_CONST, idx)
+		}
+		// [obj, key] → DUP2 → [obj, key, obj, key] → GET_INDEX → [obj, key, old]
+		c.emitter.EmitNoOperand(bytecode.OP_DUP2)
+		c.emitter.EmitNoOperand(bytecode.OP_GET_INDEX)
+
+		if isPrefix {
+			// 前缀: [obj, key, old] → TO_NUMBER → [obj, key, num] → push 1 → OP
+			// → [obj, key, new] → SET_INDEX (推回写入值) → [new]
+			c.emitter.EmitNoOperand(bytecode.OP_TO_NUMBER)
+			c.emitter.Emit(bytecode.OP_INT, 1)
+			c.emitIncDecOp(isInc)
+			c.emitter.EmitNoOperand(bytecode.OP_SET_INDEX)
+			return nil
+		}
+		// 后缀: [obj, key, old] → DUP_BELOW2 → [old, obj, key, old]
+		// → TO_NUMBER → [old, obj, key, num] → push 1 → OP → [old, obj, key, new]
+		// → SET_INDEX → [old, new] → POP → [old]
+		c.emitter.EmitNoOperand(bytecode.OP_DUP_BELOW2)
+		c.emitter.EmitNoOperand(bytecode.OP_TO_NUMBER)
+		c.emitter.Emit(bytecode.OP_INT, 1)
+		c.emitIncDecOp(isInc)
+		c.emitter.EmitNoOperand(bytecode.OP_SET_INDEX)
+		c.emitter.EmitNoOperand(bytecode.OP_POP)
+		return nil
+	}
 	return fmt.Errorf("++/-- only supports identifiers")
+}
+
+// emitIncDecOp 发射 ++/-- 的加减指令。
+func (c *Compiler) emitIncDecOp(isInc bool) {
+	if isInc {
+		c.emitter.EmitNoOperand(bytecode.OP_ADD)
+	} else {
+		c.emitter.EmitNoOperand(bytecode.OP_SUB)
+	}
 }
 
 // emitCompoundOp 发射复合赋值的运算指令
@@ -2008,6 +2122,8 @@ func (c *Compiler) emitCompoundOp(op string) {
 		c.emitter.EmitNoOperand(bytecode.OP_SHL)
 	case ">>=":
 		c.emitter.EmitNoOperand(bytecode.OP_SHR)
+	case ">>>=":
+		c.emitter.EmitNoOperand(bytecode.OP_USHR)
 	}
 }
 
@@ -2096,7 +2212,7 @@ func (c *Compiler) compileCallExpression(node *ast.CallExpression) error {
 		// LOAD_GLOBAL SuperClass → OP_THIS → 参数 → OP_CALL_METHOD
 		// 注意: 这里不 emit POP, 返回值 (父构造结果) 留在栈上由外层语句/表达式消费,
 		// 否则表达式语句还会再补一个 POP, 造成双重弹出破坏栈。
-		c.emitGlobalLoad(c.currentSuperClass) // [fn]
+		c.emitGlobalLoad(c.currentSuperClass)     // [fn]
 		c.emitter.EmitNoOperand(bytecode.OP_THIS) // [fn, this]
 		for _, arg := range node.Arguments {
 			if err := c.compileExpression(arg); err != nil {
@@ -2121,7 +2237,7 @@ func (c *Compiler) compileCallExpression(node *ast.CallExpression) error {
 			propName := member.Property.(*ast.Identifier).Value
 			keyIdx := c.constants.AddConstant(object.NewString(propName))
 			c.emitter.Emit(bytecode.OP_GET_PROP, keyIdx) // [fn]
-			c.emitter.EmitNoOperand(bytecode.OP_THIS)     // [fn, this]
+			c.emitter.EmitNoOperand(bytecode.OP_THIS)    // [fn, this]
 			for _, arg := range node.Arguments {
 				if err := c.compileExpression(arg); err != nil {
 					return err
@@ -2138,7 +2254,7 @@ func (c *Compiler) compileCallExpression(node *ast.CallExpression) error {
 		propName := member.Property.(*ast.Identifier).Value
 		idx := c.constants.AddConstant(object.NewString(propName))
 		c.emitter.Emit(bytecode.OP_GET_PROP, idx) // [obj, fn]
-		c.emitter.EmitNoOperand(bytecode.OP_SWAP)  // [fn, obj]
+		c.emitter.EmitNoOperand(bytecode.OP_SWAP) // [fn, obj]
 		// 编译参数
 		for _, arg := range node.Arguments {
 			if err := c.compileExpression(arg); err != nil {
@@ -2576,10 +2692,8 @@ func (c *Compiler) compileFunction(name string, params []*ast.Parameter, body *a
 	}
 
 	// 在函数体内不自动添加 PUSH_SCOPE/POP_SCOPE (函数本身已有作用域)
-	for _, stmt := range body.Statements {
-		if err := c.compileStatement(stmt); err != nil {
-			return nil, err
-		}
+	if err := c.compileStatements(body.Statements); err != nil {
+		return nil, err
 	}
 	// 默认返回 undefined
 	c.emitter.EmitNoOperand(bytecode.OP_RETURN_VOID)
@@ -2607,15 +2721,18 @@ func (c *Compiler) compileFunction(name string, params []*ast.Parameter, body *a
 
 // compileAsyncFunction 编译 async 函数。
 // async function f(a) { body } 等价于:
-//   function f(a) { return __spawn((function* (a) { body' }) (a)); }
+//
+//	function f(a) { return __spawn((function* (a) { body' }) (a)); }
+//
 // 其中 body' 把 await X 编译为 yield X (由内层 generator 支持)。
 // wrapper 的字节码:
-//   LOAD_GLOBAL __spawn
-//   FUNCTION <genIdx>      ; 创建 generator 闭包 (未启动)
-//   LOAD 参数 slots...
-//   CALL n                 ; 创建 Generator 对象 (参数存入 Args)
-//   CALL 1                 ; __spawn(gen) → Promise
-//   RETURN
+//
+//	LOAD_GLOBAL __spawn
+//	FUNCTION <genIdx>      ; 创建 generator 闭包 (未启动)
+//	LOAD 参数 slots...
+//	CALL n                 ; 创建 Generator 对象 (参数存入 Args)
+//	CALL 1                 ; __spawn(gen) → Promise
+//	RETURN
 func (c *Compiler) compileAsyncFunction(name string, params []*ast.Parameter, body *ast.BlockStatement) (*bytecode.FunctionMetadata, error) {
 	// 1. 编译内层 generator (同一参数, await 编译为 yield)
 	genMeta, err := c.compileFunction(name, params, body, false, true, false)
@@ -2666,7 +2783,7 @@ func (c *Compiler) compileAsyncFunction(name string, params []*ast.Parameter, bo
 	for _, slot := range paramSlots {
 		c.emitter.Emit(bytecode.OP_LOAD, uint16(slot)) // [param...]
 	}
-	c.emitter.Emit(bytecode.OP_FUNCTION, uint16(genIdx)) // [param..., genClosure]
+	c.emitter.Emit(bytecode.OP_FUNCTION, uint16(genIdx))      // [param..., genClosure]
 	c.emitter.Emit(bytecode.OP_CALL, uint16(len(paramSlots))) // [genObj]
 	c.emitter.Emit(bytecode.OP_LOAD_GLOBAL, spawnIdx)         // [genObj, spawn]
 	c.emitter.Emit(bytecode.OP_CALL, 1)                       // [promise]

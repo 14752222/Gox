@@ -70,7 +70,7 @@ type Declarator struct {
 type LetStatement struct {
 	Token lexer.Token // LET 令牌
 	Name  *Identifier
-	Value Expression // 可为 nil (let x;)
+	Value Expression   // 可为 nil (let x;)
 	More  []Declarator // 额外的声明项 (let a = 1, b = 2; 中的 b = 2)
 }
 
@@ -99,7 +99,7 @@ func (ls *LetStatement) statementNode() {}
 type ConstStatement struct {
 	Token lexer.Token // CONST 令牌
 	Name  *Identifier
-	Value Expression // const 必须有初始值
+	Value Expression   // const 必须有初始值
 	More  []Declarator // 额外的声明项 (const a = 1, b = 2;)
 }
 
@@ -319,9 +319,9 @@ func (cs *ContinueStatement) statementNode() {}
 
 // LabeledStatement 表示标签语句。例如: outer: for (...) { ... }
 type LabeledStatement struct {
-	Token   lexer.Token // 标识符 token
-	Label   *Identifier
-	Body    Statement
+	Token lexer.Token // 标识符 token
+	Label *Identifier
+	Body  Statement
 }
 
 func (ls *LabeledStatement) TokenLiteral() string { return ls.Token.Literal }
@@ -428,11 +428,11 @@ func (af *ArrowFunctionExpression) expressionNode() {}
 // Parameter 表示函数参数。
 // 可以是简单标识符、默认参数、rest 参数或解构模式。
 type Parameter struct {
-	Token    lexer.Token
-	Name     string      // 参数名 (简单参数时使用)
-	Pattern  Expression  // 解构模式 (nil = 简单参数)
-	Default  Expression  // 默认值 (nil = 无默认值)
-	Rest     bool        // 是否为 rest 参数 (...args)
+	Token   lexer.Token
+	Name    string     // 参数名 (简单参数时使用)
+	Pattern Expression // 解构模式 (nil = 简单参数)
+	Default Expression // 默认值 (nil = 无默认值)
+	Rest    bool       // 是否为 rest 参数 (...args)
 }
 
 func (p *Parameter) String() string {
@@ -465,6 +465,20 @@ type FloatLiteral struct {
 
 func (fl *FloatLiteral) TokenLiteral() string { return fl.Token.Literal }
 func (fl *FloatLiteral) String() string       { return fl.Token.Literal }
+
+// BigIntLiteral 表示 BigInt 字面量 (如 1n, 0xFFn, 0b1010n)。
+//
+// Raw 是词法阶段去掉 "n" 后缀后的数字文本，仍可能带进制前缀 (0x/0b/0o)
+// 与数字分隔符 (_)。进制解析延后到编译期 (object.ParseBigIntLiteral)，
+// 这样 AST 层不必依赖 math/big，也便于错误信息定位到源码位置。
+type BigIntLiteral struct {
+	Token lexer.Token
+	Raw   string
+}
+
+func (bl *BigIntLiteral) TokenLiteral() string { return bl.Token.Literal }
+func (bl *BigIntLiteral) String() string       { return bl.Token.Literal + "n" }
+func (bl *BigIntLiteral) expressionNode()      {}
 func (fl *FloatLiteral) expressionNode()      {}
 
 // StringLiteral 表示字符串字面量。
@@ -482,8 +496,8 @@ func (sl *StringLiteral) expressionNode()      {}
 // Quasis 是静态文本部分，Expressions 是插值表达式部分。
 // 它们交替排列: Quasis[0] + Expressions[0] + Quasis[1] + ...
 type TemplateLiteral struct {
-	Token       lexer.Token // 起始反引号
-	Quasis      []string    // 静态文本部分
+	Token       lexer.Token  // 起始反引号
+	Quasis      []string     // 静态文本部分
 	Expressions []Expression // 插值表达式
 }
 
@@ -533,11 +547,11 @@ func (di *DynamicImportExpression) expressionNode() {}
 // ClassMethod 表示 class 中的一个方法。
 type ClassMethod struct {
 	Token         lexer.Token
-	Name          string     // 方法名
-	IsConstructor bool       // 是否为 constructor
-	IsStatic      bool       // 是否 static 方法
-	IsGetter      bool       // 是否 getter
-	IsSetter      bool       // 是否 setter
+	Name          string // 方法名
+	IsConstructor bool   // 是否为 constructor
+	IsStatic      bool   // 是否 static 方法
+	IsGetter      bool   // 是否 getter
+	IsSetter      bool   // 是否 setter
 	Parameters    []*Parameter
 	Body          *BlockStatement
 	FieldValue    Expression // 字段值 (方法解析时若为字段则非 nil)
@@ -553,9 +567,9 @@ type ClassField struct {
 // ClassDeclaration 表示 class 声明。
 // 例如: class Point { constructor(x) {...} sum() {...} }
 type ClassDeclaration struct {
-	Token      lexer.Token // class 关键字
-	Name       *Identifier // 类名
-	SuperClass Expression  // extends 表达式 (nil = 无继承)
+	Token      lexer.Token    // class 关键字
+	Name       *Identifier    // 类名
+	SuperClass Expression     // extends 表达式 (nil = 无继承)
 	Methods    []*ClassMethod // 实例方法
 	Statics    []*ClassMethod // 静态方法
 	Fields     []*ClassField  // 实例字段
@@ -563,7 +577,7 @@ type ClassDeclaration struct {
 
 func (cd *ClassDeclaration) TokenLiteral() string { return cd.Token.Literal }
 func (cd *ClassDeclaration) String() string       { return "class " + cd.Name.String() }
-func (cd *ClassDeclaration) statementNode() {}
+func (cd *ClassDeclaration) statementNode()       {}
 
 // SuperExpression 表示 super 关键字。
 // 在 class 方法中: super(...) 调用父构造函数, super.method() 调用父类方法。
@@ -573,7 +587,7 @@ type SuperExpression struct {
 
 func (se *SuperExpression) TokenLiteral() string { return se.Token.Literal }
 func (se *SuperExpression) String() string       { return "super" }
-func (se *SuperExpression) expressionNode() {}
+func (se *SuperExpression) expressionNode()      {}
 
 // YieldExpression 表示 yield 表达式 (仅出现在 generator 函数中)。
 // 例如: function* gen() { yield 1; }
@@ -600,7 +614,7 @@ type AwaitExpression struct {
 
 func (ae *AwaitExpression) TokenLiteral() string { return ae.Token.Literal }
 func (ae *AwaitExpression) String() string       { return "await " + ae.Argument.String() }
-func (ae *AwaitExpression) expressionNode() {}
+func (ae *AwaitExpression) expressionNode()      {}
 
 // BooleanLiteral 表示布尔字面量 true/false。
 type BooleanLiteral struct {
@@ -668,20 +682,20 @@ func (al *ArrayLiteral) expressionNode() {}
 type PropertyKind int
 
 const (
-	PROP_INIT    PropertyKind = iota // key: value
-	PROP_METHOD                      // method() {}
-	PROP_GETTER                      // get name() {}
-	PROP_SETTER                      // set name(v) {}
+	PROP_INIT   PropertyKind = iota // key: value
+	PROP_METHOD                     // method() {}
+	PROP_GETTER                     // get name() {}
+	PROP_SETTER                     // set name(v) {}
 )
 
 // Property 表示对象字面量中的一个属性。
 type Property struct {
-	Token      lexer.Token
-	Key        Expression // 属性键 (Identifier, StringLiteral, 或计算表达式)
-	Value      Expression // 属性值
-	Kind       PropertyKind
-	Computed   bool // [表达式] 形式的计算属性名
-	Shorthand  bool // { name } 等价于 { name: name }
+	Token     lexer.Token
+	Key       Expression // 属性键 (Identifier, StringLiteral, 或计算表达式)
+	Value     Expression // 属性值
+	Kind      PropertyKind
+	Computed  bool // [表达式] 形式的计算属性名
+	Shorthand bool // { name } 等价于 { name: name }
 }
 
 func (p *Property) String() string {
@@ -792,7 +806,7 @@ func (le *LogicalExpression) expressionNode() {}
 // SequenceExpression 表示逗号运算符表达式 (a, b, c)。
 // 依次求值每个表达式, 返回最后一个的值。
 type SequenceExpression struct {
-	Token    lexer.Token // 第一个逗号
+	Token       lexer.Token // 第一个逗号
 	Expressions []Expression
 }
 
@@ -921,10 +935,10 @@ func (se *SpreadElement) expressionNode() {}
 
 // PatternElement 表示数组解构中的一个元素。
 type PatternElement struct {
-	Token    lexer.Token
-	Target   Expression // Identifier 或嵌套的 ArrayPattern/ObjectPattern
-	Default  Expression // 默认值 (nil = 无)
-	Rest     bool       // ...rest
+	Token   lexer.Token
+	Target  Expression // Identifier 或嵌套的 ArrayPattern/ObjectPattern
+	Default Expression // 默认值 (nil = 无)
+	Rest    bool       // ...rest
 }
 
 func (pe *PatternElement) String() string {
@@ -965,7 +979,7 @@ type PatternProperty struct {
 	Key       Expression // 属性名 (Identifier 或 StringLiteral)
 	Value     Expression // 绑定目标 (Identifier 或嵌套 Pattern)
 	Default   Expression // 默认值 (nil = 无)
-	Shorthand bool      // { name } 等价于 { name: name }
+	Shorthand bool       // { name } 等价于 { name: name }
 }
 
 func (pp *PatternProperty) String() string {
@@ -1042,8 +1056,8 @@ func (ne *NewExpression) expressionNode() {}
 // ThrowStatement 表示 throw 语句。
 // 例如: throw new Error("oops");
 type ThrowStatement struct {
-	Token  lexer.Token // THROW
-	Value  Expression  // 抛出的值
+	Token lexer.Token // THROW
+	Value Expression  // 抛出的值
 }
 
 func (ts *ThrowStatement) TokenLiteral() string { return ts.Token.Literal }
@@ -1057,10 +1071,10 @@ func (ts *ThrowStatement) statementNode() {}
 // TryStatement 表示 try/catch/finally 语句。
 // 例如: try { ... } catch(e) { ... } finally { ... }
 type TryStatement struct {
-	Token    lexer.Token   // TRY
-	Body     *BlockStatement // try 块
-	CatchParam *Identifier  // catch 参数名 (可为 nil 表示可选 catch binding)
-	CatchBody  *BlockStatement // catch 块 (可为 nil)
+	Token       lexer.Token     // TRY
+	Body        *BlockStatement // try 块
+	CatchParam  *Identifier     // catch 参数名 (可为 nil 表示可选 catch binding)
+	CatchBody   *BlockStatement // catch 块 (可为 nil)
 	FinallyBody *BlockStatement // finally 块 (可为 nil)
 }
 
@@ -1085,9 +1099,9 @@ func (ts *TryStatement) statementNode() {}
 
 // SwitchCase 表示 switch 语句中的一个 case。
 type SwitchCase struct {
-	Token       lexer.Token // CASE 或 DEFAULT
-	Test        Expression   // 条件表达式 (nil 表示 default)
-	Statements  []Statement  // case 体
+	Token      lexer.Token // CASE 或 DEFAULT
+	Test       Expression  // 条件表达式 (nil 表示 default)
+	Statements []Statement // case 体
 }
 
 func (sc *SwitchCase) String() string {
@@ -1105,9 +1119,9 @@ func (sc *SwitchCase) String() string {
 
 // SwitchStatement 表示 switch/case/default 语句。
 type SwitchStatement struct {
-	Token       lexer.Token // SWITCH
-	Discriminant Expression  // 判别表达式
-	Cases       []*SwitchCase // case 列表
+	Token        lexer.Token   // SWITCH
+	Discriminant Expression    // 判别表达式
+	Cases        []*SwitchCase // case 列表
 }
 
 func (ss *SwitchStatement) TokenLiteral() string { return ss.Token.Literal }
@@ -1125,14 +1139,15 @@ func (ss *SwitchStatement) statementNode() {}
 
 // ImportDeclaration 表示 import 语句。
 // 例如: import { foo, bar } from "./mod.js"
-//       import * as ns from "./mod.js"
-//       import defaultName from "./mod.js"
+//
+//	import * as ns from "./mod.js"
+//	import defaultName from "./mod.js"
 type ImportDeclaration struct {
-	Token       lexer.Token // IMPORT
-	DefaultName string      // 默认导入名 (可为 "")
-	NamedImports []string   // 命名导入列表
-	Namespace   string      // 命名空间导入名 (可为 "")
-	Source      string      // 模块路径
+	Token        lexer.Token // IMPORT
+	DefaultName  string      // 默认导入名 (可为 "")
+	NamedImports []string    // 命名导入列表
+	Namespace    string      // 命名空间导入名 (可为 "")
+	Source       string      // 模块路径
 }
 
 func (id *ImportDeclaration) TokenLiteral() string { return id.Token.Literal }
@@ -1153,13 +1168,14 @@ func (id *ImportDeclaration) statementNode() {}
 
 // ExportDeclaration 表示 export 语句。
 // 例如: export { foo, bar }
-//       export default expression
-//       export const x = 42
+//
+//	export default expression
+//	export const x = 42
 type ExportDeclaration struct {
-	Token      lexer.Token // EXPORT
-	IsDefault  bool        // 是否为 export default
-	Declaration Statement  // 被导出的声明 (let/const/function)
-	NamedExports []string  // 命名导出列表 (用于 export { a, b })
+	Token        lexer.Token // EXPORT
+	IsDefault    bool        // 是否为 export default
+	Declaration  Statement   // 被导出的声明 (let/const/function)
+	NamedExports []string    // 命名导出列表 (用于 export { a, b })
 }
 
 func (ed *ExportDeclaration) TokenLiteral() string { return ed.Token.Literal }

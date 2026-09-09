@@ -16,21 +16,21 @@ const (
 
 // Promise 表示 JavaScript 的 Promise 对象。
 type Promise struct {
-	mu          sync.Mutex
-	State       PromiseState
-	Value       Value          // fulfilled 时的值
-	Reason      Value          // rejected 时的原因
-	ThenCallbacks  []PromiseCallback // then 回调队列
-	CatchCallbacks []PromiseCallback // catch 回调队列
+	mu               sync.Mutex
+	State            PromiseState
+	Value            Value             // fulfilled 时的值
+	Reason           Value             // rejected 时的原因
+	ThenCallbacks    []PromiseCallback // then 回调队列
+	CatchCallbacks   []PromiseCallback // catch 回调队列
 	FinallyCallbacks []PromiseCallback // finally 回调队列
 }
 
 // PromiseCallback 存储回调函数和创建的后续 Promise。
 type PromiseCallback struct {
-	Callback    Value  // 回调函数
+	Callback    Value    // 回调函数
 	NextPromise *Promise // 链式调用的下一个 Promise
-	IsCatch     bool   // 是否是 catch 回调
-	IsFinally   bool   // 是否是 finally 回调
+	IsCatch     bool     // 是否是 catch 回调
+	IsFinally   bool     // 是否是 finally 回调
 }
 
 func (p *Promise) Type() ObjectType { return PROMISE_OBJ }
@@ -193,21 +193,33 @@ func invokePromiseCallbacks(p *Promise, callbacks []PromiseCallback) {
 }
 
 // Then 注册 fulfilled 回调，返回新的 Promise。
+//
+// 语义等价于 then(onFulfilled, undefined): rejection 会原样透传给 next。
+// 因此 pending 状态下必须**同时**注册一个 rejection 透传回调，
+// 否则 Promise 被 reject 时 next 会永远停留在 pending。
 func (p *Promise) Then(onFulfilled Value) *Promise {
 	next := NewPromise()
 	p.mu.Lock()
-	if p.State == PromiseFulfilled {
+	switch p.State {
+	case PromiseFulfilled:
 		p.mu.Unlock()
 		if IsCallable(onFulfilled) {
-			result := CallFunction(onFulfilled, nil, p.Value)
-			next.Resolve(result)
+			next.Resolve(CallFunction(onFulfilled, nil, p.Value))
 		} else {
 			next.Resolve(p.Value)
 		}
-	} else {
+	case PromiseRejected:
+		p.mu.Unlock()
+		next.Reject(p.Reason)
+	default:
 		p.ThenCallbacks = append(p.ThenCallbacks, PromiseCallback{
 			Callback:    onFulfilled,
 			NextPromise: next,
+		})
+		p.CatchCallbacks = append(p.CatchCallbacks, PromiseCallback{
+			Callback:    nil, // nil 表示透传 rejection
+			NextPromise: next,
+			IsCatch:     true,
 		})
 		p.mu.Unlock()
 	}
@@ -215,26 +227,67 @@ func (p *Promise) Then(onFulfilled Value) *Promise {
 }
 
 // Catch 注册 rejected 回调，返回新的 Promise。
+// 同理，fulfillment 会原样透传给 next。
 func (p *Promise) Catch(onRejected Value) *Promise {
 	next := NewPromise()
 	p.mu.Lock()
-	if p.State == PromiseRejected {
+	switch p.State {
+	case PromiseRejected:
 		p.mu.Unlock()
 		if IsCallable(onRejected) {
-			result := CallFunction(onRejected, nil, p.Reason)
-			next.Resolve(result)
+			next.Resolve(CallFunction(onRejected, nil, p.Reason))
 		} else {
 			next.Reject(p.Reason)
 		}
-	} else {
+	case PromiseFulfilled:
+		p.mu.Unlock()
+		next.Resolve(p.Value)
+	default:
 		p.CatchCallbacks = append(p.CatchCallbacks, PromiseCallback{
 			Callback:    onRejected,
 			NextPromise: next,
 			IsCatch:     true,
 		})
+		p.ThenCallbacks = append(p.ThenCallbacks, PromiseCallback{
+			Callback:    nil, // nil 表示透传 fulfillment
+			NextPromise: next,
+		})
 		p.mu.Unlock()
 	}
 	return next
+}
+
+// OnFulfilled 只注册 fulfilled 回调，不关心 rejection。
+// 供 Promise.all / Promise.race 等内部实现使用: 它们自己分别注册
+// 成功与失败回调，无需 Then 的透传机制 (否则会额外创建无用的 Promise)。
+func (p *Promise) OnFulfilled(fn Value) {
+	p.mu.Lock()
+	if p.State == PromiseFulfilled {
+		p.mu.Unlock()
+		if IsCallable(fn) {
+			CallFunction(fn, nil, p.Value)
+		}
+		return
+	}
+	p.ThenCallbacks = append(p.ThenCallbacks, PromiseCallback{Callback: fn})
+	p.mu.Unlock()
+}
+
+// OnRejected 只注册 rejected 回调，不关心 fulfillment。
+func (p *Promise) OnRejected(fn Value) {
+	p.mu.Lock()
+	if p.State == PromiseRejected {
+		p.mu.Unlock()
+		if IsCallable(fn) {
+			CallFunction(fn, nil, p.Reason)
+		}
+		return
+	}
+	p.CatchCallbacks = append(p.CatchCallbacks, PromiseCallback{
+		Callback: fn,
+		IsCatch:  true,
+	})
+	p.mu.Unlock()
 }
 
 // Finally 注册 finally 回调，返回新的 Promise。

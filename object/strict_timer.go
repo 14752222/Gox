@@ -65,7 +65,7 @@ type StrictScheduler struct {
 	stopCh   chan struct{}
 	stopOnce sync.Once
 	started  atomic.Bool
-	startMu  sync.Mutex       // 保护 ensureStarted 与 Reset 的启动决策互斥
+	startMu  sync.Mutex     // 保护 ensureStarted 与 Reset 的启动决策互斥
 	loopWG   sync.WaitGroup // 跟踪后台调度线程生命周期 (Reset 时等待退出)
 	// 统计 (供测试与演示)
 	dispatched atomic.Int64 // 总派发次数
@@ -402,16 +402,29 @@ func (s *StrictScheduler) loop() {
 				t.k++
 			} else {
 				when = t.Start.Add(t.Interval)
-				// 一次性定时器: 保持 Active=true 直到信号被消费 (VM 端消费后
-				// 会检查 Active 决定是否执行), 此处只从 tickers 移除避免重触发。
-				delete(s.tickers, t.ID)
 			}
 			s.mu.Unlock()
 			s.dispatched.Add(1)
-			// 非阻塞推送: 队列满时丢弃该信号但绝不阻塞调度线程 (主线程仍在消费)。
+
+			// 必须**先把信号推入队列，再从 tickers 移除**。
+			//
+			// 顺序反了会存在一个致命竞态窗口: ticker 已从 map 删除 (因此
+			// NextStrictFireIn 报告"没有活跃定时器")，但信号尚未进入
+			// dispatch 队列 (因此 TakeStrictInterrupts 取不到)。此时事件
+			// 循环会判定"无事可做"并退出，一次性严格定时器被永久丢失。
+			//
+			// 非阻塞推送: 队列满时丢弃信号，但绝不阻塞调度线程。
 			select {
 			case s.dispatch <- StrictDispatch{Ticker: t, ScheduledTime: when, DueTime: time.Now()}:
 			default:
+			}
+
+			if !t.Repeat {
+				// 一次性定时器: 保持 Active=true 直到信号被消费 (VM 端消费后
+				// 会检查 Active 决定是否执行)。信号入队后才从 tickers 移除。
+				s.mu.Lock()
+				delete(s.tickers, t.ID)
+				s.mu.Unlock()
 			}
 		}
 	}

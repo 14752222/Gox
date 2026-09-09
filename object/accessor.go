@@ -8,9 +8,9 @@ type Accessor struct {
 	Setter Value // setter 闭包 (nil = 无 setter)
 }
 
-func (a *Accessor) Type() ObjectType       { return ACCESSOR_OBJ }
-func (a *Accessor) Inspect() string         { return "[Accessor]" }
-func (a *Accessor) IsTruthy() bool          { return true }
+func (a *Accessor) Type() ObjectType                      { return ACCESSOR_OBJ }
+func (a *Accessor) Inspect() string                       { return "[Accessor]" }
+func (a *Accessor) IsTruthy() bool                        { return true }
 func (a *Accessor) GetProperty(name string) (Value, bool) { return nil, false }
 func (a *Accessor) SetProperty(name string, val Value)    {}
 

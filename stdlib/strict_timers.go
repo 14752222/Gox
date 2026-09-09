@@ -1,6 +1,7 @@
 package stdlib
 
 import (
+	"math"
 	"sync"
 	"time"
 
@@ -31,10 +32,7 @@ func setupStrictTimers(env *runtime.Environment) {
 		if len(args) < 1 || !object.IsCallable(args[0]) {
 			return object.NewErrorWithName("TypeError", "setStrictTimeout: first argument must be a function")
 		}
-		delay := time.Duration(0)
-		if len(args) > 1 {
-			delay = time.Duration(toFloat(args[1]) * float64(time.Millisecond))
-		}
+		delay := durationFromArg(args, 1)
 		id := scheduler.SetStrictTimeout(args[0], delay)
 		return object.NewNumber(float64(id))
 	}), false)
@@ -44,10 +42,7 @@ func setupStrictTimers(env *runtime.Environment) {
 		if len(args) < 1 || !object.IsCallable(args[0]) {
 			return object.NewErrorWithName("TypeError", "setStrictInterval: first argument must be a function")
 		}
-		interval := time.Duration(0)
-		if len(args) > 1 {
-			interval = time.Duration(toFloat(args[1]) * float64(time.Millisecond))
-		}
+		interval := strictIntervalFromArg(args, 1)
 		mode := defaultStrictMode()
 		if len(args) > 2 {
 			if s, ok := args[2].(*object.String); ok {
@@ -61,8 +56,7 @@ func setupStrictTimers(env *runtime.Environment) {
 	// clearStrictTimeout(id) / clearStrictInterval(id) — 语义相同, 共用调度器
 	clearFn := func(args ...object.Value) object.Value {
 		if len(args) > 0 {
-			id := int(toFloat(args[0]))
-			scheduler.Clear(id)
+			scheduler.Clear(int(toInt(args[0])))
 		}
 		return object.UndefinedSingleton
 	}
@@ -80,6 +74,44 @@ func setupStrictTimers(env *runtime.Environment) {
 		setDefaultStrictMode(mode)
 		return object.UndefinedSingleton
 	}), false)
+}
+
+// maxDurationMs 是延时的上限 (约 31 年)。
+// 超过后 float64 → time.Duration 的转换会溢出，溢出结果在 Go 中是未定义的。
+const maxDurationMs = 1e12
+
+// durationFromArg 将第 idx 个参数解析为毫秒延时。
+//
+// 必须显式处理 NaN 与负数: 直接 time.Duration(float64) 转换 NaN 时结果
+// 未定义 (通常得到一个极大的负 Duration)，会让定时器立即触发或行为异常。
+func durationFromArg(args []object.Value, idx int) time.Duration {
+	if idx >= len(args) {
+		return 0
+	}
+	ms := toFloat(args[idx])
+	if math.IsNaN(ms) || ms <= 0 {
+		return 0
+	}
+	if ms > maxDurationMs {
+		ms = maxDurationMs
+	}
+	return time.Duration(ms * float64(time.Millisecond))
+}
+
+// minStrictInterval 是严格 interval 的最小间隔。
+//
+// 间隔为 0 时调度线程会陷入 time.After(0) 的忙循环: 每次触发后
+// when = Start + k*0 恒在过去，循环无休止地重新计算并灌满分派队列
+// (CPU 100%)。因此这里钳到 1ms，与浏览器对 setInterval(fn, 0) 的处理一致。
+const minStrictInterval = time.Millisecond
+
+// strictIntervalFromArg 解析严格 interval 的间隔 (不允许 <= 0)。
+func strictIntervalFromArg(args []object.Value, idx int) time.Duration {
+	d := durationFromArg(args, idx)
+	if d <= 0 {
+		return minStrictInterval
+	}
+	return d
 }
 
 // strictModeFromString 将字符串解析为派发模式; 未知值回退到 queue。

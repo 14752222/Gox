@@ -38,6 +38,22 @@ func setupRegExp(env *runtime.Environment) {
 		return re
 	})
 
+	// RegExp.escape(str) (ES2025): 转义正则元字符，使字符串可安全内插。
+	regexpFn.SetProperty("escape", object.NewBuiltin("escape", func(args ...object.Value) object.Value {
+		s := ""
+		if len(args) > 0 {
+			s = toStr(args[0])
+		}
+		var b strings.Builder
+		for _, ch := range s {
+			if strings.ContainsRune("^$\\.*+?()[]{}|/", ch) {
+				b.WriteByte('\\')
+			}
+			b.WriteRune(ch)
+		}
+		return object.NewString(b.String())
+	}))
+
 	env.Declare("RegExp", regexpFn, false)
 }
 
@@ -100,17 +116,46 @@ func setupRegExpProto() *object.Object {
 	}))
 
 	// test(string): 测试是否匹配
+	//
+	// 规范: 在带 g/y 标志时，test 必须像 exec 一样从 lastIndex 处开始匹配，
+	// 成功后推进 lastIndex，失败则重置为 0。
+	// 旧实现用 MatchString 全串匹配，完全忽略 lastIndex，导致
+	// /a/g.test("abc") 连续调用永远返回 true (无法遍历所有匹配)。
 	p.SetProperty("test", object.NewBuiltinMethod("test", func(this object.Value, args ...object.Value) object.Value {
 		re, ok := this.(*object.RegExp)
 		if !ok {
-			return object.NewBoolean(false)
+			return thisTypeError("RegExp", "test", this)
 		}
 		input := ""
 		if len(args) > 0 {
 			input = toStr(args[0])
 		}
-		matched := re.Regexp.MatchString(input)
-		return object.NewBoolean(matched)
+
+		// 非全局/非粘性: 与 lastIndex 无关，也不修改它
+		if !re.Global && !re.Sticky {
+			return object.NewBoolean(re.Regexp.MatchString(input))
+		}
+
+		if re.LastIndex < 0 {
+			re.LastIndex = 0
+		}
+		if re.LastIndex > len(input) {
+			re.LastIndex = 0
+			return object.NewBoolean(false)
+		}
+
+		loc := re.Regexp.FindStringIndex(input[re.LastIndex:])
+		if loc == nil {
+			re.LastIndex = 0
+			return object.NewBoolean(false)
+		}
+		// sticky: 匹配必须正好发生在 lastIndex 处 (相对偏移为 0)
+		if re.Sticky && loc[0] != 0 {
+			re.LastIndex = 0
+			return object.NewBoolean(false)
+		}
+		re.LastIndex += loc[1]
+		return object.NewBoolean(true)
 	}))
 
 	// toString(): 返回正则的字符串表示
@@ -244,6 +289,21 @@ func setupRegExpProto() *object.Object {
 	return p
 }
 
+// toRegExpArg 将参数转换为 *object.RegExp。
+//
+// 已经是 RegExp 的直接复用；否则把字符串当作 pattern 用 defaultFlags 编译。
+// 编译失败时返回 SyntaxError 作为第二返回值，调用方应直接返回它。
+func toRegExpArg(v object.Value, defaultFlags string) (*object.RegExp, object.Value) {
+	if re, ok := v.(*object.RegExp); ok {
+		return re, nil
+	}
+	re, err := object.NewRegExp(toStr(v), defaultFlags)
+	if err != nil {
+		return nil, object.NewErrorWithName("SyntaxError", err.Error())
+	}
+	return re, nil
+}
+
 // expandReplacement 展开 $1, $2, $&, $$, $`, $' 等替换模式。
 // groups 是捕获组的字符串切片 (不含整个匹配)。
 func expandReplacement(replacement, match string, groups []string) string {
@@ -276,15 +336,19 @@ func expandReplacement(replacement, match string, groups []string) string {
 				num = num*10 + int(replacement[j]-'0')
 				j++
 			}
-			if num >= 1 && num <= len(groups) {
+			if num == 0 {
+				// $0 表示整个匹配
+				result.WriteString(match)
+				i = j - 1
+			} else if num <= len(groups) {
 				result.WriteString(groups[num-1])
+				i = j - 1
 			} else {
 				// 无对应捕获组，保留字面文本 $n
 				result.WriteString(replacement[i : j-1])
 				i = j - 2
 				continue
 			}
-			i = j - 1
 		default:
 			result.WriteByte('$')
 		}

@@ -2,6 +2,7 @@ package stdlib
 
 import (
 	"math"
+	"math/bits"
 	"math/rand"
 
 	"js-runtime/object"
@@ -175,23 +176,64 @@ func setupMath() *object.Object {
 		return object.NewNumber(math.Atan2(numArg(args, 0), numArg(args, 1)))
 	}))
 
-	m.SetProperty("hypot", object.NewBuiltin("hypot", func(args ...object.Value) object.Value {
-		result := 0.0
-		for i := 0; i < len(args); i++ {
-			v := numArg(args, i)
-			result += v * v
+	// 取一个或两个整数参数的辅助函数 (缺失时按 0 处理)
+	numArgInt := func(args []object.Value, idx int) int64 {
+		if idx >= len(args) {
+			return 0
 		}
-		return object.NewNumber(math.Sqrt(result))
+		return toInt(args[idx])
+	}
+
+	// ===== ES6 补充: 双曲函数与数值工具 =====
+
+	m.SetProperty("sinh", object.NewBuiltin("sinh", func(args ...object.Value) object.Value {
+		return object.NewNumber(math.Sinh(numArg(args, 0)))
+	}))
+	m.SetProperty("cosh", object.NewBuiltin("cosh", func(args ...object.Value) object.Value {
+		return object.NewNumber(math.Cosh(numArg(args, 0)))
+	}))
+	m.SetProperty("tanh", object.NewBuiltin("tanh", func(args ...object.Value) object.Value {
+		return object.NewNumber(math.Tanh(numArg(args, 0)))
+	}))
+	m.SetProperty("asinh", object.NewBuiltin("asinh", func(args ...object.Value) object.Value {
+		return object.NewNumber(math.Asinh(numArg(args, 0)))
+	}))
+	m.SetProperty("acosh", object.NewBuiltin("acosh", func(args ...object.Value) object.Value {
+		return object.NewNumber(math.Acosh(numArg(args, 0)))
+	}))
+	m.SetProperty("atanh", object.NewBuiltin("atanh", func(args ...object.Value) object.Value {
+		return object.NewNumber(math.Atanh(numArg(args, 0)))
+	}))
+	m.SetProperty("expm1", object.NewBuiltin("expm1", func(args ...object.Value) object.Value {
+		return object.NewNumber(math.Expm1(numArg(args, 0)))
+	}))
+	m.SetProperty("log1p", object.NewBuiltin("log1p", func(args ...object.Value) object.Value {
+		return object.NewNumber(math.Log1p(numArg(args, 0)))
 	}))
 
-	m.SetProperty("hypot2", object.NewBuiltin("hypot2", func(args ...object.Value) object.Value {
-		result := 0.0
-		for i := 0; i < len(args); i++ {
-			v := numArg(args, i)
-			result += v * v
-		}
-		return object.NewNumber(result)
+	// fround(x): 舍入到最接近的 32 位单精度浮点数
+	m.SetProperty("fround", object.NewBuiltin("fround", func(args ...object.Value) object.Value {
+		return object.NewNumber(float64(float32(numArg(args, 0))))
 	}))
+
+	// imul(a, b): 按 C 语言 32 位整数乘法语义计算 (溢出自动回绕)
+	m.SetProperty("imul", object.NewBuiltin("imul", func(args ...object.Value) object.Value {
+		a := int32(numArgInt(args, 0))
+		b := int32(numArgInt(args, 1))
+		return object.NewNumber(float64(a * b))
+	}))
+
+	// clz32(x): 返回 32 位无符号表示中前导零的个数
+	m.SetProperty("clz32", object.NewBuiltin("clz32", func(args ...object.Value) object.Value {
+		x := uint32(numArgInt(args, 0))
+		if x == 0 {
+			return object.NewNumber(32)
+		}
+		return object.NewNumber(float64(bits.LeadingZeros32(x)))
+	}))
+
+	// ES6 常量
+	m.SetProperty("EPSILON", object.NewNumber(2.220446049250313e-16))
 
 	return m
 }

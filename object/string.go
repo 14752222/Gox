@@ -24,7 +24,9 @@ func (s *String) IsTruthy() bool {
 func (s *String) GetProperty(name string) (Value, bool) {
 	switch name {
 	case "length":
-		return NewInt(int64(len(s.Value))), true
+		// JavaScript 的字符串长度以 UTF-16 码元计，而非 UTF-8 字节数。
+		// "世" 的 length 是 1 而不是 3；"😀" 的 length 是 2 而不是 4。
+		return NewInt(int64(UTF16Len(s.Value))), true
 	}
 	// 原型链查找
 	if StringProto != nil {

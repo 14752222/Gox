@@ -189,11 +189,12 @@ func TestReflectHas(t *testing.T) {
 }
 
 func TestReflectOwnKeys(t *testing.T) {
+	// ownKeys 遵循 ECMAScript OrdinaryOwnPropertyKeys: 插入顺序
 	assertString(t, evalJS(t, `
 		let o = { b: 1, a: 2, c: 3 };
 		let keys = Reflect.ownKeys(o);
 		keys.join(",");
-	`), "a,b,c")
+	`), "b,a,c")
 }
 
 func TestReflectApply(t *testing.T) {

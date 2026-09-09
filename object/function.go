@@ -121,31 +121,9 @@ func (c *Closure) GetProperty(name string) (Value, bool) {
 			c.Proto = p
 		}
 		return c.Proto, true
-	case "call":
-		// Function.prototype.call
-		return &BuiltinFunction{
-			Name: "call",
-			Fn: func(args ...Value) Value {
-				// call(thisArg, arg1, arg2, ...) 的处理在 VM 中
-				return UndefinedSingleton
-			},
-		}, true
-	case "apply":
-		// Function.prototype.apply
-		return &BuiltinFunction{
-			Name: "apply",
-			Fn: func(args ...Value) Value {
-				return UndefinedSingleton
-			},
-		}, true
-	case "bind":
-		// Function.prototype.bind
-		return &BuiltinFunction{
-			Name: "bind",
-			Fn: func(args ...Value) Value {
-				return UndefinedSingleton
-			},
-		}, true
+	case "call", "apply", "bind", "toString":
+		// Function.prototype 共享方法实现见 funcproto.go
+		return funcProtoLookup(c, name)
 	}
 	return nil, false
 }
@@ -193,6 +171,8 @@ func (b *BuiltinFunction) GetProperty(name string) (Value, bool) {
 		return NewString(b.Name), true
 	case "length":
 		return NewInt(0), true
+	case "call", "apply", "bind", "toString":
+		return funcProtoLookup(b, name)
 	}
 	return nil, false
 }
@@ -230,6 +210,8 @@ func (b *BuiltinMethod) GetProperty(name string) (Value, bool) {
 		return NewString(b.Name), true
 	case "length":
 		return NewInt(0), true
+	case "call", "apply", "bind", "toString":
+		return funcProtoLookup(b, name)
 	}
 	return nil, false
 }

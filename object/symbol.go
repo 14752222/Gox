@@ -43,9 +43,9 @@ func (s *Symbol) SetProperty(name string, val Value) {
 // ===== 全局 Symbol 注册表 =====
 
 var (
-	symbolCounter  uint64
-	symbolMutex    sync.Mutex
-	globalSymbols  = make(map[string]*Symbol) // 全局 Symbol 注册表
+	symbolCounter uint64
+	symbolMutex   sync.Mutex
+	globalSymbols = make(map[string]*Symbol) // 全局 Symbol 注册表
 )
 
 // NewSymbol 创建一个新的唯一 Symbol。

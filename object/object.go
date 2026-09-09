@@ -23,14 +23,31 @@ const (
 
 	// 函数相关类型
 	COMPILED_FUNCTION_OBJ ObjectType = "COMPILED_FUNCTION" // 已编译函数 (字节码)
-	CLOSURE_OBJ           ObjectType = "CLOSURE"            // 闭包 (函数 + 捕获环境)
-	BUILTIN_OBJ           ObjectType = "BUILTIN"            // 内建函数 (Go 实现)
+	CLOSURE_OBJ           ObjectType = "CLOSURE"           // 闭包 (函数 + 捕获环境)
+	BUILTIN_OBJ           ObjectType = "BUILTIN"           // 内建函数 (Go 实现)
 
 	// 迭代器
 	ITERATOR_OBJ ObjectType = "ITERATOR"
 
 	// Symbol
 	SYMBOL_OBJ ObjectType = "SYMBOL" // Symbol 类型 (唯一且不可变)
+
+	// BigInt
+	BIGINT_OBJ ObjectType = "BIGINT" // BigInt 任意精度整数
+
+	// ===== Temporal (ES2027) =====
+	// Temporal 的所有类型都是不可变值对象，内部状态存于 Go 字段而非
+	// Properties map——若存进 map，Object.keys() 会泄漏内部 slot。
+	TEMPORAL_INSTANT_OBJ         ObjectType = "TEMPORAL_INSTANT"          // Temporal.Instant (精确时间点)
+	TEMPORAL_PLAIN_DATE_OBJ      ObjectType = "TEMPORAL_PLAIN_DATE"       // Temporal.PlainDate (无时区日期)
+	TEMPORAL_PLAIN_TIME_OBJ      ObjectType = "TEMPORAL_PLAIN_TIME"       // Temporal.PlainTime (无日期时间)
+	TEMPORAL_PLAIN_DATETIME_OBJ  ObjectType = "TEMPORAL_PLAIN_DATETIME"   // Temporal.PlainDateTime
+	TEMPORAL_PLAIN_YM_OBJ        ObjectType = "TEMPORAL_PLAIN_YEARMONTH"  // Temporal.PlainYearMonth
+	TEMPORAL_PLAIN_MD_OBJ        ObjectType = "TEMPORAL_PLAIN_MONTHDAY"   // Temporal.PlainMonthDay
+	TEMPORAL_ZONED_DATETIME_OBJ  ObjectType = "TEMPORAL_ZONED_DATETIME"   // Temporal.ZonedDateTime
+	TEMPORAL_DURATION_OBJ        ObjectType = "TEMPORAL_DURATION"         // Temporal.Duration
+	TEMPORAL_TIMEZONE_OBJ        ObjectType = "TEMPORAL_TIMEZONE"         // Temporal.TimeZone
+	TEMPORAL_CALENDAR_OBJ        ObjectType = "TEMPORAL_CALENDAR"         // Temporal.Calendar
 
 	// 集合类型
 	MAP_OBJ ObjectType = "MAP" // Map (键值对集合)
@@ -50,6 +67,13 @@ const (
 
 	// 生成器
 	GENERATOR_OBJ ObjectType = "GENERATOR" // 生成器对象 (function* 的实例)
+
+	// ES2021/全局
+	WEAKREF_OBJ ObjectType = "WEAKREF" // WeakRef 弱引用对象
+	GLOBAL_OBJ  ObjectType = "GLOBAL"  // globalThis 全局对象
+
+	// 响应式 (Dart GetX 风格)
+	OBSERVABLE_OBJ ObjectType = "OBSERVABLE" // obs()/computed() 响应式单元
 )
 
 // Value 是所有 JavaScript 值的核心接口。
@@ -89,18 +113,18 @@ type Environment interface {
 // Null 表示 JavaScript 的 null 值。
 type Null struct{}
 
-func (n *Null) Type() ObjectType       { return NULL_OBJ }
-func (n *Null) Inspect() string         { return "null" }
-func (n *Null) IsTruthy() bool          { return false }
+func (n *Null) Type() ObjectType                      { return NULL_OBJ }
+func (n *Null) Inspect() string                       { return "null" }
+func (n *Null) IsTruthy() bool                        { return false }
 func (n *Null) GetProperty(name string) (Value, bool) { return nil, false }
 func (n *Null) SetProperty(name string, val Value)    {}
 
 // Undefined 表示 JavaScript 的 undefined 值。
 type Undefined struct{}
 
-func (u *Undefined) Type() ObjectType       { return UNDEFINED_OBJ }
-func (u *Undefined) Inspect() string         { return "undefined" }
-func (u *Undefined) IsTruthy() bool          { return false }
+func (u *Undefined) Type() ObjectType                      { return UNDEFINED_OBJ }
+func (u *Undefined) Inspect() string                       { return "undefined" }
+func (u *Undefined) IsTruthy() bool                        { return false }
 func (u *Undefined) GetProperty(name string) (Value, bool) { return nil, false }
 func (u *Undefined) SetProperty(name string, val Value)    {}
 
@@ -108,7 +132,7 @@ func (u *Undefined) SetProperty(name string, val Value)    {}
 
 var (
 	NullSingleton      = &Null{}
-	UndefinedSingleton  = &Undefined{}
+	UndefinedSingleton = &Undefined{}
 )
 
 // ===== 辅助函数 =====
@@ -130,8 +154,17 @@ func TypeOf(v Value) string {
 		return "object"
 	case SYMBOL_OBJ:
 		return "symbol"
+	case BIGINT_OBJ:
+		return "bigint"
 	case COMPILED_FUNCTION_OBJ, CLOSURE_OBJ, BUILTIN_OBJ:
 		return "function"
+	case WEAKREF_OBJ, GLOBAL_OBJ, OBSERVABLE_OBJ:
+		return "object"
+	case TEMPORAL_INSTANT_OBJ, TEMPORAL_PLAIN_DATE_OBJ, TEMPORAL_PLAIN_TIME_OBJ,
+		TEMPORAL_PLAIN_DATETIME_OBJ, TEMPORAL_PLAIN_YM_OBJ, TEMPORAL_PLAIN_MD_OBJ,
+		TEMPORAL_ZONED_DATETIME_OBJ, TEMPORAL_DURATION_OBJ, TEMPORAL_TIMEZONE_OBJ,
+		TEMPORAL_CALENDAR_OBJ:
+		return "object"
 	default:
 		return "undefined"
 	}
@@ -150,6 +183,8 @@ func IsFalsy(v Value) bool {
 		return val.Value == 0 || val.Value != val.Value // 0 或 NaN
 	case *String:
 		return val.Value == ""
+	case *BigInt:
+		return val.Value.Sign() == 0
 	default:
 		return false
 	}

@@ -8,15 +8,17 @@ import (
 
 // RegExp 表示 JavaScript 的正则表达式对象。
 type RegExp struct {
-	Pattern     string         // 原始正则表达式模式
-	Flags       string         // 标志位 (g, i, m, s, u, y)
-	Regexp      *regexp.Regexp // Go 编译后的正则
-	Global      bool           // g 标志
-	IgnoreCase  bool           // i 标志
-	Multiline   bool           // m 标志
-	DotAll      bool           // s 标志
-	mu          sync.Mutex
-	LastIndex   int            // 上次匹配位置 (g 标志使用)
+	Pattern    string         // 原始正则表达式模式
+	Flags      string         // 标志位 (g, i, m, s, u, y)
+	Regexp     *regexp.Regexp // Go 编译后的正则
+	Global     bool           // g 标志
+	IgnoreCase bool           // i 标志
+	Multiline  bool           // m 标志
+	DotAll     bool           // s 标志
+	Sticky     bool           // y 标志 (粘性匹配)
+	Unicode    bool           // u 标志
+	mu         sync.Mutex
+	LastIndex  int // 上次匹配位置 (g/y 标志使用)
 }
 
 func (r *RegExp) Type() ObjectType { return REGEXP_OBJ }
@@ -39,6 +41,10 @@ func (r *RegExp) GetProperty(name string) (Value, bool) {
 		return NewBoolean(r.Multiline), true
 	case "dotAll":
 		return NewBoolean(r.DotAll), true
+	case "sticky":
+		return NewBoolean(r.Sticky), true
+	case "unicode":
+		return NewBoolean(r.Unicode), true
 	case "lastIndex":
 		return NewNumber(float64(r.LastIndex)), true
 	}
@@ -74,8 +80,12 @@ func NewRegExp(pattern, flags string) (*RegExp, error) {
 			r.Multiline = true
 		case 's':
 			r.DotAll = true
-		case 'u', 'y':
-			// u (unicode) 和 y (sticky) 标志简化处理
+		case 'y':
+			// y (sticky): 匹配必须从 lastIndex 处开始
+			r.Sticky = true
+		case 'u':
+			// u (unicode): 按 Unicode 码点处理模式
+			r.Unicode = true
 		}
 	}
 

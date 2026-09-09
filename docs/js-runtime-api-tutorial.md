@@ -32,6 +32,7 @@ go test ./...
 3. [数据转换：JavaScript 值与原生数据结构的双向映射](#3-数据转换)
 4. [错误处理：参数校验、异常抛出及错误信息设计](#4-错误处理)
 5. [进阶：异步 API 与对象生命周期](#5-进阶内容)
+6. [宿主能力模块：fs / path / http / fetch / process](#6-宿主能力模块)
 
 ---
 
@@ -887,6 +888,83 @@ var (
 
 ---
 
+## 6. 宿主能力模块
+
+标准库除纯计算 API 外，还提供一组与宿主系统交互的模块，全部注册于 `stdlib.SetupGlobals()`：
+
+| 模块 | 文件 | 形态 |
+|------|------|------|
+| `fs` | `stdlib/fs.go` | 全局对象，同步 + 异步 (Promise/callback) 文件读写 |
+| `path` | `stdlib/path.go` | 全局对象，路径拼接与解析 |
+| `http` | `stdlib/http.go` | 全局对象，`createServer` 服务器与 `get`/`request` 客户端 |
+| `fetch` | `stdlib/http.go` | 全局函数，Promise 风格 HTTP 客户端 |
+| `process` | `stdlib/process.go` | 全局对象，argv/env/cwd/exit 等宿主信息 |
+
+### 6.1 fs：同步与异步两套 API
+
+同步 API 直接调用 Go 的 `os` 包，失败时返回 `*object.Error`，VM 会将其作为 JS 异常抛出：
+
+```js
+fs.writeFileSync("a.txt", "hello");          // 字符串
+fs.writeFileSync("a.bin", [0x41, 0x42]);     // 字节数组
+fs.readFileSync("a.txt");                    // "hello"
+fs.readFileSync("a.txt", "base64");          // 编码读取: base64 / hex
+fs.readBytesSync("a.bin");                   // 二进制: [65, 66]
+fs.mkdirSync("a/b", { recursive: true });
+fs.readdirSync("a");                         // ["b"]
+fs.statSync("a.txt");                        // { size, mtimeMs, isFile, isDirectory }
+fs.rmSync("a", { recursive: true, force: true });
+```
+
+异步 API 的错误约定遵循 Node 风格——最后一个参数是函数时走 `callback(err, result)`（成功时 err 为 null），否则返回 Promise：
+
+```js
+fs.readFile("a.txt", function (err, data) { ... });
+
+// 或 Promise/await 风格
+const data = await fs.readFile("a.txt");
+```
+
+**异步的实现模型**（`fsSchedule`）：工作函数被注册为 0ms 定时器，在事件循环主线程的下一个 tick 执行。相比 goroutine 方案牺牲了真实并行 I/O，换来确定性的回调顺序（FIFO）与单线程安全——回调里访问 VM 状态无需加锁。注册定时器发生在 `fs.readFile` 返回之前，因此事件循环在任务完成前不会退出。
+
+### 6.2 http：跨 goroutine 的单线程调度
+
+VM 是单线程的，而 Go 的 `net/http` 服务器与客户端都在自己的 goroutine 里运行。`stdlib/http.go` 的线程模型：
+
+1. **goroutine 只做 I/O**。连接处理 goroutine 读请求体、客户端 goroutine 读响应体，期间绝不触碰 VM。
+2. **结果经 0ms 定时器投递回主线程**（`dispatchToLoop`）。`TimerScheduler` 内部有互斥锁，跨 goroutine 注册定时器是安全的；JS 回调最终由事件循环在主线程执行。
+3. **挂起任务保活**（`TimerScheduler.AddPendingTask` / `FinishPendingTask`）。服务器监听与进行中的请求没有对应定时器，若不保活，主线程发现"没有到期任务"就会退出事件循环，脚本刚执行完 `listen()` 进程就结束了。存在挂起任务时，事件循环以 10ms 轮询间隔保活，计数归零后可正常退出。
+
+服务器 API 与 Node 对齐：
+
+```js
+const server = http.createServer(function (req, res) {
+  req.method; req.url; req.path; req.query; req.headers; req.body;
+  res.setHeader("X-Tag", "t1");
+  res.writeHead(200, {"Content-Type": "application/json"});
+  res.statusCode = 201;            // 也可以直接赋值
+  res.end("body");                 // 真正写出响应
+});
+server.listen(0, function () {
+  server.port;                     // 动态端口 (port 0 时由 OS 分配)
+  server.close(function () { ... });
+});
+```
+
+请求处理器抛异常时，引擎向 stderr 报告未捕获异常，并以 500 响应该请求（未 end 过的响应）。处理器也可以把 `end` 延后到某个定时器里（异步响应），挂起任务会保活循环直到响应完成。
+
+客户端：`http.get(url, cb?)` / `http.request(url, {method, headers, body}, cb?)` 回调风格；全局 `fetch(url, options?)` 返回 Promise，响应对象提供 `status / ok / headers / text() / json()`。网络层错误（DNS、超时、连接拒绝）使 Promise reject 或 `cb(err, ...)`；HTTP 4xx/5xx 与 fetch 规范一致，不算错误。客户端默认 30 秒超时。
+
+### 6.3 两个相关修复
+
+实现上述模块期间发现并修复了两个引擎既有缺陷（`vm/vm.go`、`stdlib/async.go`、`object/generator.go`）：
+
+1. **await 的 rejection 不恢复 async 函数**。`__spawn` 的驱动器对被 reject 的 Promise 只 reject 外层 Promise，从不把异常抛回 generator，导致函数体内的 try/catch 永远捕获不到。修复：新增 `object.GeneratorThrow`，VM 侧 `genThrow` 从 yield 点把 rejection 作为异常恢复帧执行。配套修改：generator 挂起时把属于自己帧的 try 处理器条目保存进 `Generator.PendingTries`（全局 tryStack 在挂起期间不能持有它们——恢复时帧深度可能不同，且无关代码抛出的异常绝不能被挂起中的 generator 捕获），恢复帧时按相对值重新挂回。
+
+2. **回调错误信号双重记账**。VM 层曾有自己的 `callbackErr` 字段，与 object 层的 `SetCallbackError`/`TakeCallbackError` 并存，且前者只在个别 OP_CALL 位点被顺手消费。任何回调（如 HTTP 处理器）抛异常后，VM 层副本永久残留，之后任意一个内建函数调用点都会被这个陈旧错误"击落"，表现为回调链静默中断。修复：错误信号统一由 object 层持有，消费即清除；`checkCallbackErr` 改为读取该信号。
+
+---
+
 ## 附录：修改摘要
 
 本次实现教程过程中对 runtime 的修改（均为 bug 修复或必要的架构增强）：
@@ -903,7 +981,75 @@ var (
 | `stats` API | `stdlib/stats.go` | 示例数据转换 API |
 | `Math.hypot` | `stdlib/math.go` | 示例参数解析 API |
 | 回归测试 | `vm/vm_builtin_error_test.go`, `vm/vm_timer_promise_test.go` | 锁定修复后的语义 |
+| generator try 条目保存/恢复 | `vm/vm.go`, `object/generator.go` | yield 时保存帧内 try 处理器，防止跨执行上下文污染 |
+| `GeneratorThrow` | `object/generator.go`, `vm/vm.go`, `stdlib/async.go` | await 的 rejection 从 yield 点抛回 generator，修复 async try/catch 失效 |
+| 回调错误信号统一 | `vm/vm.go` | 消除 VM 层 callbackErr 残留导致的回调链静默中断 |
+| 挂起任务保活 | `object/timer.go` | HTTP 服务器/fetch 等 goroutine 任务保活事件循环 |
+| `fs`/`path`/`http`/`fetch`/`process` | `stdlib/fs.go`, `stdlib/path.go`, `stdlib/http.go`, `stdlib/process.go` | 宿主能力模块，见第 6 章 |
+| 回归测试 | `vm/vm_host_modules_test.go`, `object/timer_pending_test.go` | 覆盖宿主模块与上述修复 |
 
 ---
 
 *教程基于 `js-runtime` 项目（字节码 VM 架构）编写，所有代码示例均已通过测试验证。*
+
+---
+
+## 7. ES5→ES2026 缺口补齐与 Dart GetX 风格响应式
+
+本章记录 2026-09 本轮补齐的标准库缺口、关键修复, 以及新增的响应式 API。
+
+### 7.1 标准库补齐清单 (排除 Date)
+
+| 版本 | 新增 API | 实现位置 |
+|------|----------|----------|
+| ES5 | `Function.prototype.call/apply/bind`、`Function.prototype()` 可调用、`Function` 构造器、`eval` (全局 eval)、`Object.defineProperties` | `object/funcproto.go`, `stdlib/eval.go`, `stdlib/object_methods.go` |
+| ES2015 | `new Uint8Array/Int8Array/.../DataView/ArrayBuffer`、`Symbol.species/match/replace/search/split/...`、`String.normalize` (近似恒等) | `object/typedarray.go`, `stdlib/typedarray.go`, `stdlib/symbol.go` |
+| ES2019-2021 | `AggregateError`、`WeakRef`、`FinalizationRegistry`、`globalThis`、`Promise.prototype.finally` | `object/weakref.go`, `stdlib/eval.go`, `stdlib/iterator.go` |
+| ES2023 | `Array.findLast/findLastIndex/toSorted/toReversed/toSpliced/with/fromAsync` | `stdlib/array_methods.go` |
+| ES2024 | `Object.groupBy`、`Map.groupBy`、`Promise.withResolvers`、`String.isWellFormed/toWellFormed` | `stdlib/object_methods.go`, `stdlib/promise.go`, `stdlib/string_methods.go` |
+| ES2025 | `Iterator` 全局与 helpers (map/filter/take/drop/flatMap/reduce/toArray/...)、`RegExp.escape`、Set 组合方法 (union/intersection/difference/symmetricDifference/isSubsetOf/isSupersetOf/isDisjointFrom)、`Promise.try` | `object/jsiterator.go`, `stdlib/iterator.go`, `stdlib/map_set.go`, `stdlib/regexp.go` |
+| ES2026 | `Uint8Array.fromBase64`、`Uint8Array.prototype.toBase64`、`Iterator.zip/concat` | `stdlib/typedarray.go`, `stdlib/iterator.go` |
+
+**刻意不实现:** `BigInt` (需要语言级 64 位整数类型与运算符重载)、`SharedArrayBuffer/Atomics` (单线程 VM 无共享内存语义)、`String.normalize` 的真实归一化 (避免 ICU 依赖)。
+
+### 7.2 关键修复
+
+| 修复 | 说明 |
+|------|------|
+| `vm.setIndex` 类型缺口 | 属性赋值编译为 SET_INDEX, 但该路径只处理 Array/Object —— Error/RegExp/Promise 等类型的一切字符串键写入被静默丢弃。新增默认分支走 `Value.SetProperty` 接口 |
+| `Function.prototype` 方法占位符 | Closure 的 call/apply/bind 是返回 undefined 的空壳, BuiltinMethod (原生方法) 完全没有 —— `Array.prototype.push.call(...)` 全部失效。共享实现见 `object/funcproto.go` |
+| 嵌套调用未捕获异常破坏帧栈 | 回调桥内的子帧抛错后帧未回收, `vm.frameIdx` 指向死帧, 后续语句跑飞。`vm.unwindFramesTo` 回收帧栈 |
+| ToString 与 Inspect 混用 | `String([1,[2,3]])` 曾返回调试格式; 现按规范走 `object.ToString` (数组 join 语义、对象 `[object Object]`、自定义 toString 优先) |
+| 小整数装箱缓存 | `NewNumber/NewInt` 命中 `[-1,256]` 时零分配, 降低解释循环 GC 压力 |
+
+### 7.3 响应式 API (Dart GetX 风格)
+
+```js
+let count = obs(0);        // Rx 标量
+count.value = 5;           // 写并通知
+count();                   // GetX: 直接调用返回当前值
+count.listen(fn);          // BehaviorSubject 语义: 立即回调当前值, 之后每次变化
+count.refresh();           // 强制通知
+sub.close();               // 取消订阅
+count.close();             // 关闭单元
+
+let list = obs([1, 2]);    // RxList: push/pop/remove/clear/索引写 均触发通知
+let map  = obs(new Map()); // RxMap: set/delete/clear 触发通知
+
+let total = computed(function () {   // 自动依赖追踪的计算属性
+  return price.value * qty.value;    // 读取 .value 即注册依赖
+});
+total.listen(fn);          // 依赖变化导致结果变化时通知
+
+ever(rx, fn);              // 每次变化回调
+once(rx, fn);              // 仅首次变化回调
+```
+
+**GetX 语义对齐:**
+- 值相等 (类型 + 值) 时不通知;
+- `listen` 立即以当前值回调一次;
+- `obs(x)` 对已是 Rx 的单元幂等;
+- `computed` 惰性求值 + 自动依赖收集 + 嵌套支持, 结果不变不通知。
+
+实现见 `object/observable.go` (Rx 核心/依赖追踪) 与 `stdlib/obs.go` (全局注册),
+回归测试见 `vm/vm_obs_test.go`, 可运行演示见 `testdata/rx_demo.js`。

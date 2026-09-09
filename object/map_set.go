@@ -18,6 +18,9 @@ type Map struct {
 	keyIndex map[string]int // 用于原始类型键的快速查找
 	objIndex map[uint64]int // 用于对象/Symbol 键的快速查找
 	mu       sync.RWMutex
+	// proto 是实例级原型。nil 时回退到全局 MapProto。
+	// WeakMap 复用 *Map 结构但绑定独立原型 (不可枚举)，故需要实例级字段。
+	proto Value
 }
 
 func (m *Map) Type() ObjectType { return MAP_OBJ }
@@ -31,8 +34,12 @@ func (m *Map) GetProperty(name string) (Value, bool) {
 	case "size":
 		return NewInt(int64(len(m.Entries))), true
 	}
-	if MapProto != nil {
-		return MapProto.GetProperty(name)
+	p := m.proto
+	if p == nil {
+		p = MapProto
+	}
+	if p != nil {
+		return p.GetProperty(name)
 	}
 	return nil, false
 }
@@ -40,6 +47,12 @@ func (m *Map) GetProperty(name string) (Value, bool) {
 func (m *Map) SetProperty(name string, val Value) {
 	// Map 的属性不可直接设置
 }
+
+// SetProto 设置 Map 实例的原型。
+func (m *Map) SetProto(p Value) { m.proto = p }
+
+// GetProto 返回 Map 实例的原型。
+func (m *Map) GetProto() Value { return m.proto }
 
 // mapKeyHash 为原始类型键生成哈希键字符串。
 func mapKeyHash(v Value) (string, bool) {
@@ -204,6 +217,9 @@ type Set struct {
 	Values   []Value
 	keyIndex map[string]int
 	mu       sync.RWMutex
+	// proto 是实例级原型。nil 时回退到全局 SetProto。
+	// WeakSet 复用 *Set 结构但绑定独立原型，故需要实例级字段。
+	proto Value
 }
 
 func (s *Set) Type() ObjectType { return SET_OBJ }
@@ -217,13 +233,23 @@ func (s *Set) GetProperty(name string) (Value, bool) {
 	case "size":
 		return NewInt(int64(len(s.Values))), true
 	}
-	if SetProto != nil {
-		return SetProto.GetProperty(name)
+	p := s.proto
+	if p == nil {
+		p = SetProto
+	}
+	if p != nil {
+		return p.GetProperty(name)
 	}
 	return nil, false
 }
 
 func (s *Set) SetProperty(name string, val Value) {}
+
+// SetProto 设置 Set 实例的原型。
+func (s *Set) SetProto(p Value) { s.proto = p }
+
+// GetProto 返回 Set 实例的原型。
+func (s *Set) GetProto() Value { return s.proto }
 
 // Add 添加值到 Set。
 func (s *Set) Add(val Value) *Set {

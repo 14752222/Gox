@@ -26,7 +26,7 @@ func setupTimers(env *runtime.Environment) {
 		if len(args) > 1 {
 			delay = time.Duration(toFloat(args[1]) * float64(time.Millisecond))
 		}
-		id := scheduler.SetTimeout(fn, delay)
+		id := scheduler.SetTimeout(bindTimerCallback(fn, args), delay)
 		return object.NewNumber(float64(id))
 	}), false)
 
@@ -43,7 +43,7 @@ func setupTimers(env *runtime.Environment) {
 		if len(args) > 1 {
 			interval = time.Duration(toFloat(args[1]) * float64(time.Millisecond))
 		}
-		id := scheduler.SetInterval(fn, interval)
+		id := scheduler.SetInterval(bindTimerCallback(fn, args), interval)
 		return object.NewNumber(float64(id))
 	}), false)
 
@@ -83,7 +83,7 @@ func setupTimers(env *runtime.Environment) {
 				}
 			}
 		}
-		id := scheduler.RequestIdle(fn, timeout)
+		id := scheduler.RequestIdle(bindTimerCallback(fn, args), timeout)
 		return object.NewNumber(float64(id))
 	}), false)
 
@@ -127,4 +127,19 @@ func setupTimers(env *runtime.Environment) {
 		}), time.Duration(ms*float64(time.Millisecond)))
 		return result
 	}), false)
+}
+
+// bindTimerCallback 将定时器回调与额外参数绑定。
+//
+// setTimeout(fn, delay, ...args) 规范要求 args 在回调触发时作为实参传入。
+// 调度器只接受一个零参回调，因此当存在额外参数时在这里包一层闭包。
+// args 是完整的调用参数列表 (args[0] 是 fn，args[1] 是延时)。
+func bindTimerCallback(fn object.Value, args []object.Value) object.Value {
+	if len(args) <= 2 {
+		return fn
+	}
+	extra := append([]object.Value(nil), args[2:]...)
+	return object.NewBuiltin("timerCallback", func(...object.Value) object.Value {
+		return object.CallFunction(fn, nil, extra...)
+	})
 }

@@ -4,17 +4,18 @@ import (
 	"fmt"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 )
 
 // Lexer 将 JavaScript 源代码字符流转换为 Token 序列。
 // 这是一个手写的词法分析器，逐字符扫描源码。
 type Lexer struct {
-	input        string  // 源代码
-	position     int     // 当前字符位置 (指向当前字符)
-	readPosition int     // 下一个字符位置 (指向下一个待读字符)
-	ch           rune    // 当前字符 (unicode 码点)
-	line         int     // 当前行号
-	column       int     // 当前列号
+	input        string // 源代码
+	position     int    // 当前字符位置 (指向当前字符)
+	readPosition int    // 下一个字符位置 (指向下一个待读字符)
+	ch           rune   // 当前字符 (unicode 码点)
+	line         int    // 当前行号
+	column       int    // 当前列号
 
 	// 模板字面量状态管理
 	// 当处理模板字面量 `...${expr}...` 时，lexer 需要在字符串字面量和
@@ -40,12 +41,21 @@ func New(input string) *Lexer {
 }
 
 // readChar 读取下一个字符，更新 position 和 readPosition。
-// 使用 rune 类型正确处理 Unicode 字符。
+//
+// 必须按 UTF-8 解码出完整 rune 并把 readPosition 推进对应的字节数:
+// Go 的 string 以 UTF-8 存储，逐字节取值会把一个多字节字符拆成多个
+// 非法码点 (如 "😀" 的 4 个字节会变成 4 个字符)，字符串字面量的内容
+// 在词法阶段就被破坏，后续所有 UTF-16 语义都无从谈起。
 func (l *Lexer) readChar() {
 	if l.readPosition >= len(l.input) {
 		l.ch = 0 // EOF 标记 (NUL 字符)
 	} else {
-		l.ch = rune(l.input[l.readPosition])
+		r, width := utf8.DecodeRuneInString(l.input[l.readPosition:])
+		l.ch = r
+		l.position = l.readPosition
+		l.readPosition += width
+		l.column++
+		return
 	}
 	l.position = l.readPosition
 	l.readPosition++
@@ -57,16 +67,19 @@ func (l *Lexer) peekChar() rune {
 	if l.readPosition >= len(l.input) {
 		return 0
 	}
-	return rune(l.input[l.readPosition])
+	r, _ := utf8.DecodeRuneInString(l.input[l.readPosition:])
+	return r
 }
 
 // peekCharAt 查看 offset 偏移处的字符 (不移动位置)。
+// offset 以字节计 (1 表示下一个待读字符)，与历史行为保持一致。
 func (l *Lexer) peekCharAt(offset int) rune {
 	pos := l.readPosition + offset - 1
 	if pos >= len(l.input) {
 		return 0
 	}
-	return rune(l.input[pos])
+	r, _ := utf8.DecodeRuneInString(l.input[pos:])
+	return r
 }
 
 // NextToken 返回输入中的下一个 Token。
@@ -177,7 +190,12 @@ func (l *Lexer) nextToken() Token {
 			tok = Token{Type: LTE, Literal: "<=", Line: line, Column: col}
 		} else if l.peekChar() == '<' {
 			l.readChar()
-			tok = Token{Type: SHIFT_LEFT, Literal: "<<", Line: line, Column: col}
+			if l.peekChar() == '=' {
+				l.readChar()
+				tok = Token{Type: SHIFT_LEFT_EQ, Literal: "<<=", Line: line, Column: col}
+			} else {
+				tok = Token{Type: SHIFT_LEFT, Literal: "<<", Line: line, Column: col}
+			}
 		} else {
 			tok = Token{Type: LT, Literal: "<", Line: line, Column: col}
 		}
@@ -189,7 +207,15 @@ func (l *Lexer) nextToken() Token {
 			l.readChar()
 			if l.peekChar() == '>' {
 				l.readChar()
-				tok = Token{Type: UNSIGNED_SHR, Literal: ">>>", Line: line, Column: col}
+				if l.peekChar() == '=' {
+					l.readChar()
+					tok = Token{Type: UNSIGNED_SHR_EQ, Literal: ">>>=", Line: line, Column: col}
+				} else {
+					tok = Token{Type: UNSIGNED_SHR, Literal: ">>>", Line: line, Column: col}
+				}
+			} else if l.peekChar() == '=' {
+				l.readChar()
+				tok = Token{Type: SHIFT_RIGHT_EQ, Literal: ">>=", Line: line, Column: col}
 			} else {
 				tok = Token{Type: SHIFT_RIGHT, Literal: ">>", Line: line, Column: col}
 			}
@@ -359,7 +385,7 @@ func (l *Lexer) nextToken() Token {
 func (l *Lexer) isRegexContext() bool {
 	switch l.prevTokenType {
 	case IDENTIFIER, INT_LITERAL, FLOAT_LITERAL, STRING_LITERAL, REGEX_LITERAL,
-		RPAREN, RBRACKET, RBRACE,
+		RPAREN, RBRACKET, RBRACE, BIGINT_LITERAL,
 		THIS, TRUE, FALSE, NULL, UNDEFINED,
 		INC, DEC:
 		return false
@@ -440,6 +466,7 @@ func isRegexFlag(ch rune) bool {
 	}
 	return false
 }
+
 // 标识符以字母、下划线或 $ 开头，后续可包含字母、数字、下划线或 $。
 func (l *Lexer) readIdentifier() string {
 	start := l.position
@@ -476,7 +503,7 @@ func (l *Lexer) readNumber(leadingDot bool, line, col int) Token {
 			sb.WriteRune(l.ch)
 			l.readChar()
 		}
-		return Token{Type: INT_LITERAL, Literal: sb.String(), Line: line, Column: col}
+		return l.finishNumber(sb.String(), false, line, col)
 	} else if l.ch == '0' && (l.peekChar() == 'b' || l.peekChar() == 'B') {
 		// 二进制: 0b1010
 		sb.WriteRune(l.ch)
@@ -491,7 +518,7 @@ func (l *Lexer) readNumber(leadingDot bool, line, col int) Token {
 			sb.WriteRune(l.ch)
 			l.readChar()
 		}
-		return Token{Type: INT_LITERAL, Literal: sb.String(), Line: line, Column: col}
+		return l.finishNumber(sb.String(), false, line, col)
 	} else if l.ch == '0' && (l.peekChar() == 'o' || l.peekChar() == 'O') {
 		// 八进制: 0o755
 		sb.WriteRune(l.ch)
@@ -506,7 +533,7 @@ func (l *Lexer) readNumber(leadingDot bool, line, col int) Token {
 			sb.WriteRune(l.ch)
 			l.readChar()
 		}
-		return Token{Type: INT_LITERAL, Literal: sb.String(), Line: line, Column: col}
+		return l.finishNumber(sb.String(), false, line, col)
 	}
 
 	// 十进制整数部分 (支持下划线分隔符 1_000)
@@ -553,12 +580,30 @@ func (l *Lexer) readNumber(leadingDot bool, line, col int) Token {
 		}
 	}
 
-	tokType := INT_LITERAL
-	if isFloat {
-		tokType = FLOAT_LITERAL
-	}
+	return l.finishNumber(sb.String(), isFloat, line, col)
+}
 
-	return Token{Type: tokType, Literal: sb.String(), Line: line, Column: col}
+// finishNumber 收尾数字字面量，处理 BigInt 的 "n" 后缀。
+//
+// BigInt 字面量的语法约束在此拒绝:
+//   - 不允许小数点与指数部分 (1.5n / 1e3n 均为 SyntaxError)
+//   - "n" 之后不允许紧跟标识符字符 (1nx 不是 "1n" 后跟 x，而是非法词素)
+func (l *Lexer) finishNumber(literal string, isFloat bool, line, col int) Token {
+	if l.ch != 'n' {
+		tokType := INT_LITERAL
+		if isFloat {
+			tokType = FLOAT_LITERAL
+		}
+		return Token{Type: tokType, Literal: literal, Line: line, Column: col}
+	}
+	if isFloat {
+		return Token{Type: ILLEGAL, Literal: "BigInt literal cannot contain a decimal point or exponent", Line: line, Column: col}
+	}
+	l.readChar() // 消费 'n'
+	if isIdentifierStart(l.ch) || isDigit(l.ch) {
+		return Token{Type: ILLEGAL, Literal: "invalid BigInt literal", Line: line, Column: col}
+	}
+	return Token{Type: BIGINT_LITERAL, Literal: literal, Line: line, Column: col}
 }
 
 // readString 读取一个用引号包围的字符串字面量。

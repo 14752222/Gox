@@ -37,6 +37,14 @@ func setupSymbol(env *runtime.Environment) {
 	symbolObj.SetProperty("toPrimitive", object.NewSymbol("Symbol.toPrimitive"))
 	symbolObj.SetProperty("toStringTag", object.NewSymbol("Symbol.toStringTag"))
 	symbolObj.SetProperty("hasInstance", object.NewSymbol("Symbol.hasInstance"))
+	symbolObj.SetProperty("species", object.NewSymbol("Symbol.species"))
+	symbolObj.SetProperty("match", object.NewSymbol("Symbol.match"))
+	symbolObj.SetProperty("replace", object.NewSymbol("Symbol.replace"))
+	symbolObj.SetProperty("search", object.NewSymbol("Symbol.search"))
+	symbolObj.SetProperty("split", object.NewSymbol("Symbol.split"))
+	symbolObj.SetProperty("isConcatSpreadable", object.NewSymbol("Symbol.isConcatSpreadable"))
+	symbolObj.SetProperty("unscopables", object.NewSymbol("Symbol.unscopables"))
+	symbolObj.SetProperty("matchAll", object.NewSymbol("Symbol.matchAll"))
 
 	env.Declare("Symbol", symbolObj, false)
 }
@@ -79,6 +87,14 @@ func setupSymbolFunction(env *runtime.Environment) {
 	symbolObj.SetProperty("toPrimitive", object.NewSymbol("Symbol.toPrimitive"))
 	symbolObj.SetProperty("toStringTag", object.NewSymbol("Symbol.toStringTag"))
 	symbolObj.SetProperty("hasInstance", object.NewSymbol("Symbol.hasInstance"))
+	symbolObj.SetProperty("species", object.NewSymbol("Symbol.species"))
+	symbolObj.SetProperty("match", object.NewSymbol("Symbol.match"))
+	symbolObj.SetProperty("replace", object.NewSymbol("Symbol.replace"))
+	symbolObj.SetProperty("search", object.NewSymbol("Symbol.search"))
+	symbolObj.SetProperty("split", object.NewSymbol("Symbol.split"))
+	symbolObj.SetProperty("isConcatSpreadable", object.NewSymbol("Symbol.isConcatSpreadable"))
+	symbolObj.SetProperty("unscopables", object.NewSymbol("Symbol.unscopables"))
+	symbolObj.SetProperty("matchAll", object.NewSymbol("Symbol.matchAll"))
 
 	// 将 Symbol 对象的属性复制到函数上
 	for _, k := range symbolObj.Keys() {

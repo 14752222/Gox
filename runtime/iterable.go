@@ -12,8 +12,10 @@ type Iterator struct {
 	index int
 	// keys 是对象属性的键列表 (用于 Object.keys 迭代)
 	keys []string
-	// kind 表示迭代类型: "array", "string", "object"
+	// kind 表示迭代类型: "array", "string", "object", "callback"
 	kind string
+	// nextFn 用于 "callback" 型迭代器，直接驱动 JS 层迭代器
+	nextFn func() (object.Value, bool)
 }
 
 // NewArrayIterator 创建数组迭代器
@@ -96,6 +98,12 @@ func (it *Iterator) Next() (object.Value, bool) {
 		k := it.keys[it.index]
 		it.index++
 		return object.NewString(k), false
+
+	case "callback":
+		if it.nextFn == nil {
+			return object.UndefinedSingleton, true
+		}
+		return it.nextFn()
 	}
 
 	return object.UndefinedSingleton, true
@@ -121,14 +129,49 @@ func (it *Iterator) GetProperty(name string) (object.Value, bool) {
 func (it *Iterator) SetProperty(name string, val object.Value) {}
 
 // GetIterable 判断值是否可迭代，并返回对应的迭代器。
-// 在 JavaScript 中，Array 和 String 是可迭代的。
-// Object 默认不可迭代 (需要使用 Object.keys/values/entries)。
+// 在 JavaScript 中，Array/String/Map/Set 及任何实现了 [Symbol.iterator]
+// 的对象都是可迭代的。
 func GetIterable(val object.Value) (*Iterator, bool) {
 	switch v := val.(type) {
 	case *object.Array:
 		return NewArrayIterator(v), true
 	case *object.String:
 		return NewStringIterator(v), true
+	case *object.TypedArray:
+		it := object.NewArrayIterator(v.ToArray())
+		return &Iterator{kind: "callback", nextFn: func() (object.Value, bool) {
+			return it.Next()
+		}}, true
+	case *object.JSIterator:
+		// JS 层迭代器 (arr.keys() / Iterator helpers 的产物):
+		// 用回调型适配器包装，由 NextFn 驱动。
+		it := v
+		return &Iterator{kind: "callback", nextFn: func() (object.Value, bool) {
+			return it.Next()
+		}}, true
+	case *object.Map:
+		// for...of over Map 按规范迭代 [key, value] 对
+		it := object.NewMapEntryIterator(v)
+		return &Iterator{kind: "callback", nextFn: func() (object.Value, bool) {
+			return it.Next()
+		}}, true
+	case *object.Set:
+		it := object.NewSetIterator(v)
+		return &Iterator{kind: "callback", nextFn: func() (object.Value, bool) {
+			return it.Next()
+		}}, true
+	case *object.Object:
+		// 实现了 [Symbol.iterator] 的普通对象: 调用该方法并适配其结果
+		if fn, found := v.GetProperty(object.NewSymbol("Symbol.iterator").Inspect()); found && object.IsCallable(fn) {
+			res := object.CallFunction(fn, v)
+			switch r := res.(type) {
+			case *object.JSIterator:
+				it := r
+				return &Iterator{kind: "callback", nextFn: func() (object.Value, bool) {
+					return it.Next()
+				}}, true
+			}
+		}
 	}
 	return nil, false
 }

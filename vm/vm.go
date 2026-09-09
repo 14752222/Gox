@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -43,10 +44,10 @@ func (e *YieldSignal) Error() string {
 
 // tryEntry 是 try-catch-finally 的处理器条目。
 type tryEntry struct {
-	catchPC   int  // catch 块的 PC (0 = 无 catch)
-	finallyPC int  // finally 块的 PC (0 = 无 finally)
-	stackBase int  // 进入 try 时的栈高度
-	frameIdx  int  // 进入 try 时的帧索引
+	catchPC   int // catch 块的 PC (0 = 无 catch)
+	finallyPC int // finally 块的 PC (0 = 无 finally)
+	stackBase int // 进入 try 时的栈高度
+	frameIdx  int // 进入 try 时的帧索引
 }
 
 // ModuleExports 存储模块的导出。
@@ -61,13 +62,25 @@ var currentVM *VM
 
 func init() {
 	// 注册回调桥: stdlib → object → vm
+	//
+	// 错误信号统一走 object 层的 SetCallbackError/TakeCallbackError:
+	// 消费即清除。过去 VM 还有一份自己的 callbackErr 字段，只在个别
+	// OP_CALL 位点被顺手消费 —— stdlib 层消费错误信号后 VM 层的副本
+	// 会永久残留，之后任何一个内建函数调用都会被这个陈旧错误"击落"
+	// (表现为回调链莫名中断且无任何报告)。
 	object.SetCallFunction(func(fn object.Value, this object.Value, args []object.Value) object.Value {
 		if currentVM == nil {
 			return object.UndefinedSingleton
 		}
 		result, err := currentVM.callFunction(fn, this, args)
 		if err != nil {
-			currentVM.callbackErr = err
+			// 向 object 层暴露错误信号: 返回值无法区分
+			// "函数正常返回" 与 "函数抛出了非 Error 异常"。
+			object.SetCallbackError(err)
+			// 保留原始抛出值 (throw x 的 x), 供 rejection reason 使用
+			if te, ok := err.(*ThrowError); ok {
+				object.SetCallbackErrorValue(te.Value)
+			}
 			return object.UndefinedSingleton
 		}
 		return result
@@ -79,7 +92,19 @@ func init() {
 		}
 		val, done, err := currentVM.genResume(gen, arg)
 		if err != nil {
-			currentVM.callbackErr = err
+			object.SetCallbackError(err)
+			return object.UndefinedSingleton, true
+		}
+		return val, done
+	})
+	// 注册 generator 异常恢复回调: object.GeneratorThrow → vm.genThrow
+	object.SetGeneratorThrow(func(gen *object.Generator, throwVal object.Value) (object.Value, bool) {
+		if currentVM == nil {
+			return object.UndefinedSingleton, true
+		}
+		val, done, err := currentVM.genThrow(gen, throwVal)
+		if err != nil {
+			object.SetCallbackError(err)
 			return object.UndefinedSingleton, true
 		}
 		return val, done
@@ -88,25 +113,30 @@ func init() {
 
 // VM 是 JavaScript 字节码虚拟机。
 type VM struct {
-	frames      []*Frame            // 调用栈
-	frameIdx    int                 // 当前帧索引 (栈顶)
-	stack       *Stack              // 操作数栈
-	globals     *runtime.Environment // 全局变量环境
-	constants   *bytecode.ConstantPool
-	lastPopped  object.Value        // 最后弹出的值 (用于测试)
-	callbackErr error              // 回调执行中产生的错误
+	frames     []*Frame             // 调用栈
+	frameIdx   int                  // 当前帧索引 (栈顶)
+	stack      *Stack               // 操作数栈
+	globals    *runtime.Environment // 全局变量环境
+	constants  *bytecode.ConstantPool
+	lastPopped object.Value // 最后弹出的值 (用于测试)
 
 	// try-catch-finally 支持
-	tryStack     []tryEntry  // try 处理器栈
+	tryStack     []tryEntry   // try 处理器栈
 	pendingThrow object.Value // finally 块中待重新抛出的错误 (nil = 无)
 
 	// 模块系统
-	modules      map[string]*ModuleExports // 模块缓存 (按绝对路径)
-	moduleBase   string                    // 模块基准路径 (用于解析相对路径)
-	currentExports *ModuleExports          // 当前模块的导出对象
+	modules        map[string]*ModuleExports // 模块缓存 (按绝对路径)
+	moduleBase     string                    // 模块基准路径 (用于解析相对路径)
+	currentExports *ModuleExports            // 当前模块的导出对象
 
 	// generator 支持
 	currentGenerator *object.Generator // 当前正在执行的 generator (OP_YIELD 时使用)
+
+	// 模板字面量分段收集器 (支持嵌套): 每层对应一个 OP_TEMPLATE_START，
+	// 该层内 quasi/表达式产生的字符串依次 append，OP_TEMPLATE_END 时 join 入栈。
+	// 不用操作数栈保存段的原因是模板可能作为二元运算的操作数出现——
+	// 栈上模板段之外还有外层操作数，无法区分边界。
+	tplParts [][]object.Value
 }
 
 // New 创建虚拟机。
@@ -458,6 +488,25 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			b := vm.stack.Pop()
 			vm.stack.Push(a)
 			vm.stack.Push(b)
+		case bytecode.OP_DUP_BELOW2:
+			// [a, b, c] → [c, a, b, c]: 栈顶值复制一份并插到下方两个值之下
+			cVal := vm.stack.Pop()
+			bVal := vm.stack.Pop()
+			aVal := vm.stack.Pop()
+			vm.stack.Push(cVal)
+			vm.stack.Push(aVal)
+			vm.stack.Push(bVal)
+			vm.stack.Push(cVal)
+		case bytecode.OP_DUP2:
+			// 复制栈顶两个值并保持顺序: [a, b] → [a, b, a, b]。
+			// 成员复合赋值 (obj.k += v) 需要它: obj/key 各留一份供 SET_INDEX，
+			// 同时顶部保留一份供 GET_INDEX 取旧值。
+			b := vm.stack.Pop()
+			a := vm.stack.Pop()
+			vm.stack.Push(a)
+			vm.stack.Push(b)
+			vm.stack.Push(a)
+			vm.stack.Push(b)
 		case bytecode.OP_POP_N:
 			n := int(operand)
 			for i := 0; i < n; i++ {
@@ -487,54 +536,54 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				return fmt.Errorf("VM: LOAD slot %d out of range (locals: %d)", slot, len(frame.Locals))
 			}
 			vm.stack.Push(frame.Locals[slot])
-	case bytecode.OP_STORE:
-		slot := int(operand)
-		val := vm.stack.Pop()
-		if slot >= len(frame.Locals) {
-			for len(frame.Locals) <= slot {
-				frame.Locals = append(frame.Locals, object.UndefinedSingleton)
+		case bytecode.OP_STORE:
+			slot := int(operand)
+			val := vm.stack.Pop()
+			if slot >= len(frame.Locals) {
+				for len(frame.Locals) <= slot {
+					frame.Locals = append(frame.Locals, object.UndefinedSingleton)
+				}
 			}
-		}
-		frame.Locals[slot] = val
-		// 1. 更新当前帧闭包的捕获变量 (closure → 同一闭包下次调用)
-		if frame.Closure != nil && slot < len(frame.Closure.CapturedLocals) {
-			frame.Closure.CapturedLocals[slot] = val
-		}
-		// 2. 向本帧创建的子闭包传播外层变量修改 (outer → closure)
-		for _, c := range frame.CreatedClosures {
-			if slot < len(c.CapturedLocals) {
-				c.CapturedLocals[slot] = val
+			frame.Locals[slot] = val
+			// 1. 更新当前帧闭包的捕获变量 (closure → 同一闭包下次调用)
+			if frame.Closure != nil && slot < len(frame.Closure.CapturedLocals) {
+				frame.Closure.CapturedLocals[slot] = val
 			}
-		}
-		// 3. 标记 slot 为已修改 (用于 popFrame 时向上一帧传播)
-		if frame.ModifiedSlots == nil {
-			frame.ModifiedSlots = make(map[int]bool)
-		}
-		frame.ModifiedSlots[slot] = true
-	case bytecode.OP_STORE_CONST:
-		slot := int(operand)
-		val := vm.stack.Pop()
-		if slot >= len(frame.Locals) {
-			for len(frame.Locals) <= slot {
-				frame.Locals = append(frame.Locals, object.UndefinedSingleton)
+			// 2. 向本帧创建的子闭包传播外层变量修改 (outer → closure)
+			for _, c := range frame.CreatedClosures {
+				if slot < len(c.CapturedLocals) {
+					c.CapturedLocals[slot] = val
+				}
 			}
-		}
-		frame.Locals[slot] = val
-		// 1. 更新当前帧闭包的捕获变量
-		if frame.Closure != nil && slot < len(frame.Closure.CapturedLocals) {
-			frame.Closure.CapturedLocals[slot] = val
-		}
-		// 2. 向子闭包传播
-		for _, c := range frame.CreatedClosures {
-			if slot < len(c.CapturedLocals) {
-				c.CapturedLocals[slot] = val
+			// 3. 标记 slot 为已修改 (用于 popFrame 时向上一帧传播)
+			if frame.ModifiedSlots == nil {
+				frame.ModifiedSlots = make(map[int]bool)
 			}
-		}
-		// 3. 标记为已修改
-		if frame.ModifiedSlots == nil {
-			frame.ModifiedSlots = make(map[int]bool)
-		}
-		frame.ModifiedSlots[slot] = true
+			frame.ModifiedSlots[slot] = true
+		case bytecode.OP_STORE_CONST:
+			slot := int(operand)
+			val := vm.stack.Pop()
+			if slot >= len(frame.Locals) {
+				for len(frame.Locals) <= slot {
+					frame.Locals = append(frame.Locals, object.UndefinedSingleton)
+				}
+			}
+			frame.Locals[slot] = val
+			// 1. 更新当前帧闭包的捕获变量
+			if frame.Closure != nil && slot < len(frame.Closure.CapturedLocals) {
+				frame.Closure.CapturedLocals[slot] = val
+			}
+			// 2. 向子闭包传播
+			for _, c := range frame.CreatedClosures {
+				if slot < len(c.CapturedLocals) {
+					c.CapturedLocals[slot] = val
+				}
+			}
+			// 3. 标记为已修改
+			if frame.ModifiedSlots == nil {
+				frame.ModifiedSlots = make(map[int]bool)
+			}
+			frame.ModifiedSlots[slot] = true
 		case bytecode.OP_LOAD_GLOBAL:
 			name := frame.Constants.Get(operand)
 			if s, ok := name.(*object.String); ok {
@@ -581,73 +630,36 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			a := vm.stack.Pop()
 			result, err := vm.addValues(a, b)
 			if err != nil {
-				return err
+				if terr := vm.throwJSError(err); terr != nil {
+					return terr
+				}
+				continue
 			}
 			vm.stack.Push(result)
-		case bytecode.OP_SUB:
-			b := toNumber(vm.stack.Pop())
-			a := toNumber(vm.stack.Pop())
-			vm.stack.Push(object.NewNumber(a - b))
-		case bytecode.OP_MUL:
-			b := toNumber(vm.stack.Pop())
-			a := toNumber(vm.stack.Pop())
-			vm.stack.Push(object.NewNumber(a * b))
-		case bytecode.OP_DIV:
-			b := toNumber(vm.stack.Pop())
-			a := toNumber(vm.stack.Pop())
-			if b == 0 {
-				if a == 0 {
-					vm.stack.Push(object.NewNumber(math.NaN()))
-				} else if a > 0 {
-					vm.stack.Push(object.NewNumber(math.Inf(1)))
-				} else {
-					vm.stack.Push(object.NewNumber(math.Inf(-1)))
+		case bytecode.OP_SUB, bytecode.OP_MUL, bytecode.OP_DIV, bytecode.OP_MOD,
+			bytecode.OP_POW, bytecode.OP_BIT_AND, bytecode.OP_BIT_OR, bytecode.OP_BIT_XOR,
+			bytecode.OP_SHL, bytecode.OP_SHR, bytecode.OP_USHR:
+			// BigInt 参与时走独立分支: JS 禁止 BigInt 与 Number 隐式混合运算。
+			b := vm.stack.Pop()
+			a := vm.stack.Pop()
+			result, err := vm.binaryArithmetic(op, a, b)
+			if err != nil {
+				if terr := vm.throwJSError(err); terr != nil {
+					return terr
 				}
-			} else {
-				vm.stack.Push(object.NewNumber(a / b))
+				continue
 			}
-		case bytecode.OP_MOD:
-			b := toNumber(vm.stack.Pop())
-			a := toNumber(vm.stack.Pop())
-			if b == 0 {
-				vm.stack.Push(object.NewNumber(math.NaN()))
-			} else {
-				vm.stack.Push(object.NewNumber(math.Mod(a, b)))
+			vm.stack.Push(result)
+		case bytecode.OP_NEG, bytecode.OP_BIT_NOT:
+			a := vm.stack.Pop()
+			result, err := vm.unaryArithmetic(op, a)
+			if err != nil {
+				if terr := vm.throwJSError(err); terr != nil {
+					return terr
+				}
+				continue
 			}
-		case bytecode.OP_POW:
-			b := toNumber(vm.stack.Pop())
-			a := toNumber(vm.stack.Pop())
-			vm.stack.Push(object.NewNumber(math.Pow(a, b)))
-		case bytecode.OP_NEG:
-			a := toNumber(vm.stack.Pop())
-			vm.stack.Push(object.NewNumber(-a))
-		case bytecode.OP_BIT_AND:
-			b := int64(toNumber(vm.stack.Pop()))
-			a := int64(toNumber(vm.stack.Pop()))
-			vm.stack.Push(object.NewNumber(float64(a & b)))
-		case bytecode.OP_BIT_OR:
-			b := int64(toNumber(vm.stack.Pop()))
-			a := int64(toNumber(vm.stack.Pop()))
-			vm.stack.Push(object.NewNumber(float64(a | b)))
-		case bytecode.OP_BIT_XOR:
-			b := int64(toNumber(vm.stack.Pop()))
-			a := int64(toNumber(vm.stack.Pop()))
-			vm.stack.Push(object.NewNumber(float64(a ^ b)))
-		case bytecode.OP_SHL:
-			b := int64(toNumber(vm.stack.Pop()))
-			a := int64(toNumber(vm.stack.Pop()))
-			vm.stack.Push(object.NewNumber(float64(a << uint(b))))
-		case bytecode.OP_SHR:
-			b := int64(toNumber(vm.stack.Pop()))
-			a := int64(toNumber(vm.stack.Pop()))
-			vm.stack.Push(object.NewNumber(float64(a >> uint(b))))
-		case bytecode.OP_USHR:
-			b := int64(toNumber(vm.stack.Pop()))
-			a := uint64(int64(toNumber(vm.stack.Pop())))
-			vm.stack.Push(object.NewNumber(float64(a >> uint(b))))
-		case bytecode.OP_BIT_NOT:
-			a := int64(toNumber(vm.stack.Pop()))
-			vm.stack.Push(object.NewNumber(float64(^a)))
+			vm.stack.Push(result)
 
 		// ===== 比较和逻辑 =====
 		case bytecode.OP_EQ:
@@ -666,22 +678,14 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			b := vm.stack.Pop()
 			a := vm.stack.Pop()
 			vm.stack.Push(object.NewBoolean(!strictEquals(a, b)))
-		case bytecode.OP_LT:
-			b := toNumber(vm.stack.Pop())
-			a := toNumber(vm.stack.Pop())
-			vm.stack.Push(object.NewBoolean(a < b))
-		case bytecode.OP_GT:
-			b := toNumber(vm.stack.Pop())
-			a := toNumber(vm.stack.Pop())
-			vm.stack.Push(object.NewBoolean(a > b))
-		case bytecode.OP_LTE:
-			b := toNumber(vm.stack.Pop())
-			a := toNumber(vm.stack.Pop())
-			vm.stack.Push(object.NewBoolean(a <= b))
-		case bytecode.OP_GTE:
-			b := toNumber(vm.stack.Pop())
-			a := toNumber(vm.stack.Pop())
-			vm.stack.Push(object.NewBoolean(a >= b))
+		case bytecode.OP_LT, bytecode.OP_GT, bytecode.OP_LTE, bytecode.OP_GTE:
+			b := vm.stack.Pop()
+			a := vm.stack.Pop()
+			res, err := relationalCompare(op, a, b)
+			if err != nil {
+				return err
+			}
+			vm.stack.Push(object.NewBoolean(res))
 		case bytecode.OP_NOT:
 			a := vm.stack.Pop()
 			vm.stack.Push(object.NewBoolean(object.IsFalsy(a)))
@@ -801,8 +805,12 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				}
 				vm.stack.Push(result)
 
+			case object.ObservableState:
+				// Rx 单元直接调用: count() 等价 count.value (GetX 语义)
+				vm.stack.Push(callee.RxValue())
+
 			default:
-				return fmt.Errorf("TypeError: %s is not a function", fn.Inspect())
+				return fmt.Errorf("TypeError: %s is not a function", describeCallee(fn))
 			}
 
 		case bytecode.OP_RETURN:
@@ -834,6 +842,20 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			gen.Locals = curFrame.Locals
 			gen.Constants = curFrame.Constants.Constants
 			gen.Instructions = curFrame.Instructions
+			// 保存属于 generator 帧的 try 处理器条目。挂起期间不能留在全局
+			// tryStack 上: 恢复时帧深度可能不同，且无关代码抛出的异常绝不能
+			// 被挂起中的 generator 捕获。栈基址/帧索引保存相对值。
+			gen.PendingTries = nil
+			for len(vm.tryStack) > 0 && vm.tryStack[len(vm.tryStack)-1].frameIdx >= vm.frameIdx {
+				te := vm.tryStack[len(vm.tryStack)-1]
+				vm.tryStack = vm.tryStack[:len(vm.tryStack)-1]
+				gen.PendingTries = append([]object.GenTryEntry{{
+					CatchPC:      te.catchPC,
+					FinallyPC:    te.finallyPC,
+					RelStackBase: te.stackBase - curFrame.StackBase,
+					RelFrameIdx:  te.frameIdx - vm.frameIdx,
+				}}, gen.PendingTries...)
+			}
 			// 保存帧栈残留的中间值 (如 2 + (yield 3) 中的 2)
 			if vm.stack.Len() > curFrame.StackBase {
 				n := vm.stack.Len() - curFrame.StackBase
@@ -882,59 +904,59 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				}
 				vm.stack.Push(result)
 			default:
-				return fmt.Errorf("TypeError: %s is not a function", fn.Inspect())
+				return fmt.Errorf("TypeError: %s is not a function", describeCallee(fn))
 			}
 		case bytecode.OP_CALL_METHOD:
-		// 方法调用: 栈 [fn, this, arg1, ..., argN]
-		numArgs := int(operand)
-		args := make([]object.Value, numArgs)
-		for i := numArgs - 1; i >= 0; i-- {
-			args[i] = vm.stack.Pop()
-		}
-		thisVal := vm.stack.Pop()
-		fn := vm.stack.Pop()
+			// 方法调用: 栈 [fn, this, arg1, ..., argN]
+			numArgs := int(operand)
+			args := make([]object.Value, numArgs)
+			for i := numArgs - 1; i >= 0; i-- {
+				args[i] = vm.stack.Pop()
+			}
+			thisVal := vm.stack.Pop()
+			fn := vm.stack.Pop()
 
-		switch callee := fn.(type) {
-		case *object.BuiltinFunction:
-			// 内建函数: 不传 this，直接传参数
-			result := callee.Fn(args...)
-			if result == nil {
-				result = object.UndefinedSingleton
-			}
-			if thrown, err := vm.throwIfError(result, callee.ReturnIsValue); thrown {
-				if err != nil {
+			switch callee := fn.(type) {
+			case *object.BuiltinFunction:
+				// 内建函数: 不传 this，直接传参数
+				result := callee.Fn(args...)
+				if result == nil {
+					result = object.UndefinedSingleton
+				}
+				if thrown, err := vm.throwIfError(result, callee.ReturnIsValue); thrown {
+					if err != nil {
+						return err
+					}
+					continue
+				}
+				vm.stack.Push(result)
+				if err := vm.checkCallbackErr(); err != nil {
 					return err
 				}
-				continue
-			}
-			vm.stack.Push(result)
-			if err := vm.checkCallbackErr(); err != nil {
-				return err
-			}
-		case *object.BuiltinMethod:
-			// 内建方法: this 作为第一个参数传递
-			result := callee.Fn(thisVal, args...)
-			if result == nil {
-				result = object.UndefinedSingleton
-			}
-			if thrown, err := vm.throwIfError(result, false); thrown {
-				if err != nil {
+			case *object.BuiltinMethod:
+				// 内建方法: this 作为第一个参数传递
+				result := callee.Fn(thisVal, args...)
+				if result == nil {
+					result = object.UndefinedSingleton
+				}
+				if thrown, err := vm.throwIfError(result, false); thrown {
+					if err != nil {
+						return err
+					}
+					continue
+				}
+				vm.stack.Push(result)
+				if err := vm.checkCallbackErr(); err != nil {
 					return err
 				}
-				continue
-			}
-			vm.stack.Push(result)
-			if err := vm.checkCallbackErr(); err != nil {
-				return err
-			}
-		case *object.Closure:
+			case *object.Closure:
 				// 创建绑定了 this 的新闭包
 				methodClosure := &object.Closure{
-					Fn:              callee.Fn,
-					Env:             callee.Env,
-					This:            thisVal,
-					IsArrow:         callee.IsArrow,
-					CapturedLocals:  callee.CapturedLocals,
+					Fn:             callee.Fn,
+					Env:            callee.Env,
+					This:           thisVal,
+					IsArrow:        callee.IsArrow,
+					CapturedLocals: callee.CapturedLocals,
 				}
 				// generator 方法调用: 创建 Generator (this 绑定保留在闭包中)
 				if methodClosure.Fn != nil && methodClosure.Fn.IsGenerator {
@@ -952,7 +974,7 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				}
 				vm.stack.Push(result)
 			default:
-				return fmt.Errorf("TypeError: %s is not a function", fn.Inspect())
+				return fmt.Errorf("TypeError: %s is not a function", describeCallee(fn))
 			}
 		case bytecode.OP_NEW:
 			// new Constructor(args...) — 简化实现
@@ -982,9 +1004,9 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				}
 				// 设置 this 为新对象
 				newClosure := &object.Closure{
-					Fn:     closure.Fn,
-					Env:    closure.Env,
-					This:   newObj,
+					Fn:      closure.Fn,
+					Env:     closure.Env,
+					This:    newObj,
 					IsArrow: closure.IsArrow,
 				}
 				// 调用构造函数 (同步执行到返回)
@@ -1029,7 +1051,7 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				}
 				vm.stack.Push(result)
 			} else {
-				return fmt.Errorf("TypeError: %s is not a constructor", fn.Inspect())
+				return fmt.Errorf("TypeError: %s is not a constructor", describeCallee(fn))
 			}
 
 		// ===== 对象和数组 =====
@@ -1120,9 +1142,13 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			numExprs := len(stringsArr.Elements) - 1
 			args := make([]object.Value, 0, numExprs+1)
 			args = append(args, stringsArr)
+			// 栈上插值顺序为 [e1, e2, ...]，而弹栈是逆序 (先 eN)。
+			// 直接 append 会得到 [eN, ..., e1]，插值顺序整体反转。
+			vals := make([]object.Value, numExprs)
 			for i := numExprs - 1; i >= 0; i-- {
-				args = append(args, vm.stack.Pop())
+				vals[i] = vm.stack.Pop()
 			}
+			args = append(args, vals...)
 			fn := vm.stack.Pop()
 			// 调用 tag 函数
 			switch callee := fn.(type) {
@@ -1137,7 +1163,7 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 					return err
 				}
 			default:
-				return fmt.Errorf("TypeError: %s is not a function", fn.Inspect())
+				return fmt.Errorf("TypeError: %s is not a function", describeCallee(fn))
 			}
 		case bytecode.OP_DYNAMIC_IMPORT:
 			// 动态 import(): 弹出模块路径, 加载模块, 包装为 resolved Promise
@@ -1252,31 +1278,38 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 
 		// ===== 模板字面量 =====
 		case bytecode.OP_TEMPLATE_START:
-			// operand = 部分数，无需特殊处理
+			// 打开一层分段收集器 (operand = 总部分数，实际用不上:
+			// 各段值已按 quasi → PART / 表达式 → PART 的顺序各自入栈后被消费)
+			vm.tplParts = append(vm.tplParts, nil)
 		case bytecode.OP_TEMPLATE_PART:
-			// 将栈顶值转为字符串，累积
-			// 使用一个简单的策略: 每次将栈顶弹出并暂存
-			// TEMPLATE_END 时拼接
-			// 实际实现: 用 OP_TEMPLATE_START 时初始化一个 builder
-			// 但这里简化为: PART 弹出值并追加到下方的字符串
+			// 栈顶一定是当前模板的某一段 (quasi 常量或表达式结果)，
+			// 转为字符串后只进收集器，不再碰栈 —— 这是与旧实现的本质区别:
+			// 旧代码向下 peek 并弹走"看起来像字符串"的值，会把模板外的
+			// 操作数 (如二元加法的左操作数) 误并进模板，最终造成栈下溢。
 			val := vm.stack.Pop()
-			if vm.stack.Len() > 0 {
-				if existing, ok := vm.stack.Peek().(*object.String); ok {
-					vm.stack.Pop()
-					vm.stack.Push(object.NewString(existing.Value + toJSString(val)))
-					continue
+			str := toJSString(val)
+			depth := len(vm.tplParts)
+			if depth == 0 {
+				// 防御: 字节码不完整时退化为直接把段值压栈
+				vm.stack.Push(object.NewString(str))
+				continue
+			}
+			vm.tplParts[depth-1] = append(vm.tplParts[depth-1], object.NewString(str))
+		case bytecode.OP_TEMPLATE_END:
+			// 拼接本层所有段，压回操作数栈
+			depth := len(vm.tplParts)
+			if depth == 0 {
+				continue
+			}
+			parts := vm.tplParts[depth-1]
+			vm.tplParts = vm.tplParts[:depth-1]
+			var sb strings.Builder
+			for _, p := range parts {
+				if s, ok := p.(*object.String); ok {
+					sb.WriteString(s.Value)
 				}
 			}
-			// 如果没有已有的字符串，创建一个
-			vm.stack.Push(object.NewString(toJSString(val)))
-		case bytecode.OP_TEMPLATE_END:
-			// 模板拼接完成，结果已在栈顶
-			// 确保栈顶是字符串
-			val := vm.stack.Peek()
-			if _, ok := val.(*object.String); !ok {
-				vm.stack.Pop()
-				vm.stack.Push(object.NewString(toJSString(val)))
-			}
+			vm.stack.Push(object.NewString(sb.String()))
 
 		// ===== 解构和展开 =====
 		case bytecode.OP_DESTRUCTURE:
@@ -1372,9 +1405,34 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			// 局部变量使用 slot 管理，作用域操作在 VM 中是 NOP
 
 		// ===== 类型操作 =====
+		case bytecode.OP_TO_NUMBER:
+			val := vm.stack.Pop()
+			result, err := toNumberValue(val)
+			if err != nil {
+				if terr := vm.throwJSError(err); terr != nil {
+					return terr
+				}
+				continue
+			}
+			vm.stack.Push(result)
 		case bytecode.OP_TYPEOF:
 			val := vm.stack.Pop()
 			vm.stack.Push(object.NewString(object.TypeOf(val)))
+		case bytecode.OP_TYPEOF_GLOBAL:
+			// typeof 作用于编译期未绑定的标识符。
+			// 该标识符可能是运行时注入的全局对象 (Math/Number/Array/...)，
+			// 也可能是真正的未声明变量 —— 后者按规范返回 "undefined" 而非抛错，
+			// 因此这里走非抛出的全局查找。
+			name := frame.Constants.Get(operand)
+			if s, ok := name.(*object.String); ok {
+				if val, found := vm.globals.Get(s.Value); found {
+					vm.stack.Push(object.NewString(object.TypeOf(val)))
+				} else {
+					vm.stack.Push(object.NewString("undefined"))
+				}
+			} else {
+				vm.stack.Push(object.NewString("undefined"))
+			}
 		case bytecode.OP_INSTANCEOF:
 			// instanceof: 栈顶是 Constructor (右), 下方是 obj (左)。
 			// 检查 obj 的原型链是否包含 Constructor.prototype。
@@ -1421,96 +1479,96 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				vm.stack.Push(object.NewBoolean(true))
 			}
 
-	// ===== 控制 =====
-	case bytecode.OP_BREAK, bytecode.OP_CONTINUE:
-		// break/continue 已由编译器转换为 OP_JUMP/OP_LOOP
-		// 如果直接出现，跳转到 operand
-		frame.PC = int(operand)
+		// ===== 控制 =====
+		case bytecode.OP_BREAK, bytecode.OP_CONTINUE:
+			// break/continue 已由编译器转换为 OP_JUMP/OP_LOOP
+			// 如果直接出现，跳转到 operand
+			frame.PC = int(operand)
 
-	// ===== try/catch/finally =====
-	case bytecode.OP_PUSH_TRY:
-		// operand = catchPC (0 = 无 catch)
-		vm.tryStack = append(vm.tryStack, tryEntry{
-			catchPC:   int(operand),
-			finallyPC: 0,
-			stackBase: vm.stack.Len(),
-			frameIdx:  vm.frameIdx,
-		})
-	case bytecode.OP_PUSH_FINALLY:
-		// operand = finallyPC，设置在栈顶 try 条目上
-		if len(vm.tryStack) > 0 {
-			vm.tryStack[len(vm.tryStack)-1].finallyPC = int(operand)
-		}
-	case bytecode.OP_POP_TRY:
-		// try 块正常完成，弹出处理器
-		if len(vm.tryStack) > 0 {
-			vm.tryStack = vm.tryStack[:len(vm.tryStack)-1]
-		}
-	case bytecode.OP_THROW:
-		val := vm.stack.Pop()
-		if !vm.handleThrow(val) {
-			// 无处理器: 返回错误
-			return &ThrowError{Value: val}
-		}
-		// 异常已被捕获，继续执行 (PC 已被 handleThrow 设置)
-	case bytecode.OP_END_FINALLY:
-		// finally 块结束: 如果有待重新抛出的错误，重新抛出
-		if vm.pendingThrow != nil {
-			val := vm.pendingThrow
-			vm.pendingThrow = nil
+		// ===== try/catch/finally =====
+		case bytecode.OP_PUSH_TRY:
+			// operand = catchPC (0 = 无 catch)
+			vm.tryStack = append(vm.tryStack, tryEntry{
+				catchPC:   int(operand),
+				finallyPC: 0,
+				stackBase: vm.stack.Len(),
+				frameIdx:  vm.frameIdx,
+			})
+		case bytecode.OP_PUSH_FINALLY:
+			// operand = finallyPC，设置在栈顶 try 条目上
+			if len(vm.tryStack) > 0 {
+				vm.tryStack[len(vm.tryStack)-1].finallyPC = int(operand)
+			}
+		case bytecode.OP_POP_TRY:
+			// try 块正常完成，弹出处理器
+			if len(vm.tryStack) > 0 {
+				vm.tryStack = vm.tryStack[:len(vm.tryStack)-1]
+			}
+		case bytecode.OP_THROW:
+			val := vm.stack.Pop()
 			if !vm.handleThrow(val) {
+				// 无处理器: 返回错误
 				return &ThrowError{Value: val}
 			}
-		}
-		// 无 pending error: 正常继续
-
-	// ===== 模块系统 =====
-	case bytecode.OP_IMPORT:
-		// operand = 模块路径常量索引
-		specVal := frame.Constants.Get(operand)
-		spec := ""
-		if s, ok := specVal.(*object.String); ok {
-			spec = s.Value
-		}
-		modExports, err := vm.loadModule(spec)
-		if err != nil {
-			// 模块加载失败作为异常
-			errVal := object.NewErrorWithName("Error", err.Error())
-			if !vm.handleThrow(errVal) {
-				return &ThrowError{Value: errVal}
+			// 异常已被捕获，继续执行 (PC 已被 handleThrow 设置)
+		case bytecode.OP_END_FINALLY:
+			// finally 块结束: 如果有待重新抛出的错误，重新抛出
+			if vm.pendingThrow != nil {
+				val := vm.pendingThrow
+				vm.pendingThrow = nil
+				if !vm.handleThrow(val) {
+					return &ThrowError{Value: val}
+				}
 			}
-			continue
-		}
-		// 推入模块导出对象
-		modObj := object.NewObject()
-		if modExports.Default != nil {
-			modObj.SetProperty("default", modExports.Default)
-		}
-		for name, val := range modExports.Named {
-			modObj.SetProperty(name, val)
-		}
-		vm.stack.Push(modObj)
+			// 无 pending error: 正常继续
 
-	case bytecode.OP_EXPORT:
-		// operand = 导出名常量索引，栈顶是导出值
-		nameVal := frame.Constants.Get(operand)
-		exportName := ""
-		if s, ok := nameVal.(*object.String); ok {
-			exportName = s.Value
-		}
-		val := vm.stack.Pop()
-		if vm.currentExports == nil {
-			vm.currentExports = &ModuleExports{Named: map[string]object.Value{}}
-		}
-		if exportName == "default" {
-			vm.currentExports.Default = val
-		} else {
-			vm.currentExports.Named[exportName] = val
-		}
+		// ===== 模块系统 =====
+		case bytecode.OP_IMPORT:
+			// operand = 模块路径常量索引
+			specVal := frame.Constants.Get(operand)
+			spec := ""
+			if s, ok := specVal.(*object.String); ok {
+				spec = s.Value
+			}
+			modExports, err := vm.loadModule(spec)
+			if err != nil {
+				// 模块加载失败作为异常
+				errVal := object.NewErrorWithName("Error", err.Error())
+				if !vm.handleThrow(errVal) {
+					return &ThrowError{Value: errVal}
+				}
+				continue
+			}
+			// 推入模块导出对象
+			modObj := object.NewObject()
+			if modExports.Default != nil {
+				modObj.SetProperty("default", modExports.Default)
+			}
+			for name, val := range modExports.Named {
+				modObj.SetProperty(name, val)
+			}
+			vm.stack.Push(modObj)
 
-	default:
-		return fmt.Errorf("VM: unknown opcode 0x%02x (%s)", op, op.Name())
-	}
+		case bytecode.OP_EXPORT:
+			// operand = 导出名常量索引，栈顶是导出值
+			nameVal := frame.Constants.Get(operand)
+			exportName := ""
+			if s, ok := nameVal.(*object.String); ok {
+				exportName = s.Value
+			}
+			val := vm.stack.Pop()
+			if vm.currentExports == nil {
+				vm.currentExports = &ModuleExports{Named: map[string]object.Value{}}
+			}
+			if exportName == "default" {
+				vm.currentExports.Default = val
+			} else {
+				vm.currentExports.Named[exportName] = val
+			}
+
+		default:
+			return fmt.Errorf("VM: unknown opcode 0x%02x (%s)", op, op.Name())
+		}
 	}
 	return nil
 }
@@ -1519,6 +1577,10 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 // 用于 stdlib 回调桥: 当 BuiltinMethod (如 Array.prototype.map) 需要
 // 调用用户传入的 JS 闭包时，通过此方法执行子帧。
 func (vm *VM) callFunction(fn object.Value, this object.Value, args []object.Value) (object.Value, error) {
+	// Rx 单元可直接调用: count() 等价 count.value (GetX 语义)
+	if obs, ok := fn.(object.ObservableState); ok {
+		return obs.RxValue(), nil
+	}
 	switch callee := fn.(type) {
 	case *object.BuiltinFunction:
 		result := callee.Fn(args...)
@@ -1550,26 +1612,41 @@ func (vm *VM) callFunction(fn object.Value, this object.Value, args []object.Val
 		// 记录当前帧索引，新帧从这里 +1
 		startIdx := vm.frameIdx + 1
 		if err := vm.callClosure(bound, args); err != nil {
+			// 子帧内抛出且未被捕获: 回收已压入的帧, 否则帧栈损坏,
+			// 调用方 (回调桥) 继续执行时会跑飞
+			vm.unwindFramesTo(startIdx)
 			return nil, err
 		}
 		// 执行子帧直到返回
 		if err := vm.runFrom(startIdx); err != nil {
+			vm.unwindFramesTo(startIdx)
 			return nil, err
 		}
 		// 返回值在栈顶
 		return vm.stack.Pop(), nil
 	}
-	return nil, fmt.Errorf("TypeError: %s is not a function", fn.Inspect())
+	return nil, fmt.Errorf("TypeError: %s is not a function", describeCallee(fn))
+}
+
+// unwindFramesTo 回收 frameIdx >= startIdx 的所有帧。
+// 用于嵌套调用 (回调桥) 抛出未捕获异常后的帧栈恢复。
+// 每层帧在压栈时保留了调用点的栈高度, 回收时把本帧残留的栈值一并清掉。
+func (vm *VM) unwindFramesTo(startIdx int) {
+	for vm.frameIdx >= startIdx {
+		f := vm.frames[vm.frameIdx]
+		base := f.StackBase
+		vm.popFrame()
+		// 清理本帧执行期间残留的栈值 (含嵌套帧遗留)
+		for vm.stack.Len() > base {
+			vm.stack.Pop()
+		}
+	}
 }
 
 // checkCallbackErr 检查回调执行中是否产生了错误，如有则返回并清除。
+// 错误信号由 object 层持有 (消费即清除)，这里只做读取转发。
 func (vm *VM) checkCallbackErr() error {
-	if vm.callbackErr != nil {
-		err := vm.callbackErr
-		vm.callbackErr = nil
-		return err
-	}
-	return nil
+	return object.TakeCallbackError()
 }
 
 // throwIfError 判断内建函数的返回值是否应作为异常抛出，是则执行 throw 流程。
@@ -1590,6 +1667,26 @@ func (vm *VM) throwIfError(result object.Value, returnsRaw bool) (thrown bool, e
 		return true, &ThrowError{Value: errObj}
 	}
 	return true, nil
+}
+
+// throwJSError 把结构化运行时错误 (*jsThrow) 转换为 JS 异常并走正常抛出流程。
+//
+// 返回值语义:
+//   - nil: 异常已被 catch/finally 捕获，PC 已改写，调用方应 continue
+//     (切勿再把运算结果压栈——栈已被 handleThrow 恢复到 try 入口高度)
+//   - 非 nil: 没有匹配的处理器，异常继续向上传播，调用方应 return
+//
+// 非 *jsThrow 的普通 Go error 不属于 JS 语言级异常，原样返回。
+func (vm *VM) throwJSError(err error) error {
+	var jt *jsThrow
+	if !errors.As(err, &jt) {
+		return err
+	}
+	errObj := object.NewErrorWithName(jt.Name, jt.Message)
+	if !vm.handleThrow(errObj) {
+		return &ThrowError{Value: errObj}
+	}
+	return nil
 }
 
 // ===== Proxy trap 转发 =====
@@ -1723,11 +1820,15 @@ func (vm *VM) instanceOf(left, right object.Value) object.Value {
 
 	// 右侧构造器的 prototype 属性
 	var ctorProto object.Value
-	if o, ok := right.(*object.Object); ok {
-		ctorProto, _ = o.GetProperty("prototype")
-	} else if f, ok := right.(*object.Closure); ok {
+	switch c := right.(type) {
+	case *object.Object:
+		ctorProto, _ = c.GetProperty("prototype")
+	case *object.BuiltinFunction:
+		// 内建构造器 (Object/Array/String/Number/...) 的 prototype
+		ctorProto, _ = c.GetProperty("prototype")
+	case *object.Closure:
 		// 闭包构造器: 取 prototype 属性 (new A() 时实例的原型)
-		ctorProto, _ = f.GetProperty("prototype")
+		ctorProto, _ = c.GetProperty("prototype")
 	}
 
 	// 沿 left 的原型链查找 ctorProto
@@ -1752,6 +1853,29 @@ func protoOf(v object.Value) object.Value {
 	case *object.Object:
 		return t.Proto
 	case *object.Array:
+		return t.GetProto()
+	// Temporal 类型把原型放在类型注册表里 (见 object.SetTemporalProto)，
+	// 各自实现了 GetProto()。缺了这些分支，instanceof 会退化成名称匹配，
+	// 而构造器名 ("Instant") 与类型标识并不对应。
+	case *object.TemporalInstant:
+		return t.GetProto()
+	case *object.TemporalPlainDateTime:
+		return t.GetProto()
+	case *object.TemporalPlainDate:
+		return t.GetProto()
+	case *object.TemporalPlainTime:
+		return t.GetProto()
+	case *object.TemporalPlainYearMonth:
+		return t.GetProto()
+	case *object.TemporalPlainMonthDay:
+		return t.GetProto()
+	case *object.TemporalZonedDateTime:
+		return t.GetProto()
+	case *object.TemporalDuration:
+		return t.GetProto()
+	case *object.TemporalTimeZone:
+		return t.GetProto()
+	case *object.TemporalCalendar:
 		return t.GetProto()
 	}
 	return nil
@@ -1816,6 +1940,25 @@ func builtinName(v object.Value) string {
 		}
 	}
 	return ""
+}
+
+// describeCallee 生成错误信息中对"被当作函数调用的值"的简短描述。
+//
+// 直接用 Inspect 会把整个内建对象 (含 prototype 上的几十个方法) 塞进错误信息，
+// 例如 `Array(3)` 未定义时会打印几千字符。这里对超长描述做截断，
+// 并优先使用构造器/函数的名字。
+func describeCallee(v object.Value) string {
+	if v == nil {
+		return "undefined"
+	}
+	if name := builtinName(v); name != "" {
+		return name
+	}
+	s := v.Inspect()
+	if len(s) > 64 {
+		s = s[:64] + "..."
+	}
+	return s
 }
 
 // propKey 将值转换为属性键字符串 (与 stdlib.toPropKey 一致)。
@@ -2153,36 +2296,96 @@ func (vm *VM) genResume(gen *object.Generator, arg object.Value) (object.Value, 
 			return object.UndefinedSingleton, true, err
 		}
 		gen.Started = true
-	} else {
-		// 恢复: 重建帧
-		if gen.PC >= len(gen.Instructions) {
-			gen.Done = true
-			return object.UndefinedSingleton, true, nil
+		return vm.runSuspendedGen(gen)
+	}
+	if gen.PC >= len(gen.Instructions) {
+		gen.Done = true
+		return object.UndefinedSingleton, true, nil
+	}
+	// 重建帧，压入 arg 作为 yield 表达式的值 (栈顶)
+	vm.rebuildGenFrame(gen)
+	vm.stack.Push(arg)
+	return vm.runSuspendedGen(gen)
+}
+
+// genThrow 把 throwVal 作为异常抛入暂停在 yield 点的 generator。
+// await 的 promise 被 reject 时的恢复路径: generator 体内的 try/catch
+// 可以捕获该异常；未捕获时 generator 终止并返回错误。
+func (vm *VM) genThrow(gen *object.Generator, throwVal object.Value) (object.Value, bool, error) {
+	if gen.Done {
+		return object.UndefinedSingleton, true, nil
+	}
+	if !gen.Started {
+		// 尚未启动: 无帧可恢复，视为立即抛出
+		gen.Done = true
+		return object.UndefinedSingleton, true, &ThrowError{Value: throwVal}
+	}
+	if gen.PC >= len(gen.Instructions) {
+		gen.Done = true
+		return object.UndefinedSingleton, true, nil
+	}
+	vm.rebuildGenFrame(gen)
+
+	// 仅当 generator 帧自身挂有 try 处理器时才查找处理器:
+	// tryStack 中残留的更深/更浅帧条目属于无关执行上下文，
+	// 把异常交给它们会破坏帧栈。
+	hasOwnHandler := false
+	for _, te := range vm.tryStack {
+		if te.frameIdx == vm.frameIdx {
+			hasOwnHandler = true
+			break
 		}
-		// 压入保存的帧栈残留值 (顺序与保存时一致)
-		for _, v := range gen.SavedStack {
-			vm.stack.Push(v)
-		}
-		locals := make([]object.Value, len(gen.Locals))
-		copy(locals, gen.Locals)
-		frame := &Frame{
-			Instructions: gen.Instructions,
-			PC:           gen.PC,
-			Locals:       locals,
-			Closure:      gen.Closure,
-			Constants:    &bytecode.ConstantPool{Constants: gen.Constants},
-			StackBase:    vm.stack.Len(),
-		}
-		vm.pushFrame(frame)
-		// 压入 arg 作为 yield 表达式的值 (栈顶)
-		vm.stack.Push(arg)
+	}
+	if !hasOwnHandler || !vm.handleThrow(throwVal) {
+		gen.Done = true
+		return object.UndefinedSingleton, true, &ThrowError{Value: throwVal}
 	}
 
+	return vm.runSuspendedGen(gen)
+}
+
+// rebuildGenFrame 重建 generator 暂停时保存的帧 (含恢复 try 处理器条目)。
+func (vm *VM) rebuildGenFrame(gen *object.Generator) *Frame {
+	// 压入保存的帧栈残留值 (顺序与保存时一致)
+	for _, v := range gen.SavedStack {
+		vm.stack.Push(v)
+	}
+	locals := make([]object.Value, len(gen.Locals))
+	copy(locals, gen.Locals)
+	frame := &Frame{
+		Instructions: gen.Instructions,
+		PC:           gen.PC,
+		Locals:       locals,
+		Closure:      gen.Closure,
+		Constants:    &bytecode.ConstantPool{Constants: gen.Constants},
+		StackBase:    vm.stack.Len(),
+	}
+	vm.pushFrame(frame)
+	// 把 yield 时保存的 try 处理器条目按相对值换算后重新挂回
+	for _, te := range gen.PendingTries {
+		vm.tryStack = append(vm.tryStack, tryEntry{
+			catchPC:   te.CatchPC,
+			finallyPC: te.FinallyPC,
+			stackBase: frame.StackBase + te.RelStackBase,
+			frameIdx:  vm.frameIdx + te.RelFrameIdx,
+		})
+	}
+	gen.PendingTries = nil
+	return frame
+}
+
+// runSuspendedGen 运行已重建帧的 generator 直到下一个 yield 或结束。
+func (vm *VM) runSuspendedGen(gen *object.Generator) (object.Value, bool, error) {
+	frame := vm.currentFrame()
 	prevGen := vm.currentGenerator
 	vm.currentGenerator = gen
 	err := vm.runFrom(vm.frameIdx)
 	vm.currentGenerator = prevGen
+	return vm.finishGenRun(gen, frame, err)
+}
 
+// finishGenRun 处理 generator 一次恢复运行的收尾。
+func (vm *VM) finishGenRun(gen *object.Generator, frame *Frame, err error) (object.Value, bool, error) {
 	if err != nil {
 		if ysig, ok := err.(*YieldSignal); ok {
 			gen.Value = ysig.value
@@ -2196,7 +2399,7 @@ func (vm *VM) genResume(gen *object.Generator, arg object.Value) (object.Value, 
 	// 正常结束: 弹出返回值
 	gen.Done = true
 	var result object.Value = object.UndefinedSingleton
-	if vm.stack.Len() > 0 {
+	if vm.stack.Len() > frame.StackBase {
 		result = vm.stack.Pop()
 	}
 	gen.Value = result
@@ -2221,6 +2424,18 @@ func (vm *VM) addValues(a, b object.Value) (object.Value, error) {
 			return object.NewArray(elements), nil
 		}
 	}
+	// BigInt 加法。
+	// 字符串拼接已在上面处理 (BigInt 与 String 相加时走 ToString 得到 "1")，
+	// 因此这里只需区分 BigInt+BigInt 与 BigInt+非 BigInt 两种情况。
+	aBig, aIsBig := a.(*object.BigInt)
+	bBig, bIsBig := b.(*object.BigInt)
+	if aIsBig || bIsBig {
+		if aIsBig && bIsBig {
+			return aBig.Add(bBig), nil
+		}
+		return nil, errMixBigInt
+	}
+
 	// 数字加法
 	aNum := toNumber(a)
 	bNum := toNumber(b)
@@ -2253,6 +2468,30 @@ func (vm *VM) getIndex(obj, index object.Value) object.Value {
 			if idx >= 0 && idx < len(o.Value) {
 				return object.NewString(string(o.Value[idx]))
 			}
+		}
+		return object.UndefinedSingleton
+
+	case *object.TypedArray:
+		if n, ok := index.(*object.Number); ok {
+			idx := int(n.Value)
+			if idx >= 0 && idx < o.Length {
+				return o.GetElement(idx)
+			}
+			return object.UndefinedSingleton
+		}
+		if s, ok := index.(*object.String); ok {
+			val, _ := o.GetProperty(s.Value)
+			return val
+		}
+		return object.UndefinedSingleton
+
+	case object.RxIndexed:
+		if n, ok := index.(*object.Number); ok {
+			return o.GetIndexedElement(int(n.Value))
+		}
+		if s, ok := index.(*object.String); ok {
+			val, _ := o.(object.Value).GetProperty(s.Value)
+			return val
 		}
 		return object.UndefinedSingleton
 
@@ -2305,13 +2544,47 @@ func (vm *VM) setIndex(obj, index, val object.Value) {
 					o.Elements = append(o.Elements, object.UndefinedSingleton)
 				}
 				o.Elements[idx] = val
+				return
 			}
+		}
+		// 非数字索引 (如 arr.foo = 1) 走通用属性设置
+		if s, ok := index.(*object.String); ok {
+			o.SetProperty(s.Value, val)
+		}
+	case *object.TypedArray:
+		if n, ok := index.(*object.Number); ok {
+			idx := int(n.Value)
+			if idx >= 0 {
+				// 越界写按规范静默忽略 (setElement 内部处理)
+				o.SetElement(idx, val)
+			}
+			return
+		}
+		if s, ok := index.(*object.String); ok {
+			o.SetProperty(s.Value, val)
+		}
+	case object.RxIndexed:
+		if n, ok := index.(*object.Number); ok {
+			o.SetIndexedElement(int(n.Value), val)
 		}
 	case *object.Object:
 		if s, ok := index.(*object.String); ok {
 			o.SetProperty(s.Value, val)
 		} else if sym, ok := index.(*object.Symbol); ok {
 			o.SetSymbolProperty(sym, val)
+		}
+	default:
+		// 其余类型 (Error/RegExp/Closure/Promise 等) 的字符串键赋值
+		// 统一走 Value 接口。基础类型 (String/Number/null/undefined) 的
+		// SetProperty 是无操作，与 JS 原始值语义一致。
+		if s, ok := index.(*object.String); ok {
+			obj.SetProperty(s.Value, val)
+		} else if sym, ok := index.(*object.Symbol); ok {
+			if sp, ok := obj.(interface {
+				SetSymbolProperty(*object.Symbol, object.Value)
+			}); ok {
+				sp.SetSymbolProperty(sym, val)
+			}
 		}
 	}
 }
@@ -2333,26 +2606,17 @@ func toNumber(v object.Value) float64 {
 	case *object.Undefined:
 		return math.NaN()
 	case *object.String:
-		if val.Value == "" {
-			return 0
-		}
-		var f float64
-		_, err := fmt.Sscanf(val.Value, "%f", &f)
-		if err != nil {
-			return math.NaN()
-		}
-		return f
+		return object.ParseJSNumber(val.Value)
 	default:
 		return math.NaN()
 	}
 }
 
 // toJSString 将任意值转换为 JavaScript 字符串表示。
+// 使用 ECMAScript ToString 语义 (数组 join、对象 [object Object]、
+// 自定义 toString 优先)，见 object.ToString。
 func toJSString(v object.Value) string {
-	if v == nil {
-		return "undefined"
-	}
-	return v.Inspect()
+	return object.ToString(v)
 }
 
 // looseEquals 实现 JavaScript 的 == (宽松相等)。
@@ -2364,6 +2628,10 @@ func looseEquals(a, b object.Value) bool {
 	// null == undefined
 	if isNullish(a) && isNullish(b) {
 		return true
+	}
+	// BigInt == BigInt/Number/String (数学值比较)
+	if a.Type() == object.BIGINT_OBJ || b.Type() == object.BIGINT_OBJ {
+		return bigIntLooseEqual(a, b)
 	}
 	// number == string
 	if a.Type() == object.NUMBER_OBJ && b.Type() == object.STRING_OBJ {
@@ -2410,8 +2678,16 @@ func strictEquals(a, b object.Value) bool {
 		if bv, ok := b.(*object.Symbol); ok {
 			return av.ID == bv.ID
 		}
+	case *object.BigInt:
+		if bv, ok := b.(*object.BigInt); ok {
+			return bigIntStrictEqual(av, bv)
+		}
 	}
-	return false
+	// 引用类型 (对象/数组/函数/Map/Set/RegExp/...): 按引用同一性比较。
+	// ECMAScript 的 IsStrictlyEqual 对 Object 类型即"是否同一个引用"，
+	// 缺少这一分支时连 `o === o` 都会得到 false。
+	// 所有 Value 实现都是指针类型，接口比较即指针比较。
+	return a == b
 }
 
 // isNullish 检查值是否为 null 或 undefined。

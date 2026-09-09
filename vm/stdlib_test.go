@@ -592,6 +592,133 @@ func TestArrayFindIndex(t *testing.T) {
 	assertNumber(t, evalJS(t, `[1, 2, 3, 4].findIndex((x) => x > 2)`), 2)
 }
 
+// ===== typeof 作用于全局对象 =====
+
+// 标准库的全局对象是运行时注入到全局环境的，编译期符号表里没有它们。
+// 编译器不能因为"符号表查不到"就把 typeof 折叠成 "undefined"，
+// 必须由 VM 在运行时做一次非抛出的全局查找。
+func TestTypeofGlobals(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"typeof Math", "object"},
+		{"typeof JSON", "object"},
+		{"typeof console", "object"},
+		{"typeof Reflect", "object"},
+		{"typeof Object", "function"},
+		{"typeof Array", "function"},
+		{"typeof String", "function"},
+		{"typeof Number", "function"},
+		{"typeof Boolean", "function"},
+		{"typeof Promise", "function"},
+		{"typeof RegExp", "function"},
+		{"typeof Error", "function"},
+		{"typeof Map", "function"},
+		{"typeof Set", "function"},
+		{"typeof Symbol", "function"},
+		{"typeof Proxy", "function"},
+		{"typeof setTimeout", "function"},
+		{"typeof Array.prototype", "object"},
+		{"typeof Array.prototype.map", "function"},
+		{"typeof String.prototype", "object"},
+		{"typeof String.prototype.trim", "function"},
+		// 真正的未声明变量仍是 "undefined"，且不抛 ReferenceError
+		{"typeof notDefinedAnywhere", "undefined"},
+	}
+	for _, tt := range tests {
+		assertString(t, evalJS(t, tt.input), tt.expected)
+	}
+}
+
+// ===== 构造器可调用性 =====
+
+func TestArrayConstructor(t *testing.T) {
+	// Array(len)
+	assertNumber(t, evalJS(t, `Array(3).length`), 3)
+	assertNumber(t, evalJS(t, `new Array(3).length`), 3)
+	// Array(...items)
+	assertNumber(t, evalJS(t, `Array(1, 2, 3).length`), 3)
+	assertNumber(t, evalJS(t, `Array(1, 2, 3)[2]`), 3)
+	assertNumber(t, evalJS(t, `new Array(1, 2, 3)[0]`), 1)
+	// Array(0) / Array()
+	assertNumber(t, evalJS(t, `Array().length`), 0)
+	// 非数字单参数视为元素
+	assertString(t, evalJS(t, `Array("a")[0]`), "a")
+	// 静态成员未受影响
+	if !evalJS(t, `Array.isArray(Array(2))`).(*object.Boolean).Value {
+		t.Fatal("expected Array.isArray(Array(2)) = true")
+	}
+}
+
+func TestObjectConstructor(t *testing.T) {
+	// Object() / new Object() 返回空对象
+	assertNumber(t, evalJS(t, `Object.keys(Object()).length`), 0)
+	assertNumber(t, evalJS(t, `Object.keys(new Object()).length`), 0)
+	// Object(null/undefined) 也是空对象
+	assertNumber(t, evalJS(t, `Object.keys(Object(null)).length`), 0)
+	// Object(obj) 原样返回
+	assertBoolean(t, evalJS(t, `let o = {a: 1}; Object(o) === o`), true)
+	// 静态成员未受影响
+	assertNumber(t, evalJS(t, `Object.keys({x: 1, y: 2}).length`), 2)
+}
+
+// ===== 字符串 UTF-16 语义 =====
+
+// JavaScript 的字符串索引单位是 UTF-16 码元，既不是 Unicode 码点，
+// 也不是 Go string 的 UTF-8 字节。非 ASCII 字符必须按码元计数。
+func TestStringUTF16Semantics(t *testing.T) {
+	// "世": UTF-8 占 3 字节，但只有 1 个 UTF-16 码元
+	assertNumber(t, evalJS(t, `"世".length`), 1)
+	// "😀": 一个 astral 字符 = 一个代理对 = 2 个码元
+	assertNumber(t, evalJS(t, `"😀".length`), 2)
+	assertNumber(t, evalJS(t, `"a😀b".length`), 4)
+	// 高/低位代理项
+	assertNumber(t, evalJS(t, `"😀".charCodeAt(0)`), 0xD83D)
+	assertNumber(t, evalJS(t, `"😀".charCodeAt(1)`), 0xDE00)
+	// charAt 取到的是单个码元 (半个代理对)
+	assertNumber(t, evalJS(t, `"a😀b".charAt(1).length`), 1)
+	// 按码元定位
+	assertNumber(t, evalJS(t, `"a😀b".indexOf("😀")`), 1)
+	assertNumber(t, evalJS(t, `"a😀b".lastIndexOf("😀")`), 1)
+	// split("") / Array.from 按码元拆分
+	assertNumber(t, evalJS(t, `Array.from("a😀").length`), 3)
+	assertNumber(t, evalJS(t, `"a😀".split("").length`), 3)
+	// slice / substring 按码元区间
+	assertString(t, evalJS(t, `"a😀b".slice(1, 3)`), "😀")
+	assertString(t, evalJS(t, `"a😀b".substring(1, 3)`), "😀")
+}
+
+// ===== 引用相等 =====
+
+func TestStrictEqualReferenceTypes(t *testing.T) {
+	// 对象按引用同一性比较
+	assertBoolean(t, evalJS(t, `let o = {a: 1}; o === o`), true)
+	assertBoolean(t, evalJS(t, `let o = {a: 1}; let p = o; o === p`), true)
+	assertBoolean(t, evalJS(t, `let o = {a: 1}; o == o`), true)
+	// 结构相同但引用不同则不相等
+	assertBoolean(t, evalJS(t, `{a: 1} === {a: 1}`), false)
+	assertBoolean(t, evalJS(t, `[1] === [1]`), false)
+	assertBoolean(t, evalJS(t, `let a = [1]; let b = [1]; a === b`), false)
+	// 数组与函数同理
+	assertBoolean(t, evalJS(t, `let a = [1]; a === a`), true)
+	assertBoolean(t, evalJS(t, `let f = () => 1; f === f`), true)
+	assertBoolean(t, evalJS(t, `let m = new Map(); m === m`), true)
+	// 基本类型仍按值比较
+	assertBoolean(t, evalJS(t, `1 === 1`), true)
+	assertBoolean(t, evalJS(t, `"a" === "a"`), true)
+	assertBoolean(t, evalJS(t, `1 === "1"`), false)
+}
+
+// ===== 循环引用打印 =====
+
+// 打印含环的结构必须终止。内建对象天然成环
+// (Object.prototype.constructor 指回构造器)，一旦打印就会栈溢出。
+func TestInspectCircularStructure(t *testing.T) {
+	assertString(t, evalJS(t, `let o = {}; o.self = o; typeof o.self`), "object")
+	assertNumber(t, evalJS(t, `let o = {}; o.self = o; Object.keys(o).length`), 1)
+}
+
 func TestArrayFindIndexNone(t *testing.T) {
 	assertNumber(t, evalJS(t, `[1, 2, 3].findIndex((x) => x > 10)`), -1)
 }

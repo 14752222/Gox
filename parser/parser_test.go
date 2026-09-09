@@ -542,8 +542,8 @@ func TestCallExpression(t *testing.T) {
 
 func TestMemberExpression(t *testing.T) {
 	tests := []struct {
-		input     string
-		computed  bool
+		input    string
+		computed bool
 	}{
 		{"foo.bar;", false},
 		{"foo[0];", true},

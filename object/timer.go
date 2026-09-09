@@ -1,6 +1,7 @@
 package object
 
 import (
+	"sort"
 	"sync"
 	"time"
 )
@@ -31,15 +32,32 @@ const IdleBudget = 50 * time.Millisecond
 // 此时带 timeout 的回调只能等超时强制派发。
 const IdleMinGap = 10 * time.Millisecond
 
+// pendingTaskPoll 是存在外部挂起任务时事件循环的轮询间隔。
+// goroutine 完成工作后通过 SetTimeout 把回调交给事件循环执行，
+// 主线程最迟在一个轮询周期后就能发现它。
+const pendingTaskPoll = 10 * time.Millisecond
+
 // idleDispatchGap 是两次空闲派发之间的最小间隔,
 // 防止回调内再次 requestIdleCallback 造成热自旋 (类比浏览器的帧节流)。
 const idleDispatchGap = time.Millisecond
 
 // TimerScheduler 管理所有定时器。
 type TimerScheduler struct {
-	mu               sync.Mutex
-	timers           map[int]*Timer
-	idle             map[int]*IdleCallback
+	mu     sync.Mutex
+	timers map[int]*Timer
+	// inFlight 记录已被 DueTimers 取出、正在等待执行或重新调度的定时器。
+	//
+	// 为什么需要: DueTimers 会把到期定时器从 timers 中移除。若回调内部
+	// 调用 clearInterval(自身 id) 或 clearTimeout(同批到期的兄弟 id)，
+	// Clear 在 timers 里查不到就什么都不做，t.Active 仍为 true，
+	// 随后 Reschedule 又把它塞回 timers —— 定时器无法在回调内取消。
+	inFlight map[int]*Timer
+	idle     map[int]*IdleCallback
+	// pendingTasks 记录由 Go 侧 goroutine 承载的外部任务数 (HTTP 服务器
+	// 监听、进行中的 fetch 等)。事件循环把它们当作唤醒源保活，否则
+	// "没有到期定时器" 时循环直接退出，服务器刚 listen 完进程就结束了。
+	pendingTasks     int
+	nextTaskToken    int
 	nextID           int
 	lastIdleDispatch time.Time // 上次空闲派发时间 (零值 = 从未)
 }
@@ -49,8 +67,9 @@ var globalScheduler = NewTimerScheduler()
 // NewTimerScheduler 创建一个新的定时器调度器。
 func NewTimerScheduler() *TimerScheduler {
 	return &TimerScheduler{
-		timers: make(map[int]*Timer),
-		idle:   make(map[int]*IdleCallback),
+		timers:   make(map[int]*Timer),
+		inFlight: make(map[int]*Timer),
+		idle:     make(map[int]*IdleCallback),
 	}
 }
 
@@ -94,12 +113,19 @@ func (s *TimerScheduler) SetInterval(callback Value, interval time.Duration) int
 }
 
 // Clear 取消定时器。
+//
+// 必须同时清理 timers 与 inFlight: 回调执行期间定时器已不在 timers 中，
+// 只删 timers 会导致 clearInterval(自身 id) 无效。
 func (s *TimerScheduler) Clear(id int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if t, ok := s.timers[id]; ok {
 		t.Active = false
 		delete(s.timers, id)
+	}
+	if t, ok := s.inFlight[id]; ok {
+		t.Active = false
+		delete(s.inFlight, id)
 	}
 }
 
@@ -110,16 +136,21 @@ func (s *TimerScheduler) ClearAll() {
 	for _, t := range s.timers {
 		t.Active = false
 	}
+	for _, t := range s.inFlight {
+		t.Active = false
+	}
 	s.timers = make(map[int]*Timer)
+	s.inFlight = make(map[int]*Timer)
 	for _, cb := range s.idle {
 		cb.Active = false
 	}
 	s.idle = make(map[int]*IdleCallback)
+	s.pendingTasks = 0
 }
 
 // NextFireIn 返回下一个需要唤醒的等待时间。
-// 唤醒源包括: 到期定时器、空闲回调的超时截止时间。
-// 如果两者都没有，返回 false。
+// 唤醒源包括: 到期定时器、空闲回调的超时截止时间、外部挂起任务。
+// 如果三者都没有，返回 false。
 func (s *TimerScheduler) NextFireIn() (time.Duration, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -146,6 +177,15 @@ func (s *TimerScheduler) NextFireIn() (time.Duration, bool) {
 			consider(cb.TimeoutAt)
 		}
 	}
+	// 存在挂起任务时: 有定时器则把等待时间截断到轮询间隔，
+	// 保证 goroutine 侧新注册的回调定时器 (如 fetch 完成回调) 能及时被
+	// 事件循环发现；无定时器则以轮询间隔保活循环不退出。
+	if s.pendingTasks > 0 {
+		if !found || next > pendingTaskPoll {
+			next = pendingTaskPoll
+			found = true
+		}
+	}
 	return next, found
 }
 
@@ -163,15 +203,30 @@ func (s *TimerScheduler) DueTimers() []*Timer {
 		if !t.FireAt.After(now) {
 			due = append(due, t)
 			delete(s.timers, id)
+			s.inFlight[id] = t
 		}
 	}
+	// Go 的 map 遍历顺序是随机的，直接返回会导致 setTimout(a,0);
+	// setTimeout(b,0) 的执行顺序不确定。按 (FireAt, ID) 排序保证
+	// 到期时间早的先执行，同刻到期的按注册顺序 (FIFO)。
+	sort.Slice(due, func(i, j int) bool {
+		if due[i].FireAt.Equal(due[j].FireAt) {
+			return due[i].ID < due[j].ID
+		}
+		return due[i].FireAt.Before(due[j].FireAt)
+	})
 	return due
 }
 
 // Reschedule 重新调度重复定时器。
+// 调用方 (事件循环) 必须对 DueTimers 返回的每个定时器都调用一次本方法 ——
+// 即使是一次性定时器，也需要它来清理 inFlight 记录。
 func (s *TimerScheduler) Reschedule(t *Timer) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// 执行阶段结束: 移出 inFlight。若期间被 Clear，Active 已为 false，
+	// 下面的判断会跳过重新调度。
+	delete(s.inFlight, t.ID)
 	if !t.Repeat || !t.Active {
 		return
 	}
@@ -277,4 +332,44 @@ func (s *TimerScheduler) IdleDispatchCooldown() time.Duration {
 		return 0
 	}
 	return wait
+}
+
+// ===== 外部挂起任务 (事件循环保活) =====
+//
+// HTTP 服务器监听、进行中的 fetch 等任务由 Go 侧 goroutine 承载，
+// 在调度器里没有对应的定时器。若不显式保活，事件循环在"无到期定时器、
+// 无空闲回调"时返回，脚本里刚 listen 完进程就退出了。
+//
+// 约定: goroutine 启动前 AddPendingTask() 领取令牌，任务结束或取消时
+// FinishPendingTask(token) 归还。计数归零后事件循环即可正常退出。
+// goroutine 完成后应通过 SetTimeout 把 JS 回调交回主线程执行，
+// 不要在 goroutine 里直接调用 CallFunction。
+
+// AddPendingTask 注册一个外部挂起任务，返回归还用的令牌。
+func (s *TimerScheduler) AddPendingTask() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pendingTasks++
+	s.nextTaskToken++
+	return s.nextTaskToken
+}
+
+// FinishPendingTask 归还 AddPendingTask 领取的令牌。
+// 未知令牌会被忽略，因此重复归还是安全的。
+func (s *TimerScheduler) FinishPendingTask(token int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if token <= 0 || token > s.nextTaskToken {
+		return
+	}
+	if s.pendingTasks > 0 {
+		s.pendingTasks--
+	}
+}
+
+// PendingTasks 返回当前外部挂起任务数。
+func (s *TimerScheduler) PendingTasks() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pendingTasks
 }

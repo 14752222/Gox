@@ -2,7 +2,9 @@ package stdlib
 
 import (
 	"encoding/json"
-	"fmt"
+	"errors"
+	"io"
+	"math"
 	"strconv"
 	"strings"
 
@@ -60,6 +62,12 @@ func setupJSON() *object.Object {
 			}
 		}
 
+		// 循环引用检测: 规范要求抛 TypeError。
+		// 缺少这一步会让 jsValueToJSONIndent 无限递归直至栈溢出。
+		if hasCycle(val) {
+			return object.NewErrorWithName("TypeError", "Converting circular structure to JSON")
+		}
+
 		result := jsValueToJSONIndent(val, "", indent, replacerArr, replacerFn, "")
 		if result == "" {
 			return object.UndefinedSingleton
@@ -69,17 +77,22 @@ func setupJSON() *object.Object {
 
 	j.SetProperty("parse", object.NewBuiltin("parse", func(args ...object.Value) object.Value {
 		if len(args) == 0 {
-			return object.NewError("SyntaxError: Unexpected end of JSON input")
+			return object.NewErrorWithName("SyntaxError", "Unexpected end of JSON input")
 		}
-		s, ok := args[0].(*object.String)
-		if !ok {
-			return object.NewError("SyntaxError: Unexpected token in JSON")
+		// 规范: 参数先经 ToString 转换，JSON.parse(42) 等价于 JSON.parse("42")
+		if isUndefinedValue(args[0]) {
+			return object.NewErrorWithName("SyntaxError", "undefined is not valid JSON")
 		}
-		var raw interface{}
-		if err := json.Unmarshal([]byte(s.Value), &raw); err != nil {
-			return object.NewError("SyntaxError: " + err.Error())
+		text := toStr(args[0])
+		// 用保持键顺序的解析器: encoding/json 直接解析进 map 会让属性顺序
+		// 随机化，导致 JSON.stringify(JSON.parse(x)) 与 x 的键顺序不一致。
+		ordered, perr := parseOrderedJSON(text)
+		if perr != nil {
+			// 用 NewErrorWithName 保证 e.name === "SyntaxError"。
+			// 旧实现把 "SyntaxError" 拼进了 message，name 仍是 "Error"。
+			return object.NewErrorWithName("SyntaxError", perr.Error())
 		}
-		result := jsonToJSValue(raw)
+		result := orderedToValue(ordered)
 		// 支持 reviver 函数
 		if len(args) > 1 && object.IsCallable(args[1]) {
 			holder := object.NewObject()
@@ -109,13 +122,17 @@ func applyReviver(reviver object.Value, holder *object.Object, key string) objec
 		}
 	}
 	// 如果是数组，递归处理每个元素
+	// 注意 holder 必须用与查询时相同的键存放元素。旧实现用 "" 存入、
+	// 却用索引字符串取出，导致 reviver 收到的值永远是 nil。
 	if arr, ok := val.(*object.Array); ok {
 		for i, elem := range arr.Elements {
-			holder := object.NewObject()
-			holder.SetProperty("", elem)
-			childVal := applyReviver(reviver, holder, intToString(i))
-			if childVal == object.UndefinedSingleton {
-				arr.Elements[i] = object.NullSingleton
+			h := object.NewObject()
+			k := strconv.Itoa(i)
+			h.SetProperty(k, elem)
+			childVal := applyReviver(reviver, h, k)
+			// reviver 返回 undefined 时数组元素变为 undefined (而非删除)
+			if childVal == nil || childVal == object.UndefinedSingleton {
+				arr.Elements[i] = object.UndefinedSingleton
 			} else {
 				arr.Elements[i] = childVal
 			}
@@ -126,12 +143,79 @@ func applyReviver(reviver object.Value, holder *object.Object, key string) objec
 	return object.CallFunction(reviver, nil, object.NewString(key), val)
 }
 
+// hasCycle 检测 JS 值中是否存在循环引用。
+func hasCycle(v object.Value) bool {
+	return detectCycle(v, make(map[object.Value]bool))
+}
+
+// detectCycle 深度优先遍历容器类型，seen 记录当前递归路径。
+//
+// 关键点: 记录的是"路径"而非"全局已访问集合"。同一个对象在不同分支
+// 重复出现是合法的 (如 {a: x, b: x})，只有路径上再次遇到自身才是环。
+// 因此在递归返回时必须把节点从 seen 中移除。
+//
+// 只有 *object.Array 与 *object.Object 会被写入 seen，二者均为指针类型，
+// 作为 map 键可安全比较。
+func detectCycle(v object.Value, seen map[object.Value]bool) bool {
+	switch val := v.(type) {
+	case *object.Array:
+		if seen[val] {
+			return true
+		}
+		seen[val] = true
+		for _, e := range val.Elements {
+			if detectCycle(e, seen) {
+				delete(seen, val)
+				return true
+			}
+		}
+		delete(seen, val)
+	case *object.Object:
+		if seen[val] {
+			return true
+		}
+		seen[val] = true
+		for _, k := range val.Keys() {
+			if desc, ok := val.Properties[k]; ok {
+				if detectCycle(desc.Value, seen) {
+					delete(seen, val)
+					return true
+				}
+			}
+		}
+		delete(seen, val)
+	}
+	return false
+}
+
+// jsonValueWithToJSON 若值带有可调用的 toJSON 方法，先用它替换自身。
+//
+// 规范 SerializeJSONProperty: 序列化前先查 toJSON，由它的返回值决定输出。
+// Temporal 的所有类型都靠这条路径输出 ISO 字符串——它们不是 *object.Object，
+// 走不到默认的属性枚举分支。
+func jsonValueWithToJSON(v object.Value) object.Value {
+	if v == nil {
+		return v
+	}
+	// 原始类型没有 toJSON，跳过可避免多余的属性查找
+	switch v.(type) {
+	case *object.Number, *object.String, *object.Boolean, *object.Null, *object.Undefined:
+		return v
+	}
+	tj, ok := v.GetProperty("toJSON")
+	if !ok || tj == nil || !object.IsCallable(tj) {
+		return v
+	}
+	return object.CallFunction(tj, v)
+}
+
 // jsValueToJSONIndent 将 JS 值转换为 JSON 字符串，支持缩进和 replacer。
 func jsValueToJSONIndent(v object.Value, currentIndent, indent string, replacerArr []string, replacerFn object.Value, key string) string {
 	// 应用 replacer 函数
 	if replacerFn != nil {
 		v = object.CallFunction(replacerFn, nil, object.NewString(key), v)
 	}
+	v = jsonValueWithToJSON(v)
 
 	switch val := v.(type) {
 	case *object.Number:
@@ -159,7 +243,7 @@ func jsValueToJSONIndent(v object.Value, currentIndent, indent string, replacerA
 		childIndent := currentIndent + indent
 		var parts []string
 		for i, elem := range val.Elements {
-			s := jsValueToJSONIndent(elem, childIndent, indent, replacerArr, replacerFn, intToString(i))
+			s := jsValueToJSONIndent(elem, childIndent, indent, replacerArr, replacerFn, strconv.Itoa(i))
 			if s == "" {
 				s = "null"
 			}
@@ -225,6 +309,7 @@ func jsValueToJSONIndent(v object.Value, currentIndent, indent string, replacerA
 
 // jsValueToJSON 将 JS 值转换为 JSON 字符串。
 func jsValueToJSON(v object.Value) string {
+	v = jsonValueWithToJSON(v)
 	switch val := v.(type) {
 	case *object.Number:
 		if val.Value != val.Value { // NaN
@@ -277,72 +362,290 @@ func jsValueToJSON(v object.Value) string {
 }
 
 // jsonToJSValue 将 Go 值转换为 JS 对象。
-func jsonToJSValue(raw interface{}) object.Value {
-	switch v := raw.(type) {
+// ===== 保持键顺序的 JSON 解析 =====
+//
+// encoding/json 把对象解析进 map[string]interface{}，遍历顺序是随机的。
+// 这会让 JSON.parse 得到的对象属性顺序不稳定，进而导致
+// JSON.stringify(JSON.parse(x)) 的输出与 x 的键顺序不一致 —— 规范要求
+// 序列化保持对象属性的原始顺序，因此这里改用 Decoder 逐 token 解析。
+//
+// 附带收益: 用 UseNumber() 保留数字字面量，避免大整数在 float64 转换中
+// 丢失精度。
+
+type jsonKind int
+
+const (
+	kindScalar jsonKind = iota
+	kindArray
+	kindObject
+)
+
+// orderedValue 是 JSON 解析的中间表示，对象保留键的原始顺序。
+type orderedValue struct {
+	kind jsonKind
+	obj  *orderedObject
+	arr  []*orderedValue
+	raw  interface{}
+}
+
+// orderedObject 保持键插入顺序的 JSON 对象。
+type orderedObject struct {
+	keys   []string
+	values map[string]*orderedValue
+}
+
+func newOrderedObject() *orderedObject {
+	return &orderedObject{values: make(map[string]*orderedValue)}
+}
+
+// set 写入键值。已存在的键保持原有位置 (后写覆盖先写，与 JS 对象一致)。
+func (o *orderedObject) set(key string, v *orderedValue) {
+	if _, exists := o.values[key]; !exists {
+		o.keys = append(o.keys, key)
+	}
+	o.values[key] = v
+}
+
+// parseOrderedJSON 解析 JSON 文本，返回保持键顺序的中间表示。
+func parseOrderedJSON(text string) (*orderedValue, error) {
+	dec := json.NewDecoder(strings.NewReader(text))
+	dec.UseNumber()
+	v, err := parseOrderedValue(dec)
+	if err != nil {
+		return nil, err
+	}
+	// 值之后只允许空白
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return nil, errors.New("unexpected trailing content after JSON value")
+	}
+	return v, nil
+}
+
+func parseOrderedValue(dec *json.Decoder) (*orderedValue, error) {
+	tok, err := dec.Token()
+	if err != nil {
+		return nil, err
+	}
+	switch t := tok.(type) {
+	case json.Delim:
+		switch t {
+		case '{':
+			obj := newOrderedObject()
+			for dec.More() {
+				keyTok, kerr := dec.Token()
+				if kerr != nil {
+					return nil, kerr
+				}
+				key, ok := keyTok.(string)
+				if !ok {
+					return nil, errors.New("invalid JSON: object key must be a string")
+				}
+				val, verr := parseOrderedValue(dec)
+				if verr != nil {
+					return nil, verr
+				}
+				obj.set(key, val)
+			}
+			if _, err := dec.Token(); err != nil { // 消费 '}'
+				return nil, err
+			}
+			return &orderedValue{kind: kindObject, obj: obj}, nil
+		case '[':
+			arr := []*orderedValue{}
+			for dec.More() {
+				val, verr := parseOrderedValue(dec)
+				if verr != nil {
+					return nil, verr
+				}
+				arr = append(arr, val)
+			}
+			if _, err := dec.Token(); err != nil { // 消费 ']'
+				return nil, err
+			}
+			return &orderedValue{kind: kindArray, arr: arr}, nil
+		}
+		return nil, errors.New("invalid JSON: unexpected delimiter")
+	case json.Number:
+		return &orderedValue{kind: kindScalar, raw: t}, nil
+	case string, bool, nil:
+		return &orderedValue{kind: kindScalar, raw: t}, nil
+	}
+	return nil, errors.New("invalid JSON")
+}
+
+// orderedToValue 将有序中间表示转换为 JS 值。
+func orderedToValue(v *orderedValue) object.Value {
+	switch v.kind {
+	case kindObject:
+		obj := object.NewObject()
+		for _, k := range v.obj.keys {
+			obj.SetProperty(k, orderedToValue(v.obj.values[k]))
+		}
+		return obj
+	case kindArray:
+		elements := make([]object.Value, len(v.arr))
+		for i, e := range v.arr {
+			elements[i] = orderedToValue(e)
+		}
+		return object.NewArray(elements)
+	}
+	switch val := v.raw.(type) {
 	case nil:
 		return object.NullSingleton
 	case bool:
-		return object.NewBoolean(v)
-	case float64:
-		return object.NewNumber(v)
+		return object.NewBoolean(val)
 	case string:
-		return object.NewString(v)
-	case []interface{}:
-		elements := make([]object.Value, len(v))
-		for i, elem := range v {
-			elements[i] = jsonToJSValue(elem)
+		return object.NewString(val)
+	case json.Number:
+		f, err := val.Float64()
+		if err != nil {
+			return object.NewNumber(math.NaN())
 		}
-		return object.NewArray(elements)
-	case map[string]interface{}:
-		obj := object.NewObject()
-		for k, val := range v {
-			obj.SetProperty(k, jsonToJSValue(val))
-		}
-		return obj
+		return object.NewNumber(f)
+	case float64:
+		return object.NewNumber(val)
 	}
 	return object.UndefinedSingleton
 }
 
-// parseFloatString 尝试解析字符串为 float64。
+// parseFloatString 按 ECMAScript 的 parseFloat 语义解析字符串。
+//
+// 与 strconv.ParseFloat 不同的是它会截断: 只读取最长的合法数字前缀，
+// 忽略后续非法字符。
+//
+//	parseFloat("3.14abc") -> 3.14   (strconv 会整体失败)
+//	parseFloat("Infinity") -> +Inf
+//	parseFloat("abc")     -> NaN
+//	parseFloat("  ")      -> NaN
 func parseFloatString(s string) (float64, bool) {
-	s = strings.TrimSpace(s)
-	if s == "" {
+	t := trimJSSpace(s)
+	if t == "" {
 		return 0, false
 	}
-	f, err := strconv.ParseFloat(s, 64)
+	if strings.HasPrefix(t, "Infinity") || strings.HasPrefix(t, "+Infinity") {
+		return math.Inf(1), true
+	}
+	if strings.HasPrefix(t, "-Infinity") {
+		return math.Inf(-1), true
+	}
+	end := scanNumberPrefix(t)
+	if end == 0 {
+		return 0, false
+	}
+	f, err := strconv.ParseFloat(t[:end], 64)
 	if err != nil {
 		return 0, false
 	}
 	return f, true
 }
 
-// parseIntString 尝试解析字符串为整数。
+// scanNumberPrefix 返回 s 中最长的合法十进制数字字面量前缀的长度。
+// 语法: [+-]? ( digits ( "." digits? )? | "." digits ) ( [eE] [+-]? digits )?
+// 无法构成合法数字时返回 0。
+func scanNumberPrefix(s string) int {
+	i := 0
+	if i < len(s) && (s[i] == '+' || s[i] == '-') {
+		i++
+	}
+	intStart := i
+	for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+		i++
+	}
+	hasIntDigits := i > intStart
+
+	if i < len(s) && s[i] == '.' {
+		i++
+		fracStart := i
+		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			i++
+		}
+		if !hasIntDigits && i == fracStart {
+			return 0 // 只有一个小数点
+		}
+	} else if !hasIntDigits {
+		return 0
+	}
+
+	// 指数部分: 没有数字时整体回退 (如 "1e" 只应解析出 "1")
+	if i < len(s) && (s[i] == 'e' || s[i] == 'E') {
+		save := i
+		i++
+		if i < len(s) && (s[i] == '+' || s[i] == '-') {
+			i++
+		}
+		expStart := i
+		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			i++
+		}
+		if i == expStart {
+			i = save
+		}
+	}
+	return i
+}
+
+// parseIntString 按 ECMAScript 的 parseInt 语义解析字符串。
+//
+// radix 传 0 表示调用方未指定基数 (等价于 undefined)。此时按 10 处理，
+// 但允许 "0x"/"0X" 前缀自动识别为 16 进制。
+//
+// 与 strconv.ParseInt 不同的是它会截断:
+//
+//	parseInt("12abc")   -> 12    (strconv 会整体失败)
+//	parseInt("0x10")    -> 16
+//	parseInt("0x10", 10)-> 0     (radix 明确为 10 时不识别 0x 前缀)
+//	parseInt("7", 8)    -> 7
 func parseIntString(s string, radix int) (int64, bool) {
-	s = strings.TrimSpace(s)
-	if s == "" {
+	t := trimJSSpace(s)
+	if t == "" {
 		return 0, false
 	}
-	if radix == 0 {
-		radix = 10
-	}
-	if radix < 2 || radix > 36 {
-		return 0, false
-	}
-	// 处理负号
+
 	negative := false
-	if s[0] == '-' {
+	if t[0] == '-' {
 		negative = true
-		s = s[1:]
-	} else if s[0] == '+' {
-		s = s[1:]
+		t = t[1:]
+	} else if t[0] == '+' {
+		t = t[1:]
 	}
-	// 处理 0x 前缀
-	if radix == 16 && len(s) >= 2 && (s[0:2] == "0x" || s[0:2] == "0X") {
-		s = s[2:]
+
+	if radix == 0 {
+		// 未指定基数: 默认 10，遇到 0x 前缀转 16 进制
+		radix = 10
+		if len(t) >= 2 && t[0] == '0' && (t[1] == 'x' || t[1] == 'X') {
+			t = t[2:]
+			radix = 16
+		}
+	} else {
+		if radix < 2 || radix > 36 {
+			return 0, false
+		}
+		// 基数明确为 16 时允许 0x 前缀
+		if radix == 16 && len(t) >= 2 && t[0] == '0' && (t[1] == 'x' || t[1] == 'X') {
+			t = t[2:]
+		}
 	}
-	i, err := strconv.ParseInt(s, radix, 64)
-	if err != nil {
+
+	// 截断: 只取当前基数下的合法数字前缀
+	end := 0
+	for end < len(t) && digitValue(t[end]) < radix {
+		end++
+	}
+	if end == 0 {
 		return 0, false
+	}
+
+	i, err := strconv.ParseInt(t[:end], radix, 64)
+	if err != nil {
+		// 超出 int64 范围时退化为浮点 (如 parseInt 一个超长数字串)
+		f, ferr := strconv.ParseFloat(t[:end], 64)
+		if ferr != nil {
+			return 0, false
+		}
+		if negative {
+			f = -f
+		}
+		return int64(f), true
 	}
 	if negative {
 		i = -i
@@ -350,5 +653,15 @@ func parseIntString(s string, radix int) (int64, bool) {
 	return i, true
 }
 
-// 确保使用 fmt 包 (避免未使用导入)
-var _ = fmt.Sprintf
+// digitValue 返回字符在 36 进制下的数值。非字母数字字符返回 255。
+func digitValue(c byte) int {
+	switch {
+	case c >= '0' && c <= '9':
+		return int(c - '0')
+	case c >= 'a' && c <= 'z':
+		return int(c-'a') + 10
+	case c >= 'A' && c <= 'Z':
+		return int(c-'A') + 10
+	}
+	return 255
+}

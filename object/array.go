@@ -21,19 +21,27 @@ var ArrayProto Value
 func SetArrayProto(p Value) { ArrayProto = p }
 
 func (a *Array) Type() ObjectType { return ARRAY_OBJ }
-func (a *Array) Inspect() string {
+func (a *Array) Inspect() string  { return a.inspect(newInspectGuard()) }
+
+// inspect 带环检测的打印实现，供 Object.inspect 递归调用时共享访问集合。
+func (a *Array) inspect(g *inspectGuard) string {
+	if g.arrs[a] {
+		return "[Circular]"
+	}
+	if g.depth >= inspectMaxDepth {
+		return "[ ... ]"
+	}
+	g.arrs[a] = true
+	g.depth++
+	defer func() {
+		delete(g.arrs, a)
+		g.depth--
+	}()
+
 	var elems []string
 	for _, e := range a.Elements {
-		if e == nil {
-			elems = append(elems, "null")
-			continue
-		}
-		// 字符串在数组中显示带引号
-		if s, ok := e.(*String); ok {
-			elems = append(elems, `"`+s.Value+`"`)
-		} else {
-			elems = append(elems, e.Inspect())
-		}
+		// 字符串在数组中显示带引号 (inspectValue 统一处理)
+		elems = append(elems, inspectValue(e, g))
 	}
 	return "[" + joinStrings(elems, ", ") + "]"
 }

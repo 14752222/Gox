@@ -7,6 +7,7 @@ import (
 
 	"js-runtime/ast"
 	"js-runtime/lexer"
+	"js-runtime/object"
 )
 
 // prefixParseFn 是前缀解析函数，用于解析以特定令牌开头的表达式。
@@ -19,9 +20,9 @@ type infixParseFn func(ast.Expression) ast.Expression
 // 采用预分词方案：先将整个输入分词为 token 切片，再基于切片解析。
 // 这样可以支持任意前瞻 (lookahead)，便于区分箭头函数和分组表达式等歧义语法。
 type Parser struct {
-	tokens  []lexer.Token // 预分词的令牌切片
-	pos     int           // 当前令牌位置
-	errors  *ErrorList
+	tokens []lexer.Token // 预分词的令牌切片
+	pos    int           // 当前令牌位置
+	errors *ErrorList
 
 	prefixParseFns map[lexer.TokenType]prefixParseFn
 	infixParseFns  map[lexer.TokenType]infixParseFn
@@ -49,6 +50,7 @@ func New(l *lexer.Lexer) *Parser {
 	p.registerPrefix(lexer.IDENTIFIER, p.parseIdentifier)
 	p.registerPrefix(lexer.INT_LITERAL, p.parseIntegerLiteral)
 	p.registerPrefix(lexer.FLOAT_LITERAL, p.parseFloatLiteral)
+	p.registerPrefix(lexer.BIGINT_LITERAL, p.parseBigIntLiteral)
 	p.registerPrefix(lexer.STRING_LITERAL, p.parseStringOrTemplate)
 	p.registerPrefix(lexer.BACKTICK, p.parseStringOrTemplate)
 	p.registerPrefix(lexer.IMPORT, p.parseDynamicImport)
@@ -114,6 +116,12 @@ func New(l *lexer.Lexer) *Parser {
 	p.registerInfix(lexer.SLASH_EQ, p.parseAssignmentExpression)
 	p.registerInfix(lexer.PERCENT_EQ, p.parseAssignmentExpression)
 	p.registerInfix(lexer.EXPONENT_EQ, p.parseAssignmentExpression)
+	p.registerInfix(lexer.AND_EQ, p.parseAssignmentExpression)
+	p.registerInfix(lexer.OR_EQ, p.parseAssignmentExpression)
+	p.registerInfix(lexer.XOR_EQ, p.parseAssignmentExpression)
+	p.registerInfix(lexer.SHIFT_LEFT_EQ, p.parseAssignmentExpression)
+	p.registerInfix(lexer.SHIFT_RIGHT_EQ, p.parseAssignmentExpression)
+	p.registerInfix(lexer.UNSIGNED_SHR_EQ, p.parseAssignmentExpression)
 	p.registerInfix(lexer.AND_AND_EQ, p.parseAssignmentExpression)
 	p.registerInfix(lexer.OR_OR_EQ, p.parseAssignmentExpression)
 	p.registerInfix(lexer.NULLISH_ASSIGN, p.parseAssignmentExpression)
@@ -164,7 +172,7 @@ func (p *Parser) nextToken() {
 	p.pos++
 }
 
-func (p *Parser) curTokenIs(t lexer.TokenType) bool  { return p.curToken().Type == t }
+func (p *Parser) curTokenIs(t lexer.TokenType) bool   { return p.curToken().Type == t }
 func (p *Parser) peekTokenIs(t lexer.TokenType) bool  { return p.peekToken().Type == t }
 func (p *Parser) peek2TokenIs(t lexer.TokenType) bool { return p.peekTokenAt(2).Type == t }
 func (p *Parser) peek3TokenIs(t lexer.TokenType) bool { return p.peekTokenAt(3).Type == t }
@@ -201,7 +209,10 @@ func (p *Parser) isBlockStart() bool {
 	if p.peekTokenIs(lexer.IDENTIFIER) {
 		switch p.peekTokenAt(2).Type {
 		case lexer.ASSIGN, lexer.PLUS_EQ, lexer.MINUS_EQ, lexer.ASTERISK_EQ,
-			lexer.SLASH_EQ, lexer.PERCENT_EQ, lexer.INC, lexer.DEC:
+			lexer.SLASH_EQ, lexer.PERCENT_EQ, lexer.EXPONENT_EQ, lexer.AND_EQ,
+			lexer.OR_EQ, lexer.XOR_EQ, lexer.SHIFT_LEFT_EQ, lexer.SHIFT_RIGHT_EQ,
+			lexer.UNSIGNED_SHR_EQ, lexer.AND_AND_EQ, lexer.OR_OR_EQ,
+			lexer.NULLISH_ASSIGN, lexer.INC, lexer.DEC:
 			return true
 		}
 	}
@@ -943,6 +954,19 @@ func (p *Parser) parseFloatLiteral() ast.Expression {
 		return nil
 	}
 	lit.Value = value
+	return lit
+}
+
+// parseBigIntLiteral 解析 BigInt 字面量。
+//
+// 词法阶段已保证不含小数点/指数，这里只做进制与分隔符的合法性校验；
+// 真正的数值转换交给编译期，避免在 AST 层引入 math/big 依赖。
+func (p *Parser) parseBigIntLiteral() ast.Expression {
+	lit := &ast.BigIntLiteral{Token: p.curToken(), Raw: p.curToken().Literal}
+	if _, ok := object.ParseBigIntLiteral(lit.Raw); !ok {
+		p.addError(fmt.Sprintf("could not parse %q as BigInt", lit.Raw))
+		return nil
+	}
 	return lit
 }
 

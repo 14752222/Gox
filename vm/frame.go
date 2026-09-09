@@ -23,7 +23,7 @@ type Frame struct {
 	Closure         *object.Closure
 	Constants       *bytecode.ConstantPool
 	ModifiedSlots   map[int]bool      // 修改过的 slot (用于 popFrame 传播)
-	CreatedClosures []*object.Closure  // 本帧创建的闭包 (用于 STORE 传播)
+	CreatedClosures []*object.Closure // 本帧创建的闭包 (用于 STORE 传播)
 	StackBase       int               // 进入本帧时栈高度 (返回时截断到此处)
 }
 

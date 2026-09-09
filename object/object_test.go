@@ -206,13 +206,13 @@ func TestObject(t *testing.T) {
 		t.Fatal("expected property not found")
 	}
 
-	// keys
+	// keys — 按 ECMAScript OrdinaryOwnPropertyKeys 顺序 (插入顺序)
 	keys := obj.Keys()
 	if len(keys) != 2 {
 		t.Fatalf("expected 2 keys, got %d", len(keys))
 	}
-	if keys[0] != "age" || keys[1] != "name" {
-		t.Fatalf("expected sorted keys [age, name], got %v", keys)
+	if keys[0] != "name" || keys[1] != "age" {
+		t.Fatalf("expected insertion-ordered keys [name, age], got %v", keys)
 	}
 
 	// HasOwnProperty
@@ -222,6 +222,53 @@ func TestObject(t *testing.T) {
 	if obj.HasOwnProperty("nonexistent") {
 		t.Fatal("expected HasOwnProperty('nonexistent') = false")
 	}
+}
+
+// Inspect 必须能打断循环引用: Object.prototype.constructor 指回构造器、
+// 构造器又持有 prototype，这类环在运行时普遍存在，
+// 没有环检测时打印环上任一个对象都会无限递归直至栈溢出。
+func TestInspectCircular(t *testing.T) {
+	// 对象自引用
+	o := NewObject()
+	o.SetProperty("name", NewString("o"))
+	o.SetProperty("self", o)
+	s := o.Inspect()
+	if !containsSubstr(s, "Circular") {
+		t.Fatalf("expected circular marker in Inspect output, got %q", s)
+	}
+
+	// 对象 → 数组 → 对象
+	arr := NewArray(nil)
+	arr.Elements = append(arr.Elements, o)
+	o.SetProperty("list", arr)
+	s = o.Inspect()
+	if !containsSubstr(s, "Circular") {
+		t.Fatalf("expected circular marker for obj/array cycle, got %q", s)
+	}
+
+	// 数组自引用
+	a2 := NewArray(nil)
+	a2.Elements = append(a2.Elements, a2)
+	if s := a2.Inspect(); !containsSubstr(s, "Circular") {
+		t.Fatalf("expected circular marker for self-referencing array, got %q", s)
+	}
+
+	// 无环结构不受影响
+	plain := NewObject()
+	plain.SetProperty("a", NewNumber(1))
+	plain.SetProperty("b", NewString("x"))
+	if got := plain.Inspect(); got != `{ a: 1, b: "x" }` {
+		t.Fatalf("unexpected plain Inspect output: %q", got)
+	}
+}
+
+func containsSubstr(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
 }
 
 func TestObjectPrototype(t *testing.T) {
@@ -313,7 +360,7 @@ func TestBuiltinFunction(t *testing.T) {
 
 func TestIsFalsy(t *testing.T) {
 	tests := []struct {
-		value   Value
+		value    Value
 		expected bool
 	}{
 		{NewNumber(0), true},

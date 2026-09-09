@@ -61,6 +61,10 @@ func constantsEqual(a, b object.Value) bool {
 		if bv, ok := b.(*object.Boolean); ok {
 			return av.Value == bv.Value
 		}
+	case *object.BigInt:
+		if bv, ok := b.(*object.BigInt); ok {
+			return av.Value.Cmp(bv.Value) == 0
+		}
 	case *object.Null:
 		_, ok := b.(*object.Null)
 		return ok
@@ -82,23 +86,23 @@ func constantsEqual(a, b object.Value) bool {
 // FunctionMetadata 存储编译后的函数信息。
 // 包含函数体的字节码、参数信息和局部变量数。
 type FunctionMetadata struct {
-	Name          string           // 函数名
-	Instructions  Instructions     // 函数体字节码
-	NumLocals     int              // 局部变量数 (含参数和外层捕获)
-	NumParameters int              // 参数个数
-	Parameters    []ParameterSpec  // 参数规格
-	IsArrow       bool             // 是否箭头函数
-	IsGenerator   bool             // 是否生成器函数 (function*)
-	IsAsync       bool             // 是否 async 函数
-	BaseSlot      int              // 函数自身变量的起始槽位 (外层作用域的变量数)
-	ArgumentsSlot int              // arguments 对象槽位 (-1 表示未使用/箭头函数)
+	Name          string          // 函数名
+	Instructions  Instructions    // 函数体字节码
+	NumLocals     int             // 局部变量数 (含参数和外层捕获)
+	NumParameters int             // 参数个数
+	Parameters    []ParameterSpec // 参数规格
+	IsArrow       bool            // 是否箭头函数
+	IsGenerator   bool            // 是否生成器函数 (function*)
+	IsAsync       bool            // 是否 async 函数
+	BaseSlot      int             // 函数自身变量的起始槽位 (外层作用域的变量数)
+	ArgumentsSlot int             // arguments 对象槽位 (-1 表示未使用/箭头函数)
 }
 
 // ParameterSpec 描述函数参数规格。
 type ParameterSpec struct {
-	Name      string // 参数名
-	HasDefault bool  // 是否有默认值
-	IsRest     bool  // 是否剩余参数 (...)
+	Name       string // 参数名
+	HasDefault bool   // 是否有默认值
+	IsRest     bool   // 是否剩余参数 (...)
 }
 
 // NewFunctionMetadata 创建函数元数据。
@@ -136,17 +140,17 @@ func (fm *FunctionMetadata) SetProperty(name string, val object.Value) {}
 
 // DestructurePattern 描述解构赋值的模式。
 type DestructurePattern struct {
-	IsArray     bool             // true = 数组解构, false = 对象解构
-	Bindings    []DestructureBinding // 各绑定项
+	IsArray  bool                 // true = 数组解构, false = 对象解构
+	Bindings []DestructureBinding // 各绑定项
 }
 
 // DestructureBinding 描述解构中的一个绑定。
 type DestructureBinding struct {
-	Name     string           // 变量名 (对象解构时为键名)
-	Alias    string           // 别名 (对象解构的 {key: alias})
-	HasDefault bool            // 是否有默认值
-	DefaultIdx uint16          // 默认值在常量池中的索引
-	IsRest     bool            // 是否是剩余项 (...rest)
+	Name       string // 变量名 (对象解构时为键名)
+	Alias      string // 别名 (对象解构的 {key: alias})
+	HasDefault bool   // 是否有默认值
+	DefaultIdx uint16 // 默认值在常量池中的索引
+	IsRest     bool   // 是否是剩余项 (...rest)
 }
 
 // NewDestructurePattern 创建解构模式。
@@ -187,7 +191,7 @@ func Disassemble(ins Instructions, cp *ConstantPool) string {
 func hasOperand(op Opcode) bool {
 	switch op {
 	case OP_NOP, OP_NULL, OP_UNDEFINED, OP_TRUE, OP_FALSE,
-		OP_POP, OP_DUP, OP_SWAP,
+		OP_POP, OP_DUP, OP_SWAP, OP_DUP2, OP_DUP_BELOW2,
 		OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_MOD, OP_POW, OP_NEG,
 		OP_BIT_AND, OP_BIT_OR, OP_BIT_XOR, OP_SHL, OP_SHR, OP_USHR,
 		OP_EQ, OP_NOT_EQ, OP_STRICT_EQ, OP_STRICT_NE,
@@ -197,7 +201,8 @@ func hasOperand(op Opcode) bool {
 		OP_TEMPLATE_END,
 		OP_PUSH_SCOPE, OP_POP_SCOPE,
 		OP_THIS,
-		OP_YIELD:
+		OP_YIELD,
+		OP_TO_NUMBER:
 		return false
 	}
 	return true

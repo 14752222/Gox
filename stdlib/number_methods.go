@@ -15,7 +15,7 @@ func setupNumberProto() *object.Object {
 	p.SetProperty("toFixed", object.NewBuiltinMethod("toFixed", func(this object.Value, args ...object.Value) object.Value {
 		num, ok := this.(*object.Number)
 		if !ok {
-			return object.NewString("NaN")
+			return thisTypeError("Number", "toFixed", this)
 		}
 		if isNaN(num.Value) {
 			return object.NewString("NaN")
@@ -28,10 +28,10 @@ func setupNumberProto() *object.Object {
 		}
 		digits := 0
 		if len(args) > 0 {
-			digits = int(toFloat(args[0]))
+			digits = int(toInt(args[0]))
 		}
 		if digits < 0 || digits > 100 {
-			return object.NewErrorWithName("RangeError", "toFixed() digits argument must be between 0 and 100")
+			return object.NewRangeError("toFixed() digits argument must be between 0 and 100")
 		}
 		return object.NewString(strconv.FormatFloat(num.Value, 'f', digits, 64))
 	}))
@@ -40,7 +40,7 @@ func setupNumberProto() *object.Object {
 	p.SetProperty("toPrecision", object.NewBuiltinMethod("toPrecision", func(this object.Value, args ...object.Value) object.Value {
 		num, ok := this.(*object.Number)
 		if !ok {
-			return object.NewString("NaN")
+			return thisTypeError("Number", "toPrecision", this)
 		}
 		if isNaN(num.Value) {
 			return object.NewString("NaN")
@@ -54,9 +54,9 @@ func setupNumberProto() *object.Object {
 		if len(args) == 0 {
 			return object.NewString(num.Inspect())
 		}
-		precision := int(toFloat(args[0]))
+		precision := int(toInt(args[0]))
 		if precision < 1 || precision > 100 {
-			return object.NewErrorWithName("RangeError", "toPrecision() precision argument must be between 1 and 100")
+			return object.NewRangeError("toPrecision() precision argument must be between 1 and 100")
 		}
 		return object.NewString(strconv.FormatFloat(num.Value, 'g', precision, 64))
 	}))
@@ -65,14 +65,14 @@ func setupNumberProto() *object.Object {
 	p.SetProperty("toString", object.NewBuiltinMethod("toString", func(this object.Value, args ...object.Value) object.Value {
 		num, ok := this.(*object.Number)
 		if !ok {
-			return object.NewString("NaN")
+			return thisTypeError("Number", "toString", this)
 		}
 		radix := 10
 		if len(args) > 0 {
-			radix = int(toFloat(args[0]))
+			radix = int(toInt(args[0]))
 		}
 		if radix < 2 || radix > 36 {
-			return object.NewErrorWithName("RangeError", "toString() radix must be between 2 and 36")
+			return object.NewRangeError("toString() radix must be between 2 and 36")
 		}
 		if radix == 10 {
 			return object.NewString(num.Inspect())
@@ -122,7 +122,7 @@ func setupNumberProto() *object.Object {
 	p.SetProperty("toExponential", object.NewBuiltinMethod("toExponential", func(this object.Value, args ...object.Value) object.Value {
 		num, ok := this.(*object.Number)
 		if !ok {
-			return object.NewString("NaN")
+			return thisTypeError("Number", "toExponential", this)
 		}
 		if isNaN(num.Value) {
 			return object.NewString("NaN")
@@ -133,8 +133,12 @@ func setupNumberProto() *object.Object {
 			}
 			return object.NewString("-Infinity")
 		}
-		if len(args) > 0 {
-			digits := int(toFloat(args[0]))
+		if len(args) > 0 && !isUndefinedValue(args[0]) {
+			digits := int(toInt(args[0]))
+			// 规范: fractionDigits 必须在 [0, 100] 内，否则抛 RangeError
+			if digits < 0 || digits > 100 {
+				return object.NewRangeError("toExponential() fractionDigits argument must be between 0 and 100")
+			}
 			return object.NewString(strconv.FormatFloat(num.Value, 'e', digits, 64))
 		}
 		return object.NewString(strconv.FormatFloat(num.Value, 'e', -1, 64))

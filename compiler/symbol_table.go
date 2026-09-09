@@ -9,18 +9,18 @@ package compiler
 
 // Symbol 表示一个变量绑定。
 type Symbol struct {
-	Name     string
-	Slot     int  // 在局部变量数组中的槽位号
-	IsConst  bool // 是否 const 绑定
-	Depth    int  // 作用域深度 (0=全局)
+	Name    string
+	Slot    int  // 在局部变量数组中的槽位号
+	IsConst bool // 是否 const 绑定
+	Depth   int  // 作用域深度 (0=全局)
 }
 
 // SymbolScope 表示一个作用域层级的符号表。
 type SymbolScope struct {
-	store  map[string]*Symbol // 变量名 → 符号
-	parent *SymbolScope        // 外层作用域
-	depth  int                 // 作用域深度
-	nextSlot int               // 下一个可用槽位
+	store    map[string]*Symbol // 变量名 → 符号
+	parent   *SymbolScope       // 外层作用域
+	depth    int                // 作用域深度
+	nextSlot int                // 下一个可用槽位
 }
 
 // NewSymbolScope 创建新的作用域。

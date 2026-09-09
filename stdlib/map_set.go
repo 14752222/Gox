@@ -28,6 +28,11 @@ func setupMapSet(env *runtime.Environment) {
 	mapFn.SetProperty("prototype", mapProto)
 	env.Declare("Map", mapFn, false)
 
+	// Map.groupBy(items, callback) (ES2024): 键保持原始值
+	mapFn.SetProperty("groupBy", object.NewBuiltin("groupBy", func(args ...object.Value) object.Value {
+		return groupByImpl(args, true)
+	}))
+
 	// ===== Set =====
 	setProto := setupSetProto()
 	object.SetSetProto(setProto)
@@ -46,19 +51,127 @@ func setupMapSet(env *runtime.Environment) {
 	setFn.SetProperty("prototype", setProto)
 	env.Declare("Set", setFn, false)
 
-	// ===== WeakMap (简化: 与 Map 相同行为) =====
+	// ===== ES2025 Set 组合方法 =====
+	// 这些方法在原型上实现 (见 setupSetProto 末尾的 setupSetCombinators)。
+	setupSetCombinators(setProto)
+
+	// ===== WeakMap =====
+	// WeakMap 复用 *object.Map 的存储结构，但绑定**独立的实例级原型**:
+	// 规范中 WeakMap 不可枚举，因此只暴露 get/set/has/delete，
+	// 不提供 size / clear / forEach / keys / values / entries。
+	// 过去这里既没设置 prototype 属性也没绑定实例原型，导致
+	// new WeakMap().set(k, v) 找不到方法而失败。
+	weakMapProto := setupWeakMapProto()
 	weakMapFn := object.NewBuiltin("WeakMap", func(args ...object.Value) object.Value {
 		m := object.NewMap()
+		m.SetProto(weakMapProto)
+		if len(args) > 0 {
+			if arr, ok := args[0].(*object.Array); ok {
+				for _, entry := range arr.Elements {
+					if entryArr, ok := entry.(*object.Array); ok && len(entryArr.Elements) >= 2 {
+						m.Set(entryArr.Elements[0], entryArr.Elements[1])
+					}
+				}
+			}
+		}
 		return m
 	})
+	weakMapFn.SetProperty("prototype", weakMapProto)
 	env.Declare("WeakMap", weakMapFn, false)
 
-	// ===== WeakSet (简化: 与 Set 相同行为) =====
+	// ===== WeakSet =====
+	// 同理，WeakSet 只暴露 add/has/delete。
+	weakSetProto := setupWeakSetProto()
 	weakSetFn := object.NewBuiltin("WeakSet", func(args ...object.Value) object.Value {
 		s := object.NewSet()
+		s.SetProto(weakSetProto)
+		if len(args) > 0 {
+			if arr, ok := args[0].(*object.Array); ok {
+				for _, elem := range arr.Elements {
+					s.Add(elem)
+				}
+			}
+		}
 		return s
 	})
+	weakSetFn.SetProperty("prototype", weakSetProto)
 	env.Declare("WeakSet", weakSetFn, false)
+}
+
+// setupWeakMapProto 创建 WeakMap.prototype (不可枚举，仅四个方法)。
+func setupWeakMapProto() *object.Object {
+	p := object.NewObject()
+	p.SetProperty("get", object.NewBuiltinMethod("get", func(this object.Value, args ...object.Value) object.Value {
+		m, ok := this.(*object.Map)
+		if !ok || len(args) == 0 {
+			return object.UndefinedSingleton
+		}
+		if val, found := m.Get(args[0]); found {
+			return val
+		}
+		return object.UndefinedSingleton
+	}))
+	p.SetProperty("set", object.NewBuiltinMethod("set", func(this object.Value, args ...object.Value) object.Value {
+		m, ok := this.(*object.Map)
+		if !ok {
+			return thisTypeError("WeakMap", "set", this)
+		}
+		key := object.Value(object.UndefinedSingleton)
+		val := object.Value(object.UndefinedSingleton)
+		if len(args) > 0 {
+			key = args[0]
+		}
+		if len(args) > 1 {
+			val = args[1]
+		}
+		m.Set(key, val)
+		return this
+	}))
+	p.SetProperty("has", object.NewBuiltinMethod("has", func(this object.Value, args ...object.Value) object.Value {
+		m, ok := this.(*object.Map)
+		if !ok || len(args) == 0 {
+			return object.NewBoolean(false)
+		}
+		return object.NewBoolean(m.Has(args[0]))
+	}))
+	p.SetProperty("delete", object.NewBuiltinMethod("delete", func(this object.Value, args ...object.Value) object.Value {
+		m, ok := this.(*object.Map)
+		if !ok || len(args) == 0 {
+			return object.NewBoolean(false)
+		}
+		return object.NewBoolean(m.Delete(args[0]))
+	}))
+	return p
+}
+
+// setupWeakSetProto 创建 WeakSet.prototype (不可枚举，仅三个方法)。
+func setupWeakSetProto() *object.Object {
+	p := object.NewObject()
+	p.SetProperty("add", object.NewBuiltinMethod("add", func(this object.Value, args ...object.Value) object.Value {
+		s, ok := this.(*object.Set)
+		if !ok {
+			return thisTypeError("WeakSet", "add", this)
+		}
+		if len(args) > 0 {
+			s.Add(args[0])
+		}
+		return this
+	}))
+	p.SetProperty("has", object.NewBuiltinMethod("has", func(this object.Value, args ...object.Value) object.Value {
+		s, ok := this.(*object.Set)
+		if !ok || len(args) == 0 {
+			return object.NewBoolean(false)
+		}
+		return object.NewBoolean(s.Has(args[0]))
+	}))
+	p.SetProperty("delete", object.NewBuiltinMethod("delete", func(this object.Value, args ...object.Value) object.Value {
+		s, ok := this.(*object.Set)
+		if !ok || len(args) == 0 {
+			return object.NewBoolean(false)
+		}
+		return object.NewBoolean(s.Delete(args[0]))
+	}))
+	return p
 }
 
 func setupMapProto() *object.Object {
@@ -280,4 +393,173 @@ func setupSetProto() *object.Object {
 	}))
 
 	return p
+}
+
+// setupSetCombinators 注册 ES2025 Set 组合方法:
+// union / intersection / difference / symmetricDifference / isSubsetOf /
+// isSupersetOf / isDisjointFrom。
+func setupSetCombinators(p *object.Object) {
+	// setLikeArg 将参数解析为可迭代的 *object.Set (简化: 仅接受 Set)
+	parseSetArg := func(this object.Value, args []object.Value, method string) (*object.Set, object.Value) {
+		s, ok := this.(*object.Set)
+		if !ok {
+			return nil, thisTypeError("Set", method, this)
+		}
+		if len(args) == 0 {
+			return nil, object.NewTypeError("Set.prototype.%s: argument is required", method)
+		}
+		return s, args[0]
+	}
+
+	// newSetFromIterable 从任意可迭代值构建新 Set
+	newSetFromIterable := func(v object.Value) (*object.Set, bool) {
+		out := object.NewSet()
+		next, ok := object.Iterate(v)
+		if !ok {
+			return nil, false
+		}
+		for {
+			item, done := next()
+			if done {
+				return out, true
+			}
+			out.Add(item)
+		}
+	}
+
+	// union(other): 两个集合的所有唯一元素
+	p.SetProperty("union", object.NewBuiltinMethod("union", func(this object.Value, args ...object.Value) object.Value {
+		s, arg := parseSetArg(this, args, "union")
+		if s == nil {
+			return arg
+		}
+		other, ok := newSetFromIterable(arg)
+		if !ok {
+			return object.NewTypeError("Set.prototype.union: argument is not iterable")
+		}
+		out := object.NewSet()
+		for _, v := range s.Values {
+			out.Add(v)
+		}
+		for _, v := range other.Values {
+			out.Add(v)
+		}
+		return out
+	}))
+
+	// intersection(other): 同时存在于两个集合的元素
+	p.SetProperty("intersection", object.NewBuiltinMethod("intersection", func(this object.Value, args ...object.Value) object.Value {
+		s, arg := parseSetArg(this, args, "intersection")
+		if s == nil {
+			return arg
+		}
+		other, ok := newSetFromIterable(arg)
+		if !ok {
+			return object.NewTypeError("Set.prototype.intersection: argument is not iterable")
+		}
+		out := object.NewSet()
+		for _, v := range s.Values {
+			if other.Has(v) {
+				out.Add(v)
+			}
+		}
+		return out
+	}))
+
+	// difference(other): 在 this 中但不在 other 中的元素
+	p.SetProperty("difference", object.NewBuiltinMethod("difference", func(this object.Value, args ...object.Value) object.Value {
+		s, arg := parseSetArg(this, args, "difference")
+		if s == nil {
+			return arg
+		}
+		other, ok := newSetFromIterable(arg)
+		if !ok {
+			return object.NewTypeError("Set.prototype.difference: argument is not iterable")
+		}
+		out := object.NewSet()
+		for _, v := range s.Values {
+			if !other.Has(v) {
+				out.Add(v)
+			}
+		}
+		return out
+	}))
+
+	// symmetricDifference(other): 只在一个集合中出现的元素
+	p.SetProperty("symmetricDifference", object.NewBuiltinMethod("symmetricDifference", func(this object.Value, args ...object.Value) object.Value {
+		s, arg := parseSetArg(this, args, "symmetricDifference")
+		if s == nil {
+			return arg
+		}
+		other, ok := newSetFromIterable(arg)
+		if !ok {
+			return object.NewTypeError("Set.prototype.symmetricDifference: argument is not iterable")
+		}
+		out := object.NewSet()
+		for _, v := range s.Values {
+			if !other.Has(v) {
+				out.Add(v)
+			}
+		}
+		for _, v := range other.Values {
+			if !s.Has(v) {
+				out.Add(v)
+			}
+		}
+		return out
+	}))
+
+	// isSubsetOf(other): this 的每个元素都在 other 中
+	p.SetProperty("isSubsetOf", object.NewBuiltinMethod("isSubsetOf", func(this object.Value, args ...object.Value) object.Value {
+		s, arg := parseSetArg(this, args, "isSubsetOf")
+		if s == nil {
+			return arg
+		}
+		other, ok := newSetFromIterable(arg)
+		if !ok {
+			return object.NewTypeError("Set.prototype.isSubsetOf: argument is not iterable")
+		}
+		for _, v := range s.Values {
+			if !other.Has(v) {
+				return object.NewBoolean(false)
+			}
+		}
+		return object.NewBoolean(true)
+	}))
+
+	// isSupersetOf(other): other 的每个元素都在 this 中
+	p.SetProperty("isSupersetOf", object.NewBuiltinMethod("isSupersetOf", func(this object.Value, args ...object.Value) object.Value {
+		s, arg := parseSetArg(this, args, "isSupersetOf")
+		if s == nil {
+			return arg
+		}
+		other, ok := newSetFromIterable(arg)
+		if !ok {
+			return object.NewTypeError("Set.prototype.isSupersetOf: argument is not iterable")
+		}
+		for _, v := range other.Values {
+			if !s.Has(v) {
+				return object.NewBoolean(false)
+			}
+		}
+		return object.NewBoolean(true)
+	}))
+
+	// isDisjointFrom(other): 无共同元素
+	p.SetProperty("isDisjointFrom", object.NewBuiltinMethod("isDisjointFrom", func(this object.Value, args ...object.Value) object.Value {
+		s, arg := parseSetArg(this, args, "isDisjointFrom")
+		if s == nil {
+			return arg
+		}
+		other, ok := newSetFromIterable(arg)
+		if !ok {
+			return object.NewTypeError("Set.prototype.isDisjointFrom: argument is not iterable")
+		}
+		for _, v := range s.Values {
+			if other.Has(v) {
+				return object.NewBoolean(false)
+			}
+		}
+		return object.NewBoolean(true)
+	}))
 }

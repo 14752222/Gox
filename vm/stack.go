@@ -6,11 +6,11 @@
 //   - 全局环境 (Environment): 存储全局变量 (通过 OP_LOAD_GLOBAL 访问)
 //
 // 执行流程:
-//   1. 编译器输出字节码 + 常量池
-//   2. VM 创建主帧，开始取指-解码-执行循环
-//   3. 每条指令: 读取 1 字节 opcode + 2 字节 operand, 执行对应操作
-//   4. PC 前进 3 字节，取下一条指令
-//   5. OP_CALL 创建新帧, OP_RETURN 弹出帧并返回值
+//  1. 编译器输出字节码 + 常量池
+//  2. VM 创建主帧，开始取指-解码-执行循环
+//  3. 每条指令: 读取 1 字节 opcode + 2 字节 operand, 执行对应操作
+//  4. PC 前进 3 字节，取下一条指令
+//  5. OP_CALL 创建新帧, OP_RETURN 弹出帧并返回值
 package vm
 
 import "js-runtime/object"

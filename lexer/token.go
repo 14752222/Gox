@@ -10,11 +10,12 @@ const (
 	EOF                      // 文件结束
 
 	// ==================== 字面量 ====================
-	IDENTIFIER      // 标识符: foo, bar, x, myVar
-	INT_LITERAL     // 整数字面量: 42, 0xFF, 0b1010, 0o755
-	FLOAT_LITERAL   // 浮点数字面量: 3.14, 1e5, 6.022e23
-	STRING_LITERAL  // 字符串字面量: "hello", 'world'
-	REGEX_LITERAL   // 正则字面量: /pattern/flags
+	IDENTIFIER     // 标识符: foo, bar, x, myVar
+	INT_LITERAL    // 整数字面量: 42, 0xFF, 0b1010, 0o755
+	FLOAT_LITERAL  // 浮点数字面量: 3.14, 1e5, 6.022e23
+	BIGINT_LITERAL // BigInt 字面量: 1n, 0xFFn, 0b1010n (词法阶段已去掉 n 后缀)
+	STRING_LITERAL // 字符串字面量: "hello", 'world'
+	REGEX_LITERAL  // 正则字面量: /pattern/flags
 
 	// ==================== ES6 特有令牌 ====================
 	BACKTICK     // ` 模板字面量开始/结束
@@ -47,78 +48,81 @@ const (
 	AT        // @ (装饰器预留)
 
 	// ==================== 多字符运算符 ====================
-	EQ            // ==
-	NOT_EQ        // !=
-	STRICT_EQ     // ===
-	STRICT_NOT_EQ // !==
-	LTE           // <=
-	GTE           // >=
-	AND           // &&
-	OR            // ||
-	NULL_COALESCE // ?? (ES2020, 预留)
-	PLUS_EQ       // +=
-	MINUS_EQ      // -=
-	ASTERISK_EQ   // *=
-	SLASH_EQ      // /=
-	PERCENT_EQ    // %=
-	INC           // ++
-	DEC           // --
-	EXPONENT      // ** (ES2016)
-	EXPONENT_EQ   // **=
-	AND_EQ        // &=
-	OR_EQ         // |=
-	XOR_EQ        // ^=
-	AND_AND_EQ    // &&= (逻辑与赋值, ES2021)
-	OR_OR_EQ      // ||= (逻辑或赋值, ES2021)
+	EQ             // ==
+	NOT_EQ         // !=
+	STRICT_EQ      // ===
+	STRICT_NOT_EQ  // !==
+	LTE            // <=
+	GTE            // >=
+	AND            // &&
+	OR             // ||
+	NULL_COALESCE  // ?? (ES2020, 预留)
+	PLUS_EQ        // +=
+	MINUS_EQ       // -=
+	ASTERISK_EQ    // *=
+	SLASH_EQ       // /=
+	PERCENT_EQ     // %=
+	INC            // ++
+	DEC            // --
+	EXPONENT       // ** (ES2016)
+	EXPONENT_EQ    // **=
+	AND_EQ         // &=
+	OR_EQ          // |=
+	XOR_EQ         // ^=
+	AND_AND_EQ     // &&= (逻辑与赋值, ES2021)
+	OR_OR_EQ       // ||= (逻辑或赋值, ES2021)
 	NULLISH_ASSIGN // ??= (逻辑空赋值, ES2021)
-	BIT_AND       // &
-	BIT_OR        // |
-	BIT_XOR       // ^
-	BIT_NOT       // ~ (同 TILDE, 但语义不同)
-	SHIFT_LEFT    // <<
-	SHIFT_RIGHT   // >>
-	UNSIGNED_SHR  // >>> (无符号右移)
+	BIT_AND        // &
+	BIT_OR         // |
+	BIT_XOR        // ^
+	BIT_NOT        // ~ (同 TILDE, 但语义不同)
+	SHIFT_LEFT     // <<
+	SHIFT_RIGHT    // >>
+	UNSIGNED_SHR   // >>> (无符号右移)
+	SHIFT_LEFT_EQ  // <<=
+	SHIFT_RIGHT_EQ // >>=
+	UNSIGNED_SHR_EQ // >>>=
 	OPTIONAL_CHAIN // ?. (可选链)
 
 	// ==================== 关键字 ====================
 	// 注意: VAR 关键字被故意排除 — 本运行时不支持 var，仅支持 let/const
-	LET         // let
-	CONST       // const
-	IF          // if
-	ELSE        // else
-	FOR         // for
-	OF          // of (for...of)
-	WHILE       // while
-	DO          // do
-	BREAK       // break
-	CONTINUE    // continue
-	FUNCTION    // function
-	RETURN      // return
-	TRUE        // true
-	FALSE       // false
-	NULL        // null
-	UNDEFINED    // undefined
-	TYPEOF      // typeof
-	INSTANCEOF  // instanceof
-	NEW         // new
-	THIS        // this
-	DELETE      // delete
-	VOID        // void
-	IN          // in
-	TRY         // try
-	CATCH       // catch
-	FINALLY     // finally
-	THROW       // throw
-	SWITCH      // switch
-	CASE        // case
-	DEFAULT     // default
-	CLASS       // class (预留扩展)
-	SUPER       // super (预留扩展)
-	IMPORT      // import (预留扩展)
-	EXPORT      // export (预留扩展)
-	YIELD       // yield (预留扩展)
-	ASYNC       // async (预留扩展)
-	AWAIT       // await (预留扩展)
+	LET        // let
+	CONST      // const
+	IF         // if
+	ELSE       // else
+	FOR        // for
+	OF         // of (for...of)
+	WHILE      // while
+	DO         // do
+	BREAK      // break
+	CONTINUE   // continue
+	FUNCTION   // function
+	RETURN     // return
+	TRUE       // true
+	FALSE      // false
+	NULL       // null
+	UNDEFINED  // undefined
+	TYPEOF     // typeof
+	INSTANCEOF // instanceof
+	NEW        // new
+	THIS       // this
+	DELETE     // delete
+	VOID       // void
+	IN         // in
+	TRY        // try
+	CATCH      // catch
+	FINALLY    // finally
+	THROW      // throw
+	SWITCH     // switch
+	CASE       // case
+	DEFAULT    // default
+	CLASS      // class (预留扩展)
+	SUPER      // super (预留扩展)
+	IMPORT     // import (预留扩展)
+	EXPORT     // export (预留扩展)
+	YIELD      // yield (预留扩展)
+	ASYNC      // async (预留扩展)
+	AWAIT      // await (预留扩展)
 )
 
 // Token 表示一个词法令牌。
@@ -201,6 +205,8 @@ func (t TokenType) String() string {
 		return "INT_LITERAL"
 	case FLOAT_LITERAL:
 		return "FLOAT_LITERAL"
+	case BIGINT_LITERAL:
+		return "BIGINT_LITERAL"
 	case STRING_LITERAL:
 		return "STRING_LITERAL"
 	case REGEX_LITERAL:
@@ -295,12 +301,24 @@ func (t TokenType) String() string {
 		return "BIT_OR"
 	case BIT_XOR:
 		return "BIT_XOR"
+	case AND_EQ:
+		return "AND_EQ"
+	case OR_EQ:
+		return "OR_EQ"
+	case XOR_EQ:
+		return "XOR_EQ"
 	case SHIFT_LEFT:
 		return "SHIFT_LEFT"
 	case SHIFT_RIGHT:
 		return "SHIFT_RIGHT"
 	case UNSIGNED_SHR:
 		return "UNSIGNED_SHR"
+	case SHIFT_LEFT_EQ:
+		return "SHIFT_LEFT_EQ"
+	case SHIFT_RIGHT_EQ:
+		return "SHIFT_RIGHT_EQ"
+	case UNSIGNED_SHR_EQ:
+		return "UNSIGNED_SHR_EQ"
 	case OPTIONAL_CHAIN:
 		return "OPTIONAL_CHAIN"
 	case AND_AND_EQ:
