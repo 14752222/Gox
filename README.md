@@ -3,6 +3,8 @@
 > 用 Go 从零实现的 JavaScript 运行时：词法分析 → 语法分析 → 字节码编译 → 栈式虚拟机执行。
 > 单二进制、零外部依赖，还能把 JS 脚本打包成独立可执行文件。
 
+📖 **[官网与使用教程](https://14752222.github.io/Gox/)** — 在线学习如何安装、运行脚本、写 GUI 应用与打包分发（源码在 [`website/`](website/)，纯静态零构建，经 GitHub Actions 发布）。
+
 ## 特性一览
 
 - **完整编译管线** — 自研 lexer / parser / compiler / bytecode VM，108 个操作码，定长 3 字节指令编码（`[操作码 1B][操作数 2B 大端]`），解码即取即用
@@ -12,7 +14,7 @@
 - **自研 GUI 渲染层** — `gx/gfx` 模块：纯 Go 软件光栅化，flex 风格布局（`column`/`row`/`gap`/`padding`）、命中测试、脏矩形局部重绘；win32（纯 syscall 无 cgo）与 X11 窗口后端，产物为无动态库依赖的静态单文件
 - **事件循环** — `setTimeout` / `setInterval` / `requestIdleCallback`，以及精度可控的严格定时器变体（`setStrictTimeout` 等）；GUI 模式下事件循环接入窗口消息泵
 - **响应式编程** — Dart GetX 风格的 `obs` / `computed` / `ever` / `once`，以及 SolidJS 风格的 `gx/solid` 信号（`createSignal` / `createEffect` / `createMemo`）
-- **npm 分发** — [`goxjs`](npm/) 包内置 Windows/Linux/macOS × x64/arm64 五个平台的预编译二进制，`npm i -g goxjs` 即得 `goxjs` 命令
+- **npm 分发** — [`@goxjs/goxjs`](npm/) 包内置 Windows/Linux/macOS × x64/arm64 五个平台的预编译二进制，`npm i -g @goxjs/goxjs` 即得 `goxjs` 命令
 - **工具链** — 交互式 REPL、jsbuild 打包器（JS → 独立 .exe，支持 GUI 应用与纯 Go 交叉编译）、dbgtool 词法调试器
 
 ## 快速开始
@@ -28,7 +30,7 @@ go build          # Windows 下生成 Gox.exe
 方式二：npm 安装预编译二进制（无需 Go 环境）
 
 ```bash
-npm i -g goxjs    # 或不安装直接跑: npx goxjs app.js
+npm i -g @goxjs/goxjs    # 或不安装直接跑: npx goxjs app.js
 ```
 
 **REPL：**
@@ -228,9 +230,10 @@ Options:
 | `gfx/` | 自研 GUI 渲染层（软件光栅化、布局、命中测试、win32/X11 后端） |
 | `packager/` | jsbuild 打包器（GUI 应用、交叉编译） |
 | `dbgtool/` | 词法分析调试工具（打印 Token 流） |
-| `npm/` | goxjs npm 包（跨平台二进制分发） |
+| `npm/` | @goxjs/goxjs npm 包（跨平台二进制分发） |
 | `scripts/` | 构建脚本（`build-npm.sh`：交叉编译 npm 包二进制） |
-| `.github/workflows/` | CI（打 `v*` tag 自动构建并发布 npm 包） |
+| `.github/workflows/` | CI（打 `v*` tag 自动构建并发布 npm 包；`website.yml` 发布官网到 GitHub Pages） |
+| `website/` | 官网（纯静态 HTML/CSS/JS，零构建，部署于 GitHub Pages） |
 | `docs/` | 文档 |
 | `test/` | 测试相关：`bench/` 性能剖析基准（fib、函数调用、对象操作、数值解析），`testdata/` 示例与测试脚本 |
 

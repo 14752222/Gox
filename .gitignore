@@ -36,3 +36,11 @@ npm/binaries/
 # Editor/IDE
 # .idea/
 # .vscode/
+
+# Mimosa 安全扫描产物
+.mimosa/
+
+# npm pack 产物
+npm/*.tgz
+npm/publish-v*.bat
+npm/fix-tarball-modes.py
