@@ -1712,12 +1712,20 @@ func isKeywordProperty(t lexer.TokenType) bool {
 func (p *Parser) parseConditionalExpression(left ast.Expression) ast.Expression {
 	expr := &ast.ConditionalExpression{Token: p.curToken(), Condition: left}
 	p.nextToken() // skip ?
-	expr.Consequence = p.parseExpression(TERNARY)
+	// 两个分支都按 ternaryOperand 解析 (见 precedence.go 的常量说明)。
+	//
+	// 这是右结合的关键: 中缀循环的条件是 `precedence < peekPrecedence()`, 若分支用
+	// TERNARY 自身解析, 后面紧跟的 `?` 因 `TERNARY < TERNARY` 为假而不会被消费,
+	// 外层循环会把它捡走, 于是 `a ? b : c ? d : e` 被错解析为 `(a ? b : c) ? d : e`
+	// —— 这正是 tabs_demo 面板渲染错分支的根因。
+	// 降到比 TERNARY 更松的层级后: `?` 优先于当前层 → 分支能继续吞掉后续三元
+	// (右结合); 而 `,` 与当前层同级且循环里有显式 COMMA 守卫 → 不会误吞逗号。
+	expr.Consequence = p.parseExpression(ternaryOperand)
 	if !p.expectPeek(lexer.COLON) {
 		return nil
 	}
 	p.nextToken() // skip :
-	expr.Alternative = p.parseExpression(TERNARY)
+	expr.Alternative = p.parseExpression(ternaryOperand)
 	return expr
 }
 

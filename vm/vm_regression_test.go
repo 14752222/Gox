@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -22,6 +23,8 @@ import (
 //  4. null/undefined 属性访问不抛 TypeError
 //  5. 命名函数表达式不绑定自身名字，无法递归
 //  6. 解析器对深层嵌套无上限 (Go 栈溢出) 且存在 O(n²) 解析开销
+//  7. 条件表达式被错解析为左结合 `(a ? b : c) ? d : e`，导致嵌套三元取到
+//     错误分支 (gfx 的 tabs_demo 面板渲染错颜色就是踩到这个)
 
 // testEvalCatch 编译并执行源码，返回脚本输出与执行错误。
 // 与 testEval 不同: 不把 vm error 视为测试失败，交由调用方断言。
@@ -243,4 +246,59 @@ func TestStdlibGlobalsSmoke(t *testing.T) {
 		t.Fatalf("vm error: %v", err)
 	}
 	testString(t, vm.LastPopped(), `{"a":1}|6`)
+}
+
+// ===== 条件表达式右结合 (回归 7) =====
+
+// TestConditionalExpressionRightAssociative 锁定嵌套三元的求值正确性。
+//
+// 历史缺陷: 分支按 TERNARY 自身优先级解析, 使 `?` 无法被分支消费而被外层
+// 循环捡走, `a ? b : c ? d : e` 变成 `(a ? b : c) ? d : e`。
+// 对 t=0 这类最常见的取值, 错的语法树恰好会取到第二个分支, 表现为
+// "分支判断莫名其妙偏一位", 排查时极难定位到解析器。
+func TestConditionalExpressionRightAssociative(t *testing.T) {
+	// 三分支三取值 —— 每个取值都必须命中自己的分支
+	got := map[float64]string{}
+	for _, tv := range []float64{0, 1, 2} {
+		_, result := runEvalVM(t, `
+			const t = `+formatNum(tv)+`;
+			const f = (x) => x;
+			t === 0 ? f("a") : t === 1 ? f("b") : f("c");
+		`)
+		got[tv] = result.(*object.String).Value
+	}
+	want := map[float64]string{0: "a", 1: "b", 2: "c"}
+	for tv, w := range want {
+		if got[tv] != w {
+			t.Errorf("t=%v: 取到分支 %q, 期望 %q", tv, got[tv], w)
+		}
+	}
+
+	// 纯字面量 (无函数调用) 同样右结合
+	for _, tc := range []struct{ t, want float64 }{{0, 1}, {1, 2}, {9, 3}} {
+		_, result := runEvalVM(t, `const t = `+formatNum(tc.t)+
+			`; t === 0 ? 1 : t === 1 ? 2 : 3;`)
+		testNumber(t, result, tc.want)
+	}
+
+	// 四层嵌套: 每层都取到正确分支
+	_, result := runEvalVM(t, `
+		const t = 2;
+		const f = (x) => x;
+		t === 0 ? f("a") : t === 1 ? f("b") : t === 2 ? f("c") : f("d");
+	`)
+	testString(t, result, "c")
+
+	// consequence 位置嵌套三元: a ? (b ? c : d) : e
+	_, result = runEvalVM(t, `const f = (x) => x; 1 ? 0 ? f("inner") : f("mid") : f("outer");`)
+	testString(t, result, "mid")
+
+	// 括号可覆盖默认结合方向
+	_, result = runEvalVM(t, `const f = (x) => x; (1 ? 0 : f("x")) ? f("hi") : f("lo");`)
+	testString(t, result, "lo")
+}
+
+// formatNum 把测试用的整数渲染成 JS 字面量。
+func formatNum(v float64) string {
+	return strconv.FormatFloat(v, 'f', -1, 64)
 }

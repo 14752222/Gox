@@ -600,6 +600,112 @@ func TestConditionalExpression(t *testing.T) {
 	}
 }
 
+// parseFirstExpr 解析以 `;` 结尾的单表达式源码，返回表达式节点。
+func parseFirstExpr(t *testing.T, input string) ast.Expression {
+	t.Helper()
+	p := New(lexer.New(input))
+	program := p.ParseProgram()
+	checkParserErrors(t, p)
+	stmt, ok := program.Statements[0].(*ast.ExpressionStatement)
+	if !ok {
+		t.Fatalf("expected ExpressionStatement, got %T", program.Statements[0])
+	}
+	return stmt.Expression
+}
+
+// condOf 断言节点是条件表达式并返回，否则测试失败。
+func condOf(t *testing.T, e ast.Expression, ctx string) *ast.ConditionalExpression {
+	t.Helper()
+	c, ok := e.(*ast.ConditionalExpression)
+	if !ok {
+		t.Fatalf("%s: expected ConditionalExpression, got %T", ctx, e)
+	}
+	return c
+}
+
+// TestConditionalExpressionAssociativity 锁定三元的右结合性。
+//
+// 回归背景: 原先分支用 parseExpression(TERNARY) 解析, 中缀循环条件
+// `precedence < peekPrecedence()` 使得 `TERNARY < TERNARY` 为假, 后续的 `?`
+// 不被分支消费而被外层循环捡走, 于是 `a ? b : c ? d : e` 错解析为
+// `(a ? b : c) ? d : e`。表面看是"渲染错分支", 实为语法树结构错误。
+func TestConditionalExpressionAssociativity(t *testing.T) {
+	// 嵌套三元在 alternative 位置 -> 必须挂在 Alternative 下 (右结合)
+	t.Run("alternative位置", func(t *testing.T) {
+		outer := condOf(t, parseFirstExpr(t, `a ? b : c ? d : e;`), "outer")
+		if id, ok := outer.Consequence.(*ast.Identifier); !ok || id.Value != "b" {
+			t.Fatalf("Consequence 应为 b, got %T", outer.Consequence)
+		}
+		inner := condOf(t, outer.Alternative, "Alternative")
+		if id := inner.Condition.(*ast.Identifier); id.Value != "c" {
+			t.Fatalf("内层 Condition 应为 c, got %s", id.Value)
+		}
+		if id := inner.Consequence.(*ast.Identifier); id.Value != "d" {
+			t.Fatalf("内层 Consequence 应为 d, got %s", id.Value)
+		}
+		if id := inner.Alternative.(*ast.Identifier); id.Value != "e" {
+			t.Fatalf("内层 Alternative 应为 e, got %s", id.Value)
+		}
+	})
+
+	// 嵌套三元在 consequence 位置 -> 挂在 Consequence 下
+	t.Run("consequence位置", func(t *testing.T) {
+		outer := condOf(t, parseFirstExpr(t, `a ? b ? c : d : e;`), "outer")
+		inner := condOf(t, outer.Consequence, "Consequence")
+		if id := inner.Condition.(*ast.Identifier); id.Value != "b" {
+			t.Fatalf("内层 Condition 应为 b, got %s", id.Value)
+		}
+		if id, ok := outer.Alternative.(*ast.Identifier); !ok || id.Value != "e" {
+			t.Fatalf("外层 Alternative 应为 e, got %T", outer.Alternative)
+		}
+	})
+
+	// 括号显式改变结合方向
+	t.Run("括号覆盖", func(t *testing.T) {
+		outer := condOf(t, parseFirstExpr(t, `(a ? b : c) ? d : e;`), "outer")
+		condOf(t, outer.Condition, "Condition")
+	})
+
+	// 条件位置先绑 && / || (条件按 ShortCircuitExpression 解析)
+	t.Run("条件吸收逻辑运算", func(t *testing.T) {
+		outer := condOf(t, parseFirstExpr(t, `a || b ? c : d;`), "outer")
+		if _, ok := outer.Condition.(*ast.LogicalExpression); !ok {
+			t.Fatalf("Condition 应为 LogicalExpression, got %T", outer.Condition)
+		}
+	})
+
+	// 逗号优先级低于三元: 逗号把三元当左操作数, 不能被分支吞掉
+	t.Run("不吞逗号", func(t *testing.T) {
+		seq, ok := parseFirstExpr(t, `a ? b : c, d;`).(*ast.SequenceExpression)
+		if !ok {
+			t.Fatalf("expected SequenceExpression, got %T", parseFirstExpr(t, `a ? b : c, d;`))
+		}
+		condOf(t, seq.Expressions[0], "第一个元素")
+	})
+
+	// 赋值优先级低于三元: x = (a ? b : c)
+	t.Run("赋值右侧", func(t *testing.T) {
+		asg := parseFirstExpr(t, `x = a ? b : c;`).(*ast.AssignmentExpression)
+		condOf(t, asg.Right, "Right")
+	})
+
+	// 分支按 AssignmentExpression 解析, 可吞赋值: a ? b : (c = d)
+	t.Run("分支吸收赋值", func(t *testing.T) {
+		outer := condOf(t, parseFirstExpr(t, `a ? b : c = d;`), "outer")
+		if _, ok := outer.Alternative.(*ast.AssignmentExpression); !ok {
+			t.Fatalf("Alternative 应为 AssignmentExpression, got %T", outer.Alternative)
+		}
+	})
+
+	// consequence 位置同理: a ? (b = c) : d
+	t.Run("consequence吸收赋值", func(t *testing.T) {
+		outer := condOf(t, parseFirstExpr(t, `a ? b = c : d;`), "outer")
+		if _, ok := outer.Consequence.(*ast.AssignmentExpression); !ok {
+			t.Fatalf("Consequence 应为 AssignmentExpression, got %T", outer.Consequence)
+		}
+	})
+}
+
 func TestIfStatement(t *testing.T) {
 	input := `if (x > 0) { return 1; } else { return 2; }`
 
