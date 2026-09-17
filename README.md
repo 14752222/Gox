@@ -6,21 +6,29 @@
 ## 特性一览
 
 - **完整编译管线** — 自研 lexer / parser / compiler / bytecode VM，108 个操作码，定长 3 字节指令编码（`[操作码 1B][操作数 2B 大端]`），解码即取即用
-- **ES6+ 语言子集** — `let`/`const`（不支持 `var`）、函数与箭头函数、闭包、`class`、`async`/`await`、解构赋值、剩余/默认参数、展开、模板字符串、`for...of`、`try`/`catch`/`throw`、可选链 `?.`、空值合并 `??`、ES 模块 `import`/`export`
+- **ES6+ 语言子集** — `let`/`const`（不支持 `var`）、函数与箭头函数、闭包、`class`、`async`/`await`、解构赋值、剩余/默认参数、展开、模板字符串、`for...of`、`try`/`catch`/`throw`、可选链 `?.`、空值合并 `??`、ES 模块 `import`/`export`，以及 **JSX 语法**（编译期降级为 `h(tag, props, ...children)` 调用）
 - **丰富的内置对象** — `Array` / `String` / `Number` / `Object` / `Boolean` / `Math` / `JSON` / `Map` / `Set` / `WeakMap` / `WeakSet` / `Symbol` / `BigInt` / `RegExp` / `Proxy` / `Reflect` / `Iterator` / `Promise` / `ArrayBuffer` / `DataView`（TypedArray 家族）/ `WeakRef` / `FinalizationRegistry` / 完整错误类型族 / `Temporal`（取代 `Date` 的现代日期时间 API）
 - **宿主能力模块** — `fs`（Node 风格，同步 + 异步两套）、`http`（客户端 `get`/`request` + 服务端 `createServer`）、`fetch`、`path`、`process`、`stats`
-- **事件循环** — `setTimeout` / `setInterval` / `requestIdleCallback`，以及精度可控的严格定时器变体（`setStrictTimeout` 等）
-- **响应式编程** — Dart GetX 风格的 `obs` / `computed` / `ever` / `once`
-- **工具链** — 交互式 REPL、jsbuild 打包器（JS → 独立 .exe）、dbgtool 词法调试器
+- **自研 GUI 渲染层** — `gx/gfx` 模块：纯 Go 软件光栅化，flex 风格布局（`column`/`row`/`gap`/`padding`）、命中测试、脏矩形局部重绘；win32（纯 syscall 无 cgo）与 X11 窗口后端，产物为无动态库依赖的静态单文件
+- **事件循环** — `setTimeout` / `setInterval` / `requestIdleCallback`，以及精度可控的严格定时器变体（`setStrictTimeout` 等）；GUI 模式下事件循环接入窗口消息泵
+- **响应式编程** — Dart GetX 风格的 `obs` / `computed` / `ever` / `once`，以及 SolidJS 风格的 `gx/solid` 信号（`createSignal` / `createEffect` / `createMemo`）
+- **npm 分发** — [`goxjs`](npm/) 包内置 Windows/Linux/macOS × x64/arm64 五个平台的预编译二进制，`npm i -g goxjs` 即得 `goxjs` 命令
+- **工具链** — 交互式 REPL、jsbuild 打包器（JS → 独立 .exe，支持 GUI 应用与纯 Go 交叉编译）、dbgtool 词法调试器
 
 ## 快速开始
 
-环境要求：Go 1.26+
+方式一：从源码构建（环境要求 Go 1.26+）
 
 ```bash
 git clone https://github.com/14752222/Gox.git
 cd Gox
 go build          # Windows 下生成 Gox.exe
+```
+
+方式二：npm 安装预编译二进制（无需 Go 环境）
+
+```bash
+npm i -g goxjs    # 或不安装直接跑: npx goxjs app.js
 ```
 
 **REPL：**
@@ -46,7 +54,7 @@ REPL 命令：`:help` 查看帮助、`:clear` 重置环境、`:exit` 退出。
 **运行脚本：**
 
 ```bash
-./Gox example.js
+./Gox example.js    # npm 安装的 goxjs 命令用法相同
 ```
 
 脚本执行完毕后会回显最后一个顶层表达式的值（`undefined` 除外），并等待定时器与异步回调全部执行完再退出。
@@ -131,12 +139,42 @@ count = 2
 2                  ← 顶层回显：最后一条赋值表达式的值
 ```
 
-## 打包成独立可执行文件
+## GUI 桌面应用
 
-`jsbuild`（packager 目录）把入口脚本及其相对 import 的模块嵌入一个生成的 Go 工程，编译成单文件 .exe，自带完整运行时：
+`gx/gfx` + `gx/solid` 提供 JSX 声明式 UI 与信号驱动的响应式更新，渲染器为纯 Go 软件光栅化（无 cgo、无动态库依赖）：
+
+```js
+import { createSignal } from "gx/solid"
+import { h, window, render } from "gx/gfx"
+
+const [count, setCount] = createSignal(0)
+
+render(
+  <column gap={8} padding={16}>
+    <text font={20}>{() => `count: ${count()}`}</text>
+    <button onClick={() => setCount(c => c + 1)}>加一</button>
+  </column>,
+  window({ title: "Counter", width: 400, height: 300 })
+)
+```
 
 ```bash
-go run ./packager app.js -o app.exe
+./Gox counter.js          # 直接运行，弹出 400x300 窗口
+```
+
+- 点击按钮 → `setCount` 更新信号 → 依赖该信号的属性/文本节点自动标脏 → 脏矩形合并后只重绘受影响区域
+- 内置元素：`column` / `row` / `text` / `rect` / `button`；布局属性 `gap` / `padding` / `width` / `height`
+- 窗口后端：Windows（纯 syscall win32）与 Linux（X11，Wayland 下走 XWayland）；macOS GUI 后端尚未实现
+- 完整示例见 `testdata/counter_demo.js`、`testdata/gui_demo.js`
+
+## 打包成独立可执行文件
+
+`jsbuild`（packager 目录）把入口脚本及其相对 import 的模块嵌入一个生成的 Go 工程，编译成单文件可执行程序，自带完整运行时：
+
+```bash
+go run ./packager app.js -o app.exe                    # CLI 应用
+go run ./packager counter.js --gui -o counter.exe      # GUI 应用
+go run ./packager app.js --gui --target linux/amd64    # 纯 Go 交叉编译，无需目标机工具链
 ```
 
 ```
@@ -146,8 +184,12 @@ Options:
   -o, --out <path>     输出文件路径 (默认: <输入文件名>.exe)
       --name <name>    应用名 (用于错误信息显示, 默认取输入文件名)
       --windowed       窗口模式: 不显示控制台窗口 (仅 Windows)
+      --gui            GUI 应用: 窗口消息泵事件循环 (配合 gx/gfx render)
+      --target <os>/<arch>  交叉编译目标 (windows|linux|darwin / amd64|arm64|386)
   -v, --verbose        显示构建过程输出
 ```
+
+各平台的分发注意事项（Windows 图标与签名、Linux 打包格式、macOS .app bundle）见 [docs/desktop-distribution.md](docs/desktop-distribution.md)。
 
 ## 架构
 
@@ -174,17 +216,21 @@ Options:
 
 | 目录 | 职责 |
 |---|---|
-| `lexer/` | 词法分析器 |
-| `parser/` | 语法分析器，生成 AST |
+| `lexer/` | 词法分析器（含 JSX 词法支持） |
+| `parser/` | 语法分析器，生成 AST（含 JSX 语法降级） |
 | `ast/` | AST 节点定义 |
 | `compiler/` | AST → 字节码编译器（含符号表） |
 | `bytecode/` | 操作码与字节码格式定义 |
 | `vm/` | 栈式字节码虚拟机（调用帧、模块加载、定时器调度） |
 | `object/` | 运行时对象系统（Number/Array/Map/Promise/Observable...） |
 | `runtime/` | 全局环境 Environment |
-| `stdlib/` | 标准库与宿主 API 实现 |
-| `packager/` | jsbuild 打包器 |
+| `stdlib/` | 标准库与宿主 API 实现（含 `gx/solid` 响应式信号） |
+| `gfx/` | 自研 GUI 渲染层（软件光栅化、布局、命中测试、win32/X11 后端） |
+| `packager/` | jsbuild 打包器（GUI 应用、交叉编译） |
 | `dbgtool/` | 词法分析调试工具（打印 Token 流） |
+| `npm/` | goxjs npm 包（跨平台二进制分发） |
+| `scripts/` | 构建脚本（`build-npm.sh`：交叉编译 npm 包二进制） |
+| `.github/workflows/` | CI（打 `v*` tag 自动构建并发布 npm 包） |
 | `docs/` | 文档 |
 | `test/` | 测试相关：`bench/` 性能剖析基准（fib、函数调用、对象操作、数值解析），`testdata/` 示例与测试脚本 |
 
@@ -198,6 +244,8 @@ go run ./dbgtool     # 查看词法分析的 Token 流
 
 深入参与开发（新增标准库 API、理解回调桥与内存管理）请阅读
 [docs/js-runtime-api-tutorial.md](docs/js-runtime-api-tutorial.md)。
+
+发版流程：修改 `npm/package.json` 的 `version` → 提交 → 打 tag（如 `v0.1.0`）→ push，CI 自动交叉编译全平台二进制并 `npm publish`（需在仓库 Secrets 配置 `NPM_TOKEN`）。
 
 ## 许可证
 
