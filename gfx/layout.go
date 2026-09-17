@@ -41,6 +41,18 @@ func layoutNode(n *GuiNode) {
 		layoutStack(n, true)
 	case "button":
 		layoutButton(n)
+	case "select":
+		layoutSelect(n)
+	case "select-option":
+		// 下拉项: 一行内容垂直居中 + 8px 左留白 (与 button 同一套排布)
+		layoutInlineRow(n, fieldPadX, 0)
+	case "select-popup":
+		// 下拉弹层: 纵排选项 (盒子由 layoutSelect 定: 贴在字段正下方且等宽)
+		layoutStack(n, false)
+	case "dialog":
+		layoutDialog(n)
+	case "toast":
+		layoutToast(n)
 	case "slot":
 		// 动态子节点占位容器: 单子时子节点直接占满 slot 的盒子 (slot 的尺寸
 		// 就是按这个子节点算出来的, 等价于子节点直接挂在祖父下面); 多子
@@ -150,6 +162,45 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 		if h == 0 {
 			h = ch + 2*padY
 		}
+	case "select":
+		// 字段行: 高 28; 宽 = 当前值/placeholder 文本 + 两侧留白 + 箭头。
+		// 宽度按内容算而不是 stretch: select 放在 column 里被拉满时, 箭头
+		// 会跑到离文字很远的地方 (脚本仍可显式给 width 覆盖)。
+		label, ok := n.selectLabel()
+		if !ok {
+			label = n.selectPlaceholder()
+		}
+		tw, _ := MeasureText(label, n.FontSize())
+		if w == 0 {
+			w = tw + 2*fieldPadX + selectArrowW
+			if w < selectMinW {
+				w = selectMinW
+			}
+		}
+		if h == 0 {
+			h = selectRowH
+		}
+	case "select-option":
+		tw, _ := MeasureText(n.TextContent(), n.FontSize())
+		if w == 0 {
+			w = tw + 2*fieldPadX
+		}
+		if h == 0 {
+			h = selectRowH
+		}
+	case "toast":
+		// 提示卡片: 宽按 message 文本 + 左侧色条 + 两侧留白; 高给 36 (单行
+		// 文本在 36px 卡片里垂直居中看起来才不局促)。
+		tw, th := MeasureText(n.toastMessage(), n.FontSize())
+		if w == 0 {
+			w = tw + toastAccentW + 2*fieldPadX
+		}
+		if h == 0 {
+			h = th + 16
+			if h < 36 {
+				h = 36
+			}
+		}
 	}
 	if n.Tag == "#text" || (n.Tag == "text" && n.TextContent() != "") {
 		if w == 0 || h == 0 {
@@ -253,10 +304,18 @@ func (n *GuiNode) gapOf() int {
 	return int(v)
 }
 
-// layoutButton 摆放 button 的内容区: v1 只保证"单文本子节点垂直居中",
-// 多子节点按声明顺序横排 (不换行); 横向默认留 8px 内边距 (buttonPadding)。
+// layoutButton 摆放 button 的内容区: 内边距走 buttonPadding (缺省 8/6)。
 func layoutButton(n *GuiNode) {
 	padX, padY := n.buttonPadding()
+	layoutInlineRow(n, padX, padY)
+}
+
+// layoutInlineRow 摆放"单行内容": 子节点按声明序横排, 交叉轴垂直居中,
+// 四周预留 padX/padY 内边距。v1 不换行。
+//
+// 抽出来是给 button 与下拉项共用 —— 两者的内容排布规则完全一样
+// ("一行文字居中"), 复制一份只会让后续调整漏掉其中一处。
+func layoutInlineRow(n *GuiNode, padX, padY int) {
 	area := Rect{
 		X: n.Box.X + padX, Y: n.Box.Y + padY,
 		W: n.Box.W - 2*padX, H: n.Box.H - 2*padY,
@@ -416,11 +475,17 @@ func (n *GuiNode) isContainer() bool {
 // stretchesCross 报告节点在父容器 alignItems=stretch 时是否占满交叉轴:
 // flex 容器总是占满 (内容尺寸只当下限); 单子 slot 则跟随它那个子节点
 // (slot 对布局透明), 多子 slot 按容器处理。
+//
+// 下拉项也占满: 它是"整行"元素, 高亮底色只有铺满弹层宽度才像一条选项
+// (只盖住文字宽度会显得像文本背景色)。
 func (n *GuiNode) stretchesCross() bool {
 	if n.Tag == "slot" {
 		if c := n.slotChild(); c != nil {
 			return c.stretchesCross()
 		}
+		return true
+	}
+	if n.Tag == "select-option" {
 		return true
 	}
 	return n.isContainer()

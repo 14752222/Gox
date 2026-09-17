@@ -534,10 +534,17 @@ func TestExampleScriptsMount(t *testing.T) {
 		"form_demo.js", "progress_demo.js", "button_demo.js", // P0 新增
 		"events_demo.js", "focus_demo.js", "hover_demo.js", // P1 事件/焦点/悬停
 		"tabs_demo.js", "list_demo.js", // P1 条件渲染 / 列表渲染
+		"select_demo.js", "dialog_demo.js", // P2-3 下拉框 / P2-4 弹层
 		"counter_demo.js", "gui_demo.js", // 既有演示 (布局改动后回归)
 	}
 	for _, name := range scripts {
 		t.Run(name, func(t *testing.T) {
+			// 定时器调度器是进程级单例: 演示脚本注册的 setInterval/setTimeout
+			// 若不清掉会泄漏到后续测试的事件循环里, 在别的 VM 上跑出
+			// "xxx is not defined" 这种跟本用例毫无关系的报错。
+			object.GlobalScheduler().ClearAll()
+			t.Cleanup(func() { object.GlobalScheduler().ClearAll() })
+
 			src, err := os.ReadFile(filepath.Join("..", "testdata", name))
 			if err != nil {
 				t.Fatalf("读取脚本: %v", err)
@@ -744,6 +751,47 @@ func checkDemoTree(t *testing.T, name string, root *GuiNode, fake *fakeSurface) 
 		}
 		if n := countTag(root, "separator"); n != 1 {
 			t.Fatalf("list_demo 的 separator 数量 = %d, want 1", n)
+		}
+	case "select_demo.js":
+		// 下拉演示: 两个字段行 (高 28, 显式宽 220), 初始都是闭合态
+		sels := findAll(root, "select")
+		if len(sels) != 2 {
+			t.Fatalf("select_demo 的 select 数量 = %d, want 2", len(sels))
+		}
+		for i, s := range sels {
+			if s.Box.H != selectRowH || s.Box.W != 220 {
+				t.Fatalf("第 %d 个 select 未按 220x%d 布局: %v", i, selectRowH, s.Box)
+			}
+			if s.expanded || s.popup != nil {
+				t.Fatalf("第 %d 个 select 初始不应处于展开态", i)
+			}
+		}
+		if n := countTag(root, "select-option"); n != 0 {
+			t.Fatalf("未展开时不该有下拉项, got %d", n)
+		}
+		img := shotsImage(fake)
+		if img == nil {
+			t.Fatalf("未捕获上屏帧")
+		}
+		assertPx(t, img, sels[0].Box.X+4, sels[0].Box.Y+selectRowH/2, pxFieldFace, "select_demo 字段白底")
+		assertPx(t, img, sels[0].Box.X+4, sels[0].Box.Y, pxBtnEdge, "select_demo 字段 1px 边框")
+	case "dialog_demo.js":
+		// 弹层演示: 初始 open=false 的 dialog (在树上但不绘制) + 未挂载的 toast
+		dlg := findFirst(root, "dialog")
+		if dlg == nil {
+			t.Fatalf("dialog_demo 缺少 dialog 节点")
+		}
+		if dlg.overlayVisible() {
+			t.Fatalf("dialog_demo 的 dialog 初始应为关闭态")
+		}
+		if dlg.Box != (Rect{}) {
+			t.Fatalf("关闭的 dialog 盒子应为空: %v", dlg.Box)
+		}
+		if n := countTag(root, "toast"); n != 0 {
+			t.Fatalf("toast 由条件渲染控制, 初始不该挂载, got %d", n)
+		}
+		if dlg.PropHandler("onClose") == nil {
+			t.Fatalf("dialog_demo 的 dialog 缺少 onClose 处理器")
 		}
 	}
 }

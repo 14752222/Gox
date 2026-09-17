@@ -50,6 +50,12 @@ func (n *GuiNode) isOverlay() bool {
 	return false
 }
 
+// isModal 报告节点是否是"拦截其下全部交互"的模态弹层。
+// 目前只有 dialog: toast 是非模态的, 点它下面的东西应当照常生效。
+func (n *GuiNode) isModal() bool {
+	return n.Tag == "dialog"
+}
+
 // isFlowChild 报告子节点是否参与父容器的常规流分配 (尺寸累加 / 位置排布)。
 // 绝对定位与弹层都不占位。
 func (n *GuiNode) isFlowChild() bool {
@@ -110,10 +116,16 @@ const overlayZBase = 1 << 20
 // 顺序必须与 DrawClipped 的 worklist 完全一致 (命中测试要倒着遍历):
 // 先在常规树里按 z 序 DFS 收集, 再对收集到的弹层本身继续收集 —— 弹层里
 // 嵌弹层时, 内层是"画在外层之后"的, 而不是"紧跟在外层后面"。
+//
+// 不透明的关闭弹层不下钻: drawNode 对关闭的弹层直接返回, 它的后代根本
+// 没进绘制队列, 命中测试自然也不该把它们算进来 (两边必须同进同出)。
 func escapesInDrawOrder(root *GuiNode) []*GuiNode {
 	var out []*GuiNode
 	collectEscapes(root, &out)
 	for i := 0; i < len(out); i++ {
+		if out[i].isOverlay() && !out[i].overlayVisible() {
+			continue
+		}
 		collectEscapes(out[i], &out)
 	}
 	return out
@@ -131,7 +143,7 @@ func collectEscapes(n *GuiNode, out *[]*GuiNode) {
 	}
 }
 
-// ===== 弹层可见性 =====
+// ===== 弹层可见性与遮盖判定 =====
 
 // overlayVisible 报告弹层当前是否可见: 有 open prop 就按它 (dialog 的常态),
 // 没有则"挂在树上即可见" (toast 由 JS 侧挂载/卸载控制)。
@@ -142,36 +154,56 @@ func (n *GuiNode) overlayVisible() bool {
 	return true
 }
 
-// coveredByOverlay 报告节点 n 是否被某个"打开的、且不是它祖先"的弹层盖住。
+// coveredByOverlay 报告节点 n 是否被某个弹层盖住。
 //
-// 用途只有一个: 焦点虚线框画在 Draw 之后, 会浮在遮罩之上。当焦点节点本身
-// 位于弹层之下时, 那个框就是"透过遮罩的幽灵", 必须跳过绘制。
+// 判据是**几何重叠**而不是"树里有没有弹层": 焦点虚线框画在 Draw 之后,
+// 会浮在遮罩之上, 焦点节点被盖住时那个框就是"透过遮罩的幽灵", 必须跳过。
+// 但反过来说, 一个贴在右上角的 toast 与窗口中间的按钮并不重叠, 那时抑制
+// 焦点框就是误判 —— 用 toast 做全局提示是很常见的用法。
 func coveredByOverlay(n, root *GuiNode) bool {
-	o := findOpenOverlay(root)
-	if o == nil {
+	if n == nil || root == nil {
 		return false
 	}
-	// 焦点在弹层内部 (或弹层自身) 时, 框应当正常显示
+	for _, o := range escapesInDrawOrder(root) {
+		if !o.isOverlay() || !o.overlayVisible() {
+			continue
+		}
+		if underNode(n, o) {
+			continue // 焦点就在这个弹层里, 不是"被盖住"
+		}
+		if rectsOverlap(o.Box, n.Box) {
+			return true
+		}
+	}
+	return false
+}
+
+// underNode 报告 n 是否位于 sub 子树内 (含 sub 自身)。
+func underNode(n, sub *GuiNode) bool {
 	for p := n; p != nil; p = p.Parent {
-		if p == o {
+		if p == sub {
+			return true
+		}
+	}
+	return false
+}
+
+// focusPathVisible 报告从 n 到根的路径上有没有"不可见的弹层"。
+// dialog 关闭只设 open=false 而节点仍在树上, 整支都不绘制 —— 焦点若还留在
+// 它内部的控件上, 虚线框也不能自己冒出来。
+func focusPathVisible(n *GuiNode) bool {
+	for p := n; p != nil; p = p.Parent {
+		if p.isOverlay() && !p.overlayVisible() {
 			return false
 		}
 	}
 	return true
 }
 
-// findOpenOverlay 返回树中第一个可见的弹层, 无则 nil。
-func findOpenOverlay(n *GuiNode) *GuiNode {
-	if n == nil {
-		return nil
+// rectsOverlap 判断两矩形是否有交集 (任一边长 <=0 视为不相交)。
+func rectsOverlap(a, b Rect) bool {
+	if a.W <= 0 || a.H <= 0 || b.W <= 0 || b.H <= 0 {
+		return false
 	}
-	for _, c := range n.Children {
-		if c.isOverlay() && c.overlayVisible() {
-			return c
-		}
-		if o := findOpenOverlay(c); o != nil {
-			return o
-		}
-	}
-	return nil
+	return a.X < b.X+b.W && b.X < a.X+a.W && a.Y < b.Y+b.H && b.Y < a.Y+a.H
 }

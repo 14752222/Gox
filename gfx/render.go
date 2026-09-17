@@ -45,6 +45,11 @@ type app struct {
 	hoverChain []*GuiNode
 	pressChain []*GuiNode
 	dragTarget *GuiNode // 鼠标捕获目标: 非空时 MouseMove 全部路由给它 (slider 等拖拽)
+
+	// swallowClick 吃掉紧随其后的那次点击 (P2-3): 点在下拉弹层之外时,
+	// 这次按下只用来"收起弹层", 不该顺带触发下面的控件。
+	// Down 与 Up 是两个事件, 所以这个消息要在两次事件之间留存。
+	swallowClick bool
 }
 
 var (
@@ -61,16 +66,7 @@ func Active() bool {
 
 // Invalidate 整帧标脏 (resize 等)。
 func Invalidate() {
-	appMu.Lock()
-	a := activeApp
-	appMu.Unlock()
-	if a == nil {
-		return
-	}
-	a.mu.Lock()
-	a.needDraw = true
-	a.fullDirty = true
-	a.mu.Unlock()
+	markFullDirty()
 }
 
 // markNodeDirty 节点级标脏 (effect 写回属性时调用)。
@@ -88,6 +84,31 @@ func markNodeDirty(n *GuiNode) {
 	}
 	a.dirtyNodes[n] = struct{}{}
 	a.mu.Unlock()
+}
+
+// markFullDirty 整帧标脏。
+//
+// 弹层的展开/收起必须走这条: 弹层新覆盖 (或刚让出) 的那片区域不属于任何
+// "框发生了变化" 的节点 —— 节点已经被摘掉了, diffRects 从树上根本看不到它,
+// 局部重绘的脏矩形表达不了"擦掉刚刚消失的弹层", 结果就是残留一块下拉框。
+func markFullDirty() {
+	appMu.Lock()
+	a := activeApp
+	appMu.Unlock()
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.needDraw = true
+	a.fullDirty = true
+	a.mu.Unlock()
+}
+
+// currentApp 返回当前挂载的应用 (Go 侧内置回调拿不到 app 指针时用)。
+func currentApp() *app {
+	appMu.Lock()
+	defer appMu.Unlock()
+	return activeApp
 }
 
 // Pump 是事件泵, 作为 vm.RunTimersWithPump 的 pump 回调:
@@ -181,8 +202,23 @@ func (a *app) rootNode() *GuiNode {
 
 // handleClick 命中测试并调用 onClick 回调, 同时把命中节点设为键盘焦点。
 func (a *app) handleClick(x, y int) {
-	target := HitTest(a.rootNode(), x, y)
+	a.mu.Lock()
+	swallow := a.swallowClick
+	a.swallowClick = false
+	a.mu.Unlock()
+	if swallow {
+		// 这次点击的按下阶段已经用于收起下拉弹层 (见 handleMouseDown),
+		// 抬起阶段不能再触发下面的控件 —— "点外面收起下拉" 不该顺带按到别的按钮。
+		return
+	}
+	root := a.rootNode()
+	target := HitTest(root, x, y)
 	if target == nil {
+		// 没命中任何处理器。若点落在模态遮罩上 (而不是内容卡片上), 那是
+		// "点外部关闭" 语义 (P2-4); 点在卡片身上什么都不做。
+		if d := modalAt(root, x, y); d != nil && dialogMaskHit(d, x, y) {
+			a.callHandler(d, "onClose", nil)
+		}
 		return
 	}
 	// 禁用子树 (P0-3): 既不触发回调, 也不改变键盘焦点
@@ -227,9 +263,9 @@ func (a *app) setFocus(target *GuiNode) {
 	}
 }
 
-// handleKey 键盘事件: 从焦点节点沿祖先链找第一个 name 处理器调用。
-// 回调参数带修饰键 (P1-1)。Tab 遍历仍不做: 需要 focusable 注册表,
-// 留待后续版本 (见 README 的 GUI 限制一节)。
+// handleKey 键盘事件: 先交给焦点链上的字段类组件内部消费 (下拉框的展开/
+// 高亮/选择), 未被消费的再沿祖先链找 JS 处理器。
+// Tab 遍历仍不做: 需要 focusable 注册表, 留待后续版本 (见 README 的 GUI 限制一节)。
 func (a *app) handleKey(key, name string, ev Event) {
 	a.mu.Lock()
 	n := a.focused
@@ -240,8 +276,20 @@ func (a *app) handleKey(key, name string, ev Event) {
 	if n == nil {
 		return
 	}
+	if name == "onKeyDown" && a.handleFieldKey(n, key) {
+		return
+	}
 	handler := handlerInChain(n, name)
 	if handler == nil {
+		// Esc 兜底 (P2-4): 焦点链上没有处理器时, 先收起展开的下拉框,
+		// 否则关掉最上层的对话框。焦点在对话框里的输入控件上时, Esc 会
+		// 先被文本框/下拉吃掉了, 走到这里的都是"焦点不在可交互控件里"。
+		if name == "onKeyDown" && key == "Escape" {
+			if a.closeAnyExpandedSelect(a.rootNode()) {
+				return
+			}
+			a.closeTopDialog()
+		}
 		return
 	}
 	arg := object.NewObject()
@@ -289,10 +337,20 @@ func (a *app) handleContextMenu(x, y int) {
 	a.callHandler(h, "onContextMenu", arg)
 }
 
-// handleMouseDown 记录按压目标 (视觉按压态 + 后续拖拽捕获的入口)。
-// 只有落在有交互意义的节点上才记录, 点空白处不该出现按压态。
+// handleMouseDown 记录按压目标 (视觉按压态 + 后续拖拽捕获的入口),
+// 并处理"点在下拉弹层之外 → 收起下拉且吞掉这次点击"。
+// 只有落在有交互意义的节点上才记录按压态, 点空白处不该出现按压态。
 func (a *app) handleMouseDown(x, y int) {
 	root := a.rootNode()
+	if a.closeSelectOnOutsideClick(root, x, y) {
+		// 这次按下只服务于"收起弹层": 置吞掉标记, 拖动悬停与按压态一并复位
+		a.mu.Lock()
+		a.swallowClick = true
+		a.mu.Unlock()
+		a.setHover(nil)
+		a.releasePress()
+		return
+	}
 	target := HitTestDeep(root, x, y)
 	if target == nil || target.disabledInChain() {
 		a.releasePress()
@@ -301,14 +359,33 @@ func (a *app) handleMouseDown(x, y int) {
 	a.setPress(pressChainOf(target))
 }
 
+// closeSelectOnOutsideClick 若有展开中的下拉框且 (x,y) 落在其弹层之外,
+// 收起它并返回 true。同时只处理一个: 打开新下拉前旧的一定已经收起了
+// (见 openSelect), 所以树上最多只有一个展开的弹层。
+func (a *app) closeSelectOnOutsideClick(root *GuiNode, x, y int) bool {
+	for _, sel := range expandedSelects(root) {
+		if sel.popup != nil && sel.popup.Box.Contains(x, y) {
+			continue
+		}
+		a.closeSelect(sel)
+		return true
+	}
+	return false
+}
+
 // releasePress 结束按压态 (MouseUp / 未命中时)。
 func (a *app) releasePress() {
 	a.setPress(nil)
 }
 
-// callHandler 调用事件回调: arg 为 nil 表示无参数。异常打印不中断事件循环。
+// callHandler 调用节点上的事件回调: arg 为 nil 表示无参数。异常打印不中断事件循环。
 func (a *app) callHandler(n *GuiNode, name string, arg object.Value) {
-	handler := n.PropHandler(name)
+	a.callHandlerValue(n.PropHandler(name), name, arg)
+}
+
+// callHandlerValue 用原始函数值调用回调 (Go 侧内置处理器包装脚本回调时用,
+// 与 callHandler 共享同一套异常处理)。
+func (a *app) callHandlerValue(handler object.Value, name string, arg object.Value) {
 	if handler == nil {
 		return
 	}
@@ -611,6 +688,16 @@ func (a *app) drawFocusRing(img *image.RGBA) {
 		return
 	}
 	if n.disabledInChain() {
+		return
+	}
+	// 焦点落在弹层自身 (点遮罩会把焦点给 dialog) 时不画: 那个框会绕着整个
+	// 窗口画一圈虚线, 既没有意义又很醒目。
+	if n.isOverlay() {
+		return
+	}
+	// 焦点在"已关闭的弹层"的子树里时也不画: dialog 关掉只是 open=false,
+	// 节点仍在树上 (脚本没销毁它), 整支都不绘制, 焦点框不能自己冒出来。
+	if !focusPathVisible(n) {
 		return
 	}
 	// 焦点框画在 Draw 之后, 会浮在遮罩之上: 焦点节点被打开的弹层盖住时

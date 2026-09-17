@@ -35,6 +35,26 @@ var (
 	colorKnob       = color.RGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 255} // switch 滑块
 	colorText       = color.RGBA{R: 26, G: 26, B: 26, A: 255}       // 缺省文字色 (近黑)
 	colorFocusRing  = color.RGBA{R: 0x1A, G: 0x5F, B: 0xB4, A: 255} // 焦点虚线框 (P1-3)
+	// P2-3 / P2-4 字段与弹层
+	colorFieldFace    = color.RGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 255} // 输入类字段底色
+	colorFieldHover   = color.RGBA{R: 0xF0, G: 0xF4, B: 0xF9, A: 255} // 字段悬停底 (浅蓝灰)
+	colorFieldPress   = color.RGBA{R: 0xE0, G: 0xE9, B: 0xF4, A: 255} // 字段按压底
+	colorInputEdge    = color.RGBA{R: 0x99, G: 0x99, B: 0x99, A: 255} // 输入类字段边框 (与 input 一致)
+	colorPlaceholder  = color.RGBA{R: 0x99, G: 0x99, B: 0x99, A: 255} // placeholder 灰字
+	colorOptionActive = color.RGBA{R: 0xDC, G: 0xE8, B: 0xF8, A: 255} // 下拉项高亮底 (浅蓝)
+	colorPopupFace    = color.RGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 255} // 弹层/卡片底色
+	colorPopupEdge    = color.RGBA{R: 0x99, G: 0x99, B: 0x99, A: 255} // 弹层/卡片边框
+	colorMask         = color.RGBA{R: 0, G: 0, B: 0, A: 0x66}         // modal 遮罩 (40% 黑)
+	colorInfo         = color.RGBA{R: 0x2F, G: 0x80, B: 0xED, A: 255} // toast info
+	colorWarn         = color.RGBA{R: 0xE8, G: 0x89, B: 0x0C, A: 255} // toast warn
+	colorDanger       = color.RGBA{R: 0xC0, G: 0x39, B: 0x2B, A: 255} // toast error
+)
+
+// 弹层缺省外观的十六进制写法: Go 侧构造节点时写进 props, 于是"缺省样式"
+// 与"脚本显式给的样式"走完全同一条读取路径 (没有第二套默认值逻辑)。
+const (
+	colorPopupFaceHex = "#ffffff"
+	colorPopupEdgeHex = "#999999"
 )
 
 // hoverBrighten / pressDarken 是悬停/按压的通道偏移量 (P1-4)。
@@ -232,6 +252,15 @@ func Draw(img *image.RGBA, root *GuiNode) {
 // 索引相对 img.Rect.Min, 于是所有绘制原语自动被限制在 clip 内 —— 不必给
 // 每个原语都加一个 clip 参数。深度裁剪就是再套一层子图 (drawNode 里对
 // 绝对定位子节点做父盒求交)。
+//
+// 逃逸裁剪的子树 (弹层) 单独收集、最后补画, 且拿回未收窄的 canvas,
+// 因此不受任何祖先盒子裁剪。
+//
+// 收集放在最前面按整棵树做, 而不是"边遍历边收集": 后者会被可见性剪枝
+// 带偏 —— 祖先盒子与脏区不相交时整个分支被跳过, 分支里的弹层也跟着丢。
+// 而弹层恰恰经常超出祖先盒子 (28px 高的 select 下面挂一个下拉框), 局部
+// 重绘只覆盖弹层那一片时就会整块不画。收集与裁剪解耦后, 常规内容可以
+// 放心剪枝, 弹层始终按绘制序补画。
 func DrawClipped(img *image.RGBA, root *GuiNode, clip image.Rectangle) {
 	if root == nil {
 		return
@@ -241,14 +270,10 @@ func DrawClipped(img *image.RGBA, root *GuiNode, clip image.Rectangle) {
 		return
 	}
 	canvas := img.SubImage(clip).(*image.RGBA)
-	// 逃逸裁剪的子树 (弹层) 收集到"根层级", 等常规内容画完再逐个补画。
-	// 它们拿回未收窄的 canvas, 因此不受任何祖先盒子裁剪。
-	// 用 worklist 而非显式递归: 弹层里再嵌弹层时内层自然排在后面,
-	// 顺序与"越晚绘制越靠上"的约定一致。
-	var escapes []*GuiNode
-	drawNode(canvas, root, &escapes)
-	for i := 0; i < len(escapes); i++ {
-		drawNode(canvas, escapes[i], &escapes)
+	escapes := escapesInDrawOrder(root)
+	drawNode(canvas, root)
+	for _, e := range escapes {
+		drawNode(canvas, e)
 	}
 }
 
@@ -263,9 +288,14 @@ func clipTo(img *image.RGBA, r Rect) *image.RGBA {
 	return img.SubImage(inter).(*image.RGBA)
 }
 
-func drawNode(img *image.RGBA, n *GuiNode, escapes *[]*GuiNode) {
+func drawNode(img *image.RGBA, n *GuiNode) {
 	clipRect := img.Bounds()
 	if clipRect.Empty() {
+		return
+	}
+	// 关闭的弹层直接剪掉整支: dialog 只是把盒子清空了, 子树还在树上
+	// (脚本仍持有节点), 不挡这一下的话关掉的对话框内容照画不误。
+	if n.isOverlay() && !n.overlayVisible() {
 		return
 	}
 	box := image.Rectangle{
@@ -302,6 +332,14 @@ func drawNode(img *image.RGBA, n *GuiNode, escapes *[]*GuiNode) {
 	case "checkbox", "radio", "switch", "progress", "separator", "spacer":
 		// 内置组件: 自带外观 (background 在控件上是强调色, 不走通用填充)
 		drawWidget(img, n, disabled)
+	case "select":
+		paintSelect(img, n, disabled)
+	case "select-option":
+		paintSelectOption(img, n, disabled)
+	case "dialog":
+		paintDialog(img, n)
+	case "toast":
+		paintToast(img, n, disabled)
 	default:
 		// 通用盒子 / button: background 填充 + border 描边 (button 有缺省外观)。
 		// 交互反馈 (P1-4) 只对 button 有实际效果: 其他标签没有缺省面,
@@ -315,8 +353,8 @@ func drawNode(img *image.RGBA, n *GuiNode, escapes *[]*GuiNode) {
 	}
 	for _, c := range zOrderedChildren(n) {
 		if c.escapeClipping() {
-			// 逃逸子树留到最后画, 且不受本轮父级裁剪约束
-			*escapes = append(*escapes, c)
+			// 逃逸子树 (弹层) 不在这里画: 它们已由 DrawClipped 按绘制序
+			// 收集, 并在常规内容之后以"根层级"重画一次 (不受父盒裁剪)。
 			continue
 		}
 		sub := img
@@ -325,7 +363,7 @@ func drawNode(img *image.RGBA, n *GuiNode, escapes *[]*GuiNode) {
 			// escapeClipping (弹层组件的出口就是这个开关)。
 			sub = clipTo(img, n.Box)
 		}
-		drawNode(sub, c, escapes)
+		drawNode(sub, c)
 	}
 }
 

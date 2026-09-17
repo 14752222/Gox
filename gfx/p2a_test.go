@@ -197,8 +197,41 @@ func TestEscapeClippingStackingOrder(t *testing.T) {
 	}
 }
 
-func TestZOrderDoesNotMutateChildren(t *testing.T) {
-	// 排序只影响遍历顺序, Children 数组本身必须保持声明序
+// TestEscapeDrawnWhenAncestorOutOfClip 是局部重绘 + 逃逸裁剪的交叉回归。
+//
+// 逃逸子树的收集曾经挂在"逐层遍历"上: 祖先盒子与脏区不相交时整支被剪掉,
+// 分支里的弹层也跟着丢。而弹层恰恰经常整个落在祖先盒子之外 (28px 高的
+// select 下面挂一个下拉框), 局部重绘只覆盖弹层那一片时就会整块不画。
+// 现在收集与裁剪解耦, 常规内容照常剪枝, 弹层始终按绘制序补画。
+func TestEscapeDrawnWhenAncestorOutOfClip(t *testing.T) {
+	root := mkNode("column", nil)
+	parent := withStr(mkNode("rect", map[string]float64{"width": 100, "height": 20}), "background", zRed)
+	popup := withStr(mkNode("rect", map[string]float64{"width": 100, "height": 60}), "background", zBlue)
+	withBool(popup, "escapeClipping", true)
+	withNum(popup, "left", 0)
+	withNum(popup, "top", 0)
+	mountChildren(parent, popup)
+	mountChildren(root, parent)
+
+	img := image.NewRGBA(image.Rect(0, 0, 200, 120))
+	FillRect(img, Rect{0, 0, 200, 120}, pxWhite)
+	Layout(root, 200, 120)
+	if parent.Box.H != 20 || popup.Box.H != 60 {
+		t.Fatalf("布局前提不成立: parent=%v popup=%v", parent.Box, popup.Box)
+	}
+
+	// 裁剪区只覆盖弹层溢出父盒的那一段 (y 40..70): 父盒只到 y=20, 与脏区
+	// 完全不相交, 但弹层必须照画。
+	DrawClipped(img, root, image.Rect(0, 40, 100, 70))
+
+	assertPx(t, img, 50, 50, color.RGBA{R: 0x1A, G: 0x5F, B: 0xB4, A: 255},
+		"祖先在脏区之外时弹层仍须绘制")
+	assertPx(t, img, 50, 65, pxWhite, "弹层之下仍是底色")
+	// 裁剪本身仍然生效: 脏区外的像素不该被写入
+	assertPx(t, img, 50, 80, pxWhite, "脏区之外不该被写入")
+}
+
+func TestZOrderDoesNotMutateChildren(t *testing.T) {	// 排序只影响遍历顺序, Children 数组本身必须保持声明序
 	root := mkNode("column", nil)
 	a := withNum(mkNode("rect", nil), "zIndex", 5)
 	b := withNum(mkNode("rect", nil), "zIndex", 1)

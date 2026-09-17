@@ -29,6 +29,17 @@ type GuiNode struct {
 	// hovered/pressed 由 Pump 按鼠标事件维护 (P1-4), 绘制时读。
 	hovered bool
 	pressed bool
+
+	// 下拉框状态 (P2-3): expanded 是展开态, popup 是挂在 select 下的弹层
+	// 子节点 (未展开为 nil), highlight 是键盘光标的选项下标 (-1 = 无)。
+	expanded  bool
+	popup     *GuiNode
+	highlight int
+
+	// 下拉项状态: 在兄弟中的下标, 以及所属 select (绘制高亮时要回查
+	// highlight, 用指针比"沿 Parent 走两层"更稳 —— 弹层一旦被拆链就找不到)。
+	optIndex int
+	owner    *GuiNode
 }
 
 // Rect 是布局矩形 (客户区像素坐标)。
@@ -66,6 +77,10 @@ var knownTags = map[string]struct{}{
 	"checkbox": {}, "radio": {}, "switch": {},
 	// P0-2 展示与占位
 	"progress": {}, "separator": {}, "spacer": {},
+	// P2-3 下拉框 (select-popup / select-option 由 Go 侧构造, 脚本写不到)
+	"select": {}, "select-popup": {}, "select-option": {},
+	// P2-4 弹层
+	"dialog": {}, "toast": {},
 }
 
 var (
@@ -122,6 +137,11 @@ func JSBuiltinH(args ...object.Value) object.Value {
 	// children
 	for _, c := range args[2:] {
 		node.wireChild(c)
+	}
+	// 需要内置交互的标签在这里补上 Go 侧处理器 (select 的展开)。
+	// 放在 props/children 都接好之后: 包装脚本自己的 onClick 时要能读到它。
+	if node.Tag == "select" {
+		attachSelectHandler(node)
 	}
 	return node
 }
@@ -314,6 +334,11 @@ func disposeNode(n *GuiNode) {
 	// 交互状态一并复位: 悬停/按压链里可能还留着这个已经离开树的节点
 	n.hovered = false
 	n.pressed = false
+	// 下拉框: 弹层是子节点, 上面那轮递归已经把它 dispose 过了, 这里只需
+	// 断开指针并复位展开态 (否则节点被回收前仍指着已销毁的子树)。
+	n.expanded = false
+	n.popup = nil
+	n.owner = nil
 }
 
 // removeChild 从 Children 里摘掉一个子节点 (存在才摘)。
@@ -515,7 +540,7 @@ func (n *GuiNode) buttonPadding() (padX, padY int) {
 // 造成无谓重绘 (鼠标移动是频率最高的事件)。
 func (n *GuiNode) hoverable() bool {
 	switch n.Tag {
-	case "button", "checkbox", "radio", "switch":
+	case "button", "checkbox", "radio", "switch", "select", "select-option":
 		return true
 	}
 	return false
@@ -543,4 +568,23 @@ func (n *GuiNode) interactiveFace(c color.RGBA) color.RGBA {
 // 悬停/按压反馈, 供 button/checkbox/radio/switch 的绘制共用。
 func (n *GuiNode) faceColor(fallback color.RGBA) color.RGBA {
 	return n.interactiveFace(n.propColor("background", fallback))
+}
+
+// fieldFace 读字段类组件 (select / input) 的交互面颜色。
+//
+// 与 faceColor 的区别: 字段底色是纯白, 而"提亮"对 255 无从下手 (通道已经
+// 顶到上限), 悬停会变成毫无反馈。这里改成轻微染色 —— 意图与 button 的
+// 提亮/压暗一样 (悬停更亮、按压更沉), 只是换成白色能表达的方式。
+func (n *GuiNode) fieldFace(fallback color.RGBA) color.RGBA {
+	c := n.propColor("background", fallback)
+	if n.disabledInChain() {
+		return c
+	}
+	if n.pressed {
+		return colorFieldPress
+	}
+	if n.hovered {
+		return colorFieldHover
+	}
+	return c
 }

@@ -73,14 +73,23 @@ func hitDeep(n *GuiNode, x, y int) *GuiNode {
 // 绘制, 完全不受祖先盒子裁剪, 因此哪怕祖先的盒子不包含该点 (最常见的就是
 // 28px 高的 select 下面挂一个下拉框), 它的弹层依然是可命中的。
 // 倒序遍历 = 倒着绘制, 与 escapesInDrawOrder 的顺序配合保证"最上面的先命中"。
+//
+// 模态弹层 (dialog) 吃掉落在它身上的点击: 遮罩的作用就是"其下内容不可达",
+// 若这里返回 nil 后继续下钻到常规树, 就会点到遮罩下面的按钮 —— 看得见的
+// 遮罩挡不住看不见的点击, 这是模态实现里最容易漏的一条。
+// 非模态弹层 (toast) 与普通逃逸子树 (下拉弹层) 缝隙里的点击照旧下钻。
 func hitEscapesLayer(root *GuiNode, x, y int, recurse func(*GuiNode, int, int) *GuiNode) *GuiNode {
 	esc := escapesInDrawOrder(root)
 	for i := len(esc) - 1; i >= 0; i-- {
 		e := esc[i]
-		if e.Box.Contains(x, y) {
-			if h := recurse(e, x, y); h != nil {
-				return h
-			}
+		if !e.Box.Contains(x, y) {
+			continue
+		}
+		if h := recurse(e, x, y); h != nil {
+			return h
+		}
+		if e.isModal() && e.overlayVisible() {
+			return nil
 		}
 	}
 	return recurse(root, x, y)
