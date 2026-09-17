@@ -13,6 +13,15 @@ import (
 type Binding struct {
 	Value   object.Value
 	IsConst bool // const 声明的变量不可重新赋值
+
+	// IsLexical 标记用户代码的顶层词法声明 (let/const/class/import 绑定)。
+	// 内置全局 (console/Math 等) 与赋值创建的全局没有此标记，
+	// 因此 let 可以遮蔽它们 —— 与浏览器全局词法环境语义一致。
+	IsLexical bool
+
+	// IsFnDecl 标记顶层函数声明。函数声明允许互相重定义，
+	// 但与词法声明同名时双向冲突 (规范: SyntaxError)。
+	IsFnDecl bool
 }
 
 // Environment 实现词法作用域环境。
@@ -81,6 +90,28 @@ func (e *Environment) Declare(name string, val object.Value, isConst bool) {
 		Value:   val,
 		IsConst: isConst,
 	}
+}
+
+// DeclareGlobal 执行顶层声明并写入全局环境，同时实现全局重声明检查:
+//   - 词法声明 (let/const/class/import) 与已有词法声明或函数声明冲突 → SyntaxError
+//   - 函数声明允许互相重定义，但与已有词法声明冲突 → SyntaxError
+//   - 与无标记的绑定 (内置全局、赋值创建的全局) 不冲突，词法声明可遮蔽之
+//
+// REPL 每行输入独立编译，重声明只能在执行声明指令时对照持久化的
+// 全局环境发现，因此检查放在运行时而非编译期。
+func (e *Environment) DeclareGlobal(name string, val object.Value, isConst, isFnDecl bool) error {
+	if existing, ok := e.store[name]; ok {
+		if existing.IsLexical || (existing.IsFnDecl && !isFnDecl) {
+			return fmt.Errorf("SyntaxError: Identifier '%s' has already been declared", name)
+		}
+	}
+	e.store[name] = Binding{
+		Value:     val,
+		IsConst:   isConst,
+		IsLexical: !isFnDecl,
+		IsFnDecl:  isFnDecl,
+	}
+	return nil
 }
 
 // IsConst 检查变量是否为 const 绑定。

@@ -13,6 +13,15 @@ type Symbol struct {
 	Slot    int  // 在局部变量数组中的槽位号
 	IsConst bool // 是否 const 绑定
 	Depth   int  // 作用域深度 (0=全局)
+
+	// IsFnDecl 标记函数声明。同一作用域内函数声明允许重复，
+	// 但 let/const/class 与任何已有声明同名都是编译期错误。
+	IsFnDecl bool
+
+	// Declared 标记声明已被正式编译认领。
+	// prescanScope 先登记名字 (Declared=false)，编译到声明语句时认领；
+	// 认领时发现已 Declared 即同一作用域内的真实重复声明。
+	Declared bool
 }
 
 // SymbolScope 表示一个作用域层级的符号表。

@@ -52,6 +52,7 @@ const (
 	OP_STORE_GLOBAL  Opcode = 0x24 // 存入全局变量 [name_idx]
 	OP_DECLARE       Opcode = 0x25 // 声明变量 [name_idx] (let)
 	OP_DECLARE_CONST Opcode = 0x26 // 声明 const 变量 [name_idx]
+	OP_DECLARE_FUNC  Opcode = 0x27 // 声明顶层函数 [name_idx] (允许重定义)
 
 	// 0x30-0x3F: 算术运算
 	OP_ADD     Opcode = 0x30 // 栈顶两值相加 (弹出 a, b, 推入 a+b)
@@ -178,6 +179,7 @@ var opcodeNames = map[Opcode]string{
 	OP_TRUE: "TRUE", OP_FALSE: "FALSE", OP_INT: "INT",
 	OP_LOAD: "LOAD", OP_STORE: "STORE", OP_STORE_CONST: "STORE_CONST",
 	OP_LOAD_GLOBAL: "LOAD_GLOBAL", OP_STORE_GLOBAL: "STORE_GLOBAL", OP_DECLARE: "DECLARE", OP_DECLARE_CONST: "DECLARE_CONST",
+	OP_DECLARE_FUNC: "DECLARE_FUNC",
 	OP_ADD: "ADD", OP_SUB: "SUB", OP_MUL: "MUL", OP_DIV: "DIV",
 	OP_MOD: "MOD", OP_POW: "POW", OP_NEG: "NEG",
 	OP_BIT_AND: "BIT_AND", OP_BIT_OR: "BIT_OR", OP_BIT_XOR: "BIT_XOR",

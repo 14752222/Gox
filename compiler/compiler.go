@@ -126,7 +126,9 @@ func (c *Compiler) Compile(program *ast.Program) error {
 //  2. 再编译列表里的 function 声明 (绑定 + 创建函数对象)，其余语句按源码
 //     顺序编译，已提升的声明跳过以免重复创建。
 func (c *Compiler) compileStatements(stmts []ast.Statement) error {
-	c.prescanScope(stmts)
+	if err := c.prescanScope(stmts); err != nil {
+		return err
+	}
 
 	hoisted := make(map[ast.Statement]bool)
 	for _, stmt := range stmts {
@@ -214,7 +216,7 @@ func (c *Compiler) compileLetStatement(stmt *ast.LetStatement) error {
 	// 解构赋值: let [a, b] = arr  或  let { x, y } = obj
 	if stmt.Name.Value == "__destructure__" {
 		if assign, ok := stmt.Value.(*ast.AssignmentExpression); ok {
-			return c.compileDestructureAssignment(assign)
+			return c.compileDestructureAssignment(assign, true)
 		}
 	}
 
@@ -226,7 +228,10 @@ func (c *Compiler) compileLetStatement(stmt *ast.LetStatement) error {
 		if err := c.compileExpression(stmt.Value); err != nil {
 			return err
 		}
-		sym := c.declareOnce(stmt.Name.Value, false)
+		sym, err := c.declareOnce(stmt.Name.Value, false, false)
+		if err != nil {
+			return err
+		}
 		if c.isGlobalScope() {
 			// 全局作用域: 声明写入共享全局环境 (支持 REPL 跨输入状态保持)
 			nameIdx := c.constants.AddConstant(object.NewString(stmt.Name.Value))
@@ -235,7 +240,10 @@ func (c *Compiler) compileLetStatement(stmt *ast.LetStatement) error {
 			c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
 		}
 	} else {
-		sym := c.declareOnce(stmt.Name.Value, false)
+		sym, err := c.declareOnce(stmt.Name.Value, false, false)
+		if err != nil {
+			return err
+		}
 		c.emitter.EmitNoOperand(bytecode.OP_UNDEFINED)
 		if c.isGlobalScope() {
 			nameIdx := c.constants.AddConstant(object.NewString(stmt.Name.Value))
@@ -251,7 +259,10 @@ func (c *Compiler) compileLetStatement(stmt *ast.LetStatement) error {
 			if err := c.compileExpression(d.Value); err != nil {
 				return err
 			}
-			sym := c.declareOnce(d.Name.Value, false)
+			sym, err := c.declareOnce(d.Name.Value, false, false)
+			if err != nil {
+				return err
+			}
 			if c.isGlobalScope() {
 				nameIdx := c.constants.AddConstant(object.NewString(d.Name.Value))
 				c.emitter.Emit(bytecode.OP_DECLARE, nameIdx)
@@ -259,7 +270,10 @@ func (c *Compiler) compileLetStatement(stmt *ast.LetStatement) error {
 				c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
 			}
 		} else {
-			sym := c.declareOnce(d.Name.Value, false)
+			sym, err := c.declareOnce(d.Name.Value, false, false)
+			if err != nil {
+				return err
+			}
 			c.emitter.EmitNoOperand(bytecode.OP_UNDEFINED)
 			if c.isGlobalScope() {
 				nameIdx := c.constants.AddConstant(object.NewString(d.Name.Value))
@@ -276,14 +290,17 @@ func (c *Compiler) compileConstStatement(stmt *ast.ConstStatement) error {
 	// 解构赋值: const [a, b] = arr  或  const { x, y } = obj
 	if stmt.Name.Value == "__destructure__" {
 		if assign, ok := stmt.Value.(*ast.AssignmentExpression); ok {
-			return c.compileDestructureAssignment(assign)
+			return c.compileDestructureAssignment(assign, true)
 		}
 	}
 
 	if err := c.compileExpression(stmt.Value); err != nil {
 		return err
 	}
-	sym := c.declareOnce(stmt.Name.Value, true)
+	sym, err := c.declareOnce(stmt.Name.Value, true, false)
+	if err != nil {
+		return err
+	}
 	if c.isGlobalScope() {
 		// 全局作用域: 声明写入共享全局环境 (const 绑定)
 		nameIdx := c.constants.AddConstant(object.NewString(stmt.Name.Value))
@@ -297,7 +314,10 @@ func (c *Compiler) compileConstStatement(stmt *ast.ConstStatement) error {
 		if err := c.compileExpression(d.Value); err != nil {
 			return err
 		}
-		sym := c.declareOnce(d.Name.Value, true)
+		sym, err := c.declareOnce(d.Name.Value, true, false)
+		if err != nil {
+			return err
+		}
 		if c.isGlobalScope() {
 			nameIdx := c.constants.AddConstant(object.NewString(d.Name.Value))
 			c.emitter.Emit(bytecode.OP_DECLARE_CONST, nameIdx)
@@ -1057,11 +1077,14 @@ func (c *Compiler) compileClassDeclaration(node *ast.ClassDeclaration) error {
 	}
 
 	// 声明类名
+	sym, err := c.declareOnce(className, true, false)
+	if err != nil {
+		return err
+	}
 	if c.isGlobalScope() && !c.moduleMode {
 		nameIdx := c.constants.AddConstant(object.NewString(className))
 		c.emitter.Emit(bytecode.OP_DECLARE, nameIdx)
 	} else {
-		sym := c.scope.Define(className, true)
 		c.emitter.Emit(bytecode.OP_STORE_CONST, uint16(sym.Slot))
 	}
 	return nil
@@ -1082,12 +1105,14 @@ func (c *Compiler) compileClassConstructor(node *ast.ClassDeclaration, ctor *ast
 		for _, param := range ctor.Parameters {
 			paramSpecs = append(paramSpecs, bytecode.ParameterSpec{Name: param.Name, HasDefault: param.Default != nil, IsRest: param.Rest})
 			sym := fnScope.Define(param.Name, false)
+			sym.Declared = true // 参数是真实声明: 函数体内 let 同名 → SyntaxError
 			paramSlots = append(paramSlots, sym.Slot)
 		}
 	}
 
 	// 预留 arguments 槽位
 	argSym := fnScope.Define("__arguments__", false)
+	argSym.Declared = true
 	argumentsSlot := argSym.Slot
 	prevArgumentsSlot := c.currentArgumentsSlot
 	c.currentArgumentsSlot = argumentsSlot
@@ -1169,7 +1194,10 @@ func (c *Compiler) compileImportDeclaration(stmt *ast.ImportDeclaration) error {
 	// 绑定导入
 	if stmt.Namespace != "" {
 		// import * as ns from "..."
-		sym := c.scope.Define(stmt.Namespace, false)
+		sym, err := c.declareOnce(stmt.Namespace, false, false)
+		if err != nil {
+			return err
+		}
 		if c.isGlobalScope() {
 			c.emitGlobalDeclare(stmt.Namespace)
 		} else {
@@ -1180,7 +1208,10 @@ func (c *Compiler) compileImportDeclaration(stmt *ast.ImportDeclaration) error {
 		// 获取 default 导出
 		idx := c.constants.AddConstant(object.NewString("default"))
 		c.emitter.Emit(bytecode.OP_GET_PROP, idx)
-		sym := c.scope.Define(stmt.DefaultName, false)
+		sym, err := c.declareOnce(stmt.DefaultName, false, false)
+		if err != nil {
+			return err
+		}
 		if c.isGlobalScope() {
 			c.emitGlobalDeclare(stmt.DefaultName)
 		} else {
@@ -1194,7 +1225,10 @@ func (c *Compiler) compileImportDeclaration(stmt *ast.ImportDeclaration) error {
 				c.emitter.EmitNoOperand(bytecode.OP_DUP)
 				nameIdx := c.constants.AddConstant(object.NewString(name))
 				c.emitter.Emit(bytecode.OP_GET_PROP, nameIdx)
-				sym := c.scope.Define(name, false)
+				sym, err := c.declareOnce(name, false, false)
+				if err != nil {
+					return err
+				}
 				if c.isGlobalScope() {
 					c.emitGlobalDeclare(name)
 				} else {
@@ -1209,7 +1243,10 @@ func (c *Compiler) compileImportDeclaration(stmt *ast.ImportDeclaration) error {
 			c.emitter.EmitNoOperand(bytecode.OP_DUP)
 			nameIdx := c.constants.AddConstant(object.NewString(name))
 			c.emitter.Emit(bytecode.OP_GET_PROP, nameIdx)
-			sym := c.scope.Define(name, false)
+			sym, err := c.declareOnce(name, false, false)
+			if err != nil {
+				return err
+			}
 			if c.isGlobalScope() {
 				c.emitGlobalDeclare(name)
 			} else {
@@ -1295,7 +1332,10 @@ func (c *Compiler) compileExportDeclaration(stmt *ast.ExportDeclaration) error {
 
 func (c *Compiler) compileFunctionDeclaration(stmt *ast.FunctionDeclaration) error {
 	// 先在当前作用域定义函数名 (允许递归调用)
-	sym := c.declareOnce(stmt.Name.Value, false)
+	sym, err := c.declareOnce(stmt.Name.Value, false, true)
+	if err != nil {
+		return err
+	}
 
 	// 编译函数体为独立的 FunctionMetadata
 	fnMeta, err := c.compileFunction(
@@ -1312,9 +1352,9 @@ func (c *Compiler) compileFunctionDeclaration(stmt *ast.FunctionDeclaration) err
 	idx := c.constants.AddConstant(fnMeta)
 	c.emitter.Emit(bytecode.OP_FUNCTION, idx)
 	if c.isGlobalScope() {
-		// 全局作用域: 函数名写入共享全局环境
+		// 全局作用域: 函数名写入共享全局环境 (函数声明允许重定义)
 		nameIdx := c.constants.AddConstant(object.NewString(stmt.Name.Value))
-		c.emitter.Emit(bytecode.OP_DECLARE, nameIdx)
+		c.emitter.Emit(bytecode.OP_DECLARE_FUNC, nameIdx)
 	} else {
 		c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
 	}
@@ -1533,6 +1573,17 @@ func (c *Compiler) emitStore(sym *Symbol) {
 	}
 }
 
+// emitIdentifierAssign 发射标识符赋值 (解构赋值的目标)。
+// 已解析的局部符号写槽位，其余走全局存储 —— 与普通 x = v 一致。
+func (c *Compiler) emitIdentifierAssign(name string) {
+	sym := c.scope.Resolve(name)
+	if sym == nil || (sym.Depth == 0 && !c.moduleMode) {
+		c.emitGlobalStore(name)
+	} else {
+		c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
+	}
+}
+
 func (c *Compiler) compileIdentifier(node *ast.Identifier) error {
 	// arguments: 解析到当前函数的 arguments 槽位
 	if node.Value == "arguments" && c.currentArgumentsSlot >= 0 {
@@ -1720,10 +1771,10 @@ func (c *Compiler) compileAssignmentExpression(node *ast.AssignmentExpression) e
 
 	// 处理解构赋值: [a, b] = arr  或  { a, b } = obj
 	if _, ok := node.Left.(*ast.ArrayPattern); ok {
-		return c.compileDestructureAssignment(node)
+		return c.compileDestructureAssignment(node, false)
 	}
 	if _, ok := node.Left.(*ast.ObjectPattern); ok {
-		return c.compileDestructureAssignment(node)
+		return c.compileDestructureAssignment(node, false)
 	}
 
 	switch left := node.Left.(type) {
@@ -1789,42 +1840,89 @@ func (c *Compiler) compileAssignmentExpression(node *ast.AssignmentExpression) e
 
 // prescanScope 预登记语句列表中的绑定名 (let/const/function)。
 // 只建立符号，不发射任何指令；执行时绑定仍按源码顺序被初始化。
-func (c *Compiler) prescanScope(stmts []ast.Statement) {
+// 同一作用域内的重复声明 (let/let、let/const、let/function 等) 在此
+// 即为编译期 SyntaxError；函数声明与函数声明同名除外 (函数重定义语义)。
+// destructureSyntheticName 是解构声明在 AST 中的合成名。
+// 解构目标 (let [a, b] = x) 不经 prescan 登记 symbolic 名字，
+// 真正的绑定名在 compilePatternBind 阶段登记。
+const destructureSyntheticName = "__destructure__"
+
+func (c *Compiler) prescanScope(stmts []ast.Statement) error {
 	for _, stmt := range stmts {
 		switch s := stmt.(type) {
 		case *ast.LetStatement:
-			if s.Name != nil {
-				c.declareOnce(s.Name.Value, false)
+			if s.Name != nil && s.Name.Value != destructureSyntheticName {
+				if err := c.prescanDeclare(s.Name.Value, false, false); err != nil {
+					return err
+				}
 			}
 			for _, d := range s.More {
-				if d.Name != nil {
-					c.declareOnce(d.Name.Value, false)
+				if d.Name != nil && d.Name.Value != destructureSyntheticName {
+					if err := c.prescanDeclare(d.Name.Value, false, false); err != nil {
+						return err
+					}
 				}
 			}
 		case *ast.ConstStatement:
-			if s.Name != nil {
-				c.declareOnce(s.Name.Value, true)
+			if s.Name != nil && s.Name.Value != destructureSyntheticName {
+				if err := c.prescanDeclare(s.Name.Value, true, false); err != nil {
+					return err
+				}
 			}
 			for _, d := range s.More {
-				if d.Name != nil {
-					c.declareOnce(d.Name.Value, true)
+				if d.Name != nil && d.Name.Value != destructureSyntheticName {
+					if err := c.prescanDeclare(d.Name.Value, true, false); err != nil {
+						return err
+					}
 				}
 			}
 		case *ast.FunctionDeclaration:
 			if s.Name != nil {
-				c.declareOnce(s.Name.Value, false)
+				if err := c.prescanDeclare(s.Name.Value, false, true); err != nil {
+					return err
+				}
 			}
 		}
 	}
+	return nil
 }
 
-// declareOnce 在当前作用域登记绑定; 已有同名绑定时复用原符号 (保持 slot 不变)，
-// 避免预声明与真正编译分配出两个不同的槽位。
-func (c *Compiler) declareOnce(name string, isConst bool) *Symbol {
+// prescanDeclare 在声明提升预登记阶段登记绑定名。
+// 名字已存在说明同一作用域内有重复声明 (或与参数重名) → SyntaxError；
+// 函数声明与已有函数声明同名除外。
+func (c *Compiler) prescanDeclare(name string, isConst, isFnDecl bool) error {
 	if sym := c.scope.ResolveLocal(name); sym != nil {
-		return sym
+		if isFnDecl && sym.IsFnDecl {
+			return nil
+		}
+		return fmt.Errorf("SyntaxError: Identifier '%s' has already been declared", name)
 	}
-	return c.scope.Define(name, isConst)
+	sym := c.scope.Define(name, isConst)
+	sym.IsFnDecl = isFnDecl
+	return nil
+}
+
+// declareOnce 在当前作用域登记绑定 (prescan 之后的正式编译阶段调用)。
+//
+// prescan 只登记名字 (Declared=false)，编译到声明语句时在此认领符号，
+// 复用 prescan 分配的槽位。认领时发现符号已被认领 = 同一作用域内
+// 真实的重复声明 → SyntaxError；函数声明与已认领的函数声明同名除外。
+// 解构/class/import 不经 prescan，首次编译到时在此直接登记并认领。
+func (c *Compiler) declareOnce(name string, isConst, isFnDecl bool) (*Symbol, error) {
+	if sym := c.scope.ResolveLocal(name); sym != nil {
+		if sym.Declared && !(isFnDecl && sym.IsFnDecl) {
+			return nil, fmt.Errorf("SyntaxError: Identifier '%s' has already been declared", name)
+		}
+		sym.Declared = true
+		if isFnDecl {
+			sym.IsFnDecl = true
+		}
+		return sym, nil
+	}
+	sym := c.scope.Define(name, isConst)
+	sym.Declared = true
+	sym.IsFnDecl = isFnDecl
+	return sym, nil
 }
 
 // compileMemberRef 编译成员引用的两个部分，栈上留下 [obj, key]。
@@ -1970,21 +2068,26 @@ func (c *Compiler) emitLogicalSkip(op string) int {
 	return c.emitter.EmitJump(bytecode.OP_JUMP)
 }
 
-// compileDestructureAssignment 处理解构赋值。
-// [a, b] = arr  或  { x, y } = obj
-func (c *Compiler) compileDestructureAssignment(node *ast.AssignmentExpression) error {
+// compileDestructureAssignment 处理解构。
+// isDecl=true: 声明解构 (let/const [a] = x)，目标按声明登记 (含重声明检查)；
+// isDecl=false: 赋值解构 ([a] = x)，目标按普通赋值处理 (写已有绑定)。
+func (c *Compiler) compileDestructureAssignment(node *ast.AssignmentExpression, isDecl bool) error {
 	// 编译右值 (被解构的值)
 	if err := c.compileExpression(node.Right); err != nil {
 		return err
 	}
+	if !isDecl {
+		// 赋值表达式的值是右值: 留一份副本，解构只消耗另一份
+		c.emitter.EmitNoOperand(bytecode.OP_DUP)
+	}
 
-	return c.compilePatternBind(node.Left)
+	return c.compilePatternBind(node.Left, isDecl)
 }
 
 // compilePatternBind 对栈顶的值执行解构绑定。
 // 解构后栈顶的被解构值被弹出。
 // 支持 ArrayPattern / ObjectPattern / 嵌套模式。
-func (c *Compiler) compilePatternBind(pattern ast.Expression) error {
+func (c *Compiler) compilePatternBind(pattern ast.Expression, isDecl bool) error {
 	switch pattern := pattern.(type) {
 	case *ast.ArrayPattern:
 		// 数组解构按迭代协议取值: 先把栈顶的被解构值物化为数组，
@@ -2020,16 +2123,24 @@ func (c *Compiler) compilePatternBind(pattern ast.Expression) error {
 
 			// 存储到目标 (标识符 / 嵌套模式)
 			if ident, ok := elem.Target.(*ast.Identifier); ok {
-				sym := c.scope.Define(ident.Value, false)
-				if c.isGlobalScope() {
-					nameIdx := c.constants.AddConstant(object.NewString(ident.Value))
-					c.emitter.Emit(bytecode.OP_DECLARE, nameIdx)
+				if isDecl {
+					sym, err := c.declareOnce(ident.Value, false, false)
+					if err != nil {
+						return err
+					}
+					if c.isGlobalScope() {
+						nameIdx := c.constants.AddConstant(object.NewString(ident.Value))
+						c.emitter.Emit(bytecode.OP_DECLARE, nameIdx)
+					} else {
+						c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
+					}
 				} else {
-					c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
+					// 赋值解构: 写入已有绑定 (与 x = v 语义一致)
+					c.emitIdentifierAssign(ident.Value)
 				}
 			} else if elem.Target != nil {
 				// 嵌套解构: [ [a, b], c ] = arr
-				if err := c.compilePatternBind(elem.Target); err != nil {
+				if err := c.compilePatternBind(elem.Target, isDecl); err != nil {
 					return err
 				}
 			}
@@ -2067,15 +2178,23 @@ func (c *Compiler) compilePatternBind(pattern ast.Expression) error {
 
 			// 存储到目标 (标识符 / 嵌套模式)
 			if ident, ok := prop.Value.(*ast.Identifier); ok {
-				sym := c.scope.Define(ident.Value, false)
-				if c.isGlobalScope() {
-					nameIdx := c.constants.AddConstant(object.NewString(ident.Value))
-					c.emitter.Emit(bytecode.OP_DECLARE, nameIdx)
+				if isDecl {
+					sym, err := c.declareOnce(ident.Value, false, false)
+					if err != nil {
+						return err
+					}
+					if c.isGlobalScope() {
+						nameIdx := c.constants.AddConstant(object.NewString(ident.Value))
+						c.emitter.Emit(bytecode.OP_DECLARE, nameIdx)
+					} else {
+						c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
+					}
 				} else {
-					c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
+					// 赋值解构: 写入已有绑定 (与 x = v 语义一致)
+					c.emitIdentifierAssign(ident.Value)
 				}
 			} else if prop.Value != nil {
-				if err := c.compilePatternBind(prop.Value); err != nil {
+				if err := c.compilePatternBind(prop.Value, isDecl); err != nil {
 					return err
 				}
 			}
@@ -2721,12 +2840,14 @@ func (c *Compiler) compileFunctionSelf(name, selfName string, params []*ast.Para
 			IsRest:     param.Rest,
 		}
 		sym := fnScope.Define(param.Name, false)
+		sym.Declared = true // 参数是真实声明: 函数体内 let 同名 → SyntaxError
 		paramSlots[i] = sym.Slot
 	}
 
 	// 预留 arguments 槽位。
 	// 简化: 所有函数 (含箭头) 都有独立 arguments 对象 (非严格 ES 语义, 箭头函数应继承外层)。
 	argSym := fnScope.Define("__arguments__", false)
+	argSym.Declared = true
 	argumentsSlot := argSym.Slot
 	// 记录进入函数前的 arguments 槽位, 便于恢复
 	prevArgumentsSlot := c.currentArgumentsSlot
@@ -2737,6 +2858,7 @@ func (c *Compiler) compileFunctionSelf(name, selfName string, params []*ast.Para
 	selfSlot := -1
 	if selfName != "" && fnScope.ResolveLocal(selfName) == nil {
 		sym := fnScope.Define(selfName, true)
+		sym.Declared = true // 函数体内 let 同名 → SyntaxError (规范行为)
 		selfSlot = sym.Slot
 	}
 
@@ -2793,7 +2915,7 @@ func (c *Compiler) compileFunctionSelf(name, selfName string, params []*ast.Para
 		}
 		slot := paramSlots[i]
 		c.emitter.Emit(bytecode.OP_LOAD, uint16(slot))
-		if err := c.compilePatternBind(param.Pattern); err != nil {
+		if err := c.compilePatternBind(param.Pattern, true); err != nil {
 			return nil, err
 		}
 	}
@@ -2877,9 +2999,11 @@ func (c *Compiler) compileAsyncFunctionSelf(name, selfName string, params []*ast
 			}
 		}
 		sym := wrapperScope.Define(paramSpecs[i].Name, false)
+		sym.Declared = true
 		paramSlots[i] = sym.Slot
 	}
 	argSym := wrapperScope.Define("__arguments__", false)
+	argSym.Declared = true
 	argumentsSlot := argSym.Slot
 
 	// 3. 编译 wrapper 体

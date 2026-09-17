@@ -83,7 +83,9 @@ func startREPL() {
 		// 执行
 		result, err := vm.EvalWithGlobals(input, globals)
 		if err != nil {
-			fmt.Println("  " + err.Error())
+			// 去掉内部错误前缀, 对齐浏览器的报错呈现
+			msg := strings.TrimPrefix(err.Error(), "vm error: ")
+			fmt.Println("  " + msg)
 			continue
 		}
 

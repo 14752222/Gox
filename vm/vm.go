@@ -714,6 +714,12 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			if s, ok := name.(*object.String); ok {
 				// 弹出值 (与 OP_STORE 语义一致)。若需保留表达式结果, 编译器会在存储前 DUP。
 				val := vm.stack.Pop()
+				if vm.globals.IsConst(s.Value) {
+					if err := vm.throwNamedError("TypeError", "Assignment to constant variable: %s", s.Value); err != nil {
+						return err
+					}
+					continue
+				}
 				if _, exists := vm.globals.Get(s.Value); exists {
 					vm.globals.Set(s.Value, val)
 				} else {
@@ -721,23 +727,33 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				}
 			}
 		case bytecode.OP_DECLARE:
-			// 声明 let 变量到全局环境 (弹出值, 声明不返回结果)。
-			// 已存在时更新值 (宽松 REPL 语义)。
+			// 顶层 let/class/import 声明: 弹出值写入全局环境。
+			// 与持久化的全局词法绑定冲突时报 SyntaxError (不可被 try/catch 捕获，
+			// 与规范的早期错误语义一致)。REPL 每行独立编译，跨行重声明在此发现。
 			name := frame.Constants.Get(operand)
 			if s, ok := name.(*object.String); ok {
 				val := vm.stack.Pop()
-				if _, exists := vm.globals.Get(s.Value); exists {
-					vm.globals.Set(s.Value, val)
-				} else {
-					vm.globals.Declare(s.Value, val, false)
+				if err := vm.globals.DeclareGlobal(s.Value, val, false, false); err != nil {
+					return err
 				}
 			}
 		case bytecode.OP_DECLARE_CONST:
-			// 声明 const 变量到全局环境 (弹出值, 声明不返回结果)。
+			// 顶层 const 声明: 弹出值写入全局环境 (const 词法绑定)。
 			name := frame.Constants.Get(operand)
 			if s, ok := name.(*object.String); ok {
 				val := vm.stack.Pop()
-				vm.globals.Declare(s.Value, val, true)
+				if err := vm.globals.DeclareGlobal(s.Value, val, true, false); err != nil {
+					return err
+				}
+			}
+		case bytecode.OP_DECLARE_FUNC:
+			// 顶层函数声明: 允许函数互相重定义，但不可覆盖已有词法声明。
+			name := frame.Constants.Get(operand)
+			if s, ok := name.(*object.String); ok {
+				val := vm.stack.Pop()
+				if err := vm.globals.DeclareGlobal(s.Value, val, false, true); err != nil {
+					return err
+				}
 			}
 
 		// ===== 算术运算 =====

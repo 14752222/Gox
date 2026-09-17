@@ -1491,11 +1491,93 @@ func (p *Parser) parseSequenceExpression(left ast.Expression) ast.Expression {
 }
 
 func (p *Parser) parseAssignmentExpression(left ast.Expression) ast.Expression {
+	// 解构赋值目标: [a, b] = v / ({ x } = v)。
+	// 目标先按数组/对象字面量解析 (cover grammar)，确认是简单赋值后
+	// 转换为解构模式；此前编译器不认识字面量目标，静默不发射指令导致栈失衡。
+	if p.curTokenIs(lexer.ASSIGN) {
+		switch left.(type) {
+		case *ast.ArrayLiteral, *ast.ObjectLiteral:
+			left = p.literalToPattern(left)
+		}
+	}
 	expr := &ast.AssignmentExpression{
 		Token: p.curToken(), Left: left, Operator: p.curToken().Literal,
 	}
 	p.nextToken()
 	expr.Right = p.parseExpression(ASSIGN - 1)
+	return expr
+}
+
+// literalToPattern 把赋值目标位置的数组/对象字面量转换为解构模式。
+// 只接受合法的绑定目标 (标识符、嵌套模式、默认值)；遇到不支持的
+// 目标 (成员表达式、对象 rest 等) 记录解析错误并原样返回。
+func (p *Parser) literalToPattern(expr ast.Expression) ast.Expression {
+	switch lit := expr.(type) {
+	case *ast.ArrayLiteral:
+		pattern := &ast.ArrayPattern{Token: lit.Token, Elements: []*ast.PatternElement{}}
+		for _, el := range lit.Elements {
+			switch e := el.(type) {
+			case *ast.Identifier:
+				pattern.Elements = append(pattern.Elements, &ast.PatternElement{Token: e.Token, Target: e})
+			case *ast.SpreadElement: // [a, ...rest]
+				if id, ok := e.Argument.(*ast.Identifier); ok {
+					pattern.Elements = append(pattern.Elements, &ast.PatternElement{Token: e.Token, Target: id, Rest: true})
+					continue
+				}
+				p.addError("invalid rest target in destructuring assignment")
+				return expr
+			case *ast.AssignmentExpression: // [a = 默认值]
+				if id, ok := e.Left.(*ast.Identifier); ok {
+					pattern.Elements = append(pattern.Elements, &ast.PatternElement{Token: e.Token, Target: id, Default: e.Right})
+					continue
+				}
+				p.addError("invalid destructuring assignment target")
+				return expr
+			default: // 嵌套模式 [[a], {b}]
+				switch nested := p.literalToPattern(el).(type) {
+				case *ast.ArrayPattern:
+					pattern.Elements = append(pattern.Elements, &ast.PatternElement{Token: nested.Token, Target: nested})
+				case *ast.ObjectPattern:
+					pattern.Elements = append(pattern.Elements, &ast.PatternElement{Token: nested.Token, Target: nested})
+				default:
+					return expr // 错误已由递归记录
+				}
+			}
+		}
+		return pattern
+	case *ast.ObjectLiteral:
+		if len(lit.Spread) > 0 {
+			p.addError("object rest in destructuring assignment is not supported")
+			return expr
+		}
+		pattern := &ast.ObjectPattern{Token: lit.Token, Properties: []*ast.PatternProperty{}}
+		for _, prop := range lit.Properties {
+			pp := &ast.PatternProperty{Token: prop.Token, Key: prop.Key, Shorthand: prop.Shorthand}
+			switch v := prop.Value.(type) {
+			case *ast.Identifier:
+				pp.Value = v
+			case *ast.AssignmentExpression: // { x = 默认值 }
+				id, ok := v.Left.(*ast.Identifier)
+				if !ok {
+					p.addError("invalid destructuring assignment target")
+					return expr
+				}
+				pp.Value, pp.Default = id, v.Right
+			default: // { x: 嵌套模式 }
+				switch nested := p.literalToPattern(prop.Value).(type) {
+				case *ast.ArrayPattern:
+					pp.Value = nested
+				case *ast.ObjectPattern:
+					pp.Value = nested
+				default:
+					continue // 错误已由递归记录
+				}
+			}
+			pattern.Properties = append(pattern.Properties, pp)
+		}
+		return pattern
+	}
+	p.addError("invalid destructuring assignment target")
 	return expr
 }
 
