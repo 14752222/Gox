@@ -1,9 +1,9 @@
 # 打 v* tag 时自动发布 npm 包：交叉编译全平台二进制 → 校验版本 → npm publish。
-# 发布认证（二选一，npm CLI 优先 OIDC、失败回落 token）：
-#   A. Trusted Publishing（推荐，免 token）：npmjs.com 账号设置里为本包添加
-#      trusted publisher（org/user: 14752222, repo: Gox, workflow: release.yml）
-#   B. 传统 token：npmjs.com → Access Tokens 创建 Granular 类型、Read and write、
-#      勾选 All packages（新包名必须），在仓库 Secrets 里配置为 NPM_TOKEN
+# 发布认证用 npm Trusted Publishing (OIDC)，免 token：
+#   前置（只需配置一次）：npmjs.com 账号设置 → Trusted Publishers 添加
+#   pending trusted publisher（org/user: 14752222, repo: Gox, workflow: release.yml）
+#   注意：workflow 里不能再设置 NODE_AUTH_TOKEN —— .npmrc 中的 token 会
+#   优先于 OIDC 自动检测，导致继续用旧凭据而 403
 # 发版流程：改 npm/package.json 的 version → 提交 → 打 tag（如 v0.1.0）→ push tag
 name: release
 
@@ -47,5 +47,3 @@ jobs:
 
       - name: Publish
         run: cd npm && npm pack --dry-run && npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
