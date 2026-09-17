@@ -1,13 +1,20 @@
 # 打 v* tag 时自动发布 npm 包：交叉编译全平台二进制 → 校验版本 → npm publish。
-# 前置条件（只需配置一次）：
-#   1. 在 npmjs.com → Access Tokens 创建 Automation 类型 token
-#   2. 在仓库 Settings → Secrets → Actions 里添加为 NPM_TOKEN
+# 发布认证（二选一，npm CLI 优先 OIDC、失败回落 token）：
+#   A. Trusted Publishing（推荐，免 token）：npmjs.com 账号设置里为本包添加
+#      trusted publisher（org/user: 14752222, repo: Gox, workflow: release.yml）
+#   B. 传统 token：npmjs.com → Access Tokens 创建 Granular 类型、Read and write、
+#      勾选 All packages（新包名必须），在仓库 Secrets 里配置为 NPM_TOKEN
 # 发版流程：改 npm/package.json 的 version → 提交 → 打 tag（如 v0.1.0）→ push tag
 name: release
 
 on:
   push:
     tags: ['v*']
+
+# id-token: write 是 npm Trusted Publishing (OIDC) 鉴权所必需
+permissions:
+  contents: read
+  id-token: write
 
 jobs:
   publish:
@@ -23,6 +30,9 @@ jobs:
         with:
           node-version: '22'
           registry-url: https://registry.npmjs.org
+
+      # Trusted Publishing (OIDC) 需要 npm >= 11.5.1，Node 22 自带的是 10.x
+      - run: npm install -g npm@latest
 
       - name: Check version matches tag
         run: |
