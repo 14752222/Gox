@@ -17,8 +17,8 @@
 package stdlib
 
 import (
-	"js-runtime/object"
-	"js-runtime/runtime"
+	"github.com/14752222/Gox/object"
+	"github.com/14752222/Gox/runtime"
 )
 
 // SetupGlobals 创建并返回带有所有标准库对象的全局环境。
@@ -136,6 +136,9 @@ func SetupGlobals() *runtime.Environment {
 
 	// ===== 响应式 (Dart GetX 风格 obs/computed/ever/once) =====
 	setupObs(env)
+
+	// ===== 响应式 (SolidJS 风格, 内置模块 gx/solid) =====
+	setupSolid(env)
 
 	return env
 }

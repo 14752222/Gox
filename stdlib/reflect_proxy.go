@@ -3,8 +3,8 @@ package stdlib
 import (
 	"strconv"
 
-	"js-runtime/object"
-	"js-runtime/runtime"
+	"github.com/14752222/Gox/object"
+	"github.com/14752222/Gox/runtime"
 )
 
 // setupReflectProxy 设置 Reflect 全局对象和 Proxy 构造器。

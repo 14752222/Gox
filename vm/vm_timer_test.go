@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"js-runtime/object"
+	"github.com/14752222/Gox/object"
 )
 
 // runEvalVM 编译执行 JS 并返回 VM (用于测试定时器)。

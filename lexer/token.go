@@ -48,46 +48,49 @@ const (
 	AT        // @ (装饰器预留)
 
 	// ==================== 多字符运算符 ====================
-	EQ             // ==
-	NOT_EQ         // !=
-	STRICT_EQ      // ===
-	STRICT_NOT_EQ  // !==
-	LTE            // <=
-	GTE            // >=
-	AND            // &&
-	OR             // ||
-	NULL_COALESCE  // ?? (ES2020, 预留)
-	PLUS_EQ        // +=
-	MINUS_EQ       // -=
-	ASTERISK_EQ    // *=
-	SLASH_EQ       // /=
-	PERCENT_EQ     // %=
-	INC            // ++
-	DEC            // --
-	EXPONENT       // ** (ES2016)
-	EXPONENT_EQ    // **=
-	AND_EQ         // &=
-	OR_EQ          // |=
-	XOR_EQ         // ^=
-	AND_AND_EQ     // &&= (逻辑与赋值, ES2021)
-	OR_OR_EQ       // ||= (逻辑或赋值, ES2021)
-	NULLISH_ASSIGN // ??= (逻辑空赋值, ES2021)
-	BIT_AND        // &
-	BIT_OR         // |
-	BIT_XOR        // ^
-	BIT_NOT        // ~ (同 TILDE, 但语义不同)
-	SHIFT_LEFT     // <<
-	SHIFT_RIGHT    // >>
-	UNSIGNED_SHR   // >>> (无符号右移)
-	SHIFT_LEFT_EQ  // <<=
-	SHIFT_RIGHT_EQ // >>=
+	EQ              // ==
+	NOT_EQ          // !=
+	STRICT_EQ       // ===
+	STRICT_NOT_EQ   // !==
+	LTE             // <=
+	GTE             // >=
+	AND             // &&
+	OR              // ||
+	NULL_COALESCE   // ?? (ES2020, 预留)
+	PLUS_EQ         // +=
+	MINUS_EQ        // -=
+	ASTERISK_EQ     // *=
+	SLASH_EQ        // /=
+	PERCENT_EQ      // %=
+	INC             // ++
+	DEC             // --
+	EXPONENT        // ** (ES2016)
+	EXPONENT_EQ     // **=
+	AND_EQ          // &=
+	OR_EQ           // |=
+	XOR_EQ          // ^=
+	AND_AND_EQ      // &&= (逻辑与赋值, ES2021)
+	OR_OR_EQ        // ||= (逻辑或赋值, ES2021)
+	NULLISH_ASSIGN  // ??= (逻辑空赋值, ES2021)
+	BIT_AND         // &
+	BIT_OR          // |
+	BIT_XOR         // ^
+	BIT_NOT         // ~ (同 TILDE, 但语义不同)
+	SHIFT_LEFT      // <<
+	SHIFT_RIGHT     // >>
+	UNSIGNED_SHR    // >>> (无符号右移)
+	SHIFT_LEFT_EQ   // <<=
+	SHIFT_RIGHT_EQ  // >>=
 	UNSIGNED_SHR_EQ // >>>=
-	OPTIONAL_CHAIN // ?. (可选链)
+	OPTIONAL_CHAIN  // ?. (可选链)
 
 	// ==================== 关键字 ====================
-	// 注意: VAR 关键字被故意排除 — 本运行时不支持 var，仅支持 let/const
+	// 注意: VAR 是合法 token，但本运行时在解析器语句层拒绝 var 声明 (仅支持 let/const)。
+	// 词法层保留 VAR 是为了允许 var 作为属性名 (obj.var, {var: 1})，
+	// 与 class/default 等关键字的属性名用法保持一致。
 	LET        // let
 	CONST      // const
+	VAR        // var (声明在 parser 层被拒绝, 仅允许作为属性名)
 	IF         // if
 	ELSE       // else
 	FOR        // for
@@ -123,6 +126,14 @@ const (
 	YIELD      // yield (预留扩展)
 	ASYNC      // async (预留扩展)
 	AWAIT      // await (预留扩展)
+
+	// ==================== JSX 令牌 ====================
+	// 注意: 必须追加在枚举末尾, 不得插入中间 —— 已有常量的数值编号
+	// 被测试与调试输出依赖。
+	JSX_LT         // < 在表达式位置开始一个 JSX 元素
+	JSX_SELF_CLOSE // /> 标签自闭合
+	JSX_CLOSE      // </tag> 闭合标签 (Literal 为标签名)
+	JSX_TEXT       // JSX 子文本 (Literal 为原始文本, 未做空白规整)
 )
 
 // Token 表示一个词法令牌。
@@ -135,9 +146,10 @@ type Token struct {
 }
 
 // keywords 将关键字字符串映射到 TokenType。
-// 注意: "var" 不在此映射中，遇到 "var" 时将作为普通标识符处理。
-// 后续在解析器阶段可以检查并报错，或在此处直接返回 ILLEGAL。
+// "var" 映射到 VAR: 词法层正常识别, 由解析器在语句层拒绝声明用法,
+// 同时允许 var 作为属性名 (obj.var, {var: 1})。
 var keywords = map[string]TokenType{
+	"var":        VAR,
 	"let":        LET,
 	"const":      CONST,
 	"if":         IF,
@@ -180,12 +192,7 @@ var keywords = map[string]TokenType{
 
 // LookupIdentifier 查找标识符是否为关键字。
 // 如果是关键字，返回对应的 TokenType；否则返回 IDENTIFIER。
-// 特殊处理: "var" 返回 ILLEGAL，因为本运行时不支持 var。
 func LookupIdentifier(identifier string) TokenType {
-	if identifier == "var" {
-		// 显式拒绝 var 关键字
-		return ILLEGAL
-	}
 	if tokType, ok := keywords[identifier]; ok {
 		return tokType
 	}
@@ -331,6 +338,8 @@ func (t TokenType) String() string {
 		return "LET"
 	case CONST:
 		return "CONST"
+	case VAR:
+		return "VAR"
 	case IF:
 		return "IF"
 	case ELSE:
@@ -387,6 +396,14 @@ func (t TokenType) String() string {
 		return "CASE"
 	case DEFAULT:
 		return "DEFAULT"
+	case JSX_LT:
+		return "JSX_LT"
+	case JSX_SELF_CLOSE:
+		return "JSX_SELF_CLOSE"
+	case JSX_CLOSE:
+		return "JSX_CLOSE"
+	case JSX_TEXT:
+		return "JSX_TEXT"
 	default:
 		return "UNKNOWN"
 	}

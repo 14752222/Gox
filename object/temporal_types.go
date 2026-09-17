@@ -109,7 +109,7 @@ func (t *TemporalInstant) GetSymbolProperty(sym *Symbol) (Value, bool) {
 	return symbolDispatch(TEMPORAL_INSTANT_OBJ, sym)
 }
 func (t *TemporalInstant) SetSymbolProperty(sym *Symbol, val Value) {}
-func (t *TemporalInstant) GetProto() Value { return GetTemporalProto(TEMPORAL_INSTANT_OBJ) }
+func (t *TemporalInstant) GetProto() Value                          { return GetTemporalProto(TEMPORAL_INSTANT_OBJ) }
 
 // ===== Temporal.PlainDateTime =====
 
@@ -179,7 +179,7 @@ func (t *TemporalPlainDate) GetSymbolProperty(sym *Symbol) (Value, bool) {
 	return symbolDispatch(TEMPORAL_PLAIN_DATE_OBJ, sym)
 }
 func (t *TemporalPlainDate) SetSymbolProperty(sym *Symbol, val Value) {}
-func (t *TemporalPlainDate) GetProto() Value { return GetTemporalProto(TEMPORAL_PLAIN_DATE_OBJ) }
+func (t *TemporalPlainDate) GetProto() Value                          { return GetTemporalProto(TEMPORAL_PLAIN_DATE_OBJ) }
 
 // ===== Temporal.PlainTime =====
 
@@ -206,7 +206,7 @@ func (t *TemporalPlainTime) GetSymbolProperty(sym *Symbol) (Value, bool) {
 	return symbolDispatch(TEMPORAL_PLAIN_TIME_OBJ, sym)
 }
 func (t *TemporalPlainTime) SetSymbolProperty(sym *Symbol, val Value) {}
-func (t *TemporalPlainTime) GetProto() Value { return GetTemporalProto(TEMPORAL_PLAIN_TIME_OBJ) }
+func (t *TemporalPlainTime) GetProto() Value                          { return GetTemporalProto(TEMPORAL_PLAIN_TIME_OBJ) }
 
 // ===== Temporal.PlainYearMonth =====
 
@@ -229,9 +229,9 @@ func NewTemporalPlainYearMonth(y, m, refDay int32, calendar string) *TemporalPla
 	return &TemporalPlainYearMonth{year: y, month: m, refDay: refDay, calendar: calendar}
 }
 
-func (t *TemporalPlainYearMonth) Year() int32      { return t.year }
-func (t *TemporalPlainYearMonth) Month() int32     { return t.month }
-func (t *TemporalPlainYearMonth) RefDay() int32    { return t.refDay }
+func (t *TemporalPlainYearMonth) Year() int32        { return t.year }
+func (t *TemporalPlainYearMonth) Month() int32       { return t.month }
+func (t *TemporalPlainYearMonth) RefDay() int32      { return t.refDay }
 func (t *TemporalPlainYearMonth) CalendarID() string { return t.calendar }
 
 func (t *TemporalPlainYearMonth) Type() ObjectType { return TEMPORAL_PLAIN_YM_OBJ }
@@ -253,7 +253,7 @@ func (t *TemporalPlainYearMonth) GetSymbolProperty(sym *Symbol) (Value, bool) {
 	return symbolDispatch(TEMPORAL_PLAIN_YM_OBJ, sym)
 }
 func (t *TemporalPlainYearMonth) SetSymbolProperty(sym *Symbol, val Value) {}
-func (t *TemporalPlainYearMonth) GetProto() Value { return GetTemporalProto(TEMPORAL_PLAIN_YM_OBJ) }
+func (t *TemporalPlainYearMonth) GetProto() Value                          { return GetTemporalProto(TEMPORAL_PLAIN_YM_OBJ) }
 
 // ===== Temporal.PlainMonthDay =====
 
@@ -292,7 +292,7 @@ func (t *TemporalPlainMonthDay) GetSymbolProperty(sym *Symbol) (Value, bool) {
 	return symbolDispatch(TEMPORAL_PLAIN_MD_OBJ, sym)
 }
 func (t *TemporalPlainMonthDay) SetSymbolProperty(sym *Symbol, val Value) {}
-func (t *TemporalPlainMonthDay) GetProto() Value { return GetTemporalProto(TEMPORAL_PLAIN_MD_OBJ) }
+func (t *TemporalPlainMonthDay) GetProto() Value                          { return GetTemporalProto(TEMPORAL_PLAIN_MD_OBJ) }
 
 // ===== Temporal.ZonedDateTime =====
 
@@ -313,7 +313,7 @@ func NewTemporalZonedDateTime(nanos *big.Int, timeZone, calendar string) *Tempor
 	return &TemporalZonedDateTime{nanos: new(big.Int).Set(nanos), timeZone: timeZone, calendar: calendar}
 }
 
-func (t *TemporalZonedDateTime) Nanos() *big.Int  { return new(big.Int).Set(t.nanos) }
+func (t *TemporalZonedDateTime) Nanos() *big.Int    { return new(big.Int).Set(t.nanos) }
 func (t *TemporalZonedDateTime) TimeZoneID() string { return t.timeZone }
 func (t *TemporalZonedDateTime) CalendarID() string { return t.calendar }
 
@@ -381,7 +381,7 @@ func (t *TemporalTimeZone) GetSymbolProperty(sym *Symbol) (Value, bool) {
 	return symbolDispatch(TEMPORAL_TIMEZONE_OBJ, sym)
 }
 func (t *TemporalTimeZone) SetSymbolProperty(sym *Symbol, val Value) {}
-func (t *TemporalTimeZone) GetProto() Value { return GetTemporalProto(TEMPORAL_TIMEZONE_OBJ) }
+func (t *TemporalTimeZone) GetProto() Value                          { return GetTemporalProto(TEMPORAL_TIMEZONE_OBJ) }
 
 // ===== Temporal.Calendar =====
 
@@ -411,7 +411,7 @@ func (t *TemporalCalendar) GetSymbolProperty(sym *Symbol) (Value, bool) {
 	return symbolDispatch(TEMPORAL_CALENDAR_OBJ, sym)
 }
 func (t *TemporalCalendar) SetSymbolProperty(sym *Symbol, val Value) {}
-func (t *TemporalCalendar) GetProto() Value { return GetTemporalProto(TEMPORAL_CALENDAR_OBJ) }
+func (t *TemporalCalendar) GetProto() Value                          { return GetTemporalProto(TEMPORAL_CALENDAR_OBJ) }
 
 // ===== ISO 字符串格式化 =====
 

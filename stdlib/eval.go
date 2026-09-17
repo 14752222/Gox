@@ -1,12 +1,12 @@
 package stdlib
 
 import (
-	"js-runtime/bytecode"
-	"js-runtime/compiler"
-	"js-runtime/lexer"
-	"js-runtime/object"
-	"js-runtime/parser"
-	"js-runtime/runtime"
+	"github.com/14752222/Gox/bytecode"
+	"github.com/14752222/Gox/compiler"
+	"github.com/14752222/Gox/lexer"
+	"github.com/14752222/Gox/object"
+	"github.com/14752222/Gox/parser"
+	"github.com/14752222/Gox/runtime"
 )
 
 // setupEvalAndMisc 注册 eval、AggregateError，并把 Function.prototype
@@ -84,14 +84,19 @@ func setupEvalAndMisc(env *runtime.Environment) {
 // (覆盖 eval 的绝大多数用途)；多语句源码退回普通函数包装，完成值为
 // undefined (函数体结尾是隐式 return void，编译器不保留语句完成值)。
 func runGlobalEval(env *runtime.Environment, src string) object.Value {
+	// parseErr 记录最后一次解析/编译失败的原因, 用于拼进 SyntaxError 帮助定位
+	var parseErr string
 	buildAndRun := func(body string) object.Value {
 		p := parser.New(lexer.New(body))
 		program := p.ParseProgram()
 		if p.Errors().HasErrors() {
+			// 记录最近一次失败原因 (多语句包装那轮的错误最贴近源码位置)
+			parseErr = p.Errors().Errors[0].Error()
 			return nil // 由外层换包装重试
 		}
 		c := compiler.New()
 		if err := c.Compile(program); err != nil {
+			parseErr = err.Error()
 			return nil
 		}
 		// 取编译产物中的函数元数据，构建闭包后经回调桥同步执行
@@ -122,6 +127,9 @@ func runGlobalEval(env *runtime.Environment, src string) object.Value {
 	if r := buildAndRun("(function(){\n" + src + "\n})"); r != nil {
 		return r
 	}
+	if parseErr != "" {
+		return object.NewErrorWithName("SyntaxError", "eval: invalid source ("+parseErr+")")
+	}
 	return object.NewErrorWithName("SyntaxError", "eval: invalid source")
 }
 
@@ -138,6 +146,7 @@ func compiledFunctionFromMeta(meta *bytecode.FunctionMetadata, consts []object.V
 		IsAsync:       meta.IsAsync,
 		BaseSlot:      meta.BaseSlot,
 		ArgumentsSlot: meta.ArgumentsSlot,
+		SelfSlot:      meta.SelfSlot,
 		Constants:     consts,
 	}
 	for _, ps := range meta.Parameters {

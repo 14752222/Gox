@@ -1,8 +1,8 @@
 package stdlib
 
 import (
-	"js-runtime/object"
-	"js-runtime/runtime"
+	"github.com/14752222/Gox/object"
+	"github.com/14752222/Gox/runtime"
 )
 
 // setupObs 注册 Dart GetX 风格的响应式 API。

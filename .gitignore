@@ -17,6 +17,9 @@ coverage.*
 *.coverprofile
 profile.cov
 
+# Profiling dumps
+*.prof
+
 # Dependency directories (remove the comment below to include it)
 # vendor/
 
@@ -26,6 +29,9 @@ go.work.sum
 
 # env file
 .env
+
+# npm 分发用的跨平台二进制（scripts/build-npm.sh 产物，发布时在 CI 上重新构建）
+npm/binaries/
 
 # Editor/IDE
 # .idea/

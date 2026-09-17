@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"js-runtime/object"
+	"github.com/14752222/Gox/object"
 )
 
 // toFloat 将任意 object.Value 转换为 float64。

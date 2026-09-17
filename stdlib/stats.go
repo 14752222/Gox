@@ -3,8 +3,8 @@ package stdlib
 import (
 	"math"
 
-	"js-runtime/object"
-	"js-runtime/runtime"
+	"github.com/14752222/Gox/object"
+	"github.com/14752222/Gox/runtime"
 )
 
 // setupStats 注册全局 stats 对象 (教程示例 API，用于演示数据转换)。

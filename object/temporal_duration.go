@@ -71,7 +71,7 @@ func (t *TemporalDuration) GetSymbolProperty(sym *Symbol) (Value, bool) {
 	return symbolDispatch(TEMPORAL_DURATION_OBJ, sym)
 }
 func (t *TemporalDuration) SetSymbolProperty(sym *Symbol, val Value) {}
-func (t *TemporalDuration) GetProto() Value { return GetTemporalProto(TEMPORAL_DURATION_OBJ) }
+func (t *TemporalDuration) GetProto() Value                          { return GetTemporalProto(TEMPORAL_DURATION_OBJ) }
 
 // ===== 字段访问 =====
 

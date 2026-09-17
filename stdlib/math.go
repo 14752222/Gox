@@ -5,7 +5,7 @@ import (
 	"math/bits"
 	"math/rand"
 
-	"js-runtime/object"
+	"github.com/14752222/Gox/object"
 )
 
 // setupMath 创建 Math 对象。

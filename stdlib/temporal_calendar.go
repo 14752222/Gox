@@ -3,7 +3,7 @@ package stdlib
 import (
 	"math"
 
-	"js-runtime/object"
+	"github.com/14752222/Gox/object"
 )
 
 // 本文件实现 Temporal.TimeZone、Temporal.Calendar、

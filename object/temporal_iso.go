@@ -122,9 +122,9 @@ func DaysFromCivil(y, m, d int32) int64 {
 	if yy < 0 {
 		era = (yy - 399) / 400
 	}
-	yoe := yy - era*400                              // [0, 399]
-	doy := (153*(mm+shiftMonth(mm)) + 2)/5 + dd - 1  // [0, 365]
-	doe := yoe*365 + yoe/4 - yoe/100 + doy           // [0, 146096]
+	yoe := yy - era*400                           // [0, 399]
+	doy := (153*(mm+shiftMonth(mm))+2)/5 + dd - 1 // [0, 365]
+	doe := yoe*365 + yoe/4 - yoe/100 + doy        // [0, 146096]
 	return era*146097 + int64(doe) - 719468
 }
 
@@ -143,13 +143,13 @@ func CivilFromDays(z int64) ISODate {
 	if zz < 0 {
 		era = (zz - 146096) / 146097
 	}
-	doe := zz - era*146097                                    // [0, 146096]
-	yoe := (doe - doe/1460 + doe/36524 - doe/146096) / 365    // [0, 399]
+	doe := zz - era*146097                                 // [0, 146096]
+	yoe := (doe - doe/1460 + doe/36524 - doe/146096) / 365 // [0, 399]
 	y := yoe + era*400
-	doy := doe - (365*yoe + yoe/4 - yoe/100)                  // [0, 365]
-	mp := (5*doy + 2) / 153                                   // [0, 11]
-	d := doy - (153*mp+2)/5 + 1                               // [1, 31]
-	m := mp + 3                                               // [3, 14]
+	doy := doe - (365*yoe + yoe/4 - yoe/100) // [0, 365]
+	mp := (5*doy + 2) / 153                  // [0, 11]
+	d := doy - (153*mp+2)/5 + 1              // [1, 31]
+	m := mp + 3                              // [3, 14]
 	if mp >= 10 {
 		m = mp - 9 // [1, 2]
 	}

@@ -3,8 +3,8 @@ package stdlib
 import (
 	"time"
 
-	"js-runtime/object"
-	"js-runtime/runtime"
+	"github.com/14752222/Gox/object"
+	"github.com/14752222/Gox/runtime"
 )
 
 // 本文件是 Temporal 的注册入口与 Temporal.Now 时间源。

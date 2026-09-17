@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"js-runtime/object"
+	"github.com/14752222/Gox/object"
 )
 
 // resetStrictTimers 彻底重置严格调度器, 避免测试间泄漏。

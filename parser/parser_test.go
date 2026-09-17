@@ -3,8 +3,8 @@ package parser
 import (
 	"testing"
 
-	"js-runtime/ast"
-	"js-runtime/lexer"
+	"github.com/14752222/Gox/ast"
+	"github.com/14752222/Gox/lexer"
 )
 
 func TestLetStatements(t *testing.T) {
@@ -62,16 +62,35 @@ func TestConstStatements(t *testing.T) {
 	}
 }
 
-func TestVarIsIllegal(t *testing.T) {
-	input := `var x = 5;`
+func TestVarDeclarationRejected(t *testing.T) {
+	// var 声明在语句层被拒绝; 包括 for (var ...) 形式
+	inputs := []string{
+		`var x = 5;`,
+		`for (var i = 0; i < 3; i++) { }`,
+		`for (var v of [1, 2]) { }`,
+	}
+	for _, input := range inputs {
+		l := lexer.New(input)
+		p := New(l)
+		p.ParseProgram()
+		if !p.Errors().HasErrors() {
+			t.Fatalf("expected parse error for %q, but got none", input)
+		}
+	}
+}
+
+func TestVarAsPropertyName(t *testing.T) {
+	// var 作为属性名是合法的 (obj.var, {var: 1}, a?.var)
+	input := `{ var: 1 }`
 
 	l := lexer.New(input)
 	p := New(l)
-
-	p.ParseProgram()
-	// Should have errors because var is not supported
-	if !p.Errors().HasErrors() {
-		t.Fatal("expected parse error for 'var' keyword, but got none")
+	program := p.ParseProgram()
+	if p.Errors().HasErrors() {
+		t.Fatalf("expected no parse error for %q, got %v", input, p.Errors())
+	}
+	if len(program.Statements) == 0 {
+		t.Fatal("expected one statement")
 	}
 }
 

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"js-runtime/object"
+	"github.com/14752222/Gox/object"
 )
 
 // ConstantPool 存储编译期产生的常量。
@@ -96,6 +96,7 @@ type FunctionMetadata struct {
 	IsAsync       bool            // 是否 async 函数
 	BaseSlot      int             // 函数自身变量的起始槽位 (外层作用域的变量数)
 	ArgumentsSlot int             // arguments 对象槽位 (-1 表示未使用/箭头函数)
+	SelfSlot      int             // 命名函数表达式的自引用槽位 (-1 表示无)
 }
 
 // ParameterSpec 描述函数参数规格。
@@ -116,6 +117,7 @@ func NewFunctionMetadata(name string, ins Instructions, numLocals, numParams int
 		IsArrow:       isArrow,
 		BaseSlot:      0,
 		ArgumentsSlot: -1,
+		SelfSlot:      -1,
 	}
 }
 
@@ -191,7 +193,7 @@ func Disassemble(ins Instructions, cp *ConstantPool) string {
 func hasOperand(op Opcode) bool {
 	switch op {
 	case OP_NOP, OP_NULL, OP_UNDEFINED, OP_TRUE, OP_FALSE,
-		OP_POP, OP_DUP, OP_SWAP, OP_DUP2, OP_DUP_BELOW2,
+		OP_POP, OP_DUP, OP_SWAP, OP_DUP2, OP_DUP_BELOW2, OP_ITER_BOUNDARY,
 		OP_ADD, OP_SUB, OP_MUL, OP_DIV, OP_MOD, OP_POW, OP_NEG,
 		OP_BIT_AND, OP_BIT_OR, OP_BIT_XOR, OP_SHL, OP_SHR, OP_USHR,
 		OP_EQ, OP_NOT_EQ, OP_STRICT_EQ, OP_STRICT_NE,

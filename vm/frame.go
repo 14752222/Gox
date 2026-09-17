@@ -1,8 +1,8 @@
 package vm
 
 import (
-	"js-runtime/bytecode"
-	"js-runtime/object"
+	"github.com/14752222/Gox/bytecode"
+	"github.com/14752222/Gox/object"
 )
 
 // Frame 表示 VM 调用栈中的一个帧。
@@ -24,15 +24,17 @@ type Frame struct {
 	Constants       *bytecode.ConstantPool
 	ModifiedSlots   map[int]bool      // 修改过的 slot (用于 popFrame 传播)
 	CreatedClosures []*object.Closure // 本帧创建的闭包 (用于 STORE 传播)
+	SharedCells     []object.Value    // 外层 binding cell (== 创建它的帧的 Locals 数组)
 	StackBase       int               // 进入本帧时栈高度 (返回时截断到此处)
 }
 
 // NewFrame 创建新的调用帧。
+//
+// Locals 刻意保持零值 (nil): nil 表示"该绑定尚未初始化"，OP_LOAD 读到它时
+// 抛 ReferenceError —— 这就是 let/const 的 TDZ (暂时性死区)。
+// 若像以前那样预填 undefined，声明前访问会静默得到 undefined。
 func NewFrame(ins bytecode.Instructions, constants *bytecode.ConstantPool, numLocals int) *Frame {
 	locals := make([]object.Value, numLocals)
-	for i := range locals {
-		locals[i] = object.UndefinedSingleton
-	}
 	return &Frame{
 		Instructions: ins,
 		PC:           0,

@@ -4,8 +4,8 @@ import (
 	"math"
 	"time"
 
-	"js-runtime/object"
-	"js-runtime/runtime"
+	"github.com/14752222/Gox/object"
+	"github.com/14752222/Gox/runtime"
 )
 
 // setupTimers 注册 setTimeout/setInterval/clearTimeout/clearInterval 及

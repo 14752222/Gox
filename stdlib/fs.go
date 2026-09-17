@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"os"
 
-	"js-runtime/object"
-	"js-runtime/runtime"
+	"github.com/14752222/Gox/object"
+	"github.com/14752222/Gox/runtime"
 )
 
 // setupFS 注册 fs 文件模块。

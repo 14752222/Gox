@@ -3,9 +3,9 @@ package compiler
 import (
 	"testing"
 
-	"js-runtime/bytecode"
-	"js-runtime/lexer"
-	"js-runtime/parser"
+	"github.com/14752222/Gox/bytecode"
+	"github.com/14752222/Gox/lexer"
+	"github.com/14752222/Gox/parser"
 )
 
 // compile 编译 JS 源码，返回编译器。

@@ -1,8 +1,8 @@
 package stdlib
 
 import (
-	"js-runtime/object"
-	"js-runtime/runtime"
+	"github.com/14752222/Gox/object"
+	"github.com/14752222/Gox/runtime"
 )
 
 // setupSymbol 设置 Symbol 全局对象。

@@ -5,7 +5,7 @@ import (
 	"math"
 	"math/big"
 
-	"js-runtime/object"
+	"github.com/14752222/Gox/object"
 )
 
 // 本文件实现 Temporal 的"墙钟时间"三兄弟: PlainDateTime / PlainDate / PlainTime。

@@ -1,6 +1,6 @@
 package compiler
 
-import "js-runtime/bytecode"
+import "github.com/14752222/Gox/bytecode"
 
 // Emitter 是字节码发射辅助器。
 // 提供便捷的方法来生成指令、管理跳转标签和回填。

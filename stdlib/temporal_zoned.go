@@ -3,7 +3,7 @@ package stdlib
 import (
 	"math/big"
 
-	"js-runtime/object"
+	"github.com/14752222/Gox/object"
 )
 
 // 本文件实现 Temporal.ZonedDateTime、Temporal.TimeZone 与 Temporal.Calendar。
@@ -121,7 +121,7 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 		next := new(big.Int).Add(startNs, big.NewInt(object.NanosPerDay))
 		offStart := int64(object.TimeZoneOffsetSecondsAt(t.TimeZoneID(), startNs)) * object.NanosPerSecond
 		offNext := int64(object.TimeZoneOffsetSecondsAt(t.TimeZoneID(), next)) * object.NanosPerSecond
-		return object.NewNumber(float64(object.NanosPerDay + offStart - offNext) / float64(object.NanosPerHour))
+		return object.NewNumber(float64(object.NanosPerDay+offStart-offNext) / float64(object.NanosPerHour))
 	})
 
 	// ===== 构造与替换 =====

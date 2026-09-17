@@ -4,8 +4,8 @@ import (
 	"os"
 	goruntime "runtime"
 
-	"js-runtime/object"
-	"js-runtime/runtime"
+	"github.com/14752222/Gox/object"
+	"github.com/14752222/Gox/runtime"
 )
 
 // setupProcess 注册 process 全局对象 (Node 风格的最小子集)。

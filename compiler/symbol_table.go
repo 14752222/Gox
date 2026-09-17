@@ -64,6 +64,15 @@ func (s *SymbolScope) Resolve(name string) *Symbol {
 	return nil
 }
 
+// ResolveLocal 只在本层作用域查找 (不向外层回溯)。
+// 变量预声明需要它: 判定"当前作用域内是否已有该绑定"时不能命中外层同名变量。
+func (s *SymbolScope) ResolveLocal(name string) *Symbol {
+	if sym, ok := s.store[name]; ok {
+		return sym
+	}
+	return nil
+}
+
 // NumLocals 返回当前作用域及其父作用域中的总变量数
 // (实际上返回最深作用域的 nextSlot)。
 func (s *SymbolScope) NumLocals() int {

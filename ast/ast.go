@@ -1,6 +1,6 @@
 package ast
 
-import "js-runtime/lexer"
+import "github.com/14752222/Gox/lexer"
 
 // Node 是所有 AST 节点的基础接口。
 // 每个 AST 节点都能返回其关联的首个令牌的字面量，用于调试。
@@ -479,7 +479,7 @@ type BigIntLiteral struct {
 func (bl *BigIntLiteral) TokenLiteral() string { return bl.Token.Literal }
 func (bl *BigIntLiteral) String() string       { return bl.Token.Literal + "n" }
 func (bl *BigIntLiteral) expressionNode()      {}
-func (fl *FloatLiteral) expressionNode()      {}
+func (fl *FloatLiteral) expressionNode()       {}
 
 // StringLiteral 表示字符串字面量。
 type StringLiteral struct {
@@ -592,16 +592,21 @@ func (se *SuperExpression) expressionNode()      {}
 // YieldExpression 表示 yield 表达式 (仅出现在 generator 函数中)。
 // 例如: function* gen() { yield 1; }
 type YieldExpression struct {
-	Token lexer.Token // YIELD
-	Value Expression  // yield 的表达式 (可为 nil: yield;)
+	Token    lexer.Token // YIELD
+	Value    Expression  // yield 的表达式 (可为 nil: yield;)
+	Delegate bool        // yield* expr: 委托给可迭代对象
 }
 
 func (ye *YieldExpression) TokenLiteral() string { return ye.Token.Literal }
 func (ye *YieldExpression) String() string {
-	if ye.Value == nil {
-		return "yield"
+	op := "yield"
+	if ye.Delegate {
+		op = "yield*"
 	}
-	return "yield " + ye.Value.String()
+	if ye.Value == nil {
+		return op
+	}
+	return op + " " + ye.Value.String()
 }
 func (ye *YieldExpression) expressionNode() {}
 

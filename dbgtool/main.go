@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 
-	"js-runtime/lexer"
+	"github.com/14752222/Gox/lexer"
 )
 
 func main() {

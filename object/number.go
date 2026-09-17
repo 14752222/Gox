@@ -205,4 +205,3 @@ func jsTrimSpace(s string) string {
 	}
 	return s[start:end]
 }
-

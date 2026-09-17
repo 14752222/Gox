@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"js-runtime/object"
+	"github.com/14752222/Gox/object"
 )
 
 // 本文件是针对标准库 API 实现修复的回归测试。

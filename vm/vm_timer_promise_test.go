@@ -3,7 +3,7 @@ package vm
 import (
 	"testing"
 
-	"js-runtime/object"
+	"github.com/14752222/Gox/object"
 )
 
 // ===== 定时器 + Promise 集成回归测试 =====

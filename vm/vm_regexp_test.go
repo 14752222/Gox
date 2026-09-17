@@ -3,7 +3,7 @@ package vm
 import (
 	"testing"
 
-	"js-runtime/object"
+	"github.com/14752222/Gox/object"
 )
 
 // ===== RegExp 构造器测试 =====

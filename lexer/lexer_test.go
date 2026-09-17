@@ -96,13 +96,18 @@ func TestNextToken(t *testing.T) {
 	}
 }
 
-func TestVarIsIllegal(t *testing.T) {
+func TestVarIsKeywordToken(t *testing.T) {
+	// var 词法层识别为 VAR 关键字 (声明在 parser 语句层被拒绝),
+	// Literal 保留原始词素, 作为属性名 (obj.var, {var: 1}) 时键名正确。
 	input := `var x = 5;`
 
 	l := New(input)
 	tok := l.NextToken()
-	if tok.Type != ILLEGAL {
-		t.Fatalf("expected ILLEGAL for 'var', got %s (%q)", tok.Type, tok.Literal)
+	if tok.Type != VAR {
+		t.Fatalf("expected VAR for 'var', got %s (%q)", tok.Type, tok.Literal)
+	}
+	if tok.Literal != "var" {
+		t.Fatalf("expected literal %q, got %q", "var", tok.Literal)
 	}
 }
 

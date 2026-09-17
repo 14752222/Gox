@@ -4,7 +4,7 @@ import (
 	"math"
 	"strconv"
 
-	"js-runtime/object"
+	"github.com/14752222/Gox/object"
 )
 
 // setupNumberProto 创建 Number.prototype 对象。

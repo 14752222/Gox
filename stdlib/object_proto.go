@@ -4,7 +4,7 @@ import (
 	"math"
 	"strconv"
 
-	"js-runtime/object"
+	"github.com/14752222/Gox/object"
 )
 
 // setupObjectPrototype 构建 Object.prototype 及其标准方法。

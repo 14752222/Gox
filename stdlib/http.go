@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"js-runtime/object"
-	"js-runtime/runtime"
+	"github.com/14752222/Gox/object"
+	"github.com/14752222/Gox/runtime"
 )
 
 // httpClient 是模块共享的 HTTP 客户端。带超时避免脚本卡死在不可达地址上。

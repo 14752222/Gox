@@ -3,9 +3,9 @@ package compiler
 import (
 	"fmt"
 
-	"js-runtime/ast"
-	"js-runtime/bytecode"
-	"js-runtime/object"
+	"github.com/14752222/Gox/ast"
+	"github.com/14752222/Gox/bytecode"
+	"github.com/14752222/Gox/object"
 )
 
 // Compiler 将 AST 编译为字节码。
@@ -114,14 +114,20 @@ func (c *Compiler) Compile(program *ast.Program) error {
 	return c.compileStatements(program.Statements)
 }
 
-// compileStatements 编译一个语句列表，并实现 ECMAScript 的函数声明提升。
+// compileStatements 编译一个语句列表，并实现 ECMAScript 的声明提升。
 //
-// 函数声明在其所在作用域的顶部即完成绑定: 编译任何语句之前先把列表里的
-// function 声明编译好 (定义符号 + 创建函数对象)，其余语句按源码顺序编译，
-// 已提升的声明跳过以免重复创建。
-// 这样 `f(); function f(){}` 才能解析 —— 之前函数只在执行到声明语句时才
-// 绑定，声明之前的调用会报 ReferenceError。
+//  1. prescanScope: 先把列表里的 let/const/function 绑定登记到当前作用域
+//     (只登记符号, 不发射指令)。这是函数提升能正确工作的前提 —— 提升到
+//     列表顶部的函数体在编译时要能解析到列表后面才出现的 let 变量:
+//
+//     let x = 1;            // 提升的 f 需要捕获 x
+//     f(); function f() { return x; }
+//
+//  2. 再编译列表里的 function 声明 (绑定 + 创建函数对象)，其余语句按源码
+//     顺序编译，已提升的声明跳过以免重复创建。
 func (c *Compiler) compileStatements(stmts []ast.Statement) error {
+	c.prescanScope(stmts)
+
 	hoisted := make(map[ast.Statement]bool)
 	for _, stmt := range stmts {
 		fd, ok := stmt.(*ast.FunctionDeclaration)
@@ -213,12 +219,14 @@ func (c *Compiler) compileLetStatement(stmt *ast.LetStatement) error {
 	}
 
 	// 无初始化器 (let x;) 也必须注册符号，
-	// 否则后续 x = ... 会被当作全局变量处理
+	// 否则后续 x = ... 会被当作全局变量处理。
+	// 规范: let x; 等价于 let x = undefined —— 必须显式写入 undefined，
+	// 否则局部槽保持未初始化态 (读取触发 TDZ 报错)、全局则根本未声明。
 	if stmt.Value != nil {
 		if err := c.compileExpression(stmt.Value); err != nil {
 			return err
 		}
-		sym := c.scope.Define(stmt.Name.Value, false)
+		sym := c.declareOnce(stmt.Name.Value, false)
 		if c.isGlobalScope() {
 			// 全局作用域: 声明写入共享全局环境 (支持 REPL 跨输入状态保持)
 			nameIdx := c.constants.AddConstant(object.NewString(stmt.Name.Value))
@@ -227,7 +235,14 @@ func (c *Compiler) compileLetStatement(stmt *ast.LetStatement) error {
 			c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
 		}
 	} else {
-		c.scope.Define(stmt.Name.Value, false)
+		sym := c.declareOnce(stmt.Name.Value, false)
+		c.emitter.EmitNoOperand(bytecode.OP_UNDEFINED)
+		if c.isGlobalScope() {
+			nameIdx := c.constants.AddConstant(object.NewString(stmt.Name.Value))
+			c.emitter.Emit(bytecode.OP_DECLARE, nameIdx)
+		} else {
+			c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
+		}
 	}
 
 	// 多条声明: let a = 1, b = 2;
@@ -236,7 +251,7 @@ func (c *Compiler) compileLetStatement(stmt *ast.LetStatement) error {
 			if err := c.compileExpression(d.Value); err != nil {
 				return err
 			}
-			sym := c.scope.Define(d.Name.Value, false)
+			sym := c.declareOnce(d.Name.Value, false)
 			if c.isGlobalScope() {
 				nameIdx := c.constants.AddConstant(object.NewString(d.Name.Value))
 				c.emitter.Emit(bytecode.OP_DECLARE, nameIdx)
@@ -244,7 +259,14 @@ func (c *Compiler) compileLetStatement(stmt *ast.LetStatement) error {
 				c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
 			}
 		} else {
-			c.scope.Define(d.Name.Value, false)
+			sym := c.declareOnce(d.Name.Value, false)
+			c.emitter.EmitNoOperand(bytecode.OP_UNDEFINED)
+			if c.isGlobalScope() {
+				nameIdx := c.constants.AddConstant(object.NewString(d.Name.Value))
+				c.emitter.Emit(bytecode.OP_DECLARE, nameIdx)
+			} else {
+				c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
+			}
 		}
 	}
 	return nil
@@ -261,7 +283,7 @@ func (c *Compiler) compileConstStatement(stmt *ast.ConstStatement) error {
 	if err := c.compileExpression(stmt.Value); err != nil {
 		return err
 	}
-	sym := c.scope.Define(stmt.Name.Value, true)
+	sym := c.declareOnce(stmt.Name.Value, true)
 	if c.isGlobalScope() {
 		// 全局作用域: 声明写入共享全局环境 (const 绑定)
 		nameIdx := c.constants.AddConstant(object.NewString(stmt.Name.Value))
@@ -275,7 +297,7 @@ func (c *Compiler) compileConstStatement(stmt *ast.ConstStatement) error {
 		if err := c.compileExpression(d.Value); err != nil {
 			return err
 		}
-		sym := c.scope.Define(d.Name.Value, true)
+		sym := c.declareOnce(d.Name.Value, true)
 		if c.isGlobalScope() {
 			nameIdx := c.constants.AddConstant(object.NewString(d.Name.Value))
 			c.emitter.Emit(bytecode.OP_DECLARE_CONST, nameIdx)
@@ -372,9 +394,12 @@ func (c *Compiler) compileWhileStatement(stmt *ast.WhileStatement) error {
 	c.scope = prevScope
 	c.emitter.EmitNoOperand(bytecode.OP_POP_SCOPE)
 
+	// 迭代边界: 提交本轮创建的闭包 (body 内 let 的 per-iteration 语义)
+	c.emitter.EmitNoOperand(bytecode.OP_ITER_BOUNDARY)
+	iterPos := c.emitter.Pos()
 	// continue 跳回循环头
 	for _, jmp := range ctx.continueJumps {
-		c.emitter.ReplaceJumpTarget(jmp, uint16(loopStart))
+		c.emitter.ReplaceJumpTarget(jmp, uint16(iterPos))
 	}
 	// 跳回条件检查
 	c.emitter.Emit(bytecode.OP_LOOP, uint16(loopStart))
@@ -412,7 +437,8 @@ func (c *Compiler) compileDoWhileStatement(stmt *ast.DoWhileStatement) error {
 	c.scope = prevScope
 	c.emitter.EmitNoOperand(bytecode.OP_POP_SCOPE)
 
-	// continue 跳到条件检查 (body 之后)
+	// continue 跳到条件检查 (body 之后); 此处同时是迭代边界
+	c.emitter.EmitNoOperand(bytecode.OP_ITER_BOUNDARY)
 	condPos := c.emitter.Pos()
 	for _, jmp := range ctx.continueJumps {
 		c.emitter.ReplaceJumpTarget(jmp, uint16(condPos))
@@ -481,9 +507,11 @@ func (c *Compiler) compileForOfStatement(stmt *ast.ForOfStatement) error {
 	c.scope = prevScope
 	c.emitter.EmitNoOperand(bytecode.OP_POP_SCOPE)
 
-	// continue 跳回迭代头
+	// continue 跳回迭代头 (经过迭代边界: 每次迭代的绑定互不影响)
+	c.emitter.EmitNoOperand(bytecode.OP_ITER_BOUNDARY)
+	iterPos := c.emitter.Pos()
 	for _, jmp := range ctx.continueJumps {
-		c.emitter.ReplaceJumpTarget(jmp, uint16(loopStart))
+		c.emitter.ReplaceJumpTarget(jmp, uint16(iterPos))
 	}
 	c.emitter.Emit(bytecode.OP_LOOP, uint16(loopStart))
 
@@ -545,8 +573,11 @@ func (c *Compiler) compileForInStatement(stmt *ast.ForInStatement) error {
 	c.scope = prevScope
 	c.emitter.EmitNoOperand(bytecode.OP_POP_SCOPE)
 
+	// 迭代边界: 本轮迭代创建的闭包定版
+	c.emitter.EmitNoOperand(bytecode.OP_ITER_BOUNDARY)
+	iterPos := c.emitter.Pos()
 	for _, jmp := range ctx.continueJumps {
-		c.emitter.ReplaceJumpTarget(jmp, uint16(loopStart))
+		c.emitter.ReplaceJumpTarget(jmp, uint16(iterPos))
 	}
 	c.emitter.Emit(bytecode.OP_LOOP, uint16(loopStart))
 
@@ -606,7 +637,8 @@ func (c *Compiler) compileForStatement(stmt *ast.ForStatement) error {
 		c.scope = bodyScope
 		c.emitter.EmitNoOperand(bytecode.OP_POP_SCOPE)
 
-		// continue 跳到 update
+		// continue 跳到 update; 此处同时是迭代边界 (per-iteration 绑定)
+		c.emitter.EmitNoOperand(bytecode.OP_ITER_BOUNDARY)
 		continueStart := c.emitter.Pos()
 		// update
 		if stmt.Update != nil {
@@ -639,7 +671,8 @@ func (c *Compiler) compileForStatement(stmt *ast.ForStatement) error {
 		c.scope = bodyScope
 		c.emitter.EmitNoOperand(bytecode.OP_POP_SCOPE)
 
-		// continue 跳到 update
+		// continue 跳到 update; 此处同时是迭代边界 (per-iteration 绑定)
+		c.emitter.EmitNoOperand(bytecode.OP_ITER_BOUNDARY)
 		continueStart := c.emitter.Pos()
 		// update (无条件循环同样需要编译 update 段)
 		if stmt.Update != nil {
@@ -1262,7 +1295,7 @@ func (c *Compiler) compileExportDeclaration(stmt *ast.ExportDeclaration) error {
 
 func (c *Compiler) compileFunctionDeclaration(stmt *ast.FunctionDeclaration) error {
 	// 先在当前作用域定义函数名 (允许递归调用)
-	sym := c.scope.Define(stmt.Name.Value, false)
+	sym := c.declareOnce(stmt.Name.Value, false)
 
 	// 编译函数体为独立的 FunctionMetadata
 	fnMeta, err := c.compileFunction(
@@ -1376,6 +1409,10 @@ func (c *Compiler) compileExpression(expr ast.Expression) error {
 		c.emitter.EmitNoOperand(bytecode.OP_THIS)
 		return nil
 	case *ast.YieldExpression:
+		// yield* expr: 委托给可迭代对象 (见 compileYieldDelegate)
+		if node.Delegate && node.Value != nil {
+			return c.compileYieldDelegate(node.Value)
+		}
 		// yield [expr]: 编译 expr (默认 undefined), 然后 OP_YIELD 暂停
 		if node.Value != nil {
 			if err := c.compileExpression(node.Value); err != nil {
@@ -1401,6 +1438,44 @@ func (c *Compiler) compileExpression(expr ast.Expression) error {
 	default:
 		return fmt.Errorf("unsupported expression type: %T", expr)
 	}
+}
+
+// compileYieldDelegate 编译 yield* expr: 逐个取出 expr 的迭代值并 yield，
+// 直到迭代结束。整个表达式的值为 undefined (不取 delegate 的 return 值)。
+//
+// 迭代器存放在隐藏局部槽位而不是操作数栈上: OP_YIELD 挂起时只保存
+// StackBase 之上的栈值，若迭代器留在栈上跨 yield 存活，generator 正常
+// 返回时它会残留在调用方栈上 (rebuildGenFrame 把保存值恢复到帧基之下)。
+func (c *Compiler) compileYieldDelegate(expr ast.Expression) error {
+	if err := c.compileExpression(expr); err != nil {
+		return err
+	}
+	c.emitter.EmitNoOperand(bytecode.OP_GET_ITERATOR)
+	sym := c.scope.Define("%yield*iter%", false)
+	c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
+
+	loopStart := c.emitter.Pos()
+	c.emitter.Emit(bytecode.OP_LOAD, uint16(sym.Slot))
+	c.emitter.EmitNoOperand(bytecode.OP_ITER_NEXT)
+	// OP_ITER_NEXT 迭代结束时压入 undefined —— 与 for-of 一致用 NULL 判断
+	c.emitter.EmitNoOperand(bytecode.OP_DUP)
+	endJump := c.emitter.EmitJump(bytecode.OP_JUMP_IF_NULL)
+	c.emitter.EmitNoOperand(bytecode.OP_POP)
+	// [iter, v] → [v]: 迭代器副本不能跨 YIELD 存活 (见函数头注释)
+	c.emitter.EmitNoOperand(bytecode.OP_SWAP)
+	c.emitter.EmitNoOperand(bytecode.OP_POP)
+	c.emitter.EmitNoOperand(bytecode.OP_YIELD)
+	c.emitter.EmitNoOperand(bytecode.OP_POP) // 弃掉 next() 传入的恢复值
+	c.emitter.Emit(bytecode.OP_LOOP, uint16(loopStart))
+
+	c.emitter.PatchJump(endJump)
+	// 跳转时栈为 [iter, u, u] (JUMP_IF_NULL 只窥视不弹出): 清空后
+	// 压入 undefined 作为 yield* 表达式的值
+	c.emitter.EmitNoOperand(bytecode.OP_POP)
+	c.emitter.EmitNoOperand(bytecode.OP_POP)
+	c.emitter.EmitNoOperand(bytecode.OP_POP)
+	c.emitter.EmitNoOperand(bytecode.OP_UNDEFINED)
+	return nil
 }
 
 // isGlobalScope 返回当前是否处于全局作用域 (depth 0) 且非模块模式。
@@ -1694,42 +1769,80 @@ func (c *Compiler) compileAssignmentExpression(node *ast.AssignmentExpression) e
 		}
 
 	case *ast.MemberExpression:
-		if left.Computed {
-			// obj[key] = val / obj[key] OP= val
-			if err := c.compileExpression(left.Object); err != nil {
+		// obj.prop = val / obj[key] OP= val 共用同一条路径:
+		// 先压 [obj, key]，简单赋值直接 SET_INDEX，复合赋值走 DUP2 取旧值写回。
+		if err := c.compileMemberRef(left); err != nil {
+			return err
+		}
+		if node.Operator == "=" {
+			if err := c.compileExpression(node.Right); err != nil {
 				return err
 			}
-			if err := c.compileExpression(left.Property); err != nil {
-				return err
+			// SET_INDEX: pops val, key, obj; pushes val → [val]
+			c.emitter.EmitNoOperand(bytecode.OP_SET_INDEX)
+			return nil
+		}
+		return c.emitCompoundMemberAssign(node)
+	}
+	return nil
+}
+
+// prescanScope 预登记语句列表中的绑定名 (let/const/function)。
+// 只建立符号，不发射任何指令；执行时绑定仍按源码顺序被初始化。
+func (c *Compiler) prescanScope(stmts []ast.Statement) {
+	for _, stmt := range stmts {
+		switch s := stmt.(type) {
+		case *ast.LetStatement:
+			if s.Name != nil {
+				c.declareOnce(s.Name.Value, false)
 			}
-			if node.Operator == "=" {
-				if err := c.compileExpression(node.Right); err != nil {
-					return err
+			for _, d := range s.More {
+				if d.Name != nil {
+					c.declareOnce(d.Name.Value, false)
 				}
-				// SET_INDEX: pops val, key, obj; pushes val → [val]
-				c.emitter.EmitNoOperand(bytecode.OP_SET_INDEX)
-				return nil
 			}
-			return c.emitCompoundMemberAssign(node)
-		} else {
-			// obj.prop = val / obj.prop OP= val (使用 SET_INDEX + 字符串键)
-			if err := c.compileExpression(left.Object); err != nil {
-				return err
+		case *ast.ConstStatement:
+			if s.Name != nil {
+				c.declareOnce(s.Name.Value, true)
 			}
-			propName := left.Property.(*ast.Identifier).Value
-			idx := c.constants.AddConstant(object.NewString(propName))
-			c.emitter.Emit(bytecode.OP_CONST, idx) // [obj, "prop"]
-			if node.Operator == "=" {
-				if err := c.compileExpression(node.Right); err != nil {
-					return err
+			for _, d := range s.More {
+				if d.Name != nil {
+					c.declareOnce(d.Name.Value, true)
 				}
-				// SET_INDEX: pops val, key, obj; pushes val → [val]
-				c.emitter.EmitNoOperand(bytecode.OP_SET_INDEX)
-				return nil
 			}
-			return c.emitCompoundMemberAssign(node)
+		case *ast.FunctionDeclaration:
+			if s.Name != nil {
+				c.declareOnce(s.Name.Value, false)
+			}
 		}
 	}
+}
+
+// declareOnce 在当前作用域登记绑定; 已有同名绑定时复用原符号 (保持 slot 不变)，
+// 避免预声明与真正编译分配出两个不同的槽位。
+func (c *Compiler) declareOnce(name string, isConst bool) *Symbol {
+	if sym := c.scope.ResolveLocal(name); sym != nil {
+		return sym
+	}
+	return c.scope.Define(name, isConst)
+}
+
+// compileMemberRef 编译成员引用的两个部分，栈上留下 [obj, key]。
+// obj 与 key 各自只求值一次 —— 复合/逻辑赋值需要重复用到这个引用，
+// 但绝不能重复求值 `obj[f()] += v` 里的 f。
+func (c *Compiler) compileMemberRef(m *ast.MemberExpression) error {
+	if err := c.compileExpression(m.Object); err != nil {
+		return err
+	}
+	if m.Computed {
+		return c.compileExpression(m.Property)
+	}
+	ident, ok := m.Property.(*ast.Identifier)
+	if !ok {
+		return fmt.Errorf("compiler: unsupported member target")
+	}
+	idx := c.constants.AddConstant(object.NewString(ident.Value))
+	c.emitter.Emit(bytecode.OP_CONST, idx) // [obj, "prop"]
 	return nil
 }
 
@@ -1796,59 +1909,41 @@ func (c *Compiler) compileLogicalAssignment(node *ast.AssignmentExpression) erro
 		return nil
 
 	case *ast.MemberExpression:
-		// obj[key] ||= y  (短路语义, 结果: 当前值或赋值后的值)
-		// 1. 加载当前值
-		if left.Computed {
-			if err := c.compileExpression(left.Object); err != nil {
-				return err
-			}
-			if err := c.compileExpression(left.Property); err != nil {
-				return err
-			}
-		} else {
-			if err := c.compileExpression(left.Object); err != nil {
-				return err
-			}
-			propName := left.Property.(*ast.Identifier).Value
-			idx := c.constants.AddConstant(object.NewString(propName))
-			c.emitter.Emit(bytecode.OP_CONST, idx)
+		// obj[key] ||= y (短路语义, 结果是当前值或赋值后的值)
+		//
+		// 与复合赋值同样用 DUP2 保留引用，避免二次求值 obj/key:
+		//
+		//	[obj,key] → DUP2 → [obj,key,obj,key] → GET_INDEX → [obj,key,val]
+		//	→ DUP → [obj,key,val,val] → 短路则跳到 cleanup
+		//	→ POP,POP → [obj,key] → 编译右值 → SET_INDEX → [y] → JUMP end
+		//	cleanup: [obj,key,val,val] → POP → SWAP → POP → SWAP → POP → [val]
+		if err := c.compileMemberRef(left); err != nil {
+			return err
 		}
-		// [obj, key]
-		c.emitter.EmitNoOperand(bytecode.OP_GET_INDEX) // → [val]
-		c.emitter.EmitNoOperand(bytecode.OP_DUP)       // [val, val]
-		skip := c.emitLogicalSkip(op)                  // 短路则跳 (目标: skip_cleanup)
-		c.emitter.EmitNoOperand(bytecode.OP_POP)       // [val] (pop dup)
+		c.emitter.EmitNoOperand(bytecode.OP_DUP2)
+		c.emitter.EmitNoOperand(bytecode.OP_GET_INDEX) // → [obj, key, val]
+		c.emitter.EmitNoOperand(bytecode.OP_DUP)       // [obj, key, val, val]
+		skip := c.emitLogicalSkip(op)                  // 短路则跳 (栈顶 val 不弹出)
+		c.emitter.EmitNoOperand(bytecode.OP_POP)       // [obj, key, val]
+		c.emitter.EmitNoOperand(bytecode.OP_POP)       // [obj, key]
 
-		// 非短路路径: 计算右侧并覆盖存储
-		c.emitter.EmitNoOperand(bytecode.OP_POP) // 弹出原值 → []
-		// 重新求值目标 (obj/key 为无副作用表达式; 学习项目简化)
-		if left.Computed {
-			if err := c.compileExpression(left.Object); err != nil {
-				return err
-			}
-			if err := c.compileExpression(left.Property); err != nil {
-				return err
-			}
-		} else {
-			if err := c.compileExpression(left.Object); err != nil {
-				return err
-			}
-			propName := left.Property.(*ast.Identifier).Value
-			idx := c.constants.AddConstant(object.NewString(propName))
-			c.emitter.Emit(bytecode.OP_CONST, idx)
-		}
+		// 非短路路径: 计算右侧并写回
 		if err := c.compileExpression(node.Right); err != nil {
 			return err
 		}
-		// [obj, key, y]
 		// SET_INDEX 弹出 val,key,obj 并推回 val (保留结果)
 		c.emitter.EmitNoOperand(bytecode.OP_SET_INDEX) // [obj,key,y] → [y]
-		done2 := c.emitter.EmitJump(bytecode.OP_JUMP)  // 目标: endPos
+		done2 := c.emitter.EmitJump(bytecode.OP_JUMP)
 
-		// 短路路径清理: [val, val] → [val]
+		// 短路路径清理: [obj, key, val, val] 丢弃 obj/key，只留 val
 		c.emitter.PatchJump(skip)
-		c.emitter.EmitNoOperand(bytecode.OP_POP) // [val, val] → [val]
-		// 最终出口: 非短路路径 done2 与 短路路径都汇聚于此
+		c.emitter.EmitNoOperand(bytecode.OP_POP)  // [obj, key, val]
+		c.emitter.EmitNoOperand(bytecode.OP_SWAP) // [obj, val, key]
+		c.emitter.EmitNoOperand(bytecode.OP_POP)  // [obj, val]
+		c.emitter.EmitNoOperand(bytecode.OP_SWAP) // [val, obj]
+		c.emitter.EmitNoOperand(bytecode.OP_POP)  // [val]
+
+		// 两条路径汇聚于此
 		c.emitter.PatchJump(done2)
 		return nil
 	}
@@ -1892,6 +1987,14 @@ func (c *Compiler) compileDestructureAssignment(node *ast.AssignmentExpression) 
 func (c *Compiler) compilePatternBind(pattern ast.Expression) error {
 	switch pattern := pattern.(type) {
 	case *ast.ArrayPattern:
+		// 数组解构按迭代协议取值: 先把栈顶的被解构值物化为数组，
+		// 使 generator/字符串/Set 等可迭代对象也能解构，
+		// 非可迭代值 (如 null) 在此抛 TypeError —— 与 ECMAScript 一致。
+		// [val] → [val, []] → [arr, val] → [materialized]
+		c.emitter.Emit(bytecode.OP_PACK_ARRAY, 0)
+		c.emitter.EmitNoOperand(bytecode.OP_SWAP)
+		c.emitter.EmitNoOperand(bytecode.OP_ARRAY_SPREAD)
+
 		for i, elem := range pattern.Elements {
 			// DUP 数组 → [arr, arr]
 			c.emitter.EmitNoOperand(bytecode.OP_DUP)
@@ -2046,20 +2149,8 @@ func (c *Compiler) compileIncDec(target ast.Expression, isInc, isPrefix bool) er
 	}
 	// 成员: obj.k++ / obj[k]-- (含前缀与后缀)
 	if member, ok := target.(*ast.MemberExpression); ok {
-		if err := c.compileExpression(member.Object); err != nil {
+		if err := c.compileMemberRef(member); err != nil {
 			return err
-		}
-		if member.Computed {
-			if err := c.compileExpression(member.Property); err != nil {
-				return err
-			}
-		} else {
-			ident, ok := member.Property.(*ast.Identifier)
-			if !ok {
-				return fmt.Errorf("++/--: unsupported member target")
-			}
-			idx := c.constants.AddConstant(object.NewString(ident.Value))
-			c.emitter.Emit(bytecode.OP_CONST, idx)
 		}
 		// [obj, key] → DUP2 → [obj, key, obj, key] → GET_INDEX → [obj, key, old]
 		c.emitter.EmitNoOperand(bytecode.OP_DUP2)
@@ -2589,9 +2680,17 @@ func (c *Compiler) compileDynamicImport(node *ast.DynamicImportExpression) error
 // ===== 函数编译 =====
 
 func (c *Compiler) compileFunction(name string, params []*ast.Parameter, body *ast.BlockStatement, isArrow, isGenerator, isAsync bool) (*bytecode.FunctionMetadata, error) {
+	return c.compileFunctionSelf(name, "", params, body, isArrow, isGenerator, isAsync)
+}
+
+// compileFunctionSelf 编译函数，可选绑定命名函数表达式的自引用。
+// selfName 非空时 (仅函数表达式场景)，在函数作用域内定义 selfName 指向
+// 函数自身 (ES 规范 NamedFunctionExpression 作用域)，VM 调用时把闭包
+// 写入对应槽位。参数与 selfName 同名时参数优先 (规范行为)。
+func (c *Compiler) compileFunctionSelf(name, selfName string, params []*ast.Parameter, body *ast.BlockStatement, isArrow, isGenerator, isAsync bool) (*bytecode.FunctionMetadata, error) {
 	// async 函数: 编译为 wrapper (返回 __spawn(generator)), 内层 generator 处理 await→yield
 	if isAsync {
-		return c.compileAsyncFunction(name, params, body)
+		return c.compileAsyncFunctionSelf(name, selfName, params, body)
 	}
 
 	// 创建新的作用域
@@ -2632,6 +2731,14 @@ func (c *Compiler) compileFunction(name string, params []*ast.Parameter, body *a
 	// 记录进入函数前的 arguments 槽位, 便于恢复
 	prevArgumentsSlot := c.currentArgumentsSlot
 	c.currentArgumentsSlot = argumentsSlot
+
+	// 命名函数表达式的自引用绑定: 名字在函数作用域内指向函数自身。
+	// 参数已有同名绑定时不覆盖 (参数遮蔽函数名, 规范行为)。
+	selfSlot := -1
+	if selfName != "" && fnScope.ResolveLocal(selfName) == nil {
+		sym := fnScope.Define(selfName, true)
+		selfSlot = sym.Slot
+	}
 
 	// 编译函数体
 	prevEmitter := c.emitter
@@ -2714,6 +2821,7 @@ func (c *Compiler) compileFunction(name string, params []*ast.Parameter, body *a
 	)
 	meta.BaseSlot = baseSlot
 	meta.ArgumentsSlot = argumentsSlot
+	meta.SelfSlot = selfSlot
 	meta.IsGenerator = isGenerator
 	meta.IsAsync = false
 	return meta, nil
@@ -2734,8 +2842,13 @@ func (c *Compiler) compileFunction(name string, params []*ast.Parameter, body *a
 //	CALL 1                 ; __spawn(gen) → Promise
 //	RETURN
 func (c *Compiler) compileAsyncFunction(name string, params []*ast.Parameter, body *ast.BlockStatement) (*bytecode.FunctionMetadata, error) {
+	return c.compileAsyncFunctionSelf(name, "", params, body)
+}
+
+func (c *Compiler) compileAsyncFunctionSelf(name, selfName string, params []*ast.Parameter, body *ast.BlockStatement) (*bytecode.FunctionMetadata, error) {
 	// 1. 编译内层 generator (同一参数, await 编译为 yield)
-	genMeta, err := c.compileFunction(name, params, body, false, true, false)
+	// 自引用绑定传播到内层: await 所在的用户代码在内层执行
+	genMeta, err := c.compileFunctionSelf(name, selfName, params, body, false, true, false)
 	if err != nil {
 		return nil, err
 	}
@@ -2804,10 +2917,13 @@ func (c *Compiler) compileAsyncFunction(name string, params []*ast.Parameter, bo
 
 func (c *Compiler) compileFunctionExpression(node *ast.FunctionExpression) error {
 	var name string
+	selfName := ""
 	if node.Name != nil {
 		name = node.Name.Value
+		// 命名函数表达式: 函数体内名字可见且指向自身 (递归入口)
+		selfName = name
 	}
-	meta, err := c.compileFunction(name, node.Parameters, node.Body, false, node.IsGenerator, node.IsAsync)
+	meta, err := c.compileFunctionSelf(name, selfName, node.Parameters, node.Body, false, node.IsGenerator, node.IsAsync)
 	if err != nil {
 		return err
 	}

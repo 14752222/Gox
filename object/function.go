@@ -34,6 +34,10 @@ type CompiledFunction struct {
 	BaseSlot int
 	// ArgumentsSlot 是 arguments 对象的槽位 (-1 表示未使用)
 	ArgumentsSlot int
+	// SelfSlot 是命名函数表达式的自引用槽位 (-1 表示无)。
+	// 函数被调用时 VM 把闭包自身写入该槽，函数体内通过名字
+	// 引用自身 (递归) 即读取此槽。
+	SelfSlot int
 	// Constants 是函数字节码引用的常量池 (用于跨模块调用)
 	// 为 nil 时使用 VM 的全局常量池
 	Constants []Value

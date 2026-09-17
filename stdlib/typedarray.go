@@ -1,8 +1,8 @@
 package stdlib
 
 import (
-	"js-runtime/object"
-	"js-runtime/runtime"
+	"github.com/14752222/Gox/object"
+	"github.com/14752222/Gox/runtime"
 )
 
 // setupTypedArrays 注册 ES2015+ TypedArray 家族、ArrayBuffer 与 DataView,

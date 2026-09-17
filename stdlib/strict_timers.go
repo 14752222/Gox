@@ -5,8 +5,8 @@ import (
 	"sync"
 	"time"
 
-	"js-runtime/object"
-	"js-runtime/runtime"
+	"github.com/14752222/Gox/object"
+	"github.com/14752222/Gox/runtime"
 )
 
 // 严格定时器全局函数:

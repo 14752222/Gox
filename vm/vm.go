@@ -10,13 +10,13 @@ import (
 	"strings"
 	"time"
 
-	"js-runtime/bytecode"
-	"js-runtime/compiler"
-	"js-runtime/lexer"
-	"js-runtime/object"
-	"js-runtime/parser"
-	"js-runtime/runtime"
-	"js-runtime/stdlib"
+	"github.com/14752222/Gox/bytecode"
+	"github.com/14752222/Gox/compiler"
+	"github.com/14752222/Gox/lexer"
+	"github.com/14752222/Gox/object"
+	"github.com/14752222/Gox/parser"
+	"github.com/14752222/Gox/runtime"
+	"github.com/14752222/Gox/stdlib"
 )
 
 // MaxFrames 是调用栈最大深度 (防止无限递归)。
@@ -80,6 +80,10 @@ func init() {
 			// 保留原始抛出值 (throw x 的 x), 供 rejection reason 使用
 			if te, ok := err.(*ThrowError); ok {
 				object.SetCallbackErrorValue(te.Value)
+			} else if jt, ok := err.(*jsThrow); ok {
+				// 栈溢出等结构化错误: 恢复为对应类型的 Error 对象，
+				// 供 stdlib 的 callbackThrown 保留错误类型传播
+				object.SetCallbackErrorValue(object.NewErrorWithName(jt.Name, jt.Message))
 			}
 			return object.UndefinedSingleton
 		}
@@ -131,6 +135,13 @@ type VM struct {
 
 	// generator 支持
 	currentGenerator *object.Generator // 当前正在执行的 generator (OP_YIELD 时使用)
+
+	// throwBoundary 是当前 runFrom 子执行允许解退到的最低帧索引。
+	// 回调桥 (callFunction→runFrom) 的子帧里抛出的异常，不允许直接
+	// 解退到外层帧的 try 处理器 —— 否则帧/PC 被改写而 Go 侧的内建
+	// 循环 (如 map) 仍在继续执行，错误值会被误当作回调返回值。
+	// 边界外的处理器留给错误传播回外层后、由外层的抛出路径匹配。
+	throwBoundary int
 
 	// 模板字面量分段收集器 (支持嵌套): 每层对应一个 OP_TEMPLATE_START，
 	// 该层内 quasi/表达式产生的字符串依次 append，OP_TEMPLATE_END 时 join 入栈。
@@ -185,6 +196,27 @@ func (vm *VM) RunTimers() error {
 // 同时消费严格定时器 (setStrictInterval/setStrictTimeout) 的到期信号:
 // 在等待普通定时器的空闲期内批量执行严格定时器回调, 保证两者在同一线程串行执行。
 func (vm *VM) RunTimersUntil(until time.Time) error {
+	return vm.runTimersLoopProtected(until, nil)
+}
+
+// RunTimersWithPump 运行事件循环, 空闲等待交给外部事件泵。
+//
+// pump(maxWait) 应在最多 maxWait 时间内等待并处理外部事件 (如窗口消息):
+//   - maxWait > 0: 等待外部事件或超时, 二者先到即返回
+//   - maxWait <= 0: 无定时任务时无限期等待外部事件
+//   - 返回 false 表示外部事件源已关闭 (如窗口销毁), 事件循环退出
+//
+// 与 RunTimers 的关键差异: 没有定时器任务时循环不会退出 —— 生命周期由
+// pump 决定。GUI 模式用它把消息泵接入定时器调度 (所有回调仍在同一线程
+// 串行执行)。
+func (vm *VM) RunTimersWithPump(pump func(maxWait time.Duration) bool) error {
+	return vm.runTimersLoopProtected(time.Time{}, pump)
+}
+
+// runTimersLoopProtected 注册 currentVM 并在 panic 保护下运行事件循环。
+// pump 为 nil 时是纯定时器语义 (RunTimersUntil), 非 nil 时由 pump 接管
+// 所有空闲等待。
+func (vm *VM) runTimersLoopProtected(until time.Time, pump func(maxWait time.Duration) bool) error {
 	// 事件循环期间注册 currentVM，保证回调链中的 object.CallFunction 桥
 	// (如 Promise resolve 触发的 .then 回调) 能找到正确的 VM 实例。
 	// 主脚本执行结束后 currentVM 会被恢复为 nil，若不在此处重新注册，
@@ -193,6 +225,25 @@ func (vm *VM) RunTimersUntil(until time.Time) error {
 	currentVM = vm
 	defer func() { currentVM = saved }()
 
+	return vm.runProtected(func() error { return vm.runTimersLoop(until, pump) })
+}
+
+// runProtected 在 defer recover 中执行 fn。
+// VM/stdlib 某处缺陷导致的 Go panic 不再直接杀死整个进程，而是转为
+// InternalError 结束当前执行。注意: panic 后 VM 状态可能已损坏，
+// 恢复出的错误必须向外传播、不能吞掉后继续用同一 VM 跑。
+func (vm *VM) runProtected(fn func() error) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("InternalError: VM panic: %v", r)
+		}
+	}()
+	return fn()
+}
+
+// runTimersLoop 是事件循环主循环体 (由 runTimersLoopProtected 包裹执行)。
+// pump 非 nil 时 (GUI 模式), 所有空闲等待交给 pump 处理外部事件。
+func (vm *VM) runTimersLoop(until time.Time, pump func(maxWait time.Duration) bool) error {
 	scheduler := object.GlobalScheduler()
 	strict := object.GlobalStrictScheduler()
 	for {
@@ -235,7 +286,13 @@ func (vm *VM) RunTimersUntil(until time.Time) error {
 				if !until.IsZero() && time.Now().Add(cd).After(until) {
 					return nil
 				}
-				time.Sleep(cd)
+				if pump != nil {
+					if !pump(cd) {
+						return nil
+					}
+				} else {
+					time.Sleep(cd)
+				}
 				continue
 			}
 			budget := object.IdleBudget
@@ -260,29 +317,46 @@ func (vm *VM) RunTimersUntil(until time.Time) error {
 				}
 				continue
 			}
-			return nil
+			if pump == nil {
+				return nil
+			}
+			// GUI 模式: 无定时器任务也持续泵外部事件, 直到事件源关闭。
+			// maxWait<=0 表示无限期等待外部事件。
+			if !pump(0) {
+				return nil
+			}
+			continue
 		}
 
-		// 等待到最早唤醒点。等待期间持续检查严格定时器信号,
-		// 避免排队模式信号积压 (回调尽量及时, 绝不丢弃)。
-		for wait > 0 {
-			if interrupts := strict.TakeStrictInterrupts(64); len(interrupts) > 0 {
-				if err := vm.runStrictDispatches(interrupts, until); err != nil {
-					return err
+		// 等待到最早唤醒点。
+		if pump != nil {
+			// GUI 模式: 等待期间由 pump 处理窗口消息; 严格定时器信号在
+			// 循环顶部下一轮消费, 不会积压丢失。
+			if !pump(wait) {
+				return nil
+			}
+		} else {
+			// 等待期间持续检查严格定时器信号,
+			// 避免排队模式信号积压 (回调尽量及时, 绝不丢弃)。
+			for wait > 0 {
+				if interrupts := strict.TakeStrictInterrupts(64); len(interrupts) > 0 {
+					if err := vm.runStrictDispatches(interrupts, until); err != nil {
+						return err
+					}
+					break
 				}
-				break
-			}
-			sleepFor := wait
-			if !until.IsZero() {
-				if remain := time.Until(until); remain < sleepFor {
-					sleepFor = remain
+				sleepFor := wait
+				if !until.IsZero() {
+					if remain := time.Until(until); remain < sleepFor {
+						sleepFor = remain
+					}
 				}
+				if sleepFor <= 0 {
+					break
+				}
+				time.Sleep(sleepFor)
+				wait = 0
 			}
-			if sleepFor <= 0 {
-				break
-			}
-			time.Sleep(sleepFor)
-			wait = 0
 		}
 
 		// 执行到期的普通定时器
@@ -440,13 +514,16 @@ func (vm *VM) execute() error {
 	saved := currentVM
 	currentVM = vm
 	defer func() { currentVM = saved }()
-	return vm.runFrom(0)
+	return vm.runProtected(func() error { return vm.runFrom(0) })
 }
 
 // runFrom 从指定帧索引开始执行指令循环。
 // startFrameIdx: 起始帧索引，循环持续到 vm.frameIdx < startFrameIdx。
 // 用于主程序执行 (startFrameIdx=0) 和回调子帧执行。
 func (vm *VM) runFrom(startFrameIdx int) error {
+	savedBoundary := vm.throwBoundary
+	vm.throwBoundary = startFrameIdx
+	defer func() { vm.throwBoundary = savedBoundary }()
 	for vm.frameIdx >= startFrameIdx {
 		frame := vm.currentFrame()
 
@@ -488,6 +565,22 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			b := vm.stack.Pop()
 			vm.stack.Push(a)
 			vm.stack.Push(b)
+		case bytecode.OP_ITER_BOUNDARY:
+			// 迭代边界: 换一组 binding cell，本轮迭代创建的闭包就此"定版"。
+			//
+			// 闭包共享创建帧的 Locals 数组 (而非快照)，所以每一次 STORE 都会被
+			// 前几轮创建的闭包看到。这里把 Locals 换成当前值的一份拷贝:
+			//   - 已创建的闭包仍引用旧数组 → 保留本轮迭代的值；
+			//   - 后续迭代写入新数组 → 不再回溯影响它们。
+			// 即 ECMAScript 的 per-iteration binding，在本 VM 的 cell 模型下的等价实现。
+			old := frame.Locals
+			fresh := make([]object.Value, len(old))
+			copy(fresh, old)
+			frame.Locals = fresh
+			// 同时切断 OP_STORE 的"向本帧创建的子闭包传播"这条更老的路径:
+			// 它会直接写 c.CapturedLocals[slot]，而那正是旧数组，等同于把后续
+			// 迭代的值写回已经定版的闭包。
+			frame.CreatedClosures = nil
 		case bytecode.OP_DUP_BELOW2:
 			// [a, b, c] → [c, a, b, c]: 栈顶值复制一份并插到下方两个值之下
 			cVal := vm.stack.Pop()
@@ -535,7 +628,19 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			if slot >= len(frame.Locals) {
 				return fmt.Errorf("VM: LOAD slot %d out of range (locals: %d)", slot, len(frame.Locals))
 			}
-			vm.stack.Push(frame.Locals[slot])
+			val := frame.Locals[slot]
+			if val == nil {
+				// TDZ: let/const 绑定在执行到声明语句前不可访问。
+				// 与 ECMAScript 一致抛 ReferenceError，而非返回 undefined。
+				if terr := vm.throwJSError(&jsThrow{
+					"ReferenceError",
+					"Cannot access lexical declaration before initialization",
+				}); terr != nil {
+					return terr
+				}
+				continue
+			}
+			vm.stack.Push(val)
 		case bytecode.OP_STORE:
 			slot := int(operand)
 			val := vm.stack.Pop()
@@ -545,6 +650,10 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				}
 			}
 			frame.Locals[slot] = val
+			// 0. 写回共享 binding cell (兄弟闭包与后续调用据此观察到新值)
+			if slot < len(frame.SharedCells) {
+				frame.SharedCells[slot] = val
+			}
 			// 1. 更新当前帧闭包的捕获变量 (closure → 同一闭包下次调用)
 			if frame.Closure != nil && slot < len(frame.Closure.CapturedLocals) {
 				frame.Closure.CapturedLocals[slot] = val
@@ -569,6 +678,10 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				}
 			}
 			frame.Locals[slot] = val
+			// 0. 写回共享 binding cell
+			if slot < len(frame.SharedCells) {
+				frame.SharedCells[slot] = val
+			}
 			// 1. 更新当前帧闭包的捕获变量
 			if frame.Closure != nil && slot < len(frame.Closure.CapturedLocals) {
 				frame.Closure.CapturedLocals[slot] = val
@@ -589,7 +702,10 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			if s, ok := name.(*object.String); ok {
 				val, found := vm.globals.Get(s.Value)
 				if !found {
-					return fmt.Errorf("ReferenceError: %s is not defined", s.Value)
+					if err := vm.throwNamedError("ReferenceError", "%s is not defined", s.Value); err != nil {
+						return err
+					}
+					continue
 				}
 				vm.stack.Push(val)
 			}
@@ -784,7 +900,10 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				}
 				vm.stack.Push(result)
 				if err := vm.checkCallbackErr(); err != nil {
-					return err
+					if terr := vm.rethrowBridgeError(err); terr != nil {
+						return terr
+					}
+					continue
 				}
 
 			case *object.Closure:
@@ -793,7 +912,10 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 					vm.stack.Push(object.NewGenerator(callee, args))
 				} else {
 					if err := vm.callClosure(callee, args); err != nil {
-						return err
+						if terr := vm.throwJSError(err); terr != nil {
+							return terr
+						}
+						continue
 					}
 				}
 
@@ -801,7 +923,10 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				// 代理: 转发到 apply trap (this 为 undefined)
 				result, err := vm.proxyApply(callee, object.UndefinedSingleton, args)
 				if err != nil {
-					return err
+					if terr := vm.rethrowBridgeError(err); terr != nil {
+						return terr
+					}
+					continue
 				}
 				vm.stack.Push(result)
 
@@ -810,7 +935,10 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				vm.stack.Push(callee.RxValue())
 
 			default:
-				return fmt.Errorf("TypeError: %s is not a function", describeCallee(fn))
+				if err := vm.throwNamedError("TypeError", "%s is not a function", describeCallee(fn)); err != nil {
+					return err
+				}
+				continue
 			}
 
 		case bytecode.OP_RETURN:
@@ -891,20 +1019,32 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				}
 				vm.stack.Push(result)
 				if err := vm.checkCallbackErr(); err != nil {
-					return err
+					if terr := vm.rethrowBridgeError(err); terr != nil {
+						return terr
+					}
+					continue
 				}
 			case *object.Closure:
 				if err := vm.callClosure(callee, args); err != nil {
-					return err
+					if terr := vm.throwJSError(err); terr != nil {
+						return terr
+					}
+					continue
 				}
 			case *object.Proxy:
 				result, err := vm.proxyApply(callee, object.UndefinedSingleton, args)
 				if err != nil {
-					return err
+					if terr := vm.rethrowBridgeError(err); terr != nil {
+						return terr
+					}
+					continue
 				}
 				vm.stack.Push(result)
 			default:
-				return fmt.Errorf("TypeError: %s is not a function", describeCallee(fn))
+				if err := vm.throwNamedError("TypeError", "%s is not a function", describeCallee(fn)); err != nil {
+					return err
+				}
+				continue
 			}
 		case bytecode.OP_CALL_METHOD:
 			// 方法调用: 栈 [fn, this, arg1, ..., argN]
@@ -931,7 +1071,10 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				}
 				vm.stack.Push(result)
 				if err := vm.checkCallbackErr(); err != nil {
-					return err
+					if terr := vm.rethrowBridgeError(err); terr != nil {
+						return terr
+					}
+					continue
 				}
 			case *object.BuiltinMethod:
 				// 内建方法: this 作为第一个参数传递
@@ -947,7 +1090,10 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				}
 				vm.stack.Push(result)
 				if err := vm.checkCallbackErr(); err != nil {
-					return err
+					if terr := vm.rethrowBridgeError(err); terr != nil {
+						return terr
+					}
+					continue
 				}
 			case *object.Closure:
 				// 创建绑定了 this 的新闭包
@@ -963,18 +1109,27 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 					vm.stack.Push(object.NewGenerator(methodClosure, args))
 				} else {
 					if err := vm.callClosure(methodClosure, args); err != nil {
-						return err
+						if terr := vm.throwJSError(err); terr != nil {
+							return terr
+						}
+						continue
 					}
 				}
 			case *object.Proxy:
 				// 代理方法调用: 转发到 apply trap，this 为 thisVal
 				result, err := vm.proxyApply(callee, thisVal, args)
 				if err != nil {
-					return err
+					if terr := vm.rethrowBridgeError(err); terr != nil {
+						return terr
+					}
+					continue
 				}
 				vm.stack.Push(result)
 			default:
-				return fmt.Errorf("TypeError: %s is not a function", describeCallee(fn))
+				if err := vm.throwNamedError("TypeError", "%s is not a function", describeCallee(fn)); err != nil {
+					return err
+				}
+				continue
 			}
 		case bytecode.OP_NEW:
 			// new Constructor(args...) — 简化实现
@@ -1041,17 +1196,26 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				}
 				vm.stack.Push(result)
 				if err := vm.checkCallbackErr(); err != nil {
-					return err
+					if terr := vm.rethrowBridgeError(err); terr != nil {
+						return terr
+					}
+					continue
 				}
 			} else if proxy, ok := fn.(*object.Proxy); ok {
 				// 代理构造: 转发到 construct trap
 				result, err := vm.proxyConstruct(proxy, args)
 				if err != nil {
-					return err
+					if terr := vm.rethrowBridgeError(err); terr != nil {
+						return terr
+					}
+					continue
 				}
 				vm.stack.Push(result)
 			} else {
-				return fmt.Errorf("TypeError: %s is not a constructor", describeCallee(fn))
+				if err := vm.throwNamedError("TypeError", "%s is not a constructor", describeCallee(fn)); err != nil {
+					return err
+				}
+				continue
 			}
 
 		// ===== 对象和数组 =====
@@ -1078,16 +1242,36 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				propName = s.Value
 			}
 			obj := vm.stack.Pop()
+			// null/undefined 属性读取抛 TypeError (规范要求；
+			// 静默返回 undefined 会掩盖程序错误)
+			if obj == object.NullSingleton || obj == object.UndefinedSingleton {
+				if err := vm.throwNamedError("TypeError",
+					"Cannot read properties of %s (reading '%s')", obj.Inspect(), propName); err != nil {
+					return err
+				}
+				continue
+			}
 			// Proxy: 转发到 get trap
 			if proxy, ok := obj.(*object.Proxy); ok {
 				val, err := vm.proxyGet(proxy, propName, obj)
 				if err != nil {
-					return err
+					if terr := vm.rethrowBridgeError(err); terr != nil {
+						return terr
+					}
+					continue
 				}
 				vm.stack.Push(val)
 				continue
 			}
 			val, found := obj.GetProperty(propName)
+			// getter 可能经回调桥执行用户代码并抛出异常: 立即消费
+			// 挂起的错误信号并走抛出流程，避免残留到之后的内建调用点
+			if err := vm.checkCallbackErr(); err != nil {
+				if terr := vm.rethrowBridgeError(err); terr != nil {
+					return terr
+				}
+				continue
+			}
 			if !found {
 				vm.stack.Push(object.UndefinedSingleton)
 			} else {
@@ -1102,14 +1286,32 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			if s, ok := propNameVal.(*object.String); ok {
 				propName = s.Value
 			}
-			// Proxy: 转发到 set trap
-			if proxy, ok := obj.(*object.Proxy); ok {
-				if err := vm.proxySet(proxy, propName, val, obj); err != nil {
+			// null/undefined 属性写入抛 TypeError (规范要求)
+			if obj == object.NullSingleton || obj == object.UndefinedSingleton {
+				if err := vm.throwNamedError("TypeError",
+					"Cannot set properties of %s (setting '%s')", obj.Inspect(), propName); err != nil {
 					return err
 				}
 				continue
 			}
+			// Proxy: 转发到 set trap
+			if proxy, ok := obj.(*object.Proxy); ok {
+				if err := vm.proxySet(proxy, propName, val, obj); err != nil {
+					if terr := vm.rethrowBridgeError(err); terr != nil {
+						return terr
+					}
+					continue
+				}
+				continue
+			}
 			obj.SetProperty(propName, val)
+			// setter 可能经回调桥执行用户代码并抛出异常: 立即消费
+			if err := vm.checkCallbackErr(); err != nil {
+				if terr := vm.rethrowBridgeError(err); terr != nil {
+					return terr
+				}
+				continue
+			}
 		case bytecode.OP_SET_GETTER, bytecode.OP_SET_SETTER:
 			// 栈: [obj, fn]; 设置 getter/setter 属性
 			fn := vm.stack.Pop()
@@ -1160,10 +1362,16 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				vm.stack.Push(result)
 			case *object.Closure:
 				if err := vm.callClosure(callee, args); err != nil {
-					return err
+					if terr := vm.throwJSError(err); terr != nil {
+						return terr
+					}
+					continue
 				}
 			default:
-				return fmt.Errorf("TypeError: %s is not a function", describeCallee(fn))
+				if err := vm.throwNamedError("TypeError", "%s is not a function", describeCallee(fn)); err != nil {
+					return err
+				}
+				continue
 			}
 		case bytecode.OP_DYNAMIC_IMPORT:
 			// 动态 import(): 弹出模块路径, 加载模块, 包装为 resolved Promise
@@ -1193,9 +1401,20 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				key := toJSString(index)
 				val, err := vm.proxyGet(proxy, key, obj)
 				if err != nil {
-					return err
+					if terr := vm.rethrowBridgeError(err); terr != nil {
+						return terr
+					}
+					continue
 				}
 				vm.stack.Push(val)
+				continue
+			}
+			// null/undefined 索引读取抛 TypeError (规范要求)
+			if obj == object.NullSingleton || obj == object.UndefinedSingleton {
+				if err := vm.throwNamedError("TypeError",
+					"Cannot read properties of %s (reading '%s')", obj.Inspect(), toJSString(index)); err != nil {
+					return err
+				}
 				continue
 			}
 			val := vm.getIndex(obj, index)
@@ -1207,9 +1426,20 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			// Proxy: 转发到 set trap
 			if proxy, ok := obj.(*object.Proxy); ok {
 				if err := vm.proxySet(proxy, toJSString(index), val, obj); err != nil {
-					return err
+					if terr := vm.rethrowBridgeError(err); terr != nil {
+						return terr
+					}
+					continue
 				}
 				vm.stack.Push(val)
+				continue
+			}
+			// null/undefined 索引写入抛 TypeError (规范要求)
+			if obj == object.NullSingleton || obj == object.UndefinedSingleton {
+				if err := vm.throwNamedError("TypeError",
+					"Cannot set properties of %s (setting '%s')", obj.Inspect(), toJSString(index)); err != nil {
+					return err
+				}
 				continue
 			}
 			vm.setIndex(obj, index, val)
@@ -1229,9 +1459,30 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			if !ok {
 				continue
 			}
+			// generator 只能在 VM 里推进 (每次 next 都要恢复它的字节码帧)，
+			// runtime.GetIterable 是纯 Go 层，覆盖不到它 —— 单独处理。
+			if gen, ok := iterable.(*object.Generator); ok {
+				// 栈布局与 OP_ITER_NEXT 保持一致: 把 generator 放回栈顶再驱动
+				vm.stack.Push(gen)
+				for {
+					val, done, err := vm.genResume(gen, object.UndefinedSingleton)
+					if err != nil {
+						return err
+					}
+					if done {
+						break
+					}
+					a.Elements = append(a.Elements, val)
+				}
+				vm.stack.Pop() // 弹出 generator，留下数组
+				continue
+			}
 			iter, hasIter := runtime.GetIterable(iterable)
 			if !hasIter {
-				return fmt.Errorf("TypeError: %s is not iterable", iterable.Inspect())
+				if err := vm.throwNamedError("TypeError", "%s is not iterable", iterable.Inspect()); err != nil {
+					return err
+				}
+				continue
 			}
 			for {
 				val, done := iter.Next()
@@ -1303,6 +1554,19 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			}
 			parts := vm.tplParts[depth-1]
 			vm.tplParts = vm.tplParts[:depth-1]
+			total := 0
+			for _, p := range parts {
+				if s, ok := p.(*object.String); ok {
+					total += len(s.Value)
+				}
+			}
+			if total > maxStringLength {
+				if terr := vm.throwJSError(&jsThrow{
+					Name: "RangeError", Message: "Invalid string length"}); terr != nil {
+					return terr
+				}
+				continue
+			}
 			var sb strings.Builder
 			for _, p := range parts {
 				if s, ok := p.(*object.String); ok {
@@ -1337,7 +1601,10 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			}
 			iter, ok := runtime.GetIterable(val)
 			if !ok {
-				return fmt.Errorf("TypeError: %s is not iterable", val.Inspect())
+				if err := vm.throwNamedError("TypeError", "%s is not iterable", val.Inspect()); err != nil {
+					return err
+				}
+				continue
 			}
 			vm.stack.Push(iter)
 		case bytecode.OP_ITER_NEXT:
@@ -1689,6 +1956,34 @@ func (vm *VM) throwJSError(err error) error {
 	return nil
 }
 
+// throwNamedError 构造命名 JS 错误并走正常抛出流程。
+// 与裸 return fmt.Errorf 的区别: 这里的错误能被 try/catch 捕获。
+// 返回 nil 表示已被 catch/finally 接住 (调用方应 continue)；
+// 非 nil 表示异常继续向外传播 (调用方应 return)。
+func (vm *VM) throwNamedError(name, format string, a ...any) error {
+	errObj := object.NewErrorWithName(name, fmt.Sprintf(format, a...))
+	if !vm.handleThrow(errObj) {
+		return &ThrowError{Value: errObj}
+	}
+	return nil
+}
+
+// rethrowBridgeError 把回调桥 (object.CallFunction) 报告的错误转回 JS
+// 抛出流程。桥另一侧的异常此前以裸 Go error 直接 return，导致
+// getter/Proxy/数组方法回调里的任何异常都逃出 try/catch。
+//   - *ThrowError: 恢复其原始抛出值 (throw x 的 x)
+//   - *jsThrow:    构造命名错误 (如栈溢出 RangeError)
+//   - 其余:        非 JS 语言级异常，原样返回
+func (vm *VM) rethrowBridgeError(err error) error {
+	if te, ok := err.(*ThrowError); ok {
+		if !vm.handleThrow(te.Value) {
+			return te
+		}
+		return nil
+	}
+	return vm.throwJSError(err)
+}
+
 // ===== Proxy trap 转发 =====
 
 // proxyTrap 调用 handler 上的 trap 函数。
@@ -2027,6 +2322,13 @@ func (vm *VM) handleThrow(val object.Value) bool {
 	for len(vm.tryStack) > 0 {
 		entry := vm.tryStack[len(vm.tryStack)-1]
 
+		// 边界检查: 处理器在外层帧 (低于当前子执行的起始帧) 时不在此处
+		// 解退。让异常以 ThrowError 返回给回调桥，由外层的抛出路径
+		// (throwIfError/rethrowBridgeError) 在正确的嵌套层级匹配它。
+		if entry.frameIdx < vm.throwBoundary {
+			return false
+		}
+
 		// 如果 try 条目在不同的帧中，先弹出帧
 		if vm.frameIdx > entry.frameIdx {
 			for vm.frameIdx > entry.frameIdx {
@@ -2065,6 +2367,13 @@ func (vm *VM) handleThrow(val object.Value) bool {
 // loadModule 加载并执行模块，返回导出对象。
 // 使用模块缓存避免重复加载。
 func (vm *VM) loadModule(spec string) (*ModuleExports, error) {
+	// 内置模块 (如 "gx/solid") 优先于文件系统解析
+	if exports, ok := object.LookupBuiltinModule(spec); ok {
+		mod := &ModuleExports{Named: exports}
+		vm.modules[spec] = mod
+		return mod, nil
+	}
+
 	// 解析模块路径
 	absPath := spec
 	if vm.moduleBase != "" {
@@ -2146,6 +2455,7 @@ func (vm *VM) createClosure(meta *bytecode.FunctionMetadata, frame *Frame) *obje
 		IsAsync:       meta.IsAsync,
 		BaseSlot:      meta.BaseSlot,
 		ArgumentsSlot: meta.ArgumentsSlot,
+		SelfSlot:      meta.SelfSlot,
 		Constants:     frame.Constants.Constants, // 保存当前帧的常量池引用
 	}
 	// 转换参数信息
@@ -2157,12 +2467,21 @@ func (vm *VM) createClosure(meta *bytecode.FunctionMetadata, frame *Frame) *obje
 		})
 	}
 
-	// 捕获外层局部变量 (slots 0..BaseSlot-1)
+	// 捕获外层局部变量: 共享当前帧的 Locals 数组本身，而不是拷一份快照。
+	//
+	// 拷快照会让兄弟闭包各自持有副本 —— 离开创建帧后它们就彻底失联，于是
+	// `const [inc, get] = mk(); inc(); get()` 读不到彼此的修改。
+	// 共享同一个数组后，写操作 (OP_STORE → SharedCells) 对所有捕获者同时可见；
+	// 该数组随闭包存活 (GC 保活)，等价于 ECMAScript 的 binding cell 逃逸到堆。
 	var captured []object.Value
 	if meta.BaseSlot > 0 {
-		captured = make([]object.Value, meta.BaseSlot)
-		for i := 0; i < meta.BaseSlot && i < len(frame.Locals); i++ {
-			captured[i] = frame.Locals[i]
+		// 必须裁剪到 BaseSlot: 闭包只会访问 slot < BaseSlot，
+		// 若不裁剪，整帧 Locals 会在调用时被拷进内层slot 区，
+		// 把尚未初始化的绑定"填上"外层残留值，TDZ 检测随之失效。
+		if meta.BaseSlot <= len(frame.Locals) {
+			captured = frame.Locals[:meta.BaseSlot]
+		} else {
+			captured = frame.Locals
 		}
 	}
 
@@ -2197,9 +2516,10 @@ func (vm *VM) callClosure(closure *object.Closure, args []object.Value) error {
 		return fmt.Errorf("VM: closure has no function")
 	}
 
-	// 检查调用栈深度
+	// 检查调用栈深度 (jsThrow 使栈溢出 RangeError 能被 try/catch 捕获，
+	// 也能经回调桥的 rethrowBridgeError 正确转回 JS 抛出流程)
 	if vm.frameIdx >= MaxFrames-1 {
-		return fmt.Errorf("RangeError: Maximum call stack size exceeded")
+		return &jsThrow{Name: "RangeError", Message: "Maximum call stack size exceeded"}
 	}
 
 	// 创建新帧: 使用闭包自带的常量池 (跨模块时不同于 vm.constants)
@@ -2212,10 +2532,12 @@ func (vm *VM) callClosure(closure *object.Closure, args []object.Value) error {
 	// 记录进入本帧时的栈高度, 返回时据此截断清理本帧残留栈值
 	frame.StackBase = vm.stack.Len()
 
-	// 复制捕获的外层局部变量
+	// 复制捕获的外层局部变量作为初值
 	if len(closure.CapturedLocals) > 0 {
 		copy(frame.Locals, closure.CapturedLocals)
 	}
+	// 但写入必须回流到共享的 binding cell，供兄弟闭包与后续调用观察
+	frame.SharedCells = closure.CapturedLocals
 
 	// 放置参数: 参数从 BaseSlot 开始排列
 	baseSlot := fn.BaseSlot
@@ -2273,6 +2595,11 @@ func (vm *VM) callClosure(closure *object.Closure, args []object.Value) error {
 		argsCopy := make([]object.Value, len(args))
 		copy(argsCopy, args)
 		frame.Locals[fn.ArgumentsSlot] = object.NewArray(argsCopy)
+	}
+
+	// 命名函数表达式的自引用: 名字槽位指向闭包自身 (递归入口)
+	if fn.SelfSlot >= 0 && fn.SelfSlot < len(frame.Locals) {
+		frame.Locals[fn.SelfSlot] = closure
 	}
 
 	vm.pushFrame(frame)
@@ -2407,13 +2734,35 @@ func (vm *VM) finishGenRun(gen *object.Generator, frame *Frame, err error) (obje
 }
 
 // addValues 实现 JavaScript 的 + 运算符 (数字加法或字符串拼接)。
+// maxStringLength 是 VM 侧字符串长度上限 (与 stdlib.maxStringLength 一致，
+// 1<<30 字节)。字符串拼接无上限时，`s = s + s` 翻倍可在数秒内请求到
+// TB 级分配，Go 的 OOM 是不可 recover 的致命错误 —— 必须在拼接前拦截。
+const maxStringLength = 1 << 30
+
+// concatStrings 带上限的字符串拼接。超限时返回 RangeError (Invalid string
+// length)，与 String.prototype.repeat/padStart 的既有行为一致。
+func concatStrings(a, b string) (string, error) {
+	if len(a)+len(b) > maxStringLength {
+		return "", &jsThrow{Name: "RangeError", Message: "Invalid string length"}
+	}
+	return a + b, nil
+}
+
 func (vm *VM) addValues(a, b object.Value) (object.Value, error) {
 	// 字符串拼接
 	if aStr, ok := a.(*object.String); ok {
-		return object.NewString(aStr.Value + toJSString(b)), nil
+		s, err := concatStrings(aStr.Value, toJSString(b))
+		if err != nil {
+			return nil, err
+		}
+		return object.NewString(s), nil
 	}
 	if bStr, ok := b.(*object.String); ok {
-		return object.NewString(toJSString(a) + bStr.Value), nil
+		s, err := concatStrings(toJSString(a), bStr.Value)
+		if err != nil {
+			return nil, err
+		}
+		return object.NewString(s), nil
 	}
 	// 数组拼接 (简化)
 	if aArr, ok := a.(*object.Array); ok {

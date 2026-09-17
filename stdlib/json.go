@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"js-runtime/object"
+	"github.com/14752222/Gox/object"
 )
 
 // setupJSON 创建 JSON 对象。

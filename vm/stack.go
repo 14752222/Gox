@@ -13,7 +13,7 @@
 //  5. OP_CALL 创建新帧, OP_RETURN 弹出帧并返回值
 package vm
 
-import "js-runtime/object"
+import "github.com/14752222/Gox/object"
 
 // StackSize 是操作数栈的初始容量。
 const StackSize = 2048

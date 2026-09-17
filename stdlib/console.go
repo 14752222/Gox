@@ -5,7 +5,7 @@ import (
 	"os"
 	"strings"
 
-	"js-runtime/object"
+	"github.com/14752222/Gox/object"
 )
 
 // setupConsole 创建 console 对象。

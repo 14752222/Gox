@@ -1,8 +1,8 @@
 package stdlib
 
 import (
-	"js-runtime/object"
-	"js-runtime/runtime"
+	"github.com/14752222/Gox/object"
+	"github.com/14752222/Gox/runtime"
 )
 
 // setupAsync 设置 async/await 的运行时辅助函数 __spawn。

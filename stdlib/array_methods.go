@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	"js-runtime/object"
+	"github.com/14752222/Gox/object"
 )
 
 // setupArrayProto 创建 Array.prototype 对象。
@@ -227,6 +227,9 @@ func setupArrayProto() *object.Object {
 				object.NewNumber(float64(i)),
 				arr,
 			)
+			if thrown := callbackThrown(); thrown != nil {
+				return thrown
+			}
 			if result != nil && result.IsTruthy() {
 				return elem
 			}
@@ -246,6 +249,9 @@ func setupArrayProto() *object.Object {
 				object.NewNumber(float64(i)),
 				arr,
 			)
+			if thrown := callbackThrown(); thrown != nil {
+				return thrown
+			}
 			if result != nil && result.IsTruthy() {
 				return object.NewNumber(float64(i))
 			}
@@ -265,6 +271,9 @@ func setupArrayProto() *object.Object {
 				object.NewNumber(float64(i)),
 				arr,
 			)
+			if thrown := callbackThrown(); thrown != nil {
+				return thrown
+			}
 		}
 		return object.UndefinedSingleton
 	}))
@@ -282,6 +291,9 @@ func setupArrayProto() *object.Object {
 				object.NewNumber(float64(i)),
 				arr,
 			)
+			if thrown := callbackThrown(); thrown != nil {
+				return thrown
+			}
 			if mapped == nil {
 				mapped = object.UndefinedSingleton
 			}
@@ -303,6 +315,9 @@ func setupArrayProto() *object.Object {
 				object.NewNumber(float64(i)),
 				arr,
 			)
+			if thrown := callbackThrown(); thrown != nil {
+				return thrown
+			}
 			if keep != nil && keep.IsTruthy() {
 				result = append(result, elem)
 			}
@@ -336,6 +351,9 @@ func setupArrayProto() *object.Object {
 				object.NewNumber(float64(i)),
 				arr,
 			)
+			if thrown := callbackThrown(); thrown != nil {
+				return thrown
+			}
 		}
 		return acc
 	}))
@@ -365,6 +383,9 @@ func setupArrayProto() *object.Object {
 				object.NewNumber(float64(i)),
 				arr,
 			)
+			if thrown := callbackThrown(); thrown != nil {
+				return thrown
+			}
 		}
 		return acc
 	}))
@@ -381,6 +402,9 @@ func setupArrayProto() *object.Object {
 				object.NewNumber(float64(i)),
 				arr,
 			)
+			if thrown := callbackThrown(); thrown != nil {
+				return thrown
+			}
 			if result != nil && result.IsTruthy() {
 				return object.NewBoolean(true)
 			}
@@ -400,6 +424,9 @@ func setupArrayProto() *object.Object {
 				object.NewNumber(float64(i)),
 				arr,
 			)
+			if thrown := callbackThrown(); thrown != nil {
+				return thrown
+			}
 			if result == nil || !result.IsTruthy() {
 				return object.NewBoolean(false)
 			}
@@ -420,6 +447,9 @@ func setupArrayProto() *object.Object {
 				object.NewNumber(float64(i)),
 				arr,
 			)
+			if thrown := callbackThrown(); thrown != nil {
+				return thrown
+			}
 			if mapped == nil {
 				mapped = object.UndefinedSingleton
 			}
@@ -472,6 +502,9 @@ func setupArrayProto() *object.Object {
 		for i := len(arr.Elements) - 1; i >= 0; i-- {
 			result := object.CallFunction(callback, thisArg,
 				arr.Elements[i], object.NewInt(int64(i)), arr)
+			if thrown := callbackThrown(); thrown != nil {
+				return thrown
+			}
 			if result != nil && result.IsTruthy() {
 				return arr.Elements[i]
 			}
@@ -488,6 +521,9 @@ func setupArrayProto() *object.Object {
 		for i := len(arr.Elements) - 1; i >= 0; i-- {
 			result := object.CallFunction(callback, thisArg,
 				arr.Elements[i], object.NewInt(int64(i)), arr)
+			if thrown := callbackThrown(); thrown != nil {
+				return thrown
+			}
 			if result != nil && result.IsTruthy() {
 				return object.NewInt(int64(i))
 			}
@@ -586,11 +622,24 @@ func setupArrayProto() *object.Object {
 			if !object.IsCallable(compareFn) {
 				return object.NewTypeError("%s is not a function", toStr(compareFn))
 			}
+			// 比较器抛异常时记录并尽快结束排序 (数组可能处于部分有序状态，
+			// 与 V8 的实现定义行为一致)；排序结束后把异常抛给调用方。
+			var sortThrown object.Value
 			sort.SliceStable(arr.Elements, func(i, j int) bool {
+				if sortThrown != nil {
+					return false
+				}
 				result := object.CallFunction(compareFn, object.UndefinedSingleton,
 					arr.Elements[i], arr.Elements[j])
+				if thrown := callbackThrown(); thrown != nil {
+					sortThrown = thrown
+					return false
+				}
 				return toFloat(result) < 0
 			})
+			if sortThrown != nil {
+				return sortThrown
+			}
 			return arr
 		}
 		// 默认排序遵循规范的 SortCompare: 先把元素转成字符串再比较。
@@ -822,6 +871,27 @@ func arrayCallbackArgs(method string, this object.Value, args []object.Value) (*
 	return arr, args[0], thisArg, nil
 }
 
+// callbackThrown 把回调桥 (object.CallFunction) 报告的异常恢复为可抛出的
+// JS 值。必须在每次 CallFunction 之后立即调用:
+//   - 回调正常返回 → nil (继续循环)；
+//   - 回调抛出 Error → 原始错误对象 (保留错误类型，返回给 VM 抛出)；
+//   - 回调抛出非 Error 值 → 包装为通用 Error。
+//
+// 不检查的话，回调抛出的异常会被下一次 CallFunction 的进入清空动作
+// 静默吞掉，且循环错误地继续执行后续元素 (规范要求立即中止)。
+func callbackThrown() object.Value {
+	cbErr := object.TakeCallbackError()
+	if cbErr == nil {
+		return nil
+	}
+	if v := object.TakeCallbackErrorValue(); v != nil {
+		if _, isErr := v.(*object.Error); isErr {
+			return v
+		}
+	}
+	return object.NewErrorWithName("Error", cbErr.Error())
+}
+
 // argInspect 取第 idx 个参数的可读表示，越界时返回 "undefined"。
 func argInspect(args []object.Value, idx int) string {
 	if idx >= len(args) {
@@ -951,6 +1021,9 @@ func setupArrayGlobal() *object.BuiltinFunction {
 			mapped := make([]object.Value, len(elements))
 			for i, e := range elements {
 				v := object.CallFunction(fn, thisArg, e, object.NewNumber(float64(i)))
+				if thrown := callbackThrown(); thrown != nil {
+					return thrown
+				}
 				if v == nil {
 					v = object.UndefinedSingleton
 				}
@@ -1048,8 +1121,8 @@ func goFn(f func(args []object.Value) object.Value) object.Value {
 func pushItem(mapFn, thisArg, item object.Value, idx int, elements *[]object.Value) object.Value {
 	if mapFn != nil && !isUndefinedValue(mapFn) {
 		mapped := object.CallFunction(mapFn, thisArg, item, object.NewInt(int64(idx)))
-		if cbErr := object.TakeCallbackError(); cbErr != nil {
-			return object.NewErrorWithName("Error", cbErr.Error())
+		if thrown := callbackThrown(); thrown != nil {
+			return thrown
 		}
 		if _, isP := mapped.(*object.Promise); isP {
 			return mapped
@@ -1070,11 +1143,22 @@ func sortArrayValues(arr *object.Array, args []object.Value) object.Value {
 		if !object.IsCallable(compareFn) {
 			return object.NewTypeError("%s is not a function", toStr(compareFn))
 		}
+		var sortThrown object.Value
 		sort.SliceStable(arr.Elements, func(i, j int) bool {
+			if sortThrown != nil {
+				return false
+			}
 			result := object.CallFunction(compareFn, object.UndefinedSingleton,
 				arr.Elements[i], arr.Elements[j])
+			if thrown := callbackThrown(); thrown != nil {
+				sortThrown = thrown
+				return false
+			}
 			return toFloat(result) < 0
 		})
+		if sortThrown != nil {
+			return sortThrown
+		}
 		return arr
 	}
 	sort.SliceStable(arr.Elements, func(i, j int) bool {

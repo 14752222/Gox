@@ -34,13 +34,13 @@ type TemporalFields struct {
 	Month   int32
 	Day     int32
 
-	HasTime      bool
-	Hour         int32
-	Minute       int32
-	Second       int32
-	Millisecond  int32
-	Microsecond  int32
-	Nanosecond   int32
+	HasTime     bool
+	Hour        int32
+	Minute      int32
+	Second      int32
+	Millisecond int32
+	Microsecond int32
+	Nanosecond  int32
 
 	// OffsetSeconds 为 nil 表示字符串中没有 UTC 偏移。
 	// Z 与 +00:00 解析结果一致 (均为 0)，但 IsZ 保留原始写法以便错误信息区分。
@@ -83,10 +83,10 @@ func (p *isoScanner) peek() byte {
 	}
 	return p.s[p.pos]
 }
-func (p *isoScanner) at(c byte) bool    { return p.peek() == c }
-func (p *isoScanner) eof() bool         { return p.pos >= len(p.s) }
-func (p *isoScanner) bump() byte        { c := p.s[p.pos]; p.pos++; return c }
-func (p *isoScanner) isDigit() bool     { c := p.peek(); return c >= '0' && c <= '9' }
+func (p *isoScanner) at(c byte) bool { return p.peek() == c }
+func (p *isoScanner) eof() bool      { return p.pos >= len(p.s) }
+func (p *isoScanner) bump() byte     { c := p.s[p.pos]; p.pos++; return c }
+func (p *isoScanner) isDigit() bool  { c := p.peek(); return c >= '0' && c <= '9' }
 func (p *isoScanner) take(c byte) bool {
 	if p.at(c) {
 		p.pos++
@@ -658,10 +658,10 @@ func IsValidTimeZoneID(id string) bool {
 // DurationFields 是 TemporalDurationString 的解析结果。
 // 各字段已折算到规范要求的整数纳秒体系 (小数已向下一级传递)。
 type DurationFields struct {
-	Years, Months, Weeks, Days                      int64
-	Hours, Minutes, Seconds                         int64
-	Milliseconds, Microseconds, Nanoseconds         int64
-	Negative                                        bool
+	Years, Months, Weeks, Days              int64
+	Hours, Minutes, Seconds                 int64
+	Milliseconds, Microseconds, Nanoseconds int64
+	Negative                                bool
 	// largestUnit 记录字符串中出现的最大单位，用于 round/relativeto 的默认值推断。
 	LargestUnit string
 }

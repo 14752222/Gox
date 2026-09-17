@@ -3,7 +3,7 @@ package stdlib
 import (
 	"math"
 
-	"js-runtime/object"
+	"github.com/14752222/Gox/object"
 )
 
 // 本文件是 Temporal 标准库层的公共辅助设施。

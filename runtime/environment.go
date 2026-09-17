@@ -6,7 +6,7 @@ package runtime
 import (
 	"fmt"
 
-	"js-runtime/object"
+	"github.com/14752222/Gox/object"
 )
 
 // Binding 表示变量绑定。

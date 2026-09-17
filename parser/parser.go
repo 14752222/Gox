@@ -5,9 +5,9 @@ import (
 	"strconv"
 	"strings"
 
-	"js-runtime/ast"
-	"js-runtime/lexer"
-	"js-runtime/object"
+	"github.com/14752222/Gox/ast"
+	"github.com/14752222/Gox/lexer"
+	"github.com/14752222/Gox/object"
 )
 
 // prefixParseFn 是前缀解析函数，用于解析以特定令牌开头的表达式。
@@ -27,7 +27,38 @@ type Parser struct {
 	prefixParseFns map[lexer.TokenType]prefixParseFn
 	infixParseFns  map[lexer.TokenType]infixParseFn
 
-	inLoop bool // 是否在循环体内 (用于 break/continue)
+	inLoop        bool // 是否在循环体内 (用于 break/continue)
+	depth         int  // 当前语法嵌套深度 (表达式/语句递归层数)
+	depthExceeded bool // 已触发嵌套深度上限 (后续解析短路，防错误洪水)
+}
+
+// maxNestingDepth 是语法嵌套深度上限。
+// 递归下降解析器对深层嵌套输入会同步加深 Go 调用栈，无上限时
+// `((((((...` 这类输入最终耗尽 Go 栈 (fatal，不可 recover)；
+// 同时配合 isArrowFunction 的扫描上限，把嵌套输入的解析代价
+// 从 O(n²) 压到线性。正常代码 (含机器生成) 远达不到该深度。
+const maxNestingDepth = 2000
+
+// maxArrowScanLimit 限定 isArrowFunction 的前向扫描距离。
+// 括号不闭合时扫描会一路走到 EOF，配合大量 `(` 构成平方级开销。
+const maxArrowScanLimit = 100_000
+
+// enterNesting 进入一层语法嵌套，超深时报错 (对应 SyntaxError)。
+func (p *Parser) enterNesting(where string) bool {
+	p.depth++
+	if p.depth > maxNestingDepth {
+		if !p.depthExceeded {
+			p.depthExceeded = true
+			p.addError(fmt.Sprintf("maximum nesting depth exceeded (%d) while parsing %s", maxNestingDepth, where))
+		}
+		return false
+	}
+	return true
+}
+
+// leaveNesting 离开一层语法嵌套。
+func (p *Parser) leaveNesting() {
+	p.depth--
 }
 
 // New 创建一个新的 Parser 实例，预分词整个输入。
@@ -78,6 +109,7 @@ func New(l *lexer.Lexer) *Parser {
 	p.registerPrefix(lexer.YIELD, p.parseYieldExpression)
 	p.registerPrefix(lexer.AWAIT, p.parseAwaitExpression)
 	p.registerPrefix(lexer.ASYNC, p.parseAsyncExpression)
+	p.registerPrefix(lexer.JSX_LT, p.parseJSXElement)
 
 	// 注册中缀解析函数
 	p.infixParseFns = make(map[lexer.TokenType]infixParseFn)
@@ -187,6 +219,11 @@ func (p *Parser) expectPeek(t lexer.TokenType) bool {
 }
 
 func (p *Parser) addError(msg string) {
+	// 嵌套深度超限后错误恢复会产生海量重复报错 (每层解退都补一条)，
+	// 保留首个深度错误即可，其余短路丢弃。
+	if p.depthExceeded && len(p.errors.Errors) > 0 {
+		return
+	}
 	tok := p.curToken()
 	p.errors.Add(msg, tok.Line, tok.Column)
 }
@@ -245,6 +282,11 @@ func (p *Parser) parseStatement() ast.Statement {
 		return p.parseLetStatement()
 	case lexer.CONST:
 		return p.parseConstStatement()
+	case lexer.VAR:
+		// 本运行时拒绝 var 声明 (var 的函数级作用域/提升语义与 let/const 冲突)。
+		// 词法层仍识别 VAR, 以支持 var 作为属性名 (obj.var, {var: 1})。
+		p.addError("var is not supported, use let or const instead")
+		return nil
 	case lexer.RETURN:
 		return p.parseReturnStatement()
 	case lexer.IF:
@@ -619,6 +661,10 @@ func (p *Parser) parseTraditionalFor() *ast.ForStatement {
 		// parseLetStatement 内 consumeSemicolon 后 curToken 停在 ';' 上,
 		// 前进一步使其落在 condition 开头。
 		p.nextToken()
+	} else if p.curTokenIs(lexer.VAR) {
+		// for (var ...) 与 var 声明同样被拒绝
+		p.addError("var is not supported, use let or const instead")
+		return nil
 	} else if !p.curTokenIs(lexer.SEMICOLON) {
 		expr := p.parseCommaSequence()
 		stmt.Init = &ast.ExpressionStatement{Token: p.curToken(), Expression: expr}
@@ -753,6 +799,11 @@ func (p *Parser) parseLabeledStatement() *ast.LabeledStatement {
 }
 
 func (p *Parser) parseBlockStatement() *ast.BlockStatement {
+	if !p.enterNesting("block") {
+		return nil
+	}
+	defer p.leaveNesting()
+
 	block := &ast.BlockStatement{Token: p.curToken()}
 	block.Statements = []ast.Statement{}
 
@@ -880,6 +931,11 @@ func (p *Parser) parseParameter() *ast.Parameter {
 // ==================== 表达式解析 (Pratt Parsing) ====================
 
 func (p *Parser) parseExpression(precedence Precedence) ast.Expression {
+	if !p.enterNesting("expression") {
+		return nil
+	}
+	defer p.leaveNesting()
+
 	prefix := p.prefixParseFns[p.curToken().Type]
 	if prefix == nil {
 		p.addError(fmt.Sprintf("no prefix parse function for %s found", p.curToken().Type))
@@ -1097,9 +1153,13 @@ func (p *Parser) isArrowFunction() bool {
 		return false
 	}
 
-	// 扫描匹配的括号
+	// 扫描匹配的括号 (有距离上限: 不闭合的括号会一路扫到 EOF，
+	// 大量 `(` 组合下构成平方级解析开销)
 	depth := 0
 	for i := 0; i+p.pos < len(p.tokens); i++ {
+		if i > maxArrowScanLimit {
+			return false
+		}
 		tok := p.peekTokenAt(i)
 		if tok.Type == lexer.EOF {
 			return false
@@ -1206,6 +1266,11 @@ func (p *Parser) parseAsyncExpression() ast.Expression {
 func (p *Parser) parseYieldExpression() ast.Expression {
 	ye := &ast.YieldExpression{Token: p.curToken()}
 	p.nextToken()
+	// yield* iterable: 委托给另一个生成器/可迭代对象
+	if p.curTokenIs(lexer.ASTERISK) {
+		ye.Delegate = true
+		p.nextToken()
+	}
 	// 空 yield (后跟分号/换行): 值为 undefined
 	if p.curTokenIs(lexer.SEMICOLON) || p.curTokenIs(lexer.RPAREN) ||
 		p.curTokenIs(lexer.RBRACE) || p.curTokenIs(lexer.EOF) {
@@ -1550,7 +1615,7 @@ func (p *Parser) parseOptionalCall(fn ast.Expression) ast.Expression {
 // isKeywordProperty 判断 token 类型是否为可用作属性名的关键字。
 func isKeywordProperty(t lexer.TokenType) bool {
 	switch t {
-	case lexer.LET, lexer.CONST, lexer.IF, lexer.ELSE, lexer.FOR, lexer.OF, lexer.WHILE,
+	case lexer.LET, lexer.CONST, lexer.VAR, lexer.IF, lexer.ELSE, lexer.FOR, lexer.OF, lexer.WHILE,
 		lexer.BREAK, lexer.CONTINUE, lexer.FUNCTION, lexer.RETURN,
 		lexer.UNDEFINED, lexer.TYPEOF, lexer.INSTANCEOF, lexer.NEW, lexer.THIS,
 		lexer.DELETE, lexer.IN, lexer.TRY, lexer.CATCH, lexer.FINALLY, lexer.THROW,
@@ -1643,7 +1708,8 @@ func (p *Parser) parseObjectPattern() *ast.ObjectPattern {
 	}
 	for !p.curTokenIs(lexer.RBRACE) && !p.curTokenIs(lexer.EOF) {
 		prop := &ast.PatternProperty{Token: p.curToken()}
-		if p.curTokenIs(lexer.IDENTIFIER) || p.curTokenIs(lexer.STRING_LITERAL) {
+		// 键与对象字面量同理: 标识符、字符串、或可作属性名的关键字 (如 { var: x })
+		if p.curTokenIs(lexer.IDENTIFIER) || p.curTokenIs(lexer.STRING_LITERAL) || isKeywordProperty(p.curToken().Type) {
 			prop.Key = &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
 			p.nextToken()
 		} else {

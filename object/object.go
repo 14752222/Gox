@@ -38,16 +38,16 @@ const (
 	// ===== Temporal (ES2027) =====
 	// Temporal 的所有类型都是不可变值对象，内部状态存于 Go 字段而非
 	// Properties map——若存进 map，Object.keys() 会泄漏内部 slot。
-	TEMPORAL_INSTANT_OBJ         ObjectType = "TEMPORAL_INSTANT"          // Temporal.Instant (精确时间点)
-	TEMPORAL_PLAIN_DATE_OBJ      ObjectType = "TEMPORAL_PLAIN_DATE"       // Temporal.PlainDate (无时区日期)
-	TEMPORAL_PLAIN_TIME_OBJ      ObjectType = "TEMPORAL_PLAIN_TIME"       // Temporal.PlainTime (无日期时间)
-	TEMPORAL_PLAIN_DATETIME_OBJ  ObjectType = "TEMPORAL_PLAIN_DATETIME"   // Temporal.PlainDateTime
-	TEMPORAL_PLAIN_YM_OBJ        ObjectType = "TEMPORAL_PLAIN_YEARMONTH"  // Temporal.PlainYearMonth
-	TEMPORAL_PLAIN_MD_OBJ        ObjectType = "TEMPORAL_PLAIN_MONTHDAY"   // Temporal.PlainMonthDay
-	TEMPORAL_ZONED_DATETIME_OBJ  ObjectType = "TEMPORAL_ZONED_DATETIME"   // Temporal.ZonedDateTime
-	TEMPORAL_DURATION_OBJ        ObjectType = "TEMPORAL_DURATION"         // Temporal.Duration
-	TEMPORAL_TIMEZONE_OBJ        ObjectType = "TEMPORAL_TIMEZONE"         // Temporal.TimeZone
-	TEMPORAL_CALENDAR_OBJ        ObjectType = "TEMPORAL_CALENDAR"         // Temporal.Calendar
+	TEMPORAL_INSTANT_OBJ        ObjectType = "TEMPORAL_INSTANT"         // Temporal.Instant (精确时间点)
+	TEMPORAL_PLAIN_DATE_OBJ     ObjectType = "TEMPORAL_PLAIN_DATE"      // Temporal.PlainDate (无时区日期)
+	TEMPORAL_PLAIN_TIME_OBJ     ObjectType = "TEMPORAL_PLAIN_TIME"      // Temporal.PlainTime (无日期时间)
+	TEMPORAL_PLAIN_DATETIME_OBJ ObjectType = "TEMPORAL_PLAIN_DATETIME"  // Temporal.PlainDateTime
+	TEMPORAL_PLAIN_YM_OBJ       ObjectType = "TEMPORAL_PLAIN_YEARMONTH" // Temporal.PlainYearMonth
+	TEMPORAL_PLAIN_MD_OBJ       ObjectType = "TEMPORAL_PLAIN_MONTHDAY"  // Temporal.PlainMonthDay
+	TEMPORAL_ZONED_DATETIME_OBJ ObjectType = "TEMPORAL_ZONED_DATETIME"  // Temporal.ZonedDateTime
+	TEMPORAL_DURATION_OBJ       ObjectType = "TEMPORAL_DURATION"        // Temporal.Duration
+	TEMPORAL_TIMEZONE_OBJ       ObjectType = "TEMPORAL_TIMEZONE"        // Temporal.TimeZone
+	TEMPORAL_CALENDAR_OBJ       ObjectType = "TEMPORAL_CALENDAR"        // Temporal.Calendar
 
 	// 集合类型
 	MAP_OBJ ObjectType = "MAP" // Map (键值对集合)

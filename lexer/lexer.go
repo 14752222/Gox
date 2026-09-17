@@ -27,6 +27,10 @@ type Lexer struct {
 
 	// 正则字面量上下文: 追踪前一个 token 类型以区分 / 是除法还是正则开始
 	prevTokenType TokenType
+
+	// JSX 上下文栈 (见 jsx.go): 标签内 / 子文本 / 插值表达式三种帧。
+	// 栈空表示当前处于普通代码。
+	jsxStack []jsxFrame
 }
 
 // New 创建一个新的 Lexer 实例。
@@ -94,7 +98,26 @@ func (l *Lexer) NextToken() Token {
 }
 
 func (l *Lexer) nextToken() Token {
+	// JSX 标签/子文本上下文整体自管词法
+	if n := len(l.jsxStack); n > 0 {
+		switch l.jsxStack[n-1].kind {
+		case jsxTag:
+			return l.nextJSXTagToken()
+		case jsxChild:
+			return l.nextJSXChildToken()
+		}
+	}
+
 	l.skipWhitespaceAndComments()
+
+	// 插值表达式与普通代码共用词法, 但其顶层 { } 要先于普通分派处理。
+	// 必须放在 skipWhitespaceAndComments 之后: 带空格的花括号
+	// (如 attr={ {a:1} }) 也要计入深度配对, 否则提前弹栈导致词法错位。
+	if n := len(l.jsxStack); n > 0 && l.jsxStack[n-1].kind == jsxExpr {
+		if tok, ok := l.nextJSXExprBrace(); ok {
+			return tok
+		}
+	}
 
 	// 记录 Token 起始位置
 	line := l.line
@@ -196,6 +219,8 @@ func (l *Lexer) nextToken() Token {
 			} else {
 				tok = Token{Type: SHIFT_LEFT, Literal: "<<", Line: line, Column: col}
 			}
+		} else if l.jsxStartsHere() {
+			return l.beginJSXElement(line, col)
 		} else {
 			tok = Token{Type: LT, Literal: "<", Line: line, Column: col}
 		}
@@ -364,10 +389,6 @@ func (l *Lexer) nextToken() Token {
 			ident := l.readIdentifier()
 			tokType := LookupIdentifier(ident)
 			tok = Token{Type: tokType, Literal: ident, Line: line, Column: col}
-			// 如果是 var，返回 ILLEGAL
-			if tokType == ILLEGAL {
-				tok.Literal = fmt.Sprintf("var is not supported, use let or const instead")
-			}
 			return tok
 		}
 		// 无法识别的字符

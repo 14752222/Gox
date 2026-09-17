@@ -3,7 +3,7 @@ package vm
 import (
 	"testing"
 
-	"js-runtime/object"
+	"github.com/14752222/Gox/object"
 )
 
 // evalJS 编译并执行 JS 源码，返回结果。

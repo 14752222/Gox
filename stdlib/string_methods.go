@@ -4,7 +4,7 @@ import (
 	"math"
 	"strings"
 
-	"js-runtime/object"
+	"github.com/14752222/Gox/object"
 )
 
 // jsWhitespace 是 ECMAScript 定义的 WhiteSpace 与 LineTerminator 集合。

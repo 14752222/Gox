@@ -34,6 +34,8 @@ const (
 	// 必须排在其上才能直接喂给 SET_INDEX。
 	OP_DUP_BELOW2 Opcode = 0x06
 
+	OP_ITER_BOUNDARY Opcode = 0x07 // 循环迭代边界: 提交本轮创建的闭包 (for-let per-iteration 绑定)
+
 	// 0x10-0x1F: 常量加载
 	OP_CONST     Opcode = 0x10 // 加载常量池[operand]到栈顶
 	OP_NULL      Opcode = 0x11 // 加载 null
@@ -171,7 +173,7 @@ const InstructionSize = 3
 // opcodeNames 将操作码映射到可读名称 (用于反汇编)。
 var opcodeNames = map[Opcode]string{
 	OP_NOP: "NOP", OP_POP: "POP", OP_DUP: "DUP", OP_SWAP: "SWAP", OP_POP_N: "POP_N",
-	OP_DUP2: "DUP2", OP_DUP_BELOW2: "DUP_BELOW2",
+	OP_DUP2: "DUP2", OP_DUP_BELOW2: "DUP_BELOW2", OP_ITER_BOUNDARY: "ITER_BOUNDARY",
 	OP_CONST: "CONST", OP_NULL: "NULL", OP_UNDEFINED: "UNDEFINED",
 	OP_TRUE: "TRUE", OP_FALSE: "FALSE", OP_INT: "INT",
 	OP_LOAD: "LOAD", OP_STORE: "STORE", OP_STORE_CONST: "STORE_CONST",

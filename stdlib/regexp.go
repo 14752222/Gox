@@ -3,8 +3,8 @@ package stdlib
 import (
 	"strings"
 
-	"js-runtime/object"
-	"js-runtime/runtime"
+	"github.com/14752222/Gox/object"
+	"github.com/14752222/Gox/runtime"
 )
 
 // setupRegExp 设置 RegExp 构造器。

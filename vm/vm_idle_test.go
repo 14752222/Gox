@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"js-runtime/object"
+	"github.com/14752222/Gox/object"
 )
 
 // ===== requestIdleCallback 测试 =====

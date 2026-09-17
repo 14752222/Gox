@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"js-runtime/object"
-	"js-runtime/runtime"
+	"github.com/14752222/Gox/object"
+	"github.com/14752222/Gox/runtime"
 )
 
 // setupPath 注册 path 路径工具模块。

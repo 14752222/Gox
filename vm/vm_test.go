@@ -4,12 +4,12 @@ import (
 	"os"
 	"testing"
 
-	"js-runtime/compiler"
-	"js-runtime/lexer"
-	"js-runtime/object"
-	"js-runtime/parser"
-	"js-runtime/runtime"
-	"js-runtime/stdlib"
+	"github.com/14752222/Gox/compiler"
+	"github.com/14752222/Gox/lexer"
+	"github.com/14752222/Gox/object"
+	"github.com/14752222/Gox/parser"
+	"github.com/14752222/Gox/runtime"
+	"github.com/14752222/Gox/stdlib"
 )
 
 // testEval 编译并执行 JS 源码，返回最后一个表达式的值。
@@ -906,4 +906,36 @@ func evalWithGlobals(t *testing.T, input string) object.Value {
 		t.Fatalf("eval error for %q: %v", input, err)
 	}
 	return result
+}
+
+// TestYieldDelegate 覆盖 yield* 委托: 迭代器跨挂起点存活且返回时栈平衡。
+func TestYieldDelegate(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{`function* g(){ yield* [1,2]; yield 3; } let a = [...g()]; "" + a[0] + a[1] + a[2]`, "123"},
+		{`function* inner(){ yield 1; yield 2; } function* outer(){ yield* inner(); yield 3; } let a = [...outer()]; "" + a[0] + a[1] + a[2]`, "123"},
+		{`let out = ""; function* g(){ yield* [1,2]; } for (const x of g()) { out += x; } out`, "12"},
+		{`function* g(){ yield* [1,2]; yield 3; } let it = g(); let s = ""; s += it.next().value; s += it.next().value; s += it.next().value; s += it.next().done; s`, "123true"},
+	}
+	for _, tt := range tests {
+		testString(t, testEval(t, tt.input), tt.expected)
+	}
+}
+
+// TestDestructureIterable 数组解构必须走迭代协议 (generator/字符串)，
+// 非可迭代值抛 TypeError。
+func TestDestructureIterable(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{`function* g(){ yield 1; yield 2; } const [a, b] = g(); "" + a + b`, "12"},
+		{`const [a, b] = "xy"; "" + a + b`, "xy"},
+		{`function* g(){ yield 1; yield 2; } const [a, ...rest] = g(); "" + a + rest.length`, "11"},
+	}
+	for _, tt := range tests {
+		testString(t, testEval(t, tt.input), tt.expected)
+	}
 }

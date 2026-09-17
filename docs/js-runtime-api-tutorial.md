@@ -1,6 +1,6 @@
 # JavaScript Runtime API 实现教程
 
-> 基于你的 js-runtime 项目（字节码 VM 架构），从零实现一套完整的 JavaScript API。
+> 基于你的 Gox 项目（字节码 VM 架构），从零实现一套完整的 JavaScript API。
 > 假设你已掌握 JavaScript 语法，了解编译原理基础，无 runtime 开发经验。
 
 ---
@@ -11,11 +11,11 @@
 |------|------|
 | 源码目录 | `F:\desktop\go` |
 | Go 运行时 | 1.13+ |
-| 执行入口 | `./js-runtime.exe <script.js>` |
+| 执行入口 | `./Gox.exe <script.js>` |
 
 **运行示例：**
 ```bash
-./js-runtime.exe testdata/tut/demo.js
+./Gox.exe test/testdata/tut/demo.js
 ```
 
 **测试：**
@@ -242,11 +242,11 @@ m.SetProperty("hypot", object.NewBuiltin("hypot", func(args ...object.Value) obj
 **验证：**
 
 ```bash
-$ ./js-runtime.exe -e 'console.log(Math.hypot(3, 4))'
+$ ./Gox.exe -e 'console.log(Math.hypot(3, 4))'
 5
-$ ./js-runtime.exe -e 'console.log(Math.hypot("6", 8))'
+$ ./Gox.exe -e 'console.log(Math.hypot("6", 8))'
 10
-$ ./js-runtime.exe -e 'console.log(Math.hypot(1, NaN))'
+$ ./Gox.exe -e 'console.log(Math.hypot(1, NaN))'
 NaN
 ```
 
@@ -990,7 +990,7 @@ server.listen(0, function () {
 
 ---
 
-*教程基于 `js-runtime` 项目（字节码 VM 架构）编写，所有代码示例均已通过测试验证。*
+*教程基于 `Gox` 项目（字节码 VM 架构）编写，所有代码示例均已通过测试验证。*
 
 ---
 
@@ -1052,4 +1052,4 @@ once(rx, fn);              // 仅首次变化回调
 - `computed` 惰性求值 + 自动依赖收集 + 嵌套支持, 结果不变不通知。
 
 实现见 `object/observable.go` (Rx 核心/依赖追踪) 与 `stdlib/obs.go` (全局注册),
-回归测试见 `vm/vm_obs_test.go`, 可运行演示见 `testdata/rx_demo.js`。
+回归测试见 `vm/vm_obs_test.go`, 可运行演示见 `test/testdata/rx_demo.js`。

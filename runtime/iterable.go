@@ -1,6 +1,6 @@
 package runtime
 
-import "js-runtime/object"
+import "github.com/14752222/Gox/object"
 
 // Iterator 表示 JavaScript 的迭代器协议。
 // 任何具有 [Symbol.iterator] 方法的对象都可以产生迭代器。

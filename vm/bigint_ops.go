@@ -4,8 +4,8 @@ import (
 	"math"
 	"math/big"
 
-	"js-runtime/bytecode"
-	"js-runtime/object"
+	"github.com/14752222/Gox/bytecode"
+	"github.com/14752222/Gox/object"
 )
 
 // 本文件实现 BigInt 参与的运算符语义。

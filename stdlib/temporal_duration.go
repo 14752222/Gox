@@ -4,7 +4,7 @@ import (
 	"math"
 	"math/big"
 
-	"js-runtime/object"
+	"github.com/14752222/Gox/object"
 )
 
 // 本文件实现 Temporal.Duration 的 JS 接口。
@@ -355,8 +355,9 @@ func relativeToISO(opts object.Value) (*object.ISODateTime, bool) {
 // balancedDurationAdd 按规范语义做 Duration 加法: 相加后必须平衡字段。
 //
 // 平衡的目标粒度由两个操作数的"最大非零单位"中较大的那个决定:
-//   PT1H30M + PT30M → 粒度 hour → PT2H   (而不是未平衡的 PT1H60M)
-//   P1Y2M   + P1M   → 粒度 year → P1Y3M
+//
+//	PT1H30M + PT30M → 粒度 hour → PT2H   (而不是未平衡的 PT1H60M)
+//	P1Y2M   + P1M   → 粒度 year → P1Y3M
 //
 // 注意与 Duration.from 的区别: 解析 "PT90M" 得到的就是 PT90M，
 // 平衡只发生在运算结果上。

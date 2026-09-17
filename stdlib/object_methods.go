@@ -6,12 +6,12 @@ import (
 	"strconv"
 	"strings"
 
-	"js-runtime/bytecode"
-	"js-runtime/compiler"
-	"js-runtime/lexer"
-	"js-runtime/object"
-	"js-runtime/parser"
-	"js-runtime/runtime"
+	"github.com/14752222/Gox/bytecode"
+	"github.com/14752222/Gox/compiler"
+	"github.com/14752222/Gox/lexer"
+	"github.com/14752222/Gox/object"
+	"github.com/14752222/Gox/parser"
+	"github.com/14752222/Gox/runtime"
 )
 
 // setupObjectGlobal 创建 Object 构造器。

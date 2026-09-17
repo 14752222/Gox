@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"js-runtime/object"
+	"github.com/14752222/Gox/object"
 )
 
 // 本文件覆盖宿主能力模块: fs / path / process / http (含全局 fetch)。

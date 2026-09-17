@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"js-runtime/object"
+	"github.com/14752222/Gox/object"
 )
 
 // ===== 内建函数错误抛出语义测试 =====

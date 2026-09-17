@@ -4,8 +4,8 @@ import (
 	"math"
 	"math/big"
 
-	"js-runtime/object"
-	"js-runtime/runtime"
+	"github.com/14752222/Gox/object"
+	"github.com/14752222/Gox/runtime"
 )
 
 // setupBigInt 注册 BigInt 构造器、原型与静态方法。

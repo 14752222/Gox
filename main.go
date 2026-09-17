@@ -1,4 +1,4 @@
-// Package main 是 js-runtime 的入口点。
+// Package main 是 Gox 的入口点。
 // 提供交互式 REPL 和脚本执行功能。
 package main
 
@@ -8,9 +8,10 @@ import (
 	"os"
 	"strings"
 
-	"js-runtime/object"
-	"js-runtime/stdlib"
-	"js-runtime/vm"
+	"github.com/14752222/Gox/gfx"
+	"github.com/14752222/Gox/object"
+	"github.com/14752222/Gox/stdlib"
+	"github.com/14752222/Gox/vm"
 )
 
 func main() {
@@ -37,9 +38,15 @@ func runFile(path string) {
 		fmt.Println(result.Inspect())
 	}
 
-	// 运行定时器事件循环, 让 setTimeout/setInterval 及严格定时器回调执行完毕
-	if err := vm.RunTimers(); err != nil {
-		fmt.Fprintf(os.Stderr, "timer error: %v\n", err)
+	// 运行事件循环: GUI 模式用消息泵接入 (窗口关闭退出), 普通模式跑定时器
+	var loopErr error
+	if gfx.Active() {
+		loopErr = vm.RunTimersWithPump(gfx.Pump)
+	} else {
+		loopErr = vm.RunTimers()
+	}
+	if loopErr != nil {
+		fmt.Fprintf(os.Stderr, "timer error: %v\n", loopErr)
 		os.Exit(1)
 	}
 }
@@ -48,7 +55,7 @@ func runFile(path string) {
 func startREPL() {
 	globals := stdlib.SetupGlobals()
 
-	fmt.Println("js-runtime REPL (ES6 subset, no var)")
+	fmt.Println("Gox REPL (ES6 subset, no var)")
 	fmt.Println("Type :exit to quit, :help for help")
 	fmt.Println()
 
