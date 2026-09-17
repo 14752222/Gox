@@ -1,6 +1,11 @@
 package gfx
 
 import (
+	"fmt"
+	"image/color"
+	"os"
+	"sync"
+
 	"github.com/14752222/Gox/object"
 )
 
@@ -16,9 +21,14 @@ type GuiNode struct {
 	Box      Rect // 布局结果 (layout.go 写入)
 	PrevBox  Rect // 上一帧布局 (脏矩形 diff 用)
 
-	// effects 记录本节点接线的 effect dispose 函数 (v1 节点常驻不销毁,
-	// 仅测试断言用)
+	// effects 记录本节点接线的 effect dispose 函数 (节点销毁时由 disposeNode
+	// 递归调用; 条件渲染 (P1-2) 的插槽子节点会走这条路径)
 	effects []object.Value
+
+	// 运行时交互状态: 渲染层专有, 不来自 props, 也不暴露给脚本。
+	// hovered/pressed 由 Pump 按鼠标事件维护 (P1-4), 绘制时读。
+	hovered bool
+	pressed bool
 }
 
 // Rect 是布局矩形 (客户区像素坐标)。
@@ -40,6 +50,48 @@ func (n *GuiNode) GetProperty(string) (object.Value, bool) {
 }
 func (n *GuiNode) SetProperty(string, object.Value) {}
 
+// ===== 标签白名单与未知标签警告 (P0-4) =====
+
+// knownTags 是已实现的内置元素集合。h() 收到集合外的标签时输出一次警告,
+// 消除"未实现组件静默渲染成空盒子"的陷阱 (不会报错, 用户只能看到空白)。
+// 渲染行为不因告警改变: 未知标签仍走通用盒子分支 (背景/边框 + 子节点叠放)。
+//
+// !!! 每新增一个内置组件 (含布局/绘制分支) 时必须同步在此登记 !!!
+var knownTags = map[string]struct{}{
+	"column": {}, "row": {},
+	"text": {}, "#text": {},
+	"rect":   {},
+	"button": {},
+	// P0-1 表单控件
+	"checkbox": {}, "radio": {}, "switch": {},
+	// P0-2 展示与占位
+	"progress": {}, "separator": {}, "spacer": {},
+}
+
+var (
+	warnMu       sync.Mutex
+	warnSeenTags = map[string]struct{}{}
+)
+
+// warnUnknownTag 是未知标签的警告出口。做成变量而非直接写 stderr,
+// 便于单测替换为计数器断言 (同一标签只警告一次的行为见 warnUnknownTagOnce)。
+var warnUnknownTag = func(tag string) {
+	fmt.Fprintf(os.Stderr,
+		"gfx: unknown tag %q (rendered as a plain box; see docs/gui-component-status.md)\n", tag)
+}
+
+// warnUnknownTagOnce 同一标签只警告一次: 函数值 prop 驱动的重建会反复
+// 调用 h(), 不去重会在热路径上刷屏。
+func warnUnknownTagOnce(tag string) {
+	warnMu.Lock()
+	defer warnMu.Unlock()
+	if _, seen := warnSeenTags[tag]; seen {
+		return
+	}
+	warnSeenTags[tag] = struct{}{}
+	warnUnknownTag(tag)
+}
+
 // ===== JS 侧 h(tag, props, ...children) =====
 
 // JSBuiltinH 是暴露给 JS 的 h 函数实现 (render.go 注册进 gx/gfx 模块)。
@@ -52,6 +104,9 @@ func JSBuiltinH(args ...object.Value) object.Value {
 	if !ok {
 		// 组件标签在 parser 层已是直接调用, h 只处理字符串标签
 		return object.NewTypeError("h: tag must be a string, got %s", tagVal.Type())
+	}
+	if _, known := knownTags[tagStr.Value]; !known {
+		warnUnknownTagOnce(tagStr.Value)
 	}
 	node := &GuiNode{Tag: tagStr.Value, Props: map[string]object.Value{}}
 
@@ -104,7 +159,7 @@ func (n *GuiNode) reactiveProp(name string, getter object.Value) {
 // wireChild 接线一个子节点:
 //   - GuiNode → 直接挂载
 //   - 字符串/数字 → #text 文本节点
-//   - 函数 → 响应式文本子节点 (effect 求值写回 Text, Solid 的 computed 约定)
+//   - 函数 → 响应式子节点 (返回到元素/数组/null 就是条件渲染与列表渲染)
 func (n *GuiNode) wireChild(val object.Value) {
 	switch c := val.(type) {
 	case *GuiNode:
@@ -116,23 +171,158 @@ func (n *GuiNode) wireChild(val object.Value) {
 		n.appendTextNode(object.ToString(c))
 	case *object.Null, *object.Undefined:
 		// null/undefined 子节点忽略
+	case *object.Boolean:
+		// 布尔子节点 (如 JSX 里 {cond && <x/>} 的 false 分支) 忽略
 	default:
 		if object.IsCallable(val) {
-			// 响应式子节点: 求值结果按标量文本处理 (v1 不支持返回元素)
-			textNode := n.appendTextNode("")
-			dispose := runEffect(func() object.Value {
-				v := object.CallFunction(val, nil)
-				textNode.Text = scalarText(v)
-				markNodeDirty(textNode)
-				return object.UndefinedSingleton
-			})
-			if dispose != nil {
-				textNode.effects = append(textNode.effects, dispose)
-			}
+			n.wireReactiveChild(val)
 			return
 		}
-		// 数组等其余类型: 展开为文本 (v1 简化)
+		// 数组等其余类型: 展开为文本 (静态数组子节点)
 		n.appendTextNode(object.ToString(val))
+	}
+}
+
+// wireReactiveChild 接线"函数子节点": 每次求值把结果挂进一个 slot 占位节点。
+// 求值结果按类型分派 (见 mountValue): 元素 → 挂上, 数组 → 逐元素递归,
+// 标量 → 文本, null/undefined/布尔 → 空插槽。这就是声明式条件渲染与
+// 列表渲染。
+//
+// 为什么用 slot 占位而不是直接替换父节点的 Children: 父容器的布局按声明序
+// 分配位置, 动态子节点必须有固定的"坑", 兄弟节点的位置才不会跟着抖动。
+// slot 对布局透明 (单子时尺寸与交叉轴行为都跟随子节点, 见 layout.go)。
+//
+// 两种"稳定"结果原地更新, 不拆树:
+//  1. 同一个元素对象 (vnode 在闭包外创建) → 直接返回;
+//  2. 标量且当前挂的正是那个文本节点 → 只改 Text (这是 P1-2 之前的行为,
+//     纯动态文本不该因为引入了 slot 就每次都重建节点)。
+//
+// 其余情形 (换成元素 / 数组 / 类型改变) 整组重建: v1 不做 diff/key,
+// 长列表的增量更新留待后续版本。
+func (n *GuiNode) wireReactiveChild(getter object.Value) {
+	slot := &GuiNode{Tag: "slot", Props: map[string]object.Value{}}
+	slot.Parent = n
+	n.Children = append(n.Children, slot)
+
+	var (
+		mounted  *GuiNode // 上次挂的单元素
+		textNode *GuiNode // 上次挂的文本节点 (标量结果)
+	)
+	dispose := runEffect(func() object.Value {
+		v := object.CallFunction(getter, nil)
+		if node, ok := v.(*GuiNode); ok && node == mounted {
+			return object.UndefinedSingleton
+		}
+		if text, ok := scalarString(v); ok && textNode != nil &&
+			len(slot.Children) == 1 && slot.Children[0] == textNode {
+			if textNode.Text != text {
+				textNode.Text = text
+				markNodeDirty(textNode)
+			}
+			return object.UndefinedSingleton
+		}
+		clearSlot(slot)
+		mounted, textNode = nil, nil
+		mountValue(slot, v)
+		switch {
+		case isElement(v):
+			mounted = slot.Children[0]
+		case len(slot.Children) == 1 && slot.Children[0].Tag == "#text":
+			textNode = slot.Children[0]
+		}
+		markNodeDirty(slot)
+		return object.UndefinedSingleton
+	})
+	if dispose != nil {
+		slot.effects = append(slot.effects, dispose)
+	}
+}
+
+// isElement 报告求值结果是否是单个元素 (GuiNode)。
+func isElement(v object.Value) bool {
+	_, ok := v.(*GuiNode)
+	return ok
+}
+
+// scalarString 把标量值转成文本; 非标量返回 ok=false (走拆树重建)。
+func scalarString(v object.Value) (string, bool) {
+	switch x := v.(type) {
+	case *object.String:
+		return x.Value, true
+	case *object.Number:
+		return object.ToString(x), true
+	}
+	return "", false
+}
+
+// mountValue 把一个求值结果挂进 slot。
+func mountValue(slot *GuiNode, v object.Value) {
+	switch x := v.(type) {
+	case *GuiNode:
+		x.Parent = slot
+		slot.Children = append(slot.Children, x)
+	case *object.Array:
+		// 列表渲染: 逐元素递归分派 (元素可以是元素/标量/嵌套数组)
+		for _, e := range x.Elements {
+			mountValue(slot, e)
+		}
+	case *object.Null, *object.Undefined, *object.Boolean:
+		// 空插槽: 条件渲染的 false 分支 / 列表里的空洞
+	case *object.String:
+		slot.appendTextNode(x.Value)
+	case *object.Number:
+		slot.appendTextNode(object.ToString(x))
+	default:
+		slot.appendTextNode(object.ToString(v))
+	}
+}
+
+// clearSlot 清空 slot 的已挂子树 (递归注销其 effect), 保留 slot 自身。
+func clearSlot(slot *GuiNode) {
+	old := slot.Children
+	slot.Children = nil
+	for _, c := range old {
+		c.Parent = nil
+		disposeNode(c)
+	}
+}
+
+// disposeNode 递归销毁子树: 先递归子节点, 再注销本节点接线的 effect,
+// 最后从父节点摘除。
+//
+// 为什么必须显式注销: 节点不会自己离开响应式系统 —— 旧子树若不 dispose,
+// 它订阅的 signal 变化仍会跑来写这个已经不在树上的节点 (白跑一轮 effect +
+// 标脏)。v1 无条件重建的动态子树全靠这里收尾。
+func disposeNode(n *GuiNode) {
+	if n == nil {
+		return
+	}
+	for _, c := range n.Children {
+		disposeNode(c)
+	}
+	if len(n.effects) > 0 {
+		// 没有 VM (纯 Go 单测) 时 runEffect 返回 nil 且不入册, 这里是空表
+		for _, d := range n.effects {
+			object.CallFunction(d, nil)
+		}
+		n.effects = nil
+	}
+	if n.Parent != nil {
+		n.Parent.removeChild(n)
+		n.Parent = nil
+	}
+	// 交互状态一并复位: 悬停/按压链里可能还留着这个已经离开树的节点
+	n.hovered = false
+	n.pressed = false
+}
+
+// removeChild 从 Children 里摘掉一个子节点 (存在才摘)。
+func (n *GuiNode) removeChild(c *GuiNode) {
+	for i, x := range n.Children {
+		if x == c {
+			n.Children = append(n.Children[:i], n.Children[i+1:]...)
+			return
+		}
 	}
 }
 
@@ -163,17 +353,6 @@ func runEffect(fn func() object.Value) object.Value {
 	return object.CallFunction(createEffect, nil, wrapper)
 }
 
-// scalarText 把标量值转为文本 (用于文本子节点)。
-func scalarText(v object.Value) string {
-	switch v.(type) {
-	case *object.Null:
-		return "null"
-	case *object.Undefined:
-		return ""
-	}
-	return object.ToString(v)
-}
-
 // ===== 属性读取辅助 (布局/光栅化用) =====
 
 // PropNum 读取数值属性 (不存在或类型不符返回 0, has=false)。
@@ -200,7 +379,18 @@ func (n *GuiNode) PropStr(name string) (string, bool) {
 	return "", false
 }
 
-// PropHandler 读取事件回调属性。
+// PropBool 读取布尔属性 (不存在或类型不符返回 false, has=false)。
+func (n *GuiNode) PropBool(name string) (bool, bool) {
+	v, ok := n.Props[name]
+	if !ok {
+		return false, false
+	}
+	if b, ok := v.(*object.Boolean); ok {
+		return b.Value, true
+	}
+	return false, false
+}
+
 func (n *GuiNode) PropHandler(name string) object.Value {
 	v, ok := n.Props[name]
 	if !ok || !object.IsCallable(v) {
@@ -219,16 +409,138 @@ func (n *GuiNode) FontSize() int {
 	return 16
 }
 
-// TextContent 拼接直接 #text 子节点的文本 (text 元素的内容)。
+// TextContent 拼接直接或经 slot 间接的 #text 子节点文本 (text 元素的内容)。
+// 动态文本挂在 slot 里 (见 wireReactiveChild), 布局与绘制都按同一棵树遍历,
+// 这里也必须看穿 slot, 否则 `<text>{() => count()}</text>` 会渲染成空。
 func (n *GuiNode) TextContent() string {
 	if n.Tag == "#text" {
 		return n.Text
 	}
 	s := ""
 	for _, c := range n.Children {
-		if c.Tag == "#text" {
+		switch c.Tag {
+		case "#text":
 			s += c.Text
+		case "slot":
+			s += c.TextContent()
 		}
 	}
 	return s
+}
+
+// ===== slot: 动态子节点的占位容器 (P1-2) =====
+//
+// slot 由 wireReactiveChild 内部创建, 不对应任何内置标签, JS 侧看不到。
+// 布局语义是"透明": 单子时尺寸与交叉轴行为完全跟随子节点, 多子 (列表)
+// 时按父容器的方向堆叠。
+
+// slotChild 返回 slot 的唯一子节点 (非 slot / 空 / 多子时返回 nil)。
+func (n *GuiNode) slotChild() *GuiNode {
+	if n.Tag != "slot" || len(n.Children) != 1 {
+		return nil
+	}
+	return n.Children[0]
+}
+
+// slotHorizontal 返回 slot 内多子节点的排布方向: 跟随父 flex 容器的方向,
+// 于是同一个列表渲染写法放进 column 就是竖排, 放进 row 就是横排。
+func (n *GuiNode) slotHorizontal() bool {
+	return n.Parent != nil && n.Parent.Tag == "row"
+}
+
+// ===== 内置组件的属性语义 (布局与绘制共用) =====
+
+// checked 读取受控组件的选中态。非受控: 控件自身不保存状态, 完全由 JS 的
+// signal 经 checked prop 驱动 (与 Solid 的受控组件一致)。
+func (n *GuiNode) checked() bool {
+	v, _ := n.PropBool("checked")
+	return v
+}
+
+// vertical 读取 separator 的方向 (默认横向)。
+func (n *GuiNode) vertical() bool {
+	v, _ := n.PropBool("vertical")
+	return v
+}
+
+// disabledInChain 判断节点是否处于禁用子树内 (disabled 沿祖先链继承,
+// 这样按钮内的文本子节点也会跟着变灰)。
+func (n *GuiNode) disabledInChain() bool {
+	for p := n; p != nil; p = p.Parent {
+		if v, ok := p.PropBool("disabled"); ok && v {
+			return true
+		}
+	}
+	return false
+}
+
+// progressValue 读取 progress 的进度并钳位到 [0,1]。
+func (n *GuiNode) progressValue() float64 {
+	v, ok := n.PropNum("value")
+	if !ok {
+		return 0
+	}
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
+}
+
+// buttonPadX / buttonPadY 是 button 缺省内边距 (水平 8px 为任务约定;
+// 纵向给 6px 让默认外观有可点击的实体高度)。
+const (
+	buttonPadX = 8
+	buttonPadY = 6
+)
+
+// buttonPadding 返回 button 的内容内边距: padding prop 优先, 缺省 8/6。
+func (n *GuiNode) buttonPadding() (padX, padY int) {
+	if v, ok := n.PropNum("padding"); ok {
+		p := int(v)
+		if p < 0 {
+			p = 0
+		}
+		return p, p
+	}
+	return buttonPadX, buttonPadY
+}
+
+// ===== 交互反馈语义 (P1-4) =====
+
+// hoverable 报告节点是否应呈现悬停反馈。只覆盖"有实体外观的交互组件":
+// 普通盒子挂 onClick 时也可以被点, 但画面上没有可提亮的"面", 标脏只会
+// 造成无谓重绘 (鼠标移动是频率最高的事件)。
+func (n *GuiNode) hoverable() bool {
+	switch n.Tag {
+	case "button", "checkbox", "radio", "switch":
+		return true
+	}
+	return false
+}
+
+// pressable 与 hoverable 是同一批组件: 有"面"才谈得上按压反馈。
+func (n *GuiNode) pressable() bool { return n.hoverable() }
+
+// interactiveFace 叠加悬停/按压视觉反馈 (P1-4): 按住优先于悬停, 禁用态
+// 不做反馈 (禁用按钮"按下去变深"只会让人以为可点)。
+func (n *GuiNode) interactiveFace(c color.RGBA) color.RGBA {
+	if n.disabledInChain() {
+		return c
+	}
+	if n.pressed {
+		return darken(c, 24)
+	}
+	if n.hovered {
+		return brighten(c, 12)
+	}
+	return c
+}
+
+// faceColor 读取组件交互面颜色 (background prop → fallback) 并叠加
+// 悬停/按压反馈, 供 button/checkbox/radio/switch 的绘制共用。
+func (n *GuiNode) faceColor(fallback color.RGBA) color.RGBA {
+	return n.interactiveFace(n.propColor("background", fallback))
 }

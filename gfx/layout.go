@@ -39,25 +39,117 @@ func layoutNode(n *GuiNode) {
 		layoutStack(n, false)
 	case "row":
 		layoutStack(n, true)
+	case "button":
+		layoutButton(n)
+	case "slot":
+		// 动态子节点占位容器: 单子时子节点直接占满 slot 的盒子 (slot 的尺寸
+		// 就是按这个子节点算出来的, 等价于子节点直接挂在祖父下面); 多子
+		// (列表渲染) 时按父容器方向堆叠。
+		if c := n.slotChild(); c != nil {
+			c.Box = n.Box
+			layoutNode(c)
+			return
+		}
+		layoutStack(n, n.slotHorizontal())
 	default:
 		// 非容器: 子节点以内容区左上角为原点, 按自身 width/height 定位
 		area := inner(n)
 		for _, c := range n.Children {
+			if !c.isFlowChild() {
+				continue // 绝对定位/弹层子节点不参与常规流, 循环后统一摆放
+			}
 			cw, ch := c.intrinsicSize()
 			c.Box = Rect{X: area.X, Y: area.Y, W: cw, H: ch}
 			layoutNode(c)
 		}
+		placeAbsoluteIn(n, area)
 	}
 }
 
-// intrinsicSize 返回节点的期望尺寸: 显式 width/height 优先,
-// 文本节点按字体测量, 其余为 0。
+// intrinsicSize 返回节点的期望尺寸: 显式 width/height 优先, 内置组件有
+// 缺省固有尺寸, button 按内容尺寸, 文本节点按字体测量, 其余为 0。
 func (n *GuiNode) intrinsicSize() (w, h int) {
 	if v, ok := n.PropNum("width"); ok {
 		w = int(v)
 	}
 	if v, ok := n.PropNum("height"); ok {
 		h = int(v)
+	}
+	switch n.Tag {
+	case "column", "row":
+		// 容器按内容确定尺寸: 主轴 = 子节点累加 (+gap), 交叉轴 = 最大者,
+		// 两侧各加 padding。缺了这条, 嵌套容器恒为 0 尺寸, 而 drawNode 会
+		// 跳过"自身盒为空"的子树 → 嵌套几层就整片不渲染。
+		cw, ch := stackContentSize(n, n.Tag == "row")
+		if w == 0 {
+			w = cw
+		}
+		if h == 0 {
+			h = ch
+		}
+	case "slot":
+		if c := n.slotChild(); c != nil {
+			// 单子 slot 对布局透明: 尺寸完全跟随子节点
+			cw, ch := c.intrinsicSize()
+			if w == 0 {
+				w = cw
+			}
+			if h == 0 {
+				h = ch
+			}
+		} else {
+			cw, ch := stackContentSize(n, n.slotHorizontal())
+			if w == 0 {
+				w = cw
+			}
+			if h == 0 {
+				h = ch
+			}
+		}
+	case "checkbox", "radio":
+		if w == 0 {
+			w = 18
+		}
+		if h == 0 {
+			h = 18
+		}
+	case "switch":
+		if w == 0 {
+			w = 36
+		}
+		if h == 0 {
+			h = 20
+		}
+	case "progress":
+		if w == 0 {
+			w = 200
+		}
+		if h == 0 {
+			h = 8
+		}
+	case "separator":
+		// 横线: 高 1、宽 0 → 由父容器 stretch 撑开; 纵线: 反之。
+		// (纵线在 column 里主轴不被 stretch, 需显式 height。)
+		if n.vertical() {
+			if w == 0 {
+				w = 1
+			}
+		} else if h == 0 {
+			h = 1
+		}
+	case "spacer":
+		// 弹性占位: 无固有尺寸、不绘制, 靠 flexGrow 吃掉主轴富余空间
+	case "button":
+		// 内容尺寸: 让缺省外观有实体高度 (此前 button 无尺寸 → 0 高空盒,
+		// 既不可见也命不中)。v1 多子节点按横排累加, 不做自动换行。
+		cw, ch := n.contentSize()
+		padX, padY := n.buttonPadding()
+		if w == 0 {
+			w = cw + 2*padX
+		}
+		if h == 0 {
+			h = ch + 2*padY
+		}
 	}
 	if n.Tag == "#text" || (n.Tag == "text" && n.TextContent() != "") {
 		if w == 0 || h == 0 {
@@ -73,14 +165,132 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 	return w, h
 }
 
-// layoutStack 布局 column/row 容器。
+// contentSize 返回子节点按声明顺序横排所需的内容区尺寸
+// (宽度累加, 高度取最大)。绝对定位/弹层子节点不占位。
+func (n *GuiNode) contentSize() (w, h int) {
+	for _, c := range n.Children {
+		if !c.isFlowChild() {
+			continue
+		}
+		cw, ch := c.intrinsicSize()
+		w += cw
+		if ch > h {
+			h = ch
+		}
+	}
+	return w, h
+}
+
+// stackContentSize 按给定方向计算"堆叠子节点"所需的外框尺寸
+// (主轴累加 + gap + margin, 交叉轴取最大, 两侧再加 padding)。
+// column/row 容器与多子 slot (列表渲染) 共用同一套算法。
+// 绝对定位/弹层子节点不参与: 它们不占位, 不能把容器撑大。
+func stackContentSize(n *GuiNode, horizontal bool) (w, h int) {
+	pad, _ := n.PropNum("padding")
+	p := int(pad)
+	if p < 0 {
+		p = 0
+	}
+	g := n.gapOf()
+	var contentMain, contentCross int
+	placed := 0
+	for _, c := range n.Children {
+		if !c.isFlowChild() {
+			continue
+		}
+		cw, ch := c.intrinsicSize()
+		m, _ := c.PropNum("margin")
+		mg := int(m)
+		if mg < 0 {
+			mg = 0
+		}
+		if placed > 0 {
+			contentMain += g
+		}
+		placed++
+		if horizontal {
+			contentMain += cw + 2*mg
+			contentCross = max(contentCross, ch+2*mg)
+		} else {
+			contentMain += ch + 2*mg
+			contentCross = max(contentCross, cw+2*mg)
+		}
+	}
+	if horizontal {
+		return contentMain + 2*p, contentCross + 2*p
+	}
+	return contentCross + 2*p, contentMain + 2*p
+}
+
+// placeAbsoluteIn 摆放容器内"脱离常规流"的直系子节点 (P2-2):
+// 相对容器内容区按 left/top 定位, 尺寸取自身固有尺寸。
+//
+// 放在常规流摆完之后统一处理, 是因为绝对定位的参考系 (内容区) 与
+// 兄弟节点的排布结果无关 —— 先排完流内子节点再落弹层, 顺序更清楚。
+func placeAbsoluteIn(n *GuiNode, area Rect) {
+	for _, c := range n.Children {
+		if c.isFlowChild() {
+			continue
+		}
+		l, t := c.absoluteOffset()
+		cw, ch := c.intrinsicSize()
+		c.Box = Rect{X: area.X + l, Y: area.Y + t, W: cw, H: ch}
+		layoutNode(c)
+	}
+}
+
+// gapOf 读取容器的子节点间距。slot 没有自己的 gap 时跟随父容器: 列表渲染
+// 写进 gap 容器后, 列表项的间距与直接写子元素时一致 (否则 slot 只能用
+// 默认 0, 写 <column gap={4}>{() => items.map(...)}</column> 会挤在一起)。
+func (n *GuiNode) gapOf() int {
+	v, ok := n.PropNum("gap")
+	if !ok && n.Tag == "slot" && n.Parent != nil {
+		v, _ = n.Parent.PropNum("gap")
+	}
+	if v < 0 {
+		return 0
+	}
+	return int(v)
+}
+
+// layoutButton 摆放 button 的内容区: v1 只保证"单文本子节点垂直居中",
+// 多子节点按声明顺序横排 (不换行); 横向默认留 8px 内边距 (buttonPadding)。
+func layoutButton(n *GuiNode) {
+	padX, padY := n.buttonPadding()
+	area := Rect{
+		X: n.Box.X + padX, Y: n.Box.Y + padY,
+		W: n.Box.W - 2*padX, H: n.Box.H - 2*padY,
+	}
+	if area.W < 0 {
+		area.W = 0
+	}
+	if area.H < 0 {
+		area.H = 0
+	}
+	x := area.X
+	right := area.X + area.W
+	for _, c := range n.Children {
+		if !c.isFlowChild() {
+			continue // 绝对定位子节点不参与横排 (下面统一摆放)
+		}
+		cw, ch := c.intrinsicSize()
+		if x+cw > right { // 内容超出内容区: 截断宽度 (文本绘制本身也会截断)
+			cw = right - x
+		}
+		if cw < 0 {
+			cw = 0
+		}
+		c.Box = Rect{X: x, Y: area.Y + (area.H-ch)/2, W: cw, H: ch}
+		layoutNode(c)
+		x += cw
+	}
+	placeAbsoluteIn(n, area)
+}
+
+// layoutStack 布局 column/row 容器 (以及多子 slot)。
 func layoutStack(n *GuiNode, horizontal bool) {
 	area := inner(n)
-	gap, _ := n.PropNum("gap")
-	g := int(gap)
-	if g < 0 {
-		g = 0
-	}
+	g := n.gapOf()
 	align := n.alignItems()
 
 	type slot struct {
@@ -94,6 +304,9 @@ func layoutStack(n *GuiNode, horizontal bool) {
 	var sumGrow float64
 
 	for _, c := range n.Children {
+		if !c.isFlowChild() {
+			continue // 绝对定位/弹层: 不参与主轴分配 (见函数末尾统一摆放)
+		}
 		cw, ch := c.intrinsicSize()
 		m, _ := c.PropNum("margin")
 		mg := int(m)
@@ -112,6 +325,8 @@ func layoutStack(n *GuiNode, horizontal bool) {
 		slots = append(slots, s)
 	}
 	if len(slots) == 0 {
+		// 全是绝对定位子节点: 内容区还是要作为它们的参考系
+		placeAbsoluteIn(n, area)
 		return
 	}
 
@@ -150,9 +365,11 @@ func layoutStack(n *GuiNode, horizontal bool) {
 		}
 		pos += s.margin
 
-		// 交叉轴: 显式尺寸直接用; 否则 stretch 占满, start/center/end 用固有尺寸
+		// 交叉轴: 显式尺寸直接用; 容器与无固有尺寸的节点在 stretch 下占满,
+		// 其余组件保持内容尺寸 (checkbox/button 被拉满会变形)。
 		cross := s.cross
-		if cross == 0 && align == "stretch" {
+		if align == "stretch" && !s.child.hasExplicitCross(horizontal) &&
+			(cross == 0 || s.child.stretchesCross()) {
 			cross = areaCross - 2*s.margin
 		}
 		crossOffset := 0
@@ -180,6 +397,7 @@ func layoutStack(n *GuiNode, horizontal bool) {
 		layoutNode(c)
 		pos += s.main + s.margin
 	}
+	placeAbsoluteIn(n, area)
 }
 
 // alignItems 读取容器交叉轴对齐 (默认 stretch)。
@@ -188,6 +406,41 @@ func (n *GuiNode) alignItems() string {
 		return v
 	}
 	return "stretch"
+}
+
+// isContainer 报告节点是否为 flex 容器。
+func (n *GuiNode) isContainer() bool {
+	return n.Tag == "column" || n.Tag == "row"
+}
+
+// stretchesCross 报告节点在父容器 alignItems=stretch 时是否占满交叉轴:
+// flex 容器总是占满 (内容尺寸只当下限); 单子 slot 则跟随它那个子节点
+// (slot 对布局透明), 多子 slot 按容器处理。
+func (n *GuiNode) stretchesCross() bool {
+	if n.Tag == "slot" {
+		if c := n.slotChild(); c != nil {
+			return c.stretchesCross()
+		}
+		return true
+	}
+	return n.isContainer()
+}
+
+// hasExplicitCross 报告节点是否显式指定了交叉轴尺寸 (父容器是 row 时
+// 交叉轴为高, 否则为宽): 显式值即"定死", 不参与 stretch 拉伸。
+// 单子 slot 委托给子节点, 保持"透明"。
+func (n *GuiNode) hasExplicitCross(parentHorizontal bool) bool {
+	if n.Tag == "slot" {
+		if c := n.slotChild(); c != nil {
+			return c.hasExplicitCross(parentHorizontal)
+		}
+	}
+	name := "width"
+	if parentHorizontal {
+		name = "height"
+	}
+	_, ok := n.PropNum(name)
+	return ok
 }
 
 // justifyContent 读取容器主轴分布 (默认 start)。

@@ -43,6 +43,9 @@ var (
 	procReleaseDC                     = user32.NewProc("ReleaseDC")
 	procSetProcessDpiAwarenessContext = user32.NewProc("SetProcessDpiAwarenessContext")
 	procSetProcessDPIAware            = user32.NewProc("SetProcessDPIAware")
+	procScreenToClient                = user32.NewProc("ScreenToClient")
+	procGetAsyncKeyState              = user32.NewProc("GetAsyncKeyState")
+	procTrackMouseEvent               = user32.NewProc("TrackMouseEvent")
 
 	procGetModuleHandleW = kernel32.NewProc("GetModuleHandleW")
 
@@ -61,9 +64,16 @@ const (
 	WM_CLOSE       = 0x0010
 	WM_QUIT        = 0x0012
 	WM_KEYDOWN     = 0x0100
+	WM_KEYUP       = 0x0101
 	WM_CHAR        = 0x0102
+	WM_MOUSEMOVE   = 0x0200
 	WM_LBUTTONDOWN = 0x0201
 	WM_LBUTTONUP   = 0x0202
+	WM_RBUTTONUP   = 0x0205
+	WM_MOUSEWHEEL  = 0x020A
+	WM_MOUSELEAVE  = 0x02A3
+	WM_ACTIVATE    = 0x0006
+	WA_INACTIVE    = 0
 
 	WS_OVERLAPPEDWINDOW = 0x00CF0000
 	WS_VISIBLE          = 0x10000000
@@ -79,6 +89,13 @@ const (
 
 	BI_RGB         = 0
 	DIB_RGB_COLORS = 0
+
+	// 修饰键虚拟键码 (GetAsyncKeyState 查询用)
+	VK_SHIFT   = 0x10
+	VK_CONTROL = 0x11
+	VK_MENU    = 0x12 // Alt
+
+	TME_LEAVE = 0x00000002
 )
 
 // vkNames 常用虚拟键 → 键名 (WM_KEYDOWN 路径; 可打印字符走 WM_CHAR)。
@@ -146,6 +163,27 @@ type rect32 struct {
 	Left, Top, Right, Bottom int32
 }
 
+// trackMouseEventStruct 对应 Win32 TRACKMOUSEEVENT (用于订阅 WM_MOUSELEAVE)。
+type trackMouseEventStruct struct {
+	CbSize      uint32
+	DwFlags     uint32
+	HwndTrack   syscall.Handle
+	DwHoverTime uint32
+}
+
+// point32 对应 Win32 POINT。
+type point32 struct{ X, Y int32 }
+
+// modifiers 读当前修饰键状态。键消息 lParam 的状态位在部分输入路径下
+// 不刷新, 统一用 GetAsyncKeyState 取"当下是否按下"(返回值为负 = 按下)。
+func modifiers() (ctrl, shift, alt bool) {
+	down := func(vk uintptr) bool {
+		r, _, _ := procGetAsyncKeyState.Call(vk)
+		return int16(r) < 0
+	}
+	return down(VK_CONTROL), down(VK_SHIFT), down(VK_MENU)
+}
+
 // ===== 工厂注册 =====
 
 func init() {
@@ -183,6 +221,10 @@ type surface struct {
 	events chan gfx.Event
 	mu     sync.Mutex
 	closed bool
+
+	// trackingLeave 标记已订阅 WM_MOUSELEAVE (TrackMouseEvent 的订阅只报一次,
+	// 光标再次进入后需要重新订阅)
+	trackingLeave bool
 
 	// DIB 帧缓冲 (与窗口客户区同尺寸)
 	dibMem  unsafe.Pointer // DIB 内存首址 (生命周期由 dibBmp 句柄持有)
@@ -264,13 +306,52 @@ func globalWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 	case WM_LBUTTONUP:
 		s.trySend(gfx.Event{Kind: gfx.EventMouseUp, X: lo16(lParam), Y: hi16(lParam)})
 		return 0
+	case WM_RBUTTONUP:
+		s.trySend(gfx.Event{Kind: gfx.EventMouseRightUp, X: lo16(lParam), Y: hi16(lParam)})
+		return 0
+	case WM_MOUSEMOVE:
+		s.trackLeave(hwnd)
+		s.trySend(gfx.Event{Kind: gfx.EventMouseMove, X: lo16(lParam), Y: hi16(lParam)})
+		return 0
+	case WM_MOUSELEAVE:
+		s.mu.Lock()
+		s.trackingLeave = false
+		s.mu.Unlock()
+		s.trySend(gfx.Event{Kind: gfx.EventMouseLeave})
+		return 0
+	case WM_ACTIVATE:
+		// 切到别的窗口时鼠标已经不在我们这儿了, 主动清掉悬停/按压态,
+		// 否则回到窗口前按钮一直是"悬停/按住"的假状态。
+		if lo16(wParam) == WA_INACTIVE {
+			s.trySend(gfx.Event{Kind: gfx.EventMouseLeave})
+		}
+		return 0
+	case WM_MOUSEWHEEL:
+		// 高 16 位是带符号的滚轮增量 (WHEEL_DELTA = 120 一格, 向上为正);
+		// lParam 是屏幕坐标, 而 gfx 事件坐标一律是客户区坐标, 需转换。
+		delta := int(int16((wParam >> 16) & 0xFFFF))
+		var pt point32
+		pt.X, pt.Y = int32(lo16(lParam)), int32(hi16(lParam))
+		procScreenToClient.Call(hwnd, uintptr(unsafe.Pointer(&pt)))
+		s.trySend(gfx.Event{Kind: gfx.EventMouseWheel, X: int(pt.X), Y: int(pt.Y), DeltaY: delta})
+		return 0
 	case WM_KEYDOWN:
 		// 可打印字符交给 WM_CHAR (避免重复投递); 其余映射为键名
 		if name, ok := vkNames[wParam]; ok {
 			if wParam == 0x20 { // 空格两者都发, 这里跳过留给 WM_CHAR
 				return 0
 			}
-			s.trySend(gfx.Event{Kind: gfx.EventKeyDown, Key: name})
+			ctrl, shift, alt := modifiers()
+			s.trySend(gfx.Event{Kind: gfx.EventKeyDown, Key: name, Ctrl: ctrl, Shift: shift, Alt: alt})
+		}
+		return 0
+	case WM_KEYUP:
+		if name, ok := vkNames[wParam]; ok {
+			if wParam == 0x20 {
+				return 0
+			}
+			ctrl, shift, alt := modifiers()
+			s.trySend(gfx.Event{Kind: gfx.EventKeyUp, Key: name, Ctrl: ctrl, Shift: shift, Alt: alt})
 		}
 		return 0
 	case WM_CHAR:
@@ -319,6 +400,24 @@ func globalWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 
 func lo16(l uintptr) int { return int(int16(l & 0xFFFF)) }
 func hi16(l uintptr) int { return int(int16((l >> 16) & 0xFFFF)) }
+
+// trackLeave 订阅一次 WM_MOUSELEAVE: 光标离开客户区时系统回调过来,
+// gfx 据此清掉悬停/按压态。TrackMouseEvent 的订阅只报一次, 需重新订阅。
+func (s *surface) trackLeave(hwnd uintptr) {
+	s.mu.Lock()
+	already := s.trackingLeave
+	s.trackingLeave = true
+	s.mu.Unlock()
+	if already {
+		return
+	}
+	tme := trackMouseEventStruct{
+		CbSize:    uint32(unsafe.Sizeof(trackMouseEventStruct{})),
+		DwFlags:   TME_LEAVE,
+		HwndTrack: syscall.Handle(hwnd),
+	}
+	procTrackMouseEvent.Call(uintptr(unsafe.Pointer(&tme)))
+}
 
 // trySend 非阻塞投递事件 (通道满则丢弃, 避免 WndProc 阻塞)。
 func (s *surface) trySend(ev gfx.Event) {

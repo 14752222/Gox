@@ -177,9 +177,14 @@ func solidExecute(obs *solidObserver) object.Value {
 		obs.pending = true
 		return nil
 	}
-	solidChainRuns++
-	if solidChainRuns > solidMaxChainRuns {
-		return object.NewErrorWithName("Error", "solid: effect cascade exceeded limit (possible infinite loop)")
+	// 只对"重跑"计数: 级联上限是为了拦住 effect 互相触发形成的死循环,
+	// 而首次执行 (deps 为空) 不可能是循环的一环。若把首次执行也计入,
+	// 一次构建上千个节点 (列表渲染) 就会误触发上限保护。
+	if obs.deps != nil {
+		solidChainRuns++
+		if solidChainRuns > solidMaxChainRuns {
+			return object.NewErrorWithName("Error", "solid: effect cascade exceeded limit (possible infinite loop)")
+		}
 	}
 
 	obs.running = true

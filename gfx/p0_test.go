@@ -1,0 +1,749 @@
+package gfx
+
+import (
+	"image"
+	"image/color"
+	"os"
+	"path/filepath"
+	"testing"
+
+	"github.com/14752222/Gox/object"
+	"github.com/14752222/Gox/vm"
+)
+
+// ===== P0: 内置组件的固有尺寸 / 像素输出 / 事件链路 =====
+//
+// 断言策略与 p3_test.go 一致: 纯 Go 层直接 Layout + Draw 到 image.RGBA 后
+// 逐像素比对; 涉及回调的用假 Surface 注入事件 + 真 VM 跑事件循环。
+
+// 组件缺省色 (与 raster.go 的色板保持一致, 便于逐像素断言)。
+var (
+	pxWhite      = color.RGBA{R: 255, G: 255, B: 255, A: 255}
+	pxAccent     = color.RGBA{R: 0x27, G: 0xAE, B: 0x60, A: 255}
+	pxTrack      = color.RGBA{R: 0xD0, G: 0xD0, B: 0xD0, A: 255}
+	pxSwitchOff  = color.RGBA{R: 0xC8, G: 0xC8, B: 0xC8, A: 255}
+	pxFieldEdge  = color.RGBA{R: 0x55, G: 0x55, B: 0x55, A: 255}
+	pxBtnFace    = color.RGBA{R: 0xE8, G: 0xE8, B: 0xE8, A: 255}
+	pxBtnEdge    = color.RGBA{R: 0x99, G: 0x99, B: 0x99, A: 255}
+	pxBtnFaceOff = color.RGBA{R: 211, G: 211, B: 211, A: 255} // 禁用态 (与 190 取平均)
+	pxRed        = color.RGBA{R: 0xC0, G: 0x39, B: 0x2B, A: 255}
+)
+
+// renderTree 白底布局并整帧绘制, 返回可直接断言的像素面。
+func renderTree(root *GuiNode, w, h int) *image.RGBA {
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	FillRect(img, Rect{0, 0, w, h}, pxWhite)
+	Layout(root, w, h)
+	Draw(img, root)
+	return img
+}
+
+// withBool 给节点补一个布尔属性 (mkNode 只写数值属性)。
+func withBool(n *GuiNode, name string, v bool) *GuiNode {
+	n.Props[name] = object.NewBoolean(v)
+	return n
+}
+
+// withStr 给节点补一个字符串属性。
+func withStr(n *GuiNode, name, v string) *GuiNode {
+	n.Props[name] = object.NewString(v)
+	return n
+}
+
+func assertPx(t *testing.T, img *image.RGBA, x, y int, want color.RGBA, what string) {
+	t.Helper()
+	if got := img.RGBAAt(x, y); got != want {
+		t.Fatalf("%s: pixel(%d,%d) = %v, want %v", what, x, y, got, want)
+	}
+}
+
+// countColor 统计矩形内等于某颜色的像素数。
+func countColor(img *image.RGBA, r Rect, c color.RGBA) int {
+	n := 0
+	for y := r.Y; y < r.Y+r.H; y++ {
+		for x := r.X; x < r.X+r.W; x++ {
+			if img.RGBAAt(x, y) == c {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+func TestWidgetIntrinsicSize(t *testing.T) {
+	root := mkNode("column", nil)
+	cb, rd, sw, pr, sp := mkNode("checkbox", nil), mkNode("radio", nil),
+		mkNode("switch", nil), mkNode("progress", nil), mkNode("spacer", nil)
+	root.Children = []*GuiNode{cb, rd, sw, pr, sp}
+	Layout(root, 400, 300)
+
+	if cb.Box.W != 18 || cb.Box.H != 18 {
+		t.Fatalf("checkbox 固有尺寸 = %v, want 18x18", cb.Box)
+	}
+	if rd.Box.W != 18 || rd.Box.H != 18 {
+		t.Fatalf("radio 固有尺寸 = %v, want 18x18", rd.Box)
+	}
+	if sw.Box.W != 36 || sw.Box.H != 20 {
+		t.Fatalf("switch 固有尺寸 = %v, want 36x20", sw.Box)
+	}
+	if pr.Box.W != 200 || pr.Box.H != 8 {
+		t.Fatalf("progress 固有尺寸 = %v, want 200x8", pr.Box)
+	}
+	// spacer: 主轴(纵向)不占位, 交叉轴由 stretch 撑满
+	if sp.Box.H != 0 || sp.Box.W != 400 {
+		t.Fatalf("spacer 固有尺寸 = %v, want 高 0 宽 400 (stretch)", sp.Box)
+	}
+
+	// 显式尺寸优先
+	root2 := mkNode("column", nil)
+	pr2 := mkNode("progress", map[string]float64{"width": 100, "height": 4})
+	root2.Children = []*GuiNode{pr2}
+	Layout(root2, 400, 300)
+	if pr2.Box.W != 100 || pr2.Box.H != 4 {
+		t.Fatalf("progress 显式尺寸未被尊重: %v", pr2.Box)
+	}
+}
+
+func TestSeparatorBothDirections(t *testing.T) {
+	root := mkNode("column", map[string]float64{"padding": 4})
+	hsep := mkNode("separator", nil)
+	vsep := withBool(mkNode("separator", map[string]float64{"height": 20}), "vertical", true)
+	root.Children = []*GuiNode{hsep, vsep}
+	img := renderTree(root, 400, 300)
+
+	// 横线: 高 1, 宽占满内容区 (392)
+	if hsep.Box.W != 392 || hsep.Box.H != 1 {
+		t.Fatalf("横向 separator = %v, want 宽 392 高 1", hsep.Box)
+	}
+	assertPx(t, img, 200, 4, pxTrack, "分隔线颜色")
+	// 纵线: 宽 1, 显式 height=20
+	if vsep.Box.W != 1 || vsep.Box.H != 20 {
+		t.Fatalf("纵向 separator = %v, want 宽 1 高 20", vsep.Box)
+	}
+	assertPx(t, img, 4, vsep.Box.Y+10, pxTrack, "纵向分隔线颜色")
+}
+
+func TestSpacerDrawsNothingAndGrows(t *testing.T) {
+	// row: [rect 50][spacer flexGrow 1][rect 50] → 右侧 rect 被推到 x=350
+	root := mkNode("row", nil)
+	left := mkNode("rect", map[string]float64{"width": 50, "height": 10})
+	sp := mkNode("spacer", map[string]float64{"flexGrow": 1, "width": 40, "height": 10})
+	right := mkNode("rect", map[string]float64{"width": 50, "height": 10})
+	root.Children = []*GuiNode{left, sp, right}
+	Layout(root, 400, 300)
+
+	if right.Box.X != 350 {
+		t.Fatalf("spacer 未吃掉主轴富余空间: right.X = %d, want 350", right.Box.X)
+	}
+
+	// 即便显式给了尺寸/背景, spacer 也不产生任何像素
+	root2 := mkNode("row", nil)
+	sp2 := mkNode("spacer", map[string]float64{"width": 40, "height": 10})
+	withStr(sp2, "background", "#000000")
+	root2.Children = []*GuiNode{sp2}
+	img := renderTree(root2, 100, 60)
+	if got := countColor(img, Rect{0, 0, 100, 60}, color.RGBA{A: 255}); got != 0 {
+		t.Fatalf("spacer 不应绘制任何像素, 却发现 %d 个黑像素", got)
+	}
+	if got := countColor(img, Rect{0, 0, 100, 60}, pxWhite); got != 100*60 {
+		t.Fatalf("spacer 区域应保持底色, 白像素 = %d", got)
+	}
+}
+
+func TestProgressFillWidths(t *testing.T) {
+	cases := []struct {
+		value  float64
+		filled int // 期望填充宽度 (200px 宽)
+	}{
+		{0, 0}, {0.5, 100}, {1, 200}, {2, 200}, {-1, 0}, {0.25, 50},
+	}
+	for _, tc := range cases {
+		root := mkNode("column", nil)
+		pr := mkNode("progress", map[string]float64{"value": tc.value})
+		root.Children = []*GuiNode{pr}
+		img := renderTree(root, 200, 8)
+
+		if pr.Box.W != 200 || pr.Box.H != 8 {
+			t.Fatalf("value=%v: progress 尺寸 = %v", tc.value, pr.Box)
+		}
+		if tc.filled > 0 {
+			assertPx(t, img, tc.filled-1, 4, pxAccent, "填充末端")
+		}
+		if tc.filled < 200 {
+			assertPx(t, img, tc.filled, 4, pxTrack, "填充之后的轨道")
+		}
+	}
+
+	// background 覆盖前景色
+	root := mkNode("column", nil)
+	pr := mkNode("progress", map[string]float64{"value": 1, "width": 10, "height": 4})
+	withStr(pr, "background", "#c0392b")
+	root.Children = []*GuiNode{pr}
+	img := renderTree(root, 10, 4)
+	assertPx(t, img, 5, 2, pxRed, "progress 前景色可覆盖")
+}
+
+func TestCheckboxStates(t *testing.T) {
+	root := mkNode("column", nil)
+	unchecked := withBool(mkNode("checkbox", nil), "checked", false)
+	checked := withBool(mkNode("checkbox", nil), "checked", true)
+	root.Children = []*GuiNode{unchecked, checked}
+	img := renderTree(root, 40, 40)
+
+	// 未选中: 1px 边框空盒
+	assertPx(t, img, 0, 0, pxFieldEdge, "checkbox 左上边框")
+	assertPx(t, img, 17, 17, pxFieldEdge, "checkbox 右下边框")
+	assertPx(t, img, 14, 14, pxWhite, "未选中盒内应为空")
+
+	// 选中: 强调色填充 + 白勾 + 保留边框
+	b := checked.Box
+	assertPx(t, img, b.X+14, b.Y+14, pxAccent, "选中填充色")
+	assertPx(t, img, b.X, b.Y, pxFieldEdge, "选中仍保留边框")
+	if n := countColor(img, Rect{b.X + 1, b.Y + 1, b.W - 2, b.H - 2}, pxWhite); n < 8 {
+		t.Fatalf("选中态未画出勾 (盒内白像素 = %d)", n)
+	}
+}
+
+func TestRadioStates(t *testing.T) {
+	root := mkNode("column", nil)
+	off := withBool(mkNode("radio", nil), "checked", false)
+	on := withBool(mkNode("radio", nil), "checked", true)
+	root.Children = []*GuiNode{off, on}
+	img := renderTree(root, 40, 60)
+
+	// 圆环: 顶部/左右在环上, 四角在圆外, 中心空心
+	assertPx(t, img, 9, 1, pxFieldEdge, "radio 圆环顶部")
+	assertPx(t, img, 1, 9, pxFieldEdge, "radio 圆环左侧")
+	assertPx(t, img, 0, 0, pxWhite, "radio 圆角外应为空")
+	assertPx(t, img, 9, 9, pxWhite, "未选中圆内应为空")
+
+	// 选中: 中心实心圆点
+	b := on.Box
+	assertPx(t, img, b.X+9, b.Y+9, pxAccent, "radio 选中圆点")
+	assertPx(t, img, b.X+9, b.Y+1, pxFieldEdge, "选中仍保留圆环")
+}
+
+func TestSwitchStates(t *testing.T) {
+	root := mkNode("column", nil)
+	off := withBool(mkNode("switch", nil), "checked", false)
+	on := withBool(mkNode("switch", nil), "checked", true)
+	root.Children = []*GuiNode{off, on}
+	img := renderTree(root, 60, 60)
+
+	// 关闭: 左滑块(白) + 右轨道(浅灰)
+	assertPx(t, img, 10, 10, pxWhite, "switch 关闭态滑块在左")
+	assertPx(t, img, 30, 10, pxSwitchOff, "switch 关闭态轨道色")
+	// 打开: 左轨道(强调色) + 右滑块(白)
+	b := on.Box
+	assertPx(t, img, b.X+10, b.Y+10, pxAccent, "switch 打开态轨道色")
+	assertPx(t, img, b.X+30, b.Y+10, pxWhite, "switch 打开态滑块在右")
+}
+
+func TestFillCircleAndStrokeCircle(t *testing.T) {
+	red := color.RGBA{R: 255, A: 255}
+
+	img := image.NewRGBA(image.Rect(0, 0, 20, 20))
+	FillRect(img, Rect{0, 0, 20, 20}, pxWhite)
+	FillCircle(img, 10, 10, 8, red)
+	assertPx(t, img, 10, 10, red, "实心圆圆心")
+	assertPx(t, img, 10, 2, red, "实心圆上端点")
+	assertPx(t, img, 1, 1, pxWhite, "实心圆四角之外")
+
+	img2 := image.NewRGBA(image.Rect(0, 0, 20, 20))
+	FillRect(img2, Rect{0, 0, 20, 20}, pxWhite)
+	StrokeCircle(img2, 10, 10, 8, red)
+	assertPx(t, img2, 10, 2, red, "圆环顶部")
+	assertPx(t, img2, 2, 10, red, "圆环左端")
+	assertPx(t, img2, 18, 10, red, "圆环右端")
+	assertPx(t, img2, 10, 10, pxWhite, "圆环内部应为空")
+}
+
+// 已修回归: button 此前无固有尺寸 (0 高), 缺省外观不可见且命不中。
+func TestButtonIntrinsicAndDefaultStyle(t *testing.T) {
+	root := mkNode("column", map[string]float64{"gap": 8, "padding": 10})
+	plain := mkNode("button", nil)
+	plain.Children = []*GuiNode{{Tag: "#text", Text: "OK", Props: map[string]object.Value{}}}
+	root.Children = []*GuiNode{plain}
+	img := renderTree(root, 200, 100)
+
+	tw, th := MeasureText("OK", 16)
+	if plain.Box.W != tw+2*buttonPadX || plain.Box.H != th+2*buttonPadY {
+		t.Fatalf("button 内容尺寸 = %v, want %dx%d", plain.Box, tw+2*buttonPadX, th+2*buttonPadY)
+	}
+	if plain.Box.H <= 0 {
+		t.Fatalf("button 高度不应为 0: %v", plain.Box)
+	}
+	// 缺省浅灰底 + 1px 深灰边框
+	assertPx(t, img, plain.Box.X+3, plain.Box.Y+plain.Box.H/2, pxBtnFace, "button 缺省底色")
+	assertPx(t, img, plain.Box.X, plain.Box.Y, pxBtnEdge, "button 缺省边框")
+	// 文本子节点垂直居中 (水平方向 v1 左对齐 + 8px 内边距)
+	label := plain.Children[0]
+	if label.Box.X != plain.Box.X+buttonPadX {
+		t.Fatalf("文本子节点未按 8px 内边距左对齐: %v", label.Box)
+	}
+	wantY := plain.Box.Y + (plain.Box.H-th)/2
+	if label.Box.Y != wantY {
+		t.Fatalf("文本子节点未垂直居中: Y=%d want %d", label.Box.Y, wantY)
+	}
+}
+
+func TestButtonDisabledDimsColors(t *testing.T) {
+	root := mkNode("column", nil)
+	on := mkNode("button", nil)
+	off := withBool(mkNode("button", nil), "disabled", true)
+	root.Children = []*GuiNode{on, off}
+	img := renderTree(root, 200, 120)
+
+	assertPx(t, img, on.Box.X+3, on.Box.Y+on.Box.H/2, pxBtnFace, "可用 button 底色")
+	assertPx(t, img, off.Box.X+3, off.Box.Y+off.Box.H/2, pxBtnFaceOff, "禁用 button 应降饱和")
+}
+
+// TestButtonClickAndDisabled 用假 Surface 走真实事件链路:
+// 点击落在按钮的文字子节点上 (需要命中测试回溯到按钮), 禁用按钮被拦截。
+func TestButtonClickAndDisabled(t *testing.T) {
+	fake := newFakeSurface()
+	SetDefaultFactory(&fakeFactory{fake})
+	defer SetDefaultFactory(nil)
+
+	v, err := vm.EvalVM(`
+		import { h, window, render } from "gx/gfx";
+		let clicks = 0;
+		const ui = h("column", {gap: 8, padding: 16},
+			h("button", {onClick: () => { clicks = clicks + 1; }}, "加一"),
+			h("button", {disabled: true, onClick: () => { clicks = clicks + 100; }}, "禁用"));
+		render(ui, window({title: "T", width: 400, height: 300}));
+	`)
+	if err != nil {
+		t.Fatalf("EvalVM: %v", err)
+	}
+
+	uiVal, ok := v.Globals().Get("ui")
+	if !ok {
+		t.Fatalf("global ui missing")
+	}
+	ui := uiVal.(*GuiNode)
+	enabled, disabled := ui.Children[0], ui.Children[1]
+	if enabled.Box.H <= 0 || disabled.Box.H <= 0 {
+		t.Fatalf("button 应有内容高度: %v / %v", enabled.Box, disabled.Box)
+	}
+
+	pushOnLabel := func(btn *GuiNode) {
+		label := btn.Children[0]
+		fake.push(Event{Kind: EventMouseUp, X: label.Box.X + 1, Y: label.Box.Y + 1})
+	}
+	pushOnLabel(enabled)
+	pushOnLabel(disabled)
+	fake.push(Event{Kind: EventClose})
+
+	if err := v.RunTimersWithPump(Pump); err != nil {
+		t.Fatalf("RunTimersWithPump: %v", err)
+	}
+
+	cv, _ := v.Globals().Get("clicks")
+	num, _ := cv.(*object.Number)
+	if num == nil || num.Value != 1 {
+		t.Fatalf("clicks = %v, want 1 (点在文字上应命中按钮, 禁用按钮应被拦截)", cv)
+	}
+}
+
+func TestUnknownTagWarnsOnce(t *testing.T) {
+	warnMu.Lock()
+	warnSeenTags = map[string]struct{}{}
+	warnMu.Unlock()
+
+	var warned []string
+	old := warnUnknownTag
+	warnUnknownTag = func(tag string) { warned = append(warned, tag) }
+	defer func() {
+		warnUnknownTag = old
+		warnMu.Lock()
+		warnSeenTags = map[string]struct{}{}
+		warnMu.Unlock()
+	}()
+
+	nodeVal := JSBuiltinH(object.NewString("frobnicator"), nil)
+	JSBuiltinH(object.NewString("frobnicator"), nil) // 第二次不重复告警
+	JSBuiltinH(object.NewString("checkbox"), nil)    // 已知标签不告警
+
+	if len(warned) != 1 || warned[0] != "frobnicator" {
+		t.Fatalf("warned = %v, want 仅 frobnicator 一次", warned)
+	}
+
+	// 渲染行为不变: 未知标签仍走通用盒子分支 (可填充背景)
+	unknown, ok := nodeVal.(*GuiNode)
+	if !ok || unknown.Tag != "frobnicator" {
+		t.Fatalf("未知标签节点 = %v", nodeVal)
+	}
+	unknown.Props["background"] = object.NewString("#c0392b")
+	unknown.Props["width"] = object.NewNumber(10)
+	unknown.Props["height"] = object.NewNumber(10)
+	root := mkNode("column", nil)
+	root.Children = []*GuiNode{unknown}
+	img := renderTree(root, 40, 40)
+	assertPx(t, img, 5, 5, pxRed, "未知标签仍渲染为通用盒子")
+}
+
+// findFirst 深度优先找第一个指定标签的节点。
+func findFirst(root *GuiNode, tag string) *GuiNode {
+	if root == nil {
+		return nil
+	}
+	if root.Tag == tag {
+		return root
+	}
+	for _, c := range root.Children {
+		if n := findFirst(c, tag); n != nil {
+			return n
+		}
+	}
+	return nil
+}
+
+// countTag 统计指定标签的节点数。
+func countTag(root *GuiNode, tag string) int {
+	if root == nil {
+		return 0
+	}
+	n := 0
+	if root.Tag == tag {
+		n++
+	}
+	for _, c := range root.Children {
+		n += countTag(c, tag)
+	}
+	return n
+}
+
+// TestNestedContainerSizesAndDraws 回归: 容器的固有尺寸此前只取显式
+// width/height → 嵌套 column/row 恒为 0 尺寸, 而 drawNode 会跳过"自身盒为空"
+// 的子树, 导致嵌套几层的界面整片不渲染。
+func TestNestedContainerSizesAndDraws(t *testing.T) {
+	outer := mkNode("column", map[string]float64{"gap": 6, "padding": 8})
+	inner := mkNode("row", map[string]float64{"gap": 4})
+	left := withStr(mkNode("rect", map[string]float64{"width": 30, "height": 12}), "background", "#c0392b")
+	right := withStr(mkNode("rect", map[string]float64{"width": 20, "height": 18}), "background", "#27ae60")
+	inner.Children = []*GuiNode{left, right}
+	outer.Children = []*GuiNode{inner}
+	img := renderTree(outer, 100, 60)
+
+	if inner.Box.H != 18 {
+		t.Fatalf("嵌套 row 高度 = %d, want 18 (内容尺寸: 子节点最大高)", inner.Box.H)
+	}
+	if inner.Box.W != 84 {
+		t.Fatalf("嵌套 row 宽度 = %d, want 84 (stretch 撑满内容区)", inner.Box.W)
+	}
+	if left.Box.X != 8 || left.Box.Y != 8 {
+		t.Fatalf("左块位置 = %v, want (8,8)", left.Box)
+	}
+	if right.Box.X != 42 {
+		t.Fatalf("右块位置 = %v, want x=42 (30+4)", right.Box)
+	}
+	// 嵌套层级内的像素真的被绘制出来了
+	assertPx(t, img, 10, 10, pxRed, "嵌套容器内的左块")
+	assertPx(t, img, 44, 10, pxAccent, "嵌套容器内的右块")
+
+	// 零尺寸盒子的子树同样不能丢: <rect> 自身没给尺寸, 但子节点有
+	zeroParent := mkNode("rect", nil)
+	child := withStr(mkNode("rect", map[string]float64{"width": 6, "height": 6}), "background", "#c0392b")
+	zeroParent.Children = []*GuiNode{child}
+	root := mkNode("column", nil)
+	root.Children = []*GuiNode{zeroParent}
+	img2 := renderTree(root, 40, 40)
+	assertPx(t, img2, child.Box.X+2, child.Box.Y+2, pxRed, "零尺寸父盒内的子节点")
+}
+
+// TestCounterDemoClick 端到端跑 README 的计数器示例: 点击按钮 (落在文字上)
+// → onClick 计数 +1 → 响应式文本更新。此前 button 无高度且命中不回溯,
+// 这个示例是点不动的。
+func TestCounterDemoClick(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("..", "testdata", "counter_demo.js"))
+	if err != nil {
+		t.Fatalf("读取脚本: %v", err)
+	}
+	fake := newFakeSurface()
+	SetDefaultFactory(&fakeFactory{fake})
+	defer SetDefaultFactory(nil)
+
+	v, err := vm.EvalVM(string(src))
+	if err != nil {
+		t.Fatalf("EvalVM: %v", err)
+	}
+	appMu.Lock()
+	root := activeApp.root
+	appMu.Unlock()
+
+	label := findFirst(root, "#text")
+	if label == nil || label.Text != "count: 0" {
+		t.Fatalf("初始文本 = %v, want count: 0", label)
+	}
+	btn := findFirst(root, "button")
+	fake.push(Event{Kind: EventMouseUp, X: btn.Box.X + 2, Y: btn.Box.Y + btn.Box.H/2})
+	fake.push(Event{Kind: EventClose})
+	if err := v.RunTimersWithPump(Pump); err != nil {
+		t.Fatalf("RunTimersWithPump: %v", err)
+	}
+	if label.Text != "count: 1" {
+		t.Fatalf("点击后文本 = %q, want \"count: 1\"", label.Text)
+	}
+}
+
+// TestGuiDemoClickUpdatesBar 端到端跑 gui_demo.js: 点击绿块 → count=1 →
+// 红条宽度变为 20px (走"命中按钮 → 改 signal → effect 写回 width → 重绘")。
+func TestGuiDemoClickUpdatesBar(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("..", "testdata", "gui_demo.js"))
+	if err != nil {
+		t.Fatalf("读取脚本: %v", err)
+	}
+	fake := newFakeSurface()
+	SetDefaultFactory(&fakeFactory{fake})
+	defer SetDefaultFactory(nil)
+
+	v, err := vm.EvalVM(string(src))
+	if err != nil {
+		t.Fatalf("EvalVM: %v", err)
+	}
+	appMu.Lock()
+	root := activeApp.root
+	appMu.Unlock()
+
+	bar := root.Children[0] // 红条
+	if bar.Box.W != 0 {
+		t.Fatalf("初始红条宽度 = %d, want 0", bar.Box.W)
+	}
+	green := root.Children[1] // 绿块 (可点)
+	fake.push(Event{Kind: EventMouseUp, X: green.Box.X + 10, Y: green.Box.Y + 10})
+	fake.push(Event{Kind: EventClose})
+	if err := v.RunTimersWithPump(Pump); err != nil {
+		t.Fatalf("RunTimersWithPump: %v", err)
+	}
+	if bar.Box.W != 20 {
+		t.Fatalf("点击后红条宽度 = %d, want 20", bar.Box.W)
+	}
+	img := shotsImage(fake)
+	if img == nil {
+		t.Fatalf("未捕获上屏帧")
+	}
+	assertPx(t, img, bar.Box.X+19, bar.Box.Y+5, pxRed, "红条末端像素")
+}
+
+// TestExampleScriptsMount 用假 Surface 把演示脚本跑一遍: 它们是组件的真实
+// JSX 用法, 这里验证能编译、能挂载、能干净关闭, 并对挂载后的元素树与上屏帧
+// 做几何/像素抽查 (窗口观感仍需人工验收)。含 P3 起的既有演示, 防回归。
+func TestExampleScriptsMount(t *testing.T) {
+	scripts := []string{
+		"form_demo.js", "progress_demo.js", "button_demo.js", // P0 新增
+		"events_demo.js", "focus_demo.js", "hover_demo.js", // P1 事件/焦点/悬停
+		"tabs_demo.js", "list_demo.js", // P1 条件渲染 / 列表渲染
+		"counter_demo.js", "gui_demo.js", // 既有演示 (布局改动后回归)
+	}
+	for _, name := range scripts {
+		t.Run(name, func(t *testing.T) {
+			src, err := os.ReadFile(filepath.Join("..", "testdata", name))
+			if err != nil {
+				t.Fatalf("读取脚本: %v", err)
+			}
+			fake := newFakeSurface()
+			SetDefaultFactory(&fakeFactory{fake})
+			defer SetDefaultFactory(nil)
+
+			v, err := vm.EvalVM(string(src))
+			if err != nil {
+				t.Fatalf("执行脚本: %v", err)
+			}
+			if !Active() {
+				t.Fatalf("脚本未挂载窗口 (render 未生效)")
+			}
+			if shots(fake) < 1 {
+				t.Fatalf("首帧未上屏")
+			}
+			appMu.Lock()
+			root := activeApp.root
+			appMu.Unlock()
+			checkDemoTree(t, name, root, fake)
+
+			fake.push(Event{Kind: EventClose})
+			if err := v.RunTimersWithPump(Pump); err != nil {
+				t.Fatalf("事件循环: %v", err)
+			}
+			if Active() {
+				t.Fatalf("关闭后应用未退出")
+			}
+		})
+	}
+}
+
+// shotsImage 取最近一次上屏的帧 (假 Surface 的记录)。
+func shotsImage(f *fakeSurface) *image.RGBA {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.img
+}
+
+// checkDemoTree 抽查演示脚本挂载后的元素树与上屏帧。
+func checkDemoTree(t *testing.T, name string, root *GuiNode, fake *fakeSurface) {
+	t.Helper()
+	switch name {
+	case "form_demo.js":
+		cb := findFirst(root, "checkbox")
+		if cb == nil || cb.Box.W != 18 || cb.Box.H != 18 {
+			t.Fatalf("checkbox 未按 18x18 布局: %v", cb)
+		}
+		if n := countTag(root, "radio"); n != 3 {
+			t.Fatalf("radio 数量 = %d, want 3", n)
+		}
+		sw := findFirst(root, "switch")
+		if sw == nil || sw.Box.W != 36 || sw.Box.H != 20 {
+			t.Fatalf("switch 未按 36x20 布局: %v", sw)
+		}
+		// 脚本里 notify 初值为 true → 开关打开: 左轨道强调色、右滑块白色
+		img := shotsImage(fake)
+		if img == nil {
+			t.Fatalf("未捕获上屏帧")
+		}
+		assertPx(t, img, sw.Box.X+10, sw.Box.Y+10, pxAccent, "form_demo 开关打开态")
+		assertPx(t, img, sw.Box.X+30, sw.Box.Y+10, pxWhite, "form_demo 滑块在右")
+	case "progress_demo.js":
+		pr := findFirst(root, "progress")
+		if pr == nil || pr.Box.W != 200 || pr.Box.H != 8 {
+			t.Fatalf("progress 未按 200x8 布局: %v", pr)
+		}
+		if n := countTag(root, "separator"); n != 2 {
+			t.Fatalf("separator 数量 = %d, want 2", n)
+		}
+		sp := findFirst(root, "spacer")
+		if sp == nil || sp.Box.W <= 80 {
+			t.Fatalf("spacer 未撑开富余空间: %v", sp)
+		}
+	case "button_demo.js":
+		if n := countTag(root, "button"); n != 3 {
+			t.Fatalf("button 数量 = %d, want 3", n)
+		}
+		var buttons []*GuiNode
+		var walk func(n *GuiNode)
+		walk = func(n *GuiNode) {
+			if n.Tag == "button" {
+				buttons = append(buttons, n)
+			}
+			for _, c := range n.Children {
+				walk(c)
+			}
+		}
+		walk(root)
+		for i, b := range buttons {
+			if b.Box.H <= 0 {
+				t.Fatalf("第 %d 个 button 无内容高度: %v", i, b.Box)
+			}
+		}
+		// 第三个按钮 disabled → 底色降饱和
+		dis := buttons[2]
+		img := shotsImage(fake)
+		if img == nil {
+			t.Fatalf("未捕获上屏帧")
+		}
+		assertPx(t, img, dis.Box.X+3, dis.Box.Y+dis.Box.H/2, pxBtnFaceOff, "button_demo 禁用按钮变灰")
+	case "counter_demo.js":
+		// 既有演示: button 必须有内容高度, 否则点击永远命不中 (见 P0-3)
+		btn := findFirst(root, "button")
+		if btn == nil || btn.Box.H <= 0 {
+			t.Fatalf("counter_demo 的 button 无内容高度: %v", btn)
+		}
+		if len(btn.Children) == 0 || btn.Children[0].Box.W <= 0 {
+			t.Fatalf("counter_demo 的按钮文字未布局: %v", btn.Children)
+		}
+	case "events_demo.js":
+		// 事件演示: 浅蓝框 (rect) 上挂齐鼠标/键盘处理器, 初始坐标为占位文案
+		box := findFirst(root, "rect")
+		if box == nil || box.Box.W != 380 || box.Box.H != 110 {
+			t.Fatalf("events_demo 的交互区未按 380x110 布局: %v", box)
+		}
+		for _, h := range []string{"onMouseMove", "onWheel", "onContextMenu", "onKeyDown", "onKeyUp"} {
+			if box.PropHandler(h) == nil {
+				t.Fatalf("events_demo 的交互区缺少 %s 处理器", h)
+			}
+		}
+	case "focus_demo.js":
+		// 焦点演示: 三个可点块 + 根节点上的 hideFocusRing 响应式开关
+		if n := countTag(root, "button"); n != 3 {
+			t.Fatalf("focus_demo 的 button 数量 = %d, want 3", n)
+		}
+		if _, ok := root.PropBool("hideFocusRing"); !ok {
+			t.Fatalf("focus_demo 的根节点缺少 hideFocusRing 开关")
+		}
+		for _, b := range findAll(root, "button") {
+			for _, h := range []string{"onFocus", "onBlur"} {
+				if b.PropHandler(h) == nil {
+					t.Fatalf("focus_demo 的块缺少 %s 处理器", h)
+				}
+			}
+		}
+	case "hover_demo.js":
+		btns := findAll(root, "button")
+		if len(btns) != 3 {
+			t.Fatalf("hover_demo 的 button 数量 = %d, want 3", len(btns))
+		}
+		if d, _ := btns[2].PropBool("disabled"); !d {
+			t.Fatalf("hover_demo 的第三个按钮应为 disabled")
+		}
+		if n := countTag(root, "checkbox"); n != 1 {
+			t.Fatalf("hover_demo 的 checkbox 数量 = %d, want 1", n)
+		}
+		if n := countTag(root, "switch"); n != 1 {
+			t.Fatalf("hover_demo 的 switch 数量 = %d, want 1", n)
+		}
+	case "tabs_demo.js":
+		// 条件渲染: 默认 tab 0 → 只挂一个面板 (标题 + 色块 + 说明)
+		if n := countTag(root, "button"); n != 3 {
+			t.Fatalf("tabs_demo 的 button 数量 = %d, want 3", n)
+		}
+		slots := 0
+		var walk func(n *GuiNode)
+		walk = func(n *GuiNode) {
+			if n.Tag == "slot" {
+				slots++
+			}
+			for _, c := range n.Children {
+				walk(c)
+			}
+		}
+		walk(root)
+		if slots == 0 {
+			t.Fatalf("tabs_demo 没有动态子节点插槽")
+		}
+		if n := countTag(root, "rect"); n != 1 {
+			t.Fatalf("tabs_demo 初始应只有一个面板色块, got %d", n)
+		}
+		// 面板里的色块按 stretch 撑满内容区 (证明 slot 对布局透明)
+		panel := findFirst(root, "rect")
+		if panel == nil || panel.Box.H != 48 || panel.Box.W <= 200 {
+			t.Fatalf("tabs_demo 面板色块布局异常: %v", panel)
+		}
+		img := shotsImage(fake)
+		if img == nil {
+			t.Fatalf("未捕获上屏帧")
+		}
+		assertPx(t, img, panel.Box.X+5, panel.Box.Y+5, pxRed, "默认面板应为红色")
+	case "list_demo.js":
+		// 列表渲染: 初始 2 项 → 2 个色块 + 2 行文字
+		if n := countTag(root, "button"); n != 2 {
+			t.Fatalf("list_demo 的 button 数量 = %d, want 2", n)
+		}
+		// 每行一个 10x10 色块, 加上标题/计数等没有其它色块
+		blocks := 0
+		var walk func(n *GuiNode)
+		walk = func(n *GuiNode) {
+			if n.Tag == "rect" && n.Box.W == 10 && n.Box.H == 10 {
+				blocks++
+			}
+			for _, c := range n.Children {
+				walk(c)
+			}
+		}
+		walk(root)
+		if blocks != 2 {
+			t.Fatalf("list_demo 初始应有 2 个列表项色块, got %d", blocks)
+		}
+		if n := countTag(root, "separator"); n != 1 {
+			t.Fatalf("list_demo 的 separator 数量 = %d, want 1", n)
+		}
+	}
+}

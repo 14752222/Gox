@@ -72,9 +72,13 @@ func newSurface(cfg gfx.WindowConfig) (gfx.Surface, error) {
 	if err != nil {
 		return nil, err
 	}
-	// 事件: 结构变化/按键/按钮 (曝光不需要, gfx 自管重绘)
+	// 事件: 结构变化/按键(按下+抬起)/按钮(按下+抬起)/指针移动/离开窗口。
+	// 曝光不需要 (gfx 自管重绘)。注意 P1-1 新增的指针与键盘事件在纯 Go
+	// 单测里覆盖不到, 需 Linux 实机验证 (Windows 路径已完整可用)。
 	const eventMask = xproto.EventMaskStructureNotify |
-		xproto.EventMaskKeyPress | xproto.EventMaskButtonPress | xproto.EventMaskButtonRelease
+		xproto.EventMaskKeyPress | xproto.EventMaskKeyRelease |
+		xproto.EventMaskButtonPress | xproto.EventMaskButtonRelease |
+		xproto.EventMaskPointerMotion | xproto.EventMaskLeaveWindow
 	xproto.CreateWindow(conn, screen.RootDepth, win, screen.Root,
 		0, 0, uint16(w), uint16(h), 1,
 		xproto.WindowClassInputOutput, screen.RootVisual,
@@ -313,16 +317,34 @@ func (s *surface) translate(ev xgb.Event) bool {
 			s.trySend(gfx.Event{Kind: gfx.EventClose})
 		}
 	case *xproto.ButtonPressEvent:
-		if e.Detail == 1 { // 左键
+		switch e.Detail {
+		case 1: // 左键
 			s.trySend(gfx.Event{Kind: gfx.EventMouseDown, X: int(e.EventX), Y: int(e.EventY)})
+		case 4: // 滚轮上
+			s.trySend(gfx.Event{Kind: gfx.EventMouseWheel, X: int(e.EventX), Y: int(e.EventY), DeltaY: wheelDelta})
+		case 5: // 滚轮下
+			s.trySend(gfx.Event{Kind: gfx.EventMouseWheel, X: int(e.EventX), Y: int(e.EventY), DeltaY: -wheelDelta})
 		}
 	case *xproto.ButtonReleaseEvent:
-		if e.Detail == 1 {
+		switch e.Detail {
+		case 1:
 			s.trySend(gfx.Event{Kind: gfx.EventMouseUp, X: int(e.EventX), Y: int(e.EventY)})
+		case 3: // 右键
+			s.trySend(gfx.Event{Kind: gfx.EventMouseRightUp, X: int(e.EventX), Y: int(e.EventY)})
 		}
+	case *xproto.MotionNotifyEvent:
+		s.trySend(gfx.Event{Kind: gfx.EventMouseMove, X: int(e.EventX), Y: int(e.EventY)})
+	case *xproto.LeaveNotifyEvent:
+		s.trySend(gfx.Event{Kind: gfx.EventMouseLeave})
 	case *xproto.KeyPressEvent:
 		if name, ok := s.keyNames[e.Detail]; ok {
-			s.trySend(gfx.Event{Kind: gfx.EventKeyDown, Key: name})
+			ctrl, shift, alt := xModifiers(e.State)
+			s.trySend(gfx.Event{Kind: gfx.EventKeyDown, Key: name, Ctrl: ctrl, Shift: shift, Alt: alt})
+		}
+	case *xproto.KeyReleaseEvent:
+		if name, ok := s.keyNames[e.Detail]; ok {
+			ctrl, shift, alt := xModifiers(e.State)
+			s.trySend(gfx.Event{Kind: gfx.EventKeyUp, Key: name, Ctrl: ctrl, Shift: shift, Alt: alt})
 		}
 	case *xproto.ConfigureNotifyEvent:
 		s.mu.Lock()
@@ -334,6 +356,17 @@ func (s *surface) translate(ev xgb.Event) bool {
 		}
 	}
 	return true
+}
+
+// wheelDelta 与 Windows 的 WHEEL_DELTA 对齐 (一格 120), 让脚本不必区分平台。
+const wheelDelta = 120
+
+// xModifiers 从 X 事件 state 位域取修饰键。
+// ModMask1 是传统 Alt 所在的修饰位 (与 win32 的 VK_MENU 对应)。
+func xModifiers(state uint16) (ctrl, shift, alt bool) {
+	return state&xproto.ModMaskControl != 0,
+		state&xproto.ModMaskShift != 0,
+		state&xproto.ModMask1 != 0
 }
 
 // trySend 非阻塞投递事件 (通道满则丢弃)。

@@ -33,6 +33,14 @@ const (
 	EventMouseDown EventKind = iota
 	EventMouseUp
 	EventKeyDown
+	EventKeyUp
+	EventMouseMove
+	EventMouseWheel
+	EventMouseRightUp
+	// EventMouseLeave 是"光标离开客户区 / 窗口失活"。任务书只列了前四类,
+	// 这里补一类是因为 hover 态必须有明确的清除信号: 靠 MouseMove(-1,-1)
+	// 之类的哨兵坐标既隐晦又和真实坐标混淆。
+	EventMouseLeave
 	EventResize
 	EventClose
 )
@@ -42,7 +50,15 @@ type Event struct {
 	Kind EventKind
 	X, Y int    // 鼠标事件坐标 (客户区像素)
 	W, H int    // EventResize 后的新尺寸
-	Key  string // EventKeyDown 的键名 (可打印字符或 Enter/Backspace/ArrowLeft/...)
+	Key  string // EventKeyDown/EventKeyUp 的键名 (可打印字符或 Enter/Backspace/ArrowLeft/...)
+
+	// DeltaY 是滚轮增量, 向上滚为正 (Windows WHEEL_DELTA 一格的原始语义)。
+	// 注意 JS 侧 onWheel 收到的是 DOM 约定的 deltaY (向下为正), 分发时取反。
+	DeltaY int
+
+	// 修饰键状态 (随 KeyDown/KeyUp 附带)。后端在投递时刻读取键盘状态,
+	// 因为平台键消息的低位状态位在部分场景下不可靠。
+	Ctrl, Shift, Alt bool
 }
 
 // Surface 是平台窗口的抽象: 一块可上屏的像素面 + 事件流。

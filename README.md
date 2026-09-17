@@ -165,9 +165,72 @@ render(
 ```
 
 - 点击按钮 → `setCount` 更新信号 → 依赖该信号的属性/文本节点自动标脏 → 脏矩形合并后只重绘受影响区域
-- 内置元素：`column` / `row` / `text` / `rect` / `button`；布局属性 `gap` / `padding` / `width` / `height`
+- 未实现的标签（如 `<input>` / `<image>`）会在 stderr 打印一次性警告，并仍按普通盒子渲染（不再静默成空盒子）
 - 窗口后端：Windows（纯 syscall win32）与 Linux（X11，Wayland 下走 XWayland）；macOS GUI 后端尚未实现
-- 完整示例见 `testdata/counter_demo.js`、`testdata/gui_demo.js`
+
+事件：
+
+| 事件 | 参数 | 分发规则 |
+|---|---|---|
+| `onClick` | 无 | 命中测试（最内层带 `onClick` 的节点），并把该节点设为键盘焦点 |
+| `onMouseMove` | `{x, y}` | 光标下最深节点起沿祖先链找第一个处理器（不冒泡到根以外） |
+| `onWheel` | `{deltaY}` | 同上；`deltaY` 沿用 DOM 约定（向下滚为正） |
+| `onContextMenu` | `{x, y}` | 右键抬起时触发 |
+| `onKeyDown` / `onKeyUp` | `{key, ctrl, shift, alt}` | 从焦点节点沿祖先链找第一个处理器 |
+| `onFocus` / `onBlur` | 无 | 焦点切换时触发，沿祖先链找第一个处理器；焦点节点会画 1px 蓝色虚线框（根节点 `hideFocusRing` 可关闭） |
+
+> 交互组件（`button` / `checkbox` / `radio` / `switch`）自动获得悬停提亮（各通道 +12）与按压压暗（-24）反馈，
+> 状态由渲染层维护，脚本无需（也无法）读写。`disabled` 的子树既不响应事件也不做交互反馈。
+>
+> 光标离开窗口 / 窗口失活会清除悬停与按压态。Tab 键焦点遍历尚未实现（需要 focusable 注册表）。
+
+内置元素：
+
+| 元素 | 主要属性 | 说明 |
+|---|---|---|
+| `column` / `row` | `gap` / `padding` / `margin`(子级) / `alignItems` / `justifyContent` / `flexGrow`(子级) / `width` / `height` | flex 风格容器，尺寸按内容确定（交叉轴默认 stretch） |
+| `text` | `font` / `color` / `width` | 单行文本，超宽硬截断 |
+| `rect` | `width` / `height` / `background` / `border` | 通用盒子；未特判的标签也走这条绘制路径 |
+| `button` | `onClick` / `disabled` / `background` / `border` / `color` / `padding` | 缺省浅灰底 + 深灰边框，文字子节点垂直居中；`disabled` 时整体变灰且不响应点击 |
+| `checkbox` / `radio` | `checked` / `onClick` / `border` / `background` / `color` | 18×18 受控控件；`background` 是选中填充色，radio 互斥在 JS 侧用 signal 实现 |
+| `switch` | `checked` / `onClick` | 36×20 受控开关（方形轨道），`background` 覆盖打开态轨道色 |
+| `progress` | `value`(0~1，越界自动钳位) / `background` / `width` / `height` | 缺省 200×8，轨道浅灰 + 前景主题绿 |
+| `separator` | `vertical` / `background` | 横向 1px 高、宽度由容器拉伸；纵向宽度 1px，需显式 `height` |
+| `spacer` | `flexGrow` | 不绘制任何内容，仅吃主轴富余空间，用法 `<spacer flexGrow={1}/>` |
+
+> 颜色属性（`background` / `border` / `color`）在组件标签上有语义差异：`background` 表示"选中/填充的强调色"，
+> 在 `button` / `rect` 上才是普通填充色；`color` 沿祖先链继承，因此 `<button color="#fff">文字</button>` 生效。
+
+**响应式子节点（条件渲染 / 列表渲染）**
+
+子节点传函数即为响应式，effect 会自动追踪它读到的信号并在变化时重新挂载：
+
+```js
+h("column", null,
+  h("button", { onClick: () => setTab(0) }, "首页"),
+  h("button", { onClick: () => setTab(1) }, "设置"),
+
+  // 条件渲染：返回元素直接替换
+  () => tab() === 0
+    ? h("rect", { width: 120, height: 40, background: "#c0392b" })
+    : h("rect", { width: 120, height: 40, background: "#2980b9" }),
+
+  // 列表渲染：返回数组即展开成元素列表，增删项自动挂载/卸载
+  () => items().map((it) => h("text", null, it)),
+)
+```
+
+求值结果按类型分派：元素直接挂载，数组递归展开，`false`/`true`/`null`/`undefined` 渲染为**空**，
+字符串与数字渲染为文本，其他对象走 `toString()`。元素 ↔ 标量相互切换时复用同一个内部占位节点，
+不会打断其他子节点的布局。
+
+> 列表暂无 key/diff：内容变化按"清空重建"处理，小列表够用。
+
+示例：`testdata/form_demo.js`（表单控件）、`testdata/progress_demo.js`（进度/分隔/占位）、
+`testdata/button_demo.js`（按钮三态）、`testdata/events_demo.js`（鼠标/滚轮/右键/修饰键）、
+`testdata/focus_demo.js`（焦点框与 focus/blur）、`testdata/hover_demo.js`（悬停与按压反馈）、
+`testdata/tabs_demo.js`（条件渲染切面板）、`testdata/list_demo.js`（数组信号增删列表）、
+`testdata/counter_demo.js` 与 `testdata/gui_demo.js`（响应式基础）。
 
 ## 打包成独立可执行文件
 

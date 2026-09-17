@@ -39,6 +39,12 @@ type app struct {
 	closeOnce  sync.Once
 	dirtyNodes map[*GuiNode]struct{} // 属性变化的节点 (框可能不变)
 	focused    *GuiNode              // 键盘事件焦点 (点击更新, 默认根)
+
+	// 交互状态 (P1-4 / P2-8): 悬停链与按压捕获目标。
+	// 只保存"当前生效"的链, 与新的链做差集即可知道哪些节点需要翻转状态。
+	hoverChain []*GuiNode
+	pressChain []*GuiNode
+	dragTarget *GuiNode // 鼠标捕获目标: 非空时 MouseMove 全部路由给它 (slider 等拖拽)
 }
 
 var (
@@ -116,10 +122,25 @@ func (a *app) pump(maxWait time.Duration) bool {
 		switch ev.Kind {
 		case EventClose:
 			sawClose = true
+		case EventMouseDown:
+			a.handleMouseDown(ev.X, ev.Y)
 		case EventMouseUp:
+			a.releasePress()
 			a.handleClick(ev.X, ev.Y)
+		case EventMouseMove:
+			a.handleMouseMove(ev.X, ev.Y)
+		case EventMouseWheel:
+			a.handleWheel(ev.X, ev.Y, ev.DeltaY)
+		case EventMouseRightUp:
+			a.handleContextMenu(ev.X, ev.Y)
+		case EventMouseLeave:
+			// 光标离开客户区 / 窗口失活: 清掉悬停与按压态
+			a.setHover(nil)
+			a.releasePress()
 		case EventKeyDown:
-			a.handleKey(ev.Key)
+			a.handleKey(ev.Key, "onKeyDown", ev)
+		case EventKeyUp:
+			a.handleKey(ev.Key, "onKeyUp", ev)
 		case EventResize:
 			a.mu.Lock()
 			a.needDraw = true
@@ -151,19 +172,25 @@ func (a *app) takeEvent() (Event, bool) {
 	}
 }
 
-// handleClick 命中测试并调用 onClick 回调。
-func (a *app) handleClick(x, y int) {
+// rootNode 取当前根节点 (加锁读)。
+func (a *app) rootNode() *GuiNode {
 	a.mu.Lock()
-	root := a.root
-	a.mu.Unlock()
-	target := HitTest(root, x, y)
+	defer a.mu.Unlock()
+	return a.root
+}
+
+// handleClick 命中测试并调用 onClick 回调, 同时把命中节点设为键盘焦点。
+func (a *app) handleClick(x, y int) {
+	target := HitTest(a.rootNode(), x, y)
 	if target == nil {
 		return
 	}
+	// 禁用子树 (P0-3): 既不触发回调, 也不改变键盘焦点
+	if target.disabledInChain() {
+		return
+	}
 	// 点击即设为键盘焦点 (键事件沿祖先链寻找 onKeyDown)
-	a.mu.Lock()
-	a.focused = target
-	a.mu.Unlock()
+	a.setFocus(target)
 
 	if handler := target.PropHandler("onClick"); handler != nil {
 		object.CallFunction(handler, nil)
@@ -175,26 +202,210 @@ func (a *app) handleClick(x, y int) {
 	}
 }
 
-// handleKey 键盘事件: 从焦点节点沿祖先链找第一个 onKeyDown 调用。
-func (a *app) handleKey(key string) {
+// setFocus 切换键盘焦点并派发 onBlur/onFocus (各沿祖先链找第一个处理器)。
+// 焦点节点自身标脏, 让虚线焦点框在新旧位置各自重绘一次 (局部重绘下
+// 旧框必须被该节点的脏矩形覆盖掉, 否则会残留)。
+func (a *app) setFocus(target *GuiNode) {
+	a.mu.Lock()
+	old := a.focused
+	a.focused = target
+	a.mu.Unlock()
+	if old == target {
+		return
+	}
+	if old != nil {
+		if h := handlerInChain(old, "onBlur"); h != nil {
+			a.callHandler(h, "onBlur", nil)
+		}
+		markNodeDirty(old)
+	}
+	if target != nil {
+		if h := handlerInChain(target, "onFocus"); h != nil {
+			a.callHandler(h, "onFocus", nil)
+		}
+		markNodeDirty(target)
+	}
+}
+
+// handleKey 键盘事件: 从焦点节点沿祖先链找第一个 name 处理器调用。
+// 回调参数带修饰键 (P1-1)。Tab 遍历仍不做: 需要 focusable 注册表,
+// 留待后续版本 (见 README 的 GUI 限制一节)。
+func (a *app) handleKey(key, name string, ev Event) {
 	a.mu.Lock()
 	n := a.focused
 	if n == nil {
 		n = a.root
 	}
 	a.mu.Unlock()
-	for n != nil {
-		if handler := n.PropHandler("onKeyDown"); handler != nil {
-			ev := object.NewObject()
-			ev.SetProperty("key", object.NewString(key))
-			object.CallFunction(handler, nil, ev)
-			if err := takeCallbackErr(); err != nil {
-				fmt.Fprintf(os.Stderr, "gfx: onKeyDown error: %v\n", err)
-			}
-			return
-		}
-		n = n.Parent
+	if n == nil {
+		return
 	}
+	handler := handlerInChain(n, name)
+	if handler == nil {
+		return
+	}
+	arg := object.NewObject()
+	arg.SetProperty("key", object.NewString(key))
+	arg.SetProperty("ctrl", object.NewBoolean(ev.Ctrl))
+	arg.SetProperty("shift", object.NewBoolean(ev.Shift))
+	arg.SetProperty("alt", object.NewBoolean(ev.Alt))
+	a.callHandler(handler, name, arg)
+}
+
+// handleMouseMove 维护悬停链并派发 onMouseMove({x, y})。
+// 事件频率最高: 悬停链未变化时不标脏 (P1-4 的性能前提)。
+func (a *app) handleMouseMove(x, y int) {
+	target := HitTestDeep(a.rootNode(), x, y)
+	a.setHover(target)
+	if h := handlerInChain(target, "onMouseMove"); h != nil {
+		a.callHandlerWithPoint(h, "onMouseMove", x, y)
+	}
+}
+
+// handleWheel 派发 onWheel({deltaY})。Win32 的 DeltaY 向上为正,
+// 这里按 DOM 约定取反 (向下滚为正值), 免得两套符号在脚本里打架。
+func (a *app) handleWheel(x, y, deltaY int) {
+	target := HitTestDeep(a.rootNode(), x, y)
+	h := handlerInChain(target, "onWheel")
+	if h == nil {
+		return
+	}
+	arg := object.NewObject()
+	arg.SetProperty("deltaY", object.NewNumber(float64(-deltaY)))
+	a.callHandler(h, "onWheel", arg)
+}
+
+// handleContextMenu 派发 onContextMenu({x, y})。坐标一并给出, 供
+// 右键菜单就地弹出 (P3-5)。
+func (a *app) handleContextMenu(x, y int) {
+	target := HitTestDeep(a.rootNode(), x, y)
+	h := handlerInChain(target, "onContextMenu")
+	if h == nil {
+		return
+	}
+	arg := object.NewObject()
+	arg.SetProperty("x", object.NewNumber(float64(x)))
+	arg.SetProperty("y", object.NewNumber(float64(y)))
+	a.callHandler(h, "onContextMenu", arg)
+}
+
+// handleMouseDown 记录按压目标 (视觉按压态 + 后续拖拽捕获的入口)。
+// 只有落在有交互意义的节点上才记录, 点空白处不该出现按压态。
+func (a *app) handleMouseDown(x, y int) {
+	root := a.rootNode()
+	target := HitTestDeep(root, x, y)
+	if target == nil || target.disabledInChain() {
+		a.releasePress()
+		return
+	}
+	a.setPress(pressChainOf(target))
+}
+
+// releasePress 结束按压态 (MouseUp / 未命中时)。
+func (a *app) releasePress() {
+	a.setPress(nil)
+}
+
+// callHandler 调用事件回调: arg 为 nil 表示无参数。异常打印不中断事件循环。
+func (a *app) callHandler(n *GuiNode, name string, arg object.Value) {
+	handler := n.PropHandler(name)
+	if handler == nil {
+		return
+	}
+	if arg == nil {
+		object.CallFunction(handler, nil)
+	} else {
+		object.CallFunction(handler, nil, arg)
+	}
+	if err := takeCallbackErr(); err != nil {
+		fmt.Fprintf(os.Stderr, "gfx: %s error: %v\n", name, err)
+	}
+}
+
+// callHandlerWithPoint 用 {x, y} 参数调用回调 (鼠标位置类事件)。
+func (a *app) callHandlerWithPoint(n *GuiNode, name string, x, y int) {
+	arg := object.NewObject()
+	arg.SetProperty("x", object.NewNumber(float64(x)))
+	arg.SetProperty("y", object.NewNumber(float64(y)))
+	a.callHandler(n, name, arg)
+}
+
+// ===== 悬停 / 按压链维护 =====
+
+// setHover 把悬停态从旧链迁到新链, 只对发生变化的节点标脏。
+func (a *app) setHover(target *GuiNode) {
+	a.mu.Lock()
+	prev := a.hoverChain
+	a.hoverChain = hoverChainOf(target)
+	next := a.hoverChain
+	a.mu.Unlock()
+	applyChain(prev, next, func(n *GuiNode, on bool) {
+		if n.hovered != on {
+			n.hovered = on
+			markNodeDirty(n)
+		}
+	})
+}
+
+// setPress 设置按压链 (nil = 全部释放)。
+func (a *app) setPress(chain []*GuiNode) {
+	a.mu.Lock()
+	prev := a.pressChain
+	a.pressChain = chain
+	a.mu.Unlock()
+	applyChain(prev, chain, func(n *GuiNode, on bool) {
+		if n.pressed != on {
+			n.pressed = on
+			markNodeDirty(n)
+		}
+	})
+}
+
+// hoverChainOf 收集祖先链上需要悬停反馈的节点 (含被悬停组件的祖先组件,
+// 这样悬停在按钮文字上时按钮本体也会亮起)。
+func hoverChainOf(target *GuiNode) []*GuiNode {
+	var chain []*GuiNode
+	for p := target; p != nil; p = p.Parent {
+		if p.hoverable() {
+			chain = append(chain, p)
+		}
+	}
+	return chain
+}
+
+// pressChainOf 收集按压反馈节点 (与悬停链同一批组件)。
+func pressChainOf(target *GuiNode) []*GuiNode {
+	var chain []*GuiNode
+	for p := target; p != nil; p = p.Parent {
+		if p.pressable() {
+			chain = append(chain, p)
+		}
+	}
+	return chain
+}
+
+// applyChain 对新旧链做差集: 离开的置 false, 进入的置 true。
+// 用线性查找而非 map: 链长 = 树深 (通常 <10), 建 map 反而更贵。
+func applyChain(prev, next []*GuiNode, set func(n *GuiNode, on bool)) {
+	for _, n := range prev {
+		if !containsNode(next, n) {
+			set(n, false)
+		}
+	}
+	for _, n := range next {
+		if !containsNode(prev, n) {
+			set(n, true)
+		}
+	}
+}
+
+func containsNode(list []*GuiNode, n *GuiNode) bool {
+	for _, x := range list {
+		if x == n {
+			return true
+		}
+	}
+	return false
 }
 
 // takeCallbackErr 消费最近一次 CallFunction 的异常信号 (Go 侧与值都要清,
@@ -337,6 +548,7 @@ func (a *app) redraw() {
 		markAllPrev(root)
 		FillRect(a.img, Rect{0, 0, w, h}, white)
 		Draw(a.img, root)
+		a.drawFocusRing(a.img)
 		a.surface.ShowRegions(a.img, nil)
 		return
 	}
@@ -359,6 +571,7 @@ func (a *app) redraw() {
 		markAllPrev(root)
 		FillRect(a.img, Rect{0, 0, w, h}, white)
 		Draw(a.img, root)
+		a.drawFocusRing(a.img)
 		a.surface.ShowRegions(a.img, nil)
 		return
 	}
@@ -376,8 +589,41 @@ func (a *app) redraw() {
 		clipRects = append(clipRects, image.Rect(r.X, r.Y, r.X+r.W, r.Y+r.H))
 	}
 	if len(clipRects) > 0 {
+		// 焦点框在所有内容之上重画一次: 它可能横跨多个脏区, 逐区补画
+		// 反而更绕; 框始终画在焦点节点自身的盒内, 所以仍落在脏区内。
+		a.drawFocusRing(a.img)
 		a.surface.ShowRegions(a.img, clipRects)
 	}
+}
+
+// drawFocusRing 给当前焦点节点画虚线框 (P1-3)。根节点接焦时不需要
+// 焦点反馈 (点击空白处即焦点回到根), 可用根节点 props.hideFocusRing
+// 整体关闭 (演示脚本里想拍"无焦点框"的画面时用)。
+func (a *app) drawFocusRing(img *image.RGBA) {
+	a.mu.Lock()
+	n := a.focused
+	root := a.root
+	a.mu.Unlock()
+	if n == nil || root == nil || n == root {
+		return
+	}
+	if hide, _ := root.PropBool("hideFocusRing"); hide {
+		return
+	}
+	if n.disabledInChain() {
+		return
+	}
+	// 焦点框画在 Draw 之后, 会浮在遮罩之上: 焦点节点被打开的弹层盖住时
+	// 不该画 (否则是"透过遮罩的幽灵框")。
+	if coveredByOverlay(n, root) {
+		return
+	}
+	// 内缩 1px: 不覆盖节点自己的边框 (button 缺省有 1px 边), 框看得清
+	r := Rect{X: n.Box.X + 1, Y: n.Box.Y + 1, W: n.Box.W - 2, H: n.Box.H - 2}
+	if r.W < 2 || r.H < 2 {
+		return
+	}
+	StrokeDashedRect(img, r, colorFocusRing, 2, 2)
 }
 
 // ===== gx/gfx 模块注册 =====
