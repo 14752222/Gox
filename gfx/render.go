@@ -170,6 +170,9 @@ func (a *app) pump(maxWait time.Duration) bool {
 		}
 	}
 	// 4) 脏区重绘
+	// 输入框光标闪烁 (P2-1): 相位翻转时才标脏, 于是每次闪烁只重绘一帧,
+	// 而不是 60fps 常驻重绘 (光标闪烁不需要每一帧都变)。
+	a.tickCaretBlink()
 	a.mu.Lock()
 	need := a.needDraw
 	a.mu.Unlock()
@@ -181,6 +184,31 @@ func (a *app) pump(maxWait time.Duration) bool {
 		return false
 	}
 	return true
+}
+
+// caretPhase 记录上一次重绘时光标相位的取值: 只有相位翻转的那一帧才需要
+// 重绘输入框 (见 tickCaretBlink)。初值与 caretEpoch 时刻的相位一致。
+var caretPhase = true
+
+// tickCaretBlink 在光标闪烁相位翻转时把获焦的输入框标脏 (P2-1)。
+//
+// 它只能"在事件泵醒着的时候"生效: 窗口既没有事件、也没有任何定时器时,
+// 泵会在 WaitEvents 里睡着, 此时只有点击/按键才会触发重绘, 光标不闪。
+// 需要持续闪烁的应用挂一个 requestAnimationFrame 循环即可
+// (testdata/input_demo.js 就是这么做的) —— 浏览器里也是动画帧在驱动光标闪烁。
+func (a *app) tickCaretBlink() {
+	a.mu.Lock()
+	in := inputInChain(a.focused)
+	a.mu.Unlock()
+	if in == nil {
+		return
+	}
+	visible := caretVisibleAt(time.Now())
+	if visible == caretPhase {
+		return
+	}
+	caretPhase = visible
+	markNodeDirty(in)
 }
 
 // takeEvent 非阻塞取一条窗口事件。
@@ -214,6 +242,16 @@ func (a *app) handleClick(x, y int) {
 	root := a.rootNode()
 	target := HitTest(root, x, y)
 	if target == nil {
+		// 没有 onClick 的字段类组件也要能点击获焦: 命中测试只认"带处理器的
+		// 节点" (HitTest), input 表面没有处理器, 常规路径会直接判成"点了空白"。
+		// 这里退一步用最深命中节点判断, 顺带把光标落到点击位置 (P2-1)。
+		if deep := HitTestDeep(root, x, y); deep != nil {
+			if in := inputInChain(deep); in != nil && !in.disabledInChain() {
+				a.setFocus(in)
+				a.setCaretFromX(in, x)
+				return
+			}
+		}
 		// 没命中任何处理器。若点落在模态遮罩上 (而不是内容卡片上), 那是
 		// "点外部关闭" 语义 (P2-4); 点在卡片身上什么都不做。
 		if d := modalAt(root, x, y); d != nil && dialogMaskHit(d, x, y) {
@@ -227,6 +265,10 @@ func (a *app) handleClick(x, y int) {
 	}
 	// 点击即设为键盘焦点 (键事件沿祖先链寻找 onKeyDown)
 	a.setFocus(target)
+	// 输入框另加一步: 光标落到点击位置 (脚本自己挂 onClick 时同样适用)
+	if in := inputInChain(target); in != nil && in.Tag == "input" {
+		a.setCaretFromX(in, x)
+	}
 
 	if handler := target.PropHandler("onClick"); handler != nil {
 		object.CallFunction(handler, nil)
@@ -246,6 +288,14 @@ func (a *app) setFocus(target *GuiNode) {
 	old := a.focused
 	a.focused = target
 	a.mu.Unlock()
+	// 输入框 (P2-1) 的"获焦"是画在节点上的状态 (边框颜色 + 是否画光标):
+	// 节点级字段让绘制侧不必反查 app。这里与 a.focused 严格同步。
+	if old != nil && old != target {
+		old.focused = false
+	}
+	if target != nil {
+		target.focused = true
+	}
 	if old == target {
 		return
 	}
@@ -276,7 +326,7 @@ func (a *app) handleKey(key, name string, ev Event) {
 	if n == nil {
 		return
 	}
-	if name == "onKeyDown" && a.handleFieldKey(n, key) {
+	if name == "onKeyDown" && a.handleFieldKey(n, key, ev) {
 		return
 	}
 	handler := handlerInChain(n, name)

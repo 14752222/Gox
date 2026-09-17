@@ -310,48 +310,8 @@ func withBoolProp(n *GuiNode, name string, v bool) *GuiNode {
 
 // ===== 键盘 =====
 
-// handleFieldKey 把键盘事件先交给焦点链上的"字段类组件"内部处理。
-// 返回 true 表示按键已被消费, 不再走 JS 回调 (脚本仍可用 onKeyDown 观察
-// 未被消费的键)。
-func (a *app) handleFieldKey(n *GuiNode, key string) bool {
-	sel := selectInChain(n)
-	if sel == nil {
-		return false
-	}
-	switch key {
-	case "Enter", " ":
-		if sel.expanded {
-			if idx := sel.highlight; idx >= 0 {
-				if opts := sel.selectOptions(); idx < len(opts) {
-					a.chooseOption(sel, opts[idx].value)
-					return true
-				}
-			}
-			a.closeSelect(sel)
-			return true
-		}
-		a.openSelect(sel)
-		return true
-	case "ArrowDown", "ArrowUp":
-		delta := 1
-		if key == "ArrowUp" {
-			delta = -1
-		}
-		if !sel.expanded {
-			a.openSelect(sel)
-			return true
-		}
-		opts := sel.selectOptions()
-		a.setHighlight(sel, wrapIndex(sel.highlight+delta, len(opts)))
-		return true
-	case "Escape":
-		if sel.expanded {
-			a.closeSelect(sel)
-			return true
-		}
-	}
-	return false
-}
+// 字段类组件的键盘分流统一在 input.go 的 handleFieldKey 里 (它先问 input,
+// 再问 select), 本文件只负责 select 那一半的编辑动作。
 
 // setHighlight 移动键盘光标并只标脏受影响的两行 (局部重绘下, 只重画变化
 // 的那两行比整帧便宜得多; 弹层展开/收起才需要整帧)。

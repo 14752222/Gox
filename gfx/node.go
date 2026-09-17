@@ -40,6 +40,11 @@ type GuiNode struct {
 	// highlight, 用指针比"沿 Parent 走两层"更稳 —— 弹层一旦被拆链就找不到)。
 	optIndex int
 	owner    *GuiNode
+
+	// 输入框状态 (P2-1): focused 是"是否持有键盘焦点"(由 setFocus 维护,
+	// 绘制时决定边框颜色与是否画光标), caret 是光标位置 (rune 下标)。
+	focused bool
+	caret   int
 }
 
 // Rect 是布局矩形 (客户区像素坐标)。
@@ -81,6 +86,8 @@ var knownTags = map[string]struct{}{
 	"select": {}, "select-popup": {}, "select-option": {},
 	// P2-4 弹层
 	"dialog": {}, "toast": {},
+	// P2-1 单行文本输入
+	"input": {},
 }
 
 var (
@@ -339,6 +346,10 @@ func disposeNode(n *GuiNode) {
 	n.expanded = false
 	n.popup = nil
 	n.owner = nil
+	// 输入框状态: 节点离树后不该再被当成"持有焦点" (否则 setFocus 的
+	// 旧节点标脏会对一个游离节点做无意义的重绘)。
+	n.focused = false
+	n.caret = 0
 }
 
 // removeChild 从 Children 里摘掉一个子节点 (存在才摘)。
@@ -540,7 +551,7 @@ func (n *GuiNode) buttonPadding() (padX, padY int) {
 // 造成无谓重绘 (鼠标移动是频率最高的事件)。
 func (n *GuiNode) hoverable() bool {
 	switch n.Tag {
-	case "button", "checkbox", "radio", "switch", "select", "select-option":
+	case "button", "checkbox", "radio", "switch", "select", "select-option", "input":
 		return true
 	}
 	return false

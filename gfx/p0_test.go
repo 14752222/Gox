@@ -535,6 +535,7 @@ func TestExampleScriptsMount(t *testing.T) {
 		"events_demo.js", "focus_demo.js", "hover_demo.js", // P1 事件/焦点/悬停
 		"tabs_demo.js", "list_demo.js", // P1 条件渲染 / 列表渲染
 		"select_demo.js", "dialog_demo.js", // P2-3 下拉框 / P2-4 弹层
+		"input_demo.js",                    // P2-1 单行输入
 		"counter_demo.js", "gui_demo.js", // 既有演示 (布局改动后回归)
 	}
 	for _, name := range scripts {
@@ -775,6 +776,37 @@ func checkDemoTree(t *testing.T, name string, root *GuiNode, fake *fakeSurface) 
 		}
 		assertPx(t, img, sels[0].Box.X+4, sels[0].Box.Y+selectRowH/2, pxFieldFace, "select_demo 字段白底")
 		assertPx(t, img, sels[0].Box.X+4, sels[0].Box.Y, pxBtnEdge, "select_demo 字段 1px 边框")
+	case "input_demo.js":
+		// 单行输入: 初始空值, placeholder 态, 未获焦所以不画光标
+		in := findFirst(root, "input")
+		if in == nil {
+			t.Fatalf("input_demo 缺少 input 节点")
+		}
+		if in.Box.H != selectRowH || in.Box.W != 260 {
+			t.Fatalf("input 未按 260x%d 布局: %v", selectRowH, in.Box)
+		}
+		if in.Box.W != 260 {
+			t.Fatalf("input 宽度 = %d, want 260", in.Box.W)
+		}
+		if in.inputValue() != "" || in.hasInputValue() {
+			t.Fatalf("input_demo 初始值应为空, got %q", in.inputValue())
+		}
+		if in.focused {
+			t.Fatalf("首帧不该有输入框处于获焦态")
+		}
+		// 首帧不该画出光标: 光标是近黑的 1px 竖线, 字段内部不该出现这个颜色。
+		// (不能只看左侧留白那一格 —— 演示带 placeholder, 那里正好有灰字。)
+		img := shotsImage(fake)
+		if img == nil {
+			t.Fatalf("未捕获上屏帧")
+		}
+		for y := in.Box.Y + 1; y < in.Box.Y+in.Box.H-1; y++ {
+			for x := in.Box.X + 1; x < in.Box.X+in.Box.W-1; x++ {
+				if img.RGBAAt(x, y) == pxCaret {
+					t.Fatalf("input_demo 未获焦却画了光标: (%d,%d)", x, y)
+				}
+			}
+		}
 	case "dialog_demo.js":
 		// 弹层演示: 初始 open=false 的 dialog (在树上但不绘制) + 未挂载的 toast
 		dlg := findFirst(root, "dialog")

@@ -340,6 +340,8 @@ func drawNode(img *image.RGBA, n *GuiNode) {
 		paintDialog(img, n)
 	case "toast":
 		paintToast(img, n, disabled)
+	case "input":
+		paintInput(img, n, disabled)
 	default:
 		// 通用盒子 / button: background 填充 + border 描边 (button 有缺省外观)。
 		// 交互反馈 (P1-4) 只对 button 有实际效果: 其他标签没有缺省面,

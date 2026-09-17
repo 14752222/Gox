@@ -201,6 +201,16 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 				h = 36
 			}
 		}
+	case "input":
+		// 单行输入框: 高 28 (与 select 同一套字段常量); 宽度按内容算不合适
+		// —— 文字会随打字变长, 宽度跟着跳变很难看, 所以给一个固定缺省值,
+		// 需要更宽就显式写 width。
+		if w == 0 {
+			w = inputMinW
+		}
+		if h == 0 {
+			h = selectRowH
+		}
 	}
 	if n.Tag == "#text" || (n.Tag == "text" && n.TextContent() != "") {
 		if w == 0 || h == 0 {
