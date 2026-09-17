@@ -1,0 +1,41 @@
+# 打 v* tag 时自动发布 npm 包：交叉编译全平台二进制 → 校验版本 → npm publish。
+# 前置条件（只需配置一次）：
+#   1. 在 npmjs.com → Access Tokens 创建 Automation 类型 token
+#   2. 在仓库 Settings → Secrets → Actions 里添加为 NPM_TOKEN
+# 发版流程：改 npm/package.json 的 version → 提交 → 打 tag（如 v0.1.0）→ push tag
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: https://registry.npmjs.org
+
+      - name: Check version matches tag
+        run: |
+          PKG_VER=$(node -p "require('./npm/package.json').version")
+          TAG_VER="${GITHUB_REF_NAME#v}"
+          if [ "$PKG_VER" != "$TAG_VER" ]; then
+            echo "npm/package.json 版本 ($PKG_VER) 与 tag ($TAG_VER) 不一致，请先同步版本号" >&2
+            exit 1
+          fi
+
+      - run: bash ./scripts/build-npm.sh
+
+      - name: Publish
+        run: cd npm && npm pack --dry-run && npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
