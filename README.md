@@ -197,6 +197,30 @@ render(
 | `progress` | `value`(0~1，越界自动钳位) / `background` / `width` / `height` | 缺省 200×8，轨道浅灰 + 前景主题绿 |
 | `separator` | `vertical` / `background` | 横向 1px 高、宽度由容器拉伸；纵向宽度 1px，需显式 `height` |
 | `spacer` | `flexGrow` | 不绘制任何内容，仅吃主轴富余空间，用法 `<spacer flexGrow={1}/>` |
+| `select` | `value` / `options` / `onChange` / `placeholder` / `disabled` | 受控下拉框；`options` 可为字符串数组或 `{value,label}` 数组，选中派发 `onChange({value})`；键盘可开合/移动/选中/Esc 关闭 |
+| `dialog` | `open` / `onClose` | 模态弹层：40% 黑遮罩 + 居中卡片（流内子节点即卡片内容）；点遮罩 / Esc / 卡片内按钮触发 `onClose`，遮罩吞掉其下点击 |
+| `toast` | `message` / `level` | 非模态提示，固定右上角；`level` 取 `success` / `warn` / `error` / `info` 决定色条，显隐由 JS 侧信号控制 |
+
+**层叠与定位**
+
+任何节点都可挂 `zIndex`（同层绘制与命中顺序，越大越靠上，相同值保持声明序）、
+`position="absolute"` + `left`/`top`（脱离常规流，相对父内容区定位）与 `escapeClipping`
+（子树的绘制与命中溢出父盒，收集到根层级最后绘制）。`dialog`/`toast` 天生是弹层，自带高层级基线，
+不必手写大 `zIndex`：
+
+```js
+h("column", null,
+  h("rect", { width: 200, height: 100, background: "#eee" }),
+  // 绝对定位 + 逃逸裁剪：绘制与命中都溢出父盒
+  h("rect", {
+    position: "absolute", left: 40, top: 20, width: 120, height: 60,
+    background: "rgba(192, 57, 43, 0.6)", escapeClipping: true,
+  }),
+)
+```
+
+颜色支持命名色与 `#rgb` / `#rgba` / `#rrggbb` / `#rrggbbaa` / `rgb()` / `rgba()`（alpha 可写 `0~255` 或 `0~1`），
+带 alpha 的颜色会与下方内容做真正的混合（`dialog` 的遮罩就是这么实现的）。
 
 > 颜色属性（`background` / `border` / `color`）在组件标签上有语义差异：`background` 表示"选中/填充的强调色"，
 > 在 `button` / `rect` 上才是普通填充色；`color` 沿祖先链继承，因此 `<button color="#fff">文字</button>` 生效。
@@ -230,6 +254,7 @@ h("column", null,
 `testdata/button_demo.js`（按钮三态）、`testdata/events_demo.js`（鼠标/滚轮/右键/修饰键）、
 `testdata/focus_demo.js`（焦点框与 focus/blur）、`testdata/hover_demo.js`（悬停与按压反馈）、
 `testdata/tabs_demo.js`（条件渲染切面板）、`testdata/list_demo.js`（数组信号增删列表）、
+`testdata/select_demo.js`（受控下拉框）、`testdata/dialog_demo.js`（模态对话框与右上角 toast）、
 `testdata/counter_demo.js` 与 `testdata/gui_demo.js`（响应式基础）。
 
 ## 打包成独立可执行文件
