@@ -14,7 +14,7 @@
 //   - 拖动期间鼠标划过别的控件**不会**给它们加悬停高亮 —— 这是刻意的:
 //     一次拖动是一个手势, 中途划过谁都不算"指向"它。
 import { createSignal } from "gx/solid";
-import { h, window, render } from "gx/gfx";
+import { h, render } from "gx/gfx";
 
 const [vol, setVol] = createSignal(40);
 const [zoom, setZoom] = createSignal(4);
@@ -39,5 +39,5 @@ render(
     h("text", { font: 13, width: 200 }, "disabled:"),
     h("slider", { width: 200, min: 0, max: 100, step: 5, value: 70, disabled: true })
   ),
-  window({ title: "Slider demo", width: 260, height: 260 })
+  { title: "Slider demo", width: 260, height: 260 }
 );

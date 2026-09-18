@@ -148,16 +148,17 @@ count = 2
 
 ```js
 import { createSignal } from "gx/solid"
-import { h, window, render } from "gx/gfx"
+import { h, render } from "gx/gfx"
 
 const [count, setCount] = createSignal(0)
 
 render(
-  <column gap={8} padding={16}>
-    <text font={20}>{() => `count: ${count()}`}</text>
-    <button onClick={() => setCount(c => c + 1)}>加一</button>
-  </column>,
-  window({ title: "Counter", width: 400, height: 300 })
+  <window title="Counter" width={400} height={300}>
+    <column gap={8} padding={16}>
+      <text font={20}>{() => `count: ${count()}`}</text>
+      <button onClick={() => setCount(c => c + 1)}>加一</button>
+    </column>
+  </window>
 )
 ```
 
@@ -166,6 +167,7 @@ render(
 ```
 
 - 点击按钮 → `setCount` 更新信号 → 依赖该信号的属性/文本节点自动标脏 → 脏矩形合并后只重绘受影响区域
+- 窗口配置写在根元素上：JSX 里 `<window title width height>` 包住整棵树；`h()` 手拼树时 `render(tree, {title, width, height})` 传普通对象，省略则用缺省（Gox 400x300）
 - `render()` 返回窗口句柄 `{close(), isClosed()}`，可**调用多次**开多窗口（各窗口独立元素树与事件循环，全关才退出进程）
 - 未实现的标签（拼错的名字、或还没做进 `knownTags` 的名字）会在 stderr 打印一次性警告，并仍按普通盒子渲染（不再静默成空盒子）
 - 窗口后端：Windows（纯 syscall win32）与 Linux（X11，Wayland 下走 XWayland）；macOS GUI 后端尚未实现
@@ -350,7 +352,7 @@ const path = await openFile({                               // → 完整路径 
 脚本自己写 `column { menubar; 内容 }`，gfx 不会往根节点里偷偷插一条：
 
 ```js
-import { h, window, render, openContextMenu } from "gx/gfx";
+import { h, render, openContextMenu } from "gx/gfx";
 
 render(
   h("column", null,
@@ -373,7 +375,7 @@ render(
           h("menuitem", { label: "Paste", onClick: () => say("Paste") }),
         ]),
       }))),
-  window({ title: "Menu", width: 480, height: 380 }));
+  { title: "Menu", width: 480, height: 380 });
 ```
 
 - **下拉是弹层**：溢出 26px 的菜单栏显示，不被裁剪也不被后面的兄弟盖住；点外部收起（该次点击被吞掉，
@@ -396,7 +398,7 @@ render(
 `render()` 可以调用多次，每次开一个独立窗口 —— 各有自己的元素树、焦点、交互态与事件循环：
 
 ```js
-import { h, window, render } from "gx/gfx";
+import { h, render } from "gx/gfx";
 import { createSignal } from "gx/solid";
 
 const n = createSignal(0);                       // 想跨窗口共享状态就在顶层建信号
@@ -409,8 +411,8 @@ function counter(title) {
     h("button", { onClick: () => wB.close() }, "close me"));
 }
 
-const wA = render(counter("Window A"), window({ title: "A", width: 320, height: 200 }));
-const wB = render(counter("Window B"), window({ title: "B", width: 320, height: 200 }));
+const wA = render(counter("Window A"), { title: "A", width: 320, height: 200 });
+const wB = render(counter("Window B"), { title: "B", width: 320, height: 200 });
 ```
 
 - `render()` 返回**窗口句柄**：`w.close()` 关掉这个窗口，`w.isClosed()` 查状态。

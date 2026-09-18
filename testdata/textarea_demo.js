@@ -10,32 +10,33 @@
 // 受控: 编辑只派发 onInput({value}), 显示永远来自 value —— 底下那行镜像
 // 文本就是 value 本身。
 import { createSignal } from "gx/solid";
-import { h, window, render } from "gx/gfx";
+import { h, render } from "gx/gfx";
 
 const [text, setText] = createSignal("");
 const [escapes, setEscapes] = createSignal(0);
 const [keys, setKeys] = createSignal(0);
 
 render(
-  <column gap={8} padding={12}>
-    <text font={16}>Textarea</text>
+  <window title="Textarea demo" width={320} height={280}>
+    <column gap={8} padding={12}>
+      <text font={16}>Textarea</text>
 
-    <textarea
-      rows={4}
-      width={260}
-      placeholder="Type here..."
-      value={() => text()}
-      onInput={(e) => setText(e.value)}
-      onKeyDown={(e) => {
-        setKeys((n) => n + 1);
-        if (e.key === "Escape") setEscapes((n) => n + 1);
-      }}
-    />
+      <textarea
+        rows={4}
+        width={260}
+        placeholder="Type here..."
+        value={() => text()}
+        onInput={(e) => setText(e.value)}
+        onKeyDown={(e) => {
+          setKeys((n) => n + 1);
+          if (e.key === "Escape") setEscapes((n) => n + 1);
+        }}
+      />
 
-    <text wrap width={260} font={12}>
-      {() => `value = "${text()}"`}
-    </text>
-    <text font={12}>{() => `escapes = ${escapes()} keys = ${keys()}`}</text>
-  </column>,
-  window({ title: "Textarea demo", width: 320, height: 280 })
+      <text wrap width={260} font={12}>
+        {() => `value = "${text()}"`}
+      </text>
+      <text font={12}>{() => `escapes = ${escapes()} keys = ${keys()}`}</text>
+    </column>
+  </window>
 );

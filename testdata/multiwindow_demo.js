@@ -17,7 +17,7 @@
 //   - 每个窗口是独立的 app 实例: 悬停链、按压态、键盘焦点、快捷键表、
 //     弹层状态互不干扰。gfx.Post 的任务队列是全局的 (v1 广播), 每轮只排空一次。
 import { createSignal } from "gx/solid";
-import { h, window, render } from "gx/gfx";
+import { h, render } from "gx/gfx";
 
 // makeCounter 造一个窗口: 标题不同、计数独立、带自己的关闭按钮。
 // 复用同一个组件定义是刻意的 —— 它证明"同一份脚本代码可以挂成多个窗口",
@@ -31,33 +31,34 @@ const makeCounter = (title, accent) => {
   };
 
   self = render(
-    <column>
-      <menubar>
-        <menu label="File">
-          <menuitem label="Close window" shortcut="Ctrl+Q" onClick={close} />
-        </menu>
-        <text>ready</text>
-      </menubar>
+    <window title={`Multi-window ${title}`} width={380} height={340}>
+      <column>
+        <menubar>
+          <menu label="File">
+            <menuitem label="Close window" shortcut="Ctrl+Q" onClick={close} />
+          </menu>
+          <text>ready</text>
+        </menubar>
 
-      <column gap={12} padding={16}>
-        <text font={18}>Window {title}</text>
-        <text>Each window has its own element tree, focus and shortcuts.</text>
+        <column gap={12} padding={16}>
+          <text font={18}>Window {title}</text>
+          <text>Each window has its own element tree, focus and shortcuts.</text>
 
-        <rect width={260} height={8} background={accent} />
+          <rect width={260} height={8} background={accent} />
 
-        <row gap={10}>
-          <button onClick={() => setN(n() + 1)}>+1</button>
-          <button onClick={() => setN(n() - 1)}>-1</button>
-          <button onClick={() => setN(0)}>reset</button>
-        </row>
+          <row gap={10}>
+            <button onClick={() => setN(n() + 1)}>+1</button>
+            <button onClick={() => setN(n() - 1)}>-1</button>
+            <button onClick={() => setN(0)}>reset</button>
+          </row>
 
-        <text font={22}>{() => `${title} count = ${n()}`}</text>
+          <text font={22}>{() => `${title} count = ${n()}`}</text>
 
-        <text>Tip: focus this window and press Ctrl+Q, or use File - Close window.</text>
-        <button onClick={close}>Close this window</button>
+          <text>Tip: focus this window and press Ctrl+Q, or use File - Close window.</text>
+          <button onClick={close}>Close this window</button>
+        </column>
       </column>
-    </column>,
-    window({ title: `Multi-window ${title}`, width: 380, height: 340 })
+    </window>
   );
 
   return self;

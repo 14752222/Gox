@@ -25,7 +25,7 @@
 // (parser/parser.go 的 parseAsyncExpression 显式降级报错)。所以下面写成
 // `async function () { ... }` —— 匿名 async 函数表达式, 等价可用。
 import { createSignal } from "gx/solid";
-import { h, window, render } from "gx/gfx";
+import { h, render } from "gx/gfx";
 import { alert, confirm, openFile } from "gx/dialog";
 
 const [log, setLog] = createSignal("(nothing yet)");
@@ -72,5 +72,5 @@ render(
     h("text", { font: 12, width: 460 }, "log:"),
     h("text", { font: 12, width: 460, wrap: true, color: "#555555" }, () => log())
   ),
-  window({ title: "Native dialog demo", width: 480, height: 260 })
+  { title: "Native dialog demo", width: 480, height: 260 }
 );

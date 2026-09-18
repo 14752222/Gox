@@ -12,26 +12,27 @@
 //     stdin / 字符串 / 打包产物来, 没有所在目录这个概念)。
 //   - 不给 width/height 时用图片自然尺寸; 加载失败则给 16x16 兜底尺寸 ——
 //     兜底必须非 0, 否则 0 尺寸子树会被整支跳过, 界面上什么都看不到。
-import { h, window, render } from "gx/gfx";
+import { h, render } from "gx/gfx";
 
 const SRC = "testdata/image_demo.png";
 
 render(
-  <column gap={10} padding={12}>
-    <text font={13} color="#8a8a8a">natural (no size given)</text>
-    <image src={SRC} />
+  <window title="Image demo" width={220} height={460}>
+    <column gap={10} padding={12}>
+      <text font={13} color="#8a8a8a">natural (no size given)</text>
+      <image src={SRC} />
 
-    <text font={13} color="#8a8a8a">scaled up 96x96 (nearest)</text>
-    <image src={SRC} width={96} height={96} />
+      <text font={13} color="#8a8a8a">scaled up 96x96 (nearest)</text>
+      <image src={SRC} width={96} height={96} />
 
-    <text font={13} color="#8a8a8a">scaled down 16x16</text>
-    <image src={SRC} width={16} height={16} />
+      <text font={13} color="#8a8a8a">scaled down 16x16</text>
+      <image src={SRC} width={16} height={16} />
 
-    <text font={13} color="#8a8a8a">missing file -&gt; placeholder</text>
-    <image src="testdata/definitely_missing.png" width={96} height={48} />
+      <text font={13} color="#8a8a8a">missing file -&gt; placeholder</text>
+      <image src="testdata/definitely_missing.png" width={96} height={48} />
 
-    <text font={13} color="#8a8a8a">disabled</text>
-    <image src={SRC} width={64} height={64} disabled />
-  </column>,
-  window({ title: "Image demo", width: 220, height: 460 })
+      <text font={13} color="#8a8a8a">disabled</text>
+      <image src={SRC} width={64} height={64} disabled />
+    </column>
+  </window>
 );

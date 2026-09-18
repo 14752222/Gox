@@ -5,7 +5,7 @@
 //     里就横排 (slot 的排布方向跟随父容器), 间距沿用父容器的 gap;
 //   - v1 不做 diff/key: 数组变化整组重建, 长列表的增量更新留待后续版本。
 import { createSignal } from "gx/solid";
-import { h, window, render } from "gx/gfx";
+import { h, render } from "gx/gfx";
 
 const [items, setItems] = createSignal(["alpha", "beta"]);
 let serial = 2;
@@ -27,20 +27,21 @@ const row = (text) => (
 );
 
 render(
-  <column gap={10} padding={16}>
-    <text font={18}>List rendering</text>
+  <window title="List demo" width={400} height={320}>
+    <column gap={10} padding={16}>
+      <text font={18}>List rendering</text>
 
-    <row gap={8}>
-      <button onClick={add}>Add</button>
-      <button onClick={remove}>Remove</button>
-    </row>
+      <row gap={8}>
+        <button onClick={add}>Add</button>
+        <button onClick={remove}>Remove</button>
+      </row>
 
-    <text>{() => `count: ${items().length}`}</text>
-    <separator/>
+      <text>{() => `count: ${items().length}`}</text>
+      <separator/>
 
-    <column gap={6}>
-      {() => items().map(row)}
+      <column gap={6}>
+        {() => items().map(row)}
+      </column>
     </column>
-  </column>,
-  window({ title: "List demo", width: 400, height: 320 })
+  </window>
 );

@@ -6,7 +6,7 @@
 //   - 面板元素在每次求值里新建, 因此不会被"同一对象复用"的快捷路径命中,
 //     这是刻意的 —— 演示的就是完整重建语义。
 import { createSignal } from "gx/solid";
-import { h, window, render } from "gx/gfx";
+import { h, render } from "gx/gfx";
 
 const [tab, setTab] = createSignal(0);
 
@@ -27,22 +27,23 @@ const tabButton = (index, label) => (
 );
 
 render(
-  <column gap={12} padding={16}>
-    <text font={18}>Conditional rendering</text>
+  <window title="Tabs demo" width={420} height={280}>
+    <column gap={12} padding={16}>
+      <text font={18}>Conditional rendering</text>
 
-    <row gap={8}>
-      {tabButton(0, "Tab A")}
-      {tabButton(1, "Tab B")}
-      {tabButton(2, "Tab C")}
-    </row>
+      <row gap={8}>
+        {tabButton(0, "Tab A")}
+        {tabButton(1, "Tab B")}
+        {tabButton(2, "Tab C")}
+      </row>
 
-    <text>{() => `active tab: ${tab()}`}</text>
+      <text>{() => `active tab: ${tab()}`}</text>
 
-    {() => (
-      tab() === 0 ? panel("Panel A", "#c0392b", "red panel rendered from a function child")
-      : tab() === 1 ? panel("Panel B", "#27ae60", "green panel rendered from a function child")
-      : panel("Panel C", "#1a5fb4", "blue panel rendered from a function child")
-    )}
-  </column>,
-  window({ title: "Tabs demo", width: 420, height: 280 })
+      {() => (
+        tab() === 0 ? panel("Panel A", "#c0392b", "red panel rendered from a function child")
+        : tab() === 1 ? panel("Panel B", "#27ae60", "green panel rendered from a function child")
+        : panel("Panel C", "#1a5fb4", "blue panel rendered from a function child")
+      )}
+    </column>
+  </window>
 );

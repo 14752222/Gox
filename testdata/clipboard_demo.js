@@ -12,7 +12,6 @@
 import { createSignal } from "gx/solid";
 import {
   h,
-  window,
   render,
   clipboardReadText,
   clipboardWriteText,
@@ -33,24 +32,25 @@ function onPaste() {
 }
 
 render(
-  <column gap={10} padding={16}>
-    <text font={18}>Clipboard</text>
+  <window title="Clipboard demo" width={360} height={300}>
+    <column gap={10} padding={16}>
+      <text font={18}>Clipboard</text>
 
-    <textarea
-      width={300}
-      height={100}
-      placeholder="type something"
-      value={() => text()}
-      onInput={(e) => setText(e.value)}
-    />
+      <textarea
+        width={300}
+        height={100}
+        placeholder="type something"
+        value={() => text()}
+        onInput={(e) => setText(e.value)}
+      />
 
-    <row gap={8}>
-      <button onClick={onCopy}>Copy</button>
-      <button onClick={onPaste}>Paste</button>
-    </row>
+      <row gap={8}>
+        <button onClick={onCopy}>Copy</button>
+        <button onClick={onPaste}>Paste</button>
+      </row>
 
-    <text>{() => `status: ${status()}`}</text>
-    <text>{() => `length = ${text().length}`}</text>
-  </column>,
-  window({ title: "Clipboard demo", width: 360, height: 300 })
+      <text>{() => `status: ${status()}`}</text>
+      <text>{() => `length = ${text().length}`}</text>
+    </column>
+  </window>
 );

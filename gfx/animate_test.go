@@ -531,7 +531,7 @@ func TestTransitionOnSignal(t *testing.T) {
 	t.Cleanup(func() { SetDefaultFactory(nil) })
 
 	v, err := vm.EvalVM(`
-		import { h, window, render } from "gx/gfx";
+		import { h, render } from "gx/gfx";
 		import { createSignal } from "gx/solid";
 		const [w, setW] = createSignal(100);
 		globalThis.grow = () => setW(300);
@@ -539,7 +539,7 @@ func TestTransitionOnSignal(t *testing.T) {
 			h("column", null,
 				h("rect", { width: w, height: 20, transition: { width: 1000 },
 				            background: "#c0392b" })),
-			window({ title: "anim", width: 400, height: 200 }));
+			{ title: "anim", width: 400, height: 200 });
 	`)
 	if err != nil {
 		t.Fatalf("EvalVM: %v", err)
@@ -600,12 +600,12 @@ func TestTransitionSkippedWithoutProp(t *testing.T) {
 	t.Cleanup(func() { SetDefaultFactory(nil) })
 
 	v, err := vm.EvalVM(`
-		import { h, window, render } from "gx/gfx";
+		import { h, render } from "gx/gfx";
 		import { createSignal } from "gx/solid";
 		const [w, setW] = createSignal(100);
 		globalThis.grow = () => setW(300);
 		render(h("column", null, h("rect", { width: w, height: 20 })),
-		       window({ title: "plain", width: 400, height: 200 }));
+		       { title: "plain", width: 400, height: 200 });
 	`)
 	if err != nil {
 		t.Fatalf("EvalVM: %v", err)
@@ -668,7 +668,7 @@ func TestAnimateRawCallsOnUpdate(t *testing.T) {
 	t.Cleanup(func() { SetDefaultFactory(nil) })
 
 	v, err := vm.EvalVM(`
-		import { h, window, render, animate } from "gx/gfx";
+		import { h, render, animate } from "gx/gfx";
 		globalThis.samples = [];
 		globalThis.finished = false;
 		globalThis.run = () => {
@@ -676,7 +676,7 @@ func TestAnimateRawCallsOnUpdate(t *testing.T) {
 				function () { globalThis.finished = true; });
 		};
 		render(h("column", null, h("text", null, "anim")),
-		       window({ title: "raw", width: 200, height: 120 }));
+		       { title: "raw", width: 200, height: 120 });
 	`)
 	if err != nil {
 		t.Fatalf("EvalVM: %v", err)

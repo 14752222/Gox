@@ -25,3 +25,4 @@
 2026-09-17 | - | 全部完成: P1–P4 四个阶段均已完成并验收, 报告齐全; 流水线结束, 后续延伸项(x11 真机验证/cocoa 落地/图标嵌入等)见 IDLE_TASK_REPORT_P4.md 遗留清单 | 无
 2026-09-18 | - | 全部完成 (重复触发): 无待办阶段, 本次空转 | 无
 2026-09-18 | GUI 补全(非闲时任务) | 批次 H 完成: P3-4 原生对话框 —— gx/dialog 模块(alert/confirm/openFile, 均 async 返回 Promise) + 可选接口 nativeDialogHost + win32 侧 MessageBoxW/GetOpenFileNameW 实现(OPENFILENAMEW Win64 布局固化为回归断言) + 11 个新测试(gfx 顶层 211→222, win32 4 例) + testdata/dialog_native_demo.js + 文档(index §21 / README); 发现并记录"运行时只支持 async function 不支持 async 箭头函数" | 下一批 I: P3-5 菜单栏/右键菜单
+2026-09-19 | 选型落地(非闲时任务) | 启动顺序 #1–#3 完成: <window> 根元素(render 三形态, window() 移除) + onResize 窗口级事件(resize_test 2 例 + resize_demo) + gx/storage(stdlib/storage.go, 3 例 + demo) + 路由 A 模式文档 docs/gui-patterns.md + routing_demo + 全流程交互测试 + 官网组件参考页 components.html(~1500 行) + status §24; 踩坑: 受控 input 的 value 必须传函数(静态求值则每个按键基于旧值)、守卫"放弃"要先清脏标记否则被自己再拦 | #4 createResource/onMount/onCleanup 由并行会话推进中(resource_test 5 例待绿), 落地后补 §25

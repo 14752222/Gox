@@ -10,7 +10,7 @@
 //   回显; 非 Windows 后端 (X11) 暂无 IME。
 // 光标闪烁靠事件泵持续醒来驱动, 这里挂一个空转的 requestAnimationFrame。
 import { createSignal } from "gx/solid";
-import { h, window, render, requestAnimationFrame } from "gx/gfx";
+import { h, render, requestAnimationFrame } from "gx/gfx";
 
 const [name, setName] = createSignal("");
 const [note, setNote] = createSignal("");
@@ -22,30 +22,31 @@ function tick() {
 tick();
 
 render(
-  <column gap={10} padding={16}>
-    <text font={18}>IME input</text>
+  <window title="IME demo" width={360} height={360}>
+    <column gap={10} padding={16}>
+      <text font={18}>IME input</text>
 
-    <input
-      width={280}
-      placeholder="Switch to a Chinese IME and type"
-      value={() => name()}
-      onInput={(e) => {
-        setName(e.value);
-        setCommits((n) => n + 1);
-      }}
-    />
-    <text>{() => `name = "${name()}"`}</text>
+      <input
+        width={280}
+        placeholder="Switch to a Chinese IME and type"
+        value={() => name()}
+        onInput={(e) => {
+          setName(e.value);
+          setCommits((n) => n + 1);
+        }}
+      />
+      <text>{() => `name = "${name()}"`}</text>
 
-    <textarea
-      width={280}
-      height={80}
-      placeholder="multi-line"
-      value={() => note()}
-      onInput={(e) => setNote(e.value)}
-    />
-    <text>{() => `note = "${note()}"`}</text>
+      <textarea
+        width={280}
+        height={80}
+        placeholder="multi-line"
+        value={() => note()}
+        onInput={(e) => setNote(e.value)}
+      />
+      <text>{() => `note = "${note()}"`}</text>
 
-    <text>{() => `ime commits = ${commits()}`}</text>
-  </column>,
-  window({ title: "IME demo", width: 360, height: 360 })
+      <text>{() => `ime commits = ${commits()}`}</text>
+    </column>
+  </window>
 );

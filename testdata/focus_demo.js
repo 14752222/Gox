@@ -4,7 +4,7 @@
 //   - 焦点框画在焦点节点自身盒内 (1px 内缩), 所以局部重绘能干净擦掉旧框;
 //   - 根节点接焦时没有焦点框; 根节点 props.hideFocusRing 可整体关闭。
 import { createSignal } from "gx/solid";
-import { h, window, render } from "gx/gfx";
+import { h, render } from "gx/gfx";
 
 const [focused, setFocused] = createSignal("(none)");
 const [log, setLog] = createSignal("(click a block)");
@@ -22,22 +22,23 @@ const block = (name) => (
 );
 
 render(
-  <column gap={12} padding={16} hideFocusRing={() => !ring()}>
-    <text font={18}>Focus ring</text>
+  <window title="Focus demo" width={420} height={260}>
+    <column gap={12} padding={16} hideFocusRing={() => !ring()}>
+      <text font={18}>Focus ring</text>
 
-    <row gap={12} alignItems="center">
-      {block("Alpha")}
-      {block("Beta")}
-      {block("Gamma")}
-    </row>
+      <row gap={12} alignItems="center">
+        {block("Alpha")}
+        {block("Beta")}
+        {block("Gamma")}
+      </row>
 
-    <text>{() => `focused: ${focused()}`}</text>
-    <text>{() => `log: ${log()}`}</text>
+      <text>{() => `focused: ${focused()}`}</text>
+      <text>{() => `log: ${log()}`}</text>
 
-    <row gap={8} alignItems="center">
-      <checkbox checked={() => ring()} onClick={() => setRing(v => !v)}/>
-      <text>show focus ring</text>
-    </row>
-  </column>,
-  window({ title: "Focus demo", width: 420, height: 260 })
+      <row gap={8} alignItems="center">
+        <checkbox checked={() => ring()} onClick={() => setRing(v => !v)}/>
+        <text>show focus ring</text>
+      </row>
+    </column>
+  </window>
 );

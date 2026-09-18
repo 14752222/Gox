@@ -12,7 +12,7 @@
 //   也是动画帧在驱动光标闪烁)。
 // 中文 IME 组合输入见 P2-7; 选区与拖选 v1 未做。
 import { createSignal } from "gx/solid";
-import { h, window, render, requestAnimationFrame } from "gx/gfx";
+import { h, render, requestAnimationFrame } from "gx/gfx";
 
 const [name, setName] = createSignal("");
 const [enters, setEnters] = createSignal(0);
@@ -23,21 +23,22 @@ function tick() {
 tick();
 
 render(
-  <column gap={10} padding={16}>
-    <text font={18}>Input</text>
+  <window title="Input demo" width={360} height={240}>
+    <column gap={10} padding={16}>
+      <text font={18}>Input</text>
 
-    <input
-      width={260}
-      placeholder="Type your name"
-      value={() => name()}
-      onInput={(e) => setName(e.value)}
-      onKeyDown={(e) => {
-        if (e.key === "Enter") setEnters((n) => n + 1);
-      }}
-    />
+      <input
+        width={260}
+        placeholder="Type your name"
+        value={() => name()}
+        onInput={(e) => setName(e.value)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") setEnters((n) => n + 1);
+        }}
+      />
 
-    <text>{() => `name = "${name()}"`}</text>
-    <text>{() => `enter presses = ${enters()}`}</text>
-  </column>,
-  window({ title: "Input demo", width: 360, height: 240 })
+      <text>{() => `name = "${name()}"`}</text>
+      <text>{() => `enter presses = ${enters()}`}</text>
+    </column>
+  </window>
 );

@@ -325,7 +325,7 @@ func TestFocusBlurOrderFullChain(t *testing.T) {
 	defer SetDefaultFactory(nil)
 
 	v, err := vm.EvalVM(`
-		import { h, window, render } from "gx/gfx";
+		import { h, render } from "gx/gfx";
 		let log = "";
 		const block = (name) => h("button", {
 			onClick: () => 0,
@@ -333,7 +333,7 @@ func TestFocusBlurOrderFullChain(t *testing.T) {
 			onBlur: () => { log = log + "blur:" + name + ";"; },
 		}, name);
 		const ui = h("column", {gap: 10, padding: 12}, block("A"), block("B"));
-		render(ui, window({title: "T", width: 300, height: 160}));
+		render(ui, {title: "T", width: 300, height: 160});
 	`)
 	if err != nil {
 		t.Fatalf("EvalVM: %v", err)
@@ -383,7 +383,7 @@ func TestMouseAndKeyEventsFullChain(t *testing.T) {
 	defer SetDefaultFactory(nil)
 
 	v, err := vm.EvalVM(`
-		import { h, window, render } from "gx/gfx";
+		import { h, render } from "gx/gfx";
 		let move = "", wheel = "", ctx = "", down = "", up = "", focused = "", blurred = "";
 		const target = h("button", {
 			onClick: () => 0,
@@ -396,7 +396,7 @@ func TestMouseAndKeyEventsFullChain(t *testing.T) {
 			onBlur: () => { blurred = "out"; },
 		}, "T");
 		const ui = h("column", null, target, h("rect", {width: 40, height: 20, onClick: () => 0}));
-		render(ui, window({title: "T", width: 400, height: 300}));
+		render(ui, {title: "T", width: 400, height: 300});
 	`)
 	if err != nil {
 		t.Fatalf("EvalVM: %v", err)
@@ -470,7 +470,7 @@ func TestEventHandlerErrorsDoNotBreakLoop(t *testing.T) {
 	defer SetDefaultFactory(nil)
 
 	v, err := vm.EvalVM(`
-		import { h, window, render } from "gx/gfx";
+		import { h, render } from "gx/gfx";
 		let seen = 0;
 		const ui = h("column", null,
 			h("button", {
@@ -478,7 +478,7 @@ func TestEventHandlerErrorsDoNotBreakLoop(t *testing.T) {
 				onMouseMove: () => { throw new Error("boom"); },
 				onWheel: () => { seen = seen + 1; },
 			}, "T"));
-		render(ui, window({title: "T", width: 400, height: 300}));
+		render(ui, {title: "T", width: 400, height: 300});
 	`)
 	if err != nil {
 		t.Fatalf("EvalVM: %v", err)

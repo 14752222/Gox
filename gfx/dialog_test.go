@@ -230,10 +230,10 @@ func TestAlertResolvesPromise(t *testing.T) {
 
 	v, err := vm.EvalVM(`
 		import { alert, confirm, openFile } from "gx/dialog";
-		import { h, window, render } from "gx/gfx";
+		import { h, render } from "gx/gfx";
 		globalThis.log = [];
 		render(h("rect", {width: 10, height: 10}),
-			window({title: "T", width: 200, height: 150}));
+			{title: "T", width: 200, height: 150});
 
 		alert("hello", "标题").then(() => log.push("alert-done"));
 		log.push("after-call");
@@ -286,10 +286,10 @@ func TestConfirmResolvesBoolean(t *testing.T) {
 
 			v, err := vm.EvalVM(`
 				import { confirm } from "gx/dialog";
-				import { h, window, render } from "gx/gfx";
+				import { h, render } from "gx/gfx";
 				globalThis.got = "pending";
 				render(h("rect", {width: 10, height: 10}),
-					window({title: "T", width: 200, height: 150}));
+					{title: "T", width: 200, height: 150});
 				confirm("sure?").then(v => { got = v; });
 			`)
 			if err != nil {
@@ -334,10 +334,10 @@ func TestOpenFileResolvesPathOrNull(t *testing.T) {
 
 			v, err := vm.EvalVM(`
 				import { openFile } from "gx/dialog";
-				import { h, window, render } from "gx/gfx";
+				import { h, render } from "gx/gfx";
 				globalThis.got = "pending";
 				render(h("rect", {width: 10, height: 10}),
-					window({title: "T", width: 200, height: 150}));
+					{title: "T", width: 200, height: 150});
 				openFile({title: "打开", filter: "文本文件|*.txt"}).then(p => { got = String(p); });
 			`)
 			if err != nil {
@@ -374,10 +374,10 @@ func TestDialogKeepsEventLoopAlive(t *testing.T) {
 
 	v, err := vm.EvalVM(`
 		import { alert } from "gx/dialog";
-		import { h, window, render } from "gx/gfx";
+		import { h, render } from "gx/gfx";
 		globalThis.done = false;
 		render(h("rect", {width: 10, height: 10}),
-			window({title: "T", width: 200, height: 150}));
+			{title: "T", width: 200, height: 150});
 		alert("x").then(() => { done = true; });
 	`)
 	if err != nil {

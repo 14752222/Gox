@@ -25,6 +25,11 @@ type GuiNode struct {
 	// 递归调用; 条件渲染 (P1-2) 的插槽子节点会走这条路径)
 	effects []object.Value
 
+	// cleanups 记录响应式子树 (slot) 各代登记的 onCleanup 回调 (gx/solid)。
+	// 只会挂在 slot 节点上: 重建时由 wireReactiveChild 在拆树前执行,
+	// 整树销毁时由 disposeNode 执行。见 object/wiring.go 的机制说明。
+	cleanups []object.Value
+
 	// 运行时交互状态: 渲染层专有, 不来自 props, 也不暴露给脚本。
 	// hovered/pressed 由 Pump 按鼠标事件维护 (P1-4), 绘制时读。
 	hovered bool
@@ -149,6 +154,9 @@ var knownTags = map[string]struct{}{
 	// P3-5 菜单栏与右键菜单 (menu-popup / menu-item 由 Go 侧构造, 脚本写不到)
 	"menubar": {}, "menu": {}, "menuitem": {},
 	"menu-popup": {}, "menu-item": {},
+	// 窗口根元素: 只在 render() 的根位置有意义 (拆包成窗口配置, 不进树),
+	// 登记在这里是为了让 h() 不对它的正常用法报未知标签警告
+	"window": {},
 }
 
 var (
@@ -216,8 +224,12 @@ func JSBuiltinH(args ...object.Value) object.Value {
 	}
 
 	// children
-	for _, c := range args[2:] {
-		node.wireChild(c)
+	// props 参数可省 (h("column") 与 h("column", null) 等价): 只有 tag 时
+	// args[2:] 会越界, JSX 不会生成这种调用, 但手拼脚本会。
+	if len(args) > 2 {
+		for _, c := range args[2:] {
+			node.wireChild(c)
+		}
 	}
 	// 需要内置交互的标签在这里补上 Go 侧处理器 (select 的展开、菜单的展开)。
 	// 放在 props/children 都接好之后: 包装脚本自己的 onClick 时要能读到它。
@@ -379,8 +391,14 @@ func (n *GuiNode) wireReactiveChild(getter object.Value) {
 		textNode *GuiNode // 上次挂的文本节点 (标量结果)
 	)
 	dispose := runEffect(func() object.Value {
+		// 接线作用域: getter 求值期间 (组件体在这里跑) 调用的 onMount/onCleanup
+		// 登记到 sc, 归属"这一代"子树。见 object/wiring.go。
+		sc := object.PushWiringScope()
 		v := object.CallFunction(getter, nil)
 		if node, ok := v.(*GuiNode); ok && node == mounted {
+			// 同一元素对象: 组件体没有重跑 (vnode 在闭包外创建), 本次没有
+			// 新登记 —— 出栈即丢弃, 语义正确。
+			object.PopWiringScope()
 			return object.UndefinedSingleton
 		}
 		if text, ok := scalarString(v); ok && textNode != nil &&
@@ -389,8 +407,12 @@ func (n *GuiNode) wireReactiveChild(getter object.Value) {
 				textNode.Text = text
 				markNodeDirty(textNode)
 			}
+			object.PopWiringScope()
 			return object.UndefinedSingleton
 		}
+		// 先跑上一代的 onCleanup 再拆树: 清理回调可能还要读一眼即将销毁的
+		// 子树 (顺序反过来它看到的就是空树)。
+		runCleanups(slot)
 		clearSlot(slot)
 		mounted, textNode = nil, nil
 		mountValue(slot, v)
@@ -401,11 +423,36 @@ func (n *GuiNode) wireReactiveChild(getter object.Value) {
 			textNode = slot.Children[0]
 		}
 		markNodeDirty(slot)
+		object.PopWiringScope()
+		// 出栈后消费登记表: Mounts 立即执行 (子树已挂上); Cleanups 存进
+		// slot, 等下一次重建或整树销毁。
+		slot.cleanups = append(slot.cleanups, sc.Cleanups...)
+		for _, fn := range sc.Mounts {
+			object.CallFunction(fn, nil)
+			if err := takeCallbackErr(); err != nil {
+				fmt.Fprintf(os.Stderr, "gfx: onMount error: %v\n", err)
+			}
+		}
 		return object.UndefinedSingleton
 	})
 	if dispose != nil {
 		slot.effects = append(slot.effects, dispose)
 	}
+}
+
+// runCleanups 逆序执行并清空节点登记的 onCleanup 回调 (后注册的先执行,
+// 与栈式解构一致), 异常打日志不中断。
+func runCleanups(n *GuiNode) {
+	if len(n.cleanups) == 0 {
+		return
+	}
+	for i := len(n.cleanups) - 1; i >= 0; i-- {
+		object.CallFunction(n.cleanups[i], nil)
+		if err := takeCallbackErr(); err != nil {
+			fmt.Fprintf(os.Stderr, "gfx: onCleanup error: %v\n", err)
+		}
+	}
+	n.cleanups = nil
 }
 
 // isElement 报告求值结果是否是单个元素 (GuiNode)。
@@ -477,6 +524,9 @@ func disposeNode(n *GuiNode) {
 		}
 		n.effects = nil
 	}
+	// onCleanup (gx/solid) 与 effect dispose 同一时刻执行: 子树离开树了,
+	// 组件登记的生命周期清理就该跑 (slot 上的登记见 wireReactiveChild)。
+	runCleanups(n)
 	if n.Parent != nil {
 		n.Parent.removeChild(n)
 		n.Parent = nil

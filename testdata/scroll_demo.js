@@ -7,7 +7,7 @@
 //   - 溢出的内容既画不出来也点不中 (裁剪与命中用同一个视口);
 //   - 容器不给 height 时缺省 200; 内容不足一屏则不出滚动条。
 import { createSignal } from "gx/solid";
-import { h, window, render } from "gx/gfx";
+import { h, render } from "gx/gfx";
 
 const ROWS = 20;
 const ROW_H = 36;
@@ -26,14 +26,15 @@ for (let i = 0; i < ROWS; i++) {
 }
 
 render(
-  <column gap={8} padding={12}>
-    <text font={16}>Scroll</text>
+  <window title="Scroll demo" width={320} height={240}>
+    <column gap={8} padding={12}>
+      <text font={16}>Scroll</text>
 
-    <scroll width={240} height={120} onWheel={() => setOverscroll((n) => n + 1)}>
-      {rows}
-    </scroll>
+      <scroll width={240} height={120} onWheel={() => setOverscroll((n) => n + 1)}>
+        {rows}
+      </scroll>
 
-    <text>{() => `overscroll events = ${overscroll()}`}</text>
-  </column>,
-  window({ title: "Scroll demo", width: 320, height: 240 })
+      <text>{() => `overscroll events = ${overscroll()}`}</text>
+    </column>
+  </window>
 );

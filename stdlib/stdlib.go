@@ -140,6 +140,9 @@ func SetupGlobals() *runtime.Environment {
 	// ===== 响应式 (SolidJS 风格, 内置模块 gx/solid) =====
 	setupSolid(env)
 
+	// ===== 应用级 kv 持久化 (内置模块 gx/storage, 设备能力 API 方案 A) =====
+	setupStorage(env)
+
 	return env
 }
 

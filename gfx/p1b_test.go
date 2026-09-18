@@ -92,14 +92,14 @@ func jsStr(s string) object.Value             { return object.NewString(s) }
 func TestConditionalRenderSwitchesAndDisposes(t *testing.T) {
 	v, root, _ := evalForUI(t, `
 		import { createSignal } from "gx/solid";
-		import { h, window, render } from "gx/gfx";
+		import { h, render } from "gx/gfx";
 		const [show, setShow] = createSignal(true);
 		const [w, setW] = createSignal(1);
 		// 分支里的元素带自己的响应式 prop: 若旧子树没被 dispose,
 		// 改 w 仍会写回这个已经离树的节点。
 		const branch = () => h("rect", {width: () => w() * 10, height: 6, background: "#c0392b"});
 		const ui = h("column", {gap: 4}, () => (show() ? branch() : null));
-		render(ui, window({title: "T", width: 200, height: 120}));
+		render(ui, {title: "T", width: 200, height: 120});
 	`)
 
 	slot := slotOf(t, root)
@@ -155,11 +155,11 @@ func TestConditionalRenderSwitchesAndDisposes(t *testing.T) {
 func TestListRenderArraySignal(t *testing.T) {
 	v, root, _ := evalForUI(t, `
 		import { createSignal } from "gx/solid";
-		import { h, window, render } from "gx/gfx";
+		import { h, render } from "gx/gfx";
 		const [items, setItems] = createSignal(["a", "b"]);
 		const item = (t) => h("text", null, t);
 		const ui = h("column", {gap: 4}, () => items().map(item));
-		render(ui, window({title: "T", width: 300, height: 200}));
+		render(ui, {title: "T", width: 300, height: 200});
 	`)
 
 	slot := slotOf(t, root)
@@ -213,10 +213,10 @@ func TestListRenderArraySignal(t *testing.T) {
 func TestListRenderNestedAndScalarElements(t *testing.T) {
 	v, root, _ := evalForUI(t, `
 		import { createSignal } from "gx/solid";
-		import { h, window, render } from "gx/gfx";
+		import { h, render } from "gx/gfx";
 		const [items, setItems] = createSignal(["a", "b"]);
 		const ui = h("column", null, () => items());
-		render(ui, window({title: "T", width: 300, height: 200}));
+		render(ui, {title: "T", width: 300, height: 200});
 	`)
 
 	slot := slotOf(t, root)
@@ -255,13 +255,13 @@ func TestListRenderNestedAndScalarElements(t *testing.T) {
 func TestNestedReactiveTwoLevels(t *testing.T) {
 	v, root, _ := evalForUI(t, `
 		import { createSignal } from "gx/solid";
-		import { h, window, render } from "gx/gfx";
+		import { h, render } from "gx/gfx";
 		const [outer, setOuter] = createSignal(2);
 		const [inner, setInner] = createSignal(3);
 		// 外层 getter 读 outer 决定挂什么 (因此会重建), 内层函数读两个信号
 		const ui = h("column", null, () => h("row", {height: outer()},
 			h("rect", {width: () => inner() * outer(), height: 5, background: "#27ae60"})));
-		render(ui, window({title: "T", width: 300, height: 200}));
+		render(ui, {title: "T", width: 300, height: 200});
 	`)
 
 	row := slotOf(t, root).Children[0]
@@ -377,12 +377,12 @@ func TestSlotLayoutTransparency(t *testing.T) {
 func TestConditionalRenderPixels(t *testing.T) {
 	v, root, a := evalForUI(t, `
 		import { createSignal } from "gx/solid";
-		import { h, window, render } from "gx/gfx";
+		import { h, render } from "gx/gfx";
 		const [flag, setFlag] = createSignal(true);
 		const ui = h("column", null, () => (flag()
 			? h("rect", {width: 120, height: 40, background: "#c0392b"})
 			: h("rect", {width: 120, height: 40, background: "#27ae60"})));
-		render(ui, window({title: "T", width: 200, height: 100}));
+		render(ui, {title: "T", width: 200, height: 100});
 	`)
 	fake := a.surface.(*fakeSurface)
 

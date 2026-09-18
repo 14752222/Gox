@@ -89,7 +89,7 @@ func sliderApp(t *testing.T, extra string) (*vm.VM, *GuiNode, *app, *GuiNode) {
 	t.Helper()
 	v, root, a := evalForUI(t, `
 		import { createSignal } from "gx/solid";
-		import { h, window, render } from "gx/gfx";
+		import { h, render } from "gx/gfx";
 		const [val, setVal] = createSignal(0);
 		const seen = [];
 		const s = h("slider", {
@@ -98,7 +98,7 @@ func sliderApp(t *testing.T, extra string) (*vm.VM, *GuiNode, *app, *GuiNode) {
 			value: () => val(),
 			onInput: (e) => { seen.push(e.value); setVal(e.value); },
 		});
-		render(h("column", null, s), window({ title: "slider", width: 300, height: 120 }));
+		render(h("column", null, s), { title: "slider", width: 300, height: 120 });
 		`+extra)
 	sl := findFirst(root, "slider")
 	if sl == nil {
@@ -332,13 +332,13 @@ func TestSliderClickJump(t *testing.T) {
 //   - 松手后再按同一位置仍会派发 (endDrag 复位了缓存)。
 func TestSliderDropBackNoWriteBack(t *testing.T) {
 	v, root, a := evalForUI(t, `
-		import { h, window, render } from "gx/gfx";
+		import { h, render } from "gx/gfx";
 		const seen = [];
 		const s = h("slider", {
 			width: 160, height: 24, min: 0, max: 100, step: 1, value: 0,
 			onInput: (e) => { seen.push(e.value); },   // 刻意不回写
 		});
-		render(h("column", null, s), window({ title: "slider", width: 300, height: 120 }));
+		render(h("column", null, s), { title: "slider", width: 300, height: 120 });
 	`)
 	sl := findFirst(root, "slider")
 
@@ -366,10 +366,10 @@ func TestSliderDropBackNoWriteBack(t *testing.T) {
 // 且拖动期间鼠标划过别的控件不给它们加悬停高亮。
 func TestSliderNoHoverDuringDrag(t *testing.T) {
 	v, root, a := evalForUI(t, `
-		import { h, window, render } from "gx/gfx";
+		import { h, render } from "gx/gfx";
 		const btn = h("button", {width: 100, height: 30}, "btn");
 		const s = h("slider", {width: 160, height: 24, min: 0, max: 100, value: 0});
-		render(h("column", null, btn, s), window({ title: "slider", width: 300, height: 120 }));
+		render(h("column", null, btn, s), { title: "slider", width: 300, height: 120 });
 	`)
 	sl := findFirst(root, "slider")
 	btn := findFirst(root, "button")

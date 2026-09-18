@@ -306,12 +306,12 @@ func TestButtonClickAndDisabled(t *testing.T) {
 	defer SetDefaultFactory(nil)
 
 	v, err := vm.EvalVM(`
-		import { h, window, render } from "gx/gfx";
+		import { h, render } from "gx/gfx";
 		let clicks = 0;
 		const ui = h("column", {gap: 8, padding: 16},
 			h("button", {onClick: () => { clicks = clicks + 1; }}, "加一"),
 			h("button", {disabled: true, onClick: () => { clicks = clicks + 100; }}, "禁用"));
-		render(ui, window({title: "T", width: 400, height: 300}));
+		render(ui, {title: "T", width: 400, height: 300});
 	`)
 	if err != nil {
 		t.Fatalf("EvalVM: %v", err)
@@ -559,6 +559,8 @@ func TestExampleScriptsMount(t *testing.T) {
 		"transition_demo.js",             // P3-2 过渡动画 (首帧应静止: 见断言)
 		"dialog_native_demo.js",          // P3-4 原生对话框 (测试注入假后端应答)
 		"menu_demo.js",                   // P3-5 菜单栏 / 右键菜单 / 快捷键
+		"resize_demo.js",                 // 屏幕 A: onResize + useWindowSize 模式
+		"routing_demo.js",                // 路由 A: signal 切页 (交互全流程见 routing_test.go)
 		"counter_demo.js", "gui_demo.js", // 既有演示 (布局改动后回归)
 		// 注: image_demo.js 不在本列表 —— 它的 src 是相对文件路径, 必须从仓库根
 		// 目录运行 (而本用例的 cwd 是 gfx/)。由 TestImageDemoScript 专职覆盖。
@@ -1095,6 +1097,32 @@ func checkDemoTree(t *testing.T, name string, root *GuiNode, fake *fakeSurface) 
 		}
 		if animRunning {
 			t.Fatalf("首帧不该有动画定时器在跑")
+		}
+	case "resize_demo.js":
+		// 屏幕 A 演示初始宽布局: win signal 初值 520 (与窗口配置一致, 与假
+		// Surface 的固定 400 宽无关 —— 断言的是响应式管线, 不是后端)。
+		if !textContainsAny(root, "wide layout") {
+			t.Fatalf("初始 (520px) 应是宽布局")
+		}
+		if !textContainsAny(root, "520 x 360") {
+			t.Fatalf("尺寸文本应显示初值 520 x 360")
+		}
+		// 底部进度条宽度 = max(60, 520-300) = 220, 靠 signal 驱动
+		bar := findFirst(root, "rect")
+		if bar == nil || bar.Box.W != 220 || bar.Box.H != 10 {
+			t.Fatalf("跟随窗口的进度条 = %v, want 220x10", bar)
+		}
+	case "routing_demo.js":
+		// 路由 A 演示初始 home: 切页即卸载 ⇒ editor 的 input 不在树上,
+		// 导航两个按钮 (交互全流程见 TestRoutingDemoScript)。
+		if !textContainsAny(root, "route: home") {
+			t.Fatalf("初始应停在 home")
+		}
+		if inp := findFirst(root, "input"); inp != nil {
+			t.Fatalf("home 页不该挂载 editor 的 input")
+		}
+		if n := countTag(root, "button"); n != 2 {
+			t.Fatalf("导航 button 数量 = %d, want 2", n)
 		}
 	}
 }

@@ -376,20 +376,20 @@ func TestMultiWindowFullChain(t *testing.T) {
 	t.Cleanup(func() { SetDefaultFactory(nil) })
 
 	v, err := vm.EvalVM(`
-		import { h, window, render } from "gx/gfx";
+		import { h, render } from "gx/gfx";
 		let clicksA = 0;
 		let clicksB = 0;
 		const wA = render(
 			h("column", null,
 				h("button", { onClick: () => { clicksA++; } }, "A")
 			),
-			window({ title: "A", width: 300, height: 200 })
+			{ title: "A", width: 300, height: 200 }
 		);
 		const wB = render(
 			h("column", null,
 				h("button", { onClick: () => { clicksB++; } }, "B")
 			),
-			window({ title: "B", width: 300, height: 200 })
+			{ title: "B", width: 300, height: 200 }
 		);
 	`)
 	if err != nil {
@@ -683,4 +683,142 @@ func closeWindowViaScript(t *testing.T, v *vm.VM, name string) {
 	}
 	callScriptFn(fn)
 	DrainTasks() // 让 Post 排队的销毁动作落地
+}
+
+// ===== render 的窗口配置形态 =====
+//
+// render 有三种合法形态 (见 jsRender): <window> 根元素 / 普通配置对象 / 全默认。
+// 这里验"配置真的到达建窗工厂"与各错误分支返回 Error 而不是 panic。
+
+// cfgFactory 记录每次 Create 收到的窗口配置 (断言 render 把配置传对了),
+// 并让假 Surface 的尺寸跟随配置 —— 布局结果与窗口配置一致才算数。
+type cfgFactory struct{ cfgs []WindowConfig }
+
+func (f *cfgFactory) Create(cfg WindowConfig) (Surface, error) {
+	f.cfgs = append(f.cfgs, cfg)
+	s := newFakeSurface()
+	s.w, s.h = cfg.Width, cfg.Height
+	return s, nil
+}
+
+// evalRender 在真 VM 里跑一段 render 脚本 (走完整 JSX → h → render 链路),
+// 返回 VM 与录制了建窗配置的工厂。
+func evalRender(t *testing.T, src string) (*vm.VM, *cfgFactory) {
+	t.Helper()
+	object.GlobalScheduler().ClearAll()
+	t.Cleanup(func() { object.GlobalScheduler().ClearAll() })
+	factory := &cfgFactory{}
+	SetDefaultFactory(factory)
+	t.Cleanup(func() {
+		SetDefaultFactory(nil)
+		for _, a := range appsSnapshot() {
+			a.close()
+		}
+	})
+	v, err := vm.EvalVM(src)
+	if err != nil {
+		t.Fatalf("EvalVM: %v", err)
+	}
+	return v, factory
+}
+
+// TestRenderWindowElementCarriesConfig: JSX 里 <window> 作根 —— 配置从它的
+// props 读出, 布局根换成它的子元素, window 本身不进树。
+func TestRenderWindowElementCarriesConfig(t *testing.T) {
+	v, factory := evalRender(t, `
+		import { h, render } from "gx/gfx";
+		const w = render(
+			<window title="W" width={220} height={460}>
+				<column gap={8}><button>A</button></column>
+			</window>
+		);
+	`)
+
+	if WindowCount() != 1 {
+		t.Fatalf("应挂载 1 个窗口, got %d", WindowCount())
+	}
+	if len(factory.cfgs) != 1 {
+		t.Fatalf("建窗应发生 1 次, got %d", len(factory.cfgs))
+	}
+	if got := factory.cfgs[0]; got != (WindowConfig{Title: "W", Width: 220, Height: 460}) {
+		t.Fatalf("窗口配置 = %+v, want {W 220 460}", got)
+	}
+	appMu.Lock()
+	root := activeApp.root
+	appMu.Unlock()
+	if root.Tag != "column" {
+		t.Fatalf("布局根应是 column (<window> 已拆包), got %s", root.Tag)
+	}
+	for _, n := range allNodes(root) {
+		if n.Tag == "window" {
+			t.Fatalf("<window> 不该出现在元素树里")
+		}
+	}
+	// 句柄语义不受形态影响: 返回对象且 close 能关掉它
+	if _, ok := globalVal(t, v, "w").(*object.Object); !ok {
+		t.Fatalf("render 应返回窗口句柄对象, got %T", globalVal(t, v, "w"))
+	}
+	closeWindowViaScript(t, v, "w")
+	if WindowCount() != 0 {
+		t.Fatalf("close 后窗口数 = %d, want 0", WindowCount())
+	}
+}
+
+// TestRenderConfigObjectForm: h() 手拼树的形态 —— 第二参数是普通对象。
+func TestRenderConfigObjectForm(t *testing.T) {
+	_, factory := evalRender(t, `
+		import { h, render } from "gx/gfx";
+		render(h("column", null, h("button", null, "A")), { title: "T", width: 320, height: 200 });
+	`)
+	if got := factory.cfgs[0]; got != (WindowConfig{Title: "T", Width: 320, Height: 200}) {
+		t.Fatalf("窗口配置 = %+v, want {T 320 200}", got)
+	}
+}
+
+// TestRenderDefaultsWhenNoConfig: 配置整体省略 → Gox 400x300。
+func TestRenderDefaultsWhenNoConfig(t *testing.T) {
+	_, factory := evalRender(t, `
+		import { h, render } from "gx/gfx";
+		render(h("column"));
+	`)
+	if got := factory.cfgs[0]; got != (WindowConfig{Title: "Gox", Width: 400, Height: 300}) {
+		t.Fatalf("缺省配置 = %+v, want {Gox 400 300}", got)
+	}
+}
+
+// TestRenderFormErrors: 各错误分支返回 Error 值 (而不是 panic / 静默挂载)。
+func TestRenderFormErrors(t *testing.T) {
+	fake := newFakeSurface()
+	SetDefaultFactory(&fakeFactory{fake})
+	t.Cleanup(func() { SetDefaultFactory(nil) })
+
+	col := mkColumn(mkButton("x"))
+	winOf := func(children ...*GuiNode) *GuiNode {
+		n := &GuiNode{Tag: "window", Props: map[string]object.Value{}}
+		for _, c := range children {
+			c.Parent = n
+			n.Children = append(n.Children, c)
+		}
+		return n
+	}
+	cases := []struct {
+		name string
+		args []object.Value
+	}{
+		{"window 无子元素", []object.Value{winOf()}},
+		{"window 两个子元素", []object.Value{winOf(col, mkColumn(mkButton("y")))}},
+		{"window 根又带配置对象", []object.Value{winOf(col), object.NewObject()}},
+		{"第二个参数不是对象", []object.Value{col, object.NewString("x")}},
+		{"嵌套 window", []object.Value{winOf(winOf(col))}},
+		{"第一个参数不是元素", []object.Value{object.NewString("x")}},
+		{"无参数", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := jsRender(tc.args...)
+			if _, ok := got.(*object.Error); !ok {
+				t.Fatalf("应返回 Error, 实际 %s (%s)", got.Type(), got.Inspect())
+			}
+		})
+	}
 }

@@ -357,7 +357,7 @@ func TestCanvasSignalRedraw(t *testing.T) {
 
 	v, root, fake := evalCanvasUI(t, `
 		import { createSignal } from "gx/solid";
-		import { h, window, render } from "gx/gfx";
+		import { h, render } from "gx/gfx";
 		const [on, setOn] = createSignal(false);
 		render(
 			h("column", null,
@@ -368,7 +368,7 @@ func TestCanvasSignalRedraw(t *testing.T) {
 					},
 				})
 			),
-			window({ title: "canvas", width: 200, height: 120 })
+			{ title: "canvas", width: 200, height: 120 }
 		);
 	`)
 
@@ -427,7 +427,7 @@ func TestCanvasNoDrawDepsNoSpin(t *testing.T) {
 
 	v, root, fake := evalCanvasUI(t, `
 		import { createSignal } from "gx/solid";
-		import { h, window, render } from "gx/gfx";
+		import { h, render } from "gx/gfx";
 		const [on, setOn] = createSignal(false);
 		let plain = 0;   // 普通变量: onDraw 读它不会产生依赖
 		const bump = () => { plain = 1; setOn(true); };
@@ -438,7 +438,7 @@ func TestCanvasNoDrawDepsNoSpin(t *testing.T) {
 				h("canvas", {width: 20, height: 20,
 					onDraw: (ctx) => { ctx.fillRect(0, 0, 20, 20, plain ? "#2ecc71" : "#f0f0f0"); }})
 			),
-			window({ title: "canvas", width: 200, height: 120 })
+			{ title: "canvas", width: 200, height: 120 }
 		);
 	`)
 

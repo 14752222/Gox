@@ -248,7 +248,7 @@ func imeApp(t *testing.T, field string) (*vm.VM, *GuiNode, *app) {
 	t.Cleanup(func() { object.GlobalScheduler().ClearAll() })
 	v, root, a := evalForUI(t, `
 		import { createSignal } from "gx/solid";
-		import { h, window, render } from "gx/gfx";
+		import { h, render } from "gx/gfx";
 		const [text, setText] = createSignal("");
 		const seen = [];
 		globalThis.seen = seen;
@@ -257,7 +257,7 @@ func imeApp(t *testing.T, field string) (*vm.VM, *GuiNode, *app) {
 			value: () => text(),
 			onInput: (e) => { seen.push(e.value); setText(e.value); },
 		});
-		render(h("column", null, f), window({ title: "ime", width: 300, height: 120 }));
+		render(h("column", null, f), { title: "ime", width: 300, height: 120 });
 	`)
 	return v, root, a
 }

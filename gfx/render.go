@@ -16,9 +16,17 @@ import (
 //
 // JS 侧 API:
 //
-//	import { h, window, render, requestAnimationFrame,
+//	import { h, render, requestAnimationFrame,
 //	         clipboardReadText, clipboardWriteText, animate } from "gx/gfx";
-//	render(<column gap={8}>...</column>, window({title, width, height}));
+//	render(
+//	  <window title="Demo" width={320} height={240}>
+//	    <column gap={8}>...</column>
+//	  </window>
+//	);
+//
+// 窗口配置的写法: JSX 里 <window> 直接作根元素, title/width/height 写在它
+// 的属性上; h() 手拼树时第二个参数传普通对象 {title, width, height}, 整个
+// 省略则用缺省 (Gox, 400x300)。多窗口 = 多次 render, 每次返回窗口句柄。
 //
 // render() 挂载元素树并创建窗口后立即返回; 阻塞式的消息泵由宿主入口经
 // vm.RunTimersWithPump(gfx.Pump) 驱动 (见 main.go)。
@@ -413,6 +421,19 @@ func (a *app) dispatchEvent(ev Event) {
 		a.needDraw = true
 		a.fullDirty = true
 		a.mu.Unlock()
+		// 屏幕适配 A (2026-09-19 拍板): resize 是**窗口级**事件, 派发给根节点
+		// 链上的 onResize({width, height}) —— 不走焦点链 (焦点在哪个输入框上
+		// 与"窗口变了多大"无关), 直接从布局根找处理器。载荷字段名与
+		// getSystemInfo (设备 API 方案 B) 统一为 width/height, 两处词汇一次定好。
+		// 脚本侧包成 signal + 断点 memo 的模式见 docs/gui-patterns.md。
+		if root := a.rootNode(); root != nil {
+			if h := handlerInChain(root, "onResize"); h != nil {
+				arg := object.NewObject()
+				arg.SetProperty("width", object.NewNumber(float64(ev.W)))
+				arg.SetProperty("height", object.NewNumber(float64(ev.H)))
+				a.callHandler(h, "onResize", arg)
+			}
+		}
 	case EventIMECommit:
 		// P2-7: 整批插入到当前焦点的编辑框 (焦点不可编辑时内部丢弃)
 		a.insertIMECommit(ev.Text)
@@ -1231,7 +1252,6 @@ func init() {
 	object.RegisterBuiltinModule("gx/gfx", func() map[string]object.Value {
 		return map[string]object.Value{
 			"h":                     object.NewBuiltin("h", JSBuiltinH),
-			"window":                object.NewBuiltin("window", jsWindow),
 			"render":                object.NewBuiltin("render", jsRender),
 			"requestAnimationFrame": object.NewBuiltin("requestAnimationFrame", jsRAF),
 			// P3-3 剪贴板 (同步: 脚本与窗口同线程, 直接调原生 API 即为正确线程)
@@ -1264,53 +1284,103 @@ func jsRAF(args ...object.Value) object.Value {
 	return object.NewNumber(float64(id))
 }
 
-// jsWindow 包装窗口配置对象: window({title, width, height}) 原样返回,
-// 真正建窗在 render() (必须在 GUI 线程)。
-func jsWindow(args ...object.Value) object.Value {
-	if len(args) > 0 {
-		if _, ok := args[0].(*object.Object); ok {
-			return args[0]
-		}
-	}
-	return object.NewTypeError("window: config object required, e.g. window({title, width, height})")
-}
-
-// jsRender 挂载元素树并创建窗口。
+// jsRender 挂载元素树并创建窗口, 接受三种形态:
+//
+//	render(<window title="T" width={W} height={H}><column .../></window>); // JSX: 窗口配置即根元素
+//	render(tree, { title: "T", width: W, height: H });                    // h() 手拼: 普通配置对象
+//	render(tree);                                                          // 全默认 (Gox 400x300)
+//
+// <window> 不是组件: render 在挂载前把它"拆包" —— title/width/height 从它的
+// props 读出当窗口配置, 布局根换成它唯一的子元素。它本身不进树、不参与
+// 布局与绘制, 所以任何窗口级配置 (未来的 resizable 等) 都应该写在这里,
+// 而不是混进布局根的 props。
 func jsRender(args ...object.Value) object.Value {
-	if len(args) < 2 {
-		return object.NewTypeError("render: (vnode, windowConfig) required")
+	if len(args) == 0 || len(args) > 2 {
+		return object.NewTypeError("render: (element[, config]) required")
 	}
 	root, ok := args[0].(*GuiNode)
 	if !ok {
 		return object.NewTypeError("render: first argument must be an element (from h/JSX)")
 	}
-	cfgVal, ok := args[1].(*object.Object)
-	if !ok {
-		return object.NewTypeError("render: second argument must be window({...})")
+
+	// 形态 1: <window> 根元素 —— 配置与内容写在一起
+	if root.Tag == "window" {
+		if len(args) > 1 {
+			return object.NewTypeError("render: <window> element already carries config; drop the second argument")
+		}
+		if len(root.Children) != 1 {
+			return object.NewTypeError("render: <window> needs exactly one child element, got %d", len(root.Children))
+		}
+		// 拆包: 布局根换成唯一子元素, 并断开它对 <window> 的 Parent 引用 ——
+		// wireChild 已经把 Parent 指到了 window 节点上, 而它不参与布局,
+		// 任何"沿 Parent 走到树顶"的逻辑 (appOfNode / 弹层贴边) 都必须落在
+		// 挂载根上, 否则会拿到一个从未布局过的 0 尺寸节点。
+		child := root.Children[0]
+		child.Parent = nil
+		root.Children = nil
+		return mountJS(child, windowConfigFromProps(root))
 	}
 
-	cfg := WindowConfig{Title: "Gox", Width: 400, Height: 300}
-	if v, ok := cfgVal.GetProperty("title"); ok {
+	// 形态 2/3: 普通根元素 + 可选配置对象
+	cfg := defaultWindowConfig()
+	if len(args) == 2 {
+		cfgVal, ok := args[1].(*object.Object)
+		if !ok {
+			return object.NewTypeError("render: second argument must be a config object, e.g. {title, width, height}")
+		}
+		applyWindowConfig(&cfg, cfgVal)
+	}
+	return mountJS(root, cfg)
+}
+
+// defaultWindowConfig 是 render 的缺省窗口配置。
+func defaultWindowConfig() WindowConfig {
+	return WindowConfig{Title: "Gox", Width: 400, Height: 300}
+}
+
+// applyWindowConfig 从普通对象读 title/width/height (与字段级容错口径一致:
+// 类型不符的项静默落回缺省, "title 写成数字"这类笔误不至于让窗口开不出来)。
+func applyWindowConfig(cfg *WindowConfig, o *object.Object) {
+	if v, ok := o.GetProperty("title"); ok {
 		if s, ok := v.(*object.String); ok {
 			cfg.Title = s.Value
 		}
 	}
-	if v, ok := cfgVal.GetProperty("width"); ok {
+	if v, ok := o.GetProperty("width"); ok {
 		if n, ok := v.(*object.Number); ok && n.Value > 0 {
 			cfg.Width = int(n.Value)
 		}
 	}
-	if v, ok := cfgVal.GetProperty("height"); ok {
+	if v, ok := o.GetProperty("height"); ok {
 		if n, ok := v.(*object.Number); ok && n.Value > 0 {
 			cfg.Height = int(n.Value)
 		}
 	}
+}
 
-	if win, err := Mount(root, cfg); err != nil {
-		return object.NewErrorWithName("Error", "gfx: "+err.Error())
-	} else {
-		return win.jsObject()
+// windowConfigFromProps 从 <window> 元素的 props 读窗口配置 (容错口径同
+// applyWindowConfig: 坏类型的项落回缺省)。
+func windowConfigFromProps(n *GuiNode) WindowConfig {
+	cfg := defaultWindowConfig()
+	if s, ok := n.PropStr("title"); ok {
+		cfg.Title = s
 	}
+	if v, ok := n.PropNum("width"); ok && v > 0 {
+		cfg.Width = int(v)
+	}
+	if v, ok := n.PropNum("height"); ok && v > 0 {
+		cfg.Height = int(v)
+	}
+	return cfg
+}
+
+// mountJS 建窗并把句柄包装成 JS 对象 (Mount 失败转成 JS Error)。
+func mountJS(root *GuiNode, cfg WindowConfig) object.Value {
+	win, err := Mount(root, cfg)
+	if err != nil {
+		return object.NewErrorWithName("Error", "gfx: "+err.Error())
+	}
+	return win.jsObject()
 }
 
 // jsOpenContextMenu 是 openContextMenu(x, y, items): 在 (x, y) 处就地弹出菜单。
@@ -1351,6 +1421,11 @@ func jsOpenContextMenu(args ...object.Value) object.Value {
 // P3-6 起可多次调用 (每次开一个新窗口), 返回该窗口的句柄。返回值而不是
 // 只返回 error 是必要的: 脚本要能 `w.close()` 关掉**指定的**那个窗口。
 func Mount(root *GuiNode, cfg WindowConfig) (*Window, error) {
+	if root.Tag == "window" {
+		// render 已经把根上的 <window> 拆包过; 走到这说明窗口元素嵌在了
+		// 内容里 —— 它不是组件, 渲染成盒子毫无意义, 直接报错更好查。
+		return nil, fmt.Errorf("<window> can only be the root element passed to render()")
+	}
 	if defaultFactory == nil {
 		return nil, fmt.Errorf("no window backend available on this platform")
 	}

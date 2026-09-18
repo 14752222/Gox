@@ -136,7 +136,7 @@ func TestClipboardFullChain(t *testing.T) {
 	SetDefaultFactory(&fakeFactory{fake})
 	t.Cleanup(func() { SetDefaultFactory(nil) })
 	v, err := vm.EvalVM(`
-		import { h, window, render, clipboardReadText, clipboardWriteText } from "gx/gfx";
+		import { h, render, clipboardReadText, clipboardWriteText } from "gx/gfx";
 		globalThis.copyOk = false;
 		globalThis.pasted = "";
 		globalThis.noArg = "?";
@@ -144,7 +144,7 @@ func TestClipboardFullChain(t *testing.T) {
 		globalThis.paste = () => { globalThis.pasted = clipboardReadText(); };
 		globalThis.bad = () => { globalThis.noArg = clipboardWriteText(); };
 		render(h("column", null, h("text", null, "clipboard")),
-		       window({ title: "clip", width: 300, height: 120 }));
+		       { title: "clip", width: 300, height: 120 });
 	`)
 	if err != nil {
 		t.Fatalf("EvalVM: %v", err)

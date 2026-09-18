@@ -5,7 +5,7 @@
 //   - onWheel 的 deltaY 沿用 DOM 约定 (向下滚为正), 与 Go 事件层的
 //     DeltaY (向上为正, Windows 原生语义) 符号相反。
 import { createSignal } from "gx/solid";
-import { h, window, render } from "gx/gfx";
+import { h, render } from "gx/gfx";
 
 const [pos, setPos] = createSignal("(move the mouse)");
 const [last, setLast] = createSignal("(no event yet)");
@@ -20,26 +20,27 @@ function mods(e) {
 }
 
 render(
-  <column gap={10} padding={16}>
-    <text font={18}>Mouse & key events</text>
+  <window title="Events demo" width={420} height={240}>
+    <column gap={10} padding={16}>
+      <text font={18}>Mouse & key events</text>
 
-    <rect
-      width={380}
-      height={110}
-      background="#eef3f8"
-      border="#8aa0b6"
-      onClick={() => setLast("click")}
-      onMouseMove={(e) => setPos(`${e.x}, ${e.y}`)}
-      onWheel={(e) => setLast(`wheel deltaY=${e.deltaY}`)}
-      onContextMenu={(e) => setLast(`context menu at ${e.x}, ${e.y}`)}
-      onKeyDown={(e) => setLast(`keydown ${e.key}${mods(e)}`)}
-      onKeyUp={(e) => setLast(`keyup ${e.key}${mods(e)}`)}
-    >
-      <text>click to focus, then move / scroll / right-click / type</text>
-    </rect>
+      <rect
+        width={380}
+        height={110}
+        background="#eef3f8"
+        border="#8aa0b6"
+        onClick={() => setLast("click")}
+        onMouseMove={(e) => setPos(`${e.x}, ${e.y}`)}
+        onWheel={(e) => setLast(`wheel deltaY=${e.deltaY}`)}
+        onContextMenu={(e) => setLast(`context menu at ${e.x}, ${e.y}`)}
+        onKeyDown={(e) => setLast(`keydown ${e.key}${mods(e)}`)}
+        onKeyUp={(e) => setLast(`keyup ${e.key}${mods(e)}`)}
+      >
+        <text>click to focus, then move / scroll / right-click / type</text>
+      </rect>
 
-    <text>{() => `position: ${pos()}`}</text>
-    <text>{() => `last event: ${last()}`}</text>
-  </column>,
-  window({ title: "Events demo", width: 420, height: 240 })
+      <text>{() => `position: ${pos()}`}</text>
+      <text>{() => `last event: ${last()}`}</text>
+    </column>
+  </window>
 );

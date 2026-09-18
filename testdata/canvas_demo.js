@@ -14,7 +14,7 @@
 //   - 画布不铺底 (与 HTML canvas 一样是透明的)。要底色就 ctx.fillRect
 //     铺一层, 或者给 canvas 挂 background 属性。
 import { createSignal } from "gx/solid";
-import { h, window, render } from "gx/gfx";
+import { h, render } from "gx/gfx";
 
 // 固定的几何常量: 演示脚本刻意不用除法算坐标, 保证任何机器上像素一致。
 const N = 8; // 柱子数
@@ -70,7 +70,7 @@ render(
     h("text", { font: 13, color: "#666666" }, "ctx primitives (local coords, clipped)"),
     primitives
   ),
-  window({ title: "Canvas demo", width: 300, height: 300 })
+  { title: "Canvas demo", width: 300, height: 300 }
 );
 
 setInterval(() => setTick(tick() + 1), 500);

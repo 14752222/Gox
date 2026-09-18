@@ -7,7 +7,7 @@
 //   - <dialog open={bool} onClose={fn}> 的流内子节点即内容卡片 (居中);
 //   - <toast message level?> 是非模态的: 它下面的内容照常可点。
 import { createSignal } from "gx/solid";
-import { h, window, render } from "gx/gfx";
+import { h, render } from "gx/gfx";
 
 const [open, setOpen] = createSignal(false);
 const [showToast, setShowToast] = createSignal(false);
@@ -26,33 +26,34 @@ const closeBy = (how) => {
 };
 
 render(
-  <column gap={10} padding={16}>
-    <text font={18}>Dialog and Toast</text>
+  <window title="Dialog demo" width={420} height={320}>
+    <column gap={10} padding={16}>
+      <text font={18}>Dialog and Toast</text>
 
-    <row gap={8}>
-      <button onClick={() => setOpen(true)}>Open dialog</button>
-      <button onClick={notify}>Show toast</button>
-    </row>
+      <row gap={8}>
+        <button onClick={() => setOpen(true)}>Open dialog</button>
+        <button onClick={notify}>Show toast</button>
+      </row>
 
-    <button
-      background="#c0392b"
-      color="#ffffff"
-      onClick={() => setCovered(covered() + 1)}
-    >Covered button</button>
+      <button
+        background="#c0392b"
+        color="#ffffff"
+        onClick={() => setCovered(covered() + 1)}
+      >Covered button</button>
 
-    <text>{() => `dialog: ${open() ? "open" : "closed"}   toast: ${showToast() ? "shown" : "hidden"}`}</text>
-    <text>{() => `covered clicks = ${covered()}`}</text>
-    <text>{() => log()}</text>
+      <text>{() => `dialog: ${open() ? "open" : "closed"}   toast: ${showToast() ? "shown" : "hidden"}`}</text>
+      <text>{() => `covered clicks = ${covered()}`}</text>
+      <text>{() => log()}</text>
 
-    <dialog open={() => open()} onClose={() => closeBy("mask")}>
-      <column gap={8} padding={14}>
-        <text font={16}>Confirm</text>
-        <text>Click the mask or press Esc to close.</text>
-        <button onClick={() => closeBy("button")}>Close</button>
-      </column>
-    </dialog>
+      <dialog open={() => open()} onClose={() => closeBy("mask")}>
+        <column gap={8} padding={14}>
+          <text font={16}>Confirm</text>
+          <text>Click the mask or press Esc to close.</text>
+          <button onClick={() => closeBy("button")}>Close</button>
+        </column>
+      </dialog>
 
-    {() => (showToast() ? <toast message="Saved successfully" level="success"/> : null)}
-  </column>,
-  window({ title: "Dialog demo", width: 420, height: 320 })
+      {() => (showToast() ? <toast message="Saved successfully" level="success"/> : null)}
+    </column>
+  </window>
 );

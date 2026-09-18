@@ -164,13 +164,13 @@ func TestDirtyRectPartialUpdate(t *testing.T) {
 
 	v, err := vm.EvalVM(`
 		import { createSignal } from "gx/solid";
-		import { h, window, render } from "gx/gfx";
+		import { h, render } from "gx/gfx";
 		const [count, setCount] = createSignal(0);
 		const ui = h("column", {gap: 10, padding: 16},
 			h("rect", {width: () => count() * 20 + 10, height: 24, background: "#c0392b"}),
 			h("rect", {width: 200, height: 32, background: "#27ae60",
 				onClick: () => setCount(c => c + 1)}));
-		render(ui, window({title: "T", width: 400, height: 300}));
+		render(ui, {title: "T", width: 400, height: 300});
 	`)
 	if err != nil {
 		t.Fatalf("EvalVM: %v", err)
@@ -222,13 +222,13 @@ func TestDirtySiblingShift(t *testing.T) {
 	// row: [width=() => n*10+10 的红条][绿条], 红条变宽推动绿条右移
 	v, err := vm.EvalVM(`
 		import { createSignal } from "gx/solid";
-		import { h, window, render } from "gx/gfx";
+		import { h, render } from "gx/gfx";
 		const [n, setN] = createSignal(0);
 		const ui = h("row", {gap: 0},
 			h("rect", {width: () => n() * 10 + 10, height: 20, background: "#c0392b"}),
 			h("rect", {width: 30, height: 20, background: "#27ae60",
 				onClick: () => setN(3)}));
-		render(ui, window({title: "T", width: 400, height: 300}));
+		render(ui, {title: "T", width: 400, height: 300});
 	`)
 	if err != nil {
 		t.Fatalf("EvalVM: %v", err)
@@ -261,14 +261,14 @@ func TestKeyboardEvent(t *testing.T) {
 	defer SetDefaultFactory(nil)
 
 	v, err := vm.EvalVM(`
-		import { h, window, render } from "gx/gfx";
+		import { h, render } from "gx/gfx";
 		let out = "";
 		const ui = h("column", null,
 			h("rect", {width: 100, height: 30, background: "#27ae60",
 				onClick: () => 0, onKeyDown: (e) => { out += "[" + e.key + "]"; }}),
 			h("rect", {width: 100, height: 30, background: "#000",
 				onKeyDown: () => { out += "child"; }}));
-		render(ui, window({title: "T", width: 400, height: 300}));
+		render(ui, {title: "T", width: 400, height: 300});
 	`)
 	if err != nil {
 		t.Fatalf("EvalVM: %v", err)

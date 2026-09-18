@@ -19,7 +19,7 @@
 //   - 动画结束前脚本里读到的 prop 已经是**终值**了 —— prop 是唯一真相,
 //     插值只活在渲染层。想读"当前显示值"要自己在 signal 里维护。
 import { createSignal } from "gx/solid";
-import { h, window, render, animate } from "gx/gfx";
+import { h, render, animate } from "gx/gfx";
 
 const [wide, setWide] = createSignal(false);
 const [visible, setVisible] = createSignal(true);
@@ -79,5 +79,5 @@ render(
     }),
     h("text", { font: 12, width: 320 }, () => status())
   ),
-  window({ title: "Transition demo", width: 360, height: 430 })
+  { title: "Transition demo", width: 360, height: 430 }
 );

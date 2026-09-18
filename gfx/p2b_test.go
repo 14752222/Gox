@@ -891,7 +891,7 @@ func TestToastDemoMountsAtTopRightAndStaysNonModal(t *testing.T) {
 			if toast == nil {
 				t.Fatalf("点击后应挂载 toast")
 			}
-			// 窗口尺寸取假 Surface 的 (它不理会 window({width}) 配置)
+			// 窗口尺寸取假 Surface 的 (它不理会 render 配置里的 {width})
 			w, _ := fake.Size()
 			if toast.Box.X+toast.Box.W != w-toastMargin || toast.Box.Y != toastMargin {
 				t.Fatalf("toast 未贴右上角: %v (窗口宽 %d)", toast.Box, w)

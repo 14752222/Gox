@@ -212,13 +212,13 @@ func TestReactivePipeline(t *testing.T) {
 
 	v, err := vm.EvalVM(`
 		import { createSignal } from "gx/solid";
-		import { h, window, render } from "gx/gfx";
+		import { h, render } from "gx/gfx";
 		const [count, setCount] = createSignal(0);
 		const ui = h("column", {gap: 10, padding: 16},
 			h("rect", {width: () => count() * 20 + 10, height: 24, background: "#c0392b"}),
 			h("rect", {width: 200, height: 32, background: "#27ae60",
 				onClick: () => setCount(c => c + 1)}));
-		render(ui, window({title: "T", width: 400, height: 300}));
+		render(ui, {title: "T", width: 400, height: 300});
 	`)
 	if err != nil {
 		t.Fatalf("EvalVM: %v", err)

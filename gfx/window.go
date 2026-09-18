@@ -10,8 +10,8 @@ import (
 //
 // 多窗口的入口是 `render()`, 它现在**返回一个句柄**而不是 undefined:
 //
-//	const w1 = render(<Counter label="A" />, window({ title: "A", width: 320, height: 200 }));
-//	const w2 = render(<Counter label="B" />, window({ title: "B", width: 320, height: 200 }));
+//	const w1 = render(<window title="A" width={320} height={200}><Counter label="A" /></window>);
+//	const w2 = render(<window title="B" width={320} height={200}><Counter label="B" /></window>);
 //	w1.close();   // 只关第一个窗口, 第二个继续跑
 //
 // 为什么需要句柄: "关掉某一个窗口"在多窗口下是刚需 (验收里就是"关一个另一个

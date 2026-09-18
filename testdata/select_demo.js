@@ -7,7 +7,7 @@
 //   - 受控: 选中只派发 onChange, 显示值取决于 value prop (由 signal 驱动);
 //   - 键盘: 聚焦后 Enter/Space 展开, 上下键移动高亮, Enter 选中, Esc 收起。
 import { createSignal } from "gx/solid";
-import { h, window, render } from "gx/gfx";
+import { h, render } from "gx/gfx";
 
 const CITIES = [
   { value: "sh", label: "Shanghai" },
@@ -20,25 +20,26 @@ const [city, setCity] = createSignal("sh");
 const [fruit, setFruit] = createSignal("");
 
 render(
-  <column gap={10} padding={16}>
-    <text font={18}>Select</text>
+  <window title="Select demo" width={380} height={260}>
+    <column gap={10} padding={16}>
+      <text font={18}>Select</text>
 
-    <select
-      width={220}
-      options={CITIES}
-      value={() => city()}
-      onChange={(e) => setCity(e.value)}
-    />
+      <select
+        width={220}
+        options={CITIES}
+        value={() => city()}
+        onChange={(e) => setCity(e.value)}
+      />
 
-    <select
-      width={220}
-      placeholder="Pick a fruit"
-      options={["apple", "banana", "cherry"]}
-      value={() => fruit()}
-      onChange={(e) => setFruit(e.value)}
-    />
+      <select
+        width={220}
+        placeholder="Pick a fruit"
+        options={["apple", "banana", "cherry"]}
+        value={() => fruit()}
+        onChange={(e) => setFruit(e.value)}
+      />
 
-    <text>{() => `city = ${city()}   fruit = ${fruit() || "-"}`}</text>
-  </column>,
-  window({ title: "Select demo", width: 380, height: 260 })
+      <text>{() => `city = ${city()}   fruit = ${fruit() || "-"}`}</text>
+    </column>
+  </window>
 );

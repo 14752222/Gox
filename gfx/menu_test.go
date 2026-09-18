@@ -1126,7 +1126,7 @@ func TestMenuFullChainItemCallback(t *testing.T) {
 	t.Cleanup(func() { SetDefaultFactory(nil) })
 
 	v, err := vm.EvalVM(`
-		import { h, window, render } from "gx/gfx";
+		import { h, render } from "gx/gfx";
 		globalThis.picked = "";
 		globalThis.save = () => { globalThis.picked = "save"; };
 		globalThis.open = () => { globalThis.picked = "open"; };
@@ -1137,7 +1137,7 @@ func TestMenuFullChainItemCallback(t *testing.T) {
 						h("menuitem", { label: "Save", onClick: () => globalThis.save() }),
 						h("menuitem", { label: "Open", onClick: () => globalThis.open() }))),
 				h("text", null, "body")),
-			window({ title: "menu", width: 400, height: 260 }));
+			{ title: "menu", width: 400, height: 260 });
 	`)
 	if err != nil {
 		t.Fatalf("EvalVM: %v", err)
@@ -1180,7 +1180,7 @@ func TestContextMenuFullChain(t *testing.T) {
 	t.Cleanup(func() { SetDefaultFactory(nil) })
 
 	v, err := vm.EvalVM(`
-		import { h, window, render, openContextMenu } from "gx/gfx";
+		import { h, render, openContextMenu } from "gx/gfx";
 		globalThis.picked = "";
 		globalThis.at = "";
 		globalThis.menuItems = [
@@ -1195,7 +1195,7 @@ func TestContextMenuFullChain(t *testing.T) {
 			h("column", null,
 				h("rect", { width: 300, height: 200, onContextMenu: (e) => globalThis.showCtx(e) }),
 				h("text", null, "body")),
-			window({ title: "ctx", width: 400, height: 300 }));
+			{ title: "ctx", width: 400, height: 300 });
 	`)
 	if err != nil {
 		t.Fatalf("EvalVM: %v", err)
@@ -1245,7 +1245,7 @@ func TestShortcutFullChain(t *testing.T) {
 	t.Cleanup(func() { SetDefaultFactory(nil) })
 
 	v, err := vm.EvalVM(`
-		import { h, window, render } from "gx/gfx";
+		import { h, render } from "gx/gfx";
 		globalThis.hits = 0;
 		globalThis.keys = "";
 		render(
@@ -1257,7 +1257,7 @@ func TestShortcutFullChain(t *testing.T) {
 							onClick: (e) => { globalThis.hits = globalThis.hits + 1; globalThis.keys = e.shortcut; },
 						}))),
 				h("text", null, "body")),
-			window({ title: "sc", width: 400, height: 260 }));
+			{ title: "sc", width: 400, height: 260 });
 	`)
 	if err != nil {
 		t.Fatalf("EvalVM: %v", err)

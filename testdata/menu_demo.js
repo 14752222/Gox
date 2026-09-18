@@ -18,7 +18,7 @@
 //     没做成 prop 是因为 JSX 元素是单次挂载的对象, 同一个 <menu> 挂到多个
 //     组件上会互相争抢 Parent (节点只有一个 Parent 字段)。
 import { createSignal } from "gx/solid";
-import { h, window, render, openContextMenu } from "gx/gfx";
+import { h, render, openContextMenu } from "gx/gfx";
 
 const [log, setLog] = createSignal("booting");
 const [clicks, setClicks] = createSignal(0);
@@ -29,54 +29,55 @@ const say = (s) => {
 };
 
 render(
-  <column>
-    <menubar>
-      <menu label="File">
-        <menuitem label="New" shortcut="Ctrl+N" onClick={() => say("File > New")} />
-        <menuitem label="Open" shortcut="Ctrl+O" onClick={() => say("File > Open")} />
-        <separator />
-        <menuitem label="Save" shortcut="Ctrl+S" onClick={() => say("File > Save")} />
-        <menuitem label="Save As" disabled={true} onClick={() => say("不该被触发")} />
-      </menu>
+  <window title="Menu demo" width={520} height={420}>
+    <column>
+      <menubar>
+        <menu label="File">
+          <menuitem label="New" shortcut="Ctrl+N" onClick={() => say("File > New")} />
+          <menuitem label="Open" shortcut="Ctrl+O" onClick={() => say("File > Open")} />
+          <separator />
+          <menuitem label="Save" shortcut="Ctrl+S" onClick={() => say("File > Save")} />
+          <menuitem label="Save As" disabled={true} onClick={() => say("不该被触发")} />
+        </menu>
 
-      <menu label="Edit">
-        <menuitem label="Cut" shortcut="Ctrl+X" onClick={() => say("Edit > Cut")} />
-        <menuitem label="Paste" shortcut="Ctrl+V" onClick={() => say("Edit > Paste")} />
-      </menu>
+        <menu label="Edit">
+          <menuitem label="Cut" shortcut="Ctrl+X" onClick={() => say("Edit > Cut")} />
+          <menuitem label="Paste" shortcut="Ctrl+V" onClick={() => say("Edit > Paste")} />
+        </menu>
 
-      <menu label="View">
-        <menuitem label="Zoom In" onClick={() => say("View > Zoom In")} />
-        <menuitem label="Theme">
-          <menu>
-            <menuitem label="Dark" onClick={() => say("Theme > Dark")} />
-            <menuitem label="Light" onClick={() => say("Theme > Light")} />
-          </menu>
-        </menuitem>
-      </menu>
+        <menu label="View">
+          <menuitem label="Zoom In" onClick={() => say("View > Zoom In")} />
+          <menuitem label="Theme">
+            <menu>
+              <menuitem label="Dark" onClick={() => say("Theme > Dark")} />
+              <menuitem label="Light" onClick={() => say("Theme > Light")} />
+            </menu>
+          </menuitem>
+        </menu>
 
-      <text>ready</text>
-    </menubar>
+        <text>ready</text>
+      </menubar>
 
-    <column gap={12} padding={16}>
-      <text font={18}>Menu / Context menu</text>
-      <text>Right-click the panel below. Try Ctrl+S, or open File.</text>
+      <column gap={12} padding={16}>
+        <text font={18}>Menu / Context menu</text>
+        <text>Right-click the panel below. Try Ctrl+S, or open File.</text>
 
-      <rect
-        width={340}
-        height={140}
-        background="#e8eef7"
-        onContextMenu={(e) =>
-          openContextMenu(e.x, e.y, [
-            <menuitem label="Copy" shortcut="Ctrl+C" onClick={() => say("ctx > Copy")} />,
-            <menuitem label="Paste" shortcut="Ctrl+V" onClick={() => say("ctx > Paste")} />,
-            <separator />,
-            <menuitem label="Inspect" onClick={() => say("ctx > Inspect")} />,
-          ])
-        }
-      />
+        <rect
+          width={340}
+          height={140}
+          background="#e8eef7"
+          onContextMenu={(e) =>
+            openContextMenu(e.x, e.y, [
+              <menuitem label="Copy" shortcut="Ctrl+C" onClick={() => say("ctx > Copy")} />,
+              <menuitem label="Paste" shortcut="Ctrl+V" onClick={() => say("ctx > Paste")} />,
+              <separator />,
+              <menuitem label="Inspect" onClick={() => say("ctx > Inspect")} />,
+            ])
+          }
+        />
 
-      <text>{() => log()}</text>
+        <text>{() => log()}</text>
+      </column>
     </column>
-  </column>,
-  window({ title: "Menu demo", width: 520, height: 420 })
+  </window>
 );
