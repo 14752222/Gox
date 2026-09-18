@@ -539,6 +539,7 @@ func TestExampleScriptsMount(t *testing.T) {
 		"canvas_demo.js",                 // P3-1 自绘画布
 		"slider_demo.js",                 // P2-8 滑块
 		"ime_demo.js",                    // P2-7 输入法 (提交由平台投递, 这里只验挂载)
+		"clipboard_demo.js",              // P3-3 剪贴板 (读写由后端提供, 这里只验挂载)
 		"counter_demo.js", "gui_demo.js", // 既有演示 (布局改动后回归)
 		// 注: image_demo.js 不在本列表 —— 它的 src 是相对文件路径, 必须从仓库根
 		// 目录运行 (而本用例的 cwd 是 gfx/)。由 TestImageDemoScript 专职覆盖。
@@ -856,6 +857,18 @@ func checkDemoTree(t *testing.T, name string, root *GuiNode, fake *fakeSurface) 
 		}
 		assertPx(t, img, sels[0].Box.X+4, sels[0].Box.Y+selectRowH/2, pxFieldFace, "select_demo 字段白底")
 		assertPx(t, img, sels[0].Box.X+4, sels[0].Box.Y, pxBtnEdge, "select_demo 字段 1px 边框")
+	case "clipboard_demo.js":
+		// 剪贴板演示: 一个多行框 + 两个按钮; 首帧 status 为空、未点过按钮
+		ta := findFirst(root, "textarea")
+		if ta == nil {
+			t.Fatalf("clipboard_demo 缺少 textarea 节点")
+		}
+		if ta.taValue() != "Hello from Gox" {
+			t.Fatalf("初始值 = %q, want %q", ta.taValue(), "Hello from Gox")
+		}
+		if got := findAll(root, "button"); len(got) != 2 {
+			t.Fatalf("按钮数 = %d, want 2", len(got))
+		}
 	case "ime_demo.js":
 		// 输入法演示: 两个编辑器都挂上, 初始空值, 提交次数从 0 起
 		in := findFirst(root, "input")

@@ -10,6 +10,7 @@
 package win32
 
 import (
+	"errors"
 	"fmt"
 	"image"
 	"sync"
@@ -58,6 +59,18 @@ var (
 	procImmReleaseContext        = imm32.NewProc("ImmReleaseContext")
 	procImmGetCompositionStringW = imm32.NewProc("ImmGetCompositionStringW")
 	procImmAssociateContext      = imm32.NewProc("ImmAssociateContext")
+
+	// P3-3: 剪贴板
+	procOpenClipboard    = user32.NewProc("OpenClipboard")
+	procCloseClipboard   = user32.NewProc("CloseClipboard")
+	procEmptyClipboard   = user32.NewProc("EmptyClipboard")
+	procGetClipboardData = user32.NewProc("GetClipboardData")
+	procSetClipboardData = user32.NewProc("SetClipboardData")
+	procGlobalAlloc      = kernel32.NewProc("GlobalAlloc")
+	procGlobalFree       = kernel32.NewProc("GlobalFree")
+	procGlobalLock       = kernel32.NewProc("GlobalLock")
+	procGlobalUnlock     = kernel32.NewProc("GlobalUnlock")
+	procGlobalSize       = kernel32.NewProc("GlobalSize")
 
 	procGetModuleHandleW = kernel32.NewProc("GetModuleHandleW")
 
@@ -117,6 +130,15 @@ const (
 	// ISC_SHOWUICOMPOSITIONWINDOW 让系统把"正在拼的字"那个小窗画出来
 	// (v1 不在输入框里内联预编辑, 全靠这个窗给用户回显)。
 	ISC_SHOWUICOMPOSITIONWINDOW = 0x80000000
+
+	// P3-3 剪贴板
+	CF_UNICODETEXT = 13
+	GMEM_MOVEABLE  = 0x0002
+	// clipboardOpenTries / clipboardOpenDelay 是 OpenClipboard 的重试参数:
+	// 别的应用正捏着剪贴板时会失败, 不重试就表现为"偶尔复制不到"。
+	// 重试期间 GUI 线程是阻塞的, 所以上限压得很小 (5 × 20ms = 100ms)。
+	clipboardOpenTries = 5
+	clipboardOpenDelay = 20 * time.Millisecond
 )
 
 // vkNames 常用虚拟键 → 键名 (WM_KEYDOWN 路径; 可打印字符走 WM_CHAR)。
@@ -453,6 +475,95 @@ func globalWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 	}
 	r, _, _ := procDefWindowProcW.Call(hwnd, uintptr(msg), wParam, lParam)
 	return r
+}
+
+// ===== P3-3: 剪贴板 =====
+
+// openClipboard 带重试地打开剪贴板 (被别的进程占用时会失败)。
+// 调用方成功后必须 `defer procCloseClipboard.Call()` —— Open/Close 必须成对,
+// 否则剪贴板会一直被本进程锁着, 其它应用再也复制不了。
+func (s *surface) openClipboard() bool {
+	for i := 0; i < clipboardOpenTries; i++ {
+		if r, _, _ := procOpenClipboard.Call(uintptr(s.hwnd)); r != 0 {
+			return true
+		}
+		time.Sleep(clipboardOpenDelay)
+	}
+	return false
+}
+
+// ReadClipboardText 取剪贴板里的文本 (UTF-8), 实现 gfx 的 clipboardHost。
+//
+// 数据块是 **UTF-16 + NUL 结尾**, 长度只能从 GlobalSize 反推: 直接用
+// `syscall.UTF16ToString` 需要提前知道长度, 而这里只有句柄。读到 NUL 即停,
+// 并以 GlobalSize/2 为上限 —— 没有上限的话, 一个没有终止符的坏块会让这里
+// 一直读进别人的内存。
+func (s *surface) ReadClipboardText() (string, error) {
+	if !s.openClipboard() {
+		return "", errors.New("gfx: 打不开剪贴板 (可能被别的进程占用)")
+	}
+	defer procCloseClipboard.Call()
+
+	h, _, _ := procGetClipboardData.Call(uintptr(CF_UNICODETEXT))
+	if h == 0 {
+		return "", errors.New("gfx: 剪贴板里没有文本")
+	}
+	p, _, _ := procGlobalLock.Call(h)
+	if p == 0 {
+		return "", errors.New("gfx: GlobalLock 失败")
+	}
+	defer procGlobalUnlock.Call(h)
+	sz, _, _ := procGlobalSize.Call(h)
+	max := int(sz) / 2
+	if max <= 0 {
+		return "", nil
+	}
+	// uintptr → unsafe.Pointer 直接转换会被 vet 判为 "possible misuse",
+	// 这里用 reallocDIB 那一手: 经指针间接完成 (内存由剪贴板句柄持有保活)。
+	// 拿到切片后按值索引, 就不需要任何指针算术了。
+	sl := unsafe.Slice((*uint16)(*(*unsafe.Pointer)(unsafe.Pointer(&p))), max)
+	n := 0
+	for n < len(sl) && sl[n] != 0 {
+		n++
+	}
+	return string(utf16.Decode(sl[:n])), nil
+}
+
+// WriteClipboardText 把文本放到剪贴板, 实现 gfx 的 clipboardHost。
+//
+// 两个易错点:
+//  1. 分配 **字节数** 时要给结尾的 NUL 留一个 UTF-16 单元
+//     (emoji / 扩展区汉字一个 rune 占两个单元, 所以先 `utf16.Encode` 再算);
+//  2. `SetClipboardData` **成功之后内存归系统**, 绝不能再 `GlobalFree` ——
+//     只有它失败 (或 GlobalLock 失败) 时才需要自己释放。
+func (s *surface) WriteClipboardText(text string) error {
+	units := utf16.Encode([]rune(text))
+	size := uintptr((len(units) + 1) * 2)
+	if !s.openClipboard() {
+		return errors.New("gfx: 打不开剪贴板 (可能被别的进程占用)")
+	}
+	defer procCloseClipboard.Call()
+	procEmptyClipboard.Call()
+
+	h, _, _ := procGlobalAlloc.Call(GMEM_MOVEABLE, size)
+	if h == 0 {
+		return errors.New("gfx: GlobalAlloc 失败")
+	}
+	p, _, _ := procGlobalLock.Call(h)
+	if p == 0 {
+		procGlobalFree.Call(h)
+		return errors.New("gfx: GlobalLock 失败")
+	}
+	// 同上: 转成切片后按值写入 (末位留给结尾的 NUL)
+	sl := unsafe.Slice((*uint16)(*(*unsafe.Pointer)(unsafe.Pointer(&p))), len(units)+1)
+	copy(sl, units)
+	sl[len(units)] = 0
+	procGlobalUnlock.Call(h)
+	if r, _, _ := procSetClipboardData.Call(uintptr(CF_UNICODETEXT), h); r == 0 {
+		procGlobalFree.Call(h)
+		return errors.New("gfx: SetClipboardData 失败")
+	}
+	return nil
 }
 
 // ===== P2-7: 输入法 =====

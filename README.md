@@ -168,6 +168,8 @@ render(
 - 未实现的标签（拼错的名字、或还没做进 `knownTags` 的名字）会在 stderr 打印一次性警告，并仍按普通盒子渲染（不再静默成空盒子）
 - 窗口后端：Windows（纯 syscall win32）与 Linux（X11，Wayland 下走 XWayland）；macOS GUI 后端尚未实现
 - 字体：Windows/macOS 走静态候选路径；Linux 惰性扫描系统字体目录（`/usr/share/fonts`、`~/.local/share/fonts` 等，**CJK 字体优先**、条目上限 2000）。找不到可用字体时文字整体不渲染，错误里会给出候选条数与最后一个失败原因
+- 输入法（IME）：`<input>` / `<textarea>` 支持候选词输入，一次提交只派发一次 `onInput`（**Windows 后端**；Linux 暂无）
+- 剪贴板：`clipboardReadText()` / `clipboardWriteText(text)`（**Windows 后端**；Linux 暂无，读返回空串、写返回 false）
 
 事件：
 
@@ -252,6 +254,21 @@ h("input", {
 自动关闭，在按钮/画布上敲字不会弹候选窗。`textarea` 里同样可用，且"提交内容自带换行"会正确
 把光标落到新行。已知取舍：Linux（X11）后端暂无 IME；组合过程不在框内内联绘制。
 示例见 `testdata/ime_demo.js`。
+
+**剪贴板**
+
+`gx/gfx` 导出两个**同步**函数（脚本与窗口在同一个 OS 线程，直接调原生 API 即为正确的线程，不需要 `await`）：
+
+```js
+import { clipboardReadText, clipboardWriteText } from "gx/gfx";
+
+const ok = clipboardWriteText("hello");   // → true / false
+const s = clipboardReadText();            // → 字符串，读不到时为空串
+```
+
+拿不到剪贴板（被别的进程占着，或后端不支持）时**静默降级**：写返回 `false`、读返回空串，不抛异常。
+Windows 后端走 `OpenClipboard` + `CF_UNICODETEXT`（打开失败会重试 5 次 × 20ms，期间 UI 冻结 ≤100ms）；
+Linux（X11）暂未实现。示例：`testdata/clipboard_demo.js`。
 
 **多行文本与自动换行**
 
@@ -395,6 +412,7 @@ h("column", null,
 `testdata/canvas_demo.js`（自绘画布：signal 驱动柱状图 + ctx 原语展示）、
 `testdata/slider_demo.js`（滑块：受控值 / 量程 / 禁用三态）、
 `testdata/ime_demo.js`（输入法：候选词整批提交与光标跨批）、
+`testdata/clipboard_demo.js`（剪贴板：同步读写与失败降级）、
 `testdata/counter_demo.js` 与 `testdata/gui_demo.js`（响应式基础）。
 
 ## 打包成独立可执行文件
