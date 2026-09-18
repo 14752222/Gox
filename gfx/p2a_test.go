@@ -231,7 +231,7 @@ func TestEscapeDrawnWhenAncestorOutOfClip(t *testing.T) {
 	assertPx(t, img, 50, 80, pxWhite, "脏区之外不该被写入")
 }
 
-func TestZOrderDoesNotMutateChildren(t *testing.T) {	// 排序只影响遍历顺序, Children 数组本身必须保持声明序
+func TestZOrderDoesNotMutateChildren(t *testing.T) { // 排序只影响遍历顺序, Children 数组本身必须保持声明序
 	root := mkNode("column", nil)
 	a := withNum(mkNode("rect", nil), "zIndex", 5)
 	b := withNum(mkNode("rect", nil), "zIndex", 1)

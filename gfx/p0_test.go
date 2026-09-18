@@ -535,7 +535,7 @@ func TestExampleScriptsMount(t *testing.T) {
 		"events_demo.js", "focus_demo.js", "hover_demo.js", // P1 事件/焦点/悬停
 		"tabs_demo.js", "list_demo.js", // P1 条件渲染 / 列表渲染
 		"select_demo.js", "dialog_demo.js", // P2-3 下拉框 / P2-4 弹层
-		"input_demo.js",                    // P2-1 单行输入
+		"input_demo.js",                  // P2-1 单行输入
 		"counter_demo.js", "gui_demo.js", // 既有演示 (布局改动后回归)
 	}
 	for _, name := range scripts {
