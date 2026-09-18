@@ -537,6 +537,7 @@ func TestExampleScriptsMount(t *testing.T) {
 		"select_demo.js", "dialog_demo.js", // P2-3 下拉框 / P2-4 弹层
 		"input_demo.js",                  // P2-1 单行输入
 		"canvas_demo.js",                 // P3-1 自绘画布
+		"slider_demo.js",                 // P2-8 滑块
 		"counter_demo.js", "gui_demo.js", // 既有演示 (布局改动后回归)
 		// 注: image_demo.js 不在本列表 —— 它的 src 是相对文件路径, 必须从仓库根
 		// 目录运行 (而本用例的 cwd 是 gfx/)。由 TestImageDemoScript 专职覆盖。
@@ -692,6 +693,41 @@ func checkDemoTree(t *testing.T, name string, root *GuiNode, fake *fakeSurface) 
 		}
 		// 越界绘制会被裁掉: 原语画布右侧外面必须还是窗口底色
 		assertPx(t, img, prim.Box.X+prim.Box.W+2, prim.Box.Y+20, pxWhite, "画布右外侧应保持窗口底色")
+	case "slider_demo.js":
+		// 滑块: 两个可用 (200x24) + 一个禁用, 且 value 要真的驱动布局
+		sls := findAll(root, "slider")
+		if len(sls) != 3 {
+			t.Fatalf("slider_demo 的 slider 数量 = %d, want 3", len(sls))
+		}
+		for i, sl := range sls {
+			if sl.Box.W != 200 || sl.Box.H != 24 {
+				t.Fatalf("第 %d 个滑块尺寸 = %v, want 200x24", i, sl.Box)
+			}
+		}
+		if v, _ := sls[2].PropBool("disabled"); !v {
+			t.Fatalf("第三个滑块应为 disabled")
+		}
+		// volume 初值 40 → 红条宽 = 40*1.6 = 64 (证明 onInput 的数值真的流进了布局)
+		bar := findFirst(root, "rect")
+		if bar == nil || bar.Box.W != 64 {
+			t.Fatalf("红条宽度 = %v, want 64 (volume 初值 40 × 1.6)", bar)
+		}
+		img := shotsImage(fake)
+		if img == nil {
+			t.Fatalf("未捕获上屏帧")
+		}
+		// 值 40 → ratio .4 → 滑块左缘 = round(.4*(200-12)) = 75, 填充到 81
+		trackY := sls[0].Box.Y + (24-sliderTrackH)/2
+		if n := countColor(img, Rect{X: sls[0].Box.X, Y: trackY, W: 60, H: sliderTrackH}, colorAccent); n == 0 {
+			t.Fatalf("滑块左段应已填充强调色")
+		}
+		if n := countColor(img, Rect{X: sls[0].Box.X + 120, Y: trackY, W: 60, H: sliderTrackH}, colorTrack); n == 0 {
+			t.Fatalf("滑块右段应还是空轨道")
+		}
+		// 禁用滑块整盒降饱和: 不再出现"纯轨道色"
+		if n := countColor(img, sls[2].Box, colorTrack); n != 0 {
+			t.Fatalf("禁用滑块的轨道色未被降饱和 (%d 个像素)", n)
+		}
 	case "counter_demo.js":
 		// 既有演示: button 必须有内容高度, 否则点击永远命不中 (见 P0-3)
 		btn := findFirst(root, "button")

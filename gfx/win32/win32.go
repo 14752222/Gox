@@ -46,6 +46,9 @@ var (
 	procScreenToClient                = user32.NewProc("ScreenToClient")
 	procGetAsyncKeyState              = user32.NewProc("GetAsyncKeyState")
 	procTrackMouseEvent               = user32.NewProc("TrackMouseEvent")
+	// P2-8: 拖动期间的鼠标捕获 (滑块拖出窗口仍跟手)
+	procSetCapture     = user32.NewProc("SetCapture")
+	procReleaseCapture = user32.NewProc("ReleaseCapture")
 
 	procGetModuleHandleW = kernel32.NewProc("GetModuleHandleW")
 
@@ -428,6 +431,12 @@ func (s *surface) trySend(ev gfx.Event) {
 }
 
 func (s *surface) Events() <-chan gfx.Event { return s.events }
+
+// CapturePointer / ReleasePointer 实现 gfx 的可选 capturer 接口 (P2-8):
+// 捕获期间鼠标事件全部送到本窗口, 滑块拖出客户区仍然跟手, 松手也能收到。
+func (s *surface) CapturePointer() { procSetCapture.Call(uintptr(s.hwnd)) }
+
+func (s *surface) ReleasePointer() { procReleaseCapture.Call() }
 
 // Size 返回客户区尺寸。
 func (s *surface) Size() (int, int) {

@@ -146,8 +146,8 @@ func (a *app) pump(maxWait time.Duration) bool {
 		case EventMouseDown:
 			a.handleMouseDown(ev.X, ev.Y)
 		case EventMouseUp:
-			a.releasePress()
-			a.handleClick(ev.X, ev.Y)
+			// 走完整流程: 结束拖动 (还鼠标捕获) → 清按压态 → 派发点击
+			a.handleMouseUp(ev.X, ev.Y)
 		case EventMouseMove:
 			a.handleMouseMove(ev.X, ev.Y)
 		case EventMouseWheel:
@@ -158,6 +158,12 @@ func (a *app) pump(maxWait time.Duration) bool {
 			// 光标离开客户区 / 窗口失活: 清掉悬停与按压态
 			a.setHover(nil)
 			a.releasePress()
+			// 拖动中 (P2-8): 支持鼠标捕获的后端会在窗口外继续送事件, 可以
+			// 安心等 MouseUp; 不支持的后端则**永远等不到**, 只能在这里放弃,
+			// 否则 dragTarget 卡死 (下次移进窗口时没按键也会拖着滑块跑)。
+			if !a.hasPointerCapture() {
+				a.endDrag()
+			}
 		case EventKeyDown:
 			a.handleKey(ev.Key, "onKeyDown", ev)
 		case EventKeyUp:
@@ -360,7 +366,18 @@ func (a *app) handleKey(key, name string, ev Event) {
 
 // handleMouseMove 维护悬停链并派发 onMouseMove({x, y})。
 // 事件频率最高: 悬停链未变化时不标脏 (P1-4 的性能前提)。
+//
+// 拖动期间 (P2-8) 走**另一条路**: 事件只喂拖动目标, 不维护悬停链。理由是
+// 拖动是"独占"交互 —— 鼠标从 A 拖到 B 的过程中划过一堆控件, 让它们挨个闪
+// 悬停高亮既难看, 也暗示"你可以点它们" (实际上这一串移动属于同一个手势)。
 func (a *app) handleMouseMove(x, y int) {
+	a.mu.Lock()
+	drag := a.dragTarget
+	a.mu.Unlock()
+	if drag != nil {
+		a.dragMove(drag, x, y)
+		return
+	}
 	target := HitTestDeep(a.rootNode(), x, y)
 	a.setHover(target)
 	if h := handlerInChain(target, "onMouseMove"); h != nil {
@@ -433,6 +450,14 @@ func (a *app) handleMouseDown(x, y int) {
 		a.releasePress()
 		return
 	}
+	// slider (P2-8): 按下即锁定拖动目标, 并按点击位置**直接跳值** ——
+	// 不必"先按住再拖", 与浏览器 `<input type=range>` 的手感一致。
+	if sl := sliderInChain(target); sl != nil {
+		a.setPress(pressChainOf(sl))
+		a.beginDrag(sl)
+		a.sliderDrag(sl, x)
+		return
+	}
 	a.setPress(pressChainOf(target))
 }
 
@@ -453,6 +478,79 @@ func (a *app) closeSelectOnOutsideClick(root *GuiNode, x, y int) bool {
 // releasePress 结束按压态 (MouseUp / 未命中时)。
 func (a *app) releasePress() {
 	a.setPress(nil)
+}
+
+// ===== P2-8 拖动 (slider) =====
+
+// capturer 是 Surface 的**可选能力**: 拖动期间把鼠标事件钉在本窗口上。
+//
+// 为什么定义成可选接口而不是给 Surface 加两个方法: Surface 有三个实现
+// (win32 / x11 / 测试用 fakeSurface), 扩接口就要同步改三处, 而且假 Surface
+// 根本没有"窗口"可以捕获。做成类型断言后, 没实现的后端自动退化为
+// "拖出窗口即停止跟踪" —— 功能不坏, 只是不跟手。
+//
+// 方法名必须**导出**: Go 不允许跨包实现未导出方法, 而 win32 是另一个包
+// (它 import gfx 来实现 gfx.Surface), 所以 setCapture 这种小写名做不到。
+type capturer interface {
+	CapturePointer()
+	ReleasePointer()
+}
+
+// hasPointerCapture 报告当前后端是否支持鼠标捕获。
+//
+// 它的用途只有一个: 决定"光标离开窗口时要不要放弃拖动"。有捕获的后端会在
+// 窗口外继续送 MouseMove/MouseUp, 可以放心等着; 没有捕获的后端则**永远等不到
+// 那次 MouseUp** —— 不主动放弃就会留下一个卡死的 dragTarget (下次鼠标移进窗口
+// 时, 明明没按键也会拖着滑块跑)。
+func (a *app) hasPointerCapture() bool {
+	a.mu.Lock()
+	s := a.surface
+	a.mu.Unlock()
+	_, ok := s.(capturer)
+	return ok
+}
+
+// beginDrag 把 n 设为拖动目标并申请鼠标捕获。
+func (a *app) beginDrag(n *GuiNode) {
+	a.mu.Lock()
+	a.dragTarget = n
+	s := a.surface
+	a.mu.Unlock()
+	if c, ok := s.(capturer); ok {
+		c.CapturePointer()
+	}
+}
+
+// endDrag 结束拖动: 清目标、还捕获、复位"上次派发的值"。
+//
+// 复位 slideValSet 是必须的: 拖动期间挡重复派发靠的是"和上次派发值相等就跳过",
+// 若不复位, 松手后再按同一位置 (值没变) 就不会派发 onInput —— 表现为
+// "第一次拖有效, 第二次拖同一个位置没反应"。
+func (a *app) endDrag() {
+	a.mu.Lock()
+	t := a.dragTarget
+	a.dragTarget = nil
+	s := a.surface
+	a.mu.Unlock()
+	if t == nil {
+		return
+	}
+	t.slideValSet = false
+	if c, ok := s.(capturer); ok {
+		c.ReleasePointer()
+	}
+}
+
+// handleMouseUp 处理左键抬起: 先结束拖动 (还鼠标捕获), 再清按压态,
+// 最后才走点击派发。
+//
+// 顺序不能换: releasePress 与 endDrag 都要在 handleClick **之前**完成,
+// 否则一次"拖动结束"会被后面的命中测试当成普通点击再处理一遍 (按压态还没复位,
+// 视觉上按钮会一直暗着)。
+func (a *app) handleMouseUp(x, y int) {
+	a.endDrag()
+	a.releasePress()
+	a.handleClick(x, y)
 }
 
 // callHandler 调用节点上的事件回调: arg 为 nil 表示无参数。异常打印不中断事件循环。

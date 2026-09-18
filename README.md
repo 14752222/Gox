@@ -206,6 +206,7 @@ render(
 | `scroll` | `width` / `height` / `onWheel` | 纵向滚动容器：内容超高时右侧出现 8px 轨道 + 比例滑块，滚轮滚动（一格 60px），到边界后滚轮才冒泡给 `onWheel`；溢出的内容既画不出来也点不中。缺省高 200 |
 | `image` | `src` / `width` / `height` / `disabled` | 显示 png / jpeg / gif 图片（Go 标准库解码，无新增依赖）；不给 `width`/`height` 时用图片自然尺寸，给了就按最近邻缩放；`src` 相对**进程工作目录**解析，加载失败画灰底交叉线占位（stderr 每个路径只警告一次），不中断其它内容 |
 | `canvas` | `width` / `height` / `onDraw(ctx)` / `background` / `border` | 自绘画布：`onDraw` 收到一个 ctx，用 `ctx.fillRect/strokeRect/fillCircle/strokeCircle/line/drawText/clear` 直接落笔，坐标是**画布局部坐标**（0,0 = 左上角），越界部分自动裁掉；`ctx.width` / `ctx.height` 是画布尺寸。`onDraw` 里读到的 signal 变化会自动重绘（缺省 200×120） |
+| `slider` | `value` / `onInput` / `min` / `max` / `step` / `disabled` | 受控滑块（`min`/`max`/`step` 缺省 0/100/1）：显示只看 `value`，拖动或**单击轨道任意位置**派发 `onInput({value})`（`value` 是 **number**）；拖出窗口仍跟手（win32 走 `SetCapture`）。缺省 160×24 |
 
 **层叠与定位**
 
@@ -332,6 +333,26 @@ h("canvas", {
 - `disabled` 时每个落笔色自动降饱和。
 - 目前只有最近邻/无插值的直线与圆（无抗锯齿、无路径、无变换、无渐变）。
 
+**滑块**
+
+`<slider>` 是受控滑块：`value` 决定位置（含 `min`/`max`/`step`），拖动或**单击轨道任意位置**都会派发 `onInput({value})`：
+
+```js
+const [vol, setVol] = createSignal(40)
+
+h("slider", {
+  width: 200, min: 0, max: 100, step: 5,
+  value: () => vol(),
+  onInput: (e) => setVol(e.value),   // e.value 是 number，不是字符串
+})
+```
+
+- **受控语义**与 `input` / `textarea` 一致：不回写 `value`，滑块会弹回原位；
+- 点击轨道**直接跳值**，不必"先按住再拖"；
+- 拖动中鼠标划过别的控件**不会**给它们加悬停高亮 —— 一次拖动算一个手势；
+- 拖动期间鼠标移出窗口在 Windows 上仍然跟手（内部用 `SetCapture`）；
+- `step ≤ 0` 表示连续取值；`max < min` 时量程塌缩到 `min`（滑块停在最左），不会产生 NaN。
+
 **响应式子节点（条件渲染 / 列表渲染）**
 
 子节点传函数即为响应式，effect 会自动追踪它读到的信号并在变化时重新挂载：
@@ -366,6 +387,7 @@ h("column", null,
 `testdata/multiline_demo.js`（自动换行 / 省略号 / 硬截断三态对照）、`testdata/textarea_demo.js`（多行编辑器）、
 `testdata/image_demo.js`（图片五态：自然尺寸 / 放大 / 缩小 / 坏路径占位 / 禁用）、
 `testdata/canvas_demo.js`（自绘画布：signal 驱动柱状图 + ctx 原语展示）、
+`testdata/slider_demo.js`（滑块：受控值 / 量程 / 禁用三态）、
 `testdata/counter_demo.js` 与 `testdata/gui_demo.js`（响应式基础）。
 
 ## 打包成独立可执行文件

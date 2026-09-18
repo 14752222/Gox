@@ -262,6 +262,16 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 		if h == 0 {
 			h = canvasDefH
 		}
+	case "slider":
+		// 滑块: 横向一条, 宽高都按内容定 (轨道在盒内居中铺开), 与 input/select
+		// 一样不参与交叉轴 stretch —— 被拉满的滑块很难看, 也失去了"预设长度"
+		// 这个语义。需要更宽就显式写 width。
+		if w == 0 {
+			w = sliderDefW
+		}
+		if h == 0 {
+			h = sliderDefH
+		}
 	}
 	if n.Tag == "#text" {
 		if w == 0 || h == 0 {

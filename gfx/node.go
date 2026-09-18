@@ -59,6 +59,13 @@ type GuiNode struct {
 	// canvas 自绘回调 (P3-1): onDraw 是脚本给的函数, 每次绘制时用一个
 	// 落笔 ctx 调用一次 (依赖收集另有一遍空跑, 见 canvas.go 的说明)。
 	onDraw object.Value
+
+	// 拖动状态 (P2-8): slideVal 是**上一次派发出去的**量化值, slideValSet
+	// 区分"还没派发过"与"上一次恰好是 0"。用它挡掉"鼠标每移一像素就派发一次
+	// 相同的 value" —— 注意不能拿 value prop 来比: 脚本不回写时 prop 永远不变,
+	// 那等于没挡。
+	slideVal    float64
+	slideValSet bool
 }
 
 // Rect 是布局矩形 (客户区像素坐标)。
@@ -110,6 +117,8 @@ var knownTags = map[string]struct{}{
 	"image": {},
 	// P3-1 自绘画布
 	"canvas": {},
+	// P2-8 滑块
+	"slider": {},
 }
 
 var (
@@ -398,6 +407,9 @@ func disposeNode(n *GuiNode) {
 	// canvas 的 onDraw 一并断开: 节点离树后它的 effect 已被注销 (上面那轮),
 	// 留着这个引用只会让脚本函数对象多活一轮 GC, 没有别的意义。
 	n.onDraw = nil
+	// 拖动值缓存复位 (节点可能正被拖着时就被卸载了)
+	n.slideVal = 0
+	n.slideValSet = false
 }
 
 // removeChild 从 Children 里摘掉一个子节点 (存在才摘)。
@@ -599,7 +611,7 @@ func (n *GuiNode) buttonPadding() (padX, padY int) {
 // 造成无谓重绘 (鼠标移动是频率最高的事件)。
 func (n *GuiNode) hoverable() bool {
 	switch n.Tag {
-	case "button", "checkbox", "radio", "switch", "select", "select-option", "input", "textarea":
+	case "button", "checkbox", "radio", "switch", "select", "select-option", "input", "textarea", "slider":
 		return true
 	}
 	return false
