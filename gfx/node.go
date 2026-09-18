@@ -45,6 +45,11 @@ type GuiNode struct {
 	// 绘制时决定边框颜色与是否画光标), caret 是光标位置 (rune 下标)。
 	focused bool
 	caret   int
+
+	// 滚动状态 (P2-5): offsetY 是当前纵向偏移, contentH 是上一次布局测出的
+	// 内容总高 (两者都由布局/滚轮维护, 不来自 props)。
+	offsetY  int
+	contentH int
 }
 
 // Rect 是布局矩形 (客户区像素坐标)。
@@ -88,6 +93,8 @@ var knownTags = map[string]struct{}{
 	"dialog": {}, "toast": {},
 	// P2-1 单行文本输入
 	"input": {},
+	// P2-5 滚动容器
+	"scroll": {},
 }
 
 var (
@@ -205,7 +212,17 @@ func (n *GuiNode) wireChild(val object.Value) {
 			n.wireReactiveChild(val)
 			return
 		}
-		// 数组等其余类型: 展开为文本 (静态数组子节点)
+		if arr, ok := val.(*object.Array); ok {
+			// 静态数组子节点 (JSX 里的 <scroll>{rows}</scroll> 这种): 逐个展开,
+			// 与 mountValue 的列表渲染语义保持一致。**必须在这里展开** ——
+			// 否则整个数组会走 ToString 变成一行文本 ("[object Object],..."),
+			// 表现为"塞了 20 行却只渲染出一行"。
+			for _, e := range arr.Elements {
+				n.wireChild(e)
+			}
+			return
+		}
+		// 其余类型: 退化为文本
 		n.appendTextNode(object.ToString(val))
 	}
 }
@@ -350,6 +367,9 @@ func disposeNode(n *GuiNode) {
 	// 旧节点标脏会对一个游离节点做无意义的重绘)。
 	n.focused = false
 	n.caret = 0
+	// 滚动状态同样复位 (偏移属于"这一棵子树自己的视图状态")
+	n.offsetY = 0
+	n.contentH = 0
 }
 
 // removeChild 从 Children 里摘掉一个子节点 (存在才摘)。

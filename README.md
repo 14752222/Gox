@@ -165,7 +165,7 @@ render(
 ```
 
 - 点击按钮 → `setCount` 更新信号 → 依赖该信号的属性/文本节点自动标脏 → 脏矩形合并后只重绘受影响区域
-- 未实现的标签（如 `<input>` / `<image>`）会在 stderr 打印一次性警告，并仍按普通盒子渲染（不再静默成空盒子）
+- 未实现的标签（如 `<image>` / `<textarea>`）会在 stderr 打印一次性警告，并仍按普通盒子渲染（不再静默成空盒子）
 - 窗口后端：Windows（纯 syscall win32）与 Linux（X11，Wayland 下走 XWayland）；macOS GUI 后端尚未实现
 
 事件：
@@ -241,6 +241,24 @@ h("input", {
 光标闪烁需要事件泵持续醒来，挂一个 `requestAnimationFrame` 循环即可（见 `testdata/input_demo.js`）。
 中文 IME 尚未实现。
 
+**滚动容器**
+
+`<scroll>` 让任意高度的内容待在固定高度的视口里，超出部分被裁掉，右侧自动出现滚动条：
+
+```js
+h("scroll", { width: 240, height: 120, onWheel: () => setOverscroll(n => n + 1) },
+  rows.map((r) => h("rect", { height: 36, background: "#fff" },
+    h("text", { font: 13 }, r))),
+)
+```
+
+- 滚轮在容器内先被容器消费（一格 60px），**到边界才继续往外冒泡**给 `onWheel` —— 所以"到顶/到底再翻页"可以纯 JS 写；
+- 溢出的内容**既画不出来也点不中**（绘制裁剪与命中裁剪用同一个视口），不会出现幽灵点击；
+- 子节点的 `Box` 已经包含滚动偏移（就是屏幕坐标），不用自己再算；
+- 内容不足一屏时不出滚动条，也不会给内容让出滚动条那 8px；
+- 静态数组子节点会自动展开成兄弟节点，所以 `<scroll>{rows}</scroll>` 直接可用。
+- 横向滚动与滚动条拖拽尚未实现，滚动条本身不可拖（只能滚轮或脚本改偏移）。
+
 > 颜色属性（`background` / `border` / `color`）在组件标签上有语义差异：`background` 表示"选中/填充的强调色"，
 > 在 `button` / `rect` 上才是普通填充色；`color` 沿祖先链继承，因此 `<button color="#fff">文字</button>` 生效。
 
@@ -274,7 +292,7 @@ h("column", null,
 `testdata/focus_demo.js`（焦点框与 focus/blur）、`testdata/hover_demo.js`（悬停与按压反馈）、
 `testdata/tabs_demo.js`（条件渲染切面板）、`testdata/list_demo.js`（数组信号增删列表）、
 `testdata/select_demo.js`（受控下拉框）、`testdata/dialog_demo.js`（模态对话框与右上角 toast）、
-`testdata/input_demo.js`（单行输入与实时镜像）、
+`testdata/input_demo.js`（单行输入与实时镜像）、`testdata/scroll_demo.js`（滚动容器与边界冒泡）、
 `testdata/counter_demo.js` 与 `testdata/gui_demo.js`（响应式基础）。
 
 ## 打包成独立可执行文件

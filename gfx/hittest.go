@@ -102,6 +102,11 @@ func hittableIn(c, parent *GuiNode, x, y int) bool {
 	if !c.Box.Contains(x, y) {
 		return false
 	}
+	// 滚动容器: 视口之外的子内容既画不出来也不该被点中 (与 drawNode 里
+	// clipTo(视口) 的行为一一对应)。
+	if parent.Tag == "scroll" && !parent.scrollViewport().Contains(x, y) {
+		return false
+	}
 	if c.positionAbsolute() && !parent.Box.Contains(x, y) {
 		return false
 	}

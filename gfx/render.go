@@ -360,10 +360,22 @@ func (a *app) handleMouseMove(x, y int) {
 	}
 }
 
-// handleWheel 派发 onWheel({deltaY})。Win32 的 DeltaY 向上为正,
-// 这里按 DOM 约定取反 (向下滚为正值), 免得两套符号在脚本里打架。
+// handleWheel 先做内建滚动 (P2-5), 再派发 onWheel({deltaY})。
+//
+// 滚轮的原生增量向上为正 (Windows WHEEL_DELTA 一格 = 120), 这里一格折算
+// scrollNotch 像素; 内容往下滚 = 子内容上移 = offsetY 增大, 所以取负号。
+//
+// 滚到边界时 scrollBy 返回 false ⇒ 事件继续往外传 (派发 onWheel), 与 DOM 的
+// 滚动链一致; 已经在滚动画布上消费掉的滚轮不会触发脚本回调。
+// Win32 的 DeltaY 向上为正, 派发给脚本时按 DOM 约定取反 (向下滚为正值),
+// 免得两套符号在脚本里打架。
 func (a *app) handleWheel(x, y, deltaY int) {
 	target := HitTestDeep(a.rootNode(), x, y)
+	if sc := scrollInChain(target); sc != nil {
+		if sc.scrollBy(-deltaY * scrollNotch / wheelDeltaUnit) {
+			return
+		}
+	}
 	h := handlerInChain(target, "onWheel")
 	if h == nil {
 		return

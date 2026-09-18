@@ -53,6 +53,8 @@ func layoutNode(n *GuiNode) {
 		layoutDialog(n)
 	case "toast":
 		layoutToast(n)
+	case "scroll":
+		layoutScroll(n)
 	case "slot":
 		// 动态子节点占位容器: 单子时子节点直接占满 slot 的盒子 (slot 的尺寸
 		// 就是按这个子节点算出来的, 等价于子节点直接挂在祖父下面); 多子
@@ -210,6 +212,13 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 		}
 		if h == 0 {
 			h = selectRowH
+		}
+	case "scroll":
+		// 滚动视口: 宽度不给固有值 (0 → 父容器 stretch 时铺满, 或脚本显式
+		// width); 高度必须给缺省值 —— column 的主轴是高度, 0 高会变成
+		// 不可见的空盒, 整个滚动区消失。
+		if h == 0 {
+			h = scrollDefH
 		}
 	}
 	if n.Tag == "#text" || (n.Tag == "text" && n.TextContent() != "") {

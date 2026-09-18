@@ -41,6 +41,8 @@ var (
 	colorFieldPress   = color.RGBA{R: 0xE0, G: 0xE9, B: 0xF4, A: 255} // 字段按压底
 	colorInputEdge    = color.RGBA{R: 0x99, G: 0x99, B: 0x99, A: 255} // 输入类字段边框 (与 input 一致)
 	colorPlaceholder  = color.RGBA{R: 0x99, G: 0x99, B: 0x99, A: 255} // placeholder 灰字
+	colorScrollTrack  = color.RGBA{R: 0, G: 0, B: 0, A: 0x14}         // 滚动条轨道 (半透明黑)
+	colorScrollThumb  = color.RGBA{R: 0xA0, G: 0xA0, B: 0xA0, A: 255} // 滚动条滑块
 	colorOptionActive = color.RGBA{R: 0xDC, G: 0xE8, B: 0xF8, A: 255} // 下拉项高亮底 (浅蓝)
 	colorPopupFace    = color.RGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 255} // 弹层/卡片底色
 	colorPopupEdge    = color.RGBA{R: 0x99, G: 0x99, B: 0x99, A: 255} // 弹层/卡片边框
@@ -342,6 +344,8 @@ func drawNode(img *image.RGBA, n *GuiNode) {
 		paintToast(img, n, disabled)
 	case "input":
 		paintInput(img, n, disabled)
+	case "scroll":
+		paintScroll(img, n, disabled)
 	default:
 		// 通用盒子 / button: background 填充 + border 描边 (button 有缺省外观)。
 		// 交互反馈 (P1-4) 只对 button 有实际效果: 其他标签没有缺省面,
@@ -360,7 +364,12 @@ func drawNode(img *image.RGBA, n *GuiNode) {
 			continue
 		}
 		sub := img
-		if c.positionAbsolute() {
+		switch {
+		case n.Tag == "scroll":
+			// 滚动容器: 子内容一律裁到视口 (内容超高时右侧还扣掉滚动条
+			// 占位), 溢出容器的部分不绘制也不命中 (命中测试用同一套盒子)。
+			sub = clipTo(img, n.scrollViewport())
+		case c.positionAbsolute():
 			// 绝对定位默认仍被父节点盒子裁剪; 想溢出父框必须显式
 			// escapeClipping (弹层组件的出口就是这个开关)。
 			sub = clipTo(img, n.Box)
