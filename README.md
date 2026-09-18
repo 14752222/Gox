@@ -167,6 +167,7 @@ render(
 - 点击按钮 → `setCount` 更新信号 → 依赖该信号的属性/文本节点自动标脏 → 脏矩形合并后只重绘受影响区域
 - 未实现的标签（如 `<image>` / `<slider>`）会在 stderr 打印一次性警告，并仍按普通盒子渲染（不再静默成空盒子）
 - 窗口后端：Windows（纯 syscall win32）与 Linux（X11，Wayland 下走 XWayland）；macOS GUI 后端尚未实现
+- 字体：Windows/macOS 走静态候选路径；Linux 惰性扫描系统字体目录（`/usr/share/fonts`、`~/.local/share/fonts` 等，**CJK 字体优先**、条目上限 2000）。找不到可用字体时文字整体不渲染，错误里会给出候选条数与最后一个失败原因
 
 事件：
 

@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -16,17 +17,182 @@ import (
 
 // 文字渲染子系统 (P3)。
 //
-// 字体来源: 系统字体文件 (微软雅黑优先, CJK 覆盖最好), 经
-// x/image/font/opentype 解析。按字号懒建 face, rune → glyph 掩码做
-// LRU 缓存 (键 = 字号|rune)。不做复杂 shaping: 中西文按码位直排
-// (任务书 P3 约定; 连字/复杂脚本不支持)。
+// 字体来源: 系统字体文件, 经 x/image/font/opentype 解析。按字号懒建 face,
+// rune → glyph 掩码做 LRU 缓存 (键 = 字号|rune)。不做复杂 shaping: 中西文按
+// 码位直排 (任务书 P3 约定; 连字/复杂脚本不支持)。
+//
+// 候选字体按平台组装 (见 fontCandidatesForOS)。Windows 的字体目录与文件名
+// 稳定, 可以写死; Linux 各发行版差异极大 (Noto / WenQuanYi / Droid 命名毫无
+// 规律), 只能真去扫目录 —— 这就是 P3-7 修的"Linux 上文字完全不渲染"。
 
 // fontCandidates 系统字体候选, 依次尝试首个可解析者。
-var fontCandidates = []string{
-	`C:\Windows\Fonts\msyh.ttc`,   // 微软雅黑
-	`C:\Windows\Fonts\msyhbd.ttc`, // 微软雅黑 粗体
-	`C:\Windows\Fonts\simsun.ttc`, // 宋体
-	`C:\Windows\Fonts\segoeui.ttf`,
+// 进程内只增不改: 静态候选在 init 期定下, 扫描结果由 initFontCandidates 前置。
+var fontCandidates = fontCandidatesForOS()
+
+// fontCandsOnce 保证扫描型候选只收集一次 (扫描要真解析字体头, 不便宜)。
+var fontCandsOnce sync.Once
+
+// fontScanLimit 是递归扫描的**条目**数上限 (含目录)。深目录 + 大字体集合时
+// 无限递归会把首帧拖住, 宁可少找几个字体也不能卡住界面。
+const fontScanLimit = 2000
+
+// fontCandidatesForOS 返回当前平台的静态候选 (不含扫描结果)。
+func fontCandidatesForOS() []string {
+	switch runtime.GOOS {
+	case "windows":
+		return []string{
+			`C:\Windows\Fonts\msyh.ttc`,   // 微软雅黑
+			`C:\Windows\Fonts\msyhbd.ttc`, // 微软雅黑 粗体
+			`C:\Windows\Fonts\simsun.ttc`, // 宋体
+			`C:\Windows\Fonts\segoeui.ttf`,
+		}
+	case "darwin":
+		return []string{
+			"/System/Library/Fonts/PingFang.ttc",
+			"/System/Library/Fonts/Supplemental/Arial.ttf",
+			"/Library/Fonts/Arial.ttf",
+		}
+	default:
+		// 常见发行版的兜底路径; 主力候选靠目录扫描补齐。
+		return []string{
+			"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+			"/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+		}
+	}
+}
+
+// fontScanDirs 返回当前平台需要递归扫描的字体目录 (按优先级)。
+//
+// Windows 刻意不给扫描目录: 静态候选已经可靠, 而扫 C:\Windows\Fonts 要解析
+// 几百个 ttc 才能确认"能用" —— 为了可能多找几个字体, 每个进程启动都付一次
+// 昂贵开销, 不划算。
+func fontScanDirs() []string {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	var dirs []string
+	if runtime.GOOS == "darwin" {
+		dirs = append(dirs, "/System/Library/Fonts", "/Library/Fonts")
+	} else {
+		dirs = append(dirs, "/usr/share/fonts", "/usr/local/share/fonts")
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		// 用 UserHomeDir 而不是拼 $HOME: 各平台都能拿到, 且 Windows 上不会
+		// 因为环境变量缺失而拼出 "/.fonts" 这种怪路径。
+		if runtime.GOOS == "darwin" {
+			dirs = append(dirs, filepath.Join(home, "Library", "Fonts"))
+		} else {
+			dirs = append(dirs,
+				filepath.Join(home, ".local", "share", "fonts"),
+				filepath.Join(home, ".fonts"),
+			)
+		}
+	}
+	return dirs
+}
+
+// initFontCandidates 惰性把扫描到的字体前置到候选列表 (幂等, 只跑一次)。
+//
+// 放在加载首个字体之前而不是 init(): 从不用 GUI 的脚本不该为扫描付钱。
+func initFontCandidates() {
+	fontCandsOnce.Do(func() {
+		found := scanSystemFonts(fontScanDirs(), fontScanLimit)
+		if len(found) > 0 {
+			// 扫描结果排在静态候选之前: 它们来自"这台机器上确实存在"的目录,
+			// 而静态路径在部分发行版/精简镜像里根本不存在。
+			fontCandidates = append(found, fontCandidates...)
+		}
+	})
+}
+
+// cjkFontHints 是"这个文件名看起来能覆盖中文"的线索。
+// CJK 字体必须排在任何拉丁字体之前 —— 拉丁字体也能正常解析加载, 只是中文
+// 全画成豆腐块, 比"完全不出字"更难排查。
+var cjkFontHints = []string{
+	"notosanscjk", "notoserifcjk", "wenquanyi", "wqy", "droidsansfallback",
+	"sourcehansans", "sourcehanserif", "fireflysung", "uming", "ukai", "arphic",
+	"notosansmonocjk", "sarasa",
+}
+
+// looksCJK 按文件名猜测是否覆盖中文。
+func looksCJK(fileName string) bool {
+	lower := strings.ToLower(fileName)
+	for _, h := range cjkFontHints {
+		if strings.Contains(lower, h) {
+			return true
+		}
+	}
+	return false
+}
+
+// fontExtOK 报告文件名是否为字体扩展名。只对候选做解析, 免得把目录里的
+// README/LICENSE/缓存文件也读进内存。
+func fontExtOK(name string) bool {
+	switch strings.ToLower(filepath.Ext(name)) {
+	case ".ttf", ".otf", ".ttc", ".otc":
+		return true
+	}
+	return false
+}
+
+// scanSystemFonts 递归扫描字体目录, 返回"确实能解析"的字体路径:
+// 先 CJK 字体, 再其余; 同组内保持目录序 —— 稳定比"最优"更重要, 每次启动
+// 选到同一套字体, 渲染结果才可复现, 测试断言才不会随机抖。
+//
+// limit 是访问的条目数上限; 目录不存在/无权限一律静默跳过 (Linux 上
+// ~/.fonts 常常不存在, 那不是错误)。
+func scanSystemFonts(dirs []string, limit int) []string {
+	var cjk, other []string
+	visited := 0
+	var walk func(dir string)
+	walk = func(dir string) {
+		if visited >= limit {
+			return
+		}
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			return
+		}
+		for _, e := range entries {
+			if visited >= limit {
+				return
+			}
+			visited++
+			full := filepath.Join(dir, e.Name())
+			if e.IsDir() {
+				walk(full)
+				continue
+			}
+			if !fontExtOK(e.Name()) {
+				continue
+			}
+			if _, err := parseFontFile(full); err != nil {
+				continue // 不是真字体 / 格式不支持
+			}
+			if looksCJK(e.Name()) {
+				cjk = append(cjk, full)
+			} else {
+				other = append(other, full)
+			}
+		}
+	}
+	for _, d := range dirs {
+		walk(d)
+	}
+	return append(cjk, other...)
+}
+
+// parseFontFile 试解析一个字体文件, 返回其首个 face。
+func parseFontFile(path string) (*opentype.Font, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	col, err := opentype.ParseCollection(data)
+	if err != nil {
+		return nil, err
+	}
+	return col.Font(0)
 }
 
 var (
@@ -49,23 +215,19 @@ func loadBaseFontLocked() (*opentype.Font, error) {
 	if baseFont != nil {
 		return baseFont, nil
 	}
+	// 扫描型候选 (Linux) 到这里才补齐: 它要遍历目录并真解析字体头, 放 init()
+	// 会让"从不用 GUI"的脚本平白付一次开销。initFontCandidates 自带 sync.Once,
+	// 且**不取 fontMu** —— 调用方已经持有, 再取会自锁。
+	initFontCandidates()
 	var lastErr error
 	for _, path := range fontCandidates {
 		if filepath.Base(path) == "" {
 			continue
 		}
-		data, err := os.ReadFile(path)
+		f, err := parseFontFile(path)
 		if err != nil {
-			lastErr = err
-			continue
-		}
-		col, err := opentype.ParseCollection(data)
-		if err != nil {
-			lastErr = fmt.Errorf("%s: %w", filepath.Base(path), err)
-			continue
-		}
-		f, err := col.Font(0)
-		if err != nil {
+			// 带上文件名: 候选动辄几十上百条, 只说"解析失败"没法定位是哪台
+			// 机器上哪个文件的问题。
 			lastErr = fmt.Errorf("%s: %w", filepath.Base(path), err)
 			continue
 		}
