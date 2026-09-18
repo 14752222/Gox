@@ -40,10 +40,13 @@ func mountTestApp(t *testing.T, root *GuiNode, w, h int) (*fakeSurface, *app) {
 		fullDirty:  true,
 		dirtyNodes: map[*GuiNode]struct{}{},
 	}
-	appMu.Lock()
-	activeApp = a
-	appMu.Unlock()
+	// P3-6: 登记进注册表 (不只是 activeApp) —— Pump 现在按注册表遍历窗口,
+	// 只写 activeApp 的替身会在 Pump 里被完全看不见。
+	registerApp(a)
 	t.Cleanup(func() {
+		// 摘除 + 清 activeApp: 注册表是**包级**状态, 留着会让下一个用例的
+		// Pump 去等一个再也不会来事件的假 Surface (表现为整个测试挂住)。
+		unregisterApp(a)
 		appMu.Lock()
 		if activeApp == a {
 			activeApp = nil

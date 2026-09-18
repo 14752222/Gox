@@ -313,7 +313,7 @@ func BenchmarkDirtyFrame1000Nodes(b *testing.B) {
 			target = c
 		}
 	}
-	if err := Mount(root, WindowConfig{Width: 400, Height: 900}); err != nil {
+	if _, err := Mount(root, WindowConfig{Width: 400, Height: 900}); err != nil {
 		b.Fatal(err)
 	}
 

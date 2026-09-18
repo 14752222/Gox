@@ -145,7 +145,8 @@ func selectInChain(n *GuiNode) *GuiNode {
 func attachSelectHandler(n *GuiNode) {
 	user := n.PropHandler("onClick")
 	n.Props["onClick"] = object.NewBuiltin("selectToggle", func(args ...object.Value) object.Value {
-		a := currentApp()
+		// 按节点归属找 app (多窗口下 currentApp 可能指向别的窗口)
+		a := appOfNode(n)
 		if a == nil {
 			return object.UndefinedSingleton
 		}
@@ -214,7 +215,7 @@ func (a *app) openSelect(sel *GuiNode) {
 	sel.expanded = true
 	sel.popup = popup
 	sel.highlight = 0
-	markFullDirty()
+	markFullDirtyFor(sel)
 }
 
 // closeSelect 收起下拉弹层并销毁它 (递归注销选项行上的 effect)。
@@ -238,7 +239,7 @@ func (a *app) closeSelect(sel *GuiNode) {
 		a.setFocus(sel)
 	}
 	disposeNode(popup) // 会把它从 sel.Children 里摘掉 (Parent 保持有效)
-	markFullDirty()
+	markFullDirtyFor(sel)
 }
 
 // chooseOption 选中一个选项: 收起弹层 → 焦点收回 select → 派发 onChange。
@@ -279,7 +280,8 @@ func buildSelectPopup(sel *GuiNode) *GuiNode {
 		row.owner = sel
 		row.Parent = popup
 		row.Props["onClick"] = object.NewBuiltin("selectOption", func(args ...object.Value) object.Value {
-			if app := currentApp(); app != nil {
+			// 按节点归属找 app: row 挂在 sel 下, sel 在某个窗口的树里
+			if app := appOfNode(sel); app != nil {
 				app.chooseOption(sel, o.value)
 			}
 			return object.UndefinedSingleton

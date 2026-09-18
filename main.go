@@ -34,11 +34,18 @@ func runFile(path string) {
 	result := vm.LastPopped()
 
 	// 打印结果 (如果不是 undefined)
-	if _, isUndef := result.(*object.Undefined); !isUndef && result != nil {
+	//
+	// GUI 模式下不打印 (P3-6): render() 现在返回**窗口句柄对象**, 于是所有
+	// 以 `render(...)` 收尾的演示脚本都会往终端回显一行
+	// `{ close: [Function: close], isClosed: [Function: isClosed] }` ——
+	// 纯噪音, 而且窗口已经开出来了, 这行也不提供任何信息。
+	// 判据放在"有没有窗口"而不是"值是不是 Window": 前者是脚本的真实语义
+	// (GUI 脚本的产出是窗口), 后者会让宿主依赖 gfx 的内部类型。
+	if _, isUndef := result.(*object.Undefined); !isUndef && result != nil && !gfx.Active() {
 		fmt.Println(result.Inspect())
 	}
 
-	// 运行事件循环: GUI 模式用消息泵接入 (窗口关闭退出), 普通模式跑定时器
+	// 运行事件循环: GUI 模式用消息泵接入 (全部窗口关闭才退出), 普通模式跑定时器
 	var loopErr error
 	if gfx.Active() {
 		loopErr = vm.RunTimersWithPump(gfx.Pump)

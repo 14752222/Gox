@@ -186,7 +186,11 @@ func menuPopupOf(n *GuiNode) *GuiNode {
 func attachMenuHandler(n *GuiNode) {
 	user := n.PropHandler("onClick")
 	n.Props["onClick"] = object.NewBuiltin("menuToggle", func(args ...object.Value) object.Value {
-		a := currentApp()
+		// 按**节点归属**找 app, 不能用 currentApp: 多窗口下 currentApp 是
+		// "最近挂载的窗口", 而这里的 n 明确属于某一个具体窗口 ——
+		// 用错窗口会让 toggleMenu 去改另一个窗口的展开状态 (A 的菜单开了,
+		// 看到的却是 B 的界面变化)。
+		a := appOfNode(n)
 		if a == nil {
 			return object.UndefinedSingleton
 		}
@@ -220,7 +224,7 @@ func (a *app) openMenu(m *GuiNode) {
 	m.expanded = true
 	m.menuHighlight = -1
 	m.menuPopup = a.buildMenuPopup(m, items, menuIsTop(m))
-	markFullDirty()
+	markFullDirtyFor(m)
 }
 
 // closeMenu 收起 menu 及其所有后代子菜单。
@@ -234,7 +238,7 @@ func (a *app) closeMenu(m *GuiNode) {
 	a.closeMenuSubtree(m)
 	m.expanded = false
 	m.menuHighlight = -1
-	markFullDirty()
+	markFullDirtyFor(m)
 }
 
 // closeMenuSubtree 销毁 m 的下拉弹层 (含全部后代子菜单状态)。
@@ -337,7 +341,8 @@ func (a *app) buildMenuPopup(m *GuiNode, items []menuItemSpec, dirDown bool) *Gu
 		// 处理器的行点不中, 悬停链也起不来。分隔线给一个空处理器, 它就
 		// 变成了"吞掉点击但不做任何事"的一行 —— 正是分隔线该有的行为。
 		row.Props["onClick"] = object.NewBuiltin("menuItem", func(args ...object.Value) object.Value {
-			if app := currentApp(); app != nil {
+			// 按节点归属找 app (同 attachMenuHandler 的理由)
+			if app := appOfNode(m); app != nil {
 				app.clickMenuItem(m, idx)
 			}
 			return object.UndefinedSingleton
@@ -438,7 +443,7 @@ func (a *app) openSubmenu(row *GuiNode, sub *GuiNode) {
 	sub.expanded = true
 	sub.menuHighlight = -1
 	sub.menuPopup = a.buildMenuPopup(sub, items, false)
-	markFullDirty()
+	markFullDirtyFor(row)
 }
 
 // childOf 报告 c 是否已经是 n 的直接子节点。
@@ -584,7 +589,8 @@ func (a *app) openContextMenu(x, y int, items []*GuiNode) {
 			row.menuDisabled = it.disabled
 		}
 		row.Props["onClick"] = object.NewBuiltin("menuItem", func(args ...object.Value) object.Value {
-			if app := currentApp(); app != nil {
+			// 按节点归属找 app: 右键菜单挂在**根节点**下, 归属明确
+			if app := appOfNode(m); app != nil {
 				app.clickContextMenuItem(m, idx)
 			}
 			return object.UndefinedSingleton
@@ -594,7 +600,7 @@ func (a *app) openContextMenu(x, y int, items []*GuiNode) {
 	m.menuPopup = popup
 	m.Children = append(m.Children, popup)
 	root.Children = append(root.Children, m)
-	markFullDirty()
+	markFullDirtyFor(m)
 }
 
 // clickContextMenuItem 处理右键菜单项的点击: 关掉菜单 (连节点一起摘掉) 再派发。
@@ -639,7 +645,7 @@ func (a *app) closeContextMenu() {
 	}
 	if removed {
 		root.Children = kept
-		markFullDirty()
+		markFullDirtyFor(root)
 	}
 }
 

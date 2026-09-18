@@ -28,7 +28,11 @@ import (
 // 捕获), 合并脏矩形后只清空+重绘+上屏受影响区域。总面积超过帧的 85%
 // 时退化为整帧重绘。
 
-// app 单窗口应用状态 (v1 全局单例)。
+// app 是**一个窗口**的应用状态 (P3-6 起可同时存在多个, 见 apps 注册表)。
+//
+// 每个 app 独占一个 Surface、一棵元素树、一套交互态 (悬停/按压/焦点)。
+// 跨窗口不共享任何状态: 键盘焦点、拖动目标、快捷键表都是"本窗口"的 ——
+// 键盘事件由平台投递到具体窗口, 天然隔离。
 type app struct {
 	mu         sync.Mutex
 	surface    Surface
@@ -55,10 +59,25 @@ type app struct {
 	// 全局快捷键表 (P3-5): 从树上 menuitem 的 shortcut prop 收集而来。
 	// 惰性重建 (表为空时按键触发一次), 因为它只在"菜单项集合变化"时需要更新。
 	shortcuts []menuShortcutEntry
+
+	// surfaceClosed 标记"事件源已结束" (P3-6): WaitEvents 返回 false 或
+	// EventClose 到达时置位, 由 processEvents 在冲刷完本轮后真正 close。
+	surfaceClosed bool
 }
 
 var (
-	appMu     sync.Mutex
+	appMu sync.Mutex
+	// apps 是全部活动窗口的注册表 (P3-6)。键是 Surface 而不是 app 指针:
+	// 事件泵要按"谁还有事件"遍历, 而 surface 是 app 与后端之间唯一稳定的
+	// 身份 —— 拿 Surface 反查 app 也正是 WndProc 回调侧的常见需求。
+	apps map[Surface]*app
+	// activeApp 是"最近 Mount 的那个窗口"。
+	//
+	// **它不是焦点窗口**, 而是刻意保留的兼容语义 (A 方案): 剪贴板 / 原生
+	// 对话框这些"本来就没有明确 owner"的能力继续经它取 surface, 于是单窗口
+	// 场景下行为与 P3-5 完全一致 (既有 22 处读取与全部用例零改动)。
+	// 多窗口时它们指向最新窗口 —— 这是有意的取舍: 剪贴板本就是进程级资源,
+	// 而对话框需要一个 owner (传最近窗口比"传第一个"更符合直觉)。
 	activeApp *app
 )
 
@@ -66,7 +85,73 @@ var (
 func Active() bool {
 	appMu.Lock()
 	defer appMu.Unlock()
-	return activeApp != nil
+	return len(apps) > 0
+}
+
+// WindowCount 返回当前活动窗口数 (调试/测试用)。
+func WindowCount() int {
+	appMu.Lock()
+	defer appMu.Unlock()
+	return len(apps)
+}
+
+// registerApp 把新窗口写入注册表并把 activeApp 指向它。
+func registerApp(a *app) {
+	appMu.Lock()
+	if apps == nil {
+		apps = map[Surface]*app{}
+	}
+	apps[a.surface] = a
+	activeApp = a
+	appMu.Unlock()
+}
+
+// unregisterApp 摘掉一个窗口 (close 时调用), 幂等。
+//
+// activeApp 只在恰好指向被摘掉的那个时才改: 多窗口下关掉一个旧窗口
+// 不该让"最近窗口"语义跳回别的窗口 —— 但若关掉的正是它, 就得改指
+// 剩下任意一个 (否则 currentApp() 会返回已关闭的窗口)。
+func unregisterApp(a *app) {
+	appMu.Lock()
+	delete(apps, a.surface)
+	if activeApp == a {
+		activeApp = nil
+		for _, other := range apps {
+			activeApp = other
+			break
+		}
+	}
+	appMu.Unlock()
+}
+
+// appsSnapshot 取当前全部**存活**窗口的快照, 并顺手清掉已关闭的条目。
+//
+// 自愈而不是只读是刻意的: close() 之外的路径 (后端直接销毁窗口、测试里
+// 遗留的替身) 都可能让注册表里留下"已经不再送事件"的 app, 而 Pump 若去等
+// 它们就会**永久挂住** (假 Surface 的 WaitEvents 只等到超时, 真窗口的
+// 已销毁句柄同理)。这里把清理与遍历放在同一把锁里, 保证"快照里全是活的"。
+func appsSnapshot() []*app {
+	appMu.Lock()
+	defer appMu.Unlock()
+	out := make([]*app, 0, len(apps))
+	for s, a := range apps {
+		a.mu.Lock()
+		dead := a.closed
+		a.mu.Unlock()
+		if dead {
+			delete(apps, s)
+			continue
+		}
+		out = append(out, a)
+	}
+	return out
+}
+
+// appForSurface 按 Surface 反查 app (WndProc 事件归属 / 后端回调用)。
+func appForSurface(s Surface) *app {
+	appMu.Lock()
+	defer appMu.Unlock()
+	return apps[s]
 }
 
 // Invalidate 整帧标脏 (resize 等)。
@@ -74,11 +159,36 @@ func Invalidate() {
 	markFullDirty()
 }
 
+// appOfNode 找节点所属的窗口: 沿 Parent 走到根, 再按根盒子认不出窗口,
+// 所以改成"沿 Parent 走上去, 再在注册表里找根 == 该节点的 app"。
+//
+// 为什么需要它: 属性变化 (effect 写回) 发生在节点上, 而节点自己不持有
+// 窗口引用。多窗口下"标脏"必须标对窗口, 否则 A 窗口的属性变化会让 B 窗口
+// 重绘 (资源浪费) 而 A 自己不重绘 (界面不更新)。
+func appOfNode(n *GuiNode) *app {
+	if n == nil {
+		return nil
+	}
+	r := n
+	for r.Parent != nil {
+		r = r.Parent
+	}
+	appMu.Lock()
+	defer appMu.Unlock()
+	for _, a := range apps {
+		if a.root == r {
+			return a
+		}
+	}
+	// 没找到 (节点还没挂载 / 已卸载): 退化为 activeApp。
+	// 这不是错误 —— 接线期间的 effect 可能先于 Mount 跑, 丢掉这次标脏
+	// 也不影响最终画面 (Mount 自带首帧 fullDirty)。
+	return activeApp
+}
+
 // markNodeDirty 节点级标脏 (effect 写回属性时调用)。
 func markNodeDirty(n *GuiNode) {
-	appMu.Lock()
-	a := activeApp
-	appMu.Unlock()
+	a := appOfNode(n)
 	if a == nil {
 		return
 	}
@@ -96,6 +206,10 @@ func markNodeDirty(n *GuiNode) {
 // 弹层的展开/收起必须走这条: 弹层新覆盖 (或刚让出) 的那片区域不属于任何
 // "框发生了变化" 的节点 —— 节点已经被摘掉了, diffRects 从树上根本看不到它,
 // 局部重绘的脏矩形表达不了"擦掉刚刚消失的弹层", 结果就是残留一块下拉框。
+//
+// 第二个参数形式 markFullDirtyFor 是 P3-6 加的: 弹层状态挂在节点上, 而
+// "标脏哪个窗口"要按节点归属算 (见 appOfNode)。无参形式沿用 activeApp,
+// 给"没有具体节点"的调用点 (resize / Invalidate) 用。
 func markFullDirty() {
 	appMu.Lock()
 	a := activeApp
@@ -109,7 +223,24 @@ func markFullDirty() {
 	a.mu.Unlock()
 }
 
-// currentApp 返回当前挂载的应用 (Go 侧内置回调拿不到 app 指针时用)。
+// markFullDirtyFor 按节点归属整帧标脏 (弹层展开/收起路径走它)。
+func markFullDirtyFor(n *GuiNode) {
+	a := appOfNode(n)
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.needDraw = true
+	a.fullDirty = true
+	a.mu.Unlock()
+}
+
+// currentApp 返回"最近挂载"的应用。
+//
+// 语义说明 (P3-6): 它不是"焦点窗口" —— 用户点了哪个窗口不改变它。
+// 需要"事件属于哪个窗口"时用 appForSurface, 需要"节点属于哪个窗口"时用
+// appOfNode; 只有那些**没有具体归属**的能力 (剪贴板 / 原生对话框 / 菜单
+// 模块入口) 才用 currentApp。
 func currentApp() *app {
 	appMu.Lock()
 	defer appMu.Unlock()
@@ -117,73 +248,120 @@ func currentApp() *app {
 }
 
 // Pump 是事件泵, 作为 vm.RunTimersWithPump 的 pump 回调:
-// 等待窗口消息 (至多 maxWait, <=0 表示无限) → 处理事件 → 执行 PostTask →
-// 有脏区则重绘。窗口关闭后返回 false 结束事件循环。
+// 等待**全部窗口**的消息 (至多 maxWait, <=0 表示无限) → 处理各窗口事件 →
+// 执行 PostTask (只做一次) → 有脏区的窗口各自重绘。
+// **全部窗口关闭**后返回 false 结束事件循环。
+//
+// 单窗口下与 P3-5 逐字节等价: 遍历只有一个元素, 顺序与结论完全一致。
 func Pump(maxWait time.Duration) bool {
-	appMu.Lock()
-	a := activeApp
-	appMu.Unlock()
-	if a == nil {
+	list := appsSnapshot()
+	if len(list) == 0 {
 		return false
 	}
-	return a.pump(maxWait)
+	// 等待阶段: 逐个窗口等一遍预算 (见 sliceWait)。注意 WaitEvents 的返回值
+	// 不能当作"窗口已关闭"直接退出 —— 只标记即可, 真正的关闭判定放在
+	// processEvents 里 (那里才会看到 EventClose)。
+	for _, a := range list {
+		if !a.surfaceAlive() {
+			continue
+		}
+		if !a.surface.WaitEvents(sliceWait(maxWait, len(list))) {
+			a.markSurfaceClosed()
+		}
+	}
+	// 任务队列是全局的: 每次 Pump 只排空一次 (多个窗口的 pump 不该各排一次,
+	// 否则同一批任务会被执行多次)。
+	DrainTasks()
+
+	survived := 0
+	for _, a := range list {
+		if a.processEvents() {
+			survived++
+		}
+	}
+	return survived > 0
 }
 
-func (a *app) pump(maxWait time.Duration) bool {
-	// 1) 等待并分发窗口消息 (WndProc 只投递事件, 不执行 JS)
-	if !a.surface.WaitEvents(maxWait) {
-		a.close()
-		return false
+// multiWindowWaitCap 是多窗口时单个窗口的等待上限。
+//
+// 为什么需要它: 单窗口下 maxWait<=0 (无限期) 是合理的 —— 唯一的窗口就是
+// 唯一的事件源。多窗口下**不能**对第一个窗口无限期等待: 那样第二个窗口的
+// 事件只有在第一个窗口"醒了"之后才会被处理。Win32 的消息队列是线程级共享的
+// (所以碰巧也能work), 但 X11 那种"单连接按窗口分发"的后端没有共享队列,
+// 会真的卡住。所以多窗口时把无限期换成一个有界切片, 轮流醒来检查所有窗口。
+//
+// 32ms ≈ 两帧: 足够短, 不至于让"另一个窗口的输入"有明显延迟感;
+// 又足够长, 避免空转轮询把 CPU 烧起来。单窗口路径不受影响 (仍无限期睡在
+// WaitEvents 里, 与 P3-5 完全一致)。
+const multiWindowWaitCap = 32 * time.Millisecond
+
+// sliceWait 把一个等待预算切给 n 个窗口。
+//
+//   - 只有一个窗口: 原样返回 (无限期 → 真正的阻塞式等待, 零空转);
+//   - 多个窗口 + 有限预算: 均分 (保证每个窗口都被轮到);
+//   - 多个窗口 + 无限期: 换成 multiWindowWaitCap 的有界切片。
+func sliceWait(maxWait time.Duration, n int) time.Duration {
+	if n <= 1 {
+		return maxWait
 	}
-	// 2) 执行投递任务
+	if maxWait <= 0 {
+		return multiWindowWaitCap
+	}
+	d := maxWait / time.Duration(n)
+	if d <= 0 {
+		d = time.Millisecond
+	}
+	return d
+}
+
+// pump 是单窗口泵 (测试与"只跑一个窗口"的内部调用点用)。
+func (a *app) pump(maxWait time.Duration) bool {
+	if !a.surface.WaitEvents(maxWait) {
+		a.markSurfaceClosed()
+	}
 	DrainTasks()
-	// 3) 处理窗口事件 (点击 → 命中测试 → onClick, 在 VM 线程执行);
+	return a.processEvents()
+}
+
+// surfaceAlive 报告窗口是否还没被标记关闭。
+func (a *app) surfaceAlive() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return !a.closed
+}
+
+// markSurfaceClosed 标记"事件源已结束" (WaitEvents 返回 false 的窗口)。
+// 只标脏不直接 close: 关闭动作要等本轮事件处理完 (processEvents) 再做,
+// 否则同一轮里剩下的窗口会被跳过。
+func (a *app) markSurfaceClosed() {
+	a.mu.Lock()
+	a.surfaceClosed = true
+	a.mu.Unlock()
+}
+
+// processEvents 处理本窗口本轮的全部事件 + 脏区重绘。
+// 返回 false 表示本窗口已结束 (不再存活)。
+func (a *app) processEvents() bool {
+	// 1) 处理窗口事件 (点击 → 命中测试 → onClick, 在 VM 线程执行);
 	//    close 先记录, 冲刷完本轮重绘后再退出
 	sawClose := false
+	a.mu.Lock()
+	pending := a.surfaceClosed
+	a.mu.Unlock()
+	if pending {
+		sawClose = true
+	}
 	for {
 		ev, ok := a.takeEvent()
 		if !ok {
 			break
 		}
-		switch ev.Kind {
-		case EventClose:
+		a.dispatchEvent(ev)
+		if ev.Kind == EventClose {
 			sawClose = true
-		case EventMouseDown:
-			a.handleMouseDown(ev.X, ev.Y)
-		case EventMouseUp:
-			// 走完整流程: 结束拖动 (还鼠标捕获) → 清按压态 → 派发点击
-			a.handleMouseUp(ev.X, ev.Y)
-		case EventMouseMove:
-			a.handleMouseMove(ev.X, ev.Y)
-		case EventMouseWheel:
-			a.handleWheel(ev.X, ev.Y, ev.DeltaY)
-		case EventMouseRightUp:
-			a.handleContextMenu(ev.X, ev.Y)
-		case EventMouseLeave:
-			// 光标离开客户区 / 窗口失活: 清掉悬停与按压态
-			a.setHover(nil)
-			a.releasePress()
-			// 拖动中 (P2-8): 支持鼠标捕获的后端会在窗口外继续送事件, 可以
-			// 安心等 MouseUp; 不支持的后端则**永远等不到**, 只能在这里放弃,
-			// 否则 dragTarget 卡死 (下次移进窗口时没按键也会拖着滑块跑)。
-			if !a.hasPointerCapture() {
-				a.endDrag()
-			}
-		case EventKeyDown:
-			a.handleKey(ev.Key, "onKeyDown", ev)
-		case EventKeyUp:
-			a.handleKey(ev.Key, "onKeyUp", ev)
-		case EventResize:
-			a.mu.Lock()
-			a.needDraw = true
-			a.fullDirty = true
-			a.mu.Unlock()
-		case EventIMECommit:
-			// P2-7: 整批插入到当前焦点的编辑框 (焦点不可编辑时内部丢弃)
-			a.insertIMECommit(ev.Text)
 		}
 	}
-	// 4) 脏区重绘
+	// 2) 脏区重绘
 	// 输入框光标闪烁 (P2-1): 相位翻转时才标脏, 于是每次闪烁只重绘一帧,
 	// 而不是 60fps 常驻重绘 (光标闪烁不需要每一帧都变)。
 	a.tickCaretBlink()
@@ -198,6 +376,47 @@ func (a *app) pump(maxWait time.Duration) bool {
 		return false
 	}
 	return true
+}
+
+// dispatchEvent 分发一条窗口事件 (从 pump 里拆出来: 单窗口与多窗口共用)。
+func (a *app) dispatchEvent(ev Event) {
+	switch ev.Kind {
+	case EventClose:
+		// 由调用方 (processEvents) 统一记录后退出
+	case EventMouseDown:
+		a.handleMouseDown(ev.X, ev.Y)
+	case EventMouseUp:
+		// 走完整流程: 结束拖动 (还鼠标捕获) → 清按压态 → 派发点击
+		a.handleMouseUp(ev.X, ev.Y)
+	case EventMouseMove:
+		a.handleMouseMove(ev.X, ev.Y)
+	case EventMouseWheel:
+		a.handleWheel(ev.X, ev.Y, ev.DeltaY)
+	case EventMouseRightUp:
+		a.handleContextMenu(ev.X, ev.Y)
+	case EventMouseLeave:
+		// 光标离开客户区 / 窗口失活: 清掉悬停与按压态
+		a.setHover(nil)
+		a.releasePress()
+		// 拖动中 (P2-8): 支持鼠标捕获的后端会在窗口外继续送事件, 可以
+		// 安心等 MouseUp; 不支持的后端则**永远等不到**, 只能在这里放弃,
+		// 否则 dragTarget 卡死 (下次移进窗口时没按键也会拖着滑块跑)。
+		if !a.hasPointerCapture() {
+			a.endDrag()
+		}
+	case EventKeyDown:
+		a.handleKey(ev.Key, "onKeyDown", ev)
+	case EventKeyUp:
+		a.handleKey(ev.Key, "onKeyUp", ev)
+	case EventResize:
+		a.mu.Lock()
+		a.needDraw = true
+		a.fullDirty = true
+		a.mu.Unlock()
+	case EventIMECommit:
+		// P2-7: 整批插入到当前焦点的编辑框 (焦点不可编辑时内部丢弃)
+		a.insertIMECommit(ev.Text)
+	}
 }
 
 // caretPhase 记录上一次重绘时光标相位的取值: 只有相位翻转的那一帧才需要
@@ -788,17 +1007,17 @@ func takeCallbackErr() error {
 	return nil
 }
 
-// close 结束应用 (清空 activeApp, 幂等)。
+// close 结束本窗口 (从注册表摘除, 幂等)。
+//
+// 与 P3-5 的差异: 不再无条件把 activeApp 清空 —— 那是单窗口的写法,
+// 多窗口下会把"最近窗口"错误地清掉 (剩下还有活着的窗口, 但
+// currentApp() 返回 nil, 剪贴板/原生对话框全失效)。
 func (a *app) close() {
 	a.closeOnce.Do(func() {
 		a.mu.Lock()
 		a.closed = true
 		a.mu.Unlock()
-		appMu.Lock()
-		if activeApp == a {
-			activeApp = nil
-		}
-		appMu.Unlock()
+		unregisterApp(a)
 	})
 }
 
@@ -1087,10 +1306,11 @@ func jsRender(args ...object.Value) object.Value {
 		}
 	}
 
-	if err := Mount(root, cfg); err != nil {
+	if win, err := Mount(root, cfg); err != nil {
 		return object.NewErrorWithName("Error", "gfx: "+err.Error())
+	} else {
+		return win.jsObject()
 	}
-	return object.UndefinedSingleton
 }
 
 // jsOpenContextMenu 是 openContextMenu(x, y, items): 在 (x, y) 处就地弹出菜单。
@@ -1127,15 +1347,18 @@ func jsOpenContextMenu(args ...object.Value) object.Value {
 
 // Mount 创建窗口并挂载元素树 (JS render 的 Go 层实现, 测试可用假工厂替身)。
 // 调用后主 goroutine 锁定 OS 线程 (窗口消息投递到创建线程)。
-func Mount(root *GuiNode, cfg WindowConfig) error {
+//
+// P3-6 起可多次调用 (每次开一个新窗口), 返回该窗口的句柄。返回值而不是
+// 只返回 error 是必要的: 脚本要能 `w.close()` 关掉**指定的**那个窗口。
+func Mount(root *GuiNode, cfg WindowConfig) (*Window, error) {
 	if defaultFactory == nil {
-		return fmt.Errorf("no window backend available on this platform")
+		return nil, fmt.Errorf("no window backend available on this platform")
 	}
 	runtime.LockOSThread()
 
 	surface, err := defaultFactory.Create(cfg)
 	if err != nil {
-		return fmt.Errorf("create window: %w", err)
+		return nil, fmt.Errorf("create window: %w", err)
 	}
 
 	a := &app{
@@ -1144,10 +1367,8 @@ func Mount(root *GuiNode, cfg WindowConfig) error {
 		fullDirty:  true,
 		dirtyNodes: map[*GuiNode]struct{}{},
 	}
-	appMu.Lock()
-	activeApp = a
-	appMu.Unlock()
+	registerApp(a)
 
 	a.redraw() // 首帧
-	return nil
+	return &Window{a: a}, nil
 }

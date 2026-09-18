@@ -166,6 +166,7 @@ render(
 ```
 
 - 点击按钮 → `setCount` 更新信号 → 依赖该信号的属性/文本节点自动标脏 → 脏矩形合并后只重绘受影响区域
+- `render()` 返回窗口句柄 `{close(), isClosed()}`，可**调用多次**开多窗口（各窗口独立元素树与事件循环，全关才退出进程）
 - 未实现的标签（拼错的名字、或还没做进 `knownTags` 的名字）会在 stderr 打印一次性警告，并仍按普通盒子渲染（不再静默成空盒子）
 - 窗口后端：Windows（纯 syscall win32）与 Linux（X11，Wayland 下走 XWayland）；macOS GUI 后端尚未实现
 - 字体：Windows/macOS 走静态候选路径；Linux 惰性扫描系统字体目录（`/usr/share/fonts`、`~/.local/share/fonts` 等，**CJK 字体优先**、条目上限 2000）。找不到可用字体时文字整体不渲染，错误里会给出候选条数与最后一个失败原因
@@ -390,6 +391,43 @@ render(
 
 示例：`testdata/menu_demo.js`。
 
+**多窗口**
+
+`render()` 可以调用多次，每次开一个独立窗口 —— 各有自己的元素树、焦点、交互态与事件循环：
+
+```js
+import { h, window, render } from "gx/gfx";
+import { createSignal } from "gx/solid";
+
+const n = createSignal(0);                       // 想跨窗口共享状态就在顶层建信号
+
+function counter(title) {
+  return h("column", { padding: 12, gap: 8 },
+    h("text", null, title),
+    h("text", null, () => "count = " + n()),
+    h("button", { onClick: () => n(n() + 1) }, "+1"),
+    h("button", { onClick: () => wB.close() }, "close me"));
+}
+
+const wA = render(counter("Window A"), window({ title: "A", width: 320, height: 200 }));
+const wB = render(counter("Window B"), window({ title: "B", width: 320, height: 200 }));
+```
+
+- `render()` 返回**窗口句柄**：`w.close()` 关掉这个窗口，`w.isClosed()` 查状态。
+  关闭是**异步受理**的（内部经 `Post` 投回 GUI 线程，避免在遍历注册表时改注册表），
+  返回时窗口可能还没真正消失；关窗口是幂等的。
+- **关一个，其余继续跑**；只有**全部窗口都关掉**，事件循环才退出、进程才结束。
+- 每个窗口是**各自跑一遍组件函数**：两张窗口的节点不共享。想同步状态就在脚本顶层
+  共享 `createSignal`（如上例的 `n`），别指望同名全局变量自动串起来。
+- 每个窗口**焦点独立**：在 B 里点击不会把 A 的焦点框带过去。
+- 事件泵对多个窗口是**切片轮询**（Windows 有线程级消息队列，可共享；X11 是单连接、
+  没有共享队列，对第一个窗口无限期阻塞会饿死其余窗口）—— 所以多窗口下等待上限是
+  32ms 的有界轮询，单窗口仍是原来的阻塞零空转。
+- `gfx.Post` 的任务在当前版本是**广播**（所有窗口的泵各处理一次）；现有任务都幂等。
+
+示例：`testdata/multiwindow_demo.js`（开两个窗口各自计数，`File - Close window` / `Ctrl+Q`
+关掉当前窗口，关一个另一个继续跑）。
+
 **多行文本与自动换行**
 
 `<text>` 加 `wrap` 就变成会自动折行的文本块（按可用宽度贪心断行，中西文一视同仁），
@@ -536,6 +574,7 @@ h("column", null,
 `testdata/transition_demo.js`（过渡动画：宽度 / 成组淡出 / 位移 / 命令式 animate）、
 `testdata/dialog_native_demo.js`（原生对话框：alert / confirm / 打开文件，全 async await）、
 `testdata/menu_demo.js`（菜单栏：下拉 / 子菜单 / 禁用项 / 快捷键 / 右键菜单）、
+`testdata/multiwindow_demo.js`（多窗口：两窗口独立计数、关一个另一个继续跑、全关退出）、
 `testdata/counter_demo.js` 与 `testdata/gui_demo.js`（响应式基础）。
 
 ## 打包成独立可执行文件

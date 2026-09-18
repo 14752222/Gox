@@ -203,7 +203,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	if result := runtimeVM.LastPopped(); result != nil {
+	// GUI 模式下不打印 (P3-6): render() 返回窗口句柄对象, 打印出来纯属噪音。
+	// 判据与 main.go 一致 —— 看"有没有挂载窗口", 而不是值的类型。
+	if result := runtimeVM.LastPopped(); result != nil && !gfx.Active() {
 		if _, isUndef := result.(*object.Undefined); !isUndef {
 			fmt.Println(result.Inspect())
 		}

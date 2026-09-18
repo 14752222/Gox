@@ -95,7 +95,26 @@ type WindowFactory interface {
 var defaultFactory WindowFactory
 
 // SetDefaultFactory 注册默认窗口后端 (由平台包 init 调用)。
-func SetDefaultFactory(f WindowFactory) { defaultFactory = f }
+//
+// 传 nil 表示"撤销后端", 此时**顺带清空窗口注册表** (P3-6)。
+// 语义是自洽的: 没有后端就不可能有活着的窗口, 留下注册表条目只会让 Pump
+// 去等一个再也不会送事件的 Surface (表现为事件循环永久挂住)。
+// 生产代码只以非 nil 调用 (平台包 init); nil 这条路是测试拆卸用的,
+// 在那儿它替代了"逐个窗口 close"的样板代码。
+func SetDefaultFactory(f WindowFactory) {
+	appMu.Lock()
+	defer appMu.Unlock()
+	defaultFactory = f
+	if f == nil {
+		for s, a := range apps {
+			a.mu.Lock()
+			a.closed = true
+			a.mu.Unlock()
+			delete(apps, s)
+		}
+		activeApp = nil
+	}
+}
 
 // ===== PostTask 队列 =====
 // WndProc 等平台回调绝不直接执行 JS, 一律投递任务由 Pump 在 VM 线程执行。
@@ -106,6 +125,14 @@ var (
 )
 
 // Post 投递一个任务到 GUI 线程。
+//
+// P3-6 多窗口语义: 队列是**全局的**, 任务没有目标窗口 —— Pump 每轮只
+// DrainTasks 一次, 于是任务在"任意窗口还在跑"时都会被执行 (v1 的广播语义)。
+// 目前唯一的调用点是 Window.Close (关自己) 与平台回调用它推跨线程动作,
+// 二者都不依赖执行时机落在某个具体窗口上, 所以广播是安全的。
+// 若将来出现"任务必须由特定窗口处理"的需求 (如按窗口分发的 PostMessage),
+// 再给 Post 加目标参数 (Surface 或 *Window) 并在这里做路由 —— 不要现在
+// 猜, 因为多一个参数会让所有既有调用点都要解释"这个任务属于谁"。
 func Post(task func()) {
 	postMu.Lock()
 	postQueue = append(postQueue, task)
@@ -113,6 +140,8 @@ func Post(task func()) {
 }
 
 // DrainTasks 取出并执行全部排队任务 (仅应在 GUI 线程/Pump 内调用)。
+// 多窗口下由 Pump 每轮调用**一次** (不是每个窗口一次), 否则同一批任务
+// 会被执行多遍。
 func DrainTasks() {
 	for {
 		postMu.Lock()

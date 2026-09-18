@@ -337,6 +337,16 @@ func evalCanvasUI(t *testing.T, src string) (*vm.VM, *GuiNode, *fakeSurface) {
 	if a == nil {
 		t.Fatalf("脚本未挂载窗口")
 	}
+	// P3-6: 注册表是包级状态, 用完必须摘掉 —— 否则下一个用例的 Pump
+	// 会遍历到本用例遗留的假 Surface 并等它的事件 (永远不来)。
+	t.Cleanup(func() {
+		unregisterApp(a)
+		appMu.Lock()
+		if activeApp == a {
+			activeApp = nil
+		}
+		appMu.Unlock()
+	})
 	return v, a.root, fake
 }
 
