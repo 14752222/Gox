@@ -11,7 +11,7 @@
 - **ES6+ 语言子集** — `let`/`const`（不支持 `var`）、函数与箭头函数、闭包、`class`、`async`/`await`、解构赋值、剩余/默认参数、展开、模板字符串、`for...of`、`try`/`catch`/`throw`、可选链 `?.`、空值合并 `??`、ES 模块 `import`/`export`，以及 **JSX 语法**（编译期降级为 `h(tag, props, ...children)` 调用）
 - **丰富的内置对象** — `Array` / `String` / `Number` / `Object` / `Boolean` / `Math` / `JSON` / `Map` / `Set` / `WeakMap` / `WeakSet` / `Symbol` / `BigInt` / `RegExp` / `Proxy` / `Reflect` / `Iterator` / `Promise` / `ArrayBuffer` / `DataView`（TypedArray 家族）/ `WeakRef` / `FinalizationRegistry` / 完整错误类型族 / `Temporal`（取代 `Date` 的现代日期时间 API）
 - **宿主能力模块** — `fs`（Node 风格，同步 + 异步两套）、`http`（客户端 `get`/`request` + 服务端 `createServer`）、`fetch`、`path`、`process`、`stats`
-- **自研 GUI 渲染层** — `gx/gfx` 模块：纯 Go 软件光栅化，flex 风格布局（`column`/`row`/`gap`/`padding`）、命中测试、脏矩形局部重绘；win32（纯 syscall 无 cgo）与 X11 窗口后端，产物为无动态库依赖的静态单文件
+- **自研 GUI 渲染层** — `gx/gfx` 模块：纯 Go 软件光栅化，flex 风格布局（`column`/`row`/`gap`/`padding`）、命中测试、脏矩形局部重绘；win32（纯 syscall 无 cgo）与 X11 窗口后端，产物为无动态库依赖的静态单文件；配套 `gx/dialog`（原生消息框与文件对话框）等宿主能力模块
 - **事件循环** — `setTimeout` / `setInterval` / `requestIdleCallback`，以及精度可控的严格定时器变体（`setStrictTimeout` 等）；GUI 模式下事件循环接入窗口消息泵
 - **响应式编程** — Dart GetX 风格的 `obs` / `computed` / `ever` / `once`，以及 SolidJS 风格的 `gx/solid` 信号（`createSignal` / `createEffect` / `createMemo`）
 - **npm 分发** — [`@goxjs/goxjs`](npm/) 包内置 Windows/Linux/macOS × x64/arm64 五个平台的预编译二进制，`npm i -g @goxjs/goxjs` 即得 `goxjs` 命令
@@ -170,6 +170,7 @@ render(
 - 字体：Windows/macOS 走静态候选路径；Linux 惰性扫描系统字体目录（`/usr/share/fonts`、`~/.local/share/fonts` 等，**CJK 字体优先**、条目上限 2000）。找不到可用字体时文字整体不渲染，错误里会给出候选条数与最后一个失败原因
 - 输入法（IME）：`<input>` / `<textarea>` 支持候选词输入，一次提交只派发一次 `onInput`（**Windows 后端**；Linux 暂无）
 - 剪贴板：`clipboardReadText()` / `clipboardWriteText(text)`（**Windows 后端**；Linux 暂无，读返回空串、写返回 false）
+- 原生对话框：`gx/dialog` 的 `alert` / `confirm` / `openFile`，**都是 async**（返回 Promise，用 `await`）（**Windows 后端**；其它后端降级为写 stderr）
 
 事件：
 
@@ -303,6 +304,38 @@ const cancel = animate(0, 100, 600, (v) => setProgress(v), () => setDone(true))
 `opacity` 是**成组**属性：父节点半透明 = 整棵子树一起淡。
 动画期间布局读到的是**插值**，所以兄弟节点会跟着让位。帧驱动复用与光标闪烁同一套 16ms 定时器，
 **没有活动动画时不占定时器**（静止零开销）。示例：`testdata/transition_demo.js`。
+
+**原生系统对话框**
+
+`gx/dialog` 把系统消息框与"打开文件"对话框直接接到脚本上：
+
+```js
+import { alert, confirm, openFile } from "gx/dialog"
+
+await alert("All changes have been saved.", "Gox")          // 只有一个"确定"
+const yes = await confirm("Delete this file?", "Please confirm")  // → true / false
+const path = await openFile({                               // → 完整路径 / null（取消）
+  title: "Pick a source file",
+  filter: [
+    { name: "Text files", pattern: "*.txt;*.md" },
+    { name: "All files",  pattern: "*.*" },
+  ],
+})
+```
+
+三件事值得留意：
+
+- **是 async 的**（与同步的剪贴板不同）。实现是"同步落地 + 异步外观"：Go 侧真的阻塞到用户作答，
+  Promise 的 resolve 投回脚本事件循环 —— 所以 `await` 之后的代码在对话框关掉前不会执行。
+- **模态期间界面不冻结**：消息框以主窗口为 owner，Windows 会自动替我们泵模态消息，
+  重绘 / 拖动都正常，也**不需要**自己写 goroutine 或消息循环。
+- **取消不是错误**：`openFile` 取消返回 `null`（与浏览器 File System Access API 一致），不必 try/catch。
+  **没有原生能力的后端会降级**：内容写到 stderr 并立刻返回（`confirm` 取 true、`openFile` 取 null）。
+
+> 语法提示：运行时只支持 `async function`，**不支持 `async () => {}`**。
+> 事件处理器要写成 `onClick: async function () { ... }`。
+
+示例：`testdata/dialog_native_demo.js`。
 
 **多行文本与自动换行**
 
@@ -448,6 +481,7 @@ h("column", null,
 `testdata/ime_demo.js`（输入法：候选词整批提交与光标跨批）、
 `testdata/clipboard_demo.js`（剪贴板：同步读写与失败降级）、
 `testdata/transition_demo.js`（过渡动画：宽度 / 成组淡出 / 位移 / 命令式 animate）、
+`testdata/dialog_native_demo.js`（原生对话框：alert / confirm / 打开文件，全 async await）、
 `testdata/counter_demo.js` 与 `testdata/gui_demo.js`（响应式基础）。
 
 ## 打包成独立可执行文件

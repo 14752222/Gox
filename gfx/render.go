@@ -918,6 +918,15 @@ func init() {
 			"animate": object.NewBuiltin("animate", jsAnimate),
 		}
 	})
+	// gx/dialog (P3-4) 单列一个模块: 它不依赖元素树, 只依赖"当前有没有窗口",
+	// 与 gx/gfx 的绑定关系比剪贴板还弱。
+	object.RegisterBuiltinModule("gx/dialog", func() map[string]object.Value {
+		return map[string]object.Value{
+			"alert":    object.NewBuiltin("alert", jsAlert),
+			"confirm":  object.NewBuiltin("confirm", jsConfirm),
+			"openFile": object.NewBuiltin("openFile", jsOpenFile),
+		}
+	})
 }
 
 // jsRAF 是 requestAnimationFrame: 以 ~60fps 帧间隔把回调挂到事件循环的

@@ -23,3 +23,5 @@
 2026-09-10 | P3 | 已完成: 字体子系统(x/image opentype, glyph LRU, 中西文直排) + margin/align/justify/flexGrow/文本固有尺寸 + 节点级脏矩形局部重绘上屏(bench 0.082ms/帧) + 键盘(焦点链)+rAF + jsbuild --gui(go mod tidy 步骤); 修复字体加载自死锁; counter_demo 源码(3次点击→count:3)与打包 exe(2次→count:2)双验收 | 无断点, P4 可启动
 2026-09-17 | P4 | 已完成: gfx/backend 选择器 + x11 后端(xgb: PutImage/事件/限时等待, vet 编译级验证) + cocoa 占位(止损: 无cgo无法加载dylib/无IMP, 路径分析 purego vs cgo) + jsbuild --target(windows/linux/darwin 三平台编译全绿, linux 产物 ELF 确认) + docs/desktop-distribution.md; WSL 未安装, x11/cocoa 运行时验证为待办 | 全部阶段完成
 2026-09-17 | - | 全部完成: P1–P4 四个阶段均已完成并验收, 报告齐全; 流水线结束, 后续延伸项(x11 真机验证/cocoa 落地/图标嵌入等)见 IDLE_TASK_REPORT_P4.md 遗留清单 | 无
+2026-09-18 | - | 全部完成 (重复触发): 无待办阶段, 本次空转 | 无
+2026-09-18 | GUI 补全(非闲时任务) | 批次 H 完成: P3-4 原生对话框 —— gx/dialog 模块(alert/confirm/openFile, 均 async 返回 Promise) + 可选接口 nativeDialogHost + win32 侧 MessageBoxW/GetOpenFileNameW 实现(OPENFILENAMEW Win64 布局固化为回归断言) + 11 个新测试(gfx 顶层 211→222, win32 4 例) + testdata/dialog_native_demo.js + 文档(index §21 / README); 发现并记录"运行时只支持 async function 不支持 async 箭头函数" | 下一批 I: P3-5 菜单栏/右键菜单

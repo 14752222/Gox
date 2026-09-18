@@ -1,6 +1,7 @@
 package gfx
 
 import (
+	"errors"
 	"image"
 	"image/color"
 	"sync"
@@ -133,6 +134,27 @@ type fakeSurface struct {
 	w, h    int
 	shown   int
 	regions []image.Rectangle // 最近一次 ShowRegions 的区域 (nil=整帧)
+
+	// dialog 非空时, fakeSurface 就同时满足 nativeDialogHost 可选接口 (P3-4)。
+	// 字段放在这里而不是各测试文件里加包装类型, 是为了让"注入假原生框"
+	// 与其它可选接口 (剪贴板等) 用同一种写法。
+	dialog *fakeDialogHost
+}
+
+// ShowMessage 转发给注入的假原生框 (未注入时返回错误 = "后端不支持")。
+func (f *fakeSurface) ShowMessage(kind NativeDialogKind, title, message string) (bool, error) {
+	if f.dialog == nil {
+		return false, errors.New("test: 未注入假对话框")
+	}
+	return f.dialog.ShowMessage(kind, title, message)
+}
+
+// ShowOpenFile 同上。
+func (f *fakeSurface) ShowOpenFile(opts NativeFileOptions) (string, bool, error) {
+	if f.dialog == nil {
+		return "", false, errors.New("test: 未注入假对话框")
+	}
+	return f.dialog.ShowOpenFile(opts)
 }
 
 func newFakeSurface() *fakeSurface {

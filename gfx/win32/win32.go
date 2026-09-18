@@ -13,6 +13,8 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"runtime"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -73,6 +75,12 @@ var (
 	procGlobalSize       = kernel32.NewProc("GlobalSize")
 
 	procGetModuleHandleW = kernel32.NewProc("GetModuleHandleW")
+
+	// P3-4 原生对话框
+	procMessageBoxW = user32.NewProc("MessageBoxW")
+	// comdlg32 在极老的 Windows 上也可能缺席, 懒加载即可 (调用返回 0 会走降级)
+	comdlg32             = syscall.NewLazyDLL("comdlg32.dll")
+	procGetOpenFileNameW = comdlg32.NewProc("GetOpenFileNameW")
 
 	procCreateDIBSection   = gdi32.NewProc("CreateDIBSection")
 	procCreateCompatibleDC = gdi32.NewProc("CreateCompatibleDC")
@@ -139,6 +147,21 @@ const (
 	// 重试期间 GUI 线程是阻塞的, 所以上限压得很小 (5 × 20ms = 100ms)。
 	clipboardOpenTries = 5
 	clipboardOpenDelay = 20 * time.Millisecond
+
+	// P3-4 原生对话框
+	MB_OK             = 0x00000000
+	MB_OKCANCEL       = 0x00000001
+	MB_ICONINFO       = 0x00000040
+	IDOK              = 1
+	IDCANCEL          = 2
+	OFN_FILEMUSTEXIST = 0x00001000
+	OFN_PATHMUSTEXIST = 0x00000800
+	OFN_NOCHANGEDIR   = 0x00000008
+	OFN_EXPLORER      = 0x00080000
+	// dialogPathMax 是 OPENFILENAMEW.lpstrFile 缓冲区的容量。
+	// Windows 的 MAX_PATH 是 260, 但长路径可达 32767; 给 1024 是折中 ——
+	// 足够覆盖日常路径, 又不至于在栈上开太大。
+	dialogPathMax = 1024
 )
 
 // vkNames 常用虚拟键 → 键名 (WM_KEYDOWN 路径; 可打印字符走 WM_CHAR)。
@@ -204,6 +227,65 @@ type paintStruct struct {
 
 type rect32 struct {
 	Left, Top, Right, Bottom int32
+}
+
+// openFileNameW 对应 Win32 OPENFILENAMEW (comdlg32 的 GetOpenFileNameW)。
+//
+// **布局要点 (x64)**: 结构体里混着 DWORD (4 字节)、指针 (8 字节) 与
+// WORD (2 字节), 编译器在 DWORD 与指针之间会插入 4 字节填充 —— 所以
+// **字段声明顺序不能按文档顺序随便调**, 也不能用"看起来紧凑"的顺序。
+// 下面严格按照 Win32 头文件的声明序排列, 让 Go 的对齐规则与 C 一致:
+//
+//	lStructSize  DWORD      0    (末尾补 4 字节, 使 hwndOwner 8 字节对齐)
+//	hwndOwner    HWND       8
+//	hInstance    HINSTANCE  16
+//	lpstrFilter  LPCWSTR    24
+//	lpstrCustomFilter LPWSTR 32
+//	nMaxCustFilter DWORD    40   (+4 填充 → 48)
+//	nFilterIndex DWORD      48
+//	lpstrFile    LPWSTR     56
+//	nMaxFile     DWORD      64   (+4 填充 → 72)
+//	lpstrFileTitle LPWSTR   72
+//	nMaxFileTitle DWORD     80   (+4 填充 → 88)
+//	lpstrInitialDir LPWSTR  88
+//	lpstrTitle   LPCWSTR    96
+//	Flags        DWORD      104
+//	... (之后是 v1 不用的一堆字段, 但**必须留足空间**: GetOpenFileNameW
+//	     会按 lStructSize 校验并整体读写, 结构体开小了会踩到后面的内存)
+//
+// 上面这段布局推演直接对应下面的字段顺序与 uint32/uintptr 类型选择;
+// 改字段时先回来读一遍。
+type openFileNameW struct {
+	StructSize        uint32
+	_                 uint32 // 对齐填充 (勿删)
+	HwndOwner         uintptr
+	HInstance         uintptr
+	LpstrFilter       *uint16
+	LpstrCustomFilter *uint16
+	NMaxCustFilter    uint32
+	_                 uint32
+	NFilterIndex      uint32
+	_                 uint32
+	LpstrFile         *uint16
+	NMaxFile          uint32
+	_                 uint32
+	LpstrFileTitle    *uint16
+	NMaxFileTitle     uint32
+	_                 uint32
+	LpstrInitialDir   *uint16
+	LpstrTitle        *uint16
+	Flags             uint32
+
+	// 以下字段 v1 不使用, 但必须保留占位 (见上方说明)。
+	NFileOffset    uint16
+	NFileExtension uint16
+	LpstrDefExt    *uint16
+	LCustData      uintptr
+	LpfnHook       uintptr
+	LpTemplateName *uint16
+	PvReserved     uintptr
+	DwReserved     uint32
+	FlagsEx        uint32
 }
 
 // trackMouseEventStruct 对应 Win32 TRACKMOUSEEVENT (用于订阅 WM_MOUSELEAVE)。
@@ -564,6 +646,145 @@ func (s *surface) WriteClipboardText(text string) error {
 		return errors.New("gfx: SetClipboardData 失败")
 	}
 	return nil
+}
+
+// ===== P3-4: 原生对话框 =====
+
+// utf16Ptr 把 Go 字符串转成 NUL 结尾的 UTF-16 缓冲, 返回首元素指针。
+//
+// 返回切片而不是裸指针: 让调用方显式持有它, 避免"转完就没人引用、
+// 被 GC 回收而 Windows 还在读"的经典悬空指针问题。
+func utf16Ptr(s string) (*uint16, []uint16) {
+	u := utf16.Encode([]rune(s))
+	u = append(u, 0)
+	return &u[0], u
+}
+
+// ShowMessage 弹消息框, 实现 gfx 的 nativeDialogHost。
+//
+// **这里不需要另开 goroutine, 也不需要手动泵消息**: 传入 hwndOwner 后
+// Windows 会自动禁用该窗口并把对话框归一到本线程的消息队列,
+// 直到它返回 —— 重绘、拖动、其它窗口的输入都照常。
+// (若在别的 goroutine 里调用, 就没有这个保证, 而且跨线程碰 UI 本身就是
+// Win32 的雷区。见 gfx/dialog.go 文件头关于线程模型的说明。)
+func (s *surface) ShowMessage(kind gfx.NativeDialogKind, title, message string) (bool, error) {
+	flags := uintptr(MB_OK | MB_ICONINFO)
+	if kind == gfx.DialogConfirm {
+		flags = MB_OKCANCEL | MB_ICONINFO
+	}
+	if title == "" {
+		title = "Gox"
+	}
+	tp, t := utf16Ptr(title)
+	mp, m := utf16Ptr(message)
+	// 保留引用直到调用返回 (防 GC)
+	runtime.KeepAlive(t)
+	runtime.KeepAlive(m)
+
+	ret, _, _ := procMessageBoxW.Call(uintptr(s.hwnd), uintptr(unsafe.Pointer(mp)),
+		uintptr(unsafe.Pointer(tp)), flags)
+	// 返回 0 表示失败 (通常是内存不足); 其它情况返回被按下按钮的 ID。
+	if ret == 0 {
+		return false, errors.New("gfx: MessageBoxW 失败")
+	}
+	if kind == gfx.DialogConfirm {
+		return ret == uintptr(IDOK), nil
+	}
+	return true, nil
+}
+
+// ShowOpenFile 弹"打开文件"对话框, 实现 gfx 的 nativeDialogHost。
+//
+// 取消时返回 ok=false 且 err=nil —— 用户按取消是正常操作,
+// 不是错误 (GetOpenFileNameW 的返回值 0 同时表示"取消"和"出错",
+// 要靠 CommDlgExtendedError 才能区分, 而 v1 刻意不引它: 把取消当错误
+// 会让每个脚本都被迫写 try/catch)。
+func (s *surface) ShowOpenFile(opts gfx.NativeFileOptions) (string, bool, error) {
+	buf := make([]uint16, dialogPathMax)
+	if opts.Default != "" {
+		d := utf16.Encode([]rune(opts.Default))
+		if len(d) < dialogPathMax-1 {
+			copy(buf, d)
+		}
+	}
+	fp, f := utf16Ptr(buildFilter(opts.Filter))
+	runtime.KeepAlive(f)
+
+	var titlePtr *uint16
+	var titleKeep []uint16
+	if opts.Title != "" {
+		titlePtr, titleKeep = utf16Ptr(opts.Title)
+		runtime.KeepAlive(titleKeep)
+	}
+	var dirPtr *uint16
+	var dirKeep []uint16
+	if opts.Dir != "" {
+		dirPtr, dirKeep = utf16Ptr(opts.Dir)
+		runtime.KeepAlive(dirKeep)
+	}
+
+	ofn := openFileNameW{
+		StructSize:      uint32(unsafe.Sizeof(openFileNameW{})),
+		HwndOwner:       uintptr(s.hwnd),
+		HInstance:       uintptr(moduleHandle()),
+		LpstrFilter:     fp,
+		NFilterIndex:    1,
+		LpstrFile:       &buf[0],
+		NMaxFile:        uint32(len(buf)),
+		LpstrInitialDir: dirPtr,
+		LpstrTitle:      titlePtr,
+		// NOCHANGEDIR: 不然对话框会把**进程的当前目录**改到用户选的目录,
+		// 而 `<image src="./a.png">` 是相对进程工作目录解析的 —— 选完文件
+		// 之后所有相对路径就全错了 (这类副作用极难排查)。
+		Flags: OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER,
+	}
+
+	r, _, _ := procGetOpenFileNameW.Call(uintptr(unsafe.Pointer(&ofn)))
+	if r == 0 {
+		return "", false, nil
+	}
+	// lpstrFile 是 NUL 结尾的完整路径
+	n := 0
+	for n < len(buf) && buf[n] != 0 {
+		n++
+	}
+	return string(utf16.Decode(buf[:n])), true, nil
+}
+
+// buildFilter 把结构化过滤规则拼成 Win32 要求的过滤串。
+//
+// 格式是 `描述\x00通配符\x00描述\x00通配符\x00\x00` —— **结尾是双 NUL**,
+// 少一个 Windows 就会一直往后读。这是本文件里最容易漏的一处。
+// 没给过滤时返回 "所有文件\0*.*\0\0" (不给它, 对话框会没有类型下拉框)。
+func buildFilter(filters []gfx.NativeFileFilter) string {
+	if len(filters) == 0 {
+		filters = []gfx.NativeFileFilter{{Name: "所有文件", Pattern: "*.*"}}
+	}
+	var b strings.Builder
+	for _, f := range filters {
+		name := f.Name
+		if name == "" {
+			name = f.Pattern
+		}
+		pat := f.Pattern
+		if pat == "" {
+			pat = "*.*"
+		}
+		// 描述里不能夹 NUL (会把过滤串提前截断, 表现为"类型下拉框少了几项")
+		b.WriteString(strings.ReplaceAll(name, "\x00", ""))
+		b.WriteByte(0)
+		b.WriteString(strings.ReplaceAll(pat, "\x00", ""))
+		b.WriteByte(0)
+	}
+	b.WriteByte(0) // 结尾的第二个 NUL
+	return b.String()
+}
+
+// moduleHandle 取本进程的模块句柄 (OPENFILENAMEW.hInstance 用;
+// 传 0 也能工作, 但显式给更规范)。
+func moduleHandle() syscall.Handle {
+	h, _, _ := procGetModuleHandleW.Call(0)
+	return syscall.Handle(h)
 }
 
 // ===== P2-7: 输入法 =====

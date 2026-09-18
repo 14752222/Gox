@@ -557,6 +557,7 @@ func TestExampleScriptsMount(t *testing.T) {
 		"ime_demo.js",                    // P2-7 输入法 (提交由平台投递, 这里只验挂载)
 		"clipboard_demo.js",              // P3-3 剪贴板 (读写由后端提供, 这里只验挂载)
 		"transition_demo.js",             // P3-2 过渡动画 (首帧应静止: 见断言)
+		"dialog_native_demo.js",          // P3-4 原生对话框 (测试注入假后端应答)
 		"counter_demo.js", "gui_demo.js", // 既有演示 (布局改动后回归)
 		// 注: image_demo.js 不在本列表 —— 它的 src 是相对文件路径, 必须从仓库根
 		// 目录运行 (而本用例的 cwd 是 gfx/)。由 TestImageDemoScript 专职覆盖。
@@ -574,6 +575,10 @@ func TestExampleScriptsMount(t *testing.T) {
 				t.Fatalf("读取脚本: %v", err)
 			}
 			fake := newFakeSurface()
+			// 演示里可能有原生对话框调用 (P3-4): 没人点按钮的自动化环境里,
+			// 真对话框会挂到超时。给个自动应答的假后端 —— 顺带证明
+			// "可选接口可替换"这条设计确实能落到测试上。
+			fake.dialog = &fakeDialogHost{confirmAnswer: true, openPath: "/tmp/picked.txt", openOk: true}
 			SetDefaultFactory(&fakeFactory{fake})
 			defer SetDefaultFactory(nil)
 
@@ -746,6 +751,28 @@ func checkDemoTree(t *testing.T, name string, root *GuiNode, fake *fakeSurface) 
 		// 禁用滑块整盒降饱和: 不再出现"纯轨道色"
 		if n := countColor(img, sls[2].Box, colorTrack); n != 0 {
 			t.Fatalf("禁用滑块的轨道色未被降饱和 (%d 个像素)", n)
+		}
+	case "dialog_native_demo.js":
+		// 原生对话框演示: 三个按钮 (Alert / Confirm / Open file) 必须可见可点,
+		// 且首帧不该真的弹过任何系统对话框 —— 自动化环境里没人点按钮,
+		// 真弹一个模态框会让用例一直等到超时。
+		btns := findAll(root, "button")
+		if len(btns) != 3 {
+			t.Fatalf("dialog_native_demo 的 button 数量 = %d, want 3", len(btns))
+		}
+		for i, b := range btns {
+			if b.Box.H <= 0 {
+				t.Fatalf("dialog_native_demo 第 %d 个按钮无内容高度: %v", i, b.Box)
+			}
+			if len(b.Children) == 0 || b.Children[0].Box.W <= 0 {
+				t.Fatalf("dialog_native_demo 第 %d 个按钮文字未布局: %v", i, b.Children)
+			}
+		}
+		if n := fake.dialog.messageCalls(); len(n) != 0 {
+			t.Fatalf("首帧不该弹任何消息框, got %d 次", len(n))
+		}
+		if n := fake.dialog.openCalls(); len(n) != 0 {
+			t.Fatalf("首帧不该弹文件选择框, got %d 次", len(n))
 		}
 	case "counter_demo.js":
 		// 既有演示: button 必须有内容高度, 否则点击永远命不中 (见 P0-3)
