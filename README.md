@@ -12,6 +12,7 @@
 - **丰富的内置对象** — `Array` / `String` / `Number` / `Object` / `Boolean` / `Math` / `JSON` / `Map` / `Set` / `WeakMap` / `WeakSet` / `Symbol` / `BigInt` / `RegExp` / `Proxy` / `Reflect` / `Iterator` / `Promise` / `ArrayBuffer` / `DataView`（TypedArray 家族）/ `WeakRef` / `FinalizationRegistry` / 完整错误类型族 / `Temporal`（取代 `Date` 的现代日期时间 API）
 - **宿主能力模块** — `fs`（Node 风格，同步 + 异步两套）、`http`（客户端 `get`/`request` + 服务端 `createServer`）、`fetch`、`path`、`process`、`stats`
 - **自研 GUI 渲染层** — `gx/gfx` 模块：纯 Go 软件光栅化，flex 风格布局（`column`/`row`/`gap`/`padding`）、命中测试、脏矩形局部重绘；win32（纯 syscall 无 cgo）与 X11 窗口后端，产物为无动态库依赖的静态单文件；配套 `gx/dialog`（原生消息框与文件对话框）等宿主能力模块
+- **原生感的交互组件** — 表单控件（`input`/`textarea`/`select`/`slider`/`checkbox`/`radio`/`switch`）、弹层（`dialog`/`toast`）、滚动容器、自绘画布，以及**自绘菜单栏与右键菜单**（下拉/子菜单/快捷键/禁用项，不依赖系统菜单 API）
 - **事件循环** — `setTimeout` / `setInterval` / `requestIdleCallback`，以及精度可控的严格定时器变体（`setStrictTimeout` 等）；GUI 模式下事件循环接入窗口消息泵
 - **响应式编程** — Dart GetX 风格的 `obs` / `computed` / `ever` / `once`，以及 SolidJS 风格的 `gx/solid` 信号（`createSignal` / `createEffect` / `createMemo`）
 - **npm 分发** — [`@goxjs/goxjs`](npm/) 包内置 Windows/Linux/macOS × x64/arm64 五个平台的预编译二进制，`npm i -g @goxjs/goxjs` 即得 `goxjs` 命令
@@ -171,6 +172,7 @@ render(
 - 输入法（IME）：`<input>` / `<textarea>` 支持候选词输入，一次提交只派发一次 `onInput`（**Windows 后端**；Linux 暂无）
 - 剪贴板：`clipboardReadText()` / `clipboardWriteText(text)`（**Windows 后端**；Linux 暂无，读返回空串、写返回 false）
 - 原生对话框：`gx/dialog` 的 `alert` / `confirm` / `openFile`，**都是 async**（返回 Promise，用 `await`）（**Windows 后端**；其它后端降级为写 stderr）
+- 菜单栏与右键菜单：`<menubar>` / `<menu>` / `<menuitem>` 由 gfx **自绘**（不依赖 win32 菜单 API，三平台一致）；右键菜单用 `openContextMenu(x, y, items)` 就地弹出；`<menuitem shortcut="Ctrl+S">` 的快捷键由 Go 侧快捷键表在事件泵层匹配
 
 事件：
 
@@ -179,9 +181,10 @@ render(
 | `onClick` | 无 | 命中测试（最内层带 `onClick` 的节点），并把该节点设为键盘焦点 |
 | `onMouseMove` | `{x, y}` | 光标下最深节点起沿祖先链找第一个处理器（不冒泡到根以外） |
 | `onWheel` | `{deltaY}` | 光标所在 `scroll` 容器先消费（一格 60px），容器已到边界才继续冒泡；`deltaY` 沿用 DOM 约定（向下滚为正） |
-| `onContextMenu` | `{x, y}` | 右键抬起时触发 |
+| `onContextMenu` | `{x, y}` | 右键抬起时触发；常配合 `openContextMenu(e.x, e.y, items)` 弹右键菜单 |
 | `onKeyDown` / `onKeyUp` | `{key, ctrl, shift, alt}` | 从焦点节点沿祖先链找第一个处理器 |
 | `onFocus` / `onBlur` | 无 | 焦点切换时触发，沿祖先链找第一个处理器；焦点节点会画 1px 蓝色虚线框（根节点 `hideFocusRing` 可关闭） |
+| `shortcut`（属性，非事件） | 回调收 `{x, y, shortcut}` | `<menuitem shortcut="Ctrl+S">`：不必展开菜单，快捷键表在事件泵层直接匹配。只认带 `Ctrl`/`Alt` 的组合，且修饰键**全等**（`Ctrl+S` 不会被 `Ctrl+Shift+S` 触发） |
 
 > 交互组件（`button` / `checkbox` / `radio` / `switch`）自动获得悬停提亮（各通道 +12）与按压压暗（-24）反馈，
 > 状态由渲染层维护，脚本无需（也无法）读写。`disabled` 的子树既不响应事件也不做交互反馈。
@@ -210,6 +213,9 @@ render(
 | `image` | `src` / `width` / `height` / `disabled` | 显示 png / jpeg / gif 图片（Go 标准库解码，无新增依赖）；不给 `width`/`height` 时用图片自然尺寸，给了就按最近邻缩放；`src` 相对**进程工作目录**解析，加载失败画灰底交叉线占位（stderr 每个路径只警告一次），不中断其它内容 |
 | `canvas` | `width` / `height` / `onDraw(ctx)` / `background` / `border` | 自绘画布：`onDraw` 收到一个 ctx，用 `ctx.fillRect/strokeRect/fillCircle/strokeCircle/line/drawText/clear` 直接落笔，坐标是**画布局部坐标**（0,0 = 左上角），越界部分自动裁掉；`ctx.width` / `ctx.height` 是画布尺寸。`onDraw` 里读到的 signal 变化会自动重绘（缺省 200×120） |
 | `slider` | `value` / `onInput` / `min` / `max` / `step` / `disabled` | 受控滑块（`min`/`max`/`step` 缺省 0/100/1）：显示只看 `value`，拖动或**单击轨道任意位置**派发 `onInput({value})`（`value` 是 **number**）；拖出窗口仍跟手（win32 走 `SetCapture`）。缺省 160×24 |
+| `menubar` | `background` / `border` | 菜单栏容器（缺省 26px 高、自动铺满容器宽）；**它只是个普通容器**，脚本自己写 `column { menubar; 内容 }`，gfx 不会往 root 里偷偷插一条 |
+| `menu` | `label`（或 `title`、或文本子节点） | 菜单标题；作为 `<menubar>` 的直接子节点时是**顶级菜单**（下拉挂在标题正下方），嵌在 `<menuitem>` 里时是**子菜单**（挂在触发项右侧）。空菜单点了不展开 |
+| `menuitem` | `label` / `shortcut` / `disabled` / `onClick` | 菜单项；点中派发 `onClick({x, y})` 并收起整棵菜单。`disabled` 灰字且点了没反应（**也不收起**）；内嵌一个 `<menu>` 即成为子菜单触发器（点击展开/收起右侧下拉，自身不派发 `onClick`）。分隔线用已有的 `<separator>`，它照样可命中（点了没反应） |
 
 **层叠与定位**
 
@@ -336,6 +342,53 @@ const path = await openFile({                               // → 完整路径 
 > 事件处理器要写成 `onClick: async function () { ... }`。
 
 示例：`testdata/dialog_native_demo.js`。
+
+**菜单栏与右键菜单**
+
+菜单栏是**自绘**的（不走 win32 菜单 API），所以三个平台观感一致。它只是个普通容器 ——
+脚本自己写 `column { menubar; 内容 }`，gfx 不会往根节点里偷偷插一条：
+
+```js
+import { h, window, render, openContextMenu } from "gx/gfx";
+
+render(
+  h("column", null,
+    h("menubar", null,
+      h("menu", { label: "File" },
+        h("menuitem", { label: "New",  shortcut: "Ctrl+N", onClick: () => say("New") }),
+        h("menuitem", { label: "Open", shortcut: "Ctrl+O", onClick: () => say("Open") }),
+        h("separator", null),
+        h("menuitem", { label: "Save As", disabled: true }),
+        h("menuitem", { label: "Theme" },                  // 内嵌 menu = 子菜单
+          h("menu", null,
+            h("menuitem", { label: "Dark",  onClick: () => say("Dark") }),
+            h("menuitem", { label: "Light", onClick: () => say("Light") })))),
+      h("text", null, "ready")),                          // 菜单栏里放别的标签按固有尺寸顺排
+    h("column", { padding: 16 },
+      h("rect", {
+        width: 320, height: 160, background: "#e8eef7",
+        onContextMenu: (e) => openContextMenu(e.x, e.y, [
+          h("menuitem", { label: "Copy", onClick: () => say("Copy") }),
+          h("menuitem", { label: "Paste", onClick: () => say("Paste") }),
+        ]),
+      }))),
+  window({ title: "Menu", width: 480, height: 380 }));
+```
+
+- **下拉是弹层**：溢出 26px 的菜单栏显示，不被裁剪也不被后面的兄弟盖住；点外部收起（该次点击被吞掉，
+  不会顺带按到下面的控件）；点菜单栏另一个标题直接换过去（互斥）。
+- **键盘**：焦点在菜单栏时 ←/→ 在标题间循环（换过去就开着），↓/Enter/Space 展开，Esc 收起。
+  **Esc 的优先级是"菜单 > 下拉框 > 对话框"**，一次只关一层。
+- **快捷键**由 Go 侧一张表在事件泵层匹配，**菜单不必展开**就能用。只认带 `Ctrl`/`Alt` 的组合
+  （不然菜单里写 `shortcut="S"` 会让整个应用打不出 `s`），且修饰键**全等**
+  （`Ctrl+S` 不会被 `Ctrl+Shift+S` 触发）。命中回落 `onClick({x, y, shortcut: "Ctrl+S"})`。
+- **右键菜单走数据式 API**（`openContextMenu(x, y, items)`）而不是 `contextMenu` prop：
+  JSX 元素是**单次挂载**的对象（一个节点只有一个 `Parent`），做成 prop 的话同一个 `<menu>`
+  挂到多个组件上会互相争抢 `Parent` —— 每个使用点都得重新 `h()` 一次，与直接调 API 没区别。
+- 越界会自动向左/上翻折（在窗口右下角右键也能看到整块菜单）；
+  在右键菜单上再点右键会被吞掉（不换位置、不重弹）。
+
+示例：`testdata/menu_demo.js`。
 
 **多行文本与自动换行**
 
@@ -482,6 +535,7 @@ h("column", null,
 `testdata/clipboard_demo.js`（剪贴板：同步读写与失败降级）、
 `testdata/transition_demo.js`（过渡动画：宽度 / 成组淡出 / 位移 / 命令式 animate）、
 `testdata/dialog_native_demo.js`（原生对话框：alert / confirm / 打开文件，全 async await）、
+`testdata/menu_demo.js`（菜单栏：下拉 / 子菜单 / 禁用项 / 快捷键 / 右键菜单）、
 `testdata/counter_demo.js` 与 `testdata/gui_demo.js`（响应式基础）。
 
 ## 打包成独立可执行文件

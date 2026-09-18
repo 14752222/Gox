@@ -183,17 +183,39 @@ func TestSelectOptionClickChoosesClosesAndRefocuses(t *testing.T) {
 	rows := selectRows(sel)
 
 	// 点到的必须是那一行: 选项行自带 onClick (Go 侧 builtin), 命中测试要能找到它。
-	// 该处理器内部调 chooseOption —— 但 object.CallFunction 需要 currentVM,
-	// 纯 Go 用例里回调是空操作 (见 mountTestApp 的注释), 所以"点击真的选了"
-	// 由 TestSelectDemoPickOptionUpdatesMirror 的全链路用例覆盖, 这里验状态机。
+	// 该处理器内部调 chooseOption —— 派发走 callScriptFn (P3-5 修正), 所以
+	// 纯 Go 用例里 Go 侧 builtin 是**真的会执行**的: 点击即选中并收起。
 	if hit := HitTest(root, rows[1].Box.X+4, rows[1].Box.Y+selectRowH/2); hit != rows[1] {
 		t.Fatalf("点击应命中第二个下拉项, got %v", hit)
 	}
 	pushAndPump(t, fake, a, Event{Kind: EventMouseUp, X: rows[1].Box.X + 4, Y: rows[1].Box.Y + selectRowH/2})
-	// 无 VM 时回调不执行 → 弹层仍开着, 这本身证明"开合由回调驱动"
-	if !sel.expanded {
-		t.Fatalf("纯 Go 环境下回调不执行, 弹层不该被收起")
+	// 回调执行 → 弹层收起 (这正是"开合由回调驱动"的证明)。
+	// 注: P3-5 之前 handleClick 直接走 object.CallFunction, currentVM 为 nil
+	// 时静默返回 undefined, 于是这里断言的是"弹层仍开着" —— 那条断言记录的
+	// 是当时的一个真 bug (无 VM 嵌入场景下所有 onClick 都失效), 现已修掉。
+	if sel.expanded {
+		t.Fatalf("选中后弹层应收起")
 	}
+	if n := countTag(root, "select-option"); n != 0 {
+		t.Fatalf("收起后树上仍有 %d 个下拉项", n)
+	}
+	a.mu.Lock()
+	afterClick := a.focused
+	a.mu.Unlock()
+	if afterClick != sel {
+		t.Fatalf("选中后焦点应收回 select, got %v", afterClick)
+	}
+}
+
+// 无回调的选项点击 (纯状态机): 走 chooseOption 直接验"选中→收起→释放弹层"。
+func TestSelectChooseOptionStateMachine(t *testing.T) {
+	root := mkNode("column", map[string]float64{"padding": 10})
+	sel := mkSelect([]string{"a", "b", "c"}, "a")
+	mountChildren(root, sel)
+
+	_, a := mountTestApp(t, root, 300, 200)
+	a.openSelect(sel)
+	a.redraw()
 
 	// 状态机: 选中 → 收起 → 弹层销毁 → 焦点收回
 	a.chooseOption(sel, "b")

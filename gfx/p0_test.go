@@ -558,6 +558,7 @@ func TestExampleScriptsMount(t *testing.T) {
 		"clipboard_demo.js",              // P3-3 剪贴板 (读写由后端提供, 这里只验挂载)
 		"transition_demo.js",             // P3-2 过渡动画 (首帧应静止: 见断言)
 		"dialog_native_demo.js",          // P3-4 原生对话框 (测试注入假后端应答)
+		"menu_demo.js",                   // P3-5 菜单栏 / 右键菜单 / 快捷键
 		"counter_demo.js", "gui_demo.js", // 既有演示 (布局改动后回归)
 		// 注: image_demo.js 不在本列表 —— 它的 src 是相对文件路径, 必须从仓库根
 		// 目录运行 (而本用例的 cwd 是 gfx/)。由 TestImageDemoScript 专职覆盖。
@@ -901,6 +902,54 @@ func checkDemoTree(t *testing.T, name string, root *GuiNode, fake *fakeSurface) 
 		}
 		assertPx(t, img, sels[0].Box.X+4, sels[0].Box.Y+selectRowH/2, pxFieldFace, "select_demo 字段白底")
 		assertPx(t, img, sels[0].Box.X+4, sels[0].Box.Y, pxBtnEdge, "select_demo 字段 1px 边框")
+	case "menu_demo.js":
+		// 菜单演示: 顶部菜单栏 (26px, 铺满宽), 三个标题 + 右侧状态文本;
+		// 初始无弹层 (所有菜单都是收起的), 也没挂右键菜单。
+		bar := findFirst(root, "menubar")
+		if bar == nil {
+			t.Fatalf("menu_demo 缺少 menubar 节点")
+		}
+		if bar.Box.Y != 0 || bar.Box.H != menuBarH {
+			t.Fatalf("menubar 未占据顶部一行: %v (want Y=0 H=%d)", bar.Box, menuBarH)
+		}
+		// 菜单栏铺满窗口宽 (用根盒做参照, 不直接读 fake 的 w/h: 那是互斥量
+		// 保护的字段, 测试里裸读会踩 data race)。
+		if bar.Box.W != root.Box.W {
+			t.Fatalf("menubar 未铺满窗口宽: W = %d, want %d", bar.Box.W, root.Box.W)
+		}
+		// 标题行在同一水平线上依次排开, 互不重叠
+		titles := findAll(root, "menu")
+		if len(titles) != 4 { // File / Edit / View + View 里嵌的 Theme 子菜单
+			t.Fatalf("menu 数量 = %d, want 4", len(titles))
+		}
+		prevRight := bar.Box.X
+		for i, m := range titles[:3] {
+			if m.Box.Y != bar.Box.Y || m.Box.H != menuBarH {
+				t.Fatalf("第 %d 个菜单标题未与菜单栏同行: %v", i, m.Box)
+			}
+			if m.Box.X < prevRight {
+				t.Fatalf("第 %d 个菜单标题与前一个重叠: X = %d, 前一个右缘 = %d",
+					i, m.Box.X, prevRight)
+			}
+			prevRight = m.Box.X + m.Box.W
+		}
+		// 首帧应无任何弹层, 菜单项与分隔线都还没物化
+		if n := countTag(root, "menu-popup"); n != 0 {
+			t.Fatalf("menu_demo 初始不该有弹层, got %d", n)
+		}
+		if n := countTag(root, "menu-item"); n != 0 {
+			t.Fatalf("menu_demo 初始不该有菜单项行, got %d", n)
+		}
+		if contextMenuNode(root) != nil {
+			t.Fatalf("menu_demo 初始不该挂右键菜单")
+		}
+		// 菜单栏是普通容器: 内容区必须紧贴在它下方 (没有"隐式插入的顶部条"
+		// 把内容区再往下推一段 —— 那会让下面的坐标整体漂移)。
+		body := root.Children[len(root.Children)-1]
+		if body.Box.Y != bar.Box.Y+bar.Box.H {
+			t.Fatalf("内容区未紧贴菜单栏下方: body.Y = %d, 菜单栏底 = %d",
+				body.Box.Y, bar.Box.Y+bar.Box.H)
+		}
 	case "clipboard_demo.js":
 		// 剪贴板演示: 一个多行框 + 两个按钮; 首帧 status 为空、未点过按钮
 		ta := findFirst(root, "textarea")

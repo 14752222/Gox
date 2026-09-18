@@ -44,7 +44,7 @@ func (n *GuiNode) escapeClipping() bool {
 // 逃逸裁剪、自动拿到高层 zIndex (见 drawOrderKey 的注释)。
 func (n *GuiNode) isOverlay() bool {
 	switch n.Tag {
-	case "dialog", "toast":
+	case "dialog", "toast", "menu-popup":
 		return true
 	}
 	return false
@@ -123,6 +123,10 @@ const overlayZBase = 1 << 20
 func escapesInDrawOrder(root *GuiNode) []*GuiNode {
 	var out []*GuiNode
 	collectEscapes(root, &out)
+	// 必须**边遍历边扩展** (不是"先把初始集合跑完再逐个下钻"): 菜单下拉是
+	// 挂在 menu 上的子节点, 只能从 menu 出发才找得到 —— 而 menu 本身不是
+	// 逃逸子树。若这里只对初始集合里的元素下钻, 下拉永远进不了 out, 于是
+	// "菜单画得出来却点不中"(绘制走 drawNode 的 children 递归, 命中走本函数)。
 	for i := 0; i < len(out); i++ {
 		if out[i].isOverlay() && !out[i].overlayVisible() {
 			continue
@@ -132,13 +136,18 @@ func escapesInDrawOrder(root *GuiNode) []*GuiNode {
 	return out
 }
 
-// collectEscapes 把 n 的逃逸子孙按 z 序 DFS 追加到 out; 遇到逃逸子树即
-// 停止下钻 (它内部留到下一轮), 与 drawNode 的收集规则逐条对应。
+// collectEscapes 把 n 的逃逸子孙按 z 序 DFS 追加到 out。
+//
+// 遇到逃逸子树时**登记后仍继续下钻** (而不是像早期版本那样 continue):
+// 菜单的下拉弹层挂在一级 menu 下, 而子菜单又挂在弹层里的 menu-item 下 ——
+// 不递归就会漏掉第二层, 表现为"子菜单画得出来但点不中"。与 drawNode 的
+// 收集规则逐条对应 (那边同样会对子节点的 children 继续收)。
 func collectEscapes(n *GuiNode, out *[]*GuiNode) {
 	for _, c := range zOrderedChildren(n) {
 		if c.escapeClipping() {
 			*out = append(*out, c)
-			continue
+			// 菜单下拉的**定位源**在盒外也要能下钻: menu-popup 自身在
+			// 布局上不被父盒裁剪, 而它的子项 (含子菜单) 由它自己定位。
 		}
 		collectEscapes(c, out)
 	}

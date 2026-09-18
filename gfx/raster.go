@@ -50,6 +50,13 @@ var (
 	colorInfo         = color.RGBA{R: 0x2F, G: 0x80, B: 0xED, A: 255} // toast info
 	colorWarn         = color.RGBA{R: 0xE8, G: 0x89, B: 0x0C, A: 255} // toast warn
 	colorDanger       = color.RGBA{R: 0xC0, G: 0x39, B: 0x2B, A: 255} // toast error
+	// P3-5 菜单
+	colorMenuBarFace   = color.RGBA{R: 0xF3, G: 0xF3, B: 0xF3, A: 255} // 菜单栏底色 (浅灰条)
+	colorMenuBarEdge   = color.RGBA{R: 0xD0, G: 0xD0, B: 0xD0, A: 255} // 菜单栏底边线
+	colorMenuActive    = color.RGBA{R: 0xDC, G: 0xE8, B: 0xF8, A: 255} // 展开中的菜单标题底 (浅蓝)
+	colorMenuHighlight = color.RGBA{R: 0xDC, G: 0xE8, B: 0xF8, A: 255} // 菜单项高亮底
+	colorMenuShortcut  = color.RGBA{R: 0x77, G: 0x77, B: 0x77, A: 255} // 快捷键文字 (灰)
+	colorMenuSep       = color.RGBA{R: 0xD0, G: 0xD0, B: 0xD0, A: 255} // 分隔线
 )
 
 // 弹层缺省外观的十六进制写法: Go 侧构造节点时写进 props, 于是"缺省样式"
@@ -376,6 +383,14 @@ func drawNode(img *image.RGBA, n *GuiNode) {
 		paintCanvas(img, n, disabled)
 	case "slider":
 		paintSlider(img, n, disabled)
+	case "menubar":
+		paintMenuBar(img, n, disabled)
+	case "menu":
+		paintMenu(img, n, disabled)
+	case "menu-popup":
+		paintMenuPopup(img, n, disabled)
+	case "menu-item":
+		paintMenuItem(img, n, disabled)
 	default:
 		// 通用盒子 / button: background 填充 + border 描边 (button 有缺省外观)。
 		// 交互反馈 (P1-4) 只对 button 有实际效果: 其他标签没有缺省面,
@@ -399,6 +414,10 @@ func drawNode(img *image.RGBA, n *GuiNode) {
 			// 滚动容器: 子内容一律裁到视口 (内容超高时右侧还扣掉滚动条
 			// 占位), 溢出容器的部分不绘制也不命中 (命中测试用同一套盒子)。
 			sub = clipTo(img, n.scrollViewport())
+		case n.Tag == "menu-popup":
+			// 菜单下拉/子菜单: **不裁剪** —— 它们的定位本来就允许超出
+			// 宿主盒子 (子菜单挂在触发项右侧, 一级下拉挂在标题下方),
+			// 被父盒裁掉就会出现"菜单只画出一半"。
 		case c.positionAbsolute():
 			// 绝对定位默认仍被父节点盒子裁剪; 想溢出父框必须显式
 			// escapeClipping (弹层组件的出口就是这个开关)。

@@ -36,6 +36,28 @@ type GuiNode struct {
 	popup     *GuiNode
 	highlight int
 
+	// 菜单状态 (P3-5): 复用 expanded 表达"下拉是否打开", 另有两组专职字段。
+	//   - menuPopup 是挂在 menu 下的下拉弹层 (menu-popup);
+	//   - menuHighlight 是键盘光标的项下标 (-1 = 无);
+	//   - ctxMenu/ctxX/ctxY 标记"这是一个就地弹出的右键菜单"及其落点;
+	//   - menuIndex/menuOwner/menuLabel/... 是**弹出层行**的自有数据 ——
+	//     菜单项的文字是数据而不是元素 (脚本写 <menuitem label="Save">),
+	//     所以不像 select-option 那样有 #text 子节点可画。
+	menuPopup     *GuiNode
+	menuHighlight int
+	ctxMenu       bool
+	ctxX, ctxY    int
+
+	menuIndex        int
+	menuOwner        *GuiNode
+	menuLabel        string
+	menuShortcutText string
+	menuDisabled     bool
+	menuSep          bool
+	menuSub          bool
+	menuChildMenu    *GuiNode
+	menuDirDown      bool
+
 	// 下拉项状态: 在兄弟中的下标, 以及所属 select (绘制高亮时要回查
 	// highlight, 用指针比"沿 Parent 走两层"更稳 —— 弹层一旦被拆链就找不到)。
 	optIndex int
@@ -124,6 +146,9 @@ var knownTags = map[string]struct{}{
 	"canvas": {},
 	// P2-8 滑块
 	"slider": {},
+	// P3-5 菜单栏与右键菜单 (menu-popup / menu-item 由 Go 侧构造, 脚本写不到)
+	"menubar": {}, "menu": {}, "menuitem": {},
+	"menu-popup": {}, "menu-item": {},
 }
 
 var (
@@ -194,10 +219,17 @@ func JSBuiltinH(args ...object.Value) object.Value {
 	for _, c := range args[2:] {
 		node.wireChild(c)
 	}
-	// 需要内置交互的标签在这里补上 Go 侧处理器 (select 的展开)。
+	// 需要内置交互的标签在这里补上 Go 侧处理器 (select 的展开、菜单的展开)。
 	// 放在 props/children 都接好之后: 包装脚本自己的 onClick 时要能读到它。
 	if node.Tag == "select" {
 		attachSelectHandler(node)
+	}
+	// 只有菜单栏直属的 menu 才是"点标题展开下拉"的一级菜单; 嵌在 menuitem
+	// 里的 menu 是子菜单, 由它的父项驱动展开 (见 openSubmenu)。
+	if node.Tag == "menu" {
+		if node.Parent != nil && node.Parent.Tag == "menubar" {
+			attachMenuHandler(node)
+		}
 	}
 	return node
 }
@@ -457,6 +489,11 @@ func disposeNode(n *GuiNode) {
 	n.expanded = false
 	n.popup = nil
 	n.owner = nil
+	// 菜单 (P3-5) 同理: 下拉弹层是子节点, 已由上面那轮递归销毁, 这里断指针。
+	n.menuPopup = nil
+	n.menuChildMenu = nil
+	n.menuOwner = nil
+	n.menuHighlight = -1
 	// 输入框状态: 节点离树后不该再被当成"持有焦点" (否则 setFocus 的
 	// 旧节点标脏会对一个游离节点做无意义的重绘)。
 	n.focused = false
@@ -684,7 +721,8 @@ func (n *GuiNode) buttonPadding() (padX, padY int) {
 // 造成无谓重绘 (鼠标移动是频率最高的事件)。
 func (n *GuiNode) hoverable() bool {
 	switch n.Tag {
-	case "button", "checkbox", "radio", "switch", "select", "select-option", "input", "textarea", "slider":
+	case "button", "checkbox", "radio", "switch", "select", "select-option", "input", "textarea", "slider",
+		"menu", "menu-item":
 		return true
 	}
 	return false

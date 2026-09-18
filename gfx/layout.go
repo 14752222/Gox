@@ -57,6 +57,14 @@ func layoutNode(n *GuiNode) {
 		layoutScroll(n)
 	case "textarea":
 		layoutTextarea(n)
+	case "menubar":
+		layoutMenuBar(n)
+	case "menu":
+		layoutMenu(n)
+	case "menu-popup":
+		layoutMenuPopup(n)
+	case "menu-item":
+		layoutMenuItem(n)
 	case "slot":
 		// 动态子节点占位容器: 单子时子节点直接占满 slot 的盒子 (slot 的尺寸
 		// 就是按这个子节点算出来的, 等价于子节点直接挂在祖父下面); 多子
@@ -274,6 +282,35 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 		}
 		if h == 0 {
 			h = sliderDefH
+		}
+	case "menubar":
+		// 菜单栏: 高度固定一行, 宽度撑满父容器 (它是"窗口顶部的一条",
+		// 不铺满会露出底色)。高度**不吃 stretch**: 被拉到全高的菜单栏是
+		// 明显的错误, 而 column 的交叉轴缺省正是 stretch。
+		if w == 0 {
+			w = menuBarContentWidth(n)
+		}
+		if h == 0 {
+			h = menuBarH
+		}
+	case "menu":
+		// 菜单标题: 一行 26px (右键菜单是纯弹层, 自身无尺寸)。
+		if n.ctxMenu {
+			return 0, 0
+		}
+		if w == 0 {
+			w = n.menuTitleWidth()
+		}
+		if h == 0 {
+			h = menuBarH
+		}
+	case "menuitem":
+		// 菜单项在声明位置上不绘制也不占位 (它的文字由下拉弹层里的
+		// menu-item 画)。给 0 尺寸会让 drawNode 跳过整支 —— 而它的
+		// 子 menu (子菜单) 恰恰要能被 layoutMenu 走到, 所以给一个非 0 的
+		// 名义行高, 保证子树不被剪掉。
+		if h == 0 {
+			h = menuItemH
 		}
 	}
 	if n.Tag == "#text" {
@@ -590,6 +627,12 @@ func (n *GuiNode) stretchesCross() bool {
 	if n.Tag == "select-option" {
 		return true
 	}
+	// 菜单栏必须拿到可用宽度: 它是"窗口顶部的一条", 拿不到宽度就只按标题
+	// 总宽撑开, 右侧会露出一截窗口底色。
+	// 菜单标题**不吃** stretch: 被拉满的标题会摊掉整行, 菜单栏也就不成立了。
+	if n.Tag == "menubar" {
+		return true
+	}
 	// 开了 wrap 的文本块必须拿到可用宽度, 否则它没有换行依据 —— 在 column
 	// 里会按"未折行的整行宽"撑开并溢出容器。
 	if n.wrapsText() {
@@ -610,6 +653,11 @@ func (n *GuiNode) hasExplicitCross(parentHorizontal bool) bool {
 	name := "width"
 	if parentHorizontal {
 		name = "height"
+	}
+	// 菜单栏的高度是固定的 (26px), 对"高度敏感"的父容器而言它相当于
+	// 显式指定 —— 不加这条, 它在 column 里会被 stretch 到全高。
+	if n.Tag == "menubar" && parentHorizontal {
+		return true
 	}
 	_, ok := effectivePropNumOk(n, name)
 	return ok

@@ -51,6 +51,10 @@ type app struct {
 	// 这次按下只用来"收起弹层", 不该顺带触发下面的控件。
 	// Down 与 Up 是两个事件, 所以这个消息要在两次事件之间留存。
 	swallowClick bool
+
+	// 全局快捷键表 (P3-5): 从树上 menuitem 的 shortcut prop 收集而来。
+	// 惰性重建 (表为空时按键触发一次), 因为它只在"菜单项集合变化"时需要更新。
+	shortcuts []menuShortcutEntry
 }
 
 var (
@@ -288,13 +292,14 @@ func (a *app) handleClick(x, y int) {
 		a.taSetCaretFromXY(ta, x, y)
 	}
 
+	// 走 callHandlerValue (内部是 callScriptFn) 而不是 object.CallFunction:
+	// 后者经 VM 回调桥, currentVM 为 nil 时**静默返回 undefined** —— 纯 Go
+	// 嵌入 / 单测里挂在节点上的 *BuiltinFunction 就永远不执行, 而脚本闭包
+	// 与内置回调这两类混在同一个 prop 里, 分流只能在 callScriptFn 做。
+	// 这里的 target 是 hitNode 找到的"带 onClick 的最深节点", 处理器的
+	// 归属节点就是它, 因此与其它事件路径共用同一套派发逻辑。
 	if handler := target.PropHandler("onClick"); handler != nil {
-		object.CallFunction(handler, nil)
-		// 回调抛出的异常不中断事件循环 (P2 无 ErrorBoundary, 打印后继续)
-		if err := takeCallbackErr(); err != nil {
-			fmt.Fprintf(os.Stderr, "gfx: onClick error: %v\n", err)
-		}
-		// 回调可能改变了 signal → effect 已标脏
+		a.callHandlerValue(handler, "onClick", nil)
 	}
 }
 
@@ -354,13 +359,28 @@ func (a *app) handleKey(key, name string, ev Event) {
 	if name == "onKeyDown" && a.handleFieldKey(n, key, ev) {
 		return
 	}
+	// 全局快捷键 (P3-5) 排在字段消费之后: 焦点在输入框里时 Ctrl+S 该不该
+	// 触发"保存"? 应该 —— 输入框不消费带 Ctrl 的组合键 (见 input.go),
+	// 所以顺序上不会打架。只有"带 Ctrl/Alt"的组合才进快捷键表。
+	if name == "onKeyDown" && a.handleShortcut(key, ev.Ctrl, ev.Shift, ev.Alt, ev) {
+		return
+	}
+	// 菜单的键盘导航 (P3-5): 焦点在 menu 标题上时, ←→ 换菜单、↓/Enter 展开。
+	if name == "onKeyDown" {
+		if m := menuInChain(n); m != nil && a.handleMenuKey(m, key) {
+			return
+		}
+	}
 	handler := handlerInChain(n, name)
 	if handler == nil {
-		// Esc 兜底 (P2-4): 焦点链上没有处理器时, 先收起展开的下拉框,
-		// 否则关掉最上层的对话框。焦点在对话框里的输入控件上时, Esc 会
-		// 先被文本框/下拉吃掉了, 走到这里的都是"焦点不在可交互控件里"。
+		// Esc 兜底 (P2-4/P3-5): 优先级 = 菜单 > 下拉框 > 对话框。
+		// 从最表层的交互开始收: 菜单弹在下拉之上, 下拉弹在对话框之上。
 		if name == "onKeyDown" && key == "Escape" {
-			if a.closeAnyExpandedSelect(a.rootNode()) {
+			root := a.rootNode()
+			if a.closeAnyExpandedMenu(root) {
+				return
+			}
+			if a.closeAnyExpandedSelect(root) {
 				return
 			}
 			a.closeTopDialog()
@@ -428,10 +448,25 @@ func (a *app) handleWheel(x, y, deltaY int) {
 	a.callHandler(h, "onWheel", arg)
 }
 
-// handleContextMenu 派发 onContextMenu({x, y})。坐标一并给出, 供
-// 右键菜单就地弹出 (P3-5)。
+// handleContextMenu 派发 onContextMenu({x, y})。坐标一并给出, 供右键菜单直接使用。
+//
+// P3-5 起多了两步: ① 先收起已经弹出的右键菜单 (在菜单上再点右键 = 换一个菜单);
+// ② 焦点菜单先吃掉这次右键 —— 在弹出的菜单上点右键不该再弹一个菜单。
 func (a *app) handleContextMenu(x, y int) {
-	target := HitTestDeep(a.rootNode(), x, y)
+	root := a.rootNode()
+	// 在已弹出的右键菜单上再点右键: 吞掉, 不换位置也不重弹。
+	//
+	// 判据要用**弹层盒**而不是菜单节点盒: ctx menu 是个零尺寸的定位锚
+	// (Box = {x, y, 0, 0}), 拿它去做 Contains 永远为假, 于是"在菜单上点右键"
+	// 会被当成外部点击把菜单关掉 —— 用户看到的是"菜单一点右键就消失"。
+	// 所以与 handleMouseDown 里的判据保持一致, 都用 menuPopupOf(ctx).Box。
+	if ctx := contextMenuNode(root); ctx != nil {
+		if p := menuPopupOf(ctx); p != nil && p.Box.Contains(x, y) {
+			return
+		}
+	}
+	a.closeContextMenu()
+	target := HitTestDeep(root, x, y)
 	h := handlerInChain(target, "onContextMenu")
 	if h == nil {
 		return
@@ -447,6 +482,26 @@ func (a *app) handleContextMenu(x, y int) {
 // 只有落在有交互意义的节点上才记录按压态, 点空白处不该出现按压态。
 func (a *app) handleMouseDown(x, y int) {
 	root := a.rootNode()
+	// 右键菜单最先收: 它盖在一切之上, 点它之外任何地方都是"关掉它"。
+	// 与下拉框同理 —— 这次按下只服务于收起, 顺便吞掉该次点击。
+	if ctx := contextMenuNode(root); ctx != nil {
+		if p := menuPopupOf(ctx); p == nil || !p.Box.Contains(x, y) {
+			a.closeContextMenu()
+			a.swallowClick = true
+			a.setHover(nil)
+			a.releasePress()
+			return
+		}
+	}
+	if a.closeMenuOnOutsideClick(root, x, y) {
+		// 这次按下只服务于"收起弹层": 置吞掉标记, 拖动悬停与按压态一并复位
+		a.mu.Lock()
+		a.swallowClick = true
+		a.mu.Unlock()
+		a.setHover(nil)
+		a.releasePress()
+		return
+	}
 	if a.closeSelectOnOutsideClick(root, x, y) {
 		// 这次按下只服务于"收起弹层": 置吞掉标记, 拖动悬停与按压态一并复位
 		a.mu.Lock()
@@ -484,6 +539,55 @@ func (a *app) closeSelectOnOutsideClick(root *GuiNode, x, y int) bool {
 		return true
 	}
 	return false
+}
+
+// closeMenuOnOutsideClick 若有展开中的菜单且 (x,y) 落在**整棵菜单树**
+// (菜单栏标题 + 所有下拉) 之外, 收起它并返回 true。
+//
+// 判据必须比"落在下拉之外"更宽: 点菜单标题本身是"切换菜单"(由标题上的
+// 内置处理器接管), 不是"点外面"; 而子菜单叠在父下拉之上, 只判父下拉
+// 会把"点在子菜单上"误判成外部点击 —— 于是点子菜单的瞬间菜单就没了。
+func (a *app) closeMenuOnOutsideClick(root *GuiNode, x, y int) bool {
+	list := expandedMenus(root)
+	if len(list) == 0 {
+		return false
+	}
+	for _, m := range list {
+		if menuHitArea(m).Contains(x, y) {
+			return false
+		}
+		if p := menuPopupOf(m); p != nil && p.Box.Contains(x, y) {
+			return false
+		}
+	}
+	// 收最深的那个即可: closeMenu 会连带收起它的后代, 但同级兄弟菜单
+	// (比如菜单栏上另一个开着的) 需要各自收 —— 正常流程保证最多只有一个。
+	for _, m := range list {
+		a.closeMenu(m)
+	}
+	return true
+}
+
+// menuHitArea 是菜单标题的命中区 (右键菜单没有标题, 用它的弹层代替)。
+func menuHitArea(m *GuiNode) Rect {
+	if m.ctxMenu {
+		if p := menuPopupOf(m); p != nil {
+			return p.Box
+		}
+		return Rect{}
+	}
+	return m.Box
+}
+
+// menuInChain 从 n 起沿祖先链找第一个 menu (菜单键盘导航用: 焦点可能落在
+// 菜单标题、或标题下的文本节点上)。
+func menuInChain(n *GuiNode) *GuiNode {
+	for p := n; p != nil; p = p.Parent {
+		if p.Tag == "menu" {
+			return p
+		}
+	}
+	return nil
 }
 
 // releasePress 结束按压态 (MouseUp / 未命中时)。
@@ -916,6 +1020,8 @@ func init() {
 			"clipboardWriteText": object.NewBuiltin("clipboardWriteText", jsClipboardWriteText),
 			// P3-2 过渡动画 (命令式; 声明式走 transition prop, 不经模块)
 			"animate": object.NewBuiltin("animate", jsAnimate),
+			// P3-5 右键菜单 (就地弹出; 声明式菜单栏走 menubar/menu/menuitem 标签)
+			"openContextMenu": object.NewBuiltin("openContextMenu", jsOpenContextMenu),
 		}
 	})
 	// gx/dialog (P3-4) 单列一个模块: 它不依赖元素树, 只依赖"当前有没有窗口",
@@ -984,6 +1090,38 @@ func jsRender(args ...object.Value) object.Value {
 	if err := Mount(root, cfg); err != nil {
 		return object.NewErrorWithName("Error", "gfx: "+err.Error())
 	}
+	return object.UndefinedSingleton
+}
+
+// jsOpenContextMenu 是 openContextMenu(x, y, items): 在 (x, y) 处就地弹出菜单。
+//
+// items 是**菜单项节点数组** (menuitem / separator), 所以脚本可以复用与
+// 声明式菜单完全相同的写法, 只是不挂在树上而已。非节点元素静默跳过 ——
+// 与 options 的容错口径一致 (数据形状不对不该让渲染层 panic)。
+func jsOpenContextMenu(args ...object.Value) object.Value {
+	if len(args) < 3 {
+		return object.NewTypeError("openContextMenu: (x, y, items) required")
+	}
+	x, okX := args[0].(*object.Number)
+	y, okY := args[1].(*object.Number)
+	if !okX || !okY {
+		return object.NewTypeError("openContextMenu: x and y must be numbers")
+	}
+	arr, ok := args[2].(*object.Array)
+	if !ok {
+		return object.NewTypeError("openContextMenu: items must be an array of menuitem elements")
+	}
+	a := currentApp()
+	if a == nil {
+		return object.UndefinedSingleton
+	}
+	items := make([]*GuiNode, 0, len(arr.Elements))
+	for _, e := range arr.Elements {
+		if n, ok := e.(*GuiNode); ok {
+			items = append(items, n)
+		}
+	}
+	a.openContextMenu(int(x.Value), int(y.Value), items)
 	return object.UndefinedSingleton
 }
 

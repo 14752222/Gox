@@ -44,3 +44,4 @@ npm/binaries/
 npm/*.tgz
 npm/publish-v*.bat
 npm/fix-tarball-modes.py
+_commitmsg.txt
