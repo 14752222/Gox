@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"image"
 	"image/color"
-	"os"
 	"runtime"
 	"sync"
 	"time"
@@ -928,7 +927,7 @@ func (a *app) callHandlerValue(handler object.Value, name string, arg object.Val
 		callScriptFn(handler, arg)
 	}
 	if err := takeCallbackErr(); err != nil {
-		fmt.Fprintf(os.Stderr, "gfx: %s error: %v\n", name, err)
+		warnEventError(name, err)
 	}
 }
 
@@ -1160,6 +1159,7 @@ func (a *app) redraw() {
 		Draw(a.img, root)
 		a.drawFocusRing(a.img)
 		a.surface.ShowRegions(a.img, nil)
+		devFrameTick(true)
 		return
 	}
 
@@ -1183,6 +1183,7 @@ func (a *app) redraw() {
 		Draw(a.img, root)
 		a.drawFocusRing(a.img)
 		a.surface.ShowRegions(a.img, nil)
+		devFrameTick(true)
 		return
 	}
 
@@ -1203,6 +1204,7 @@ func (a *app) redraw() {
 		// 反而更绕; 框始终画在焦点节点自身的盒内, 所以仍落在脏区内。
 		a.drawFocusRing(a.img)
 		a.surface.ShowRegions(a.img, clipRects)
+		devFrameTick(false)
 	}
 }
 

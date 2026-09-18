@@ -1,9 +1,7 @@
 package gfx
 
 import (
-	"fmt"
 	"image/color"
-	"os"
 	"sync"
 
 	"github.com/14752222/Gox/object"
@@ -165,10 +163,10 @@ var (
 )
 
 // warnUnknownTag 是未知标签的警告出口。做成变量而非直接写 stderr,
-// 便于单测替换为计数器断言 (同一标签只警告一次的行为见 warnUnknownTagOnce)。
+// 便于单测替换为计数器断言 (同一标签只警告一次的行为见 warnUnknownTagOnce;
+// 默认出口经 recordWarn 进警告环形缓冲, gx/dev 可读)。
 var warnUnknownTag = func(tag string) {
-	fmt.Fprintf(os.Stderr,
-		"gfx: unknown tag %q (rendered as a plain box; see docs/gui-component-status.md)\n", tag)
+	recordWarn("unknown tag %q (rendered as a plain box; see docs/gui-component-status.md)", tag)
 }
 
 // warnUnknownTagOnce 同一标签只警告一次: 函数值 prop 驱动的重建会反复
@@ -430,7 +428,7 @@ func (n *GuiNode) wireReactiveChild(getter object.Value) {
 		for _, fn := range sc.Mounts {
 			object.CallFunction(fn, nil)
 			if err := takeCallbackErr(); err != nil {
-				fmt.Fprintf(os.Stderr, "gfx: onMount error: %v\n", err)
+				recordWarn("onMount error: %v", err)
 			}
 		}
 		return object.UndefinedSingleton
@@ -449,7 +447,7 @@ func runCleanups(n *GuiNode) {
 	for i := len(n.cleanups) - 1; i >= 0; i-- {
 		object.CallFunction(n.cleanups[i], nil)
 		if err := takeCallbackErr(); err != nil {
-			fmt.Fprintf(os.Stderr, "gfx: onCleanup error: %v\n", err)
+			recordWarn("onCleanup error: %v", err)
 		}
 	}
 	n.cleanups = nil

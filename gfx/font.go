@@ -279,6 +279,8 @@ type glyphCache struct {
 	cap   int
 	order []glyphKey
 	entry map[glyphKey]*glyphEntry
+	// devtools 基础设施 1: 命中/未中/淘汰计数 (口径与 imageLRU 一致)。
+	hits, misses, evicts int
 }
 
 type glyphKey struct {
@@ -295,8 +297,10 @@ func (c *glyphCache) get(size int, r rune) *glyphEntry {
 	defer c.mu.Unlock()
 	k := glyphKey{size, r}
 	if e, ok := c.entry[k]; ok {
+		c.hits++
 		return e
 	}
+	c.misses++
 	return nil
 }
 
@@ -312,9 +316,17 @@ func (c *glyphCache) put(size int, r rune, e *glyphEntry) {
 		old := c.order[0]
 		c.order = c.order[1:]
 		delete(c.entry, old)
+		c.evicts++
 	}
 	c.order = append(c.order, k)
 	c.entry[k] = e
+}
+
+// stats 返回缓存统计 (gx/dev 的 devSnapshot 用)。
+func (c *glyphCache) stats() (size, cap, hits, misses, evicts int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.entry), c.cap, c.hits, c.misses, c.evicts
 }
 
 // glyph 渲染 (或取缓存) 一个字符: 以 dot=(0,0) 调 face.Glyph,

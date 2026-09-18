@@ -5,10 +5,14 @@
 >
 > 来源：2026-09-18 选型拍板（`undecided-and-unimplemented.md` §一）——
 > 路由 A「用户态 signal 模式（模式文档 + testdata demo）」与屏幕适配 A
-> 「onResize + useWindowSize」的落地交付物。
+> 「onResize + useWindowSize」的落地交付物；2026-09-19 增补状态 B
+> createResource、onMount/onCleanup、devtools A（gx/dev）、样式 F（用户态
+> 设计套件）四章。
 >
 > 章节对应 demo：§1–§2 → `testdata/routing_demo.js`（`gfx/routing_test.go`）；
-> §3 → `testdata/resize_demo.js`（`gfx/resize_test.go`）。
+> §3 → `testdata/resize_demo.js`（`gfx/resize_test.go`）；§4 → `testdata/resource_demo.js`；
+> §7 → `testdata/dev_panel_demo.js`；§8 → `testdata/kit_demo.js`（后三个在
+> `TestExampleScriptsMount` 挂载，交互断言见 `gfx/resource_test.go` / `gfx/dev_test.go`）。
 
 ---
 
@@ -142,7 +146,171 @@ render(
 - 响应式分支里**别把 signal 读取藏进条件后半段**（canvas 依赖收集同款坑）：
   `{() => wide() ? ... : ...}` 两边都读 `wide` 本身，天然安全。
 
-## 4. 何时从「模式」升级为「模块 / 内核」
+## 4. 状态：createResource（异步取数三件套）
+
+**问题**：取数 → 展示页面的 loading / error / data 三件套与竞态防御，
+每页手写一遍太疼（状态管理方案 B 收编的就是这块）。
+
+**模块依赖**（2026-09-19 落地，`gx/solid` 新增）：
+
+```js
+import { createResource } from "gx/solid";
+
+const [data, res] = createResource(fetchItems);   // fetcher 返回 Promise
+// data()        → undefined (pending) | 值 | 上一次的值 (refreshing / error)
+// res.state()   → "pending" | "ready" | "refreshing" | "error"
+// res.error()   → 错误值 (仅 error 态有值)
+// res.refetch() → 重取 (保留旧值显示, 即 refreshing)
+
+<text font={14}>{() => res.state() === "pending" ? "加载中…" : String(data())}</text>
+<button onClick={() => res.refetch()} disabled={() => res.state() === "pending"}>刷新</button>
+```
+
+与 Solid 的刻意差异（v1 减法，**属公共 API 承诺**）：
+
+- `const [data, { refetch }] = ...` 嵌套解构**引擎不支持**（数组解构里不能嵌
+  对象模式），controls 作为第二个元素取出（上例的 `res`）。
+- `state`/`error` 不挂在 `data` 函数上（函数值不带属性），是 controls 里的
+  signal getter。
+- **error 态的 `data()` 不抛**（v1 无 ErrorBoundary，抛了会冒泡进任意 effect，
+  炸得没有上下文）：返回上一次的值（从未成功过则 undefined），错误只从
+  `res.error()` 读。
+- fetcher 返回非 Promise（同步值）按「立即可用」处理；不做 source signal
+  自动重取（Solid 二参形态），联动用 `createEffect` 手动串。
+- **latest-wins**：快速连续 `refetch` 时旧响应后到即丢弃（结构性消灭竞态），
+  `resource_demo.js` 可当场验证。
+
+`testdata/resource_demo.js` 覆盖 pending → ready、refetch 保旧值、fail 后
+`data()` 不抛不丢、恢复四个场景。
+
+## 5. 状态：枚举 signal 状态机（流程状态）
+
+**问题**：向导 / 审批流这类**流程**状态（loading→ok/fail→retry）怎么管。
+拍板结论：v1 不做 `gx/machine`，用一张迁移表 + 单入口 `send`（状态管理
+方案 A 的模式），第一个真实多状态流程出现再升级。
+
+```js
+const transitions = {
+  idle:    { LOAD: "loading" },
+  loading: { OK: "success", FAIL: "error", CANCEL: "idle" },
+  error:   { RETRY: "loading", RESET: "idle" },
+  success: { RESET: "idle" },
+};
+const [phase, setPhase] = createSignal("idle");
+
+function send(event) {
+  const next = transitions[phase()]?.[event];
+  if (!next) throw new Error(`illegal transition: ${phase()} --${event}-->`);
+  setPhase(next);
+}
+
+// UI 全部派生, 不存第二份状态
+const face = createMemo(() =>
+  phase() === "loading" ? "加载中…" : phase() === "error" ? "失败" : "完成");
+```
+
+纪律（写错的表现比写对更常见）：
+
+- `phase` 存字符串（`===` 可用）；带载荷就存 `{name, data}` 且**每次迁移新建
+  对象**，不做原地修改。
+- 所有迁移过 `send`：非法迁移直接抛错（宁可炸也别"静默卡住"）；绕过 `send`
+  直接 `setPhase` 编译期拦不住，靠 review。
+- 竞态防御已被 §4 的 createResource 收走 —— 这张表只管"流程走到哪"，
+  别再用它管"数据怎么来"。
+
+## 6. 生命周期：onMount / onCleanup
+
+**问题**：组件要在"我挂上/我被换掉"时做事（起定时器、注册回调、清理）。
+`gx/solid` 新增（2026-09-19，与 createResource 同批）：
+
+```js
+import { onMount, onCleanup } from "gx/solid";
+
+const Timer = (p) => {
+  const [tick, setTick] = createSignal(0);
+  const id = setInterval(() => setTick(tick() + 1), 1000);
+  onCleanup(() => clearInterval(id));      // 本代子树被替换/销毁时执行
+  onMount(() => console.log("Timer mounted"));
+  return <text font={14}>{() => `t=${tick()}`}</text>;
+};
+
+render(<window title="t" width={200} height={100}>
+  <column>{() => show() ? <Timer/> : null}</column>   {/* 切走时 clearInterval 自动跑 */}
+</window>);
+```
+
+语义与边界（v1，文档即承诺）：
+
+- 登记到**当前正在构建的响应式子树**（条件/列表渲染的求值期）：切页/换代
+  时 `onCleanup` **逆序**执行，新子树挂上后 `onMount` 立即执行（顺序：
+  旧代 cleanup → 拆树 → 挂新树 → 新代 mount，`gfx/resource_test.go`
+  有序列断言）。
+- **顶层脚本直接调用是 no-op**（打一次警告）：初始静态树存活于整个窗口生命
+  期，没有"被换掉"的时刻；需要"窗口关闭时清理"的场景 v1 不覆盖。
+- 列表渲染同一代多个组件的登记**整批执行**，粒度是"代"不是"组件实例"
+  （v1 无 diff/key，没有实例身份）。
+
+## 7. devtools：gx/dev 快照与自绘面板
+
+**问题**：开发期想看帧统计 / 缓存命中 / 树规模 / 内核警告。
+模块 `gx/dev`（2026-09-19 落地）只导出一个只读函数：
+
+```js
+import { devSnapshot } from "gx/dev";
+const snap = devSnapshot();
+// snap.frame      → { count, full, partial, fullRatio }   帧埋点 (只计真实上屏)
+// snap.imageCache → { size, cap, hits, misses, evicts }   图片缓存 (cap=16)
+// snap.glyphCache → { ... }                               字形缓存 (cap=1024)
+// snap.tree       → { windows, nodes, depth }             全部窗口聚合
+// snap.solid      → { effects }                           存活 effect 数 (泄漏排查)
+// snap.warnings   → [{ at, text }]                        最近 64 条内核警告
+```
+
+用法三条纪律（拍板 2026-09-18）：
+
+- **拉取式**：面板自己 `setInterval(() => setSnap(devSnapshot()), 1000)`；
+  **别用 requestAnimationFrame**（和真实渲染抢帧）。`testdata/dev_panel_demo.js`
+  是可复制的模板（帧 / 缓存 / 树 / warnings 四区）。
+- **字段名是 API**：结构由 `TestDevSnapshotShape` 锁住；`solid.effects` 与
+  警告文本格式不算承诺。
+- **应用树坏掉时面板一起坏**（方案 A 的已知边界）：需要"卡死现场可看"再
+  评估 HTTP 旁路（方案 C）；脏矩形可视化是内核帧埋点的后补项。
+
+## 8. 样式：用户态设计套件（令牌 / 变体 / 主题）
+
+**问题**：颜色与间距的重复（同一种按钮蓝抄 20 遍）。拍板 F+C+B 起步：
+零内核改动，令牌是普通对象，变体是工厂函数参数，主题切换 = 换一组令牌。
+`testdata/kit_demo.js` 是完整模板，骨架：
+
+```js
+const light = { surface: "#ffffff", ink: "#1c2430", accent: "#3355aa", padX: 14, gap: 10 };
+const dark  = { surface: "#242b33", ink: "#dfe6ee", accent: "#6c8fd9", padX: 14, gap: 10 };
+const [themeName, setThemeName] = createSignal("light");
+const t = () => (themeName() === "dark" ? dark : light);
+
+const Btn = (p) => {
+  const [hover, setHover] = createSignal(false);           // 悬停近似 (方案 F)
+  return (
+    <button
+      padding={p.size === "sm" ? 6 : 10}
+      color={() => (p.variant === "primary" ? "#fff" : t().ink)}
+      background={() => p.variant === "primary" ? t().accent : t().surface}
+      onMouseMove={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+    >{p.children}</button>
+  );
+};
+const Card = (p) => <column background={() => t().surface} padding={() => t().padX}>{p.children}</column>;
+```
+
+**能力边界必须诚实**（❌ 清单，内核把值写死）：焦点虚线框颜色 / 滚动条与
+滑块色 / select 箭头 / progress 轨道色 / checkbox 未选中底色 / modal 遮罩 /
+switch 滑块 / disabled 降饱和 / 圆角 / 阴影 / 边框宽度 / 光标闪烁周期——
+套件在这些地方会"露出底"，属预期。悬停是 `onMouseMove` + signal 的**近似**
+（事件粒度是"移动"不是"进入/离开"）。交互态覆盖 button/input/select/menu
+核心件；第二主题成为硬需求时再评估样式表选择器（方案 D）。
+
+## 9. 何时从「模式」升级为「模块 / 内核」
 
 模式层的成本是每个应用抄一遍；升级触发（拍板 2026-09-18，抄自各 options 文档）：
 
@@ -152,6 +320,11 @@ render(
 | §1 切页即卸载 | 内核 `hidden` prop（唯一动内核项） | 真实应用抱怨切页丢状态 |
 | §3 useWindowSize | 并入 `gx/device` 的 `getSystemInfo` | 移动端 M1 或第二个平台能力出现 |
 | §3 断点 | 声明式断点（样式体系的一部分） | 样式体系 F+C+B 落地之后（此前单独做会发明第二套样式通道） |
+| §4 createResource | source signal 自动重取（Solid 二参形态） | 出现 ≥3 个"手动 createEffect 串 refetch"的应用 |
+| §5 枚举状态机 | `gx/machine`（XState 子集） | 第一个真实多状态流程（状态 >5 或迁移 >10 条） |
+| §6 生命周期 | 窗口级卸载钩子 / 组件实例粒度 | 窗口关闭清理成为真实需求 / 内核引入 diff+key |
+| §7 gx/dev | 脏矩形可视化（内核帧埋点后补） / HTTP 旁路（方案 C） | 排查"局部重绘不生效" / 应用卡死时要能看 |
+| §8 设计套件 | 语义令牌进内核（方案 B/C 内核侧）+ 装饰栈（方案 E） | 第二主题硬需求 / 圆角阴影等光栅能力落地后 |
 
 在那之前，本手册的写法就是**官方推荐用法**：内核 API 面不增长，模式演进
 （加参数路由、加嵌套路由）只是改示例，不是改兼容承诺。

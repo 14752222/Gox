@@ -561,9 +561,14 @@ func TestExampleScriptsMount(t *testing.T) {
 		"menu_demo.js",                   // P3-5 菜单栏 / 右键菜单 / 快捷键
 		"resize_demo.js",                 // 屏幕 A: onResize + useWindowSize 模式
 		"routing_demo.js",                // 路由 A: signal 切页 (交互全流程见 routing_test.go)
+		"resource_demo.js",               // 状态 B: createResource (交互断言见 resource_test.go)
+		"dev_panel_demo.js",              // devtools A: gx/dev 快照面板 (结构见 dev_test.go)
+		"kit_demo.js",                    // 样式 F: 用户态设计套件 (令牌/变体/主题)
 		"counter_demo.js", "gui_demo.js", // 既有演示 (布局改动后回归)
 		// 注: image_demo.js 不在本列表 —— 它的 src 是相对文件路径, 必须从仓库根
 		// 目录运行 (而本用例的 cwd 是 gfx/)。由 TestImageDemoScript 专职覆盖。
+		// storage_demo.js 同理: 它会真实写存储文件, 需 GOX_STORAGE_DIR 隔离,
+		// 由 TestStorageDemoScript 专职覆盖。
 	}
 	for _, name := range scripts {
 		t.Run(name, func(t *testing.T) {
@@ -622,6 +627,26 @@ func shotsImage(f *fakeSurface) *image.RGBA {
 func checkDemoTree(t *testing.T, name string, root *GuiNode, fake *fakeSurface) {
 	t.Helper()
 	switch name {
+	case "resource_demo.js":
+		// 取数定时器 (800ms) 在关闭前不会到: 首帧就是 pending 态
+		tx := findFirstWhere(root, func(n *GuiNode) bool { return n.Tag == "text" && n.TextContent() == "loading..." })
+		if tx == nil {
+			t.Fatalf("pending 态应显示 loading...")
+		}
+	case "dev_panel_demo.js":
+		if n := countTag(root, "text"); n < 5 {
+			t.Fatalf("面板文本行数量 = %d, want >= 5", n)
+		}
+		if n := countTag(root, "button"); n != 1 {
+			t.Fatalf("bump 按钮数量 = %d, want 1", n)
+		}
+	case "kit_demo.js":
+		if n := countTag(root, "button"); n != 5 {
+			t.Fatalf("按钮数量 = %d, want 5 (主题切换+primary+normal+small+disabled)", n)
+		}
+		if n := countTag(root, "input"); n != 1 {
+			t.Fatalf("Field 输入框数量 = %d, want 1", n)
+		}
 	case "form_demo.js":
 		cb := findFirst(root, "checkbox")
 		if cb == nil || cb.Box.W != 18 || cb.Box.H != 18 {

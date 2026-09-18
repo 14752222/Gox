@@ -57,6 +57,10 @@ type imageLRU struct {
 	cap   int
 	order []string
 	entry map[string]*imageEntry
+	// devtools 基础设施 1 (2026-09-19): 命中/未中/淘汰计数。misses 的口径
+	// 是"查缓存未中"—— 路径坏 (解码失败永远进不了缓存) 的重试也计入,
+	// 排查"图为什么是占位框"时这正是想要的信号。
+	hits, misses, evicts int
 }
 
 func newImageLRU(capacity int) *imageLRU {
@@ -66,7 +70,12 @@ func newImageLRU(capacity int) *imageLRU {
 func (c *imageLRU) get(path string) *imageEntry {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.entry[path]
+	if e, ok := c.entry[path]; ok {
+		c.hits++
+		return e
+	}
+	c.misses++
+	return nil
 }
 
 func (c *imageLRU) put(path string, e *imageEntry) {
@@ -79,9 +88,17 @@ func (c *imageLRU) put(path string, e *imageEntry) {
 		old := c.order[0]
 		c.order = c.order[1:]
 		delete(c.entry, old)
+		c.evicts++
 	}
 	c.order = append(c.order, path)
 	c.entry[path] = e
+}
+
+// stats 返回缓存统计 (gx/dev 的 devSnapshot 用)。
+func (c *imageLRU) stats() (size, cap, hits, misses, evicts int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.entry), c.cap, c.hits, c.misses, c.evicts
 }
 
 // imageCacheCap 是缓存张数上限。按张数而不是字节数: 反正 v1 连"按字节淘汰"
@@ -137,9 +154,10 @@ func toRGBA(src image.Image) *image.RGBA {
 
 // ===== 加载失败警告 (同一路径只报一次) =====
 
-// warnImageLoad 是加载失败的警告出口。做成变量便于单测替换成计数器。
+// warnImageLoad 是加载失败的警告出口。做成变量便于单测替换成计数器
+// (默认出口经 recordWarn 进警告环形缓冲, gx/dev 可读)。
 var warnImageLoad = func(path string, err error) {
-	fmt.Fprintf(os.Stderr, "gfx: image %q load failed: %v\n", path, err)
+	recordWarn("image %q load failed: %v", path, err)
 }
 
 var (
