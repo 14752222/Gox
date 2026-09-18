@@ -270,6 +270,40 @@ const s = clipboardReadText();            // → 字符串，读不到时为空�
 Windows 后端走 `OpenClipboard` + `CF_UNICODETEXT`（打开失败会重试 5 次 × 20ms，期间 UI 冻结 ≤100ms）；
 Linux（X11）暂未实现。示例：`testdata/clipboard_demo.js`。
 
+**过渡动画**
+
+给节点挂 `transition`，它的**数值属性发生变化**时就不再一帧跳到位，而是在指定毫秒内按 ease-out 逐帧逼近：
+
+```js
+const [wide, setWide] = createSignal(false)
+
+h("rect", {
+  height: 18,
+  background: "#2f80ed",
+  transition: { width: 400 },          // width 用 400ms 过渡
+  width: () => (wide() ? 300 : 60),    // 值一变就开始补间
+})
+
+// 简写：所有可动画属性共用同一时长
+h("row", { transition: 350, opacity: () => (visible() ? 1 : 0.15) }, /* ... */)
+```
+
+可动画属性只有 `width` / `height` / `left` / `top` / `opacity` 五个（`value`、`padding`、`gap` 等
+刻意排除，理由见 `docs/gui-component-status.md` §20）。**首次赋值不做过渡**（与 CSS 一致），
+想要入场动画用命令式 API：
+
+```js
+import { animate } from "gx/gfx"
+
+const cancel = animate(0, 100, 600, (v) => setProgress(v), () => setDone(true))
+// 也可以改元素属性：animate(node, "width", 200, 300)
+// cancel() → 停在当前插值
+```
+
+`opacity` 是**成组**属性：父节点半透明 = 整棵子树一起淡。
+动画期间布局读到的是**插值**，所以兄弟节点会跟着让位。帧驱动复用与光标闪烁同一套 16ms 定时器，
+**没有活动动画时不占定时器**（静止零开销）。示例：`testdata/transition_demo.js`。
+
 **多行文本与自动换行**
 
 `<text>` 加 `wrap` 就变成会自动折行的文本块（按可用宽度贪心断行，中西文一视同仁），
@@ -413,6 +447,7 @@ h("column", null,
 `testdata/slider_demo.js`（滑块：受控值 / 量程 / 禁用三态）、
 `testdata/ime_demo.js`（输入法：候选词整批提交与光标跨批）、
 `testdata/clipboard_demo.js`（剪贴板：同步读写与失败降级）、
+`testdata/transition_demo.js`（过渡动画：宽度 / 成组淡出 / 位移 / 命令式 animate）、
 `testdata/counter_demo.js` 与 `testdata/gui_demo.js`（响应式基础）。
 
 ## 打包成独立可执行文件

@@ -55,8 +55,10 @@ func (n *GuiNode) maxLines() int {
 
 // blockWrapWidth 返回换行所用宽度: 显式 width 优先, 否则用父给的约束宽。
 // 返回 0 表示"没有宽度约束" ⇒ 不折行 (只按 '\n' 分)。
+// 读 effectivePropNumOk (P3-2): 宽度做过渡时要按当前插值折行, 否则动画
+// 期间文字会按"终值宽度"排版, 看起来跟盒子错位。
 func (n *GuiNode) blockWrapWidth(constraint int) int {
-	if v, ok := n.PropNum("width"); ok && int(v) > 0 {
+	if v, ok := effectivePropNumOk(n, "width"); ok && int(v) > 0 {
 		return int(v)
 	}
 	if constraint < 0 {
@@ -82,7 +84,7 @@ func (n *GuiNode) blockHeight(cross, fallback int) int {
 	if !n.wrapsText() {
 		return fallback
 	}
-	if _, ok := n.PropNum("width"); ok {
+	if _, ok := effectivePropNumOk(n, "width"); ok {
 		return fallback // 定宽: intrinsicSize 已经按同一宽度算过
 	}
 	if cross <= 0 {

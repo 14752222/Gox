@@ -318,6 +318,15 @@ func drawNode(img *image.RGBA, n *GuiNode) {
 	}
 	// 禁用态沿祖先链继承 (按需查找, 树深通常 <10, 相对光栅化开销可忽略)
 	disabled := n.disabledInChain()
+	// 子树不透明度 (P3-2): opacity 是**成组**属性 —— 整棵子树一起淡出,
+	// 而不是每个子节点各自 0.5 再叠起来。所以在进入子树之前压栈,
+	// 本节点自身的绘制与全部后代都乘上这个因子。
+	// 全不透明时 pushFade 返回的闭包只是空操作, 但为了省掉每次的栈操作,
+	// 这里显式判断一下 (绝大多数字点没有 opacity)。
+	if o := effectiveOpacity(n); o < 1 {
+		restore := pushFade(o)
+		defer restore()
+	}
 	if n.Tag == "#text" {
 		// 文本节点: 在自身框内绘制 (超宽截断)
 		DrawText(img, clipRect, n.Text, n.Box.X, n.Box.Y, n.FontSize(),
@@ -565,6 +574,12 @@ func FillRect(img *image.RGBA, r Rect, c color.RGBA) {
 	if !visible {
 		return
 	}
+	// 子树不透明度 (P3-2): 在**最底层原语**上统一施加, 而不是让每个
+	// paintXxx 自己去乘 —— 绘制路径有十几条 (含 canvas 的脚本落笔、
+	// image 的像素拷贝、dialog 的遮罩), 逐个改既容易漏又难维护。
+	// 所有绘制最终都汇到 FillRect (边框/圆/粗线都是它的组合), 这里是
+	// 唯一能一网打尽的位置。
+	c = applyFade(c)
 	ca := uint32(c.A)
 	if ca == 0 {
 		return // 全透明: 不改动画面 (也不该白白遍历像素)

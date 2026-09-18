@@ -414,6 +414,22 @@ func countTag(root *GuiNode, tag string) int {
 	return n
 }
 
+// findFirstWhere 深度优先找第一个满足谓词的节点 (按属性特征定位比按下标稳)。
+func findFirstWhere(root *GuiNode, pred func(*GuiNode) bool) *GuiNode {
+	if root == nil {
+		return nil
+	}
+	if pred(root) {
+		return root
+	}
+	for _, c := range root.Children {
+		if n := findFirstWhere(c, pred); n != nil {
+			return n
+		}
+	}
+	return nil
+}
+
 // TestNestedContainerSizesAndDraws 回归: 容器的固有尺寸此前只取显式
 // width/height → 嵌套 column/row 恒为 0 尺寸, 而 drawNode 会跳过"自身盒为空"
 // 的子树, 导致嵌套几层的界面整片不渲染。
@@ -540,6 +556,7 @@ func TestExampleScriptsMount(t *testing.T) {
 		"slider_demo.js",                 // P2-8 滑块
 		"ime_demo.js",                    // P2-7 输入法 (提交由平台投递, 这里只验挂载)
 		"clipboard_demo.js",              // P3-3 剪贴板 (读写由后端提供, 这里只验挂载)
+		"transition_demo.js",             // P3-2 过渡动画 (首帧应静止: 见断言)
 		"counter_demo.js", "gui_demo.js", // 既有演示 (布局改动后回归)
 		// 注: image_demo.js 不在本列表 —— 它的 src 是相对文件路径, 必须从仓库根
 		// 目录运行 (而本用例的 cwd 是 gfx/)。由 TestImageDemoScript 专职覆盖。
@@ -930,6 +947,78 @@ func checkDemoTree(t *testing.T, name string, root *GuiNode, fake *fakeSurface) 
 		}
 		if dlg.PropHandler("onClose") == nil {
 			t.Fatalf("dialog_demo 的 dialog 缺少 onClose 处理器")
+		}
+	case "transition_demo.js":
+		// 过渡动画演示: 首帧是"静止"状态 —— 首次赋值不做过渡 (与 CSS 一致),
+		// 所以挂载后不该有任何活动动画, 尺寸就是终值。
+		// 6 个 rect: 蓝条 / 淡出组的红块+橙块 / 灰色轨道 / 绿点 / 黄条。
+		// 这里不按下标取 (容易随脚本微调错位), 一律按 props 特征定位。
+		rects := findAll(root, "rect")
+		if len(rects) != 6 {
+			t.Fatalf("transition_demo 的 rect 数量 = %d, want 6", len(rects))
+		}
+		// ① 宽度过渡的起点: wide=false → 60 (带 width transition 的那个就是蓝条)
+		blue := findFirstWhere(root, func(n *GuiNode) bool {
+			return n.Tag == "rect" && n.PropHasTransition("width")
+		})
+		if blue == nil {
+			t.Fatalf("transition_demo 缺少带 width 过渡的蓝条")
+		}
+		if blue.Box.W != 60 || blue.Box.H != 18 {
+			t.Fatalf("蓝条初始尺寸 = %v, want 60x18", blue.Box)
+		}
+		// ② 不透明度组的行容器 (两个 24x24 色块 + 文本)
+		fading := findFirstWhere(root, func(n *GuiNode) bool {
+			return n.Tag == "row" && n.PropHasTransition("opacity")
+		})
+		if fading == nil {
+			t.Fatalf("transition_demo 缺少带 opacity 过渡的 row 容器")
+		}
+		if v, ok := fading.PropNum("opacity"); !ok || v != 1 {
+			t.Fatalf("淡出组初始 opacity = %v (ok=%v), want 1", v, ok)
+		}
+		if fading.Box.H != 28 {
+			t.Fatalf("淡出组未按 28 高布局: %v", fading.Box)
+		}
+		// ③ 位移过渡: 绿点绝对定位, left 由轨道坐标 +4 决定
+		dot := findFirstWhere(root, func(n *GuiNode) bool {
+			return n.Tag == "rect" && n.PropHasTransition("left")
+		})
+		track := findFirstWhere(root, func(n *GuiNode) bool {
+			return n.Tag == "rect" && n.PropHas("position") && n.Box.W == 320
+		})
+		if dot == nil || track == nil {
+			t.Fatalf("transition_demo 缺少绿点或灰色轨道 (dot=%v track=%v)", dot, track)
+		}
+		if dot.Box.X != track.Box.X+4 || dot.Box.Y != track.Box.Y+2 {
+			t.Fatalf("绿点位置 = %v (轨道 %v), want 轨道内 +4/+2", dot.Box, track.Box)
+		}
+		// ④ 命令式 animate 的黄条: 初始 40 宽 (status=idle)。
+		// 蓝条同样是"带 width 过渡的 rect", 只能靠高度区分 (18 vs 14)。
+		yellow := findFirstWhere(root, func(n *GuiNode) bool {
+			if n.Tag != "rect" || !n.PropHasTransition("width") {
+				return false
+			}
+			h, _ := n.PropNum("height")
+			return h == 14
+		})
+		if yellow == nil {
+			t.Fatalf("transition_demo 缺少黄条")
+		}
+		if yellow.Box.W != 40 || yellow.Box.H != 14 {
+			t.Fatalf("黄条初始尺寸 = %v, want 40x14", yellow.Box)
+		}
+		if yellow == blue {
+			t.Fatalf("黄条与蓝条定位到同一个节点, 特征选取不够特异")
+		}
+		// 首帧不该有任何动画在跑 (否则静止界面会一直占着 16ms 帧定时器)
+		for _, n := range rects {
+			if len(n.anim) != 0 {
+				t.Fatalf("%s 首帧不该有活动动画: %v", n.Tag, n.anim)
+			}
+		}
+		if animRunning {
+			t.Fatalf("首帧不该有动画定时器在跑")
 		}
 	}
 }

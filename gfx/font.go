@@ -511,6 +511,10 @@ func DrawText(img *image.RGBA, clip image.Rectangle, text string, x, y, size int
 	if size < 8 {
 		size = 8
 	}
+	// 子树不透明度 (P3-2): 文字走的是"字形覆盖度当 alpha"的混合 (见 blitGlyph,
+	// 只用 c.R/G/B), 所以这里不能像 FillRect 那样改 c.A —— 把淡出因子
+	// 编码进 alpha 通道传下去, blitGlyph 会乘到覆盖度上。
+	c = applyFade(c)
 	ascent := textAscent(size)
 	dotY := y + ascent
 	drawn := 0
@@ -532,7 +536,11 @@ func DrawText(img *image.RGBA, clip image.Rectangle, text string, x, y, size int
 }
 
 // blitGlyph 把 glyph 掩码按颜色 alpha 混合写入 img (clip 裁剪)。
+//
+// 淡出 (P3-2) 的接法是"c.A 当额外覆盖度因子": 调用方 (DrawText) 已经
+// 把不透明度折进了 c.A, 这里再乘一次就得到 final alpha = 覆盖度 × 不透明度。
 func blitGlyph(img *image.RGBA, clip image.Rectangle, e *glyphEntry, dx, dy int, c color.RGBA) {
+	fade := uint32(c.A)
 	b := e.mask.Bounds()
 	for my := b.Min.Y; my < b.Max.Y; my++ {
 		iy := dy + my - b.Min.Y
@@ -544,7 +552,7 @@ func blitGlyph(img *image.RGBA, clip image.Rectangle, e *glyphEntry, dx, dy int,
 			if ix < clip.Min.X || ix >= clip.Max.X || ix < img.Rect.Min.X || ix >= img.Rect.Max.X {
 				continue
 			}
-			a := uint32(e.mask.AlphaAt(mx, my).A)
+			a := uint32(e.mask.AlphaAt(mx, my).A) * fade / 255
 			if a == 0 {
 				continue
 			}

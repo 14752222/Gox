@@ -63,9 +63,10 @@ func (n *GuiNode) isFlowChild() bool {
 }
 
 // absoluteOffset 读取绝对定位的 left/top 偏移 (默认 0, 相对父内容区)。
+// 走 effectivePropNum: left/top 是可动画属性 (P3-2), 过渡期间要读插值。
 func (n *GuiNode) absoluteOffset() (left, top int) {
-	l, _ := n.PropNum("left")
-	t, _ := n.PropNum("top")
+	l := effectivePropNum(n, "left")
+	t := effectivePropNum(n, "top")
 	return int(l), int(t)
 }
 

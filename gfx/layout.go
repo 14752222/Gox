@@ -84,11 +84,14 @@ func layoutNode(n *GuiNode) {
 
 // intrinsicSize 返回节点的期望尺寸: 显式 width/height 优先, 内置组件有
 // 缺省固有尺寸, button 按内容尺寸, 文本节点按字体测量, 其余为 0。
+//
+// 读的是 effectivePropNumOk (P3-2): 过渡动画期间尺寸走插值, 而且"有动画"
+// 必须算作"有显式尺寸" —— 否则动画中途会突然回退到内容尺寸再跳回来。
 func (n *GuiNode) intrinsicSize() (w, h int) {
-	if v, ok := n.PropNum("width"); ok {
+	if v, ok := effectivePropNumOk(n, "width"); ok {
 		w = int(v)
 	}
-	if v, ok := n.PropNum("height"); ok {
+	if v, ok := effectivePropNumOk(n, "height"); ok {
 		h = int(v)
 	}
 	switch n.Tag {
@@ -608,7 +611,7 @@ func (n *GuiNode) hasExplicitCross(parentHorizontal bool) bool {
 	if parentHorizontal {
 		name = "height"
 	}
-	_, ok := n.PropNum(name)
+	_, ok := effectivePropNumOk(n, name)
 	return ok
 }
 

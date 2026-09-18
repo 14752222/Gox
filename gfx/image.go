@@ -235,6 +235,10 @@ func paintImagePlaceholder(img *image.RGBA, r Rect, disabled bool) {
 //
 // 索引一律相对子图 Rect.Min 计算, 于是调用方传入脏区子图时自动被裁剪
 // (与 FillRect / DrawText 同一套约定)。
+//
+// 子树不透明度 (P3-2): 这里绕过了 FillRect, 所以淡出要自己接一手 ——
+// 用 fadeOf() 取当前因子, 展开成逐像素的 alpha 缩放。**不透明时走原路径**,
+// 常见的"没开 opacity"场景不多花一分钱。
 func blitNearest(img *image.RGBA, r Rect, src *image.RGBA) {
 	if r.W <= 0 || r.H <= 0 {
 		return
@@ -248,23 +252,51 @@ func blitNearest(img *image.RGBA, r Rect, src *image.RGBA) {
 	if !visible {
 		return
 	}
+	fade := fadeOf()
 	dstStride := img.Stride
 	dstPix := img.Pix
 	ox, oy := img.Rect.Min.X, img.Rect.Min.Y
 	srcMinX, srcMinY := src.Rect.Min.X, src.Rect.Min.Y
 
-	if sw == r.W && sh == r.H {
+	if fade >= 1 {
+		if sw == r.W && sh == r.H {
+			for y := y0; y < y1; y++ {
+				srow := src.Pix[(sb.Min.Y+(y-r.Y)-srcMinY)*src.Stride:]
+				drow := dstPix[(y-oy)*dstStride:]
+				for x := x0; x < x1; x++ {
+					blitPixel(drow, (x-ox)*4, srow, (sb.Min.X+(x-r.X)-srcMinX)*4)
+				}
+			}
+			return
+		}
+
+		// 缩放: 预先把每列对应的源 x 算好
+		xs := make([]int, r.W)
+		for i := range xs {
+			xs[i] = (sb.Min.X + i*sw/r.W - srcMinX) * 4
+		}
 		for y := y0; y < y1; y++ {
-			srow := src.Pix[(sb.Min.Y+(y-r.Y)-srcMinY)*src.Stride:]
+			sy := sb.Min.Y + (y-r.Y)*sh/r.H
+			srow := src.Pix[(sy-srcMinY)*src.Stride:]
 			drow := dstPix[(y-oy)*dstStride:]
 			for x := x0; x < x1; x++ {
-				blitPixel(drow, (x-ox)*4, srow, (sb.Min.X+(x-r.X)-srcMinX)*4)
+				blitPixel(drow, (x-ox)*4, srow, xs[x-r.X])
 			}
 		}
 		return
 	}
 
-	// 缩放: 预先把每列对应的源 x 算好
+	// 淡出路径: 与上面同构, 只是每个像素多乘一次 fade。
+	if sw == r.W && sh == r.H {
+		for y := y0; y < y1; y++ {
+			srow := src.Pix[(sb.Min.Y+(y-r.Y)-srcMinY)*src.Stride:]
+			drow := dstPix[(y-oy)*dstStride:]
+			for x := x0; x < x1; x++ {
+				blitPixelFade(drow, (x-ox)*4, srow, (sb.Min.X+(x-r.X)-srcMinX)*4, fade)
+			}
+		}
+		return
+	}
 	xs := make([]int, r.W)
 	for i := range xs {
 		xs[i] = (sb.Min.X + i*sw/r.W - srcMinX) * 4
@@ -274,8 +306,31 @@ func blitNearest(img *image.RGBA, r Rect, src *image.RGBA) {
 		srow := src.Pix[(sy-srcMinY)*src.Stride:]
 		drow := dstPix[(y-oy)*dstStride:]
 		for x := x0; x < x1; x++ {
-			blitPixel(drow, (x-ox)*4, srow, xs[x-r.X])
+			blitPixelFade(drow, (x-ox)*4, srow, xs[x-r.X], fade)
 		}
+	}
+}
+
+// blitPixelFade 与 blitPixel 同义, 但先按 fade 缩放源像素的 alpha (P3-2 淡出)。
+//
+// 预乘表示下"降 alpha"就是四个通道同比例缩小 —— 不能只改 A, 那会让颜色
+// 变亮 (预乘约定被破坏, 表现为"淡出过程中图片发白")。
+func blitPixelFade(dst []byte, di int, sp []byte, si int, fade float64) {
+	a := uint32(float64(sp[si+3]) * fade)
+	switch a {
+	case 0:
+		return
+	case 255:
+		dst[di], dst[di+1], dst[di+2], dst[di+3] = sp[si], sp[si+1], sp[si+2], 255
+	default:
+		r := uint8(uint32(sp[si]) * a / 255)
+		g := uint8(uint32(sp[si+1]) * a / 255)
+		b := uint8(uint32(sp[si+2]) * a / 255)
+		inv := 255 - int(a)
+		dst[di] = blendChannel(r, dst[di], inv)
+		dst[di+1] = blendChannel(g, dst[di+1], inv)
+		dst[di+2] = blendChannel(b, dst[di+2], inv)
+		dst[di+3] = clamp8(int(a) + int(dst[di+3])*inv/255)
 	}
 }
 

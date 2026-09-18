@@ -66,6 +66,11 @@ type GuiNode struct {
 	// 那等于没挡。
 	slideVal    float64
 	slideValSet bool
+
+	// 过渡动画状态 (P3-2): prop 名 → 进行中的补间。nil = 该节点无动画。
+	// **注意受控模型的这个分离**: 一旦起动画, Props[prop] 就已被写成**终值**,
+	// 布局/绘制必须读 effectivePropNum (动画期间只认 animState), 否则会跳变。
+	anim map[string]*animState
 }
 
 // Rect 是布局矩形 (客户区像素坐标)。
@@ -164,10 +169,23 @@ func JSBuiltinH(args ...object.Value) object.Value {
 	node := &GuiNode{Tag: tagStr.Value, Props: map[string]object.Value{}}
 
 	// props: 对象字面量或 null
+	//
+	// **两轮接线, 静态值优先** —— 这不是微优化, 而是语义要求:
+	// Go 的 map 迭代顺序是随机的, 而响应式 prop (函数值) 会**在接线当场
+	// 立刻跑一次 effect**。若先接 `width={w}` 再接 `transition={{width:150}}`,
+	// 那次 effect 读到的 transition 还是空的, 属性就被当成"不过渡"直接跳变了
+	// —— 而且这个 bug 是**随机复现**的 (取决于 map 顺序), 最难查。
+	// 静态 prop (含 transition / min / max 这些"配置项") 必须全部就位,
+	// 再跑任何 effect。
 	if len(args) > 1 {
 		if props, ok := args[1].(*object.Object); ok {
-			for name, desc := range props.Properties {
-				node.wireProp(name, desc.Value)
+			for _, reactive := range []bool{false, true} {
+				for name, desc := range props.Properties {
+					if isReactiveProp(name, desc.Value) != reactive {
+						continue
+					}
+					node.wireProp(name, desc.Value)
+				}
 			}
 		}
 	}
@@ -198,11 +216,23 @@ func (n *GuiNode) wireProp(name string, val object.Value) {
 		n.wireDraw(val)
 		return
 	}
-	if object.IsCallable(val) && !isEventPropName(name) {
+	if isReactiveProp(name, val) {
 		n.reactiveProp(name, val)
 		return
 	}
 	n.Props[name] = val
+}
+
+// isReactiveProp 报告这个 prop 会不会走 reactiveProp (包 effect 求值)。
+//
+// **必须与 wireProp 的分派条件保持一致** (两处判定同一个语义, 改动时要一起改):
+// 函数值 + 非事件属性才算响应式; `onDraw` 虽然也是函数, 但它走 wireDraw
+// 这条专门通道 (见 wireProp 顶部的说明), 也不算"普通响应式 prop"。
+//
+// h() 用它做两轮接线 (静态优先) 的分堆判断 —— 判定若与 wireProp 分叉,
+// 某些 prop 会在两轮里都被跳过 (直接丢失), 或都被接两次 (effect 重复注册)。
+func isReactiveProp(name string, val object.Value) bool {
+	return object.IsCallable(val) && name != "onDraw" && !isEventPropName(name)
 }
 
 // isEventPropName 判断是否事件回调属性 (Solid 约定: on 开头)。
@@ -211,9 +241,18 @@ func isEventPropName(name string) bool {
 }
 
 // reactiveProp 用 createEffect 包一层响应式属性: 求值 → 写回 Props → 标脏。
+//
+// P3-2 起多一条分流: 若该属性在 animatableProps 里**且**节点配了 transition,
+// 就不直接跳过去 —— 以"当前显示值"为起点起一段过渡 (startTransition 内部
+// 会把 Props 写成终值)。这样 `<rect transition={{width:150}} width={w()}>`
+// 在 w() 变化时才是平滑的, 而不是"一帧跳到位"。
 func (n *GuiNode) reactiveProp(name string, getter object.Value) {
 	dispose := runEffect(func() object.Value {
 		v := object.CallFunction(getter, nil)
+		if n.startPropTransition(name, v) {
+			// 已由过渡接管显示值: Props 已被写成终值, 这里只需记账
+			return object.UndefinedSingleton
+		}
 		n.Props[name] = v
 		markNodeDirty(n)
 		return object.UndefinedSingleton
@@ -221,6 +260,28 @@ func (n *GuiNode) reactiveProp(name string, getter object.Value) {
 	if dispose != nil {
 		n.effects = append(n.effects, dispose)
 	}
+}
+
+// startPropTransition 在"属性可动画 + 节点配了 transition + 新值是数字"
+// 三条同时成立时启动过渡, 并返回 true (调用方就不要再写回/标脏了)。
+//
+// 为什么把判断收在这里而不是塞进 reactiveProp 的内联 if: 这段逻辑要读
+// 三个来源 (属性白名单 / transition 配置 / 目标值类型), 内联进 effect 闭包
+// 会把"响应式写回"这条主线上最该保持直观的一段搅浑。
+func (n *GuiNode) startPropTransition(name string, v object.Value) bool {
+	if !animatableProps[name] || !n.hasTransition() {
+		return false
+	}
+	target, ok := v.(*object.Number)
+	if !ok {
+		// 目标不是数字 (脚本传了字符串/undefined): 老老实实按原路径写回。
+		// animState 只做数值插值, 硬塞进去只会得到 NaN 几何。
+		return false
+	}
+	// startTransition 负责"先读显示值、再写 prop、最后起表"这个顺序,
+	// 调用方不必(也不能)自己提前写 prop —— 那会让 from 读成终值。
+	startTransition(n, name, target.Value)
+	return true
 }
 
 // wireChild 接线一个子节点:
@@ -410,6 +471,9 @@ func disposeNode(n *GuiNode) {
 	// 拖动值缓存复位 (节点可能正被拖着时就被卸载了)
 	n.slideVal = 0
 	n.slideValSet = false
+	// 过渡动画 (P3-2) 一并摘掉: 心跳定时器只认 animNodes 里的节点,
+	// 离树节点留在表里会被每帧标脏 (而且标的是脏矩形流程看不见的节点)。
+	cancelAnim(n)
 }
 
 // removeChild 从 Children 里摘掉一个子节点 (存在才摘)。
@@ -485,6 +549,15 @@ func (n *GuiNode) PropBool(name string) (bool, bool) {
 		return b.Value, true
 	}
 	return false, false
+}
+
+// PropHas 报告该属性是否存在 (不关心类型)。
+func (n *GuiNode) PropHas(name string) bool {
+	if n == nil {
+		return false
+	}
+	_, ok := n.Props[name]
+	return ok
 }
 
 func (n *GuiNode) PropHandler(name string) object.Value {

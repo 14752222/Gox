@@ -17,7 +17,7 @@ import (
 // JS 侧 API:
 //
 //	import { h, window, render, requestAnimationFrame,
-//	         clipboardReadText, clipboardWriteText } from "gx/gfx";
+//	         clipboardReadText, clipboardWriteText, animate } from "gx/gfx";
 //	render(<column gap={8}>...</column>, window({title, width, height}));
 //
 // render() 挂载元素树并创建窗口后立即返回; 阻塞式的消息泵由宿主入口经
@@ -914,6 +914,8 @@ func init() {
 			// P3-3 剪贴板 (同步: 脚本与窗口同线程, 直接调原生 API 即为正确线程)
 			"clipboardReadText":  object.NewBuiltin("clipboardReadText", jsClipboardReadText),
 			"clipboardWriteText": object.NewBuiltin("clipboardWriteText", jsClipboardWriteText),
+			// P3-2 过渡动画 (命令式; 声明式走 transition prop, 不经模块)
+			"animate": object.NewBuiltin("animate", jsAnimate),
 		}
 	})
 }
