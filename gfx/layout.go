@@ -55,6 +55,8 @@ func layoutNode(n *GuiNode) {
 		layoutToast(n)
 	case "scroll":
 		layoutScroll(n)
+	case "textarea":
+		layoutTextarea(n)
 	case "slot":
 		// 动态子节点占位容器: 单子时子节点直接占满 slot 的盒子 (slot 的尺寸
 		// 就是按这个子节点算出来的, 等价于子节点直接挂在祖父下面); 多子
@@ -220,9 +222,44 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 		if h == 0 {
 			h = scrollDefH
 		}
+	case "textarea":
+		// 多行输入框: 宽固定缺省 (理由同 input), 高 = 行数 × 行高 + 上下内边距。
+		// 行数用 `rows` 覆盖 (与 HTML textarea 同名)。
+		if w == 0 {
+			w = textareaMinW
+		}
+		if h == 0 {
+			rows := textareaDefaultRows
+			if v, ok := n.PropNum("rows"); ok && int(v) > 0 {
+				rows = int(v)
+			}
+			h = rows*lineHeight(n.FontSize()) + 2*textareaPadY
+		}
 	}
-	if n.Tag == "#text" || (n.Tag == "text" && n.TextContent() != "") {
+	if n.Tag == "#text" {
 		if w == 0 || h == 0 {
+			tw, th := MeasureText(n.TextContent(), n.FontSize())
+			if w == 0 {
+				w = tw
+			}
+			if h == 0 {
+				h = th
+			}
+		}
+	} else if n.Tag == "text" && n.TextContent() != "" {
+		if n.wrapsText() {
+			// 文本块: 高度按换行后的行数算 (宽度有约束才会真的折行,
+			// 没约束时与单行等价)。显式 width 在这里就能生效, 见 textblock.go。
+			if w == 0 || h == 0 {
+				tw, th := n.blockSize(w)
+				if w == 0 {
+					w = tw
+				}
+				if h == 0 {
+					h = th
+				}
+			}
+		} else if w == 0 || h == 0 {
 			tw, th := MeasureText(n.TextContent(), n.FontSize())
 			if w == 0 {
 				w = tw
@@ -467,6 +504,12 @@ func layoutStack(n *GuiNode, horizontal bool) {
 		}
 
 		c := s.child
+		// 文本块: 盒宽定下来之后才能知道折成几行 —— 只有"没有显式 width"
+		// 的 wrap 文本需要在这里回头改主轴尺寸 (它的高度就是行数 × 行高)。
+		// 放在交叉轴确定之后、写 Box 之前, 位置分配用的是修正后的高度。
+		if !horizontal {
+			s.main = c.blockHeight(cross, s.main)
+		}
 		if horizontal {
 			c.Box = Rect{X: area.X + pos, Y: area.Y + s.margin + crossOffset, W: s.main, H: cross}
 		} else {
@@ -505,6 +548,11 @@ func (n *GuiNode) stretchesCross() bool {
 		return true
 	}
 	if n.Tag == "select-option" {
+		return true
+	}
+	// 开了 wrap 的文本块必须拿到可用宽度, 否则它没有换行依据 —— 在 column
+	// 里会按"未折行的整行宽"撑开并溢出容器。
+	if n.wrapsText() {
 		return true
 	}
 	return n.isContainer()

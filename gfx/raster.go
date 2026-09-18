@@ -326,10 +326,23 @@ func drawNode(img *image.RGBA, n *GuiNode) {
 	}
 	switch n.Tag {
 	case "text":
-		// 文本容器: 拼接 #text 子节点为一行, 在自身框内绘制
+		// 文本容器: 拼接 #text 子节点; 开了 wrap 就逐行绘制 (行高统一取
+		// lineHeight, 与 textblock.go 的测量口径一致), 否则单行截断。
 		if text := n.TextContent(); text != "" {
-			DrawText(img, clipRect, text, n.Box.X, n.Box.Y, n.FontSize(),
-				tint(n.textColor(), disabled), n.Box.W)
+			c := tint(n.textColor(), disabled)
+			if n.wrapsText() {
+				lines := n.blockLines(n.Box.W)
+				lh := lineHeight(n.FontSize())
+				for i, ln := range lines {
+					if y := n.Box.Y + i*lh; y >= n.Box.Y+n.Box.H {
+						break // 盒高不够 (被父容器压过) 就不再画多余的整行
+					}
+					DrawText(img, clipRect, ln, n.Box.X, n.Box.Y+i*lh,
+						n.FontSize(), c, n.Box.W)
+				}
+			} else {
+				DrawText(img, clipRect, text, n.Box.X, n.Box.Y, n.FontSize(), c, n.Box.W)
+			}
 		}
 	case "checkbox", "radio", "switch", "progress", "separator", "spacer":
 		// 内置组件: 自带外观 (background 在控件上是强调色, 不走通用填充)
@@ -346,6 +359,8 @@ func drawNode(img *image.RGBA, n *GuiNode) {
 		paintInput(img, n, disabled)
 	case "scroll":
 		paintScroll(img, n, disabled)
+	case "textarea":
+		paintTextarea(img, n, disabled)
 	default:
 		// 通用盒子 / button: background 填充 + border 描边 (button 有缺省外观)。
 		// 交互反馈 (P1-4) 只对 button 有实际效果: 其他标签没有缺省面,

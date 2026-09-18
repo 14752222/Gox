@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"golang.org/x/image/font"
@@ -218,6 +219,127 @@ func MeasureText(text string, size int) (w, h int) {
 	}
 	h = size + size/4 // 近似行高 (ascent+descent 简化)
 	return w, h
+}
+
+// ===== 自动换行 (P2-6) =====
+
+// lineHeight 返回字号对应的行高。与 MeasureText 的 h 同口径 —— 多行文本的
+// 总高就是 行数 × lineHeight, 别处不要另算一套。
+func lineHeight(size int) int {
+	if size < 8 {
+		size = 8
+	}
+	return size + size/4
+}
+
+// runeAdvance 返回单个字符的前进宽度; 取不到字形时退化为半个字号宽
+// (与 glyph 的缺字形占位一致), 保证换行计算永远有正数可用。
+func runeAdvance(size int, r rune) int {
+	if r == '\t' {
+		// 制表符没有字形: 按 4 个空格算 (与终端习惯一致)
+		return 4 * runeAdvance(size, ' ')
+	}
+	e, err := glyph(size, r)
+	if err != nil || e.advance <= 0 {
+		return size / 2
+	}
+	return e.advance
+}
+
+// runeWidth 返回字符串在给定字号下的像素宽度 (逐 rune 累加 advance)。
+func runeWidth(text string, size int) int {
+	w := 0
+	for _, r := range text {
+		w += runeAdvance(size, r)
+	}
+	return w
+}
+
+// ellipsisMark 是超行截断用的省略号。用三个点而不是 "…": 字体候选里
+// 微软雅黑有 U+2026, 但宋体/Segoe 的度量差异会让最后一行宽度抖动。
+const ellipsisMark = "..."
+
+// ellipsize 把一行裁到 maxWidth 内并补省略号: 从尾部逐个字符回退, 直到
+// "剩余内容 + ..." 放得下为止。maxWidth <= 0 (无约束) 时直接补后缀。
+func ellipsize(line string, size, maxWidth int) string {
+	if maxWidth <= 0 {
+		return line + ellipsisMark
+	}
+	if runeWidth(line, size)+runeWidth(ellipsisMark, size) <= maxWidth {
+		return line + ellipsisMark
+	}
+	markW := runeWidth(ellipsisMark, size)
+	rs := []rune(line)
+	used := 0
+	for len(rs) > 0 {
+		adv := runeAdvance(size, rs[len(rs)-1])
+		if used+markW+adv > maxWidth {
+			break
+		}
+		used += adv
+		rs = rs[:len(rs)-1]
+	}
+	return string(rs) + ellipsisMark
+}
+
+// wrapText 把文本按 maxWidth 切成多行 (P2-6 的核心):
+//   - 显式 '\n' 强制换行, 连续换行保留空行;
+//   - 其余贪心逐 rune 累加 advance, 若加上下一个字符会超宽就折行 ——
+//     中西文一视同仁 (CJK 字符 advance 约等于字号, 自动按字折行);
+//   - maxWidth <= 0 表示"没有宽度约束": 只按 '\n' 切, 不折行;
+//   - 单字符本身就宽于 maxWidth 时让它独占一行 —— 否则内层无法收尾,
+//     maxWidth 比一个汉字还窄时会死循环;
+//   - maxLines > 0 时只保留前 maxLines 行, 末行补 "..." 并裁到放得下。
+//
+// 返回值至少一行 (空串文本也会得到 [""]), 调用方不必再判空。
+func wrapText(text string, size, maxWidth, maxLines int) []string {
+	if size < 8 {
+		size = 8
+	}
+	var lines []string
+	for _, para := range strings.Split(text, "\n") {
+		if maxWidth <= 0 {
+			lines = append(lines, para)
+			continue
+		}
+		cur := make([]rune, 0, 32)
+		curW := 0
+		for _, r := range para {
+			adv := runeAdvance(size, r)
+			if curW > 0 && curW+adv > maxWidth {
+				lines = append(lines, string(cur))
+				cur = cur[:0]
+				curW = 0
+			}
+			cur = append(cur, r)
+			curW += adv
+		}
+		lines = append(lines, string(cur))
+	}
+	if len(lines) == 0 {
+		lines = []string{""}
+	}
+	if maxLines > 0 && len(lines) > maxLines {
+		lines = lines[:maxLines]
+		lines[maxLines-1] = ellipsize(lines[maxLines-1], size, maxWidth)
+	}
+	return lines
+}
+
+// MeasureTextMulti 多行测量: 宽 = 最长行, 高 = 行数 × 行高。
+// maxWidth <= 0 时按 '\n' 分行, maxLines > 0 时按省略号截断口径测量
+// (与 wrapText 完全一致, 所以布局尺寸和绘制结果不会打架)。
+func MeasureTextMulti(text string, size, maxWidth, maxLines int) (w, h int) {
+	if size < 8 {
+		size = 8
+	}
+	lines := wrapText(text, size, maxWidth, maxLines)
+	for _, ln := range lines {
+		if lw := runeWidth(ln, size); lw > w {
+			w = lw
+		}
+	}
+	return w, len(lines) * lineHeight(size)
 }
 
 // DrawText 在 img 的 (x,y) (左上角) 画单行文本, 限制在 clip 矩形内;

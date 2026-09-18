@@ -165,7 +165,7 @@ render(
 ```
 
 - 点击按钮 → `setCount` 更新信号 → 依赖该信号的属性/文本节点自动标脏 → 脏矩形合并后只重绘受影响区域
-- 未实现的标签（如 `<image>` / `<textarea>`）会在 stderr 打印一次性警告，并仍按普通盒子渲染（不再静默成空盒子）
+- 未实现的标签（如 `<image>` / `<slider>`）会在 stderr 打印一次性警告，并仍按普通盒子渲染（不再静默成空盒子）
 - 窗口后端：Windows（纯 syscall win32）与 Linux（X11，Wayland 下走 XWayland）；macOS GUI 后端尚未实现
 
 事件：
@@ -174,7 +174,7 @@ render(
 |---|---|---|
 | `onClick` | 无 | 命中测试（最内层带 `onClick` 的节点），并把该节点设为键盘焦点 |
 | `onMouseMove` | `{x, y}` | 光标下最深节点起沿祖先链找第一个处理器（不冒泡到根以外） |
-| `onWheel` | `{deltaY}` | 同上；`deltaY` 沿用 DOM 约定（向下滚为正） |
+| `onWheel` | `{deltaY}` | 光标所在 `scroll` 容器先消费（一格 60px），容器已到边界才继续冒泡；`deltaY` 沿用 DOM 约定（向下滚为正） |
 | `onContextMenu` | `{x, y}` | 右键抬起时触发 |
 | `onKeyDown` / `onKeyUp` | `{key, ctrl, shift, alt}` | 从焦点节点沿祖先链找第一个处理器 |
 | `onFocus` / `onBlur` | 无 | 焦点切换时触发，沿祖先链找第一个处理器；焦点节点会画 1px 蓝色虚线框（根节点 `hideFocusRing` 可关闭） |
@@ -189,7 +189,7 @@ render(
 | 元素 | 主要属性 | 说明 |
 |---|---|---|
 | `column` / `row` | `gap` / `padding` / `margin`(子级) / `alignItems` / `justifyContent` / `flexGrow`(子级) / `width` / `height` | flex 风格容器，尺寸按内容确定（交叉轴默认 stretch） |
-| `text` | `font` / `color` / `width` | 单行文本，超宽硬截断 |
+| `text` | `font` / `color` / `width` / `wrap` / `ellipsis` | 默认单行文本、超宽硬截断；加 `wrap` 变成文本块（按宽度贪心折行、`\n` 强制换行），`ellipsis={n}` 只留 n 行并在末行补 `...` |
 | `rect` | `width` / `height` / `background` / `border` | 通用盒子；未特判的标签也走这条绘制路径 |
 | `button` | `onClick` / `disabled` / `background` / `border` / `color` / `padding` | 缺省浅灰底 + 深灰边框，文字子节点垂直居中；`disabled` 时整体变灰且不响应点击 |
 | `checkbox` / `radio` | `checked` / `onClick` / `border` / `background` / `color` | 18×18 受控控件；`background` 是选中填充色，radio 互斥在 JS 侧用 signal 实现 |
@@ -201,6 +201,8 @@ render(
 | `dialog` | `open` / `onClose` | 模态弹层：40% 黑遮罩 + 居中卡片（流内子节点即卡片内容）；点遮罩 / Esc / 卡片内按钮触发 `onClose`，遮罩吞掉其下点击 |
 | `toast` | `message` / `level` | 非模态提示，固定右上角；`level` 取 `success` / `warn` / `error` / `info` 决定色条，显隐由 JS 侧信号控制 |
 | `input` | `value` / `onInput` / `placeholder` / `disabled` | 单行受控输入（沿 `value` 显示，编辑派发 `onInput({value})`）；获焦边框转蓝并显示闪烁竖线光标，点击可定位光标；支持 ←/→/Home/End/Backspace/Delete，`Enter`/`Esc` 不消费 |
+| `textarea` | `value` / `onInput` / `rows` / `placeholder` / `disabled` | 多行受控编辑器；光标 `{行,列}` 二维移动（↑↓←→/Home/End/Backspace/Delete），**`Enter` 插入换行**（不同于 input）；内容超高时纵向滚动并跟随光标。缺省 4 行 × 240px |
+| `scroll` | `width` / `height` / `onWheel` | 纵向滚动容器：内容超高时右侧出现 8px 轨道 + 比例滑块，滚轮滚动（一格 60px），到边界后滚轮才冒泡给 `onWheel`；溢出的内容既画不出来也点不中。缺省高 200 |
 
 **层叠与定位**
 
@@ -240,6 +242,42 @@ h("input", {
 点击框内任意位置可定位光标。`Enter`/`Esc` 不被输入框消费，会冒泡到 `onKeyDown`。
 光标闪烁需要事件泵持续醒来，挂一个 `requestAnimationFrame` 循环即可（见 `testdata/input_demo.js`）。
 中文 IME 尚未实现。
+
+**多行文本与自动换行**
+
+`<text>` 加 `wrap` 就变成会自动折行的文本块（按可用宽度贪心断行，中西文一视同仁），
+`ellipsis` 用来限行数并补省略号：
+
+```js
+h("column", { gap: 8 },
+  // 折行：高度按行数自动变高；宽度取显式 width，没写就铺满容器可用宽度
+  h("text", { wrap: true, width: 260, font: 14 }, longText),
+  // 最多 2 行，超出补 "..."
+  h("text", { wrap: true, ellipsis: 2, width: 260, font: 14 }, longText),
+  // 不给 wrap 就还是老行为：单行、超宽硬截断
+  h("text", { width: 260, font: 14 }, longText),
+)
+```
+
+`<textarea>` 是多行编辑框，受控语义与 `input` 一致（显示只看 `value`，编辑只派发 `onInput`）：
+
+```js
+const [text, setText] = createSignal("")
+
+h("textarea", {
+  rows: 5,
+  width: 300,
+  placeholder: "Type here...",
+  value: () => text(),
+  onInput: (e) => setText(e.value),   // 不回写就不会有反应
+})
+```
+
+- 行只由 `\n` 切分（**不做软换行**），所以光标 `{行, 列}` 与文本严格对应；超长行会被右侧裁掉；
+- `Enter` **被编辑框消费**（插入换行）—— 与单行 `input` 相反，多行框里 Enter 就是内容；
+  `Esc` / `Tab` / 功能键 / 带 `Ctrl`+`Alt` 的组合键仍然放行给脚本；
+- 内容超过可视高度后自动纵向滚动，且**滚动跟随光标**（在底部回车时光标不会跑到框外）；
+  也可以把光标放进框里滚滚轮。
 
 **滚动容器**
 
@@ -293,6 +331,7 @@ h("column", null,
 `testdata/tabs_demo.js`（条件渲染切面板）、`testdata/list_demo.js`（数组信号增删列表）、
 `testdata/select_demo.js`（受控下拉框）、`testdata/dialog_demo.js`（模态对话框与右上角 toast）、
 `testdata/input_demo.js`（单行输入与实时镜像）、`testdata/scroll_demo.js`（滚动容器与边界冒泡）、
+`testdata/multiline_demo.js`（自动换行 / 省略号 / 硬截断三态对照）、`testdata/textarea_demo.js`（多行编辑器）、
 `testdata/counter_demo.js` 与 `testdata/gui_demo.js`（响应式基础）。
 
 ## 打包成独立可执行文件

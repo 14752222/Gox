@@ -200,6 +200,9 @@ func layoutContentColumn(n *GuiNode, x, y, w int) int {
 			off = 0
 		}
 
+		// 文本块: 盒宽定下来才能知道折几行 (见 textblock.go)
+		ch = c.blockHeight(cross, ch)
+
 		c.Box = Rect{X: x + mg + off, Y: y + pos, W: cross, H: ch}
 		layoutNode(c)
 		pos += ch + mg

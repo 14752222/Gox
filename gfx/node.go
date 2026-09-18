@@ -43,11 +43,16 @@ type GuiNode struct {
 
 	// 输入框状态 (P2-1): focused 是"是否持有键盘焦点"(由 setFocus 维护,
 	// 绘制时决定边框颜色与是否画光标), caret 是光标位置 (rune 下标)。
-	focused bool
-	caret   int
+	// textarea (P2-6) 复用这两个字段: caret 表示"列", caretLine 表示"行"
+	// (单行 input 永远不用 caretLine —— 一行没有行号可言)。
+	focused   bool
+	caret     int
+	caretLine int
 
 	// 滚动状态 (P2-5): offsetY 是当前纵向偏移, contentH 是上一次布局测出的
 	// 内容总高 (两者都由布局/滚轮维护, 不来自 props)。
+	// textarea (P2-6) 只用 offsetY 做内部纵向滚动 (行数直接由 value 数出来,
+	// 不需要 contentH 缓存)。
 	offsetY  int
 	contentH int
 }
@@ -95,6 +100,8 @@ var knownTags = map[string]struct{}{
 	"input": {},
 	// P2-5 滚动容器
 	"scroll": {},
+	// P2-6 多行文本: textarea (编辑器) + text 的 wrap/ellipsis 已在 text 上
+	"textarea": {},
 }
 
 var (
@@ -367,6 +374,7 @@ func disposeNode(n *GuiNode) {
 	// 旧节点标脏会对一个游离节点做无意义的重绘)。
 	n.focused = false
 	n.caret = 0
+	n.caretLine = 0
 	// 滚动状态同样复位 (偏移属于"这一棵子树自己的视图状态")
 	n.offsetY = 0
 	n.contentH = 0
@@ -571,7 +579,7 @@ func (n *GuiNode) buttonPadding() (padX, padY int) {
 // 造成无谓重绘 (鼠标移动是频率最高的事件)。
 func (n *GuiNode) hoverable() bool {
 	switch n.Tag {
-	case "button", "checkbox", "radio", "switch", "select", "select-option", "input":
+	case "button", "checkbox", "radio", "switch", "select", "select-option", "input", "textarea":
 		return true
 	}
 	return false

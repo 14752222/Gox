@@ -246,6 +246,11 @@ func (a *app) handleClick(x, y int) {
 		// 节点" (HitTest), input 表面没有处理器, 常规路径会直接判成"点了空白"。
 		// 这里退一步用最深命中节点判断, 顺带把光标落到点击位置 (P2-1)。
 		if deep := HitTestDeep(root, x, y); deep != nil {
+			if ta := textareaInChain(deep); ta != nil && !ta.disabledInChain() {
+				a.setFocus(ta)
+				a.taSetCaretFromXY(ta, x, y)
+				return
+			}
 			if in := inputInChain(deep); in != nil && !in.disabledInChain() {
 				a.setFocus(in)
 				a.setCaretFromX(in, x)
@@ -268,6 +273,9 @@ func (a *app) handleClick(x, y int) {
 	// 输入框另加一步: 光标落到点击位置 (脚本自己挂 onClick 时同样适用)
 	if in := inputInChain(target); in != nil && in.Tag == "input" {
 		a.setCaretFromX(in, x)
+	}
+	if ta := textareaInChain(target); ta != nil && ta.Tag == "textarea" {
+		a.taSetCaretFromXY(ta, x, y)
 	}
 
 	if handler := target.PropHandler("onClick"); handler != nil {
@@ -373,6 +381,13 @@ func (a *app) handleWheel(x, y, deltaY int) {
 	target := HitTestDeep(a.rootNode(), x, y)
 	if sc := scrollInChain(target); sc != nil {
 		if sc.scrollBy(-deltaY * scrollNotch / wheelDeltaUnit) {
+			return
+		}
+	}
+	// 多行编辑框自己也能滚 (内容比框高时)。与 scroll 同理: 只有真的滚动了
+	// 才吞掉滚轮, 到边界继续往外传。
+	if ta := textareaInChain(target); ta != nil {
+		if ta.taOffsetBy(-deltaY * scrollNotch / wheelDeltaUnit) {
 			return
 		}
 	}

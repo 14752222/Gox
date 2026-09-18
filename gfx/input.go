@@ -120,6 +120,11 @@ func printableRune(key string) (rune, bool) {
 // 返回 true 表示按键已被消费, 不再走 JS 回调 (脚本仍可用 onKeyDown 观察
 // 未被消费的键)。
 func (a *app) handleFieldKey(n *GuiNode, key string, ev Event) bool {
+	// 顺序: 多行编辑框 → 单行输入框 → 下拉框。三者互斥 (一个焦点链上不会
+	// 同时出现两个), 顺序只影响"万一嵌了"时的优先级。
+	if ta := textareaInChain(n); ta != nil {
+		return a.handleTextareaKey(ta, key, ev)
+	}
 	if in := inputInChain(n); in != nil {
 		return a.handleInputKey(in, key, ev)
 	}
