@@ -55,6 +55,10 @@ type GuiNode struct {
 	// 不需要 contentH 缓存)。
 	offsetY  int
 	contentH int
+
+	// canvas 自绘回调 (P3-1): onDraw 是脚本给的函数, 每次绘制时用一个
+	// 落笔 ctx 调用一次 (依赖收集另有一遍空跑, 见 canvas.go 的说明)。
+	onDraw object.Value
 }
 
 // Rect 是布局矩形 (客户区像素坐标)。
@@ -102,6 +106,10 @@ var knownTags = map[string]struct{}{
 	"scroll": {},
 	// P2-6 多行文本: textarea (编辑器) + text 的 wrap/ellipsis 已在 text 上
 	"textarea": {},
+	// P2-9 图片
+	"image": {},
+	// P3-1 自绘画布
+	"canvas": {},
 }
 
 var (
@@ -172,6 +180,15 @@ func JSBuiltinH(args ...object.Value) object.Value {
 //   - 其他函数值 → 响应式 prop: createEffect 求值写回
 //   - 其余 → 静态值
 func (n *GuiNode) wireProp(name string, val object.Value) {
+	// onDraw 必须排在最前: 它虽然也以 "on" 开头, 但语义不是"事件回调"
+	// (没有事件源), 而是"响应式绘制函数" —— 要包 effect 收集依赖, 不能
+	// 当成普通 prop 存下来 (存下来就只是躺着, 画布永远不刷新)。
+	// 也不能落到下面的 reactiveProp: 那会把 onDraw 的**返回值**写回 Props,
+	// 而我们要的是"函数体执行一遍以登记 signal 依赖"。
+	if name == "onDraw" {
+		n.wireDraw(val)
+		return
+	}
 	if object.IsCallable(val) && !isEventPropName(name) {
 		n.reactiveProp(name, val)
 		return
@@ -378,6 +395,9 @@ func disposeNode(n *GuiNode) {
 	// 滚动状态同样复位 (偏移属于"这一棵子树自己的视图状态")
 	n.offsetY = 0
 	n.contentH = 0
+	// canvas 的 onDraw 一并断开: 节点离树后它的 effect 已被注销 (上面那轮),
+	// 留着这个引用只会让脚本函数对象多活一轮 GC, 没有别的意义。
+	n.onDraw = nil
 }
 
 // removeChild 从 Children 里摘掉一个子节点 (存在才摘)。

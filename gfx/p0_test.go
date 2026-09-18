@@ -536,7 +536,10 @@ func TestExampleScriptsMount(t *testing.T) {
 		"tabs_demo.js", "list_demo.js", // P1 条件渲染 / 列表渲染
 		"select_demo.js", "dialog_demo.js", // P2-3 下拉框 / P2-4 弹层
 		"input_demo.js",                  // P2-1 单行输入
+		"canvas_demo.js",                 // P3-1 自绘画布
 		"counter_demo.js", "gui_demo.js", // 既有演示 (布局改动后回归)
+		// 注: image_demo.js 不在本列表 —— 它的 src 是相对文件路径, 必须从仓库根
+		// 目录运行 (而本用例的 cwd 是 gfx/)。由 TestImageDemoScript 专职覆盖。
 	}
 	for _, name := range scripts {
 		t.Run(name, func(t *testing.T) {
@@ -649,6 +652,46 @@ func checkDemoTree(t *testing.T, name string, root *GuiNode, fake *fakeSurface) 
 			t.Fatalf("未捕获上屏帧")
 		}
 		assertPx(t, img, dis.Box.X+3, dis.Box.Y+dis.Box.H/2, pxBtnFaceOff, "button_demo 禁用按钮变灰")
+	case "canvas_demo.js":
+		// 自绘画布: 柱状图 (246x110) + 原语展示 (238x72, 显式 background/border)
+		cvs := findAll(root, "canvas")
+		if len(cvs) != 2 {
+			t.Fatalf("canvas_demo 的 canvas 数量 = %d, want 2", len(cvs))
+		}
+		chart, prim := cvs[0], cvs[1]
+		if chart.Box.W != 246 || chart.Box.H != 110 {
+			t.Fatalf("柱状图画布尺寸 = %v, want 246x110", chart.Box)
+		}
+		if prim.Box.W != 238 || prim.Box.H != 72 {
+			t.Fatalf("原语画布尺寸 = %v, want 238x72", prim.Box)
+		}
+		img := shotsImage(fake)
+		if img == nil {
+			t.Fatalf("未捕获上屏帧")
+		}
+		// 首帧 tick=0 → 第 0 根柱子是强调色, 其余是灰蓝
+		if n := countColor(img, chart.Box, pxRed); n == 0 {
+			t.Fatalf("柱状图缺少高亮柱 #c0392b")
+		}
+		if gray, ok := ParseColor("#7f8c8d"); ok {
+			if n := countColor(img, chart.Box, gray); n == 0 {
+				t.Fatalf("柱状图缺少普通柱 #7f8c8d")
+			}
+		} else {
+			t.Fatalf("演示色 #7f8c8d 解析失败")
+		}
+		// 原语: 第 6~46 列 × 第 6~30 行 是纯色实心矩形 (精确面积, 没有被任何
+		// 别的图元压到) —— 用它同时验"落笔位置对"与"用局部坐标"
+		if blue, ok := ParseColor("#2980b9"); ok {
+			inner := Rect{X: prim.Box.X + 6, Y: prim.Box.Y + 6, W: 40, H: 24}
+			if n := countColor(img, inner, blue); n != 40*24 {
+				t.Fatalf("实心矩形覆盖 %d 像素, want %d", n, 40*24)
+			}
+		} else {
+			t.Fatalf("演示色 #2980b9 解析失败")
+		}
+		// 越界绘制会被裁掉: 原语画布右侧外面必须还是窗口底色
+		assertPx(t, img, prim.Box.X+prim.Box.W+2, prim.Box.Y+20, pxWhite, "画布右外侧应保持窗口底色")
 	case "counter_demo.js":
 		// 既有演示: button 必须有内容高度, 否则点击永远命不中 (见 P0-3)
 		btn := findFirst(root, "button")

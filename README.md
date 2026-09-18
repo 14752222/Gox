@@ -204,6 +204,8 @@ render(
 | `input` | `value` / `onInput` / `placeholder` / `disabled` | 单行受控输入（沿 `value` 显示，编辑派发 `onInput({value})`）；获焦边框转蓝并显示闪烁竖线光标，点击可定位光标；支持 ←/→/Home/End/Backspace/Delete，`Enter`/`Esc` 不消费 |
 | `textarea` | `value` / `onInput` / `rows` / `placeholder` / `disabled` | 多行受控编辑器；光标 `{行,列}` 二维移动（↑↓←→/Home/End/Backspace/Delete），**`Enter` 插入换行**（不同于 input）；内容超高时纵向滚动并跟随光标。缺省 4 行 × 240px |
 | `scroll` | `width` / `height` / `onWheel` | 纵向滚动容器：内容超高时右侧出现 8px 轨道 + 比例滑块，滚轮滚动（一格 60px），到边界后滚轮才冒泡给 `onWheel`；溢出的内容既画不出来也点不中。缺省高 200 |
+| `image` | `src` / `width` / `height` / `disabled` | 显示 png / jpeg / gif 图片（Go 标准库解码，无新增依赖）；不给 `width`/`height` 时用图片自然尺寸，给了就按最近邻缩放；`src` 相对**进程工作目录**解析，加载失败画灰底交叉线占位（stderr 每个路径只警告一次），不中断其它内容 |
+| `canvas` | `width` / `height` / `onDraw(ctx)` / `background` / `border` | 自绘画布：`onDraw` 收到一个 ctx，用 `ctx.fillRect/strokeRect/fillCircle/strokeCircle/line/drawText/clear` 直接落笔，坐标是**画布局部坐标**（0,0 = 左上角），越界部分自动裁掉；`ctx.width` / `ctx.height` 是画布尺寸。`onDraw` 里读到的 signal 变化会自动重绘（缺省 200×120） |
 
 **层叠与定位**
 
@@ -301,6 +303,35 @@ h("scroll", { width: 240, height: 120, onWheel: () => setOverscroll(n => n + 1) 
 > 颜色属性（`background` / `border` / `color`）在组件标签上有语义差异：`background` 表示"选中/填充的强调色"，
 > 在 `button` / `rect` 上才是普通填充色；`color` 沿祖先链继承，因此 `<button color="#fff">文字</button>` 生效。
 
+**自绘画布**
+
+`<canvas>` 给脚本一个直接落笔的画布，`onDraw` 收到一个 `ctx`（坐标是画布局部坐标，越界自动裁掉）：
+
+```js
+h("canvas", {
+  width: 200, height: 80,
+  onDraw: (ctx) => {
+    ctx.fillRect(0, 0, ctx.width, ctx.height, "#fafafa")   // 铺底
+    ctx.line(0, 79, ctx.width - 1, 79, "#ccc")             // 基线
+    ctx.fillCircle(24, 30, 14, "#27ae60")                  // 实心圆
+    ctx.strokeCircle(60, 30, 14, "#8e44ad")                // 圆环
+    ctx.drawText("hi " + count(), 4, 4, 13, "#333")        // 读 signal → 自动重绘
+  },
+})
+```
+
+- ctx 方法：`fillRect(x,y,w,h,color)` / `strokeRect` / `fillCircle(cx,cy,r,color)` /
+  `strokeCircle` / `line(x1,y1,x2,y2,color)` / `drawText(text,x,y,size,color)` / `clear(color)`；
+  另有只读属性 `ctx.width` / `ctx.height`。
+- 颜色写字符串（`"#f00"` / `"red"` / `"rgba(0,0,0,.5)"`），也可以写一个数字当灰度（`0~255`）；
+  参数缺失或颜色非法**不会抛错**，按缺省值（黑色 / 0）处理 —— 画歪看得见，比整帧中断好排查。
+- **响应式**：`onDraw` 里读到的 signal 变化会自动重绘。读普通变量不会（依赖只看 signal）；
+  因此把读 signal 的语句放在函数体前部最稳。
+- 画布默认不铺底（与 HTML canvas 一样透明），要底色就 `ctx.clear(...)`/`ctx.fillRect(...)`
+  或给 canvas 挂 `background`。不给尺寸时缺省 200×120。
+- `disabled` 时每个落笔色自动降饱和。
+- 目前只有最近邻/无插值的直线与圆（无抗锯齿、无路径、无变换、无渐变）。
+
 **响应式子节点（条件渲染 / 列表渲染）**
 
 子节点传函数即为响应式，effect 会自动追踪它读到的信号并在变化时重新挂载：
@@ -333,6 +364,8 @@ h("column", null,
 `testdata/select_demo.js`（受控下拉框）、`testdata/dialog_demo.js`（模态对话框与右上角 toast）、
 `testdata/input_demo.js`（单行输入与实时镜像）、`testdata/scroll_demo.js`（滚动容器与边界冒泡）、
 `testdata/multiline_demo.js`（自动换行 / 省略号 / 硬截断三态对照）、`testdata/textarea_demo.js`（多行编辑器）、
+`testdata/image_demo.js`（图片五态：自然尺寸 / 放大 / 缩小 / 坏路径占位 / 禁用）、
+`testdata/canvas_demo.js`（自绘画布：signal 驱动柱状图 + ctx 原语展示）、
 `testdata/counter_demo.js` 与 `testdata/gui_demo.js`（响应式基础）。
 
 ## 打包成独立可执行文件

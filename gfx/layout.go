@@ -235,6 +235,33 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 			}
 			h = rows*lineHeight(n.FontSize()) + 2*textareaPadY
 		}
+	case "image":
+		// 图片: 未显式给尺寸时用**自然尺寸**; 加载失败给一个非 0 的兜底尺寸。
+		// 兜底必须非 0 —— 0 尺寸子树会被 drawNode 整支跳过, 用户看到的是
+		// "什么都没有" (与"本来就没放图"分不清), 而不是占位图。
+		if w == 0 || h == 0 {
+			nw, nh := imageNaturalSize(n)
+			if nw <= 0 || nh <= 0 {
+				nw, nh = imgPlaceholderW, imgPlaceholderH
+			}
+			if w == 0 {
+				w = nw
+			}
+			if h == 0 {
+				h = nh
+			}
+		}
+	case "canvas":
+		// 画布: canvas 不是容器 (stretchesCross 为 false), 拿不到父容器的
+		// 交叉轴拉伸, 所以**两个方向都要给缺省值** —— 否则不写 width/height
+		// 的 canvas 是个 0 尺寸空盒, 被 drawNode 整支跳过, 界面上看不到,
+		// 而 onDraw 明明在跑 (最难排查的一类"没反应")。
+		if w == 0 {
+			w = canvasDefW
+		}
+		if h == 0 {
+			h = canvasDefH
+		}
 	}
 	if n.Tag == "#text" {
 		if w == 0 || h == 0 {
