@@ -173,6 +173,9 @@ func (a *app) pump(maxWait time.Duration) bool {
 			a.needDraw = true
 			a.fullDirty = true
 			a.mu.Unlock()
+		case EventIMECommit:
+			// P2-7: 整批插入到当前焦点的编辑框 (焦点不可编辑时内部丢弃)
+			a.insertIMECommit(ev.Text)
 		}
 	}
 	// 4) 脏区重绘
@@ -301,6 +304,7 @@ func (a *app) setFocus(target *GuiNode) {
 	a.mu.Lock()
 	old := a.focused
 	a.focused = target
+	s := a.surface
 	a.mu.Unlock()
 	// 输入框 (P2-1) 的"获焦"是画在节点上的状态 (边框颜色 + 是否画光标):
 	// 节点级字段让绘制侧不必反查 app。这里与 a.focused 严格同步。
@@ -312,6 +316,12 @@ func (a *app) setFocus(target *GuiNode) {
 	}
 	if old == target {
 		return
+	}
+	// P2-7: 焦点变了, 输入法的开关跟着变 —— 只有落在 input/textarea 上才开,
+	// 在按钮/画布上敲字不该弹出候选窗。后端不支持 (X11 / 假 Surface) 时
+	// 这里的类型断言直接落空, 退化成"输入法一直开着"。
+	if c, ok := s.(imeController); ok {
+		c.SetIMEEnabled(imeTarget(target) != nil)
 	}
 	if old != nil {
 		if h := handlerInChain(old, "onBlur"); h != nil {
@@ -564,10 +574,13 @@ func (a *app) callHandlerValue(handler object.Value, name string, arg object.Val
 	if handler == nil {
 		return
 	}
+	// 走 callScriptFn 而不是直接 object.CallFunction: 后者经 VM 回调桥,
+	// currentVM 为 nil 时**静默返回 undefined** (纯 Go 嵌入 gfx 的场景),
+	// 而 Go 侧的 *BuiltinFunction 根本不需要过桥 (见 canvas.go 的说明)。
 	if arg == nil {
-		object.CallFunction(handler, nil)
+		callScriptFn(handler)
 	} else {
-		object.CallFunction(handler, nil, arg)
+		callScriptFn(handler, arg)
 	}
 	if err := takeCallbackErr(); err != nil {
 		fmt.Fprintf(os.Stderr, "gfx: %s error: %v\n", name, err)

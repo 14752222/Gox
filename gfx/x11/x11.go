@@ -8,6 +8,11 @@
 // select, WaitEvents 可限时。关闭按钮经 WM_PROTOCOLS/WM_DELETE_WINDOW。
 // xgb 的请求多为 unchecked (返回 Cookie 不返回错误), 协议错误经
 // WaitForEvent 以 Event/XError 形式回来。
+//
+// TODO(P2-7): 无 IME 支持 —— 输入法要走 XIM 协议 (或现代方案 ibus/fcitx 的
+// DBus 接口), 两者都超出"零 cgo、零新依赖"的约束范围。因此 Linux 下
+// `<input>` / `<textarea>` 只能直接输入键盘能打出的字符 (BMP), 中文候选词
+// 输入不可用。Windows 后端已实现 (见 gfx/ime.go 与 win32 的 WM_IME_* 分支)。
 package x11
 
 import (

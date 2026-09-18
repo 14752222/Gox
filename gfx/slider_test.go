@@ -17,11 +17,15 @@ import (
 //   - 全链路 (真 VM + 真事件序列) —— 拖动是一串 Down→Move…→Up, 只有走完
 //     整条链路才能验到"拖动期间路由给谁、松手后有没有清干净、重复值有没有挡掉"。
 
-// sliderPump 造一个"每轮推一个事件再 Pump"的泵。
+// pumpEvents 造一个"每轮推一个事件再 Pump"的泵。
+//
+// 与 pushAndPump 的区别: 这个走 v.RunTimersWithPump, 事件循环期间 currentVM
+// 是注册好的, 脚本回调 (以及回调里的 signal setter) 才真的会执行。只调
+// a.pump 的话回调会被回调桥静默丢掉 —— 断言"onInput 被调用了几次"必须用它。
 //
 // 假 Surface 的 events/arrived 通道各只有 16 格且每轮 WaitEvents 只消费一个
 // 唤醒信号, 一次推多个事件会直接 chan send 死锁 (整个包挂住, 无 panic 无输出)。
-func sliderPump(t *testing.T, v *vm.VM, a *app, evs ...Event) {
+func pumpEvents(t *testing.T, v *vm.VM, a *app, evs ...Event) {
 	t.Helper()
 	a.mu.Lock()
 	fake, ok := a.surface.(*fakeSurface)
@@ -256,7 +260,7 @@ func TestSliderDisabledNoDrag(t *testing.T) {
 	withBool(sl, "disabled", true)
 	Layout(a.rootNode(), 300, 120)
 
-	sliderPump(t, v, a,
+	pumpEvents(t, v, a,
 		Event{Kind: EventMouseDown, X: 43, Y: 12},
 		Event{Kind: EventMouseUp, X: 43, Y: 12},
 	)
@@ -275,7 +279,7 @@ func TestSliderDisabledNoDrag(t *testing.T) {
 func TestSliderDragSequence(t *testing.T) {
 	v, _, a, sl := sliderApp(t, "")
 
-	sliderPump(t, v, a,
+	pumpEvents(t, v, a,
 		Event{Kind: EventMouseDown, X: 6, Y: 12},   // 归零
 		Event{Kind: EventMouseMove, X: 43, Y: 12},  // 25
 		Event{Kind: EventMouseMove, X: 43, Y: 12},  // 重复 → 不派发
@@ -306,7 +310,7 @@ func TestSliderDragSequence(t *testing.T) {
 func TestSliderClickJump(t *testing.T) {
 	v, _, a, _ := sliderApp(t, "")
 
-	sliderPump(t, v, a,
+	pumpEvents(t, v, a,
 		Event{Kind: EventMouseDown, X: 43, Y: 12},
 		Event{Kind: EventMouseUp, X: 43, Y: 12},
 	)
@@ -338,7 +342,7 @@ func TestSliderDropBackNoWriteBack(t *testing.T) {
 	`)
 	sl := findFirst(root, "slider")
 
-	sliderPump(t, v, a,
+	pumpEvents(t, v, a,
 		Event{Kind: EventMouseDown, X: 43, Y: 12},
 		Event{Kind: EventMouseMove, X: 43, Y: 12}, // 重复 → 不该再派发
 		Event{Kind: EventMouseMove, X: 43, Y: 12},
@@ -352,7 +356,7 @@ func TestSliderDropBackNoWriteBack(t *testing.T) {
 	}
 
 	// 松手后再按同一位置: 缓存已复位 → 仍然派发
-	sliderPump(t, v, a, Event{Kind: EventMouseDown, X: 43, Y: 12})
+	pumpEvents(t, v, a, Event{Kind: EventMouseDown, X: 43, Y: 12})
 	if n := jsArrayLen(t, v, "seen"); n != 2 {
 		t.Fatalf("再次按下同一位置应重新派发, 实际累计 %d 次", n)
 	}
@@ -374,7 +378,7 @@ func TestSliderNoHoverDuringDrag(t *testing.T) {
 	}
 	Layout(a.rootNode(), 300, 120)
 
-	sliderPump(t, v, a,
+	pumpEvents(t, v, a,
 		Event{Kind: EventMouseDown, X: 20, Y: sl.Box.Y + 12},
 		// 拖到按钮上方: 拖动期间不该给按钮加悬停
 		Event{Kind: EventMouseMove, X: 50, Y: btn.Box.Y + 15},

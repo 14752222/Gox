@@ -538,6 +538,7 @@ func TestExampleScriptsMount(t *testing.T) {
 		"input_demo.js",                  // P2-1 单行输入
 		"canvas_demo.js",                 // P3-1 自绘画布
 		"slider_demo.js",                 // P2-8 滑块
+		"ime_demo.js",                    // P2-7 输入法 (提交由平台投递, 这里只验挂载)
 		"counter_demo.js", "gui_demo.js", // 既有演示 (布局改动后回归)
 		// 注: image_demo.js 不在本列表 —— 它的 src 是相对文件路径, 必须从仓库根
 		// 目录运行 (而本用例的 cwd 是 gfx/)。由 TestImageDemoScript 专职覆盖。
@@ -855,6 +856,19 @@ func checkDemoTree(t *testing.T, name string, root *GuiNode, fake *fakeSurface) 
 		}
 		assertPx(t, img, sels[0].Box.X+4, sels[0].Box.Y+selectRowH/2, pxFieldFace, "select_demo 字段白底")
 		assertPx(t, img, sels[0].Box.X+4, sels[0].Box.Y, pxBtnEdge, "select_demo 字段 1px 边框")
+	case "ime_demo.js":
+		// 输入法演示: 两个编辑器都挂上, 初始空值, 提交次数从 0 起
+		in := findFirst(root, "input")
+		ta := findFirst(root, "textarea")
+		if in == nil || ta == nil {
+			t.Fatalf("ime_demo 缺少 input/textarea 节点")
+		}
+		if in.inputValue() != "" || ta.taValue() != "" {
+			t.Fatalf("ime_demo 初始值应为空, got %q / %q", in.inputValue(), ta.taValue())
+		}
+		if in.focused || ta.focused {
+			t.Fatalf("首帧不该有编辑器处于获焦态")
+		}
 	case "input_demo.js":
 		// 单行输入: 初始空值, placeholder 态, 未获焦所以不画光标
 		in := findFirst(root, "input")

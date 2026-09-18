@@ -15,6 +15,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf16"
 	"unsafe"
 
 	"github.com/14752222/Gox/gfx"
@@ -49,6 +50,14 @@ var (
 	// P2-8: 拖动期间的鼠标捕获 (滑块拖出窗口仍跟手)
 	procSetCapture     = user32.NewProc("SetCapture")
 	procReleaseCapture = user32.NewProc("ReleaseCapture")
+
+	// P2-7: 输入法 (IME)。imm32 在极老的 Windows 上可能缺席, 懒加载 +
+	// 返回值判空即可 (取不到上下文就当这次没有输入法)。
+	imm32                        = syscall.NewLazyDLL("imm32.dll")
+	procImmGetContext            = imm32.NewProc("ImmGetContext")
+	procImmReleaseContext        = imm32.NewProc("ImmReleaseContext")
+	procImmGetCompositionStringW = imm32.NewProc("ImmGetCompositionStringW")
+	procImmAssociateContext      = imm32.NewProc("ImmAssociateContext")
 
 	procGetModuleHandleW = kernel32.NewProc("GetModuleHandleW")
 
@@ -99,6 +108,15 @@ const (
 	VK_MENU    = 0x12 // Alt
 
 	TME_LEAVE = 0x00000002
+
+	// P2-7 输入法消息与标志位
+	WM_IME_SETCONTEXT  = 0x0281 // 系统要往窗口挂/摘输入上下文
+	WM_IME_COMPOSITION = 0x010F // 组合串变化; lParam 的位说明变的是什么
+	WM_IME_CHAR        = 0x0286 // 未处理 WM_IME_COMPOSITION 时系统补发的字符
+	GCS_RESULTSTR      = 0x0800 // 结果串 (用户已选定的文本) 可用
+	// ISC_SHOWUICOMPOSITIONWINDOW 让系统把"正在拼的字"那个小窗画出来
+	// (v1 不在输入框里内联预编辑, 全靠这个窗给用户回显)。
+	ISC_SHOWUICOMPOSITIONWINDOW = 0x80000000
 )
 
 // vkNames 常用虚拟键 → 键名 (WM_KEYDOWN 路径; 可打印字符走 WM_CHAR)。
@@ -229,6 +247,11 @@ type surface struct {
 	// 光标再次进入后需要重新订阅)
 	trackingLeave bool
 
+	// P2-7 输入法: imeOn 是本窗口当前的输入法开关 (由 gfx 按焦点设置),
+	// himc 是"关掉时被换下来的系统默认输入上下文" —— 重新打开只能还回它。
+	imeOn bool
+	himc  uintptr
+
 	// DIB 帧缓冲 (与窗口客户区同尺寸)
 	dibMem  unsafe.Pointer // DIB 内存首址 (生命周期由 dibBmp 句柄持有)
 	dibSize int
@@ -276,6 +299,12 @@ func newSurface(cfg gfx.WindowConfig) (gfx.Surface, error) {
 	s := &surface{
 		hwnd:   syscall.Handle(hwnd),
 		events: make(chan gfx.Event, 256),
+	}
+	// P2-7: 建窗即关输入法, 让 imeOn=false 与真实状态一致 (gfx 在焦点落到
+	// input/textarea 上时才开)。返回值是系统挂上来的默认输入上下文, 存起来
+	// 供重新启用时还回去 —— 传别的值会让输入法挂错上下文。
+	if r, _, _ := procImmAssociateContext.Call(hwnd, 0); r != 0 {
+		s.himc = r
 	}
 	surfacesMu.Lock()
 	surfaces[hwnd] = s
@@ -368,6 +397,31 @@ func globalWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 		}
 		s.trySend(gfx.Event{Kind: gfx.EventKeyDown, Key: string(ch)})
 		return 0
+	case WM_IME_SETCONTEXT:
+		// P2-7: 系统想往本窗口挂输入上下文。焦点不在可编辑控件上时吞掉 ——
+		// 否则在按钮/画布上敲字也会弹候选窗。开着的时候必须走 DefWindowProc
+		// (真正把上下文关联起来的是它), 顺带要求显示组合窗。
+		if !s.imeOn {
+			return 0
+		}
+		if wParam != 0 {
+			lParam |= ISC_SHOWUICOMPOSITIONWINDOW
+		}
+		r, _, _ := procDefWindowProcW.Call(hwnd, uintptr(msg), wParam, lParam)
+		return r
+	case WM_IME_COMPOSITION:
+		if lParam&GCS_RESULTSTR != 0 {
+			if str := s.imeResultString(); str != "" {
+				s.trySend(gfx.Event{Kind: gfx.EventIMECommit, Text: str})
+				return 0
+			}
+		}
+		r, _, _ := procDefWindowProcW.Call(hwnd, uintptr(msg), wParam, lParam)
+		return r
+	case WM_IME_CHAR:
+		// 已由 WM_IME_COMPOSITION 投递过结果串, 这里必须吞掉: 不然同一批
+		// 字符会再走一次 WM_CHAR, 每个字被插两遍 (输入"你好"变成"你你好好")。
+		return 0
 	case WM_SIZE:
 		w, h := int(lo16(lParam)), int(hi16(lParam))
 		s.reallocDIB(w, h)
@@ -399,6 +453,57 @@ func globalWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 	}
 	r, _, _ := procDefWindowProcW.Call(hwnd, uintptr(msg), wParam, lParam)
 	return r
+}
+
+// ===== P2-7: 输入法 =====
+
+// imeResultString 取本次提交的结果串 (UTF-8)。
+//
+// 长度只能按**字节**算: ImmGetCompositionStringW 第一次传空缓冲返回的是
+// 所需字节数 (UTF-16 单元数 × 2), 当字符数用会把代理对 (emoji / 扩展区汉字)
+// 截掉一半。
+func (s *surface) imeResultString() string {
+	himc, _, _ := procImmGetContext.Call(uintptr(s.hwnd))
+	if himc == 0 {
+		return ""
+	}
+	defer procImmReleaseContext.Call(uintptr(s.hwnd), himc)
+	size, _, _ := procImmGetCompositionStringW.Call(himc, GCS_RESULTSTR, 0, 0)
+	if size <= 0 {
+		return ""
+	}
+	buf := make([]uint16, size/2+1)
+	got, _, _ := procImmGetCompositionStringW.Call(himc, GCS_RESULTSTR,
+		uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)*2))
+	if got <= 0 {
+		return ""
+	}
+	return string(utf16.Decode(buf[:got/2]))
+}
+
+// SetIMEEnabled 开/关本窗口的输入法, 实现 gfx 的可选 imeController 接口。
+// 由 gfx 在键盘焦点变化时调用 (只有焦点在 input/textarea 上才开)。
+//
+// 关 = 把输入上下文换成 0, 返回值是被换下来的那个 (系统默认上下文), 存起来:
+// 重新打开时只能还回这个句柄, 传别的值会让输入法挂错上下文 (表现为"切回
+// 输入框后输入法失灵")。
+func (s *surface) SetIMEEnabled(on bool) {
+	s.mu.Lock()
+	hwnd := s.hwnd
+	s.imeOn = on
+	prev := s.himc
+	s.mu.Unlock()
+	if on {
+		if prev != 0 {
+			procImmAssociateContext.Call(uintptr(hwnd), prev)
+		}
+		return
+	}
+	if r, _, _ := procImmAssociateContext.Call(uintptr(hwnd), 0); r != 0 {
+		s.mu.Lock()
+		s.himc = r
+		s.mu.Unlock()
+	}
 }
 
 func lo16(l uintptr) int { return int(int16(l & 0xFFFF)) }

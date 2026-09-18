@@ -42,6 +42,10 @@ const (
 	// 之类的哨兵坐标既隐晦又和真实坐标混淆。
 	EventMouseLeave
 	EventResize
+	// EventIMECommit 是输入法提交的一批字符 (P2-7)。组合过程由平台自己的
+	// 组合窗显示, 只有"用户选定了候选词"这一刻才会拿到结果串, 因此它天然是
+	// 整批插入 —— 与 WM_CHAR 那种一次一个字符的路径完全不同。
+	EventIMECommit
 	EventClose
 )
 
@@ -59,6 +63,11 @@ type Event struct {
 	// 修饰键状态 (随 KeyDown/KeyUp 附带)。后端在投递时刻读取键盘状态,
 	// 因为平台键消息的低位状态位在部分场景下不可靠。
 	Ctrl, Shift, Alt bool
+
+	// Text 是 EventIMECommit 提交上来的整批字符 (UTF-8)。放在 Event 里而不是
+	// 走 Post 回调, 是为了让"输入法提交"与按键走同一条事件通路: WndProc
+	// 依旧只投递事件、不碰元素树, 而测试也能直接推一条事件验全链路。
+	Text string
 }
 
 // Surface 是平台窗口的抽象: 一块可上屏的像素面 + 事件流。
