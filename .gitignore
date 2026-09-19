@@ -45,3 +45,7 @@ npm/*.tgz
 npm/publish-v*.bat
 npm/fix-tarball-modes.py
 _commitmsg.txt
+
+# WorkBuddy 内部工作笔记（逐日日志、MEMORY.md、gfx-invariants 等）—— 不对外公开。
+# 注意：只是不再跟踪；若要让它们彻底从 git 历史里消失，必须重写历史（见 memory 台账）。
+.workbuddy/
