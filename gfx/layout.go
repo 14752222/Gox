@@ -1,5 +1,10 @@
 package gfx
 
+import (
+	"strconv"
+	"strings"
+)
+
 // 布局 (P3): flex 风格子集。
 //   - 容器: column/row, gap/padding, alignItems (stretch|start|center|end),
 //     justifyContent (start|center|end|between), 子节点 flexGrow 简版
@@ -7,8 +12,9 @@ package gfx
 //     (按字体测量), 未显式指定尺寸时使用
 //   - 文本单行优先, 绘制阶段按 maxWidth 截断
 //
-// 简化 (与 CSS 的差异, 见任务书): 只支持单层主轴尺寸分配, 不支持
-// flexShrink/order/wrap; alignItems 默认 stretch。
+// 弹性词汇 (2026-09-19, 屏幕 D → §四 布局缺口的第一批): 百分比尺寸
+// width="50%"、minWidth/maxWidth/minHeight/maxHeight、flexShrink。
+// 不支持: 容器级 wrap、order、alignSelf (见 gui-component-status.md §3.4)。
 
 // Layout 以给定画布尺寸对根节点做一次布局 (自顶向下写 Box)。
 func Layout(root *GuiNode, w, h int) {
@@ -71,6 +77,18 @@ func layoutNode(n *GuiNode) {
 		// (列表渲染) 时按父容器方向堆叠。
 		if c := n.slotChild(); c != nil {
 			c.Box = n.Box
+			// 百分比子节点经 slot 的补解析: slot 的固有尺寸里百分比轴贡献 0
+			// (intrinsicSize 只认数字), slot 的盒子由外层分配定下来之后这里
+			// 才有机会按它解析。slot 自身没分到尺寸时 (主轴 0) 解析结果仍是
+			// 0 —— 百分比经 slot 只在交叉轴 stretch 等场景下成立, v1 已知边界。
+			if p, ok := c.percentProp("width"); ok {
+				c.Box.W = int(float64(n.Box.W) * p)
+			}
+			if p, ok := c.percentProp("height"); ok {
+				c.Box.H = int(float64(n.Box.H) * p)
+			}
+			c.Box.W = clampDim(c, c.Box.W, "minWidth", "maxWidth")
+			c.Box.H = clampDim(c, c.Box.H, "minHeight", "maxHeight")
 			layoutNode(c)
 			return
 		}
@@ -82,7 +100,7 @@ func layoutNode(n *GuiNode) {
 			if !c.isFlowChild() {
 				continue // 绝对定位/弹层子节点不参与常规流, 循环后统一摆放
 			}
-			cw, ch := c.intrinsicSize()
+			cw, ch := c.sizeInArea(area.W, area.H)
 			c.Box = Rect{X: area.X, Y: area.Y, W: cw, H: ch}
 			layoutNode(c)
 		}
@@ -349,6 +367,54 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 	return w, h
 }
 
+// percentProp 读取百分比尺寸 prop: "50%" 形态的字符串 → 0.5。
+// 非百分比形态 (数字 / 无 % / 格式坏 / 负数) 返回 false —— 坏格式静默忽略,
+// 与字段级容错口径一致 ("50x" 这类笔误不至于让布局炸掉)。
+func (n *GuiNode) percentProp(name string) (float64, bool) {
+	s, ok := n.PropStr(name)
+	if !ok || len(s) < 2 || !strings.HasSuffix(s, "%") {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(strings.TrimSuffix(s, "%"), 64)
+	if err != nil || v < 0 {
+		return 0, false
+	}
+	return v / 100, true
+}
+
+// clampDim 用 min/max prop 钳位一个轴的最终尺寸 (0 或缺省 = 不约束)。
+// min 优先于 max 语义上由调用顺序保证 (先钳下限再钳上限, 同 CSS)。
+func clampDim(n *GuiNode, base int, minName, maxName string) int {
+	if v, ok := n.PropNum(minName); ok && v > 0 && float64(base) < v {
+		base = int(v)
+	}
+	if v, ok := n.PropNum(maxName); ok && v > 0 && float64(base) > v {
+		base = int(v)
+	}
+	return base
+}
+
+// sizeInArea 是"子节点尺寸"的统一出口: 固有尺寸 → 百分比解析 (按父容器
+// 内容区) → min/max 钳位。layoutStack 的子节点收集、非容器分支与绝对
+// 定位都走它, 保证三条路径的词汇行为一致。
+//
+// 百分比在这里解析而不是塞进 intrinsicSize: "固有"必须是自包含的 (样式
+// 文档 C2), 百分比依赖父约束 —— 放分配点 (父内容区已知处) 解析, intrinsic
+// 路径里百分比轴天然贡献 0 (intrinsicSize 只认数字), 父容器不会被百分比
+// 子节点撑大, 与 CSS 的 auto 尺寸行为一致。
+func (n *GuiNode) sizeInArea(areaW, areaH int) (w, h int) {
+	w, h = n.intrinsicSize()
+	if p, ok := n.percentProp("width"); ok {
+		w = int(float64(areaW) * p)
+	}
+	if p, ok := n.percentProp("height"); ok {
+		h = int(float64(areaH) * p)
+	}
+	w = clampDim(n, w, "minWidth", "maxWidth")
+	h = clampDim(n, h, "minHeight", "maxHeight")
+	return w, h
+}
+
 // contentSize 返回子节点按声明顺序横排所需的内容区尺寸
 // (宽度累加, 高度取最大)。绝对定位/弹层子节点不占位。
 func (n *GuiNode) contentSize() (w, h int) {
@@ -417,7 +483,7 @@ func placeAbsoluteIn(n *GuiNode, area Rect) {
 			continue
 		}
 		l, t := c.absoluteOffset()
-		cw, ch := c.intrinsicSize()
+		cw, ch := c.sizeInArea(area.W, area.H) // 固有 → 百分比(按内容区) → min/max
 		c.Box = Rect{X: area.X + l, Y: area.Y + t, W: cw, H: ch}
 		layoutNode(c)
 	}
@@ -490,23 +556,39 @@ func layoutStack(n *GuiNode, horizontal bool) {
 		main, cross int // 不含 margin 的尺寸
 		margin      int
 		grow        float64
+		shrink      float64
 	}
 	slots := make([]slot, 0, len(n.Children))
 	totalMain := 0
-	var sumGrow float64
+	var sumGrow, sumShrink float64
 
 	for _, c := range n.Children {
 		if !c.isFlowChild() {
 			continue // 绝对定位/弹层: 不参与主轴分配 (见函数末尾统一摆放)
 		}
 		cw, ch := c.intrinsicSize()
+		if p, ok := c.percentProp("width"); ok {
+			cw = int(float64(area.W) * p)
+		}
+		if p, ok := c.percentProp("height"); ok {
+			ch = int(float64(area.H) * p)
+		}
+		// 主轴的 min/max 在收集期钳 (要计入 free 计算); **交叉轴不能在这里钳**
+		// —— "cross==0 → 参与拉伸"的判定依赖原始固有值, minWidth 把 0 抬成
+		// 非 0 会让节点反而失去 stretch (写盒处的终钳位兜住上限/下限)。
+		if horizontal {
+			cw = clampDim(c, cw, "minWidth", "maxWidth")
+		} else {
+			ch = clampDim(c, ch, "minHeight", "maxHeight")
+		}
 		m, _ := c.PropNum("margin")
 		mg := int(m)
 		if mg < 0 {
 			mg = 0
 		}
 		grow, _ := c.PropNum("flexGrow")
-		s := slot{child: c, margin: mg, grow: grow}
+		shrink, _ := c.PropNum("flexShrink")
+		s := slot{child: c, margin: mg, grow: grow, shrink: shrink}
 		if horizontal {
 			s.main, s.cross = cw, ch
 		} else {
@@ -514,6 +596,7 @@ func layoutStack(n *GuiNode, horizontal bool) {
 		}
 		totalMain += s.main + 2*mg
 		sumGrow += grow
+		sumShrink += shrink
 		slots = append(slots, s)
 	}
 	if len(slots) == 0 {
@@ -545,6 +628,24 @@ func layoutStack(n *GuiNode, horizontal bool) {
 		case "between":
 			if len(slots) > 1 {
 				betweenGap = free / (len(slots) - 1)
+			}
+		}
+	} else if free < 0 && sumShrink > 0 {
+		// 主轴溢出收缩: 按 flexShrink×基础尺寸 加权分摊 (CSS 同款权重 ——
+		// 纯按系数分摊会让大个子欠收)。尺寸下限由写 Box 前的 min/max 钳位
+		// 兜底 (收缩可以压到 0, 有 minWidth 的 item 停在底线上)。
+		deficit := -free
+		var weighted float64
+		for i := range slots {
+			if slots[i].shrink > 0 {
+				weighted += slots[i].shrink * float64(slots[i].main)
+			}
+		}
+		if weighted > 0 {
+			for i := range slots {
+				if slots[i].shrink > 0 {
+					slots[i].main -= int(float64(deficit) * slots[i].shrink * float64(slots[i].main) / weighted)
+				}
 			}
 		}
 	}
@@ -587,13 +688,23 @@ func layoutStack(n *GuiNode, horizontal bool) {
 		if !horizontal {
 			s.main = c.blockHeight(cross, s.main)
 		}
+		// min/max 终钳位: stretch/grow/shrink/百分比全部落定后做最终钳制
+		// (v1 不回收钳位差 —— grow 超过 maxWidth 的部分不分给别人, 行为
+		// 简单可预测)。钳位后的尺寸同时用于 pos 记账, 后续兄弟按实际占位走。
+		boxW, boxH := s.main, cross // horizontal 容器: main=宽 cross=高
+		if !horizontal {
+			boxW, boxH = cross, s.main
+		}
+		boxW = clampDim(c, boxW, "minWidth", "maxWidth")
+		boxH = clampDim(c, boxH, "minHeight", "maxHeight")
 		if horizontal {
-			c.Box = Rect{X: area.X + pos, Y: area.Y + s.margin + crossOffset, W: s.main, H: cross}
+			c.Box = Rect{X: area.X + pos, Y: area.Y + s.margin + crossOffset, W: boxW, H: boxH}
+			pos += boxW + s.margin
 		} else {
-			c.Box = Rect{X: area.X + s.margin + crossOffset, Y: area.Y + pos, W: cross, H: s.main}
+			c.Box = Rect{X: area.X + s.margin + crossOffset, Y: area.Y + pos, W: boxW, H: boxH}
+			pos += boxH + s.margin
 		}
 		layoutNode(c)
-		pos += s.main + s.margin
 	}
 	placeAbsoluteIn(n, area)
 }
@@ -657,6 +768,10 @@ func (n *GuiNode) hasExplicitCross(parentHorizontal bool) bool {
 	// 菜单栏的高度是固定的 (26px), 对"高度敏感"的父容器而言它相当于
 	// 显式指定 —— 不加这条, 它在 column 里会被 stretch 到全高。
 	if n.Tag == "menubar" && parentHorizontal {
+		return true
+	}
+	// 百分比尺寸算显式: "50%" 是脚本对这一轴的明确表态, 不再吃 stretch
+	if _, ok := n.percentProp(name); ok {
 		return true
 	}
 	_, ok := effectivePropNumOk(n, name)

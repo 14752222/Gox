@@ -564,6 +564,7 @@ func TestExampleScriptsMount(t *testing.T) {
 		"resource_demo.js",               // 状态 B: createResource (交互断言见 resource_test.go)
 		"dev_panel_demo.js",              // devtools A: gx/dev 快照面板 (结构见 dev_test.go)
 		"kit_demo.js",                    // 样式 F: 用户态设计套件 (令牌/变体/主题)
+		"elastic_layout_demo.js",         // 布局弹性词汇: 百分比 / min-max / flexShrink
 		"counter_demo.js", "gui_demo.js", // 既有演示 (布局改动后回归)
 		// 注: image_demo.js 不在本列表 —— 它的 src 是相对文件路径, 必须从仓库根
 		// 目录运行 (而本用例的 cwd 是 gfx/)。由 TestImageDemoScript 专职覆盖。
@@ -646,6 +647,32 @@ func checkDemoTree(t *testing.T, name string, root *GuiNode, fake *fakeSurface) 
 		}
 		if n := countTag(root, "input"); n != 1 {
 			t.Fatalf("Field 输入框数量 = %d, want 1", n)
+		}
+	case "elastic_layout_demo.js":
+		// 三张 30% 卡片: 首卡宽度 = (520-2*14 padding-2*10 gap)*30% ≈ 143
+		cards := findAll(root, "column")
+		var pctCards []*GuiNode
+		for _, c := range cards {
+			if w, _ := c.PropStr("width"); w == "30%" {
+				pctCards = append(pctCards, c)
+			}
+		}
+		if len(pctCards) != 3 {
+			t.Fatalf("30%% 卡片数量 = %d, want 3", len(pctCards))
+		}
+		if pctCards[0].Box.W <= 100 || pctCards[0].Box.W >= 160 {
+			t.Fatalf("首卡百分比宽度 = %d, want ~143 ((520-28-20)*0.3)", pctCards[0].Box.W)
+		}
+		// grow+maxWidth 条: 520-28=492 > 360 → 钳在 360
+		bars := findAll(root, "rect")
+		clamped := false
+		for _, b := range bars {
+			if _, ok := b.PropNum("maxWidth"); ok && b.Box.W == 360 {
+				clamped = true
+			}
+		}
+		if !clamped {
+			t.Fatalf("应有被 maxWidth=360 钳位的 grow 条")
 		}
 	case "form_demo.js":
 		cb := findFirst(root, "checkbox")
