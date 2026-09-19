@@ -13,6 +13,13 @@
 #     必须让人看到。
 # 另：删库重建后 npm 侧的 Trusted Publisher 可能失配（它记的是仓库身份），
 #     症状是包名版本都对但 Publish 仍 403/404 —— 去 npmjs.com 重加该配置。
+#     2026-09-19 实际踩到的坑：GitHub 侧仓库规范名是 `Gox`（大写 G），npm 上
+#     却配成了 `gox`。npm 拿 OIDC token 里的 claim 做**大小写敏感**的精确匹配，
+#     失配就返回一个极像 "trusted publisher 没配" 的 404。四个字段必须逐字符相等：
+#       Organization or user = 14752222
+#       Repository           = Gox          ← 大小写照抄仓库地址
+#       Workflow filename    = release.yml
+#       Environment name     = （留空，workflow 里没有 environment: 就不要填）
 name: release
 
 on:
@@ -34,10 +41,14 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # 故意不写 registry-url：它会让 setup-node 往 .npmrc 里塞一行
+      # //registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN} 占位符，npm 会据此
+      # 认为"用户要走 token 认证"，于是跳过 OIDC 交换，最终以一个很像
+      # "trusted publisher 没配" 的 404 收场。默认 registry 本来就是 npmjs.org，
+      # 不写这一行没有任何损失。
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-          registry-url: https://registry.npmjs.org
 
       # 校验放在装 npm / 编译之前：包名不对就直接跳过，省掉几分钟的交叉编译
       - name: Check package identity and version
@@ -70,4 +81,9 @@ jobs:
 
       - name: Publish
         if: steps.pkg.outputs.publish == 'true'
-        run: cd npm && npm pack --dry-run && npm publish --access public
+        run: |
+          # 诊断三行：不看这三行日志，OIDC 失败和"配置没配对"是完全一样的 404
+          echo "npm 版本：$(npm --version)"
+          echo "NODE_AUTH_TOKEN 是否为空：$([ -z "${NODE_AUTH_TOKEN:-}" ] && echo yes || echo no)"
+          echo "OIDC 端点是否存在：$([ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] && echo yes || echo no)"
+          cd npm && npm pack --dry-run && npm publish --access public --provenance
