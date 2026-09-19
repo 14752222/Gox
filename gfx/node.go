@@ -125,7 +125,8 @@ func (n *GuiNode) SetProperty(string, object.Value) {}
 //
 // !!! 每新增一个内置组件 (含布局/绘制分支) 时必须同步在此登记 !!!
 var knownTags = map[string]struct{}{
-	"column": {}, "row": {},
+	// 布局容器 (P3 / §四): 纵横堆叠 + 折行 + 等宽网格
+	"column": {}, "row": {}, "grid": {},
 	"text": {}, "#text": {},
 	"rect":   {},
 	"button": {},

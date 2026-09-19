@@ -565,7 +565,8 @@ func TestExampleScriptsMount(t *testing.T) {
 		"dev_panel_demo.js",              // devtools A: gx/dev 快照面板 (结构见 dev_test.go)
 		"kit_demo.js",                    // 样式 F: 用户态设计套件 (令牌/变体/主题)
 		"view_demo.js",                   // gx/view: 声明式循环与条件 (交互断言见 view_test.go)
-		"elastic_layout_demo.js",         // 布局弹性词汇: 百分比 / min-max / flexShrink
+		"elastic_layout_demo.js",         // 布局弹性词汇: 百分比 / min-max / flexShrink / wrap
+		"grid_demo.js",                   // 网格布局: columns={n} 等宽卡片栅格
 		"counter_demo.js", "gui_demo.js", // 既有演示 (布局改动后回归)
 		// 注: image_demo.js 不在本列表 —— 它的 src 是相对文件路径, 必须从仓库根
 		// 目录运行 (而本用例的 cwd 是 gfx/)。由 TestImageDemoScript 专职覆盖。
@@ -671,6 +672,26 @@ func checkDemoTree(t *testing.T, name string, root *GuiNode, fake *fakeSurface) 
 		}
 		if n := countTag(root, "input"); n != 4 {
 			t.Fatalf("输入框数量 = %d, want 4 (三行行内各一个 + 面板一个)", n)
+		}
+	case "grid_demo.js":
+		if n := countTag(root, "grid"); n != 1 {
+			t.Fatalf("grid 数量 = %d, want 1", n)
+		}
+		var cards []*GuiNode
+		for _, c := range findAll(root, "column") {
+			if _, ok := c.PropNum("radius"); ok {
+				cards = append(cards, c)
+			}
+		}
+		if len(cards) != 6 {
+			t.Fatalf("卡片数量 = %d, want 6", len(cards))
+		}
+		// 卡片是容器 → 拉伸到格: 同行等宽等高, 列距 = 列宽 + gap
+		if cards[0].Box.H != cards[1].Box.H || cards[0].Box.W != cards[1].Box.W {
+			t.Fatalf("同行卡片应等宽等高: %v vs %v", cards[0].Box, cards[1].Box)
+		}
+		if d := cards[1].Box.X - cards[0].Box.X; d != cards[0].Box.W+10 {
+			t.Fatalf("列距应 = 列宽+gap(10): got %d", d)
 		}
 	case "elastic_layout_demo.js":
 		// 三张 30% 卡片: 首卡宽度 = (520-2*14 padding-2*10 gap)*30% ≈ 143

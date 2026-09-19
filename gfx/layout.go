@@ -50,6 +50,8 @@ func layoutNode(n *GuiNode) {
 		} else {
 			layoutStack(n, true)
 		}
+	case "grid":
+		layoutGrid(n)
 	case "button":
 		layoutButton(n)
 	case "select":
@@ -131,6 +133,16 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 		// 两侧各加 padding。缺了这条, 嵌套容器恒为 0 尺寸, 而 drawNode 会
 		// 跳过"自身盒为空"的子树 → 嵌套几层就整片不渲染。
 		cw, ch := stackContentSize(n, n.Tag == "row")
+		if w == 0 {
+			w = cw
+		}
+		if h == 0 {
+			h = ch
+		}
+	case "grid":
+		// 网格固有尺寸按内容轨道 (每列/行取最大者); 拿到确定宽度后列改等宽
+		// —— 两套口径的差异见 layoutGrid 头注释。
+		cw, ch := gridContentSize(n)
 		if w == 0 {
 			w = cw
 		}
@@ -724,6 +736,167 @@ func layoutStack(n *GuiNode, horizontal bool) {
 	placeAbsoluteIn(n, area)
 }
 
+// ===== 网格布局 (§四 布局缺口, 2026-09-19) =====
+//
+// <grid columns={3} gap={8}>: 等宽列、声明序逐行填格的最小网格 (卡片栅格、
+// 设置页分组)。词汇刻意收窄: 不做轨道语法 ("1fr 2fr") / colSpan / 区域命名 /
+// 自动流密度 —— 需要不等宽列时用 row + 百分比/min-max 组合已有词汇。
+//
+// 两套口径 (与 CSS 的 min-content/definite 二重性同源): 固有尺寸 (auto 宽)
+// 按**内容轨道**估 (每列取最大子宽); 拿到确定宽度后列是**等宽**的
+// ((内容宽-gap*(cols-1))/cols)。网格几乎总在 column 里被 stretch 拿到确定宽,
+// 内容口径只在 row 父容器里 auto 宽时出现。
+//
+// 格内语义 (与 layoutStack 的 stretch 哲学同源):
+//   - 宽: 显式 (数字/百分比) 用自己的, 否则拉伸到列宽;
+//   - 高: 显式用之; 无显式时容器/slot/零高节点拉伸到行高, 其余保持固有高度
+//     顶部对齐 (行高 = 该行最高者);
+//   - alignItems 在格内**两轴同时**生效: 缺省 stretch (auto 轴拉伸),
+//     start/center/end 则不拉伸、按轴摆放;
+//   - flexGrow/flexShrink/justifyContent 不参与 (没有主轴分配)。
+
+// gridColumns 读取列数 (缺省 1, 钳 [1,32] —— 列数再多也是脚本拼错了)。
+func (n *GuiNode) gridColumns() int {
+	v, _ := n.PropNum("columns")
+	c := int(v)
+	if c < 1 {
+		c = 1
+	}
+	if c > 32 {
+		c = 32
+	}
+	return c
+}
+
+// gridContentSize 网格的固有尺寸: 列宽/行高按内容轨道取最大者 (百分比子节点
+// 在固有口径下贡献 0, 与栈容器一致)。
+func gridContentSize(n *GuiNode) (w, h int) {
+	pad, _ := n.PropNum("padding")
+	p := int(pad)
+	if p < 0 {
+		p = 0
+	}
+	g := n.gapOf()
+	cols := n.gridColumns()
+	colW := make([]int, cols)
+	var rowH []int
+	idx := 0
+	for _, c := range n.Children {
+		if !c.isFlowChild() {
+			continue
+		}
+		cw, ch := c.intrinsicSize()
+		if col := idx % cols; cw > colW[col] {
+			colW[col] = cw
+		}
+		row := idx / cols
+		for len(rowH) <= row {
+			rowH = append(rowH, 0)
+		}
+		if ch > rowH[row] {
+			rowH[row] = ch
+		}
+		idx++
+	}
+	w = g * (cols - 1)
+	for _, cw := range colW {
+		w += cw
+	}
+	h = g * max(0, len(rowH)-1)
+	for _, rh := range rowH {
+		h += rh
+	}
+	return w + 2*p, h + 2*p
+}
+
+// layoutGrid 布局网格容器。
+func layoutGrid(n *GuiNode) {
+	area := inner(n)
+	g := n.gapOf()
+	cols := n.gridColumns()
+	align := n.alignItems()
+
+	type cell struct {
+		child  *GuiNode
+		w, h   int  // 解析后的显式/固有尺寸
+		ew, eh bool // 该轴有显式尺寸 (数字或百分比)
+	}
+	cells := make([]cell, 0, len(n.Children))
+	for _, c := range n.Children {
+		if !c.isFlowChild() {
+			continue
+		}
+		cw, ch := c.intrinsicSize()
+		e := cell{child: c, w: cw, h: ch}
+		if p, ok := c.percentProp("width"); ok {
+			e.w = int(float64(area.W) * p)
+			e.ew = true
+		} else if _, ok := effectivePropNumOk(c, "width"); ok {
+			e.ew = true
+		}
+		if p, ok := c.percentProp("height"); ok {
+			e.h = int(float64(area.H) * p)
+			e.eh = true
+		} else if _, ok := effectivePropNumOk(c, "height"); ok {
+			e.eh = true
+		}
+		cells = append(cells, e)
+	}
+	if len(cells) == 0 {
+		placeAbsoluteIn(n, area)
+		return
+	}
+	colW := (area.W - g*(cols-1)) / cols
+	if colW < 0 {
+		colW = 0
+	}
+	rows := (len(cells) + cols - 1) / cols
+	rowH := make([]int, rows)
+	for i, e := range cells {
+		if e.h > rowH[i/cols] {
+			rowH[i/cols] = e.h
+		}
+	}
+	// 行起点 = 前面各行高 (含 gap) 的累计 —— 不是当前行的行高
+	rowY := make([]int, rows)
+	for r := 1; r < rows; r++ {
+		rowY[r] = rowY[r-1] + rowH[r-1] + g
+	}
+	for i, e := range cells {
+		col, row := i%cols, i/cols
+		x := area.X + col*(colW+g)
+		y := area.Y + rowY[row]
+		c := e.child
+		w, h := e.w, e.h
+		if align == "stretch" {
+			if !e.ew {
+				w = colW
+			}
+			if !e.eh && (h == 0 || c.isContainer() || c.Tag == "slot") {
+				h = rowH[row]
+			}
+		}
+		w = clampDim(c, w, "minWidth", "maxWidth")
+		h = clampDim(c, h, "minHeight", "maxHeight")
+		ox, oy := 0, 0
+		switch align {
+		case "center":
+			ox, oy = (colW-w)/2, (rowH[row]-h)/2
+		case "end":
+			ox, oy = colW-w, rowH[row]-h
+		}
+		if ox < 0 {
+			ox = 0
+		}
+		if oy < 0 {
+			oy = 0
+		}
+		c.Box = Rect{X: x + ox, Y: y + oy, W: w, H: h}
+		layoutNode(c)
+	}
+	placeAbsoluteIn(n, area)
+}
+
 // alignItems 读取容器交叉轴对齐 (默认 stretch)。
 func (n *GuiNode) alignItems() string {
 	if v, ok := n.PropStr("alignItems"); ok {
@@ -990,6 +1163,9 @@ func (n *GuiNode) stretchesCross() bool {
 	// 里会按"未折行的整行宽"撑开并溢出容器。
 	if n.wrapsText() {
 		return true
+	}
+	if n.Tag == "grid" {
+		return true // 网格几乎总是要确定宽度 (等宽列的基准)
 	}
 	return n.isContainer()
 }
