@@ -1,6 +1,18 @@
 # 把 website/ 目录发布到 GitHub Pages。
-# 前置条件(只需配置一次):
-#   仓库 Settings → Pages → Build and deployment → Source 选 "GitHub Actions"
+#
+# 前置条件(只需配置一次)。这两条任一不满足，configure-pages 都会在
+# "Get Pages site failed" 处报 `Not Found - /repos/{owner}/{repo}/pages`：
+#   1. Settings → Pages → Build and deployment → Source 必须选 "GitHub Actions"。
+#      (选 "Deploy from a branch" 时仓库里没有 Actions 类型的 Pages 站点，
+#       同一个接口照样 404。)
+#   2. 仓库可见性：GitHub Free 只有 **公开** 仓库能用 Pages；私有仓库用 Pages
+#      需要 GitHub Pro / Team 及以上。仓库不想公开又不想升级套餐，就别走 Pages，
+#      改用 Cloudflare Pages / Netlify / Vercel 这类支持私有仓库的静态托管。
+#
+# 想用工作流直接把站点建出来(免去手点第 1 条)：给 configure-pages 传
+#   enablement: true —— 但它 **不接受默认的 GITHUB_TOKEN**，必须显式传一个
+#   带 `repo` 权限的 PAT(或 administration:write + pages:write 的 GitHub App)。
+#
 # 发布地址: https://<用户名>.github.io/Gox/
 name: website
 
@@ -35,4 +47,4 @@ jobs:
           path: website
 
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
