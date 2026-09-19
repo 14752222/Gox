@@ -236,9 +236,8 @@ func (s *surface) ResizeClient(w, h int) {
 		return
 	}
 	xproto.ConfigureWindow(s.conn, s.win,
-		[]xproto.ConfigureWindowValue{
-			{Width: uint16(w)}, {Height: uint16(h)},
-		})
+		uint16(xproto.ConfigWindowWidth|xproto.ConfigWindowHeight),
+		[]uint32{uint32(w), uint32(h)})
 }
 
 // Size 返回当前窗口尺寸 (ConfigureNotify 维护)。
