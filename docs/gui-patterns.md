@@ -309,10 +309,16 @@ const Card = (p) => <column background={() => t().surface} padding={() => t().pa
 
 **能力边界必须诚实**（❌ 清单，内核把值写死）：焦点虚线框颜色 / 滚动条与
 滑块色 / select 箭头 / progress 轨道色 / checkbox 未选中底色 / modal 遮罩 /
-switch 滑块 / disabled 降饱和 / 圆角 / 阴影 / 边框宽度 / 光标闪烁周期——
-套件在这些地方会"露出底"，属预期。悬停是 `onMouseMove` + signal 的**近似**
-（事件粒度是"移动"不是"进入/离开"）。交互态覆盖 button/input/select/menu
-核心件；第二主题成为硬需求时再评估样式表选择器（方案 D）。
+switch 滑块 / disabled 降饱和 / 光标闪烁周期——套件在这些地方会"露出底"，
+属预期。悬停是 `onMouseMove` + signal 的**近似**（事件粒度是"移动"不是
+"进入/离开"）。交互态覆盖 button/input/select/menu 核心件；第二主题成为
+硬需求时再评估样式表选择器（方案 D）。
+
+> 2026-09-19 更新：原 ❌ 清单中的**圆角 / 阴影 / 边框宽度**已由内核装饰
+> props 解锁（`radius` / `shadow={{x,y,blur,color}}` / `borderWidth` /
+> `borderStyle`，另 `background` 支持 `linear-gradient(...)`，见 status §29）——
+> 套件的 Btn/Card 可以直接用它们收口观感（kit_demo 的 Decor 卡是示例），
+> 其余 ❌ 项维持。
 
 ## 9. 视图：声明的循环与条件（gx/view 的 For / Show / Switch）
 

@@ -103,9 +103,22 @@ render(
         <text font={() => t().fontSm} color={() => t().sub}>{() => `hello, ${name()}`}</text>
       </Card>
 
+      <Card>
+        <text font={() => t().fontMd} color={() => t().ink}>Decor (kernel props, 2026-09-19)</text>
+        <row gap={10}>
+          <rect width={90} height={44} radius={10}
+                background="linear-gradient(to bottom, #6c8fd9, #3355aa)"
+                shadow={{x: 0, y: 3, blur: 6, color: "#00000040"}} />
+          <rect width={90} height={44} radius={22} background={() => t().accent} />
+          <rect width={90} height={44} radius={8} background={() => t().surface}
+                border={() => t().sub} borderWidth={2} borderStyle="dashed"
+                shadow={{x: 4, y: 4, blur: 0, color: "#00000030"}} />
+        </row>
+      </Card>
+
       <text font={() => t().fontSm} color={() => t().sub}>
         Tokens drive colors/spacing; hover is approximated with onMouseMove signals.
-        Rounded corners / shadows / focus-ring color stay kernel-fixed (v1 limits).
+        Focus-ring/scrollbar colors stay kernel-fixed (v1 limits).
       </text>
     </column>
   </window>

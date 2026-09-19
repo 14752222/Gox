@@ -1045,15 +1045,28 @@ func (a *app) close() {
 
 // diffRects 重布局后收集脏矩形: Box 变化的节点 (新旧框) + 属性变化
 // 但框未变的节点。返回 nil 表示无脏区。
+//
+// 阴影补偿 (§四 绘制缺口): shadow 会画到盒子外 (偏移+模糊), 有阴影的节点
+// 的脏区按 shadowExtent 外扩, 否则移动/改属性时旧阴影会残留在屏上。
 func (a *app) diffRects() []Rect {
 	var rects []Rect
 	var walk func(n *GuiNode)
 	walk = func(n *GuiNode) {
+		ext := n.shadowExtent()
 		if n.Box != n.PrevBox {
-			rects = append(rects, n.PrevBox, n.Box)
+			r0, r1 := n.PrevBox, n.Box
+			if ext > 0 {
+				r0 = expandRect(r0, ext)
+				r1 = expandRect(r1, ext)
+			}
+			rects = append(rects, r0, r1)
 			n.PrevBox = n.Box
 		} else if _, dirty := a.dirtyNodes[n]; dirty {
-			rects = append(rects, n.Box)
+			r := n.Box
+			if ext > 0 {
+				r = expandRect(r, ext)
+			}
+			rects = append(rects, r)
 		}
 		for _, c := range n.Children {
 			walk(c)
@@ -1061,6 +1074,11 @@ func (a *app) diffRects() []Rect {
 	}
 	walk(a.root)
 	return rects
+}
+
+// expandRect 四边外扩 e (不裁剪, 后续 mergeRects/上屏自会处理越界)。
+func expandRect(r Rect, e int) Rect {
+	return Rect{X: r.X - e, Y: r.Y - e, W: r.W + 2*e, H: r.H + 2*e}
 }
 
 // markAllPrev 首帧/整帧时同步 PrevBox。

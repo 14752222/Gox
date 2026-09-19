@@ -392,15 +392,11 @@ func drawNode(img *image.RGBA, n *GuiNode) {
 	case "menu-item":
 		paintMenuItem(img, n, disabled)
 	default:
-		// 通用盒子 / button: background 填充 + border 描边 (button 有缺省外观)。
-		// 交互反馈 (P1-4) 只对 button 有实际效果: 其他标签没有缺省面,
-		// 未显式给 background 时 backgroundFor 返回 false, 不会走到这里。
-		if bg, ok := n.backgroundFor(); ok {
-			FillRect(img, n.Box, tint(n.interactiveFace(bg), disabled))
-		}
-		if bd, ok := n.borderFor(); ok {
-			StrokeRect(img, n.Box, tint(bd, disabled))
-		}
+		// 通用盒子 / button: 装饰统一出口 (§四 绘制缺口第一批) ——
+		// shadow → background (纯色/渐变, 圆角) → border (宽度/样式, 圆角)。
+		// radius=0 的纯色/1px 边在内部走与原实现逐字节等价的快路径,
+		// 既有像素断言零回归。交互反馈 (P1-4) 只对 button 的纯色面生效。
+		paintBoxDecor(img, n, disabled)
 	}
 	for _, c := range zOrderedChildren(n) {
 		if c.escapeClipping() {
@@ -427,15 +423,14 @@ func drawNode(img *image.RGBA, n *GuiNode) {
 	}
 }
 
-// backgroundFor 返回节点填充色: 显式 background prop 优先, button 无显式
-// 值时回落到缺省浅灰面, 其余标签无填充。
+// backgroundFor 返回节点纯色填充面: 显式 background prop 优先 (渐变写法
+// 不是纯色面, 这里返回 false), button 无显式值时回落缺省浅灰面。
 func (n *GuiNode) backgroundFor() (color.RGBA, bool) {
-	if s, ok := n.PropStr("background"); ok {
-		if c, ok := ParseColor(s); ok {
-			return c, true
-		}
+	solid, grad, ok := n.backgroundPaint()
+	if ok && grad == nil {
+		return solid, true
 	}
-	if n.Tag == "button" {
+	if !ok && n.Tag == "button" {
 		return colorBtnFace, true
 	}
 	return color.RGBA{}, false
