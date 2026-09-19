@@ -7,12 +7,15 @@
 > 路由 A「用户态 signal 模式（模式文档 + testdata demo）」与屏幕适配 A
 > 「onResize + useWindowSize」的落地交付物；2026-09-19 增补状态 B
 > createResource、onMount/onCleanup、devtools A（gx/dev）、样式 F（用户态
-> 设计套件）四章。
+> 设计套件）四章，以及 §9 视图（`gx/view` 的声明式循环与条件，同日内核
+> 模块化的第一批：模式 → 模块的升级触发见文末 §10）。
 >
 > 章节对应 demo：§1–§2 → `testdata/routing_demo.js`（`gfx/routing_test.go`）；
 > §3 → `testdata/resize_demo.js`（`gfx/resize_test.go`）；§4 → `testdata/resource_demo.js`；
-> §7 → `testdata/dev_panel_demo.js`；§8 → `testdata/kit_demo.js`（后三个在
-> `TestExampleScriptsMount` 挂载，交互断言见 `gfx/resource_test.go` / `gfx/dev_test.go`）。
+> §7 → `testdata/dev_panel_demo.js`；§8 → `testdata/kit_demo.js`；§9 →
+> `testdata/view_demo.js`（`gfx/view_test.go`，后四个在
+> `TestExampleScriptsMount` 挂载，交互断言见 `gfx/resource_test.go` /
+> `gfx/dev_test.go` / `gfx/view_test.go`）。
 
 ---
 
@@ -247,8 +250,9 @@ render(<window title="t" width={200} height={100}>
   有序列断言）。
 - **顶层脚本直接调用是 no-op**（打一次警告）：初始静态树存活于整个窗口生命
   期，没有"被换掉"的时刻；需要"窗口关闭时清理"的场景 v1 不覆盖。
-- 列表渲染同一代多个组件的登记**整批执行**，粒度是"代"不是"组件实例"
-  （v1 无 diff/key，没有实例身份）。
+- 列表渲染同一代多个组件的登记**整批执行**，粒度是"代"不是"组件实例"；
+  换用 `gx/view` 的 `For` 时，每一行各自构成一个"代"（行宿主 = 一棵子树），
+  于是删掉一行只跑那一行的 `onCleanup`（§9）。
 
 ## 7. devtools：gx/dev 快照与自绘面板
 
@@ -310,7 +314,61 @@ switch 滑块 / disabled 降饱和 / 圆角 / 阴影 / 边框宽度 / 光标闪�
 （事件粒度是"移动"不是"进入/离开"）。交互态覆盖 button/input/select/menu
 核心件；第二主题成为硬需求时再评估样式表选择器（方案 D）。
 
-## 9. 何时从「模式」升级为「模块 / 内核」
+## 9. 视图：声明的循环与条件（gx/view 的 For / Show / Switch）
+
+**问题**：列表与条件渲染此前只有两种写法 —— 函数子节点里 map 一遍
+（`{() => rows().map((r, i) => <Row r={r} />)}`：列表一变整表拆掉重建，行内的
+输入焦点、滚动位置、局部 signal 全丢），或三元/短路表达式堆在 JSX 里（不可读、
+也没有"哪几行该重建"的概念）。
+
+**模块依赖**（2026-09-19 落地，`gfx/view.go` 注册为 `gx/view`）：
+
+```js
+import { For, Show, Switch, Match } from "gx/view";
+
+<For each={() => rows()} key={(r) => r.id} fallback={<text>暂无数据</text>}>
+  {(row, i) => <RowCard row={row} i={i} />}
+</For>
+
+<Show when={() => open()} fallback={<text>已隐藏</text>}>
+  <column gap={4}><input value={draft} onInput={(e) => setDraft(e.value)} /></column>
+</Show>
+
+<Switch fallback={<text>未知状态</text>}>
+  <Match when={() => phase() === "loading"}><progress value={0.5} /></Match>
+  <Match when={() => phase() === "ready"}><text>就绪</text></Match>
+</Switch>
+```
+
+`each` 也接受数字：`each={() => 5}` → 0..4（Vue 的 `v-for="n in 5"`）。
+
+**三条必须记住的语义**（完整理由见 `gfx/view.go` 文件头）：
+
+1. **`each` / `when` 传取值函数**。JSX 属性在调用当场求值：`each={rows()}`
+   只是一张快照，之后 signal 再变不会重渲染 —— 与"受控 input 的 value 必须传
+   函数"是同一条纪律。传数组/数字字面量是合法的**静态**列表（渲染一次）。
+2. **复用按「key + 引用同一性 + 下标」判定**。同 key、同行引用、同下标 ⇒ 原样
+   复用（节点指针不变，行内状态保留）；只就地重渲染真正变了的行；旧 key 消失
+   则 dispose（onCleanup 执行）。`rows()` 每次 map 出新对象 ⇒ 每行都被判为变了
+   （与 Solid 的 For 同口径，比较用 `===`）。**重排/中间删除会移动后续行的下标，
+   那些行会就地重渲染** —— 因为本引擎的 JSX 内容是求值一次的静态值，序号必须
+   跟着位置更新；行不显示位置时加 `stable` 把下标从判定里摘出去（代价：下标参数
+   停在挂载时的值）。
+3. **Show / Switch 是 keep-alive 显隐，不是 v-if**。隐藏 = 摘出布局流（布局、
+   绘制、命中都看不见它），子树**保持挂载** —— 里面的输入框内容、滚动位置、
+   局部 signal 全留着，再显示瞬间切回。原因不是舍不得销毁：本引擎 dispose 过的
+   静态子树**无法复活**（reactiveProps 已断），v-if 会得到一棵"看着一样但不再
+   响应式"的死树。要 v-if（每次显示都全新构建）就用函数子节点：
+   `{() => cond() ? <column><input .../></column> : null}`。
+
+**布局**：三者的宿主是 slot（内核的透明占位），放进 column 竖排、放进 row 横排，
+gap 缺省跟随父容器 —— 不凭空多一层盒子。已知边界：宿主是 slot，因此**不参与
+容器级 wrap**（`row wrap` 只认常规流子节点）。
+
+demo `testdata/view_demo.js`（每行自带输入框，是"复用是否真的发生"的照妖镜：
+shuffle / drop last 之后文字跟着行走）；交互断言 `gfx/view_test.go` 13 例。
+
+## 10. 何时从「模式」升级为「模块 / 内核」
 
 模式层的成本是每个应用抄一遍；升级触发（拍板 2026-09-18，抄自各 options 文档）：
 
@@ -325,6 +383,11 @@ switch 滑块 / disabled 降饱和 / 圆角 / 阴影 / 边框宽度 / 光标闪�
 | §6 生命周期 | 窗口级卸载钩子 / 组件实例粒度 | 窗口关闭清理成为真实需求 / 内核引入 diff+key |
 | §7 gx/dev | 脏矩形可视化（内核帧埋点后补） / HTTP 旁路（方案 C） | 排查"局部重绘不生效" / 应用卡死时要能看 |
 | §8 设计套件 | 语义令牌进内核（方案 B/C 内核侧）+ 装饰栈（方案 E） | 第二主题硬需求 / 圆角阴影等光栅能力落地后 |
+| §9 视图 | 行级 keyed「移动」动画 / 虚拟化长列表（内核侧需 diff 之外的动画与测量设施） | 需要拖动排序动画 / 列表规模上千 |
+
+> §9 已经不在"模式"这一档：它连同 `gx/view` 一起交付（模式 → 模块的升级在
+> 同一天完成，触发条件是"每个应用都在手写 map + 三元"）。表中保留它是因为
+> 再往前一步（动画 / 虚拟化）仍要动内核。
 
 在那之前，本手册的写法就是**官方推荐用法**：内核 API 面不增长，模式演进
 （加参数路由、加嵌套路由）只是改示例，不是改兼容承诺。

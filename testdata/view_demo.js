@@ -1,0 +1,123 @@
+// gx/view 演示: 声明式循环与条件 (For / Show / Switch / Match)。
+// 运行: go run . testdata/view_demo.js
+//
+// 建议手动验证 (每一条都在演示复用判定, 光看截图看不出区别):
+//   1. "列表 (keyed + stable)": 每行有自己的输入框 (行内 signal) —— 它是
+//      复用是否真的发生的照妖镜: 某行一旦被重建, 输入的字就回到初值。
+//      点 shuffle 重排 / drop last 删尾行: 文字**跟着行走**, 一行都不重建。
+//   2. 点 add: 只渲染新行; clear: 列表为空 → 显示 fallback (懒构建, 只构建一次)。
+//   3. "条件 (Show)" 面板: 隐藏只是摘出布局流, 子树保活 —— 面板里输入的文字
+//      在隐藏后仍在, 再显示瞬间切回 (这就是 Show 不做 v-if 的原因, 见
+//      gfx/view.go 文件头: 本引擎销毁过的静态子树无法复活)。
+//   4. "分支 (Switch / Match)": 按声明序取第一个为真的 Match, 都不真用 fallback。
+//   5. "标签 (无 key)": 静态数组 + 下标写进静态文本 —— 下标参与复用判定,
+//      于是重排后序号一定是对的 (代价见文档)。
+import { createSignal } from "gx/solid";
+import { h, render } from "gx/gfx";
+import { For, Show, Switch, Match } from "gx/view";
+
+// ===== 状态 =====
+
+let seq = 0;
+const [rows, setRows] = createSignal([
+  { id: "a", title: "Alpha" },
+  { id: "b", title: "Beta" },
+  { id: "c", title: "Gamma" },
+]);
+const [open, setOpen] = createSignal(true);
+const [draft, setDraft] = createSignal("");
+const [phase, setPhase] = createSignal("loading");
+
+// ===== 行组件: 行内自带状态 (保住它就证明这一行没有被重建) =====
+
+const RowCard = (p) => {
+  const [note, setNote] = createSignal("");
+  return (
+    <row gap={8} note={p.row.id}>
+      <text font={13} width={72}>{p.row.title}</text>
+      <input width={150} value={note} onInput={(e) => setNote(e.value)} />
+    </row>
+  );
+};
+
+const addRow = () => {
+  seq = seq + 1;
+  setRows(rows().concat([{ id: "n" + seq, title: "Row " + seq }]));
+};
+const dropLast = () => setRows(rows().slice(0, rows().length - 1));
+const shuffle = () => setRows(rows().slice().reverse());
+const clearAll = () => setRows([]);
+
+// ===== 界面 =====
+
+render(
+  <window title="gx/view — declarative view" width={580} height={470}>
+    <column gap={10} padding={12}>
+      <text font={16}>gx/view — 声明式视图 (For / Show / Switch)</text>
+
+      <column gap={6} background="#f5f6f8" padding={10}>
+        <row gap={8}>
+          <text font={13} width={176}>列表 (keyed + stable)</text>
+          <button padding={4} onClick={addRow}>add</button>
+          <button padding={4} onClick={dropLast}>drop last</button>
+          <button padding={4} onClick={shuffle}>shuffle</button>
+          <button padding={4} onClick={clearAll}>clear</button>
+        </row>
+        <For
+          each={() => rows()}
+          key={(r) => r.id}
+          stable
+          fallback={<row note="list-empty"><text font={12} color="#a0522d">空列表: 这里是 fallback</text></row>}
+        >
+          {(row) => <RowCard row={row} />}
+        </For>
+      </column>
+
+      <row gap={8}>
+        <text font={13} width={176}>条件 (Show, 摘出布局流但保活)</text>
+        <button padding={4} onClick={() => setOpen(!open())}>{() => open() ? "hide" : "show"}</button>
+      </row>
+      <Show
+        when={() => open()}
+        fallback={<row note="panel-off"><text font={12} color="#a0522d">面板已隐藏 (fallback)</text></row>}
+      >
+        <row gap={8} note="panel-on">
+          <text font={12} width={132}>面板内输入:</text>
+          <input width={150} value={draft} onInput={(e) => setDraft(e.value)} />
+          <text font={12} color="#68707c">{() => "draft=" + draft()}</text>
+        </row>
+      </Show>
+
+      <row gap={8}>
+        <text font={13} width={176}>分支 (Switch / Match)</text>
+        <button padding={4} onClick={() => setPhase("loading")}>loading</button>
+        <button padding={4} onClick={() => setPhase("ready")}>ready</button>
+        <button padding={4} onClick={() => setPhase("error")}>error</button>
+      </row>
+      <Switch fallback={<row note="phase-unknown"><text font={12} color="#a0522d">未知状态 (fallback)</text></row>}>
+        <Match when={() => phase() === "loading"}>
+          <row note="phase-loading"><progress value={0.5} width={220}></progress></row>
+        </Match>
+        <Match when={() => phase() === "ready"}>
+          <row note="phase-ready"><text font={12} color="#2e7d32">就绪</text></row>
+        </Match>
+        <Match when={() => phase() === "error"}>
+          <row note="phase-error"><text font={12} color="#b00020">出错了</text></row>
+        </Match>
+      </Switch>
+
+      <column gap={4}>
+        <text font={13}>标签 (无 key, 下标写进静态文本; 宿主跟随父容器方向横排)</text>
+        <row gap={10}>
+          <For each={["go", "jsx", "declarative"]}>
+            {(tag, i) => <text font={12}>{i + 1 + "." + tag}</text>}
+          </For>
+        </row>
+      </column>
+
+      <text font={12} color="#68707c">
+        For 的宿主是 slot: 放进 column 竖排、放进 row 横排, 自己不占盒子 (布局透明)。
+      </text>
+    </column>
+  </window>
+);

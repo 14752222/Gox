@@ -564,6 +564,7 @@ func TestExampleScriptsMount(t *testing.T) {
 		"resource_demo.js",               // 状态 B: createResource (交互断言见 resource_test.go)
 		"dev_panel_demo.js",              // devtools A: gx/dev 快照面板 (结构见 dev_test.go)
 		"kit_demo.js",                    // 样式 F: 用户态设计套件 (令牌/变体/主题)
+		"view_demo.js",                   // gx/view: 声明式循环与条件 (交互断言见 view_test.go)
 		"elastic_layout_demo.js",         // 布局弹性词汇: 百分比 / min-max / flexShrink
 		"counter_demo.js", "gui_demo.js", // 既有演示 (布局改动后回归)
 		// 注: image_demo.js 不在本列表 —— 它的 src 是相对文件路径, 必须从仓库根
@@ -647,6 +648,29 @@ func checkDemoTree(t *testing.T, name string, root *GuiNode, fake *fakeSurface) 
 		}
 		if n := countTag(root, "input"); n != 1 {
 			t.Fatalf("Field 输入框数量 = %d, want 1", n)
+		}
+	case "view_demo.js":
+		// 首帧: keyed + stable 列表 3 行 (RowCard 用 note 标了行 id),
+		// Switch 命中 loading 分支, 空列表 fallback 不该出现。
+		notes := map[string]int{}
+		for _, r := range findAll(root, "row") {
+			if s, ok := r.PropStr("note"); ok {
+				notes[s]++
+			}
+		}
+		for _, id := range []string{"a", "b", "c"} {
+			if notes[id] != 1 {
+				t.Fatalf("列表行 %q 数量 = %d, want 1 (首帧三行: %v)", id, notes[id], notes)
+			}
+		}
+		if notes["phase-loading"] != 1 {
+			t.Fatalf("Switch 首帧应命中 loading 分支: %v", notes)
+		}
+		if notes["list-empty"] != 0 || notes["panel-off"] != 0 {
+			t.Fatalf("首帧不该出现 fallback 分支: %v", notes)
+		}
+		if n := countTag(root, "input"); n != 4 {
+			t.Fatalf("输入框数量 = %d, want 4 (三行行内各一个 + 面板一个)", n)
 		}
 	case "elastic_layout_demo.js":
 		// 三张 30% 卡片: 首卡宽度 = (520-2*14 padding-2*10 gap)*30% ≈ 143
