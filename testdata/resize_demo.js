@@ -27,18 +27,28 @@ const Sidebar = () => (
   </column>
 );
 
-render(
+let winHandle = null; // render() 的句柄 (onResize 里要用, 先占位)
+
+winHandle = render(
   <window title="resize demo" width={520} height={360}>
-    <column gap={10} padding={14} onResize={(e) => setWin({ width: e.width, height: e.height })}>
+    <column gap={10} padding={14} onResize={(e) => {
+      setWin({ width: e.width, height: e.height });
+      winHandle.setTitle(`resize demo - ${e.width}x${e.height}`); // 句柄 API: 标题跟随尺寸
+    }}>
       <text font={16}>{() => `window: ${win().width} x ${win().height} (physical px)`}</text>
       <text font={13}>{() => (wide() ? "wide layout: sidebar visible" : "narrow layout: sidebar hidden")}</text>
+
+      <row gap={10}>
+        <button onClick={() => winHandle.resize(800, 500)}>resize 800x500</button>
+        <button onClick={() => winHandle.resize(360, 240)}>resize 360x240</button>
+      </row>
 
       <row gap={10}>
         {() => (wide() ? <Sidebar /> : <text font={12} color="#889">(narrow)</text>)}
         <column gap={6}>
           <text font={() => (wide() ? 14 : 12)} wrap>
-            Drag the window edge. The breakpoint (480px) is a plain memo in this
-            script - layout switches ride the existing reactive pipeline.
+            Drag the window edge, or use the buttons above (the
+            winHandle.resize API). The breakpoint (480px) is a plain memo in this script.
           </text>
           <rect height={10} background="#3355aa" width={() => Math.max(60, win().width - 300)} />
         </column>

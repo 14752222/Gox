@@ -37,9 +37,18 @@ import (
 
 // Window 是一个已挂载窗口的句柄。
 type Window struct {
-	a   *app
-	mu  sync.Mutex
-	obj *object.Object // 惰性构造的 JS 对象 (同一窗口复用同一个对象)
+	a     *app
+	mu    sync.Mutex
+	obj   *object.Object // 惰性构造的 JS 对象 (同一窗口复用同一个对象)
+	title string         // 最近一次设置的标题 (后端不支持时 title() 也能读回)
+}
+
+// windowController 是 Surface 的**可选能力**: 运行期改标题 / 改客户区尺寸
+// (与 capturer / nativeDialogHost / imeController 同一模式: 不扩 Surface
+// 接口, 类型断言落空即静默降级 no-op —— 改不了标题不该让应用崩)。
+type windowController interface {
+	SetTitle(title string)
+	ResizeClient(w, h int)
 }
 
 // App 返回底层 app (Go 侧持有句柄时用; 测试用它断言窗口状态)。
@@ -53,6 +62,43 @@ func (w *Window) Close() {
 		return
 	}
 	Post(func() { a.close() })
+}
+
+// SetTitle 改窗口标题。后端不支持时只更新句柄内记录 (title() 仍读得回),
+// 不报错。与 close 不同**不需要 Post**: 非破坏性调用, 不动注册表、没有
+// "本轮还在遍历谁"的时序问题 (脚本本来就在 GUI 线程上执行)。
+func (w *Window) SetTitle(title string) {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	w.title = title
+	w.mu.Unlock()
+	if c, ok := w.Surface().(windowController); ok {
+		c.SetTitle(title)
+	}
+}
+
+// Title 返回最近一次设置的标题。
+func (w *Window) Title() string {
+	if w == nil {
+		return ""
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.title
+}
+
+// Resize 改窗口**客户区**尺寸 (与 WindowConfig.Width/Height 同一口径)。
+// 支持的后端会连带产生 EventResize (win32 的 WM_SIZE / fake 的主动投递),
+// 于是 onResize → useWindowSize 整条链自动通电; 不支持时 no-op。
+func (w *Window) Resize(width, height int) {
+	if w == nil || width <= 0 || height <= 0 {
+		return
+	}
+	if c, ok := w.Surface().(windowController); ok {
+		c.ResizeClient(width, height)
+	}
 }
 
 // Surface 返回本窗口的像素面 (测试/后端回调用)。
@@ -95,6 +141,30 @@ func (w *Window) jsObject() object.Value {
 	// 的是"此刻关没关" —— 快照会永远返回 false, 是个隐蔽的坑。
 	o.SetProperty("isClosed", object.NewBuiltin("isClosed", func(args ...object.Value) object.Value {
 		return object.NewBoolean(w.closed())
+	}))
+	// 运行期窗口控制 (§四 窗口/系统缺口, 2026-09-19): title()/setTitle(t)/
+	// resize(w,h)。title 同样做成方法 (窗口标题随时会变, 快照属性会过期)。
+	o.SetProperty("title", object.NewBuiltin("title", func(args ...object.Value) object.Value {
+		return object.NewString(w.Title())
+	}))
+	o.SetProperty("setTitle", object.NewBuiltin("setTitle", func(args ...object.Value) object.Value {
+		if len(args) == 0 {
+			return object.NewTypeError("setTitle: title required")
+		}
+		w.SetTitle(object.ToString(args[0]))
+		return object.UndefinedSingleton
+	}))
+	o.SetProperty("resize", object.NewBuiltin("resize", func(args ...object.Value) object.Value {
+		if len(args) < 2 {
+			return object.NewTypeError("resize: (width, height) required")
+		}
+		cw, okW := args[0].(*object.Number)
+		ch, okH := args[1].(*object.Number)
+		if !okW || !okH {
+			return object.NewTypeError("resize: width and height must be numbers")
+		}
+		w.Resize(int(cw.Value), int(ch.Value))
+		return object.UndefinedSingleton
 	}))
 	w.obj = o
 	return o

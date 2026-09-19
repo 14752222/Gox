@@ -54,6 +54,12 @@ var (
 	procSetCapture     = user32.NewProc("SetCapture")
 	procReleaseCapture = user32.NewProc("ReleaseCapture")
 
+	// §四 窗口/系统缺口: 运行期改标题 / 改客户区尺寸 (win 句柄的
+	// setTitle/resize 走这里; AdjustWindowRect 把客户区换算成外框尺寸)
+	procSetWindowTextW   = user32.NewProc("SetWindowTextW")
+	procSetWindowPos     = user32.NewProc("SetWindowPos")
+	procAdjustWindowRect = user32.NewProc("AdjustWindowRect")
+
 	// P2-7: 输入法 (IME)。imm32 在极老的 Windows 上可能缺席, 懒加载 +
 	// 返回值判空即可 (取不到上下文就当这次没有输入法)。
 	imm32                        = syscall.NewLazyDLL("imm32.dll")
@@ -880,6 +886,37 @@ func (s *surface) Size() (int, int) {
 	var rc rect32
 	procGetClientRect.Call(uintptr(s.hwnd), uintptr(unsafe.Pointer(&rc)))
 	return int(rc.Right), int(rc.Bottom)
+}
+
+// SetTitle 实现 gfx 的可选 windowController 接口: 改窗口标题。
+func (s *surface) SetTitle(title string) {
+	p, err := syscall.UTF16PtrFromString(title)
+	if err != nil {
+		return
+	}
+	procSetWindowTextW.Call(uintptr(s.hwnd), uintptr(unsafe.Pointer(p)))
+}
+
+// ResizeClient 实现 gfx 的可选 windowController 接口: 把**客户区**改成
+// w×h (与建窗时 WindowConfig 的口径一致)。SetWindowPos 收到的是外框尺寸,
+// 先用 AdjustWindowRect 按当前样式换算。WM_SIZE 随之到来 → reallocDIB +
+// EventResize, onResize 链路自动通电。
+func (s *surface) ResizeClient(w, h int) {
+	if w <= 0 || h <= 0 {
+		return
+	}
+	var rc rect32
+	rc.Right, rc.Bottom = int32(w), int32(h)
+	procAdjustWindowRect.Call(uintptr(unsafe.Pointer(&rc)), WS_OVERLAPPEDWINDOW, 0)
+	outerW := rc.Right - rc.Left
+	outerH := rc.Bottom - rc.Top
+	const (
+		swpNoMove     = 0x0002
+		swpNoZOrder   = 0x0004
+		swpNoActivate = 0x0010
+	)
+	procSetWindowPos.Call(uintptr(s.hwnd), 0, 0, 0, uintptr(outerW), uintptr(outerH),
+		swpNoMove|swpNoZOrder|swpNoActivate)
 }
 
 // reallocDIB 重建 DIB 帧缓冲 (尺寸变化时)。

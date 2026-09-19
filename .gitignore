@@ -54,3 +54,5 @@ _commitmsg.txt
 # 同上：只是不再跟踪；历史提交与 v0.1.0/v0.1.1 标签里仍能看到，彻底清除需重写历史。
 website/
 npm/
+/.zcode/
+/gox-logo-concepts/
