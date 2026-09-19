@@ -1465,5 +1465,5 @@ func Mount(root *GuiNode, cfg WindowConfig) (*Window, error) {
 	registerApp(a)
 
 	a.redraw() // 首帧
-	return &Window{a: a}, nil
+	return &Window{a: a, title: cfg.Title}, nil
 }
