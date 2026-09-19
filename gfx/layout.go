@@ -14,7 +14,8 @@ import (
 //
 // 弹性词汇 (2026-09-19, 屏幕 D → §四 布局缺口的第一批): 百分比尺寸
 // width="50%"、minWidth/maxWidth/minHeight/maxHeight、flexShrink。
-// 不支持: 容器级 wrap、order、alignSelf (见 gui-component-status.md §3.4)。
+// 第二批: 容器级 wrap (主轴折行, 见 layoutWrapStack)。
+// 不支持: order、alignSelf、align-content (见 gui-component-status.md §3.4)。
 
 // Layout 以给定画布尺寸对根节点做一次布局 (自顶向下写 Box)。
 func Layout(root *GuiNode, w, h int) {
@@ -44,7 +45,11 @@ func layoutNode(n *GuiNode) {
 	case "column":
 		layoutStack(n, false)
 	case "row":
-		layoutStack(n, true)
+		if n.wrapEnabled() {
+			layoutWrapStack(n, true)
+		} else {
+			layoutStack(n, true)
+		}
 	case "button":
 		layoutButton(n)
 	case "select":
@@ -682,11 +687,21 @@ func layoutStack(n *GuiNode, horizontal bool) {
 		}
 
 		c := s.child
-		// 文本块: 盒宽定下来之后才能知道折成几行 —— 只有"没有显式 width"
-		// 的 wrap 文本需要在这里回头改主轴尺寸 (它的高度就是行数 × 行高)。
-		// 放在交叉轴确定之后、写 Box 之前, 位置分配用的是修正后的高度。
+		// 主轴尺寸回填 (两遍机制, 先定交叉再回填主轴):
+		//   - wrap 文本块: 盒宽定下来才能知道折几行 (原有);
+		//   - wrap 行容器: 高度 = "宽度约束下的折行结果" (§四 布局缺口第二批)。
+		//     显式主轴尺寸优先 (同 blockHeight 的定宽守卫); 只在垂直父里回填 ——
+		//     那是"父给确定宽 (交叉轴 stretch)、子回填高"唯一自洽的方向。
 		if !horizontal {
-			s.main = c.blockHeight(cross, s.main)
+			if c.wrapsText() {
+				s.main = c.blockHeight(cross, s.main)
+			} else if c.Tag == "row" && c.wrapEnabled() {
+				if _, explicit := effectivePropNumOk(c, "height"); !explicit {
+					if h := wrapStackCrossTotal(c, cross); h > 0 {
+						s.main = h
+					}
+				}
+			}
 		}
 		// min/max 终钳位: stretch/grow/shrink/百分比全部落定后做最终钳制
 		// (v1 不回收钳位差 —— grow 超过 maxWidth 的部分不分给别人, 行为
@@ -715,6 +730,233 @@ func (n *GuiNode) alignItems() string {
 		return v
 	}
 	return "stretch"
+}
+
+// ===== 容器级 wrap (§四 布局缺口第二批, 2026-09-19) =====
+//
+// <row wrap gap={8}>: 行内横向排, 放不下就折到下一行 (标签流 / 工栏换行)。
+// 语义:
+//   - 折行 = 贪心分line (声明序, 当前行放不下即折; 单个超宽项独占一行);
+//   - gap 同时是行内间距与行间距 (单 gap 词汇, 不拆 row-gap/column-gap);
+//   - grow/shrink/justifyContent 只在**行内**生效 (不跨行, 与 CSS 一致);
+//   - alignItems 在行内对**行高**生效 (stretch 拉到行高, 不是容器总高);
+//   - 容器自身高度: 未显式给时由 layoutStack 的回填钩子按折行结果算
+//     (wrapStackCrossTotal); align-content 不支持 (行从上往下堆)。
+// 刻意不支持: column 方向的 wrap (需要"父给确定高"的罕见场景, v1 不做)。
+
+// wrapEnabled 报告容器是否开启主轴折行。
+func (n *GuiNode) wrapEnabled() bool {
+	v, _ := n.PropBool("wrap")
+	return v
+}
+
+// wrapSlot 是折行布局的一个子节点条目 (与 layoutStack 的局部 slot 同构)。
+type wrapSlot struct {
+	child        *GuiNode
+	main, cross  int // 不含 margin 的尺寸
+	margin       int
+	grow, shrink float64
+}
+
+// wrapCollect 收集子节点并解析尺寸 (与 layoutStack 同一套规则: 固有 → 百分比
+// → 主轴 min/max 收集期钳, 交叉轴写盒时钳)。
+func wrapCollect(n *GuiNode, areaW, areaH int) []wrapSlot {
+	var slots []wrapSlot
+	for _, c := range n.Children {
+		if !c.isFlowChild() {
+			continue
+		}
+		cw, ch := c.intrinsicSize()
+		if p, ok := c.percentProp("width"); ok {
+			cw = int(float64(areaW) * p)
+		}
+		if p, ok := c.percentProp("height"); ok {
+			ch = int(float64(areaH) * p)
+		}
+		cw = clampDim(c, cw, "minWidth", "maxWidth")
+		m, _ := c.PropNum("margin")
+		mg := int(m)
+		if mg < 0 {
+			mg = 0
+		}
+		grow, _ := c.PropNum("flexGrow")
+		shrink, _ := c.PropNum("flexShrink")
+		slots = append(slots, wrapSlot{
+			child: c, main: cw, cross: ch, margin: mg, grow: grow, shrink: shrink,
+		})
+	}
+	return slots
+}
+
+// wrapLines 把条目贪心分line: 当前行放不下就折行。单个条目超过整行宽度时
+// 独占一行 (溢出部分由行内 shrink / min-max 各自兜底)。
+func wrapLines(slots []wrapSlot, g, areaMain int) [][]wrapSlot {
+	var lines [][]wrapSlot
+	var cur []wrapSlot
+	curMain := 0
+	for _, s := range slots {
+		need := s.main + 2*s.margin
+		if len(cur) > 0 && curMain+g+need > areaMain {
+			lines = append(lines, cur)
+			cur = nil
+			curMain = 0
+		}
+		if len(cur) > 0 {
+			curMain += g
+		}
+		cur = append(cur, s)
+		curMain += need
+	}
+	if len(cur) > 0 {
+		lines = append(lines, cur)
+	}
+	return lines
+}
+
+// wrapStackCrossTotal 计算折行容器在给定宽度下的内容总高 (含 padding) ——
+// layoutStack 的主轴回填钩子用它 (wrap 文本 blockHeight 的同款两遍)。
+// 宽度不可用 (<=0) 时返回 0, 调用方保留原主轴尺寸。
+func wrapStackCrossTotal(n *GuiNode, mainAvailable int) int {
+	if mainAvailable <= 0 {
+		return 0
+	}
+	pad, _ := n.PropNum("padding")
+	p := int(pad)
+	if p < 0 {
+		p = 0
+	}
+	g := n.gapOf()
+	// 测量遍: areaH 传 0 (真实高度正是要求的量) —— 百分比高的子节点按
+	// 固有值 (通常 0) 计, 放置遍才按容器盒解析, 已知偏差记录在案。
+	lines := wrapLines(wrapCollect(n, mainAvailable-2*p, 0), g, mainAvailable-2*p)
+	total := 0
+	for li, line := range lines {
+		if li > 0 {
+			total += g
+		}
+		lineCross := 0
+		for _, s := range line {
+			if s.cross+2*s.margin > lineCross {
+				lineCross = s.cross + 2*s.margin
+			}
+		}
+		total += lineCross
+	}
+	return total + 2*p
+}
+
+// layoutWrapStack 布局折行容器 (仅 row 派发到这里)。
+func layoutWrapStack(n *GuiNode, horizontal bool) {
+	area := inner(n)
+	g := n.gapOf()
+	align := n.alignItems()
+
+	slots := wrapCollect(n, area.W, area.H)
+	if len(slots) == 0 {
+		placeAbsoluteIn(n, area)
+		return
+	}
+	lines := wrapLines(slots, g, area.W)
+
+	crossPos := 0
+	for li, line := range lines {
+		if li > 0 {
+			crossPos += g
+		}
+		// 行内主轴分配: 与 layoutStack 同款 (grow / shrink / justify), 不跨行
+		totalMain := 0
+		var sumGrow, sumShrink float64
+		lineCross := 0
+		for _, s := range line {
+			totalMain += s.main + 2*s.margin
+			sumGrow += s.grow
+			sumShrink += s.shrink
+			if s.cross+2*s.margin > lineCross {
+				lineCross = s.cross + 2*s.margin
+			}
+		}
+		free := area.W - totalMain - g*(len(line)-1)
+		lead, betweenGap := 0, 0
+		if free > 0 && sumGrow > 0 {
+			for i := range line {
+				if line[i].grow > 0 {
+					line[i].main += int(float64(free) * line[i].grow / sumGrow)
+				}
+			}
+		} else if free > 0 {
+			switch n.justifyContent() {
+			case "center":
+				lead = free / 2
+			case "end":
+				lead = free
+			case "between":
+				if len(line) > 1 {
+					betweenGap = free / (len(line) - 1)
+				}
+			}
+		} else if free < 0 && sumShrink > 0 {
+			deficit := -free
+			var weighted float64
+			for i := range line {
+				if line[i].shrink > 0 {
+					weighted += line[i].shrink * float64(line[i].main)
+				}
+			}
+			if weighted > 0 {
+				for i := range line {
+					if line[i].shrink > 0 {
+						line[i].main -= int(float64(deficit) * line[i].shrink * float64(line[i].main) / weighted)
+					}
+				}
+			}
+		}
+
+		pos := lead
+		for i, s := range line {
+			if i > 0 {
+				pos += g + betweenGap
+			}
+			pos += s.margin
+			// 行内 stretch: 拉到行高 (折行容器的交叉轴是多行总高, 拉到容器
+			// 高会把第一行的子节点拉出屏)。
+			cross := s.cross
+			if align == "stretch" && !s.child.hasExplicitCross(horizontal) &&
+				(s.cross == 0 || s.child.stretchesCross()) {
+				cross = lineCross - 2*s.margin
+			}
+			crossOffset := 0
+			if s.cross > 0 || align != "stretch" {
+				switch align {
+				case "center":
+					crossOffset = (lineCross - cross - 2*s.margin) / 2
+				case "end":
+					crossOffset = lineCross - cross - 2*s.margin
+				}
+			}
+			if cross < 0 {
+				cross = 0
+			}
+			if crossOffset < 0 {
+				crossOffset = 0
+			}
+			c := s.child
+			if c.wrapsText() {
+				s.main = c.blockHeight(cross, s.main)
+			}
+			boxW, boxH := s.main, cross
+			boxW = clampDim(c, boxW, "minWidth", "maxWidth")
+			boxH = clampDim(c, boxH, "minHeight", "maxHeight")
+			c.Box = Rect{
+				X: area.X + pos,
+				Y: area.Y + crossPos + s.margin + crossOffset,
+				W: boxW, H: boxH,
+			}
+			layoutNode(c)
+			pos += boxW + s.margin
+		}
+		crossPos += lineCross
+	}
+	placeAbsoluteIn(n, area)
 }
 
 // isContainer 报告节点是否为 flex 容器。

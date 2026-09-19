@@ -168,3 +168,140 @@ func TestLayoutPercentBadFormatIgnored(t *testing.T) {
 		t.Fatalf("坏格式应回退 stretch: 宽 = %d, want 300", a.Box.W)
 	}
 }
+
+// ===== 容器级 wrap (§四 布局缺口第二批) =====
+
+func TestLayoutWrapBasic(t *testing.T) {
+	// 宽 300: 三个 100 恰好一行, 第四个折行
+	root := withBool(mkNode("row", nil), "wrap", true)
+	var kids []*GuiNode
+	for i := 0; i < 4; i++ {
+		kids = append(kids, mkNode("rect", map[string]float64{"width": 100, "height": 20}))
+	}
+	root.Children = kids
+	Layout(root, 300, 200)
+	if kids[2].Box.X != 200 || kids[2].Box.Y != 0 {
+		t.Fatalf("第三个应在第一行末: %v", kids[2].Box)
+	}
+	if kids[3].Box.X != 0 || kids[3].Box.Y != 20 {
+		t.Fatalf("第四个应折行: %v", kids[3].Box)
+	}
+}
+
+func TestLayoutWrapWithGap(t *testing.T) {
+	// 宽 300 gap 10: 两个 100 (110 间隔) 一行, 第三个 (再 +110 超宽) 折行
+	root := mkNode("row", map[string]float64{"gap": 10})
+	root.Props["wrap"] = object.NewBoolean(true)
+	kids := []*GuiNode{
+		mkNode("rect", map[string]float64{"width": 100, "height": 20}),
+		mkNode("rect", map[string]float64{"width": 100, "height": 20}),
+		mkNode("rect", map[string]float64{"width": 100, "height": 20}),
+	}
+	root.Children = kids
+	Layout(root, 300, 200)
+	if kids[1].Box.X != 110 || kids[1].Box.Y != 0 {
+		t.Fatalf("行内位置: %v", kids[1].Box)
+	}
+	// 行2 y = 行1 高 20 + 行间距 gap 10
+	if kids[2].Box.X != 0 || kids[2].Box.Y != 30 {
+		t.Fatalf("第三个应折到第二行 (y=20+10): %v", kids[2].Box)
+	}
+}
+
+func TestLayoutWrapAutoHeightBackfill(t *testing.T) {
+	// column 里的 wrap row (未给高): 高度由"宽 200 约束下的折行结果"回填
+	// 90+10+90=190 ≤ 200 → 每行两个; 三个子节点 → 两行 → 高 = 20+10+20 = 50
+	root := mkNode("column", nil)
+	flow := mkNode("row", map[string]float64{"gap": 10})
+	flow.Props["wrap"] = object.NewBoolean(true)
+	var kids []*GuiNode
+	for i := 0; i < 3; i++ {
+		kids = append(kids, mkNode("rect", map[string]float64{"width": 90, "height": 20}))
+	}
+	flow.Children = kids
+	root.Children = []*GuiNode{flow}
+	Layout(root, 200, 300)
+	if flow.Box.W != 200 {
+		t.Fatalf("wrap row 应被 stretch 到 200: %v", flow.Box)
+	}
+	if flow.Box.H != 50 {
+		t.Fatalf("折行回填高度 = %d, want 50 (两行 20 + gap 10)", flow.Box.H)
+	}
+	if kids[2].Box.Y != 30 || kids[2].Box.X != 0 {
+		t.Fatalf("第三个应在第二行: %v", kids[2].Box)
+	}
+}
+
+func TestLayoutWrapExplicitHeightWins(t *testing.T) {
+	// 显式 height 优先于折行回填 (同 blockHeight 的定宽守卫)
+	root := mkNode("column", nil)
+	flow := mkNode("row", map[string]float64{"height": 80})
+	flow.Props["wrap"] = object.NewBoolean(true)
+	flow.Children = []*GuiNode{
+		mkNode("rect", map[string]float64{"width": 90, "height": 20}),
+		mkNode("rect", map[string]float64{"width": 90, "height": 20}),
+		mkNode("rect", map[string]float64{"width": 90, "height": 20}),
+	}
+	root.Children = []*GuiNode{flow}
+	Layout(root, 100, 300)
+	if flow.Box.H != 80 {
+		t.Fatalf("显式 height 应保留: %d, want 80", flow.Box.H)
+	}
+}
+
+func TestLayoutWrapAlignCenterInLine(t *testing.T) {
+	// 行内垂直居中: 行高取最大者 (40), 矮的居中偏移 10
+	root := mkNode("row", nil)
+	root.Props["alignItems"] = object.NewString("center")
+	root.Props["wrap"] = object.NewBoolean(true)
+	tall := mkNode("rect", map[string]float64{"width": 100, "height": 40})
+	short := mkNode("rect", map[string]float64{"width": 100, "height": 20})
+	root.Children = []*GuiNode{short, tall}
+	Layout(root, 300, 200)
+	if short.Box.Y != 10 {
+		t.Fatalf("矮项应行内居中 y=10: %v", short.Box)
+	}
+	if tall.Box.Y != 0 {
+		t.Fatalf("高项应贴行顶: %v", tall.Box)
+	}
+}
+
+func TestLayoutWrapStretchToLine(t *testing.T) {
+	// 行内 stretch: 无固有高的节点拉到行高 (不是容器总高)
+	root := mkNode("row", nil)
+	root.Props["wrap"] = object.NewBoolean(true)
+	flat := mkNode("rect", map[string]float64{"width": 100}) // height 缺省 0
+	tall := mkNode("rect", map[string]float64{"width": 100, "height": 30})
+	root.Children = []*GuiNode{flat, tall}
+	Layout(root, 300, 200)
+	if flat.Box.H != 30 {
+		t.Fatalf("stretch 应拉到行高 30: %v", flat.Box)
+	}
+}
+
+func TestLayoutWrapJustifyBetweenPerLine(t *testing.T) {
+	// justifyContent 在行内生效: 一行两个 100, between → 间隙 100
+	root := mkNode("row", nil)
+	root.Props["wrap"] = object.NewBoolean(true)
+	root.Props["justifyContent"] = object.NewString("between")
+	a := mkNode("rect", map[string]float64{"width": 100, "height": 20})
+	b := mkNode("rect", map[string]float64{"width": 100, "height": 20})
+	root.Children = []*GuiNode{a, b}
+	Layout(root, 300, 200)
+	if a.Box.X != 0 || b.Box.X != 200 {
+		t.Fatalf("between: a=%v b=%v, want b.x=200", a.Box, b.Box)
+	}
+}
+
+func TestLayoutWrapSingleOversizedItem(t *testing.T) {
+	// 单个超宽项独占一行 (溢出, 不强行塞进上一行)
+	root := mkNode("row", nil)
+	root.Props["wrap"] = object.NewBoolean(true)
+	a := mkNode("rect", map[string]float64{"width": 100, "height": 20})
+	big := mkNode("rect", map[string]float64{"width": 400, "height": 20})
+	root.Children = []*GuiNode{a, big}
+	Layout(root, 300, 200)
+	if big.Box.Y != 20 || big.Box.X != 0 {
+		t.Fatalf("超宽项应独占第二行: %v", big.Box)
+	}
+}

@@ -53,6 +53,18 @@ render(
         <rect height={10} background="#c0392b" flexGrow={1} maxWidth={360} minWidth={160} />
         <rect height={10} background="#3355aa" width="100%" />
       </column>
+
+      {/* ④ wrap: 标签流 (变窄自动换行, 容器高度自动回填) */}
+      <column gap={4}>
+        <text font={13}>wrap tag flow (narrow the window):</text>
+        <row wrap gap={6}>
+          {["go", "gui", "flex", "wrap", "percent", "shrink", "min-max", "token", "reactive", "desktop", "mobile"].map((tag) => (
+            <column background="#e8ecf4" padding={4}>
+              <text font={12} color="#3355aa">{`#${tag}`}</text>
+            </column>
+          ))}
+        </row>
+      </column>
     </column>
   </window>
 );
