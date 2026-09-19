@@ -1,10 +1,18 @@
-# 打 v* tag 时自动发布 npm 包：交叉编译全平台二进制 → 校验版本 → npm publish。
+# 打 v* tag 时自动发布 npm 包：交叉编译全平台二进制 → 校验包名校验版本 → npm publish。
 # 发布认证用 npm Trusted Publishing (OIDC)，免 token：
 #   前置（只需配置一次）：npmjs.com 账号设置 → Trusted Publishers 添加
 #   pending trusted publisher（org/user: 14752222, repo: Gox, workflow: release.yml）
 #   注意：workflow 里不能再设置 NODE_AUTH_TOKEN —— .npmrc 中的 token 会
 #   优先于 OIDC 自动检测，导致继续用旧凭据而 403
 # 发版流程：改 npm/package.json 的 version → 提交 → 打 tag（如 v0.1.0）→ push tag
+#
+# 两个校验的区别（别把后者也改成跳过）：
+#   * 包名不是 @goxjs/goxjs  → **跳过**发布。改名前的历史标签（v0.1.0 的
+#     package.json 里还叫无 scope 的 `goxjs`）重推时必然 404，跳过即可，不必报红。
+#   * 版本与 tag 不一致      → **硬失败**。这是真错误（发版前忘了同步版本号），
+#     必须让人看到。
+# 另：删库重建后 npm 侧的 Trusted Publisher 可能失配（它记的是仓库身份），
+#     症状是包名版本都对但 Publish 仍 403/404 —— 去 npmjs.com 重加该配置。
 name: release
 
 on:
@@ -31,19 +39,35 @@ jobs:
           node-version: '22'
           registry-url: https://registry.npmjs.org
 
-      # Trusted Publishing (OIDC) 需要 npm >= 11.5.1，Node 22 自带的是 10.x
-      - run: npm install -g npm@latest
-
-      - name: Check version matches tag
+      # 校验放在装 npm / 编译之前：包名不对就直接跳过，省掉几分钟的交叉编译
+      - name: Check package identity and version
+        id: pkg
         run: |
+          PKG_NAME=$(node -p "require('./npm/package.json').name")
           PKG_VER=$(node -p "require('./npm/package.json').version")
           TAG_VER="${GITHUB_REF_NAME#v}"
+          echo "标签 $GITHUB_REF_NAME ：包名 $PKG_NAME ，版本 $PKG_VER"
+
+          if [ "$PKG_NAME" != "@goxjs/goxjs" ]; then
+            echo "::notice::标签 $GITHUB_REF_NAME 里的包名是 '$PKG_NAME'（不是 @goxjs/goxjs），属改名前的历史标签，跳过发布"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           if [ "$PKG_VER" != "$TAG_VER" ]; then
             echo "npm/package.json 版本 ($PKG_VER) 与 tag ($TAG_VER) 不一致，请先同步版本号" >&2
             exit 1
           fi
 
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+
+      # Trusted Publishing (OIDC) 需要 npm >= 11.5.1，Node 22 自带的是 10.x
+      - run: npm install -g npm@latest
+        if: steps.pkg.outputs.publish == 'true'
+
       - run: bash ./scripts/build-npm.sh
+        if: steps.pkg.outputs.publish == 'true'
 
       - name: Publish
+        if: steps.pkg.outputs.publish == 'true'
         run: cd npm && npm pack --dry-run && npm publish --access public
