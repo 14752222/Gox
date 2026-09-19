@@ -10,13 +10,13 @@
 - **完整编译管线** — 自研 lexer / parser / compiler / bytecode VM，108 个操作码，定长 3 字节指令编码（`[操作码 1B][操作数 2B 大端]`），解码即取即用
 - **ES6+ 语言子集** — `let`/`const`（不支持 `var`）、函数与箭头函数、闭包、`class`、`async`/`await`、解构赋值、剩余/默认参数、展开、模板字符串、`for...of`、`try`/`catch`/`throw`、可选链 `?.`、空值合并 `??`、ES 模块 `import`/`export`，以及 **JSX 语法**（编译期降级为 `h(tag, props, ...children)` 调用）
 - **丰富的内置对象** — `Array` / `String` / `Number` / `Object` / `Boolean` / `Math` / `JSON` / `Map` / `Set` / `WeakMap` / `WeakSet` / `Symbol` / `BigInt` / `RegExp` / `Proxy` / `Reflect` / `Iterator` / `Promise` / `ArrayBuffer` / `DataView`（TypedArray 家族）/ `WeakRef` / `FinalizationRegistry` / 完整错误类型族 / `Temporal`（取代 `Date` 的现代日期时间 API）
-- **宿主能力模块** — `fs`（Node 风格，同步 + 异步两套）、`http`（客户端 `get`/`request` + 服务端 `createServer`）、`fetch`、`path`、`process`、`stats`
-- **自研 GUI 渲染层** — `gx/gfx` 模块：纯 Go 软件光栅化，flex 风格布局（`column`/`row`/`gap`/`padding`）、命中测试、脏矩形局部重绘；win32（纯 syscall 无 cgo）与 X11 窗口后端，产物为无动态库依赖的静态单文件；配套 `gx/dialog`（原生消息框与文件对话框）等宿主能力模块
+- **宿主能力模块** — `fs`（Node 风格，同步 + 异步两套）、`http`（客户端 `get`/`request` + 服务端 `createServer`）、`fetch`、`path`、`process`、`stats`、`gx/storage`（应用级 kv 持久化，写入系统应用数据目录）
+- **自研 GUI 渲染层** — `gx/gfx` 模块：纯 Go 软件光栅化，flex 风格布局（`column`/`row`/`grid`、百分比尺寸、min-max 钳位、`flexShrink`、折行）、圆角/线性渐变/阴影装饰、命中测试、脏矩形局部重绘；win32（纯 syscall 无 cgo）与 X11 窗口后端，产物为无动态库依赖的静态单文件；配套 `gx/dialog`（原生消息框与文件对话框）等宿主能力模块
 - **原生感的交互组件** — 表单控件（`input`/`textarea`/`select`/`slider`/`checkbox`/`radio`/`switch`）、弹层（`dialog`/`toast`）、滚动容器、自绘画布，以及**自绘菜单栏与右键菜单**（下拉/子菜单/快捷键/禁用项，不依赖系统菜单 API）
 - **事件循环** — `setTimeout` / `setInterval` / `requestIdleCallback`，以及精度可控的严格定时器变体（`setStrictTimeout` 等）；GUI 模式下事件循环接入窗口消息泵
-- **响应式编程** — Dart GetX 风格的 `obs` / `computed` / `ever` / `once`，以及 SolidJS 风格的 `gx/solid` 信号（`createSignal` / `createEffect` / `createMemo`）
+- **响应式编程** — Dart GetX 风格的 `obs` / `computed` / `ever` / `once`，以及 SolidJS 风格的 `gx/solid` 信号（`createSignal` / `createEffect` / `createMemo` / `createResource` 异步资源 / `onMount` / `onCleanup` 生命周期）；声明式视图 `gx/view`（`For` keyed 列表复用 / `Show` 保活显隐 / `Switch`+`Match` 多分支）
 - **npm 分发** — [`@goxjs/goxjs`](https://www.npmjs.com/package/@goxjs/goxjs) 包内置 Windows/Linux/macOS × x64/arm64 五个平台的预编译二进制，`npm i -g @goxjs/goxjs` 即得 `goxjs` 命令
-- **工具链** — 交互式 REPL、jsbuild 打包器（JS → 独立 .exe，支持 GUI 应用与纯 Go 交叉编译）、dbgtool 词法调试器
+- **工具链** — 交互式 REPL、jsbuild 打包器（JS → 独立 .exe，支持 GUI 应用与纯 Go 交叉编译）、`gx/dev` 运行时快照（帧统计 / 缓存命中 / 最近警告，可做调试面板）
 
 ## 快速开始
 
@@ -144,11 +144,15 @@ count = 2
 
 ## GUI 桌面应用
 
-`gx/gfx` + `gx/solid` 提供 JSX 声明式 UI 与信号驱动的响应式更新，渲染器为纯 Go 软件光栅化（无 cgo、无动态库依赖）：
+`gx/gfx` + `gx/solid` 提供 JSX 声明式 UI 与信号驱动的响应式更新，渲染器为纯 Go 软件光栅化（无 cgo、无动态库依赖）。
+
+模块导入有两种写法：聚合入口 `gox` 一行拿全常用 API（`gox` 是所有 `gx/*` 模块导出的并集，应用代码推荐）；细分模块按需导入（库代码推荐，见各模块章节）：
 
 ```js
-import { createSignal } from "gx/solid"
-import { h, render } from "gx/gfx"
+import { h, render, createSignal } from "gox"        // 聚合入口（一行拿全）
+// 等价的细分写法:
+// import { createSignal } from "gx/solid"
+// import { h, render } from "gx/gfx"
 
 const [count, setCount] = createSignal(0)
 
@@ -168,7 +172,7 @@ render(
 
 - 点击按钮 → `setCount` 更新信号 → 依赖该信号的属性/文本节点自动标脏 → 脏矩形合并后只重绘受影响区域
 - 窗口配置写在根元素上：JSX 里 `<window title width height>` 包住整棵树；`h()` 手拼树时 `render(tree, {title, width, height})` 传普通对象，省略则用缺省（Gox 400x300）
-- `render()` 返回窗口句柄 `{close(), isClosed()}`，可**调用多次**开多窗口（各窗口独立元素树与事件循环，全关才退出进程）
+- `render()` 返回窗口句柄 `{close(), isClosed(), title(), setTitle(t), resize(w, h)}`，可**调用多次**开多窗口（各窗口独立元素树与事件循环，全关才退出进程）
 - 未实现的标签（拼错的名字、或还没做进 `knownTags` 的名字）会在 stderr 打印一次性警告，并仍按普通盒子渲染（不再静默成空盒子）
 - 窗口后端：Windows（纯 syscall win32）与 Linux（X11，Wayland 下走 XWayland）；macOS GUI 后端尚未实现
 - 字体：Windows/macOS 走静态候选路径；Linux 惰性扫描系统字体目录（`/usr/share/fonts`、`~/.local/share/fonts` 等，**CJK 字体优先**、条目上限 2000）。找不到可用字体时文字整体不渲染，错误里会给出候选条数与最后一个失败原因
@@ -187,6 +191,7 @@ render(
 | `onContextMenu` | `{x, y}` | 右键抬起时触发；常配合 `openContextMenu(e.x, e.y, items)` 弹右键菜单 |
 | `onKeyDown` / `onKeyUp` | `{key, ctrl, shift, alt}` | 从焦点节点沿祖先链找第一个处理器 |
 | `onFocus` / `onBlur` | 无 | 焦点切换时触发，沿祖先链找第一个处理器；焦点节点会画 1px 蓝色虚线框（根节点 `hideFocusRing` 可关闭） |
+| `onResize` | `{width, height}` | **窗口级**事件：窗口尺寸变化时派发给**布局根**（挂非根节点不触发），不走焦点链；尺寸为物理像素。拖窗口边缘或脚本调 `win.resize()` 都会触发 |
 | `shortcut`（属性，非事件） | 回调收 `{x, y, shortcut}` | `<menuitem shortcut="Ctrl+S">`：不必展开菜单，快捷键表在事件泵层直接匹配。只认带 `Ctrl`/`Alt` 的组合，且修饰键**全等**（`Ctrl+S` 不会被 `Ctrl+Shift+S` 触发） |
 
 > 交互组件（`button` / `checkbox` / `radio` / `switch`）自动获得悬停提亮（各通道 +12）与按压压暗（-24）反馈，
@@ -198,9 +203,10 @@ render(
 
 | 元素 | 主要属性 | 说明 |
 |---|---|---|
-| `column` / `row` | `gap` / `padding` / `margin`(子级) / `alignItems` / `justifyContent` / `flexGrow`(子级) / `width` / `height` | flex 风格容器，尺寸按内容确定（交叉轴默认 stretch） |
+| `column` / `row` | `gap` / `padding` / `margin`(子级) / `alignItems` / `justifyContent` / `flexGrow` / `flexShrink`(子级) / `wrap` / `width` / `height` | flex 风格容器，尺寸按内容确定（交叉轴默认 stretch）；`row` 加 `wrap` 放不下折行，`gap` 兼作行内间距与行间距 |
+| `grid` | `columns`（1~32） | 等宽列网格：声明序逐行填格，列宽均分内容宽，格子无显式高时拉到行高；不做轨道语法 / colSpan（不等宽列用 `row` + 百分比组合） |
 | `text` | `font` / `color` / `width` / `wrap` / `ellipsis` | 默认单行文本、超宽硬截断；加 `wrap` 变成文本块（按宽度贪心折行、`\n` 强制换行），`ellipsis={n}` 只留 n 行并在末行补 `...` |
-| `rect` | `width` / `height` / `background` / `border` | 通用盒子；未特判的标签也走这条绘制路径 |
+| `rect` | `width` / `height` / `background` / `border` / `radius` / `shadow` / `borderWidth` / `borderStyle` | 通用盒子；未特判的标签也走这条绘制路径；装饰属性（圆角 / 阴影 / 渐变 / 边框宽度）见下文「装饰绘制」 |
 | `button` | `onClick` / `disabled` / `background` / `border` / `color` / `padding` | 缺省浅灰底 + 深灰边框，文字子节点垂直居中；`disabled` 时整体变灰且不响应点击 |
 | `checkbox` / `radio` | `checked` / `onClick` / `border` / `background` / `color` | 18×18 受控控件；`background` 是选中填充色，radio 互斥在 JS 侧用 signal 实现 |
 | `switch` | `checked` / `onClick` | 36×20 受控开关（方形轨道），`background` 覆盖打开态轨道色 |
@@ -219,6 +225,25 @@ render(
 | `menubar` | `background` / `border` | 菜单栏容器（缺省 26px 高、自动铺满容器宽）；**它只是个普通容器**，脚本自己写 `column { menubar; 内容 }`，gfx 不会往 root 里偷偷插一条 |
 | `menu` | `label`（或 `title`、或文本子节点） | 菜单标题；作为 `<menubar>` 的直接子节点时是**顶级菜单**（下拉挂在标题正下方），嵌在 `<menuitem>` 里时是**子菜单**（挂在触发项右侧）。空菜单点了不展开 |
 | `menuitem` | `label` / `shortcut` / `disabled` / `onClick` | 菜单项；点中派发 `onClick({x, y})` 并收起整棵菜单。`disabled` 灰字且点了没反应（**也不收起**）；内嵌一个 `<menu>` 即成为子菜单触发器（点击展开/收起右侧下拉，自身不派发 `onClick`）。分隔线用已有的 `<separator>`，它照样可命中（点了没反应） |
+
+**弹性布局：百分比 / min-max / flexShrink / 折行 / 网格**
+
+尺寸词汇不止整数像素，组合起来可以纯声明地做自适应界面：
+
+```js
+h("row", { gap: 10 },
+  h("rect", { width: "33%", height: 80, radius: 10 }),                  // 百分比：按父容器内容区解析
+  h("rect", { flexGrow: 1, minWidth: 120, maxWidth: 320, height: 16 }), // grow + min-max 钳位
+)
+```
+
+- `width="50%"` 百分比字符串按**父容器内容区**解析，坏格式静默忽略回退固有尺寸；百分比算显式尺寸（不再吃交叉轴 stretch），也不撑大父容器
+- `minWidth/maxWidth/minHeight/maxHeight` 在 stretch / grow / shrink / 百分比全部落定后**终钳位**（v1 不回收钳位差：grow 超过 maxWidth 的富余不再分给别人）
+- `flexShrink` 是 `flexGrow` 的对称面：主轴溢出时按**系数×基础尺寸**加权分摊（CSS 同款权重），下限由 minWidth 兜底
+- `<row wrap>` 放不下折到下一行（声明序贪心）：`gap` 兼作行内间距与行间距，grow / shrink / justifyContent 只在行内生效，alignItems 对**行高**生效
+- `<grid columns={3}>` 等宽列网格：格子无显式宽时拉伸到列宽、无显式高时拉到行高（该行最高者），`alignItems` 在格内两轴同时生效
+
+示例：`testdata/elastic_layout_demo.js`（百分比三等分 / 加权收缩 / 标签流折行，拖窗口全程零 JS）、`testdata/grid_demo.js`（3×2 渐变圆角卡片栅格）。
 
 **层叠与定位**
 
@@ -240,6 +265,24 @@ h("column", null,
 
 颜色支持命名色与 `#rgb` / `#rgba` / `#rrggbb` / `#rrggbbaa` / `rgb()` / `rgba()`（alpha 可写 `0~255` 或 `0~1`），
 带 alpha 的颜色会与下方内容做真正的混合（`dialog` 的遮罩就是这么实现的）。
+
+**装饰绘制（圆角 / 渐变 / 阴影 / 边框宽度）**
+
+`radius` / `shadow` / `borderWidth` / `borderStyle` 对所有走通用盒子绘制分支的标签生效（`rect` / `button` / 容器等）：
+
+```js
+h("rect", {
+  width: 220, height: 64, radius: 12,                          // 圆角，自动钳到短边一半（够大即胶囊形）
+  background: "linear-gradient(to right, #667eea, #764ba2)",   // 线性渐变：方向词可省（缺省 to bottom），2~8 个色标均匀分布
+  shadow: { x: 0, y: 4, blur: 12, color: "#00000033" },        // 四项全可省，color 缺省 25% 黑，blur 钳 0~24
+  borderWidth: 2, borderStyle: "dashed",                       // 边框宽度任意（缺省 1），dashed 虚线段长 = 2×宽
+})
+```
+
+- `radius=0` 的纯色填充与 1px 实线边框走与无装饰时**逐字节等价**的快路径 —— 不加装饰零开销；圆角用半像素覆盖抗锯齿
+- 阴影**先画再画面**（不会被自身盖住），轮廓跟随圆角；移动带阴影的节点时脏矩形自动按阴影外扩，不残留
+- 坏格式静默回落（非法渐变 → 非法颜色 → 无填充），画歪看得见但不中断整帧
+- 渐变面不参与 button 悬停提亮（提亮只定义在纯色面），`disabled` 降饱和对两者都生效
 
 受控文本输入（与 `checkbox` / `select` 同一套受控语义：显示只看 `value`，编辑只派发 `onInput`）：
 
@@ -346,6 +389,22 @@ const path = await openFile({                               // → 完整路径 
 
 示例：`testdata/dialog_native_demo.js`。
 
+**应用数据持久化（gx/storage）**
+
+```js
+import { setAppName, setStorage, getStorage, getStorageInfo } from "gx/storage"
+
+setAppName("MyApp")                     // 决定数据落在哪个子目录（缺省从脚本文件名推）
+setStorage("theme", "dark")
+getStorage("theme", "light")            // → dark（读不到时返回默认值）
+getStorageInfo()                        // → { keys, currentSize, limit }
+```
+
+数据落在 `os.UserConfigDir()/Gox/<应用名>`（Windows `%AppData%`、Linux `~/.config`、macOS `~/Library/Application Support`）。
+两个刻意取舍：**存储文件损坏按空存储处理并告警**（数据坏了不该让应用起不来），但**写入失败抛错**（静默丢持久化数据更难排查）；
+存函数 / 循环引用在写入时抛 TypeError。另有 `removeStorage` / `clearStorage` / `appDataDir`。
+示例：`testdata/storage_demo.js`。
+
 **菜单栏与右键菜单**
 
 菜单栏是**自绘**的（不走 win32 菜单 API），所以三个平台观感一致。它只是个普通容器 ——
@@ -418,6 +477,11 @@ const wB = render(counter("Window B"), { title: "B", width: 320, height: 200 });
 - `render()` 返回**窗口句柄**：`w.close()` 关掉这个窗口，`w.isClosed()` 查状态。
   关闭是**异步受理**的（内部经 `Post` 投回 GUI 线程，避免在遍历注册表时改注册表），
   返回时窗口可能还没真正消失；关窗口是幂等的。
+- 句柄还能改标题与尺寸：`w.title()` 读、`w.setTitle(t)` 写（做成方法而非属性 ——
+  属性值构造时被快照，会永远返回旧标题）、`w.resize(width, height)` 改**客户区**尺寸
+  （与 `<window width height>` 同口径），支持的后端会连带触发 `onResize`（于是
+  useWindowSize 断点布局跟着自动切）；`resize` 缺参 / 非数字抛 TypeError，数值 ≤0 静默拒绝，
+  后端不支持时 no-op（`title()` 仍读得回最近设置的值）。
 - **关一个，其余继续跑**；只有**全部窗口都关掉**，事件循环才退出、进程才结束。
 - 每个窗口是**各自跑一遍组件函数**：两张窗口的节点不共享。想同步状态就在脚本顶层
   共享 `createSignal`（如上例的 `n`），别指望同名全局变量自动串起来。
@@ -559,9 +623,63 @@ h("column", null,
 字符串与数字渲染为文本，其他对象走 `toString()`。元素 ↔ 标量相互切换时复用同一个内部占位节点，
 不会打断其他子节点的布局。
 
-> 列表暂无 key/diff：内容变化按"清空重建"处理，小列表够用。
+> 函数子节点 map 出来的列表，内容变化按"清空重建"处理 —— 要 keyed 复用（行内状态保留、
+> 只重渲染变化的行）用 `gx/view` 的 `<For>`，见下节。
 
-示例：`testdata/form_demo.js`（表单控件）、`testdata/progress_demo.js`（进度/分隔/占位）、
+**声明式视图（gx/view）与异步资源（createResource）**
+
+`gx/view` 把"循环 + 条件"写成声明（对标 Vue 的 `v-for` + `:key` / `v-show` / `v-if` 链）：
+
+```js
+import { For, Show, Switch, Match } from "gx/view"
+
+<column gap={8}>
+  <For each={() => rows()} key={(r) => r.id} fallback={<text>暂无数据</text>}>
+    {(row, i) => <text>{(i + 1) + ". " + row.title}</text>}
+  </For>
+
+  <Show when={() => open()}>
+    <input width={150} value={draft} onInput={(e) => setDraft(e.value)} />
+  </Show>
+
+  <Switch>
+    <Match when={() => phase() === "loading"}><progress value={0.5} /></Match>
+    <Match when={() => phase() === "error"}><text>出错了</text></Match>
+  </Switch>
+</column>
+```
+
+- `For` 的复用判定是 **key 配对 + item 引用同一性 + 下标**：命中的行原样复用（行内输入框、滚动位置、
+  局部 signal 全留着），只就地重渲染真正变了的行；`each` 也接受数字（生成 0..n-1）。
+  `stable` 可把下标移出判定（重排 / 中间删除不重建，代价是下标参数停在挂载值）；
+  重复 key 会降级为位置键并警告一次（不写坏树）
+- `each` / `when` **要传函数**（`each: () => rows()`）：传 `rows()` 只拿到一张快照，之后信号再变也不重渲染
+  —— 与受控 input 的 `value` 必须传函数是同一条纪律
+- `Show` / `Switch` 走 **keep-alive**：分支懒构建且只构建一次，隐藏只是摘出布局流（子树保活，再显示状态原样）。
+  刻意不做 v-if —— 静态子树销毁后重新挂回去是"看着一样但不再响应式"的死树；要该语义用函数子节点
+  `{() => cond() ? <X/> : null}`（函数体内每次求值都新建元素）
+- 宿主是**透明占位节点**：放进 column 竖排、放进 row 横排，自己不多一层盒子；
+  但 `row wrap` 的折行不认它（要折行标签流请用普通 row）
+
+异步资源与生命周期在 `gx/solid`：
+
+```js
+import { createResource, onMount, onCleanup } from "gx/solid"
+
+const [data, res] = createResource(fetchRows)   // fetcher 同步立即 ready，异步先 pending
+// res.state() ∈ pending / ready / refreshing / error
+// res.error() 读错误、res.refetch() 重取（latest-wins：过期响应丢弃）
+// error 态 data() 不抛 —— 返回上一次成功的值（从未成功则 undefined）
+
+onMount(() => console.log("子树挂上"))           // 登记到"当前正在构建的响应式子树"
+onCleanup(() => console.log("子树换代 / 销毁"))   // 顶层调用是 no-op（警告一次）
+```
+
+示例：`testdata/view_demo.js`（For keyed 复用 / Show 保活 / Switch 分支）、
+`testdata/resource_demo.js`（pending→ready / refetch 保旧值 / 失败后恢复）、
+`testdata/kit_demo.js`（设计套件：令牌主题 + 变体按钮工厂 + 装饰卡片）。
+
+更多示例：`testdata/form_demo.js`（表单控件）、`testdata/progress_demo.js`（进度/分隔/占位）、
 `testdata/button_demo.js`（按钮三态）、`testdata/events_demo.js`（鼠标/滚轮/右键/修饰键）、
 `testdata/focus_demo.js`（焦点框与 focus/blur）、`testdata/hover_demo.js`（悬停与按压反馈）、
 `testdata/tabs_demo.js`（条件渲染切面板）、`testdata/list_demo.js`（数组信号增删列表）、
@@ -577,6 +695,15 @@ h("column", null,
 `testdata/dialog_native_demo.js`（原生对话框：alert / confirm / 打开文件，全 async await）、
 `testdata/menu_demo.js`（菜单栏：下拉 / 子菜单 / 禁用项 / 快捷键 / 右键菜单）、
 `testdata/multiwindow_demo.js`（多窗口：两窗口独立计数、关一个另一个继续跑、全关退出）、
+`testdata/resize_demo.js`（窗口自适应：onResize 断点切栏 + 句柄 resize/setTitle）、
+`testdata/storage_demo.js`（gx/storage 持久化读写）、
+`testdata/routing_demo.js`（用户态路由：signal 切页 + 未保存拦截守卫）、
+`testdata/dev_panel_demo.js`（gx/dev 调试面板：帧 / 缓存 / 树 / 警告）、
+`testdata/elastic_layout_demo.js`（百分比 / min-max / flexShrink / 折行）、
+`testdata/grid_demo.js`（等宽列网格 + 渐变圆角卡片）、
+`testdata/view_demo.js`（声明式视图：For / Show / Switch）、
+`testdata/resource_demo.js`（createResource 异步资源三态）、
+`testdata/kit_demo.js`（设计套件：令牌主题与变体工厂）、
 `testdata/counter_demo.js` 与 `testdata/gui_demo.js`（响应式基础）。
 
 ## 打包成独立可执行文件
@@ -639,16 +766,14 @@ Options:
 | `stdlib/` | 标准库与宿主 API 实现（含 `gx/solid` 响应式信号） |
 | `gfx/` | 自研 GUI 渲染层（软件光栅化、布局、命中测试、win32/X11 后端） |
 | `packager/` | jsbuild 打包器（GUI 应用、交叉编译） |
-| `dbgtool/` | 词法分析调试工具（打印 Token 流） |
 | `docs/` | 文档 |
-| `test/` | 测试相关：`bench/` 性能剖析基准（fib、函数调用、对象操作、数值解析），`testdata/` 示例与测试脚本 |
+| `test/` | 测试相关：`bench/` 性能剖析基准（fib、函数调用、对象操作、数值解析） |
 
 ## 开发
 
 ```bash
 go test ./...     # 运行全部测试 (bytecode/compiler/lexer/object/parser/runtime/vm)
 go run ./test/bench   # 生成 cpu.prof 性能剖析
-go run ./dbgtool     # 查看词法分析的 Token 流
 ```
 
 深入参与开发（新增标准库 API、理解回调桥与内存管理）请阅读

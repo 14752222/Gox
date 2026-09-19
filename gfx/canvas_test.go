@@ -320,25 +320,18 @@ func TestCanvasCtxMethodParity(t *testing.T) {
 
 // ===== 响应式 (全链路) =====
 
-// evalCanvasUI 起真 VM 执行脚本, 并把假 Surface 一并返回 (canvas 用例要看上屏帧)。
+// evalCanvasUI 基于 evalUI (helpers_test.go) 挂载脚本, 额外摘除窗口注册:
+// canvas 用例不总走 EventClose 收尾, 注册表 (包级状态) 里遗留的假窗口
+// 会让下一个用例的 Pump 等一个再也不会来事件的 Surface。
 func evalCanvasUI(t *testing.T, src string) (*vm.VM, *GuiNode, *fakeSurface) {
 	t.Helper()
-	fake := newFakeSurface()
-	SetDefaultFactory(&fakeFactory{fake})
-	t.Cleanup(func() { SetDefaultFactory(nil) })
-
-	v, err := vm.EvalVM(src)
-	if err != nil {
-		t.Fatalf("EvalVM: %v", err)
-	}
+	v, fake := evalUI(t, src)
 	appMu.Lock()
 	a := activeApp
 	appMu.Unlock()
 	if a == nil {
 		t.Fatalf("脚本未挂载窗口")
 	}
-	// P3-6: 注册表是包级状态, 用完必须摘掉 —— 否则下一个用例的 Pump
-	// 会遍历到本用例遗留的假 Surface 并等它的事件 (永远不来)。
 	t.Cleanup(func() {
 		unregisterApp(a)
 		appMu.Lock()

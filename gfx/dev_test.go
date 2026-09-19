@@ -14,7 +14,7 @@ import (
 func TestDevSnapshotShape(t *testing.T) {
 	resetDevState()
 	t.Cleanup(resetDevState)
-	v := evalWithGlobals(t, `
+	v, _ := evalUI(t, `
 		import { devSnapshot } from "gx/dev";
 		globalThis.g_snap = devSnapshot();
 	`)
@@ -54,7 +54,7 @@ func TestDevSnapshotShape(t *testing.T) {
 func TestDevWarnRingRecordsUnknownTag(t *testing.T) {
 	resetDevState()
 	t.Cleanup(resetDevState)
-	v := evalWithGlobals(t, `
+	v, _ := evalUI(t, `
 		import { h, render } from "gx/gfx";
 		import { devSnapshot } from "gx/dev";
 		render(h("column", null, h("zz-not-a-tag", null), h("zz-not-a-tag", null)));

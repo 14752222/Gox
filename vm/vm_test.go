@@ -12,64 +12,7 @@ import (
 	"github.com/14752222/Gox/stdlib"
 )
 
-// testEval 编译并执行 JS 源码，返回最后一个表达式的值。
-func testEval(t *testing.T, input string) object.Value {
-	t.Helper()
-	l := lexer.New(input)
-	p := parser.New(l)
-	program := p.ParseProgram()
-	if p.Errors().HasErrors() {
-		t.Fatalf("parser errors:\n%s", p.Errors().String())
-	}
-
-	c := compiler.New()
-	if err := c.Compile(program); err != nil {
-		t.Fatalf("compiler error: %v", err)
-	}
-
-	vm := New(c.Bytes(), c.Constants(), c.NumLocals())
-	if err := vm.Run(); err != nil {
-		t.Fatalf("vm error: %v", err)
-	}
-
-	return vm.LastPopped()
-}
-
-// testNumber 检查值是否为指定数字。
-func testNumber(t *testing.T, obj object.Value, expected float64) {
-	t.Helper()
-	num, ok := obj.(*object.Number)
-	if !ok {
-		t.Fatalf("expected Number, got %T (%s)", obj, obj.Inspect())
-	}
-	if num.Value != expected {
-		t.Fatalf("expected %v, got %v", expected, num.Value)
-	}
-}
-
-// testString 检查值是否为指定字符串。
-func testString(t *testing.T, obj object.Value, expected string) {
-	t.Helper()
-	str, ok := obj.(*object.String)
-	if !ok {
-		t.Fatalf("expected String, got %T (%s)", obj, obj.Inspect())
-	}
-	if str.Value != expected {
-		t.Fatalf("expected %q, got %q", expected, str.Value)
-	}
-}
-
-// testBoolean 检查值是否为指定布尔值。
-func testBoolean(t *testing.T, obj object.Value, expected bool) {
-	t.Helper()
-	b, ok := obj.(*object.Boolean)
-	if !ok {
-		t.Fatalf("expected Boolean, got %T (%s)", obj, obj.Inspect())
-	}
-	if b.Value != expected {
-		t.Fatalf("expected %v, got %v", expected, b.Value)
-	}
-}
+// testEval 等共享测试工具定义在 testutil_test.go (断言统一用 assert* 命名)。
 
 // ===== 算术运算测试 =====
 
@@ -94,7 +37,7 @@ func TestArithmetic(t *testing.T) {
 
 	for _, tt := range tests {
 		result := testEval(t, tt.input)
-		testNumber(t, result, tt.expected)
+		assertNumber(t, result, tt.expected)
 	}
 }
 
@@ -111,7 +54,7 @@ func TestBitwise(t *testing.T) {
 	}
 	for _, tt := range tests {
 		result := testEval(t, tt.input)
-		testNumber(t, result, tt.expected)
+		assertNumber(t, result, tt.expected)
 	}
 }
 
@@ -128,18 +71,18 @@ func TestLetStatement(t *testing.T) {
 	}
 	for _, tt := range tests {
 		result := testEval(t, tt.input)
-		testNumber(t, result, tt.expected)
+		assertNumber(t, result, tt.expected)
 	}
 }
 
 func TestConstStatement(t *testing.T) {
 	result := testEval(t, "const PI = 3.14; PI;")
-	testNumber(t, result, 3.14)
+	assertNumber(t, result, 3.14)
 }
 
 func TestAssignmentExpression(t *testing.T) {
 	result := testEval(t, "let x = 5; x = 10; x;")
-	testNumber(t, result, 10)
+	assertNumber(t, result, 10)
 }
 
 // ===== 比较和逻辑 =====
@@ -168,7 +111,7 @@ func TestComparisons(t *testing.T) {
 	}
 	for _, tt := range tests {
 		result := testEval(t, tt.input)
-		testBoolean(t, result, tt.expected)
+		assertBoolean(t, result, tt.expected)
 	}
 }
 
@@ -186,7 +129,7 @@ func TestIfStatement(t *testing.T) {
 	}
 	for _, tt := range tests {
 		result := testEval(t, tt.input)
-		testNumber(t, result, tt.expected)
+		assertNumber(t, result, tt.expected)
 	}
 }
 
@@ -201,7 +144,7 @@ func TestWhileLoop(t *testing.T) {
 		sum;
 	`
 	result := testEval(t, input)
-	testNumber(t, result, 55)
+	assertNumber(t, result, 55)
 }
 
 func TestForLoop(t *testing.T) {
@@ -215,7 +158,7 @@ func TestForLoop(t *testing.T) {
 		total;
 	`
 	result := testEval(t, input)
-	testNumber(t, result, 10)
+	assertNumber(t, result, 10)
 }
 
 func TestTraditionalForLoop(t *testing.T) {
@@ -227,7 +170,7 @@ func TestTraditionalForLoop(t *testing.T) {
 		sum;
 	`
 	result := testEval(t, input)
-	testNumber(t, result, 15)
+	assertNumber(t, result, 15)
 }
 
 func TestTraditionalForEmptyCondition(t *testing.T) {
@@ -241,7 +184,7 @@ func TestTraditionalForEmptyCondition(t *testing.T) {
 		n;
 	`
 	result := testEval(t, input)
-	testNumber(t, result, 3) // 0 + 1 + 2
+	assertNumber(t, result, 3) // 0 + 1 + 2
 
 	// 空 condition + 空 update: for (let i = 0; ; )
 	input = `
@@ -255,7 +198,7 @@ func TestTraditionalForEmptyCondition(t *testing.T) {
 		n;
 	`
 	result = testEval(t, input)
-	testNumber(t, result, 3)
+	assertNumber(t, result, 3)
 }
 
 func TestTraditionalForEmptyUpdate(t *testing.T) {
@@ -269,7 +212,7 @@ func TestTraditionalForEmptyUpdate(t *testing.T) {
 		m;
 	`
 	result := testEval(t, input)
-	testNumber(t, result, 3)
+	assertNumber(t, result, 3)
 }
 
 func TestTraditionalForInfiniteLoop(t *testing.T) {
@@ -283,7 +226,7 @@ func TestTraditionalForInfiniteLoop(t *testing.T) {
 		t;
 	`
 	result := testEval(t, input)
-	testNumber(t, result, 3)
+	assertNumber(t, result, 3)
 }
 
 func TestTraditionalForContinue(t *testing.T) {
@@ -297,7 +240,7 @@ func TestTraditionalForContinue(t *testing.T) {
 		sum;
 	`
 	result := testEval(t, input)
-	testNumber(t, result, 9) // 1 + 3 + 5
+	assertNumber(t, result, 9) // 1 + 3 + 5
 }
 
 func TestTraditionalForExpressionInit(t *testing.T) {
@@ -311,7 +254,7 @@ func TestTraditionalForExpressionInit(t *testing.T) {
 		sum;
 	`
 	result := testEval(t, input)
-	testNumber(t, result, 3)
+	assertNumber(t, result, 3)
 }
 
 func TestBreakContinue(t *testing.T) {
@@ -332,7 +275,7 @@ func TestBreakContinue(t *testing.T) {
 	`
 	// 1+3+5+7+9 = 25
 	result := testEval(t, input)
-	testNumber(t, result, 25)
+	assertNumber(t, result, 25)
 }
 
 // ===== 函数调用 =====
@@ -345,7 +288,7 @@ func TestFunctionDeclaration(t *testing.T) {
 		add(3, 4);
 	`
 	result := testEval(t, input)
-	testNumber(t, result, 7)
+	assertNumber(t, result, 7)
 }
 
 func TestFunctionExpression(t *testing.T) {
@@ -354,7 +297,7 @@ func TestFunctionExpression(t *testing.T) {
 		mul(6, 7);
 	`
 	result := testEval(t, input)
-	testNumber(t, result, 42)
+	assertNumber(t, result, 42)
 }
 
 func TestArrowFunction(t *testing.T) {
@@ -363,7 +306,7 @@ func TestArrowFunction(t *testing.T) {
 		add(10, 20);
 	`
 	result := testEval(t, input)
-	testNumber(t, result, 30)
+	assertNumber(t, result, 30)
 }
 
 func TestArrowFunctionBlock(t *testing.T) {
@@ -374,7 +317,7 @@ func TestArrowFunctionBlock(t *testing.T) {
 		square(9);
 	`
 	result := testEval(t, input)
-	testNumber(t, result, 81)
+	assertNumber(t, result, 81)
 }
 
 func TestClosure(t *testing.T) {
@@ -386,7 +329,7 @@ func TestClosure(t *testing.T) {
 		getX();
 	`
 	result := testEval(t, input)
-	testNumber(t, result, 10)
+	assertNumber(t, result, 10)
 }
 
 func TestRecursiveFunction(t *testing.T) {
@@ -400,25 +343,25 @@ func TestRecursiveFunction(t *testing.T) {
 		fib(10);
 	`
 	result := testEval(t, input)
-	testNumber(t, result, 55)
+	assertNumber(t, result, 55)
 }
 
 // ===== 字符串和模板字面量 =====
 
 func TestStringConcatenation(t *testing.T) {
 	result := testEval(t, `"hello" + " " + "world";`)
-	testString(t, result, "hello world")
+	assertString(t, result, "hello world")
 }
 
 func TestStringNumberConcat(t *testing.T) {
 	result := testEval(t, `"answer: " + 42;`)
-	testString(t, result, "answer: 42")
+	assertString(t, result, "answer: 42")
 }
 
 func TestTemplateLiteral(t *testing.T) {
 	input := "let name = 'World'; `Hello, ${name}!`;"
 	result := testEval(t, input)
-	testString(t, result, "Hello, World!")
+	assertString(t, result, "Hello, World!")
 }
 
 // ===== 数组 =====
@@ -436,12 +379,12 @@ func TestArrayCreation(t *testing.T) {
 
 func TestArrayIndex(t *testing.T) {
 	result := testEval(t, "[10, 20, 30][1];")
-	testNumber(t, result, 20)
+	assertNumber(t, result, 20)
 }
 
 func TestArrayLength(t *testing.T) {
 	result := testEval(t, "[1, 2, 3, 4].length;")
-	testNumber(t, result, 4)
+	assertNumber(t, result, 4)
 }
 
 // ===== 对象 =====
@@ -463,7 +406,7 @@ func TestObjectCreation(t *testing.T) {
 
 func TestObjectPropertyAccess(t *testing.T) {
 	result := testEval(t, "let obj = { x: 10, y: 20 }; obj.x + obj.y;")
-	testNumber(t, result, 30)
+	assertNumber(t, result, 30)
 }
 
 // ===== for...of =====
@@ -477,7 +420,7 @@ func TestForOf(t *testing.T) {
 		sum;
 	`
 	result := testEval(t, input)
-	testNumber(t, result, 15)
+	assertNumber(t, result, 15)
 }
 
 // ===== typeof =====
@@ -495,7 +438,7 @@ func TestTypeof(t *testing.T) {
 	}
 	for _, tt := range tests {
 		result := testEval(t, tt.input)
-		testString(t, result, tt.expected)
+		assertString(t, result, tt.expected)
 	}
 }
 
@@ -503,7 +446,7 @@ func TestTypeof(t *testing.T) {
 
 func TestConditionalExpression(t *testing.T) {
 	result := testEval(t, "1 < 2 ? 'yes' : 'no';")
-	testString(t, result, "yes")
+	assertString(t, result, "yes")
 }
 
 // ===== 嵌套作用域 =====
@@ -517,7 +460,7 @@ func TestBlockScope(t *testing.T) {
 		x;
 	`
 	result := testEval(t, input)
-	testNumber(t, result, 1)
+	assertNumber(t, result, 1)
 }
 
 // ===== null 和 undefined =====
@@ -558,9 +501,9 @@ func TestDefaultParams(t *testing.T) {
 	for i, tt := range tests {
 		result := testEval(t, tt.input)
 		if i < 2 {
-			testNumber(t, result, tt.expected)
+			assertNumber(t, result, tt.expected)
 		} else {
-			testString(t, result, "World")
+			assertString(t, result, "World")
 		}
 	}
 }
@@ -578,7 +521,7 @@ func TestRestParams(t *testing.T) {
 		sum(1, 2, 3, 4, 5);
 	`
 	result := testEval(t, input)
-	testNumber(t, result, 15)
+	assertNumber(t, result, 15)
 }
 
 // 数组展开
@@ -589,7 +532,7 @@ func TestArraySpread(t *testing.T) {
 		b[3] + b[4];
 	`
 	result := testEval(t, input)
-	testNumber(t, result, 9)
+	assertNumber(t, result, 9)
 }
 
 func TestArraySpreadOnly(t *testing.T) {
@@ -599,7 +542,7 @@ func TestArraySpreadOnly(t *testing.T) {
 		b[0] + b[1] + b[2];
 	`
 	result := testEval(t, input)
-	testNumber(t, result, 60)
+	assertNumber(t, result, 60)
 }
 
 // 函数调用展开
@@ -612,7 +555,7 @@ func TestCallSpread(t *testing.T) {
 		add(...args);
 	`
 	result := testEval(t, input)
-	testNumber(t, result, 6)
+	assertNumber(t, result, 6)
 }
 
 // 对象简写
@@ -624,7 +567,7 @@ func TestObjectShorthand(t *testing.T) {
 		obj.name;
 	`
 	result := testEval(t, input)
-	testString(t, result, "Alice")
+	assertString(t, result, "Alice")
 }
 
 // 对象计算属性
@@ -635,7 +578,7 @@ func TestObjectComputedProperty(t *testing.T) {
 		obj.dynamic;
 	`
 	result := testEval(t, input)
-	testNumber(t, result, 42)
+	assertNumber(t, result, 42)
 }
 
 // 对象方法
@@ -648,7 +591,7 @@ func TestObjectMethod(t *testing.T) {
 		obj.getX();
 	`
 	result := testEval(t, input)
-	testNumber(t, result, 10)
+	assertNumber(t, result, 10)
 }
 
 // 自增自减
@@ -668,7 +611,7 @@ func TestIncrement(t *testing.T) {
 	}
 	for _, tt := range tests {
 		result := testEval(t, tt.input)
-		testNumber(t, result, tt.expected)
+		assertNumber(t, result, tt.expected)
 	}
 }
 
@@ -686,7 +629,7 @@ func TestCompoundAssignment(t *testing.T) {
 	}
 	for _, tt := range tests {
 		result := testEval(t, tt.input)
-		testNumber(t, result, tt.expected)
+		assertNumber(t, result, tt.expected)
 	}
 }
 
@@ -697,7 +640,7 @@ func TestArrayDestructuring(t *testing.T) {
 		a + b;
 	`
 	result := testEval(t, input)
-	testNumber(t, result, 3)
+	assertNumber(t, result, 3)
 }
 
 // 对象解构
@@ -707,7 +650,7 @@ func TestObjectDestructuring(t *testing.T) {
 		x + y;
 	`
 	result := testEval(t, input)
-	testNumber(t, result, 30)
+	assertNumber(t, result, 30)
 }
 
 func TestObjectDestructuringRename(t *testing.T) {
@@ -716,7 +659,7 @@ func TestObjectDestructuringRename(t *testing.T) {
 		a + b;
 	`
 	result := testEval(t, input)
-	testNumber(t, result, 3)
+	assertNumber(t, result, 3)
 }
 
 // 成员表达式赋值
@@ -727,7 +670,7 @@ func TestMemberAssignment(t *testing.T) {
 		obj.x;
 	`
 	result := testEval(t, input)
-	testNumber(t, result, 42)
+	assertNumber(t, result, 42)
 }
 
 func TestArrayIndexAssignment(t *testing.T) {
@@ -737,7 +680,7 @@ func TestArrayIndexAssignment(t *testing.T) {
 		arr[1];
 	`
 	result := testEval(t, input)
-	testNumber(t, result, 20)
+	assertNumber(t, result, 20)
 }
 
 // 嵌套闭包
@@ -755,7 +698,7 @@ func TestNestedClosure(t *testing.T) {
 		inc();
 	`
 	result := testEval(t, input)
-	testNumber(t, result, 2)
+	assertNumber(t, result, 2)
 }
 
 // ===== REPL 跨输入状态持久化 =====
@@ -768,36 +711,36 @@ func TestREPLStatePersistence(t *testing.T) {
 	// let 声明跨输入可见
 	evalREPLLine(t, globals, `let x = 10;`)
 	result := evalREPLLine(t, globals, `x * 2;`)
-	testNumber(t, result, 20)
+	assertNumber(t, result, 20)
 
 	// const 声明跨输入可见
 	evalREPLLine(t, globals, `const PI = 3.14;`)
 	result = evalREPLLine(t, globals, `PI * 2;`)
-	testNumber(t, result, 6.28)
+	assertNumber(t, result, 6.28)
 
 	// 函数声明跨输入可见
 	evalREPLLine(t, globals, `function add(a, b) { return a + b; }`)
 	result = evalREPLLine(t, globals, `add(3, 4);`)
-	testNumber(t, result, 7)
+	assertNumber(t, result, 7)
 
 	// 函数可读取之前声明的全局变量
 	evalREPLLine(t, globals, `let base = 100;`)
 	evalREPLLine(t, globals, `function f(n) { return n + base; }`)
 	result = evalREPLLine(t, globals, `f(7);`)
-	testNumber(t, result, 107)
+	assertNumber(t, result, 107)
 
 	// 闭包修改全局计数器
 	evalREPLLine(t, globals, `let counter = 0;`)
 	evalREPLLine(t, globals, `function inc() { counter = counter + 1; return counter; }`)
-	testNumber(t, evalREPLLine(t, globals, `inc();`), 1)
-	testNumber(t, evalREPLLine(t, globals, `inc();`), 2)
-	testNumber(t, evalREPLLine(t, globals, `inc();`), 3)
+	assertNumber(t, evalREPLLine(t, globals, `inc();`), 1)
+	assertNumber(t, evalREPLLine(t, globals, `inc();`), 2)
+	assertNumber(t, evalREPLLine(t, globals, `inc();`), 3)
 
 	// 复合赋值跨输入
 	evalREPLLine(t, globals, `let n = 0;`)
 	evalREPLLine(t, globals, `n += 5;`)
 	result = evalREPLLine(t, globals, `n;`)
-	testNumber(t, result, 5)
+	assertNumber(t, result, 5)
 }
 
 // evalREPLLine 模拟 REPL 单行输入: 复用同一 globals 环境执行。
@@ -850,7 +793,7 @@ func TestModuleImportBinding(t *testing.T) {
 		t.Fatalf("EvalFile error: %v", err)
 	}
 	// double(PI) = 3.14159 * 2
-	testNumber(t, result, 3.14159*2)
+	assertNumber(t, result, 3.14159*2)
 }
 
 // ===== in / instanceof 运算符 =====
@@ -871,7 +814,7 @@ func TestInOperator(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.input, func(t *testing.T) {
 			result := evalWithGlobals(t, tt.input)
-			testBoolean(t, result, tt.expected)
+			assertBoolean(t, result, tt.expected)
 		})
 	}
 }
@@ -893,7 +836,7 @@ func TestInstanceofOperator(t *testing.T) {
 	}
 	for _, tt := range tests {
 		result := evalWithGlobals(t, tt.input)
-		testBoolean(t, result, tt.expected)
+		assertBoolean(t, result, tt.expected)
 	}
 }
 
@@ -920,7 +863,7 @@ func TestYieldDelegate(t *testing.T) {
 		{`function* g(){ yield* [1,2]; yield 3; } let it = g(); let s = ""; s += it.next().value; s += it.next().value; s += it.next().value; s += it.next().done; s`, "123true"},
 	}
 	for _, tt := range tests {
-		testString(t, testEval(t, tt.input), tt.expected)
+		assertString(t, testEval(t, tt.input), tt.expected)
 	}
 }
 
@@ -936,6 +879,6 @@ func TestDestructureIterable(t *testing.T) {
 		{`function* g(){ yield 1; yield 2; } const [a, ...rest] = g(); "" + a + rest.length`, "11"},
 	}
 	for _, tt := range tests {
-		testString(t, testEval(t, tt.input), tt.expected)
+		assertString(t, testEval(t, tt.input), tt.expected)
 	}
 }

@@ -510,16 +510,6 @@ func rootOfSurface(t *testing.T, s Surface) *GuiNode {
 	return a.root
 }
 
-// globalVal 读一个全局变量 (与 globalStr/globalBool 同一族)。
-func globalVal(t *testing.T, v *vm.VM, name string) object.Value {
-	t.Helper()
-	val, ok := v.Globals().Get(name)
-	if !ok {
-		t.Fatalf("全局变量 %s 不存在", name)
-	}
-	return val
-}
-
 // clearDirty 清掉窗口的脏标记 (断言"是否被标脏"前先复位)。
 func clearDirty(a *app) {
 	a.mu.Lock()
@@ -527,20 +517,6 @@ func clearDirty(a *app) {
 	a.fullDirty = false
 	a.dirtyNodes = map[*GuiNode]struct{}{}
 	a.mu.Unlock()
-}
-
-// allNodes 收集子树全部节点 (含自身)。
-func allNodes(root *GuiNode) []*GuiNode {
-	var out []*GuiNode
-	var walk func(n *GuiNode)
-	walk = func(n *GuiNode) {
-		out = append(out, n)
-		for _, c := range n.Children {
-			walk(c)
-		}
-	}
-	walk(root)
-	return out
 }
 
 // ===== 演示脚本 =====

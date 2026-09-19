@@ -246,7 +246,7 @@ func imeApp(t *testing.T, field string) (*vm.VM, *GuiNode, *app) {
 	// 调度器是进程级单例, 泄漏的定时器会串到别的用例里
 	object.GlobalScheduler().ClearAll()
 	t.Cleanup(func() { object.GlobalScheduler().ClearAll() })
-	v, root, a := evalForUI(t, `
+	v, root, a := evalUIRoot(t, `
 		import { createSignal } from "gx/solid";
 		import { h, render } from "gx/gfx";
 		const [text, setText] = createSignal("");

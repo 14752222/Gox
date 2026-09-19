@@ -1,8 +1,6 @@
 package gfx
 
 import (
-	"errors"
-	"sync"
 	"testing"
 
 	"github.com/14752222/Gox/object"
@@ -18,44 +16,8 @@ import (
 //     函数, 且脚本拿到的返回值类型正确。
 //
 // 刻意**不碰系统剪贴板**: CI 上没有剪贴板所有者, 而在开发机上跑测试改掉
-// 用户正在用的剪贴板更是不可接受。所以假 Surface 在测试文件里实现
-// `clipboardHost` —— 这也是"可选接口"设计的一个附带好处: 能力可以被替换。
-
-var (
-	clipMu   sync.Mutex
-	clipText string
-	// clipFail 置真时模拟"剪贴板被别的进程占用"。
-	clipFail bool
-)
-
-// ReadClipboardText / WriteClipboardText 是假 Surface 的 clipboardHost 实现
-// (测试专用; 真后端在 gfx/win32)。
-func (f *fakeSurface) ReadClipboardText() (string, error) {
-	clipMu.Lock()
-	defer clipMu.Unlock()
-	if clipFail {
-		return "", errors.New("clipboard busy")
-	}
-	return clipText, nil
-}
-
-func (f *fakeSurface) WriteClipboardText(s string) error {
-	clipMu.Lock()
-	defer clipMu.Unlock()
-	if clipFail {
-		return errors.New("clipboard busy")
-	}
-	clipText = s
-	return nil
-}
-
-// resetClipboard 把内存剪贴板复位 (每个用例开头调, 用例之间不许串味)。
-func resetClipboard() {
-	clipMu.Lock()
-	clipText = ""
-	clipFail = false
-	clipMu.Unlock()
-}
+// 用户正在用的剪贴板更是不可接受。假 Surface 的 clipboardHost 实现与
+// globalBool/globalStr 取值器都在 helpers_test.go。
 
 // TestClipboardRoundTrip Go 层: 写入 → 读回, 中文与 emoji 都要原样回来。
 func TestClipboardRoundTrip(t *testing.T) {
@@ -172,25 +134,4 @@ func TestClipboardFullChain(t *testing.T) {
 	if got != "from-gox" {
 		t.Fatalf("后端收到的文本 = %q, want %q", got, "from-gox")
 	}
-}
-
-// globalBool / globalStr 读脚本全局里的布尔 / 字符串。
-func globalBool(t *testing.T, v *vm.VM, name string) (bool, bool) {
-	t.Helper()
-	val, ok := v.Globals().Get(name)
-	if !ok {
-		t.Fatalf("全局 %s 缺失", name)
-	}
-	b, ok := val.(*object.Boolean)
-	return b.Value, ok
-}
-
-func globalStr(t *testing.T, v *vm.VM, name string) (string, bool) {
-	t.Helper()
-	val, ok := v.Globals().Get(name)
-	if !ok {
-		t.Fatalf("全局 %s 缺失", name)
-	}
-	s, ok := val.(*object.String)
-	return s.Value, ok
 }

@@ -12,9 +12,7 @@ import (
 
 	"github.com/14752222/Gox/bytecode"
 	"github.com/14752222/Gox/compiler"
-	"github.com/14752222/Gox/lexer"
 	"github.com/14752222/Gox/object"
-	"github.com/14752222/Gox/parser"
 	"github.com/14752222/Gox/runtime"
 	"github.com/14752222/Gox/stdlib"
 )
@@ -2383,11 +2381,19 @@ func (vm *VM) handleThrow(val object.Value) bool {
 // loadModule 加载并执行模块，返回导出对象。
 // 使用模块缓存避免重复加载。
 func (vm *VM) loadModule(spec string) (*ModuleExports, error) {
-	// 内置模块 (如 "gx/solid") 优先于文件系统解析
+	// 内置模块 (如 "gx/solid"、"gox") 优先于文件系统解析
 	if exports, ok := object.LookupBuiltinModule(spec); ok {
 		mod := &ModuleExports{Named: exports}
 		vm.modules[spec] = mod
 		return mod, nil
+	}
+
+	// "gox" 与 "gx/..." 是保留的内置模块命名空间: 未命中注册表时直接
+	// 报错并列出可用模块, 不再落到文件系统解析 —— 否则拼写错误会变成
+	// 莫名其妙的 "Cannot find module 'gx/dialg'" 文件读取错误。
+	if spec == "gox" || strings.HasPrefix(spec, "gx/") {
+		return nil, fmt.Errorf("Cannot find module '%s' (unknown builtin module; available: %s)",
+			spec, strings.Join(object.RegisteredBuiltinModules(), ", "))
 	}
 
 	// 解析模块路径
@@ -2408,16 +2414,11 @@ func (vm *VM) loadModule(spec string) (*ModuleExports, error) {
 	}
 
 	// 编译模块
-	l := lexer.New(string(source))
-	p := parser.New(l)
-	program := p.ParseProgram()
-	if p.Errors().HasErrors() {
-		return nil, fmt.Errorf("Module parse error: %s", p.Errors().String())
-	}
-
-	c := compiler.New()
-	c.SetModuleMode(true) // 模块有自己的命名空间, 顶层变量不写入共享全局环境
-	if err := c.Compile(program); err != nil {
+	c, err := compileSource(string(source), true)
+	if err != nil {
+		if se, ok := err.(*sourceError); ok && se.parse {
+			return nil, fmt.Errorf("Module parse error: %s", se.msg)
+		}
 		return nil, fmt.Errorf("Module compile error: %v", err)
 	}
 
@@ -2460,28 +2461,8 @@ func (vm *VM) SetModuleBase(path string) {
 // createClosure 从 FunctionMetadata 创建闭包。
 // 捕获当前帧的外层局部变量 (slots 0..BaseSlot-1)。
 func (vm *VM) createClosure(meta *bytecode.FunctionMetadata, frame *Frame) *object.Closure {
-	// 将 FunctionMetadata 转换为 CompiledFunction
-	fn := &object.CompiledFunction{
-		Instructions:  meta.Instructions,
-		NumLocals:     meta.NumLocals,
-		NumParameters: meta.NumParameters,
-		Name:          meta.Name,
-		IsArrow:       meta.IsArrow,
-		IsGenerator:   meta.IsGenerator,
-		IsAsync:       meta.IsAsync,
-		BaseSlot:      meta.BaseSlot,
-		ArgumentsSlot: meta.ArgumentsSlot,
-		SelfSlot:      meta.SelfSlot,
-		Constants:     frame.Constants.Constants, // 保存当前帧的常量池引用
-	}
-	// 转换参数信息
-	for _, ps := range meta.Parameters {
-		fn.Parameters = append(fn.Parameters, object.ParameterInfo{
-			Name:    ps.Name,
-			Default: ps.HasDefault,
-			Rest:    ps.IsRest,
-		})
-	}
+	// 保存当前帧的常量池引用
+	fn := metaToCompiledFunction(meta, frame.Constants.Constants)
 
 	// 捕获外层局部变量: 共享当前帧的 Locals 数组本身，而不是拷一份快照。
 	//
@@ -3075,16 +3056,9 @@ func Eval(input string) (object.Value, error) {
 
 // EvalVM 编译并执行 JS 源码，返回 VM 实例 (用于访问定时器等运行时状态)。
 func EvalVM(input string) (*VM, error) {
-	l := lexer.New(input)
-	p := parser.New(l)
-	program := p.ParseProgram()
-	if p.Errors().HasErrors() {
-		return nil, fmt.Errorf("parser errors:\n%s", p.Errors().String())
-	}
-
-	c := compiler.New()
-	if err := c.Compile(program); err != nil {
-		return nil, fmt.Errorf("compiler error: %v", err)
+	c, err := compileSource(input, false)
+	if err != nil {
+		return nil, evalEntryError(err)
 	}
 
 	vm := NewWithGlobals(c.Bytes(), c.Constants(), c.NumLocals(), stdlib.SetupGlobals())
@@ -3096,16 +3070,9 @@ func EvalVM(input string) (*VM, error) {
 
 // EvalWithGlobals 使用预设全局变量编译并执行 JS 源码。
 func EvalWithGlobals(input string, globals *runtime.Environment) (object.Value, error) {
-	l := lexer.New(input)
-	p := parser.New(l)
-	program := p.ParseProgram()
-	if p.Errors().HasErrors() {
-		return nil, fmt.Errorf("parser errors:\n%s", p.Errors().String())
-	}
-
-	c := compiler.New()
-	if err := c.Compile(program); err != nil {
-		return nil, fmt.Errorf("compiler error: %v", err)
+	c, err := compileSource(input, false)
+	if err != nil {
+		return nil, evalEntryError(err)
 	}
 
 	vm := NewWithGlobals(c.Bytes(), c.Constants(), c.NumLocals(), globals)
@@ -3135,16 +3102,9 @@ func EvalFileVM(path string) (*VM, error) {
 		return nil, fmt.Errorf("cannot read file: %v", err)
 	}
 
-	l := lexer.New(string(source))
-	p := parser.New(l)
-	program := p.ParseProgram()
-	if p.Errors().HasErrors() {
-		return nil, fmt.Errorf("parser errors:\n%s", p.Errors().String())
-	}
-
-	c := compiler.New()
-	if err := c.Compile(program); err != nil {
-		return nil, fmt.Errorf("compiler error: %v", err)
+	c, err := compileSource(string(source), false)
+	if err != nil {
+		return nil, evalEntryError(err)
 	}
 
 	vm := NewWithGlobals(c.Bytes(), c.Constants(), c.NumLocals(), stdlib.SetupGlobals())

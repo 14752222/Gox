@@ -1,18 +1,16 @@
 package gfx
 
 import (
-	"errors"
 	"image"
 	"image/color"
-	"sync"
 	"testing"
-	"time"
 
 	"github.com/14752222/Gox/object"
 	"github.com/14752222/Gox/vm"
 )
 
 // ===== 纯 Go 层测试: 颜色 / 光栅化 / 布局 / 命中测试 =====
+// (mkNode / fakeSurface 家族等共享 helper 见 helpers_test.go。)
 
 func TestParseColor(t *testing.T) {
 	c, ok := ParseColor("#c0392b")
@@ -59,15 +57,6 @@ func TestStrokeRect1px(t *testing.T) {
 	if img.RGBAAt(3, 3).R != 0 {
 		t.Fatalf("interior should be empty")
 	}
-}
-
-// mkNode 造一个带数值属性的测试节点。
-func mkNode(tag string, props map[string]float64) *GuiNode {
-	n := &GuiNode{Tag: tag, Props: map[string]object.Value{}}
-	for k, v := range props {
-		n.Props[k] = object.NewNumber(v)
-	}
-	return n
 }
 
 func TestLayoutColumnRow(t *testing.T) {
@@ -124,84 +113,7 @@ func TestHitTest(t *testing.T) {
 }
 
 // ===== 全链路测试: 假 Surface + 真 VM (render → pump → 点击 → 响应式) =====
-
-// fakeSurface 是 Surface 的测试替身: 无真窗口, 事件由测试注入。
-type fakeSurface struct {
-	events  chan Event
-	arrived chan struct{} // WaitEvents 的唤醒信号 (不消费 events)
-	mu      sync.Mutex
-	img     *image.RGBA
-	w, h    int
-	shown   int
-	regions []image.Rectangle // 最近一次 ShowRegions 的区域 (nil=整帧)
-
-	// dialog 非空时, fakeSurface 就同时满足 nativeDialogHost 可选接口 (P3-4)。
-	// 字段放在这里而不是各测试文件里加包装类型, 是为了让"注入假原生框"
-	// 与其它可选接口 (剪贴板等) 用同一种写法。
-	dialog *fakeDialogHost
-}
-
-// ShowMessage 转发给注入的假原生框 (未注入时返回错误 = "后端不支持")。
-func (f *fakeSurface) ShowMessage(kind NativeDialogKind, title, message string) (bool, error) {
-	if f.dialog == nil {
-		return false, errors.New("test: 未注入假对话框")
-	}
-	return f.dialog.ShowMessage(kind, title, message)
-}
-
-// ShowOpenFile 同上。
-func (f *fakeSurface) ShowOpenFile(opts NativeFileOptions) (string, bool, error) {
-	if f.dialog == nil {
-		return "", false, errors.New("test: 未注入假对话框")
-	}
-	return f.dialog.ShowOpenFile(opts)
-}
-
-func newFakeSurface() *fakeSurface {
-	return &fakeSurface{events: make(chan Event, 16), arrived: make(chan struct{}, 16), w: 400, h: 300}
-}
-
-func (f *fakeSurface) Show(img *image.RGBA) {
-	f.ShowRegions(img, nil)
-}
-
-func (f *fakeSurface) ShowRegions(img *image.RGBA, rects []image.Rectangle) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	cp := *image.NewRGBA(img.Bounds())
-	copy(cp.Pix, img.Pix)
-	f.img = &cp
-	f.shown++
-	f.regions = rects
-}
-
-func (f *fakeSurface) Size() (int, int) { return f.w, f.h }
-
-func (f *fakeSurface) WaitEvents(maxWait time.Duration) bool {
-	if maxWait <= 0 {
-		maxWait = 10 * time.Second
-	}
-	select {
-	case <-f.arrived:
-		return true
-	case <-time.After(maxWait):
-		return true
-	}
-}
-
-func (f *fakeSurface) Events() <-chan Event { return f.events }
-
-// push 注入一个窗口事件并唤醒 WaitEvents。
-func (f *fakeSurface) push(ev Event) {
-	f.events <- ev
-	f.arrived <- struct{}{}
-}
-
-func shots(f *fakeSurface) int {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.shown
-}
+// (fakeSurface / fakeFactory 定义已移至 helpers_test.go。)
 
 // TestReactivePipeline 端到端: JS 建树(render 挂载到假窗口) → 注入点击 →
 // onClick 改 signal → effect 更新宽度属性 → 重绘。
@@ -273,6 +185,133 @@ func TestReactivePipeline(t *testing.T) {
 	}
 }
 
-type fakeFactory struct{ s *fakeSurface }
+// ===== 脏矩形: 点击后只重绘受影响区域 (由原 p3_test.go 归位而来) =====
 
-func (f *fakeFactory) Create(cfg WindowConfig) (Surface, error) { return f.s, nil }
+// TestDirtyRectPartialUpdate 点击后只重绘脏区 (局部上屏)。
+func TestDirtyRectPartialUpdate(t *testing.T) {
+	fake := newFakeSurface()
+	SetDefaultFactory(&fakeFactory{fake})
+	defer SetDefaultFactory(nil)
+
+	v, err := vm.EvalVM(`
+		import { createSignal } from "gx/solid";
+		import { h, render } from "gx/gfx";
+		const [count, setCount] = createSignal(0);
+		const ui = h("column", {gap: 10, padding: 16},
+			h("rect", {width: () => count() * 20 + 10, height: 24, background: "#c0392b"}),
+			h("rect", {width: 200, height: 32, background: "#27ae60",
+				onClick: () => setCount(c => c + 1)}));
+		render(ui, {title: "T", width: 400, height: 300});
+	`)
+	if err != nil {
+		t.Fatalf("EvalVM: %v", err)
+	}
+
+	// 首帧: 整帧
+	fake.mu.Lock()
+	firstRegions := fake.regions
+	fake.mu.Unlock()
+	if firstRegions != nil {
+		t.Fatalf("first frame should be full-frame (regions=nil)")
+	}
+
+	fake.push(Event{Kind: EventMouseUp, X: 116, Y: 66})
+	fake.push(Event{Kind: EventClose})
+	if err := v.RunTimersWithPump(Pump); err != nil {
+		t.Fatalf("RunTimersWithPump: %v", err)
+	}
+
+	fake.mu.Lock()
+	regions := fake.regions
+	img := fake.img
+	fake.mu.Unlock()
+	if regions == nil || len(regions) == 0 {
+		t.Fatalf("post-click frame should be partial (got full-frame)")
+	}
+	area := 0
+	for _, r := range regions {
+		area += r.Dx() * r.Dy()
+		if r.Dx()*r.Dy() >= 400*300 {
+			t.Fatalf("dirty region covers whole frame: %v", r)
+		}
+	}
+	if area >= 400*300 {
+		t.Fatalf("dirty area %d covers full frame", area)
+	}
+	// 帧内容仍是新宽度 (30px 红条)
+	if c := img.RGBAAt(16+29, 20); c.R != 0xC0 {
+		t.Fatalf("red bar not updated in partial frame: %v", c)
+	}
+}
+
+// TestDirtySiblingShift 红条变宽挤动绿条时, 移位的兄弟节点也在脏区内。
+func TestDirtySiblingShift(t *testing.T) {
+	fake := newFakeSurface()
+	SetDefaultFactory(&fakeFactory{fake})
+	defer SetDefaultFactory(nil)
+
+	// row: [width=() => n*10+10 的红条][绿条], 红条变宽推动绿条右移
+	v, err := vm.EvalVM(`
+		import { createSignal } from "gx/solid";
+		import { h, render } from "gx/gfx";
+		const [n, setN] = createSignal(0);
+		const ui = h("row", {gap: 0},
+			h("rect", {width: () => n() * 10 + 10, height: 20, background: "#c0392b"}),
+			h("rect", {width: 30, height: 20, background: "#27ae60",
+				onClick: () => setN(3)}));
+		render(ui, {title: "T", width: 400, height: 300});
+	`)
+	if err != nil {
+		t.Fatalf("EvalVM: %v", err)
+	}
+
+	fake.push(Event{Kind: EventMouseUp, X: 30, Y: 10}) // 点绿条 (10..40, 0..20)
+	fake.push(Event{Kind: EventClose})
+	if err := v.RunTimersWithPump(Pump); err != nil {
+		t.Fatalf("RunTimersWithPump: %v", err)
+	}
+
+	fake.mu.Lock()
+	img := fake.img
+	fake.mu.Unlock()
+	// 红条 40px + 绿条 x:40..70; 绿条新位置应为绿色
+	if c := img.RGBAAt(60, 10); c.R != 0x27 || c.G != 0xAE {
+		t.Fatalf("green sibling not repainted at new position: %v", c)
+	}
+	// 旧位置 (红条变宽前绿条在 10..40) 不再是绿色 (x=20 现在是红条内部)
+	if c := img.RGBAAt(20, 10); c.R != 0xC0 {
+		t.Fatalf("red bar not repainted over old green position: %v", c)
+	}
+}
+
+// ===== 基准: 1000 节点树单信号变化的一帧 =====
+
+func BenchmarkDirtyFrame1000Nodes(b *testing.B) {
+	fake := newFakeSurface()
+	SetDefaultFactory(&fakeFactory{fake})
+	defer SetDefaultFactory(nil)
+
+	root := mkNode("column", map[string]float64{"gap": 1})
+	var target *GuiNode
+	for i := 0; i < 1000; i++ {
+		c := &GuiNode{Tag: "rect", Props: map[string]object.Value{
+			"width":      object.NewNumber(float64(50 + i%40)),
+			"height":     object.NewNumber(2),
+			"background": object.NewString("#888888"),
+		}}
+		root.Children = append(root.Children, c)
+		if i == 500 {
+			target = c
+		}
+	}
+	if _, err := Mount(root, WindowConfig{Width: 400, Height: 900}); err != nil {
+		b.Fatal(err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		target.Props["width"] = object.NewNumber(float64(60 + i%50))
+		markNodeDirty(target)
+		activeApp.redraw()
+	}
+}

@@ -50,44 +50,11 @@ func pumpEvents(t *testing.T, v *vm.VM, a *app, evs ...Event) {
 	}
 }
 
-// jsArrayLen 读全局数组的长度 (测试里用来数回调次数)。
-func jsArrayLen(t *testing.T, v *vm.VM, name string) int {
-	t.Helper()
-	return len(jsArray(t, v, name).Elements)
-}
-
-// jsArray 取全局数组。
-func jsArray(t *testing.T, v *vm.VM, name string) *object.Array {
-	t.Helper()
-	val, ok := v.Globals().Get(name)
-	if !ok {
-		t.Fatalf("全局 %s 缺失", name)
-	}
-	arr, ok := val.(*object.Array)
-	if !ok {
-		t.Fatalf("全局 %s 不是数组, 实际 %s", name, val.Type())
-	}
-	return arr
-}
-
-// jsNumAt 取全局数组里第 i 个元素 (数值)。
-func jsNumAt(t *testing.T, v *vm.VM, name string, i int) float64 {
-	t.Helper()
-	arr := jsArray(t, v, name)
-	if i >= len(arr.Elements) || i < 0 {
-		t.Fatalf("全局 %s 只有 %d 个元素, 取不到第 %d 个", name, len(arr.Elements), i)
-	}
-	n, ok := arr.Elements[i].(*object.Number)
-	if !ok {
-		t.Fatalf("全局 %s[%d] 不是数字, 实际 %s", name, i, arr.Elements[i].Type())
-	}
-	return n.Value
-}
-
 // sliderApp 起一个"value 受控 + 记录每次 onInput"的滑块, 并返回 (VM, 根, app, 滑块)。
+// (jsArray / jsNumAt 等全局数组取值器见 helpers_test.go。)
 func sliderApp(t *testing.T, extra string) (*vm.VM, *GuiNode, *app, *GuiNode) {
 	t.Helper()
-	v, root, a := evalForUI(t, `
+	v, root, a := evalUIRoot(t, `
 		import { createSignal } from "gx/solid";
 		import { h, render } from "gx/gfx";
 		const [val, setVal] = createSignal(0);
@@ -331,7 +298,7 @@ func TestSliderClickJump(t *testing.T) {
 //     prop 永远不变, 拿它比较等于没挡);
 //   - 松手后再按同一位置仍会派发 (endDrag 复位了缓存)。
 func TestSliderDropBackNoWriteBack(t *testing.T) {
-	v, root, a := evalForUI(t, `
+	v, root, a := evalUIRoot(t, `
 		import { h, render } from "gx/gfx";
 		const seen = [];
 		const s = h("slider", {
@@ -365,7 +332,7 @@ func TestSliderDropBackNoWriteBack(t *testing.T) {
 // TestSliderPressVisualKeepsHighlight 拖动中保持按压态 (滑块颜色变化),
 // 且拖动期间鼠标划过别的控件不给它们加悬停高亮。
 func TestSliderNoHoverDuringDrag(t *testing.T) {
-	v, root, a := evalForUI(t, `
+	v, root, a := evalUIRoot(t, `
 		import { h, render } from "gx/gfx";
 		const btn = h("button", {width: 100, height: 30}, "btn");
 		const s = h("slider", {width: 160, height: 24, min: 0, max: 100, value: 0});

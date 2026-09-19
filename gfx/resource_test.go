@@ -2,7 +2,6 @@ package gfx
 
 import (
 	"testing"
-	"time"
 
 	"github.com/14752222/Gox/object"
 	"github.com/14752222/Gox/vm"
@@ -18,7 +17,7 @@ import (
 // TestCreateResourceSyncFetcher 同步 fetcher: 包装成立即可用的资源 (v1 减法
 // 语义之一), state 直接 ready。
 func TestCreateResourceSyncFetcher(t *testing.T) {
-	v := evalWithGlobals(t, `
+	v, _ := evalUI(t, `
 		import { createResource } from "gx/solid";
 		const [data, res] = createResource(() => ({ n: 7 }));
 		globalThis.g_state = res.state();
@@ -31,11 +30,7 @@ func TestCreateResourceSyncFetcher(t *testing.T) {
 // TestCreateResourcePromiseLifecycle 异步 fetcher 的完整状态机:
 // pending → ready; refetch 保留旧值 (refreshing) → ready。
 func TestCreateResourcePromiseLifecycle(t *testing.T) {
-	fake := newFakeSurface()
-	SetDefaultFactory(&fakeFactory{fake})
-	defer SetDefaultFactory(nil)
-
-	v, err := vm.EvalVM(`
+	v, fake := evalUI(t, `
 		import { createResource } from "gx/solid";
 		import { h, render } from "gx/gfx";
 		let resolver = null;
@@ -48,9 +43,6 @@ func TestCreateResourcePromiseLifecycle(t *testing.T) {
 		globalThis.state = res.state;
 		globalThis.data = data;
 	`)
-	if err != nil {
-		t.Fatalf("EvalVM: %v", err)
-	}
 	assertGlobal(t, v, "g_phase1", "pending")
 
 	runPumpSteps(t, v, fake, []func(){
@@ -78,11 +70,7 @@ func TestCreateResourcePromiseLifecycle(t *testing.T) {
 // TestCreateResourceLatestWins 快速连续 refetch: 旧响应**后**到, 必须丢弃,
 // 否则界面会闪回旧值 (S-a 竞态痛点的结构性收编)。
 func TestCreateResourceLatestWins(t *testing.T) {
-	fake := newFakeSurface()
-	SetDefaultFactory(&fakeFactory{fake})
-	defer SetDefaultFactory(nil)
-
-	v, err := vm.EvalVM(`
+	v, fake := evalUI(t, `
 		import { createResource } from "gx/solid";
 		const resolvers = [];
 		const [data, res] = createResource(() =>
@@ -93,9 +81,6 @@ func TestCreateResourceLatestWins(t *testing.T) {
 		globalThis.data = data;
 		globalThis.g_first = res.state();
 	`)
-	if err != nil {
-		t.Fatalf("EvalVM: %v", err)
-	}
 	assertGlobal(t, v, "g_first", "pending")
 
 	runPumpSteps(t, v, fake, []func(){
@@ -128,11 +113,7 @@ func TestCreateResourceLatestWins(t *testing.T) {
 // TestCreateResourceErrorNoThrow error 减法语义 (公共 API 承诺): data() 不抛,
 // 返回上一次的值 (从未成功过则 undefined); 错误从 res.error() 读。
 func TestCreateResourceErrorNoThrow(t *testing.T) {
-	fake := newFakeSurface()
-	SetDefaultFactory(&fakeFactory{fake})
-	defer SetDefaultFactory(nil)
-
-	v, err := vm.EvalVM(`
+	v, fake := evalUI(t, `
 		import { createResource } from "gx/solid";
 		let mode = "ok";
 		let n = 1;
@@ -145,9 +126,6 @@ func TestCreateResourceErrorNoThrow(t *testing.T) {
 		globalThis.error = res.error;
 		globalThis.setBoom = (m) => { mode = m; n++; };
 	`)
-	if err != nil {
-		t.Fatalf("EvalVM: %v", err)
-	}
 	assertGlobal(t, v, "g_err_initial", "undefined")
 
 	runPumpSteps(t, v, fake, []func(){
@@ -181,11 +159,7 @@ func TestCreateResourceErrorNoThrow(t *testing.T) {
 // TestOnMountOnCleanupLifecycle 条件渲染切换时 onMount/onCleanup 成对触发,
 // 序列 = mount A → cleanup A → mount B → cleanup B → mount A (每一代独立)。
 func TestOnMountOnCleanupLifecycle(t *testing.T) {
-	fake := newFakeSurface()
-	SetDefaultFactory(&fakeFactory{fake})
-	defer SetDefaultFactory(nil)
-
-	v, err := vm.EvalVM(`
+	v, fake := evalUI(t, `
 		import { createSignal, onMount, onCleanup } from "gx/solid";
 		import { h, render } from "gx/gfx";
 		let log = "";
@@ -199,9 +173,6 @@ func TestOnMountOnCleanupLifecycle(t *testing.T) {
 			() => which() === "A" ? Panel({name: "A"}) : Panel({name: "B"})));
 		globalThis.switchTo = (w) => setWhich(w);
 	`)
-	if err != nil {
-		t.Fatalf("EvalVM: %v", err)
-	}
 	assertGlobal(t, v, "log", "mount:A;") // 初始挂载即触发 onMount
 
 	runPumpSteps(t, v, fake, []func(){
@@ -212,76 +183,8 @@ func TestOnMountOnCleanupLifecycle(t *testing.T) {
 	})
 }
 
-// evalWithGlobals 跑一段脚本 (脚本自己把断言值挂到 globalThis), 需要挂载的
-// 脚本由它配好假窗口工厂。
-func evalWithGlobals(t *testing.T, src string) *vm.VM {
-	t.Helper()
-	fake := newFakeSurface()
-	SetDefaultFactory(&fakeFactory{fake})
-	t.Cleanup(func() { SetDefaultFactory(nil) })
-	v, err := vm.EvalVM(src)
-	if err != nil {
-		t.Fatalf("EvalVM: %v", err)
-	}
-	return v
-}
-
-func assertGlobal(t *testing.T, v *vm.VM, name, want string) {
-	t.Helper()
-	val, _ := v.Globals().Get(name)
-	if val == nil || val.Inspect() != want {
-		got := "<nil>"
-		if val != nil {
-			got = val.Inspect()
-		}
-		t.Fatalf("%s = %s, want %q", name, got, want)
-	}
-}
-
-// runPumpSteps 把 Go 侧的驱动/断言步骤逐个塞进泵轮次 (与 p2b runDemoSteps
-// 同构, 但步骤不带 root/fake 参数 —— 这里驱动的是脚本全局函数)。
-func runPumpSteps(t *testing.T, v *vm.VM, fake *fakeSurface, steps []func()) {
-	t.Helper()
-	round := 0
-	pump := func(maxWait time.Duration) bool {
-		round++
-		// 无害唤醒: 只做断言的步骤自己不产生事件 (语义同 runDemoSteps)
-		fake.push(Event{Kind: EventMouseLeave})
-		if round-1 < len(steps) {
-			steps[round-1]()
-		} else {
-			fake.push(Event{Kind: EventClose})
-		}
-		return Pump(maxWait)
-	}
-	if err := v.RunTimersWithPump(pump); err != nil {
-		t.Fatalf("RunTimersWithPump: %v", err)
-	}
-}
-
-// callGlobalFn 调用挂在 globalThis 上的函数并取返回值 (与 p1b 的 callGlobal
-// 区分: 那个不取返回值)。必须在泵轮次内调用 (currentVM 纪律, 见文件头)。
-func callGlobalFn(t *testing.T, v *vm.VM, name string, args ...object.Value) object.Value {
-	t.Helper()
-	fn, ok := v.Globals().Get(name)
-	if !ok || !object.IsCallable(fn) {
-		t.Fatalf("global %s 不是函数", name)
-	}
-	return object.CallFunction(fn, nil, args...)
-}
-
-// callGlobalInspect 调全局函数并返回结果的 Inspect 文本。
-func callGlobalInspect(t *testing.T, v *vm.VM, name string, args ...object.Value) string {
-	t.Helper()
-	res := callGlobalFn(t, v, name, args...)
-	if err := takeCallbackErr(); err != nil {
-		t.Fatalf("调用 %s 抛错: %v", name, err)
-	}
-	if res == nil {
-		return "<nil>"
-	}
-	return res.Inspect()
-}
+// evalWithGlobals / assertGlobal / runPumpSteps / callGlobalFn /
+// callGlobalInspect 已上移至 helpers_test.go (evalUI 等)。
 
 // assertGlobalText 断言窗口里第一个 text 节点的内容 (响应式文本上屏的最短路径)。
 func assertGlobalText(t *testing.T, v *vm.VM, want string) {

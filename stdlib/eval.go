@@ -1,11 +1,7 @@
 package stdlib
 
 import (
-	"github.com/14752222/Gox/bytecode"
-	"github.com/14752222/Gox/compiler"
-	"github.com/14752222/Gox/lexer"
 	"github.com/14752222/Gox/object"
-	"github.com/14752222/Gox/parser"
 	"github.com/14752222/Gox/runtime"
 )
 
@@ -80,6 +76,9 @@ func setupEvalAndMisc(env *runtime.Environment) {
 // runGlobalEval 编译并同步执行源码，返回最后一个语句的值。
 // 源码在全局环境中执行 (eval 内声明的 var/let 进入全局)。
 //
+// 编译经 object.CompileSource 桥完成 (由 vm 包注册实现), stdlib 不直接
+// 依赖 lexer/parser/compiler 前端包。
+//
 // 完成值策略: 若源码是单个表达式，包装为 `return (<expr>)` 捕获其值
 // (覆盖 eval 的绝大多数用途)；多语句源码退回普通函数包装，完成值为
 // undefined (函数体结尾是隐式 return void，编译器不保留语句完成值)。
@@ -87,29 +86,12 @@ func runGlobalEval(env *runtime.Environment, src string) object.Value {
 	// parseErr 记录最后一次解析/编译失败的原因, 用于拼进 SyntaxError 帮助定位
 	var parseErr string
 	buildAndRun := func(body string) object.Value {
-		p := parser.New(lexer.New(body))
-		program := p.ParseProgram()
-		if p.Errors().HasErrors() {
+		fn, err := object.CompileSource(body)
+		if err != nil {
 			// 记录最近一次失败原因 (多语句包装那轮的错误最贴近源码位置)
-			parseErr = p.Errors().Errors[0].Error()
+			parseErr = err.Error()
 			return nil // 由外层换包装重试
 		}
-		c := compiler.New()
-		if err := c.Compile(program); err != nil {
-			parseErr = err.Error()
-			return nil
-		}
-		// 取编译产物中的函数元数据，构建闭包后经回调桥同步执行
-		var meta *bytecode.FunctionMetadata
-		for i := 0; i < c.Constants().Len(); i++ {
-			if fm, ok := c.Constants().Get(uint16(i)).(*bytecode.FunctionMetadata); ok {
-				meta = fm
-			}
-		}
-		if meta == nil {
-			return nil
-		}
-		fn := compiledFunctionFromMeta(meta, c.Constants().Constants)
 		closure := &object.Closure{Fn: fn, Env: env}
 		result := object.CallFunction(closure, object.UndefinedSingleton)
 		if err := object.TakeCallbackError(); err != nil {
@@ -131,30 +113,4 @@ func runGlobalEval(env *runtime.Environment, src string) object.Value {
 		return object.NewErrorWithName("SyntaxError", "eval: invalid source ("+parseErr+")")
 	}
 	return object.NewErrorWithName("SyntaxError", "eval: invalid source")
-}
-
-// compiledFunctionFromMeta 把编译产物中的函数元数据转换为可调用的
-// CompiledFunction (new Function 与 eval 共用)。
-func compiledFunctionFromMeta(meta *bytecode.FunctionMetadata, consts []object.Value) *object.CompiledFunction {
-	fn := &object.CompiledFunction{
-		Instructions:  meta.Instructions,
-		NumLocals:     meta.NumLocals,
-		NumParameters: meta.NumParameters,
-		Name:          meta.Name,
-		IsArrow:       meta.IsArrow,
-		IsGenerator:   meta.IsGenerator,
-		IsAsync:       meta.IsAsync,
-		BaseSlot:      meta.BaseSlot,
-		ArgumentsSlot: meta.ArgumentsSlot,
-		SelfSlot:      meta.SelfSlot,
-		Constants:     consts,
-	}
-	for _, ps := range meta.Parameters {
-		fn.Parameters = append(fn.Parameters, object.ParameterInfo{
-			Name:    ps.Name,
-			Default: ps.HasDefault,
-			Rest:    ps.IsRest,
-		})
-	}
-	return fn
 }

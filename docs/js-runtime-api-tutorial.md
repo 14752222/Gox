@@ -15,7 +15,7 @@
 
 **运行示例：**
 ```bash
-./Gox.exe test/testdata/tut/demo.js
+./Gox.exe testdata/tut/demo.js
 ```
 
 **测试：**
@@ -1052,4 +1052,4 @@ once(rx, fn);              // 仅首次变化回调
 - `computed` 惰性求值 + 自动依赖收集 + 嵌套支持, 结果不变不通知。
 
 实现见 `object/observable.go` (Rx 核心/依赖追踪) 与 `stdlib/obs.go` (全局注册),
-回归测试见 `vm/vm_obs_test.go`, 可运行演示见 `test/testdata/rx_demo.js`。
+回归测试见 `vm/vm_obs_test.go`, 可运行演示见 `testdata/rx_demo.js`。
