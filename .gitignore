@@ -49,3 +49,8 @@ _commitmsg.txt
 # WorkBuddy 内部工作笔记（逐日日志、MEMORY.md、gfx-invariants 等）—— 不对外公开。
 # 注意：只是不再跟踪；若要让它们彻底从 git 历史里消失，必须重写历史（见 memory 台账）。
 .workbuddy/
+
+# 官网源码与 npm 分发目录 —— 仓库完全开源后不对外公开，仅保留本地。
+# 同上：只是不再跟踪；历史提交与 v0.1.0/v0.1.1 标签里仍能看到，彻底清除需重写历史。
+website/
+npm/
