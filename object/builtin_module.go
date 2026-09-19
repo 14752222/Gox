@@ -1,5 +1,7 @@
 package object
 
+import "sort"
+
 // 内置模块注册表。
 //
 // 让宿主以 "gx/xxx" 这类非相对路径名字注册模块, VM 的模块加载在读文件
@@ -40,4 +42,15 @@ func LookupBuiltinModule(name string) (exports map[string]Value, ok bool) {
 		builtinModuleCache[name] = exports
 	}
 	return exports, true
+}
+
+// RegisteredBuiltinModules 返回已注册的内置模块名 (按字典序)。
+// 供宿主在 "模块未找到" 的报错里列出可用模块。
+func RegisteredBuiltinModules() []string {
+	names := make([]string, 0, len(builtinModules))
+	for name := range builtinModules {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }

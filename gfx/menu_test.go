@@ -1288,17 +1288,3 @@ func TestShortcutFullChain(t *testing.T) {
 		t.Fatalf("快捷键触发不该展开菜单")
 	}
 }
-
-// globalNum 读脚本全局里的数字。
-func globalNum(t *testing.T, v *vm.VM, name string) (float64, bool) {
-	t.Helper()
-	val, ok := v.Globals().Get(name)
-	if !ok {
-		t.Fatalf("全局 %s 缺失", name)
-	}
-	n, ok := val.(*object.Number)
-	if !ok {
-		t.Fatalf("全局 %s 不是数字: %T", name, val)
-	}
-	return n.Value, true
-}

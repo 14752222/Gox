@@ -6,47 +6,8 @@ import (
 	"github.com/14752222/Gox/object"
 )
 
-// evalJS 编译并执行 JS 源码，返回结果。
-func evalJS(t *testing.T, input string) object.Value {
-	result, err := Eval(input)
-	if err != nil {
-		t.Fatalf("Eval error for input %q: %v", input, err)
-	}
-	return result
-}
-
-func assertNumber(t *testing.T, result object.Value, expected float64) {
-	t.Helper()
-	num, ok := result.(*object.Number)
-	if !ok {
-		t.Fatalf("expected Number, got %T (%s)", result, result.Inspect())
-	}
-	if num.Value != expected {
-		t.Fatalf("expected %v, got %v", expected, num.Value)
-	}
-}
-
-func assertString(t *testing.T, result object.Value, expected string) {
-	t.Helper()
-	s, ok := result.(*object.String)
-	if !ok {
-		t.Fatalf("expected String, got %T (%s)", result, result.Inspect())
-	}
-	if s.Value != expected {
-		t.Fatalf("expected %q, got %q", expected, s.Value)
-	}
-}
-
-func assertBoolean(t *testing.T, result object.Value, expected bool) {
-	t.Helper()
-	b, ok := result.(*object.Boolean)
-	if !ok {
-		t.Fatalf("expected Boolean, got %T (%s)", result, result.Inspect())
-	}
-	if b.Value != expected {
-		t.Fatalf("expected %v, got %v", expected, b.Value)
-	}
-}
+// evalJS / assertNumber / assertString / assertBoolean 等共享测试工具
+// 定义在 testutil_test.go。
 
 // ===== Math 测试 =====
 

@@ -143,6 +143,9 @@ func SetupGlobals() *runtime.Environment {
 	// ===== 应用级 kv 持久化 (内置模块 gx/storage, 设备能力 API 方案 A) =====
 	setupStorage(env)
 
+	// ===== 聚合模块 "gox" (gx/* 导出并集, 一行导入) =====
+	setupGoxUmbrella(env)
+
 	return env
 }
 

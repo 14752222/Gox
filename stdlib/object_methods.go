@@ -6,11 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/14752222/Gox/bytecode"
-	"github.com/14752222/Gox/compiler"
-	"github.com/14752222/Gox/lexer"
 	"github.com/14752222/Gox/object"
-	"github.com/14752222/Gox/parser"
 	"github.com/14752222/Gox/runtime"
 )
 
@@ -820,8 +816,8 @@ func setupGlobalFunctions(env *runtime.Environment) {
 
 // newDynamicFunction 实现 new Function([p1, ..., pn], body)。
 // 规范语义: 除最后一个参数外都是形参名，最后一个参数是函数体源码。
-// 将其包装为函数表达式编译，取编译产物中的 FunctionMetadata 构建
-// 闭包；闭包的 Env 是全局环境 (动态函数只访问全局作用域)。
+// 将其包装为函数表达式经 object.CompileSource 桥编译 (vm 包注册实现)，
+// 取顶层包装函数构建闭包；闭包的 Env 是全局环境 (动态函数只访问全局作用域)。
 func newDynamicFunction(env *runtime.Environment, args []object.Value) object.Value {
 	params := make([]string, 0, len(args))
 	body := ""
@@ -842,28 +838,10 @@ func newDynamicFunction(env *runtime.Environment, args []object.Value) object.Va
 	}
 	src := "(function anonymous(" + strings.Join(params, ",") + ") {\n" + body + "\n})"
 
-	p := parser.New(lexer.New(src))
-	program := p.ParseProgram()
-	if p.Errors().HasErrors() {
-		return object.NewErrorWithName("SyntaxError", p.Errors().String())
-	}
-	c := compiler.New()
-	if err := c.Compile(program); err != nil {
+	fn, err := object.CompileSource(src)
+	if err != nil {
 		return object.NewErrorWithName("SyntaxError", err.Error())
 	}
-
-	// 从常量池取出编译产物中的函数元数据
-	var meta *bytecode.FunctionMetadata
-	for i := 0; i < c.Constants().Len(); i++ {
-		if fm, ok := c.Constants().Get(uint16(i)).(*bytecode.FunctionMetadata); ok {
-			meta = fm
-		}
-	}
-	if meta == nil {
-		return object.NewErrorWithName("SyntaxError", "Function constructor: failed to compile body")
-	}
-
-	fn := compiledFunctionFromMeta(meta, c.Constants().Constants)
 	return &object.Closure{Fn: fn, Env: env}
 }
 

@@ -24,37 +24,9 @@ import (
 //  5. 命名函数表达式不绑定自身名字，无法递归
 //  6. 解析器对深层嵌套无上限 (Go 栈溢出) 且存在 O(n²) 解析开销
 //  7. 条件表达式被错解析为左结合 `(a ? b : c) ? d : e`，导致嵌套三元取到
-//     错误分支 (gfx 的 tabs_demo 面板渲染错颜色就是踩到这个)
-
-// testEvalCatch 编译并执行源码，返回脚本输出与执行错误。
-// 与 testEval 不同: 不把 vm error 视为测试失败，交由调用方断言。
-// 使用 stdlib 全局环境 (测试里需要 Error/TypeError/Object/Proxy 等)。
-func testEvalCatch(t *testing.T, input string) (object.Value, error) {
-	t.Helper()
-	l := lexer.New(input)
-	p := parser.New(l)
-	program := p.ParseProgram()
-	if p.Errors().HasErrors() {
-		t.Fatalf("parser errors:\n%s", p.Errors().String())
-	}
-	c := compiler.New()
-	if err := c.Compile(program); err != nil {
-		t.Fatalf("compiler error: %v", err)
-	}
-	vm := NewWithGlobals(c.Bytes(), c.Constants(), c.NumLocals(), stdlib.SetupGlobals())
-	err := vm.Run()
-	return vm.LastPopped(), err
-}
-
-// evalWithStdlib 在 stdlib 全局环境下执行源码，出错即失败，返回结果值。
-func evalWithStdlib(t *testing.T, input string) object.Value {
-	t.Helper()
-	res, err := testEvalCatch(t, input)
-	if err != nil {
-		t.Fatalf("vm error: %v", err)
-	}
-	return res
-}
+//     错分支 (gfx 的 tabs_demo 面板渲染错颜色就是踩到这个)
+//
+// testEvalCatch / evalWithStdlib 定义在 testutil_test.go。
 
 // ===== 1. 字符串长度上限 =====
 
@@ -79,7 +51,7 @@ func TestTemplateLiteralLengthLimit(t *testing.T) {
 func TestStringConcatUnderLimit(t *testing.T) {
 	// 正常长度拼接不受影响
 	res := testEval(t, `"ab" + "cd" + "ef"`)
-	testString(t, res, "abcdef")
+	assertString(t, res, "abcdef")
 }
 
 // ===== 2/3. try/catch 必须能捕获所有 JS 语义错误 =====
@@ -128,7 +100,7 @@ func TestArrayCallbackAbortsOnThrow(t *testing.T) {
 			[1,2,3].map(function(x){ calls.push(x); if (x === 1) throw new Error("stop"); return x; });
 		} catch (e) {}
 		calls.join(",");`)
-	testString(t, res, "1")
+	assertString(t, res, "1")
 }
 
 // map 回调抛错后，catch 收到的必须是错误对象本身 (而非塞进结果的数组)。
@@ -137,7 +109,7 @@ func TestArrayCallbackThrowsErrorObject(t *testing.T) {
 		try {
 			[1,2].map(function(x){ if (x === 2) throw new TypeError("boom"); return x * 10; });
 		} catch (e) { e.name + ":" + e.message + ":" + (e instanceof Error); }`)
-	testString(t, res, "TypeError:boom:true")
+	assertString(t, res, "TypeError:boom:true")
 }
 
 // 未捕获时错误正常向外传播 (vm error)。
@@ -163,7 +135,7 @@ func TestNullOrUndefinedPropertyAccess(t *testing.T) {
 	}
 	// typeof 未声明变量仍应安全返回 "undefined" (不得因此抛 ReferenceError)
 	res = evalWithStdlib(t, `typeof notDeclaredAtAll`)
-	testString(t, res, "undefined")
+	assertString(t, res, "undefined")
 }
 
 // ===== 5. 命名函数表达式自绑定 =====
@@ -171,19 +143,19 @@ func TestNullOrUndefinedPropertyAccess(t *testing.T) {
 func TestNamedFunctionExpression(t *testing.T) {
 	// 名字在函数体内可见
 	res := testEval(t, `let h = function named(){ return typeof named; }; h();`)
-	testString(t, res, "function")
+	assertString(t, res, "function")
 	// 名字可用于递归
 	res = testEval(t, `let f = function fact(n){ return n <= 1 ? 1 : n * fact(n-1); }; f(5);`)
-	testNumber(t, res, 120)
+	assertNumber(t, res, 120)
 	// 名字不泄漏到外层作用域
 	res = testEval(t, `let g = function named(){}; typeof named;`)
-	testString(t, res, "undefined")
+	assertString(t, res, "undefined")
 	// 同名参数遮蔽函数名 (规范行为)
 	res = testEval(t, `let q = function f(f){ return f; }; q(42);`)
-	testNumber(t, res, 42)
+	assertNumber(t, res, 42)
 	// 命名函数表达式递归的栈溢出可捕获
 	res = testEval(t, `try { let r = function f(){ return f(); }; r(); } catch (e) { e.name }`)
-	testString(t, res, "RangeError")
+	assertString(t, res, "RangeError")
 }
 
 // ===== 6. 解析器嵌套深度上限 =====
@@ -245,7 +217,7 @@ func TestStdlibGlobalsSmoke(t *testing.T) {
 	if err := vm.Run(); err != nil {
 		t.Fatalf("vm error: %v", err)
 	}
-	testString(t, vm.LastPopped(), `{"a":1}|6`)
+	assertString(t, vm.LastPopped(), `{"a":1}|6`)
 }
 
 // ===== 条件表达式右结合 (回归 7) =====
@@ -278,7 +250,7 @@ func TestConditionalExpressionRightAssociative(t *testing.T) {
 	for _, tc := range []struct{ t, want float64 }{{0, 1}, {1, 2}, {9, 3}} {
 		_, result := runEvalVM(t, `const t = `+formatNum(tc.t)+
 			`; t === 0 ? 1 : t === 1 ? 2 : 3;`)
-		testNumber(t, result, tc.want)
+		assertNumber(t, result, tc.want)
 	}
 
 	// 四层嵌套: 每层都取到正确分支
@@ -287,15 +259,15 @@ func TestConditionalExpressionRightAssociative(t *testing.T) {
 		const f = (x) => x;
 		t === 0 ? f("a") : t === 1 ? f("b") : t === 2 ? f("c") : f("d");
 	`)
-	testString(t, result, "c")
+	assertString(t, result, "c")
 
 	// consequence 位置嵌套三元: a ? (b ? c : d) : e
 	_, result = runEvalVM(t, `const f = (x) => x; 1 ? 0 ? f("inner") : f("mid") : f("outer");`)
-	testString(t, result, "mid")
+	assertString(t, result, "mid")
 
 	// 括号可覆盖默认结合方向
 	_, result = runEvalVM(t, `const f = (x) => x; (1 ? 0 : f("x")) ? f("hi") : f("lo");`)
-	testString(t, result, "lo")
+	assertString(t, result, "lo")
 }
 
 // formatNum 把测试用的整数渲染成 JS 字面量。

@@ -14,9 +14,7 @@
 //      于是重排后序号一定是对的 (代价见文档)。
 //
 // 界面文案用英文, 与 kit_demo / resource_demo / dev_panel_demo 保持一致。
-import { createSignal } from "gx/solid";
-import { h, render } from "gx/gfx";
-import { For, Show, Switch, Match } from "gx/view";
+import { h, render, createSignal, For, Show, Switch, Match } from "gox";
 
 // ===== 状态 =====
 

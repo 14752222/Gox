@@ -2,8 +2,6 @@ package gfx
 
 import (
 	"errors"
-	"image"
-	"sync"
 	"testing"
 	"time"
 
@@ -17,59 +15,7 @@ import (
 // 挂住 (CI 直接超时), 而"打开文件"对话框还要人去点。所以这里给假 Surface
 // 装上 `nativeDialogHost`, 由测试预设"用户会怎么答" —— 这正是可选接口的
 // 附带好处: 原生能力可替换, 弹框这件事在测试里变成一笔纯数据。
-
-// fakeDialogHost 是 nativeDialogHost 的测试替身: 记录调用参数 + 返回预设结果。
-type fakeDialogHost struct {
-	mu sync.Mutex
-	// 收到的调用
-	messages []fakeMessageCall
-	opens    []NativeFileOptions
-	// 预设的应答
-	confirmAnswer  bool
-	messageErr     error
-	openPath       string
-	openOk         bool
-	openErr        error
-	showMessageNil bool // true 时让 ShowMessage 走"后端不支持"分支之外的另一条
-}
-
-type fakeMessageCall struct {
-	Kind    NativeDialogKind
-	Title   string
-	Message string
-}
-
-func (f *fakeDialogHost) ShowMessage(kind NativeDialogKind, title, message string) (bool, error) {
-	f.mu.Lock()
-	f.messages = append(f.messages, fakeMessageCall{Kind: kind, Title: title, Message: message})
-	f.mu.Unlock()
-	if f.messageErr != nil {
-		return false, f.messageErr
-	}
-	return f.confirmAnswer, nil
-}
-
-func (f *fakeDialogHost) ShowOpenFile(opts NativeFileOptions) (string, bool, error) {
-	f.mu.Lock()
-	f.opens = append(f.opens, opts)
-	f.mu.Unlock()
-	if f.openErr != nil {
-		return "", false, f.openErr
-	}
-	return f.openPath, f.openOk, nil
-}
-
-func (f *fakeDialogHost) messageCalls() []fakeMessageCall {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return append([]fakeMessageCall(nil), f.messages...)
-}
-
-func (f *fakeDialogHost) openCalls() []NativeFileOptions {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return append([]NativeFileOptions(nil), f.opens...)
-}
+// (fakeDialogHost / bareSurface 替身定义在 helpers_test.go。)
 
 // ===== 纯 Go 层: 不挂窗口时的降级 =====
 
@@ -130,16 +76,6 @@ func TestDialogFallsBackWithoutBackend(t *testing.T) {
 		t.Fatalf("后端不支持时 openFile 应降级, got (%q,%v)", p, ok)
 	}
 }
-
-// bareSurface 是一个**只实现 Surface 接口**的最小后端 (刻意不实现任何可选
-// 能力接口), 用来验"能力缺失时的降级"。
-type bareSurface struct{}
-
-func (b *bareSurface) Show(*image.RGBA)                           {}
-func (b *bareSurface) ShowRegions(*image.RGBA, []image.Rectangle) {}
-func (b *bareSurface) Size() (int, int)                           { return 200, 150 }
-func (b *bareSurface) WaitEvents(time.Duration) bool              { return true }
-func (b *bareSurface) Events() <-chan Event                       { return nil }
 
 // TestDialogBackendNotImplemented 实现接口但调用报错时, 同步入口照样降级。
 func TestDialogBackendNotImplemented(t *testing.T) {

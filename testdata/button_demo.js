@@ -2,8 +2,7 @@
 // 运行: go run . testdata/button_demo.js
 // 现象: 前两个按钮点击计数 +1; 禁用按钮整体变灰且点击无任何效果
 //       (既不改计数, 也不抢键盘焦点)。
-import { createSignal } from "gx/solid";
-import { h, render } from "gx/gfx";
+import { h, render, createSignal } from "gox";
 
 const [count, setCount] = createSignal(0);
 
