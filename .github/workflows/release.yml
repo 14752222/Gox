@@ -24,6 +24,12 @@
 #   另：本工作流里不得出现 NODE_AUTH_TOKEN / registry-url —— .npmrc 里的 token
 #   会压过 OIDC 自动检测，让 npm 继续走旧凭据，最终也是那个 404。
 #
+# 打包布局（2026-09-20 踩坑后的定论）：二进制先编到 dist/npm/binaries/，再复制进
+#   npm/binaries/ 打包，发完即删。原因是 npm 在包目录里找不到 .npmignore 时会回退
+#   读仓库根的 .gitignore，被它忽略的目录即使写在 package.json 的 files 里也进不了
+#   包 —— 会发出一个没有二进制的空壳包（本地 Windows 不复现、Linux CI 上必现）。
+#   所以：产物不进包目录、包目录里放占位 .npmignore、.gitignore 里不写 npm/ 下路径。
+#
 # 发版动作：改 npm/package.json 的 version → 提交 → push 到 main（或打 tag），
 #           registry 上出现带 provenance 证明的新版本即成功。
 # ─────────────────────────────────────────────────────────────────────────────
@@ -60,7 +66,7 @@ jobs:
       publish: ${{ steps.guard.outputs.publish }}
       version: ${{ steps.guard.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: 解析版本号并查 registry
         id: guard
@@ -144,9 +150,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
           check-latest: true
@@ -155,7 +161,7 @@ jobs:
       # //registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN} 占位符，npm 会据此
       # 认为"用户要走 token 认证"从而跳过 OIDC 交换，最终以那个 404 收场。
       # 默认 registry 本来就是 npmjs.org，不写这一行没有任何损失。
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
 
@@ -170,8 +176,9 @@ jobs:
             exit 1
           fi
 
-      - name: 交叉编译五平台二进制
-        run: bash ./scripts/build-npm.sh
+      # 产物先落在 dist/npm/binaries/，再复制一份进包目录（发布后由最后一步清掉）
+      - name: 交叉编译五平台二进制并放进包目录
+        run: bash ./scripts/build-npm.sh --into-package
 
       - name: 校验二进制齐全
         run: |
@@ -198,18 +205,37 @@ jobs:
         run: |
           set -euo pipefail
           cd npm
+
+          # 用 npm 自己的列举逻辑取"真要发布"的清单：与 publish 用的是同一份结果，
+          # 且比解析 tar 输出更平台无关。失败时把完整清单写进 ::error:: 注解，
+          # 这样即使没有仓库权限、读不了 Actions 日志也能看到包内容。
+          LIST=$(npm pack --dry-run --json 2>/dev/null | node -e '
+            let s = "";
+            process.stdin.on("data", (d) => (s += d)).on("end", () => {
+              const files = (JSON.parse(s)[0].files || []).map((f) => f.path).sort();
+              process.stdout.write(files.join("\n"));
+            });')
+          echo "将要发布的文件："
+          echo "$LIST"
+
+          missing=""
+          for want in package.json bin/gox.js README.md \
+                      binaries/linux-x64/gox binaries/linux-arm64/gox \
+                      binaries/darwin-x64/gox binaries/darwin-arm64/gox \
+                      binaries/windows-x64/gox.exe; do
+            if ! printf '%s\n' "$LIST" | grep -qx "$want"; then
+              missing="$missing $want"
+            fi
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::包里缺少：$missing ；实际清单：$(printf '%s' "$LIST" | tr '\n' ' ') ; 若是 binaries/ 整目录缺失，检查是否在 .gitignore 里忽略了 npm/ 下的路径"
+            exit 1
+          fi
+
+          # 再打一次真包，确认落盘内容与清单一致（顺带验证 tar 可读）
           TARBALL=$(npm pack --pack-destination /tmp | tail -1)
           echo "tarball: $TARBALL"
           tar -tzf "/tmp/$TARBALL" | sort
-          for want in package/package.json package/bin/gox.js package/README.md \
-                      package/binaries/linux-x64/gox package/binaries/linux-arm64/gox \
-                      package/binaries/darwin-x64/gox package/binaries/darwin-arm64/gox \
-                      package/binaries/windows-x64/gox.exe; do
-            if ! tar -tzf "/tmp/$TARBALL" | grep -qx "$want"; then
-              echo "::error::包里缺少 $want"
-              exit 1
-            fi
-          done
 
       - name: 发布到 npm（OIDC）
         if: ${{ !inputs.dry_run }}
@@ -237,3 +263,8 @@ jobs:
           else
             gh release create "$TAG" --title "$TAG" --generate-notes --target "$GITHUB_SHA"
           fi
+
+      # 包目录里的 binaries/ 只是打包用的过客，别留在工作区（失败时也清）
+      - name: 清理包目录里的二进制
+        if: always()
+        run: rm -rf npm/binaries

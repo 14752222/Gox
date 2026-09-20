@@ -1,0 +1,10 @@
+# 这个文件存在的唯一目的是**阻止 npm 回退去读仓库根的 .gitignore**：
+# 在包目录里找不到 .npmignore 时，npm 会拿 .gitignore 当忽略规则，于是被它
+# 忽略的目录即使写进 package.json 的 files 也进不了包 —— 症状是"本地 pack
+# 有二进制、CI（Linux）pack 却没有"的空壳包，极难查（2026-09-20 实际踩到：
+# 仓库根的 .gitignore 里的 npm/binaries/ 让 0.2.0 的包丢了全部二进制）。
+#
+# 规则只留下面两条否定式：真正发布哪些文件由 package.json 的 files 白名单决定，
+# 这里负责保证 binaries/ 里的文件不会被任何上游忽略规则（如根目录的 *.exe）扫掉。
+!binaries
+!binaries/**

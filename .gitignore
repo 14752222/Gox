@@ -30,9 +30,6 @@ go.work.sum
 # env file
 .env
 
-# npm 分发用的跨平台二进制（scripts/build-npm.sh 产物，发布时在 CI 上重新构建）
-npm/binaries/
-
 # Editor/IDE
 # .idea/
 # .vscode/
@@ -40,9 +37,9 @@ npm/binaries/
 # Mimosa 安全扫描产物
 .mimosa/
 
-# npm pack 产物
+# npm 打包产物：tgz 是 npm pack 的产物，另两个是本地手工发版的辅助文件
 npm/*.tgz
-npm/publish-v*.bat
+npm/publish-*.bat
 npm/fix-tarball-modes.py
 _commitmsg.txt
 
@@ -56,7 +53,16 @@ website/
 /.zcode/
 /gox-logo-concepts/
 
-# npm 分发：仓库里只跟踪包的定义三件套（package.json / bin/gox.js / README.md）。
-# 二进制（见上方 npm/binaries/）与 tgz 都是构建产物，由 CI 在发版时重建，不进仓库。
-npm/*.tgz
+# npm 分发：仓库只跟踪包的定义三件套（package.json / bin/gox.js / README.md）。
+# 二进制与 tgz 都是构建产物，一律落在 dist/（scripts/build-npm.sh 产出），不进仓库。
+#
+# ⚠️ 不要在这份文件里写任何 npm/ 下面的路径！npm 打包时若在包目录里找不到
+# .npmignore，会回退把 .gitignore 当忽略规则用，于是被它忽略的目录即使写在
+# package.json 的 files 白名单里也进不了包 —— 0.2.0 就是这么发出一个没有二进制
+# 的空壳包的（2026-09-20：本地 Windows 不复现、Linux CI 上必现）。
+# 包目录里的 npm/.npmignore 专门用来掐断这条回退路径，这里再退一步避开它。
 dist/
+
+# 仓库顶部 Go 模板自带的 `*.exe` 会连包里的 Windows 二进制一起匹配掉，
+# 必须在包目录内显式取消忽略（父目录没被忽略，否定式才有效）。
+!npm/binaries/**/*.exe
