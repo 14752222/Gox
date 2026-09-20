@@ -1,40 +1,107 @@
 # Gox
 
 > 用 Go 从零实现的 JavaScript 运行时：词法分析 → 语法分析 → 字节码编译 → 栈式虚拟机执行。
-> 单二进制、零外部依赖，还能把 JS 脚本打包成独立可执行文件。
+> 单二进制、零 cgo、零外部运行时依赖，自带软件光栅化 GUI 与脚本打包器。
 
-📖 **[官网与使用教程](https://14752222.github.io/Gox/)** — 在线学习如何安装、运行脚本、写 GUI 应用与打包分发。
+[![Go](https://img.shields.io/badge/Go-1.26.2%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![npm](https://img.shields.io/npm/v/@goxjs/goxjs)](https://www.npmjs.com/package/@goxjs/goxjs)
+[![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)](#环境要求)
+[![Release](https://github.com/14752222/Gox/actions/workflows/release.yml/badge.svg)](https://github.com/14752222/Gox/actions/workflows/release.yml)
 
-## 特性一览
+📖 **[官网与使用教程](https://14752222.github.io/Gox/)** ｜ **[GUI 开发指南](docs/gui-guide.md)** ｜ **[npm 包](https://www.npmjs.com/package/@goxjs/goxjs)**
 
-- **完整编译管线** — 自研 lexer / parser / compiler / bytecode VM，108 个操作码，定长 3 字节指令编码（`[操作码 1B][操作数 2B 大端]`），解码即取即用
-- **ES6+ 语言子集** — `let`/`const`（不支持 `var`）、函数与箭头函数、闭包、`class`、`async`/`await`、解构赋值、剩余/默认参数、展开、模板字符串、`for...of`、`try`/`catch`/`throw`、可选链 `?.`、空值合并 `??`、ES 模块 `import`/`export`，以及 **JSX 语法**（编译期降级为 `h(tag, props, ...children)` 调用）
-- **丰富的内置对象** — `Array` / `String` / `Number` / `Object` / `Boolean` / `Math` / `JSON` / `Map` / `Set` / `WeakMap` / `WeakSet` / `Symbol` / `BigInt` / `RegExp` / `Proxy` / `Reflect` / `Iterator` / `Promise` / `ArrayBuffer` / `DataView`（TypedArray 家族）/ `WeakRef` / `FinalizationRegistry` / 完整错误类型族 / `Temporal`（取代 `Date` 的现代日期时间 API）
-- **宿主能力模块** — `fs`（Node 风格，同步 + 异步两套）、`http`（客户端 `get`/`request` + 服务端 `createServer`）、`fetch`、`path`、`process`、`stats`、`gx/storage`（应用级 kv 持久化，写入系统应用数据目录）
-- **自研 GUI 渲染层** — `gx/gfx` 模块：纯 Go 软件光栅化，flex 风格布局（`column`/`row`/`grid`、百分比尺寸、min-max 钳位、`flexShrink`、折行）、圆角/线性渐变/阴影装饰、命中测试、脏矩形局部重绘；win32（纯 syscall 无 cgo）与 X11 窗口后端，产物为无动态库依赖的静态单文件；配套 `gx/dialog`（原生消息框与文件对话框）等宿主能力模块
-- **原生感的交互组件** — 表单控件（`input`/`textarea`/`select`/`slider`/`checkbox`/`radio`/`switch`）、弹层（`dialog`/`toast`）、滚动容器、自绘画布，以及**自绘菜单栏与右键菜单**（下拉/子菜单/快捷键/禁用项，不依赖系统菜单 API）
-- **事件循环** — `setTimeout` / `setInterval` / `requestIdleCallback`，以及精度可控的严格定时器变体（`setStrictTimeout` 等）；GUI 模式下事件循环接入窗口消息泵
-- **响应式编程** — Dart GetX 风格的 `obs` / `computed` / `ever` / `once`，以及 SolidJS 风格的 `gx/solid` 信号（`createSignal` / `createEffect` / `createMemo` / `createResource` 异步资源 / `onMount` / `onCleanup` 生命周期）；声明式视图 `gx/view`（`For` keyed 列表复用 / `Show` 保活显隐 / `Switch`+`Match` 多分支）
-- **npm 分发** — [`@goxjs/goxjs`](https://www.npmjs.com/package/@goxjs/goxjs) 包内置 Windows/Linux/macOS × x64/arm64 五个平台的预编译二进制，`npm i -g @goxjs/goxjs` 即得 `goxjs` 命令
-- **工具链** — 交互式 REPL、jsbuild 打包器（JS → 独立 .exe，支持 GUI 应用与纯 Go 交叉编译）、`gx/dev` 运行时快照（帧统计 / 缓存命中 / 最近警告，可做调试面板）
+## 目录
+
+- [项目简介](#项目简介)
+- [功能特性](#功能特性)
+- [快速开始](#快速开始)
+- [使用方法](#使用方法)
+- [配置说明](#配置说明)
+- [技术架构](#技术架构)
+- [开发与测试](#开发与测试)
+- [发版流程](#发版流程)
+- [贡献指南](#贡献指南)
+- [相关文档](#相关文档)
+- [许可证](#许可证)
+
+## 项目简介
+
+Gox 是一个用**纯 Go** 实现的 JavaScript（ES6+ 子集）运行时。整条编译管线 —— 词法分析、语法分析、
+字节码生成、栈式虚拟机 —— 都从零实现，不依赖 V8/QuickJS 等任何现成引擎，也不依赖 cgo。
+
+在此之上，Gox 补齐了脚本语言通常缺失的那一层：一套**自研的桌面 GUI 渲染层**（纯 Go 软件光栅化，
+flex 布局 + JSX + 信号驱动更新，win32 / X11 窗口后端）、一组宿主能力模块（文件、HTTP、剪贴板、
+原生对话框、持久化存储），以及**把脚本打包成独立可执行文件**的工具链。
+
+它的定位是"小而完整"：一个 `go build` 得到一个可执行文件，可以把 JS 当脚本层嵌进 Go 程序，
+也可以直接用它写带界面的小工具并打包分发。
+
+**设计取向**
+
+- **单二进制分发** —— 静态编译、无动态库依赖；跨平台只需换 `GOOS`/`GOARCH`，无需目标机工具链。
+- **零 cgo** —— 后端直连系统 API（Windows 走 syscall、Linux 走 X 协议），代价是不支持 `-race` 检测。
+- **GUI 不是外挂** —— 渲染、布局、命中测试、脏矩形重绘全在运行时内部，脚本侧只有 JSX 与信号。
+- **确定性单线程** —— VM 单线程执行，网络 I/O 在 goroutine 中完成后投递回主线程，回调无需加锁。
+
+**适用场景**：用 JS 写跨平台桌面小工具；把 JS 作为配置与插件层嵌入 Go 应用；学习编译器与虚拟机实现。
+
+## 功能特性
+
+- **完整编译管线** —— 自研 lexer / parser / compiler / bytecode VM，108 个操作码，定长 3 字节指令编码
+  （`[操作码 1B][操作数 2B 大端]`），解码即取即用
+- **ES6+ 语言子集** —— `let`/`const`（不支持 `var`）、函数与箭头函数、闭包、`class`、`async`/`await`、
+  解构赋值、剩余/默认参数、展开、模板字符串、`for...of`、`try`/`catch`/`throw`、可选链 `?.`、
+  空值合并 `??`、ES 模块 `import`/`export`，以及 **JSX 语法**（编译期降级为 `h(tag, props, ...children)` 调用）
+- **丰富的内置对象** —— `Array` / `String` / `Number` / `Object` / `Boolean` / `Math` / `JSON` /
+  `Map` / `Set` / `WeakMap` / `WeakSet` / `Symbol` / `BigInt` / `RegExp` / `Proxy` / `Reflect` /
+  `Iterator` / `Promise` / `ArrayBuffer` / `DataView`（TypedArray 家族）/ `WeakRef` /
+  `FinalizationRegistry` / 完整错误类型族 / `Temporal`（现代日期时间 API，本运行时不含 `Date`）
+- **宿主能力模块** —— 以全局对象注入：`fs`（Node 风格，同步 + 异步两套）、`path`、`http`
+  （客户端 `get`/`request` + 服务端 `createServer`）、`fetch`、`process`、`stats`
+- **自研 GUI 渲染层** —— `gx/gfx` 模块：flex 风格布局（`column`/`row`/`grid`、百分比尺寸、min-max 钳位、
+  `flexShrink`、折行）、圆角/线性渐变/阴影装饰、命中测试、脏矩形局部重绘；win32（纯 syscall）与 X11
+  窗口后端。详见 **[GUI 开发指南](docs/gui-guide.md)**
+- **原生感的交互组件** —— 表单控件（`input`/`textarea`/`select`/`slider`/`checkbox`/`radio`/`switch`）、
+  弹层（`dialog`/`toast`）、滚动容器、自绘画布，以及**自绘菜单栏与右键菜单**（下拉/子菜单/快捷键/禁用项，
+  不依赖系统菜单 API）
+- **事件循环** —— `setTimeout` / `setInterval` / `requestIdleCallback`，以及精度可控的严格定时器变体
+  （`setStrictTimeout` 等）；GUI 模式下事件循环接入窗口消息泵
+- **响应式编程** —— Dart GetX 风格的 `obs` / `computed` / `ever` / `once`，以及 SolidJS 风格的
+  `gx/solid` 信号（`createSignal` / `createEffect` / `createMemo` / `createResource` / `onMount` /
+  `onCleanup`）；声明式视图 `gx/view`（`For` keyed 列表复用 / `Show` 保活显隐 / `Switch`+`Match` 多分支）
+- **npm 分发** —— [`@goxjs/goxjs`](https://www.npmjs.com/package/@goxjs/goxjs) 内置
+  macOS x64/arm64、Linux x64/arm64、Windows x64 五个平台的预编译二进制，
+  `npm i -g @goxjs/goxjs` 即得 `goxjs` 命令
+- **工具链** —— 交互式 REPL、jsbuild 打包器（JS → 独立可执行文件，支持 GUI 应用与纯 Go 交叉编译）、
+  `gx/dev` 运行时快照（帧统计 / 缓存命中 / 最近警告，可做调试面板）
 
 ## 快速开始
 
-方式一：从源码构建（环境要求 Go 1.26+）
+### 环境要求
+
+| 场景 | 要求 |
+|---|---|
+| 从源码构建 | Go 1.26.2 或更高（零 cgo，无需 C 工具链） |
+| 仅运行脚本 | 无 —— npm 包已内置各平台预编译二进制，只需 Node.js ≥ 14 |
+| GUI 应用 | Windows（win32）或 Linux（X11）；macOS 后端尚未实现 |
+
+### 从源码构建
 
 ```bash
 git clone https://github.com/14752222/Gox.git
 cd Gox
-go build          # Windows 下生成 Gox.exe
+go build          # 生成可执行文件；Windows 下为 Gox.exe
 ```
 
-方式二：npm 安装预编译二进制（无需 Go 环境）
+### 通过 npm 安装
 
 ```bash
-npm i -g @goxjs/goxjs    # 或不安装直接跑: npx goxjs app.js
+npm i -g @goxjs/goxjs    # 安装后可直接使用 goxjs 命令
+npx goxjs app.js         # 或不安装，直接运行
 ```
 
-**REPL：**
+### 交互式 REPL
 
 ```bash
 ./Gox
@@ -54,15 +121,18 @@ Type :exit to quit, :help for help
 
 REPL 命令：`:help` 查看帮助、`:clear` 重置环境、`:exit` 退出。
 
-**运行脚本：**
+### 运行脚本
 
 ```bash
 ./Gox example.js    # npm 安装的 goxjs 命令用法相同
 ```
 
-脚本执行完毕后会回显最后一个顶层表达式的值（`undefined` 除外），并等待定时器与异步回调全部执行完再退出。
+脚本执行完毕后会回显最后一个顶层表达式的值（`undefined` 除外），并等待定时器与异步回调
+全部执行完再退出。
 
-## 语言示例
+## 使用方法
+
+### 语言示例
 
 以下示例均实际运行验证过。
 
@@ -105,7 +175,9 @@ Promise { <pending> }     ← 顶层回显：main() 调用的返回值
 timer done                ← 定时器到期后，await 继续执行
 ```
 
-**ES 模块** — `lib.js`：
+> 语法提示：运行时只支持 `async function`，**不支持 `async () => {}`**。
+
+**ES 模块** —— `lib.js`：
 
 ```js
 export const PI = 3.14
@@ -142,17 +214,36 @@ count = 2
 2                  ← 顶层回显：最后一条赋值表达式的值
 ```
 
-## GUI 桌面应用
+### 宿主能力模块
 
-`gx/gfx` + `gx/solid` 提供 JSX 声明式 UI 与信号驱动的响应式更新，渲染器为纯 Go 软件光栅化（无 cgo、无动态库依赖）。
-
-模块导入有两种写法：聚合入口 `gox` 一行拿全常用 API（`gox` 是所有 `gx/*` 模块导出的并集，应用代码推荐）；细分模块按需导入（库代码推荐，见各模块章节）：
+`fs` / `path` / `http` / `fetch` / `process` / `stats` 以**全局对象**形式注入，直接使用，无需 `import`：
 
 ```js
-import { h, render, createSignal } from "gox"        // 聚合入口（一行拿全）
-// 等价的细分写法:
-// import { createSignal } from "gx/solid"
-// import { h, render } from "gx/gfx"
+const text = fs.readFileSync("a.txt")          // 同步：失败抛 JS 异常
+const data = await fs.readFile("a.txt")        // 异步：无回调时返回 Promise
+fs.mkdirSync("a/b", { recursive: true })
+
+const server = http.createServer(function (req, res) {
+  res.writeHead(200, { "Content-Type": "text/plain" })
+  res.end("hello")
+})
+server.listen(0, function () { console.log(server.port) })
+
+const res = await fetch("https://example.com")
+console.log(res.status, await res.text())
+```
+
+异步 I/O 的实现模型是**跨 goroutine I/O + 投递回 VM 单线程**：网络读写不触碰 VM 状态，结果经
+零延时定时器回到事件循环执行 JS 回调，因此回调里访问 VM 无需加锁。
+
+### GUI 桌面应用
+
+`gx/gfx` + `gx/solid` 提供 JSX 声明式 UI 与信号驱动的响应式更新，渲染器为纯 Go 软件光栅化
+（无 cgo、无动态库依赖）。
+
+```js
+import { h, render, createSignal } from "gox"        // 聚合入口：所有 gx/* 导出的并集
+// 等价的细分写法：import { h, render } from "gx/gfx"; import { createSignal } from "gx/solid"
 
 const [count, setCount] = createSignal(0)
 
@@ -170,545 +261,19 @@ render(
 ./Gox counter.js          # 直接运行，弹出 400x300 窗口
 ```
 
-- 点击按钮 → `setCount` 更新信号 → 依赖该信号的属性/文本节点自动标脏 → 脏矩形合并后只重绘受影响区域
-- 窗口配置写在根元素上：JSX 里 `<window title width height>` 包住整棵树；`h()` 手拼树时 `render(tree, {title, width, height})` 传普通对象，省略则用缺省（Gox 400x300）
-- `render()` 返回窗口句柄 `{close(), isClosed(), title(), setTitle(t), resize(w, h)}`，可**调用多次**开多窗口（各窗口独立元素树与事件循环，全关才退出进程）
-- 未实现的标签（拼错的名字、或还没做进 `knownTags` 的名字）会在 stderr 打印一次性警告，并仍按普通盒子渲染（不再静默成空盒子）
-- 窗口后端：Windows（纯 syscall win32）与 Linux（X11，Wayland 下走 XWayland）；macOS GUI 后端尚未实现
-- 字体：Windows/macOS 走静态候选路径；Linux 惰性扫描系统字体目录（`/usr/share/fonts`、`~/.local/share/fonts` 等，**CJK 字体优先**、条目上限 2000）。找不到可用字体时文字整体不渲染，错误里会给出候选条数与最后一个失败原因
-- 输入法（IME）：`<input>` / `<textarea>` 支持候选词输入，一次提交只派发一次 `onInput`（**Windows 后端**；Linux 暂无）
-- 剪贴板：`clipboardReadText()` / `clipboardWriteText(text)`（**Windows 后端**；Linux 暂无，读返回空串、写返回 false）
-- 原生对话框：`gx/dialog` 的 `alert` / `confirm` / `openFile`，**都是 async**（返回 Promise，用 `await`）（**Windows 后端**；其它后端降级为写 stderr）
-- 菜单栏与右键菜单：`<menubar>` / `<menu>` / `<menuitem>` 由 gfx **自绘**（不依赖 win32 菜单 API，三平台一致）；右键菜单用 `openContextMenu(x, y, items)` 就地弹出；`<menuitem shortcut="Ctrl+S">` 的快捷键由 Go 侧快捷键表在事件泵层匹配
-
-事件：
-
-| 事件 | 参数 | 分发规则 |
-|---|---|---|
-| `onClick` | 无 | 命中测试（最内层带 `onClick` 的节点），并把该节点设为键盘焦点 |
-| `onMouseMove` | `{x, y}` | 光标下最深节点起沿祖先链找第一个处理器（不冒泡到根以外） |
-| `onWheel` | `{deltaY}` | 光标所在 `scroll` 容器先消费（一格 60px），容器已到边界才继续冒泡；`deltaY` 沿用 DOM 约定（向下滚为正） |
-| `onContextMenu` | `{x, y}` | 右键抬起时触发；常配合 `openContextMenu(e.x, e.y, items)` 弹右键菜单 |
-| `onKeyDown` / `onKeyUp` | `{key, ctrl, shift, alt}` | 从焦点节点沿祖先链找第一个处理器 |
-| `onFocus` / `onBlur` | 无 | 焦点切换时触发，沿祖先链找第一个处理器；焦点节点会画 1px 蓝色虚线框（根节点 `hideFocusRing` 可关闭） |
-| `onResize` | `{width, height}` | **窗口级**事件：窗口尺寸变化时派发给**布局根**（挂非根节点不触发），不走焦点链；尺寸为物理像素。拖窗口边缘或脚本调 `win.resize()` 都会触发 |
-| `shortcut`（属性，非事件） | 回调收 `{x, y, shortcut}` | `<menuitem shortcut="Ctrl+S">`：不必展开菜单，快捷键表在事件泵层直接匹配。只认带 `Ctrl`/`Alt` 的组合，且修饰键**全等**（`Ctrl+S` 不会被 `Ctrl+Shift+S` 触发） |
-
-> 交互组件（`button` / `checkbox` / `radio` / `switch`）自动获得悬停提亮（各通道 +12）与按压压暗（-24）反馈，
-> 状态由渲染层维护，脚本无需（也无法）读写。`disabled` 的子树既不响应事件也不做交互反馈。
->
-> 光标离开窗口 / 窗口失活会清除悬停与按压态。Tab 键焦点遍历尚未实现（需要 focusable 注册表）。
-
-内置元素：
-
-| 元素 | 主要属性 | 说明 |
-|---|---|---|
-| `column` / `row` | `gap` / `padding` / `margin`(子级) / `alignItems` / `justifyContent` / `flexGrow` / `flexShrink`(子级) / `wrap` / `width` / `height` | flex 风格容器，尺寸按内容确定（交叉轴默认 stretch）；`row` 加 `wrap` 放不下折行，`gap` 兼作行内间距与行间距 |
-| `grid` | `columns`（1~32） | 等宽列网格：声明序逐行填格，列宽均分内容宽，格子无显式高时拉到行高；不做轨道语法 / colSpan（不等宽列用 `row` + 百分比组合） |
-| `text` | `font` / `color` / `width` / `wrap` / `ellipsis` | 默认单行文本、超宽硬截断；加 `wrap` 变成文本块（按宽度贪心折行、`\n` 强制换行），`ellipsis={n}` 只留 n 行并在末行补 `...` |
-| `rect` | `width` / `height` / `background` / `border` / `radius` / `shadow` / `borderWidth` / `borderStyle` | 通用盒子；未特判的标签也走这条绘制路径；装饰属性（圆角 / 阴影 / 渐变 / 边框宽度）见下文「装饰绘制」 |
-| `button` | `onClick` / `disabled` / `background` / `border` / `color` / `padding` | 缺省浅灰底 + 深灰边框，文字子节点垂直居中；`disabled` 时整体变灰且不响应点击 |
-| `checkbox` / `radio` | `checked` / `onClick` / `border` / `background` / `color` | 18×18 受控控件；`background` 是选中填充色，radio 互斥在 JS 侧用 signal 实现 |
-| `switch` | `checked` / `onClick` | 36×20 受控开关（方形轨道），`background` 覆盖打开态轨道色 |
-| `progress` | `value`(0~1，越界自动钳位) / `background` / `width` / `height` | 缺省 200×8，轨道浅灰 + 前景主题绿 |
-| `separator` | `vertical` / `background` | 横向 1px 高、宽度由容器拉伸；纵向宽度 1px，需显式 `height` |
-| `spacer` | `flexGrow` | 不绘制任何内容，仅吃主轴富余空间，用法 `<spacer flexGrow={1}/>` |
-| `select` | `value` / `options` / `onChange` / `placeholder` / `disabled` | 受控下拉框；`options` 可为字符串数组或 `{value,label}` 数组，选中派发 `onChange({value})`；键盘可开合/移动/选中/Esc 关闭 |
-| `dialog` | `open` / `onClose` | 模态弹层：40% 黑遮罩 + 居中卡片（流内子节点即卡片内容）；点遮罩 / Esc / 卡片内按钮触发 `onClose`，遮罩吞掉其下点击 |
-| `toast` | `message` / `level` | 非模态提示，固定右上角；`level` 取 `success` / `warn` / `error` / `info` 决定色条，显隐由 JS 侧信号控制 |
-| `input` | `value` / `onInput` / `placeholder` / `disabled` | 单行受控输入（沿 `value` 显示，编辑派发 `onInput({value})`）；获焦边框转蓝并显示闪烁竖线光标，点击可定位光标；支持 ←/→/Home/End/Backspace/Delete，`Enter`/`Esc` 不消费；支持 IME 候选词整批提交（Windows） |
-| `textarea` | `value` / `onInput` / `rows` / `placeholder` / `disabled` | 多行受控编辑器；光标 `{行,列}` 二维移动（↑↓←→/Home/End/Backspace/Delete），**`Enter` 插入换行**（不同于 input）；内容超高时纵向滚动并跟随光标；同样支持 IME。缺省 4 行 × 240px |
-| `scroll` | `width` / `height` / `onWheel` | 纵向滚动容器：内容超高时右侧出现 8px 轨道 + 比例滑块，滚轮滚动（一格 60px），到边界后滚轮才冒泡给 `onWheel`；溢出的内容既画不出来也点不中。缺省高 200 |
-| `image` | `src` / `width` / `height` / `disabled` | 显示 png / jpeg / gif 图片（Go 标准库解码，无新增依赖）；不给 `width`/`height` 时用图片自然尺寸，给了就按最近邻缩放；`src` 相对**进程工作目录**解析，加载失败画灰底交叉线占位（stderr 每个路径只警告一次），不中断其它内容 |
-| `canvas` | `width` / `height` / `onDraw(ctx)` / `background` / `border` | 自绘画布：`onDraw` 收到一个 ctx，用 `ctx.fillRect/strokeRect/fillCircle/strokeCircle/line/drawText/clear` 直接落笔，坐标是**画布局部坐标**（0,0 = 左上角），越界部分自动裁掉；`ctx.width` / `ctx.height` 是画布尺寸。`onDraw` 里读到的 signal 变化会自动重绘（缺省 200×120） |
-| `slider` | `value` / `onInput` / `min` / `max` / `step` / `disabled` | 受控滑块（`min`/`max`/`step` 缺省 0/100/1）：显示只看 `value`，拖动或**单击轨道任意位置**派发 `onInput({value})`（`value` 是 **number**）；拖出窗口仍跟手（win32 走 `SetCapture`）。缺省 160×24 |
-| `menubar` | `background` / `border` | 菜单栏容器（缺省 26px 高、自动铺满容器宽）；**它只是个普通容器**，脚本自己写 `column { menubar; 内容 }`，gfx 不会往 root 里偷偷插一条 |
-| `menu` | `label`（或 `title`、或文本子节点） | 菜单标题；作为 `<menubar>` 的直接子节点时是**顶级菜单**（下拉挂在标题正下方），嵌在 `<menuitem>` 里时是**子菜单**（挂在触发项右侧）。空菜单点了不展开 |
-| `menuitem` | `label` / `shortcut` / `disabled` / `onClick` | 菜单项；点中派发 `onClick({x, y})` 并收起整棵菜单。`disabled` 灰字且点了没反应（**也不收起**）；内嵌一个 `<menu>` 即成为子菜单触发器（点击展开/收起右侧下拉，自身不派发 `onClick`）。分隔线用已有的 `<separator>`，它照样可命中（点了没反应） |
-
-**弹性布局：百分比 / min-max / flexShrink / 折行 / 网格**
-
-尺寸词汇不止整数像素，组合起来可以纯声明地做自适应界面：
-
-```js
-h("row", { gap: 10 },
-  h("rect", { width: "33%", height: 80, radius: 10 }),                  // 百分比：按父容器内容区解析
-  h("rect", { flexGrow: 1, minWidth: 120, maxWidth: 320, height: 16 }), // grow + min-max 钳位
-)
-```
-
-- `width="50%"` 百分比字符串按**父容器内容区**解析，坏格式静默忽略回退固有尺寸；百分比算显式尺寸（不再吃交叉轴 stretch），也不撑大父容器
-- `minWidth/maxWidth/minHeight/maxHeight` 在 stretch / grow / shrink / 百分比全部落定后**终钳位**（v1 不回收钳位差：grow 超过 maxWidth 的富余不再分给别人）
-- `flexShrink` 是 `flexGrow` 的对称面：主轴溢出时按**系数×基础尺寸**加权分摊（CSS 同款权重），下限由 minWidth 兜底
-- `<row wrap>` 放不下折到下一行（声明序贪心）：`gap` 兼作行内间距与行间距，grow / shrink / justifyContent 只在行内生效，alignItems 对**行高**生效
-- `<grid columns={3}>` 等宽列网格：格子无显式宽时拉伸到列宽、无显式高时拉到行高（该行最高者），`alignItems` 在格内两轴同时生效
-
-示例：`testdata/elastic_layout_demo.js`（百分比三等分 / 加权收缩 / 标签流折行，拖窗口全程零 JS）、`testdata/grid_demo.js`（3×2 渐变圆角卡片栅格）。
-
-**层叠与定位**
-
-任何节点都可挂 `zIndex`（同层绘制与命中顺序，越大越靠上，相同值保持声明序）、
-`position="absolute"` + `left`/`top`（脱离常规流，相对父内容区定位）与 `escapeClipping`
-（子树的绘制与命中溢出父盒，收集到根层级最后绘制）。`dialog`/`toast` 天生是弹层，自带高层级基线，
-不必手写大 `zIndex`：
-
-```js
-h("column", null,
-  h("rect", { width: 200, height: 100, background: "#eee" }),
-  // 绝对定位 + 逃逸裁剪：绘制与命中都溢出父盒
-  h("rect", {
-    position: "absolute", left: 40, top: 20, width: 120, height: 60,
-    background: "rgba(192, 57, 43, 0.6)", escapeClipping: true,
-  }),
-)
-```
-
-颜色支持命名色与 `#rgb` / `#rgba` / `#rrggbb` / `#rrggbbaa` / `rgb()` / `rgba()`（alpha 可写 `0~255` 或 `0~1`），
-带 alpha 的颜色会与下方内容做真正的混合（`dialog` 的遮罩就是这么实现的）。
-
-**装饰绘制（圆角 / 渐变 / 阴影 / 边框宽度）**
-
-`radius` / `shadow` / `borderWidth` / `borderStyle` 对所有走通用盒子绘制分支的标签生效（`rect` / `button` / 容器等）：
-
-```js
-h("rect", {
-  width: 220, height: 64, radius: 12,                          // 圆角，自动钳到短边一半（够大即胶囊形）
-  background: "linear-gradient(to right, #667eea, #764ba2)",   // 线性渐变：方向词可省（缺省 to bottom），2~8 个色标均匀分布
-  shadow: { x: 0, y: 4, blur: 12, color: "#00000033" },        // 四项全可省，color 缺省 25% 黑，blur 钳 0~24
-  borderWidth: 2, borderStyle: "dashed",                       // 边框宽度任意（缺省 1），dashed 虚线段长 = 2×宽
-})
-```
-
-- `radius=0` 的纯色填充与 1px 实线边框走与无装饰时**逐字节等价**的快路径 —— 不加装饰零开销；圆角用半像素覆盖抗锯齿
-- 阴影**先画再画面**（不会被自身盖住），轮廓跟随圆角；移动带阴影的节点时脏矩形自动按阴影外扩，不残留
-- 坏格式静默回落（非法渐变 → 非法颜色 → 无填充），画歪看得见但不中断整帧
-- 渐变面不参与 button 悬停提亮（提亮只定义在纯色面），`disabled` 降饱和对两者都生效
-
-受控文本输入（与 `checkbox` / `select` 同一套受控语义：显示只看 `value`，编辑只派发 `onInput`）：
-
-```js
-const [name, setName] = createSignal("")
-
-h("input", {
-  width: 240,
-  placeholder: "Type your name",
-  value: () => name(),          // 显示内容永远来自 signal
-  onInput: (e) => setName(e.value),  // 不回写的话输入不会有反应
-})
-```
-
-获焦后边框转蓝并出现闪烁竖线光标；`←`/`→`/`Home`/`End` 移动光标，`Backspace`/`Delete` 删除，
-点击框内任意位置可定位光标。`Enter`/`Esc` 不被输入框消费，会冒泡到 `onKeyDown`。
-光标闪烁需要事件泵持续醒来，挂一个 `requestAnimationFrame` 循环即可（见 `testdata/input_demo.js`）。
-
-**输入法（IME）**：`<input>` / `<textarea>` 都支持候选词输入（Windows 后端）。切到中文输入法后
-敲拼音，正在拼的字由系统组合窗显示，选定候选词后**整批**插到光标处：一次提交只派发一次
-`onInput`，光标一次跨过整批（不会把下一个词插到前一个词中间）。焦点不在编辑框上时输入法
-自动关闭，在按钮/画布上敲字不会弹候选窗。`textarea` 里同样可用，且"提交内容自带换行"会正确
-把光标落到新行。已知取舍：Linux（X11）后端暂无 IME；组合过程不在框内内联绘制。
-示例见 `testdata/ime_demo.js`。
-
-**剪贴板**
-
-`gx/gfx` 导出两个**同步**函数（脚本与窗口在同一个 OS 线程，直接调原生 API 即为正确的线程，不需要 `await`）：
-
-```js
-import { clipboardReadText, clipboardWriteText } from "gx/gfx";
-
-const ok = clipboardWriteText("hello");   // → true / false
-const s = clipboardReadText();            // → 字符串，读不到时为空串
-```
-
-拿不到剪贴板（被别的进程占着，或后端不支持）时**静默降级**：写返回 `false`、读返回空串，不抛异常。
-Windows 后端走 `OpenClipboard` + `CF_UNICODETEXT`（打开失败会重试 5 次 × 20ms，期间 UI 冻结 ≤100ms）；
-Linux（X11）暂未实现。示例：`testdata/clipboard_demo.js`。
-
-**过渡动画**
-
-给节点挂 `transition`，它的**数值属性发生变化**时就不再一帧跳到位，而是在指定毫秒内按 ease-out 逐帧逼近：
-
-```js
-const [wide, setWide] = createSignal(false)
-
-h("rect", {
-  height: 18,
-  background: "#2f80ed",
-  transition: { width: 400 },          // width 用 400ms 过渡
-  width: () => (wide() ? 300 : 60),    // 值一变就开始补间
-})
-
-// 简写：所有可动画属性共用同一时长
-h("row", { transition: 350, opacity: () => (visible() ? 1 : 0.15) }, /* ... */)
-```
-
-可动画属性只有 `width` / `height` / `left` / `top` / `opacity` 五个（`value`、`padding`、`gap` 等
-刻意排除，理由见 `docs/gui-component-status.md` §20）。**首次赋值不做过渡**（与 CSS 一致），
-想要入场动画用命令式 API：
-
-```js
-import { animate } from "gx/gfx"
-
-const cancel = animate(0, 100, 600, (v) => setProgress(v), () => setDone(true))
-// 也可以改元素属性：animate(node, "width", 200, 300)
-// cancel() → 停在当前插值
-```
-
-`opacity` 是**成组**属性：父节点半透明 = 整棵子树一起淡。
-动画期间布局读到的是**插值**，所以兄弟节点会跟着让位。帧驱动复用与光标闪烁同一套 16ms 定时器，
-**没有活动动画时不占定时器**（静止零开销）。示例：`testdata/transition_demo.js`。
-
-**原生系统对话框**
-
-`gx/dialog` 把系统消息框与"打开文件"对话框直接接到脚本上：
-
-```js
-import { alert, confirm, openFile } from "gx/dialog"
-
-await alert("All changes have been saved.", "Gox")          // 只有一个"确定"
-const yes = await confirm("Delete this file?", "Please confirm")  // → true / false
-const path = await openFile({                               // → 完整路径 / null（取消）
-  title: "Pick a source file",
-  filter: [
-    { name: "Text files", pattern: "*.txt;*.md" },
-    { name: "All files",  pattern: "*.*" },
-  ],
-})
-```
-
-三件事值得留意：
-
-- **是 async 的**（与同步的剪贴板不同）。实现是"同步落地 + 异步外观"：Go 侧真的阻塞到用户作答，
-  Promise 的 resolve 投回脚本事件循环 —— 所以 `await` 之后的代码在对话框关掉前不会执行。
-- **模态期间界面不冻结**：消息框以主窗口为 owner，Windows 会自动替我们泵模态消息，
-  重绘 / 拖动都正常，也**不需要**自己写 goroutine 或消息循环。
-- **取消不是错误**：`openFile` 取消返回 `null`（与浏览器 File System Access API 一致），不必 try/catch。
-  **没有原生能力的后端会降级**：内容写到 stderr 并立刻返回（`confirm` 取 true、`openFile` 取 null）。
-
-> 语法提示：运行时只支持 `async function`，**不支持 `async () => {}`**。
-> 事件处理器要写成 `onClick: async function () { ... }`。
-
-示例：`testdata/dialog_native_demo.js`。
-
-**应用数据持久化（gx/storage）**
-
-```js
-import { setAppName, setStorage, getStorage, getStorageInfo } from "gx/storage"
-
-setAppName("MyApp")                     // 决定数据落在哪个子目录（缺省从脚本文件名推）
-setStorage("theme", "dark")
-getStorage("theme", "light")            // → dark（读不到时返回默认值）
-getStorageInfo()                        // → { keys, currentSize, limit }
-```
-
-数据落在 `os.UserConfigDir()/Gox/<应用名>`（Windows `%AppData%`、Linux `~/.config`、macOS `~/Library/Application Support`）。
-两个刻意取舍：**存储文件损坏按空存储处理并告警**（数据坏了不该让应用起不来），但**写入失败抛错**（静默丢持久化数据更难排查）；
-存函数 / 循环引用在写入时抛 TypeError。另有 `removeStorage` / `clearStorage` / `appDataDir`。
-示例：`testdata/storage_demo.js`。
-
-**菜单栏与右键菜单**
-
-菜单栏是**自绘**的（不走 win32 菜单 API），所以三个平台观感一致。它只是个普通容器 ——
-脚本自己写 `column { menubar; 内容 }`，gfx 不会往根节点里偷偷插一条：
-
-```js
-import { h, render, openContextMenu } from "gx/gfx";
-
-render(
-  h("column", null,
-    h("menubar", null,
-      h("menu", { label: "File" },
-        h("menuitem", { label: "New",  shortcut: "Ctrl+N", onClick: () => say("New") }),
-        h("menuitem", { label: "Open", shortcut: "Ctrl+O", onClick: () => say("Open") }),
-        h("separator", null),
-        h("menuitem", { label: "Save As", disabled: true }),
-        h("menuitem", { label: "Theme" },                  // 内嵌 menu = 子菜单
-          h("menu", null,
-            h("menuitem", { label: "Dark",  onClick: () => say("Dark") }),
-            h("menuitem", { label: "Light", onClick: () => say("Light") })))),
-      h("text", null, "ready")),                          // 菜单栏里放别的标签按固有尺寸顺排
-    h("column", { padding: 16 },
-      h("rect", {
-        width: 320, height: 160, background: "#e8eef7",
-        onContextMenu: (e) => openContextMenu(e.x, e.y, [
-          h("menuitem", { label: "Copy", onClick: () => say("Copy") }),
-          h("menuitem", { label: "Paste", onClick: () => say("Paste") }),
-        ]),
-      }))),
-  { title: "Menu", width: 480, height: 380 });
-```
-
-- **下拉是弹层**：溢出 26px 的菜单栏显示，不被裁剪也不被后面的兄弟盖住；点外部收起（该次点击被吞掉，
-  不会顺带按到下面的控件）；点菜单栏另一个标题直接换过去（互斥）。
-- **键盘**：焦点在菜单栏时 ←/→ 在标题间循环（换过去就开着），↓/Enter/Space 展开，Esc 收起。
-  **Esc 的优先级是"菜单 > 下拉框 > 对话框"**，一次只关一层。
-- **快捷键**由 Go 侧一张表在事件泵层匹配，**菜单不必展开**就能用。只认带 `Ctrl`/`Alt` 的组合
-  （不然菜单里写 `shortcut="S"` 会让整个应用打不出 `s`），且修饰键**全等**
-  （`Ctrl+S` 不会被 `Ctrl+Shift+S` 触发）。命中回落 `onClick({x, y, shortcut: "Ctrl+S"})`。
-- **右键菜单走数据式 API**（`openContextMenu(x, y, items)`）而不是 `contextMenu` prop：
-  JSX 元素是**单次挂载**的对象（一个节点只有一个 `Parent`），做成 prop 的话同一个 `<menu>`
-  挂到多个组件上会互相争抢 `Parent` —— 每个使用点都得重新 `h()` 一次，与直接调 API 没区别。
-- 越界会自动向左/上翻折（在窗口右下角右键也能看到整块菜单）；
-  在右键菜单上再点右键会被吞掉（不换位置、不重弹）。
-
-示例：`testdata/menu_demo.js`。
-
-**多窗口**
-
-`render()` 可以调用多次，每次开一个独立窗口 —— 各有自己的元素树、焦点、交互态与事件循环：
-
-```js
-import { h, render } from "gx/gfx";
-import { createSignal } from "gx/solid";
-
-const n = createSignal(0);                       // 想跨窗口共享状态就在顶层建信号
-
-function counter(title) {
-  return h("column", { padding: 12, gap: 8 },
-    h("text", null, title),
-    h("text", null, () => "count = " + n()),
-    h("button", { onClick: () => n(n() + 1) }, "+1"),
-    h("button", { onClick: () => wB.close() }, "close me"));
-}
-
-const wA = render(counter("Window A"), { title: "A", width: 320, height: 200 });
-const wB = render(counter("Window B"), { title: "B", width: 320, height: 200 });
-```
-
-- `render()` 返回**窗口句柄**：`w.close()` 关掉这个窗口，`w.isClosed()` 查状态。
-  关闭是**异步受理**的（内部经 `Post` 投回 GUI 线程，避免在遍历注册表时改注册表），
-  返回时窗口可能还没真正消失；关窗口是幂等的。
-- 句柄还能改标题与尺寸：`w.title()` 读、`w.setTitle(t)` 写（做成方法而非属性 ——
-  属性值构造时被快照，会永远返回旧标题）、`w.resize(width, height)` 改**客户区**尺寸
-  （与 `<window width height>` 同口径），支持的后端会连带触发 `onResize`（于是
-  useWindowSize 断点布局跟着自动切）；`resize` 缺参 / 非数字抛 TypeError，数值 ≤0 静默拒绝，
-  后端不支持时 no-op（`title()` 仍读得回最近设置的值）。
-- **关一个，其余继续跑**；只有**全部窗口都关掉**，事件循环才退出、进程才结束。
-- 每个窗口是**各自跑一遍组件函数**：两张窗口的节点不共享。想同步状态就在脚本顶层
-  共享 `createSignal`（如上例的 `n`），别指望同名全局变量自动串起来。
-- 每个窗口**焦点独立**：在 B 里点击不会把 A 的焦点框带过去。
-- 事件泵对多个窗口是**切片轮询**（Windows 有线程级消息队列，可共享；X11 是单连接、
-  没有共享队列，对第一个窗口无限期阻塞会饿死其余窗口）—— 所以多窗口下等待上限是
-  32ms 的有界轮询，单窗口仍是原来的阻塞零空转。
-- `gfx.Post` 的任务在当前版本是**广播**（所有窗口的泵各处理一次）；现有任务都幂等。
-
-示例：`testdata/multiwindow_demo.js`（开两个窗口各自计数，`File - Close window` / `Ctrl+Q`
-关掉当前窗口，关一个另一个继续跑）。
-
-**多行文本与自动换行**
-
-`<text>` 加 `wrap` 就变成会自动折行的文本块（按可用宽度贪心断行，中西文一视同仁），
-`ellipsis` 用来限行数并补省略号：
-
-```js
-h("column", { gap: 8 },
-  // 折行：高度按行数自动变高；宽度取显式 width，没写就铺满容器可用宽度
-  h("text", { wrap: true, width: 260, font: 14 }, longText),
-  // 最多 2 行，超出补 "..."
-  h("text", { wrap: true, ellipsis: 2, width: 260, font: 14 }, longText),
-  // 不给 wrap 就还是老行为：单行、超宽硬截断
-  h("text", { width: 260, font: 14 }, longText),
-)
-```
-
-`<textarea>` 是多行编辑框，受控语义与 `input` 一致（显示只看 `value`，编辑只派发 `onInput`）：
-
-```js
-const [text, setText] = createSignal("")
-
-h("textarea", {
-  rows: 5,
-  width: 300,
-  placeholder: "Type here...",
-  value: () => text(),
-  onInput: (e) => setText(e.value),   // 不回写就不会有反应
-})
-```
-
-- 行只由 `\n` 切分（**不做软换行**），所以光标 `{行, 列}` 与文本严格对应；超长行会被右侧裁掉；
-- `Enter` **被编辑框消费**（插入换行）—— 与单行 `input` 相反，多行框里 Enter 就是内容；
-  `Esc` / `Tab` / 功能键 / 带 `Ctrl`+`Alt` 的组合键仍然放行给脚本；
-- 内容超过可视高度后自动纵向滚动，且**滚动跟随光标**（在底部回车时光标不会跑到框外）；
-  也可以把光标放进框里滚滚轮。
-
-**滚动容器**
-
-`<scroll>` 让任意高度的内容待在固定高度的视口里，超出部分被裁掉，右侧自动出现滚动条：
-
-```js
-h("scroll", { width: 240, height: 120, onWheel: () => setOverscroll(n => n + 1) },
-  rows.map((r) => h("rect", { height: 36, background: "#fff" },
-    h("text", { font: 13 }, r))),
-)
-```
-
-- 滚轮在容器内先被容器消费（一格 60px），**到边界才继续往外冒泡**给 `onWheel` —— 所以"到顶/到底再翻页"可以纯 JS 写；
-- 溢出的内容**既画不出来也点不中**（绘制裁剪与命中裁剪用同一个视口），不会出现幽灵点击；
-- 子节点的 `Box` 已经包含滚动偏移（就是屏幕坐标），不用自己再算；
-- 内容不足一屏时不出滚动条，也不会给内容让出滚动条那 8px；
-- 静态数组子节点会自动展开成兄弟节点，所以 `<scroll>{rows}</scroll>` 直接可用。
-- 横向滚动与滚动条拖拽尚未实现，滚动条本身不可拖（只能滚轮或脚本改偏移）。
-
-> 颜色属性（`background` / `border` / `color`）在组件标签上有语义差异：`background` 表示"选中/填充的强调色"，
-> 在 `button` / `rect` 上才是普通填充色；`color` 沿祖先链继承，因此 `<button color="#fff">文字</button>` 生效。
-
-**自绘画布**
-
-`<canvas>` 给脚本一个直接落笔的画布，`onDraw` 收到一个 `ctx`（坐标是画布局部坐标，越界自动裁掉）：
-
-```js
-h("canvas", {
-  width: 200, height: 80,
-  onDraw: (ctx) => {
-    ctx.fillRect(0, 0, ctx.width, ctx.height, "#fafafa")   // 铺底
-    ctx.line(0, 79, ctx.width - 1, 79, "#ccc")             // 基线
-    ctx.fillCircle(24, 30, 14, "#27ae60")                  // 实心圆
-    ctx.strokeCircle(60, 30, 14, "#8e44ad")                // 圆环
-    ctx.drawText("hi " + count(), 4, 4, 13, "#333")        // 读 signal → 自动重绘
-  },
-})
-```
-
-- ctx 方法：`fillRect(x,y,w,h,color)` / `strokeRect` / `fillCircle(cx,cy,r,color)` /
-  `strokeCircle` / `line(x1,y1,x2,y2,color)` / `drawText(text,x,y,size,color)` / `clear(color)`；
-  另有只读属性 `ctx.width` / `ctx.height`。
-- 颜色写字符串（`"#f00"` / `"red"` / `"rgba(0,0,0,.5)"`），也可以写一个数字当灰度（`0~255`）；
-  参数缺失或颜色非法**不会抛错**，按缺省值（黑色 / 0）处理 —— 画歪看得见，比整帧中断好排查。
-- **响应式**：`onDraw` 里读到的 signal 变化会自动重绘。读普通变量不会（依赖只看 signal）；
-  因此把读 signal 的语句放在函数体前部最稳。
-- 画布默认不铺底（与 HTML canvas 一样透明），要底色就 `ctx.clear(...)`/`ctx.fillRect(...)`
-  或给 canvas 挂 `background`。不给尺寸时缺省 200×120。
-- `disabled` 时每个落笔色自动降饱和。
-- 目前只有最近邻/无插值的直线与圆（无抗锯齿、无路径、无变换、无渐变）。
-
-**滑块**
-
-`<slider>` 是受控滑块：`value` 决定位置（含 `min`/`max`/`step`），拖动或**单击轨道任意位置**都会派发 `onInput({value})`：
-
-```js
-const [vol, setVol] = createSignal(40)
-
-h("slider", {
-  width: 200, min: 0, max: 100, step: 5,
-  value: () => vol(),
-  onInput: (e) => setVol(e.value),   // e.value 是 number，不是字符串
-})
-```
-
-- **受控语义**与 `input` / `textarea` 一致：不回写 `value`，滑块会弹回原位；
-- 点击轨道**直接跳值**，不必"先按住再拖"；
-- 拖动中鼠标划过别的控件**不会**给它们加悬停高亮 —— 一次拖动算一个手势；
-- 拖动期间鼠标移出窗口在 Windows 上仍然跟手（内部用 `SetCapture`）；
-- `step ≤ 0` 表示连续取值；`max < min` 时量程塌缩到 `min`（滑块停在最左），不会产生 NaN。
-
-**响应式子节点（条件渲染 / 列表渲染）**
-
-子节点传函数即为响应式，effect 会自动追踪它读到的信号并在变化时重新挂载：
-
-```js
-h("column", null,
-  h("button", { onClick: () => setTab(0) }, "首页"),
-  h("button", { onClick: () => setTab(1) }, "设置"),
-
-  // 条件渲染：返回元素直接替换
-  () => tab() === 0
-    ? h("rect", { width: 120, height: 40, background: "#c0392b" })
-    : h("rect", { width: 120, height: 40, background: "#2980b9" }),
-
-  // 列表渲染：返回数组即展开成元素列表，增删项自动挂载/卸载
-  () => items().map((it) => h("text", null, it)),
-)
-```
-
-求值结果按类型分派：元素直接挂载，数组递归展开，`false`/`true`/`null`/`undefined` 渲染为**空**，
-字符串与数字渲染为文本，其他对象走 `toString()`。元素 ↔ 标量相互切换时复用同一个内部占位节点，
-不会打断其他子节点的布局。
-
-> 函数子节点 map 出来的列表，内容变化按"清空重建"处理 —— 要 keyed 复用（行内状态保留、
-> 只重渲染变化的行）用 `gx/view` 的 `<For>`，见下节。
-
-**声明式视图（gx/view）与异步资源（createResource）**
-
-`gx/view` 把"循环 + 条件"写成声明（对标 Vue 的 `v-for` + `:key` / `v-show` / `v-if` 链）：
-
-```js
-import { For, Show, Switch, Match } from "gx/view"
-
-<column gap={8}>
-  <For each={() => rows()} key={(r) => r.id} fallback={<text>暂无数据</text>}>
-    {(row, i) => <text>{(i + 1) + ". " + row.title}</text>}
-  </For>
-
-  <Show when={() => open()}>
-    <input width={150} value={draft} onInput={(e) => setDraft(e.value)} />
-  </Show>
-
-  <Switch>
-    <Match when={() => phase() === "loading"}><progress value={0.5} /></Match>
-    <Match when={() => phase() === "error"}><text>出错了</text></Match>
-  </Switch>
-</column>
-```
-
-- `For` 的复用判定是 **key 配对 + item 引用同一性 + 下标**：命中的行原样复用（行内输入框、滚动位置、
-  局部 signal 全留着），只就地重渲染真正变了的行；`each` 也接受数字（生成 0..n-1）。
-  `stable` 可把下标移出判定（重排 / 中间删除不重建，代价是下标参数停在挂载值）；
-  重复 key 会降级为位置键并警告一次（不写坏树）
-- `each` / `when` **要传函数**（`each: () => rows()`）：传 `rows()` 只拿到一张快照，之后信号再变也不重渲染
-  —— 与受控 input 的 `value` 必须传函数是同一条纪律
-- `Show` / `Switch` 走 **keep-alive**：分支懒构建且只构建一次，隐藏只是摘出布局流（子树保活，再显示状态原样）。
-  刻意不做 v-if —— 静态子树销毁后重新挂回去是"看着一样但不再响应式"的死树；要该语义用函数子节点
-  `{() => cond() ? <X/> : null}`（函数体内每次求值都新建元素）
-- 宿主是**透明占位节点**：放进 column 竖排、放进 row 横排，自己不多一层盒子；
-  但 `row wrap` 的折行不认它（要折行标签流请用普通 row）
-
-异步资源与生命周期在 `gx/solid`：
-
-```js
-import { createResource, onMount, onCleanup } from "gx/solid"
-
-const [data, res] = createResource(fetchRows)   // fetcher 同步立即 ready，异步先 pending
-// res.state() ∈ pending / ready / refreshing / error
-// res.error() 读错误、res.refetch() 重取（latest-wins：过期响应丢弃）
-// error 态 data() 不抛 —— 返回上一次成功的值（从未成功则 undefined）
-
-onMount(() => console.log("子树挂上"))           // 登记到"当前正在构建的响应式子树"
-onCleanup(() => console.log("子树换代 / 销毁"))   // 顶层调用是 no-op（警告一次）
-```
-
-示例：`testdata/view_demo.js`（For keyed 复用 / Show 保活 / Switch 分支）、
-`testdata/resource_demo.js`（pending→ready / refetch 保旧值 / 失败后恢复）、
-`testdata/kit_demo.js`（设计套件：令牌主题 + 变体按钮工厂 + 装饰卡片）。
-
-更多示例：`testdata/form_demo.js`（表单控件）、`testdata/progress_demo.js`（进度/分隔/占位）、
-`testdata/button_demo.js`（按钮三态）、`testdata/events_demo.js`（鼠标/滚轮/右键/修饰键）、
-`testdata/focus_demo.js`（焦点框与 focus/blur）、`testdata/hover_demo.js`（悬停与按压反馈）、
-`testdata/tabs_demo.js`（条件渲染切面板）、`testdata/list_demo.js`（数组信号增删列表）、
-`testdata/select_demo.js`（受控下拉框）、`testdata/dialog_demo.js`（模态对话框与右上角 toast）、
-`testdata/input_demo.js`（单行输入与实时镜像）、`testdata/scroll_demo.js`（滚动容器与边界冒泡）、
-`testdata/multiline_demo.js`（自动换行 / 省略号 / 硬截断三态对照）、`testdata/textarea_demo.js`（多行编辑器）、
-`testdata/image_demo.js`（图片五态：自然尺寸 / 放大 / 缩小 / 坏路径占位 / 禁用）、
-`testdata/canvas_demo.js`（自绘画布：signal 驱动柱状图 + ctx 原语展示）、
-`testdata/slider_demo.js`（滑块：受控值 / 量程 / 禁用三态）、
-`testdata/ime_demo.js`（输入法：候选词整批提交与光标跨批）、
-`testdata/clipboard_demo.js`（剪贴板：同步读写与失败降级）、
-`testdata/transition_demo.js`（过渡动画：宽度 / 成组淡出 / 位移 / 命令式 animate）、
-`testdata/dialog_native_demo.js`（原生对话框：alert / confirm / 打开文件，全 async await）、
-`testdata/menu_demo.js`（菜单栏：下拉 / 子菜单 / 禁用项 / 快捷键 / 右键菜单）、
-`testdata/multiwindow_demo.js`（多窗口：两窗口独立计数、关一个另一个继续跑、全关退出）、
-`testdata/resize_demo.js`（窗口自适应：onResize 断点切栏 + 句柄 resize/setTitle）、
-`testdata/storage_demo.js`（gx/storage 持久化读写）、
-`testdata/routing_demo.js`（用户态路由：signal 切页 + 未保存拦截守卫）、
-`testdata/dev_panel_demo.js`（gx/dev 调试面板：帧 / 缓存 / 树 / 警告）、
-`testdata/elastic_layout_demo.js`（百分比 / min-max / flexShrink / 折行）、
-`testdata/grid_demo.js`（等宽列网格 + 渐变圆角卡片）、
-`testdata/view_demo.js`（声明式视图：For / Show / Switch）、
-`testdata/resource_demo.js`（createResource 异步资源三态）、
-`testdata/kit_demo.js`（设计套件：令牌主题与变体工厂）、
-`testdata/counter_demo.js` 与 `testdata/gui_demo.js`（响应式基础）。
-
-## 打包成独立可执行文件
-
-`jsbuild`（packager 目录）把入口脚本及其相对 import 的模块嵌入一个生成的 Go 工程，编译成单文件可执行程序，自带完整运行时：
+点击按钮 → 信号更新 → 依赖它的属性/文本节点标脏 → 脏矩形合并后只重绘受影响区域。`render()`
+返回窗口句柄，可调用多次开多窗口（各有独立元素树与焦点，全关才退出进程）。
+
+完整参考 —— 事件模型、内置元素属性表、弹性布局与装饰绘制、受控组件与输入法、过渡动画、
+`gx/view` 声明式视图、原生对话框 / 剪贴板 / 持久化存储 / 菜单栏、多窗口语义与平台差异 ——
+见 **[docs/gui-guide.md](docs/gui-guide.md)**，可直接运行的示例见
+[`testdata/`](testdata/)（`counter_demo.js`、`form_demo.js`、`multiwindow_demo.js`、
+`menu_demo.js`、`view_demo.js` 等 30+ 个）。
+
+### 打包为独立可执行文件
+
+`jsbuild`（`packager/`）把入口脚本及其相对 `import` 的模块嵌入一个生成的 Go 工程，编译成单文件
+可执行程序，自带完整运行时：
 
 ```bash
 go run ./packager app.js -o app.exe                    # CLI 应用
@@ -728,9 +293,51 @@ Options:
   -v, --verbose        显示构建过程输出
 ```
 
-各平台的分发注意事项（Windows 图标与签名、Linux 打包格式、macOS .app bundle）见 [docs/desktop-distribution.md](docs/desktop-distribution.md)。
+各平台的分发注意事项（Windows 图标与签名、Linux 打包格式、macOS `.app` bundle）见
+[docs/desktop-distribution.md](docs/desktop-distribution.md)。
 
-## 架构
+## 配置说明
+
+Gox 不使用配置文件，全部行为由**命令行参数**、**少量环境变量**与**脚本内 API** 控制。
+
+### 命令行参数
+
+| 命令 | 参数 | 说明 |
+|---|---|---|
+| `Gox` / `goxjs` | 无 | 启动交互式 REPL |
+| `Gox` / `goxjs` | `<script.js>` | 执行脚本文件；报错写 stderr 并以非零码退出 |
+| `go run ./packager` | 见 [打包](#打包为独立可执行文件) | jsbuild 打包器参数表 |
+
+REPL 内建命令：`:help`（帮助）、`:clear`（重置全局环境）、`:exit` / `:quit`（退出）。
+
+### 环境变量
+
+| 变量 | 作用 | 缺省 |
+|---|---|---|
+| `GOX_STORAGE_DIR` | 覆盖 `gx/storage` 的数据根目录，测试与多实例隔离常用 | 空（走系统配置目录） |
+| `GOOS` / `GOARCH` / `CGO_ENABLED` | 仅在构建期影响交叉编译（见 `scripts/build-npm.sh`） | 宿主平台 |
+
+### 应用级配置
+
+| 配置项 | 设置方式 | 说明 |
+|---|---|---|
+| 应用名 / 数据目录 | `setAppName("MyApp")`（`gx/storage`） | 数据落在 `os.UserConfigDir()/Gox/<应用名>` —— Windows `%AppData%`、Linux `~/.config`、macOS `~/Library/Application Support`；未设置时从脚本文件名推导 |
+| 窗口标题与尺寸 | JSX `<window title width height>` 或 `render(tree, {title, width, height})` | 缺省 `Gox` 400×300 |
+| 字体 | 平台自动探测 | Linux 惰性扫描系统字体目录（`/usr/share/fonts`、`~/.local/share/fonts` 等），CJK 字体优先，条目上限 2000 |
+| 主题 / 颜色 | 元素属性（`background` / `border` / `color`） | 支持命名色与 `#rgb` / `#rgba` / `#rrggbb` / `#rrggbbaa` / `rgb()` / `rgba()` |
+
+### npm 包信息
+
+| 项 | 值 |
+|---|---|
+| 包名 / 命令 | `@goxjs/goxjs` → `goxjs` |
+| 内含平台 | macOS x64 / arm64、Linux x64 / arm64、Windows x64 |
+| Node 版本 | `>=14`（仅用于分发二进制，运行期不依赖 Node） |
+| 版本真源 | [`npm/package.json`](npm/package.json) 的 `version` 字段 |
+
+## 技术架构
+
+### 编译与执行管线
 
 ```
  .js 源码
@@ -748,8 +355,14 @@ Options:
  结果
 ```
 
-- **无 GC 的显式内存管理** — 对象生命周期由运行时显式控制，循环引用有专门处理
-- **单线程 VM + 跨 goroutine 调度** — `http.createServer` 等网络回调跨 goroutine 捕获后调度回 VM 单线程执行，无需锁
+### 关键设计决策
+
+- **无 GC 的显式内存管理** —— 对象生命周期由运行时显式控制，循环引用有专门处理。
+- **单线程 VM + 跨 goroutine 调度** —— `http.createServer` 等网络回调跨 goroutine 捕获后调度回
+  VM 单线程执行，无需锁。挂起任务保活事件循环，计数归零才允许进程退出。
+- **定长指令编码** —— 无需变长解码状态机，直取操作数；常量池承担大对象引用。
+- **可选能力走可选接口** —— GUI 后端通过 `Surface` + `WindowFactory` 抽象，换后端零改动脚本；
+  平台独有能力（IME、剪贴板、原生对话框）按后端探测，缺失时静默降级而非报错。
 
 ### 目录结构
 
@@ -761,44 +374,107 @@ Options:
 | `compiler/` | AST → 字节码编译器（含符号表） |
 | `bytecode/` | 操作码与字节码格式定义 |
 | `vm/` | 栈式字节码虚拟机（调用帧、模块加载、定时器调度） |
-| `object/` | 运行时对象系统（Number/Array/Map/Promise/Observable...） |
+| `object/` | 运行时对象系统（Number / Array / Map / Promise / Observable…） |
 | `runtime/` | 全局环境 Environment |
 | `stdlib/` | 标准库与宿主 API 实现（含 `gx/solid` 响应式信号） |
-| `gfx/` | 自研 GUI 渲染层（软件光栅化、布局、命中测试、win32/X11 后端） |
+| `gfx/` | 自研 GUI 渲染层（软件光栅化、布局、命中测试、win32 / X11 后端） |
 | `packager/` | jsbuild 打包器（GUI 应用、交叉编译） |
-| `docs/` | 文档 |
 | `test/` | 测试相关：`bench/` 性能剖析基准（fib、函数调用、对象操作、数值解析） |
-| `npm/` | npm 包 `@goxjs/goxjs` 的定义（`package.json` / `bin/gox.js` / 包说明），二进制由发版流水线现场编译，不进仓库 |
+| `testdata/` | 可直接运行的示例脚本（语言特性、宿主 API、GUI 示例） |
+| `docs/` | 文档（GUI 指南、运行时 API 教程、分发与缺口清单） |
+| `npm/` | npm 包 `@goxjs/goxjs` 的**定义**（`package.json` / `bin/gox.js` / 包说明），二进制由发版流水线现场编译，不进仓库 |
 | `scripts/` | 构建脚本：`build-npm.sh` 交叉编译五个平台的二进制 |
 | `.github/workflows/` | CI：`release.yml` 发版流水线（push main / tag / Release → npm） |
 
-## 开发
+## 开发与测试
 
 ```bash
-go test ./...     # 运行全部测试 (bytecode/compiler/lexer/object/parser/runtime/vm)
-go run ./test/bench   # 生成 cpu.prof 性能剖析
+go test ./...          # 运行全部测试 (bytecode / compiler / lexer / object / parser / runtime / vm)
+go run ./test/bench    # 生成 cpu.prof 性能剖析
 ```
+
+> 由于零 cgo，`go test -race` 在本项目不可用（Go 会要求 cgo 支持）。
 
 深入参与开发（新增标准库 API、理解回调桥与内存管理）请阅读
 [docs/js-runtime-api-tutorial.md](docs/js-runtime-api-tutorial.md)。
 
-## 发版
+## 发版流程
 
-`@goxjs/goxjs` 由 GitHub Actions 自动发布（`.github/workflows/release.yml`），认证走 npm Trusted Publishing (OIDC)，仓库里不需要任何 secret / token：
+`@goxjs/goxjs` 由 GitHub Actions 自动发布（[.github/workflows/release.yml](.github/workflows/release.yml)），
+认证走 npm Trusted Publishing (OIDC)，仓库里不需要任何 secret / token：
 
 ```bash
 # 1. 改版本号（npm/package.json 的 version 是唯一真源）
 # 2. 提交推送
-git commit -am "release: v0.2.1" && git push Gox main:main
+git commit -am "release: v0.2.1" && git push origin main
 # 3. 剩下交给 CI：交叉编译五平台二进制 → 冒烟测试 → 打包校验 → npm publish --provenance
 #    发布成功后自动打 v0.2.1 标签并建 Release
 ```
 
-- **触发**：push 到 `main`、推送 `v*` 标签、发布 Release，以及手动 `workflow_dispatch`（可勾 `dry_run` 只构建打包、不上传）
-- **幂等**：CI 先查 registry，该版本已存在则跳过并留一条 notice —— 重复推送、重跑历史工作流都不会报红，也不会重复发布
-- **版本号**：日常提交不会触发真发布，只有 registry 上还没有的版本才会被发出去；打标签时标签号必须与 `package.json` 一致，否则直接失败
-- **本地手工发版**（应急用，需要 OTP）：`bash scripts/build-npm.sh && cd npm && npm publish --access public`
-- **排障**：OIDC 失败与"Trusted Publisher 没配对"返回的是同一个误导性 404，先核对 npm 侧那四个字段（见 workflow 头部注释）；每次发布的日志里都会打印 npm 版本、`NODE_AUTH_TOKEN` 是否为空、OIDC 端点是否可用
+- **触发**：push 到 `main`、推送 `v*` 标签、发布 Release，以及手动 `workflow_dispatch`
+  （可勾 `dry_run` 只构建打包、不上传）
+- **幂等**：CI 先查 registry，该版本已存在则跳过并留一条 notice —— 重复推送、重跑历史工作流
+  都不会报红，也不会重复发布
+- **版本号**：日常提交不会触发真发布，只有 registry 上还没有的版本才会被发出去；打标签时标签号
+  必须与 `package.json` 一致，否则直接失败
+- **本地手工发版**（应急用，需要 OTP）：
+  `bash scripts/build-npm.sh && cd npm && npm publish --access public`
+- **排障**：OIDC 失败与"Trusted Publisher 没配对"返回的是同一个误导性 404，先核对 npm 侧那四个
+  字段（见 workflow 头部注释）；每次发布的日志里都会打印 npm 版本、`NODE_AUTH_TOKEN` 是否为空、
+  OIDC 端点是否可用
+
+## 贡献指南
+
+欢迎提交 Issue 与 Pull Request。
+
+**开发环境**：Go 1.26.2+，零 cgo（无需 C 工具链）。提交前请确保：
+
+```bash
+gofmt -l .             # 应无输出
+go build ./...
+go test ./...
+```
+
+**提交规范**：沿用仓库现有的 Conventional Commits 风格，scope 用受影响的模块或主题，
+中文描述：
+
+```
+feat(gfx): 新增 <slider> 的键盘调节支持
+fix(vm): 修正 SET_INDEX 对非对象类型静默丢弃的问题
+docs(gui-guide): 补充多窗口事件泵的轮询语义
+ci(release): 打包闸改回 tar 校验，不再解析 npm 的输出
+```
+
+**新增内置 GUI 组件时须同步四处**（漏改会静默失效，不出编译错误）：
+
+| 位置 | 作用 |
+|---|---|
+| `gfx/node.go` 的 `knownTags` | 注册标签名，否则 `h()` 会打印"未知标签"警告 |
+| `gfx/layout.go` 的 `intrinsicSize` | 声明固有尺寸 |
+| `gfx/layout.go` 的布局分派 | 声明子节点如何参与布局 |
+| `gfx/raster.go` 的 `drawNode` | 实现绘制；被 `case` 截走的标签需自行补画 background / border |
+
+**其他约定**：
+
+- 事件回调统一经 `callHandler` 分发；涉及窗口的操作从节点出发经 `appOfNode(n)` 取所属窗口（支持多窗口）
+- `gx/*` 的 JSX 属性与子节点在调用当场求值一次 —— 需要响应式就必须传**函数**（`value: () => sig()`），
+  传值只是一张快照
+- 新增标准库 API 请同步更新 [docs/js-runtime-api-tutorial.md](docs/js-runtime-api-tutorial.md)；
+  未决与未实现项记入 [docs/undecided-and-unimplemented.md](docs/undecided-and-unimplemented.md)
+- 涉及 GUI 组件的改动，请在 [docs/gui-component-status.md](docs/gui-component-status.md) 追加一条落地记录
+- 示例脚本放在 `testdata/` 并确保可直接运行
+
+## 相关文档
+
+| 文档 | 内容 |
+|---|---|
+| [docs/gui-guide.md](docs/gui-guide.md) | GUI 开发指南：元素/事件参考、布局、动画、宿主能力、示例索引 |
+| [docs/js-runtime-api-tutorial.md](docs/js-runtime-api-tutorial.md) | 运行时 API 教程：函数类型、回调桥、内存管理、新增 API 的完整流程 |
+| [docs/gui-component-status.md](docs/gui-component-status.md) | GUI 组件实现现状、逐批落地记录与设计取舍（§编号最权威） |
+| [docs/gui-patterns.md](docs/gui-patterns.md) | 用户态模式手册（路由、状态、主题等惯用法） |
+| [docs/desktop-distribution.md](docs/desktop-distribution.md) | 桌面应用分发：图标、签名、各平台打包格式 |
+| [docs/undecided-and-unimplemented.md](docs/undecided-and-unimplemented.md) | 未决与未实现清单 |
+| [官网](https://14752222.github.io/Gox/) | 安装、运行脚本、写 GUI 应用与打包的在线教程 |
 
 ## 许可证
 
