@@ -299,6 +299,14 @@ func TestModelSliderAndSelect(t *testing.T) {
 				</column>
 			</window>
 		);
+		// ===== 测试钩子: 把脚本闭包里的 signal 暴露给 Go 侧 =====
+		// 顶层 const 活在脚本作用域里, Go 侧的 v.Globals() 只能看到 globalThis ——
+		// 所以挂几个小函数当"窗口": getXxx 读回当前值 (断言"控件真的写回了 signal"),
+		// writeXxx 反向写入 (断言"外部改 signal 时控件跟随"), volKind 专门确认写回的是
+		// number 而不是 "50" 这种字符串 (model 不做类型转换)。
+		// 命名纪律: 一律 writeXxx —— 写成 globalThis.setCity = (v) => setCity(v) 会
+		// 自我覆盖 (箭头调到自己 ⇒ 无限递归), 而那个错只在 Go 侧 callbackError 里留
+		// 一句 (callGlobalFn 不读它), 现象是"写入静默无效"。
 		globalThis.getVol = () => vol();
 		globalThis.getCity = () => city();
 		globalThis.volKind = () => typeof vol();
