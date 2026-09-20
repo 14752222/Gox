@@ -93,22 +93,30 @@ DX 差的根因 —— 不是不会写，是写错了没人告诉你。
    区别在于这次全部出声。警告做了去重：`h()` 在每次重建时都会跑（列表行的渲染函数、
    响应式分支换代），不去重会刷屏。
 
-## 5. 为什么不动 `For / Show / Switch / Match`
+## 5. 控制流（`For / Show / Switch`）为什么不加**新概念**
 
-这三个的现有 API 已经是**声明的 1:1 翻译**，没有"两种差不多的写法"：
+三个组件的现有 API 已经是**声明的 1:1 翻译**，没有"两种差不多的写法"：
 
 ```jsx
-<For each={() => rows()} key={(r) => r.id} stable fallback={<text>空</text>}>{(row) => <Row row={row} />}</For>
-<Show when={() => open()} fallback={<text>隐藏中</text>}>…</Show>
+<For each={rows} key="id" stable fallback={<text>空</text>}>{(row) => <Row row={row} />}</For>
+<Show when={open} fallback={<text>隐藏中</text>}>…</Show>
 <Switch fallback={<text>未知</text>}>
   <Match when={() => phase() === "loading"}>…</Match>
 </Switch>
 ```
 
 它们的问题不在写法，而在**文档之前没人知道 `each` 要传取值函数**（见
-`docs/gui-patterns.md` §9 的三条语义）。给它们再加一层糖（例如 `<Match is="loading" on={phase}>`）
-只会引入**第二套调用约定** —— 而"同一组组件里并存三种传法"正是这次要消灭的东西。
-所以这里的取舍是：**受控组件加糖（痛点明确、收益可量化），控制流不加糖（已经很薄）。**
+`docs/gui-patterns.md` §9）。给它们再加一层糖（例如 `<Match is="loading" on={phase}>`）
+只会引入**第二套调用约定** —— 而"同一组组件里并存多种传法"正是这次要消灭的东西。
+
+所以这一批对控制流做的是**同一套原则下的两件事，不引入任何新概念**：
+
+| 做的事 | 内容 | 语义变化 |
+|---|---|---|
+| **短写法** | `each={rows}` / `when={open}`（signal 本身就是取值函数）、`key="id"`（= `key={(r) => r.id}`） | 无（同一机制的表达） |
+| **误用出声** | `each` 收到字符串/对象、`when` 收到字符串或忘了括号的静态布尔、`key` 收到非函数非字段名、`stable` 传函数 ⇒ 各打一条去重警告 | 无（降级行为逐字不变，只是不再静默） |
+
+判定口径写在 `gfx/view.go` 末尾的"误用出声"一节；断言在 `gfx/view_guard_test.go`。
 
 顺带一条已经可用、但很少人知道的简写：**signal 本身就是函数**，所以任何"要取值函数"的
 位置都可以裸传 signal，不用包箭头：

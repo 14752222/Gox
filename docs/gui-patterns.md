@@ -333,12 +333,12 @@ switch 滑块 / disabled 降饱和 / 光标闪烁周期——套件在这些地�
 ```js
 import { For, Show, Switch, Match } from "gx/view";
 
-<For each={() => rows()} key={(r) => r.id} fallback={<text>暂无数据</text>}>
+<For each={rows} key="id" fallback={<text>暂无数据</text>}>
   {(row, i) => <RowCard row={row} i={i} />}
 </For>
 
-<Show when={() => open()} fallback={<text>已隐藏</text>}>
-  <column gap={4}><input value={draft} onInput={(e) => setDraft(e.value)} /></column>
+<Show when={open} fallback={<text>已隐藏</text>}>
+  <column gap={4}><input model={draft} /></column>      {/* 双向绑定见 gui-model-binding.md */}
 </Show>
 
 <Switch fallback={<text>未知状态</text>}>
@@ -347,13 +347,21 @@ import { For, Show, Switch, Match } from "gx/view";
 </Switch>
 ```
 
+三个短写法（`each={rows}` / `when={open}` / `key="id"`）与展开式语义完全一致：
+signal 本身就是取值函数，所以不用再包一层箭头；`key="id"` 就是 `key={(r) => r.id}`。
+需要派生/过滤时再写函数：`each={() => rows().filter(ok)}`。
+
 `each` 也接受数字：`each={() => 5}` → 0..4（Vue 的 `v-for="n in 5"`）。
 
-**三条必须记住的语义**（完整理由见 `gfx/view.go` 文件头）：
+**四条必须记住的语义**（完整理由见 `gfx/view.go` 文件头）：
 
-1. **`each` / `when` 传取值函数**。JSX 属性在调用当场求值：`each={rows()}`
-   只是一张快照，之后 signal 再变不会重渲染 —— 与"受控 input 的 value 必须传
-   函数"是同一条纪律。传数组/数字字面量是合法的**静态**列表（渲染一次）。
+1. **`each` / `when` 收取值函数**，而 **signal 本身就是最简的那个取值函数**。
+   JSX 属性在调用当场求值：`each={rows()}` 只是一张快照，之后 signal 再变不会
+   重渲染 —— 与"受控 input 的 value 必须传函数"是同一条纪律。传数组/数字字面量
+   是合法的**静态**列表（渲染一次）。写错现在**会出声**：非法形态（`each` 收到
+   字符串/对象、`when` 收到字符串、尤其是 `when={open()}` 这种忘了括号的静态布尔、
+   `key` 收到数字、`stable` 传函数）各打一条去重警告 —— 降级行为不变，只是不再
+   静默；警告进 stderr 与 `gx/dev` 的缓冲（§7）。
 2. **复用按「key + 引用同一性 + 下标」判定**。同 key、同行引用、同下标 ⇒ 原样
    复用（节点指针不变，行内状态保留）；只就地重渲染真正变了的行；旧 key 消失
    则 dispose（onCleanup 执行）。`rows()` 每次 map 出新对象 ⇒ 每行都被判为变了
@@ -361,7 +369,9 @@ import { For, Show, Switch, Match } from "gx/view";
    那些行会就地重渲染** —— 因为本引擎的 JSX 内容是求值一次的静态值，序号必须
    跟着位置更新；行不显示位置时加 `stable` 把下标从判定里摘出去（代价：下标参数
    停在挂载时的值）。
-3. **Show / Switch 是 keep-alive 显隐，不是 v-if**。隐藏 = 摘出布局流（布局、
+3. **`key` 也可以直接给字段名**：`key="id"`。取不到该字段（项不是对象 / 没有这个
+   字段）时退化为按位置匹配，与不给 key 同义；给了别的类型会警告并同样退化。
+4. **Show / Switch 是 keep-alive 显隐，不是 v-if**。隐藏 = 摘出布局流（布局、
    绘制、命中都看不见它），子树**保持挂载** —— 里面的输入框内容、滚动位置、
    局部 signal 全留着，再显示瞬间切回。原因不是舍不得销毁：本引擎 dispose 过的
    静态子树**无法复活**（reactiveProps 已断），v-if 会得到一棵"看着一样但不再
@@ -373,7 +383,9 @@ gap 缺省跟随父容器 —— 不凭空多一层盒子。已知边界：宿�
 容器级 wrap**（`row wrap` 只认常规流子节点）。
 
 demo `testdata/view_demo.js`（每行自带输入框，是"复用是否真的发生"的照妖镜：
-shuffle / drop last 之后文字跟着行走）；交互断言 `gfx/view_test.go` 13 例。
+shuffle / drop last 之后文字跟着行走）；改写版 `testdata/view_demo2.js` 把"复用还是
+重建"做成界面上的 gen / builds 计数。交互断言 `gfx/view_test.go` 13 例；短写法
+（裸 signal、`key="id"`）与误用警告见 `gfx/view_guard_test.go`。
 
 ## 10. 何时从「模式」升级为「模块 / 内核」
 

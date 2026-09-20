@@ -434,12 +434,12 @@ h("column", null,
 import { For, Show, Switch, Match } from "gx/view"
 
 <column gap={8}>
-  <For each={() => rows()} key={(r) => r.id} fallback={<text>暂无数据</text>}>
+  <For each={rows} key="id" fallback={<text>暂无数据</text>}>
     {(row, i) => <text>{(i + 1) + ". " + row.title}</text>}
   </For>
 
-  <Show when={() => open()}>
-    <input width={150} value={draft} onInput={(e) => setDraft(e.value)} />
+  <Show when={open}>
+    <input width={150} model={draft} />
   </Show>
 
   <Switch>
@@ -449,12 +449,16 @@ import { For, Show, Switch, Match } from "gx/view"
 </column>
 ```
 
+- **三个短写法**：`each={rows}` / `when={open}`（signal 本身就是取值函数，不用再包箭头）、
+  `key="id"`（等价于 `key={(r) => r.id}`）。需要派生/过滤时再写函数：`each={() => rows().filter(ok)}`
 - `For` 的复用判定是 **key 配对 + item 引用同一性 + 下标**：命中的行原样复用（行内输入框、
   滚动位置、局部 signal 全留着），只就地重渲染真正变了的行；`each` 也接受数字（生成 0..n-1）。
   `stable` 可把下标移出判定（重排 / 中间删除不重建，代价是下标参数停在挂载值）；
   重复 key 会降级为位置键并警告一次（不写坏树）
-- `each` / `when` **要传函数**（`each: () => rows()`）：传 `rows()` 只拿到一张快照，
-  之后信号再变也不重渲染 —— 与受控 input 的 `value` 必须传函数是同一条纪律
+- `each` / `when` **要收取值函数**：传 `rows()` 只拿到一张快照，之后信号再变也不重渲染 ——
+  与受控 input 的 `value` 必须传函数是同一条纪律。**写错会出警告**（`each` 收到字符串/对象、
+  `when` 收到字符串、忘了括号的 `when={open()}`、`key` 收到数字、`stable` 传函数），
+  降级行为不变、只是不再静默
 - `Show` / `Switch` 走 **keep-alive**：分支懒构建且只构建一次，隐藏只是摘出布局流（子树保活，再显示状态原样）。
   刻意不做 v-if —— 静态子树销毁后重新挂回去是"看着一样但不再响应式"的死树；要该语义用函数子节点
   `{() => cond() ? <X/> : null}`（函数体内每次求值都新建元素）

@@ -2,6 +2,7 @@ package gfx
 
 import (
 	"strconv"
+	"sync"
 
 	"github.com/14752222/Gox/object"
 )
@@ -13,11 +14,11 @@ import (
 //
 //	import { For, Show, Switch, Match } from "gx/view";
 //
-//	<For each={() => rows()} key={(r) => r.id} fallback={<text>暂无数据</text>}>
+//	<For each={rows} key="id" fallback={<text>暂无数据</text>}>
 //	  {(row, i) => <row gap={6}><text>{`${i + 1}. ${row.title}`}</text></row>}
 //	</For>
 //
-//	<Show when={() => user()} fallback={<text>请先登录</text>}>
+//	<Show when={user} fallback={<text>请先登录</text>}>
 //	  <column gap={4}><text>{() => user().name}</text></column>
 //	</Show>
 //
@@ -26,6 +27,12 @@ import (
 //	  <Match when={() => phase() === "error"}><text>出错了</text></Match>
 //	  <Match when={() => true}><text>就绪</text></Match>
 //	</Switch>
+//
+// 三个短写法先记住, 语义与展开式完全一致 (理由见下面两节):
+//
+//	each={rows}   signal 本身就是取值函数 ⇒ 不用再包一层 () => rows()
+//	when={open}   同上 (Show / Match 都适用)
+//	key="id"      等价于 key={(r) => r.id}
 //
 // 与 Vue 的对应关系 (以及一处刻意的差异):
 //
@@ -46,16 +53,37 @@ import (
 // 元素在函数体里新建 ⇒ 每次求值都是新节点 (这是一直以来就有的写法, For 的行
 // 渲染函数也是同一回事)。
 //
-// ## 为什么 each / when 要传函数
+// ## each / when 收**取值函数** —— 最简写法是直接传 signal
 //
-// `each` / `when` 传的是**取值函数** (`() => rows()`), 不是快照值。这不是
-// 优化, 是**语义**: JSX 的属性表达式在 h()/组件调用的当场求值, 写
-// `each={rows()}` 只会把列表的第一份快照交给内核, 之后 signal 再变也不会
-// 重渲染 —— 这正是本运行时最常见的静默失效陷阱 (受控 input 的 value 必须
-// 传函数是同一条纪律)。传函数才是"跟着 signal 走"。
+// `each` / `when` 传的是**取值函数** (`() => rows()`), 不是快照值。JSX 的属性
+// 表达式在 h()/组件调用的当场求值, 写 `each={rows()}` 只会把列表的第一份快照交给
+// 内核, 之后 signal 再变也不会重渲染 —— 这是本运行时最常见的静默失效陷阱
+// (受控 input 的 value 必须传函数是同一条纪律)。
+//
+// 而 **signal 本身就是一个函数**, 所以最简写法是直接传它:
+//
+//	<For each={rows} key="id">…</For>
+//	<Show when={open}>…</Show>
+//	<text>{draft}</text>          (函数子节点同理: 响应式子节点就是"每次求值")
+//
+// 包一层的写法仍然合法, 需要派生/过滤时用它: each={() => rows().filter(ok)}。
 //
 // 例外: 传数组字面量 / 数字字面量是**合法的静态列表** (渲染一次, 不再变化),
-// 拿不准就一律传函数。
+// 拿不准就一律传 signal 或函数。
+//
+// 写错时内核**会出声**: 合法形态之外的值 (each 收到字符串/对象, when 收到字符串,
+// 尤其 when={open()} 这种"忘了括号"的静态布尔) 都记一条 stderr 警告并去重
+// (viewCheckEach / viewCheckWhen, 见文件末尾的"误用出声")。语义照旧降级 ——
+// 改不了已经写下的表达式, 至少让"它冻在第一帧"这件事有据可查。
+//
+// ## key: 取值函数或字段名简写
+//
+//	<For each={rows} key="id">                      等价于 key={(r) => r.id}
+//	<For each={rows} key={(r) => r.kind + r.id}>    需要拼 key 时用取值函数
+//
+// 字段名取不到 (项不是对象 / 没有该字段) 时退化为位置键 —— 与不给 key 同义;
+// 给了别的类型 (数字 / 对象) 会警告并同样退化 (从前它只是静默地退化为按位置匹配)。
+// 注意 key 函数收到的是 (item, i), 与渲染函数同一个签名。
 //
 // ## 宿主是 slot: 不凭空多出一个盒子
 //
@@ -115,7 +143,11 @@ import (
 //     row 的常规流子节点)。需要折行标签流时把 <For> 放进普通 row, 或改写成
 //     函数子节点里的 row wrap;
 //   - Match 只在 Switch 里有意义, 直接挂到别处会渲染成一行 "[view Match]"
-//     文本 (误用可见, 不静默)。
+//     文本 (误用可见, 不静默);
+//   - 写作校验**只出声、不改语义** (viewCheckEach / viewCheckWhen / viewCheckKey /
+//     viewCheckStable): 非法形态的降级行为与从前逐字一致 (空列表 / 恒真恒假 /
+//     按位置匹配 / stable 当 false), 只是多一条去重警告。要升级成"直接报错"
+//     得等一次 breaking change 窗口。
 func init() {
 	object.RegisterBuiltinModule("gx/view", func() map[string]object.Value {
 		return map[string]object.Value{
@@ -321,9 +353,21 @@ func jsViewFor(args ...object.Value) object.Value {
 	keyFn := viewProp(props, "key")
 	fallback := viewProp(props, "fallback")
 	// stable: 行只认 key + 引用, 位置变化不重渲染 (下标参数停在挂载时的值)。
-	// 语义与代价见文件头 "为什么下标变了也算变了"。
-	stable, _ := viewProp(props, "stable").(*object.Boolean)
+	// 语义与代价见文件头 "为什么下标变了也算变了"。只认字面量布尔 ——
+	// 传函数/表达式会被类型断言吃成 false, 所以这里出声 (见 viewCheckStable)。
+	stableProp := viewProp(props, "stable")
+	viewCheckStable(stableProp)
+	stable, _ := stableProp.(*object.Boolean)
 	stableRows := stable != nil && stable.Value
+
+	// 取列表来源: each 收取值函数 (signal 本身也行) / 数组字面量 / 数字。
+	viewCheckEach(each)
+	// 取 key: 取值函数, 或者字段名简写 key="id" (等价于 key={(r) => r.id})。
+	if s, ok := keyFn.(*object.String); ok {
+		keyFn = viewKeyField(s.Value)
+	} else {
+		viewCheckKey(keyFn)
+	}
 
 	// children: 渲染函数。JSX 里写 {(item, i) => ...}; 多个子节点时只认第一个
 	// 函数 (其余是排版空白, 归一化后不会产生值)。
@@ -403,7 +447,9 @@ func viewList(each object.Value) []object.Value {
 // 把该行降级为位置键并警告一次 (只警告一次, 重排是热路径)。
 func viewRowKey(keyFn, item object.Value, i int, used map[string]bool, warnedDup *bool) string {
 	key := ""
-	if keyFn != nil {
+	// 只调可调用的: 非函数 (key={42} 这类) 已经在 jsViewFor 里警告过了, 这里再抛一个
+	// "42 is not a function" 只会多一层噪音, 结果同样是退化为位置键。
+	if keyFn != nil && object.IsCallable(keyFn) {
 		if s, ok := viewKeyString(viewCall(keyFn, item, object.NewNumber(float64(i)))); ok {
 			key = s
 		}
@@ -437,6 +483,118 @@ func viewKeyString(v object.Value) (string, bool) {
 		return "b:0", true
 	}
 	return "", false
+}
+
+// ===== 误用出声: 取值函数类 prop 的写法校验 =====
+//
+// 为什么值得单独一块: 控制流的三个 prop (each / when / key) 都收**取值函数**,
+// 而写成快照 (each={rows()} / when={open()}) 与正确写法在屏幕上只差一对括号,
+// 后果却是静默的 —— 列表与条件从此不再变化, 没有任何报错。与 gfx/model.go 同一条
+// 纪律: 改不了已经写下的表达式, 至少让"写错了"这件事出声。
+//
+// 合法形态各自独立, 不合并成一条"通用规则" (合并只会得到一条谁也记不住的规则):
+//
+//	each    取值函数 (传 signal 本身也行) / 数组字面量 / 数字   —— 静态列表是合法写法
+//	when    取值函数 / 布尔字面量
+//	key     取值函数 / 字段名字符串 (key="id")
+//	stable  字面量布尔 (它压根不是响应式 prop)
+//
+// 警告一律去重: h() 在每次重建时都会跑 (列表行的渲染函数、响应式分支换代),
+// 不去重会在热路径上刷屏 —— 与 warnUnknownTagOnce / modelWarnOnce 同一条纪律。
+
+var (
+	viewWarnMu   sync.Mutex
+	viewWarnSeen = map[string]struct{}{}
+)
+
+// viewWarnOnce 同一类警告只说一次。
+func viewWarnOnce(key, format string, args ...interface{}) {
+	viewWarnMu.Lock()
+	_, seen := viewWarnSeen[key]
+	if !seen {
+		viewWarnSeen[key] = struct{}{}
+	}
+	viewWarnMu.Unlock()
+	if !seen {
+		recordWarn(format, args...)
+	}
+}
+
+// resetViewWarns 清空去重表 (仅测试用: 警告环是跨用例共享的进程级状态)。
+func resetViewWarns() {
+	viewWarnMu.Lock()
+	viewWarnSeen = map[string]struct{}{}
+	viewWarnMu.Unlock()
+}
+
+// viewCheckEach 校验 each: 取值函数 / 数组 / 数字, 其余一律渲染成空列表 (静默)。
+func viewCheckEach(v object.Value) {
+	if v == nil || object.IsCallable(v) {
+		return
+	}
+	switch v.(type) {
+	case *object.Array, *object.Number:
+		return
+	}
+	viewWarnOnce("each", "gx/view For: each 需要取值函数 (传 signal 本身也行) 或数组/数字字面量, "+
+		"收到 %s —— 它会一直渲染成空列表", v.Type())
+}
+
+// viewCheckWhen 校验 when: 取值函数 / 布尔字面量。
+//
+// 布尔字面量单独给一条文案: `when={open()}` 就是这么写出来的, 而它的现象是
+// "条件冻在第一帧" —— 只喊"要传函数"用户未必对得上号。
+func viewCheckWhen(tag string, v object.Value) {
+	if v == nil || object.IsCallable(v) {
+		return
+	}
+	if _, ok := v.(*object.Boolean); ok {
+		viewWarnOnce("when:"+tag, "gx/view %s: when 收到静态布尔 (%s) —— 刻意的常量条件可忽略; "+
+			"若是忘了函数括号, 条件之后不会再跟着 signal 变", tag, v.Inspect())
+		return
+	}
+	viewWarnOnce("when:"+tag, "gx/view %s: when 需要取值函数 (传 signal 本身也行), 收到 %s —— "+
+		"它会被当成固定真值/假值, 条件不会再变", tag, v.Type())
+}
+
+// viewCheckKey 校验 key: 取值函数 / 字段名字符串。
+func viewCheckKey(v object.Value) {
+	if v == nil || object.IsCallable(v) {
+		return
+	}
+	if _, ok := v.(*object.String); ok {
+		return
+	}
+	viewWarnOnce("key", "gx/view For: key 需要取值函数或字段名简写 (key=\"id\"), 收到 %s —— "+
+		"该行会退化为按位置匹配", v.Type())
+}
+
+// viewCheckStable 校验 stable: 只认字面量布尔 (传函数会被类型断言静默吃成 false)。
+func viewCheckStable(v object.Value) {
+	if v == nil {
+		return
+	}
+	if _, ok := v.(*object.Boolean); ok {
+		return
+	}
+	viewWarnOnce("stable", "gx/view For: stable 只认字面量布尔, 收到 %s —— "+
+		"它会被静默当成 false (位置变化仍会重建行)", v.Type())
+}
+
+// viewKeyField 把 key="id" 展开成取值函数: 从列表项上取同名属性。
+//
+// 取不到 (项不是对象 / 没有该字段) 时返回 undefined ⇒ viewRowKey 退化为位置键,
+// 与不给 key 同义 —— 这正是"字段名写错"的自然后果, 不必再加一条警告。
+func viewKeyField(name string) object.Value {
+	return object.NewBuiltin("view.key."+name, func(args ...object.Value) object.Value {
+		if len(args) == 0 || args[0] == nil {
+			return object.UndefinedSingleton
+		}
+		if v, ok := args[0].GetProperty(name); ok && v != nil {
+			return v
+		}
+		return object.UndefinedSingleton
+	})
 }
 
 // viewForUpdate 按最新的 each 值重算列表 (就地改 st)。
@@ -572,6 +730,7 @@ func jsViewShow(args ...object.Value) object.Value {
 	if when == nil {
 		recordWarn("gx/view Show: 缺少 when (条件), 按 false 渲染")
 	}
+	viewCheckWhen("Show", when)
 
 	body := viewBranchNew(args[1:])
 	fb := viewBranchNew(viewBranchKids(fallback))
@@ -625,6 +784,7 @@ func jsViewMatch(args ...object.Value) object.Value {
 	if when == nil {
 		recordWarn("gx/view Match: 缺少 when (条件), 按 false 处理")
 	}
+	viewCheckWhen("Match", when)
 	return &viewMatchValue{when: when, kids: args[1:]}
 }
 

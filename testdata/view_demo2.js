@@ -16,11 +16,12 @@
 //   6. 交互日志条把"刚才发生了什么"写在界面上 —— 演示脚本自己解释自己。
 //
 // 三条纪律 (完整理由见 gfx/view.go 文件头):
-//   · each / when 传取值函数。each={rows()} 只拿到第一帧的列表, 之后 signal 再变
-//     也不会重渲染 (传 signal 本身也行 —— 它本来就是函数, 但写 () => rows() 最不
-//     容易看错)。
-//   · 复用判定 = key + 引用同一性 + 下标。行里不显示位置才加 stable; 代价是下标
-//     参数停在挂载时的值 (stable 的行别拿 i 拼静态文本)。
+//   · each / when 传取值函数 —— **直接传 signal 就是最简写法** (它本来就是函数):
+//     each={rows} / when={open}。写成快照 (each={rows()} / when={open()}) 只有第一帧,
+//     之后 signal 再变也不会重渲染 —— 这种写法内核现在会出声警告。
+//   · key 传取值函数, 或字段名简写 key="id" (等价于 key={(r) => r.id}。字段名取不到时
+//     退化为按位置匹配, 与不给 key 同义)。复用判定 = key + 引用同一性 + 下标;
+//     行里不显示位置才加 stable, 代价是下标参数停在挂载时的值 (别拿 i 拼静态文本)。
 //   · Show / Switch 是 keep-alive 显隐 (隐藏 = 摘出布局流, 子树保活), 不是 v-if。
 //     要 v-if (每次显示都全新构建) 用函数子节点: {() => cond() ? <column/> : null}
 import { h, render, createSignal, onCleanup, For, Show, Switch, Match } from "gox";
@@ -181,10 +182,11 @@ render(
         {/* 列表放进 <scroll>: 行数不设硬上限也能一直加 —— 没有滚动容器时, 多出来的
             行会被窗口裁掉, 而裁掉的部分既画不出来也点不中 */}
         <scroll height={142}>
-          {/* each / key 都传函数; stable = 行不显示位置, 于是下标不参与复用判定 */}
+          {/* each 传 signal 本身 (它本来就是取值函数); key="id" 是 key={(r) => r.id} 的简写;
+              stable = 行不显示位置, 于是下标不参与复用判定 */}
           <For
-            each={() => rows()}
-            key={(r) => r.id}
+            each={rows}
+            key="id"
             stable
             fallback={
               <row gap={8} alignItems="center">
@@ -199,7 +201,7 @@ render(
         <row gap={8} alignItems="center">
           <text font={11} color="#7a8391" width={166}>positional — For (no stable)</text>
           {/* 不带 stable: 下标参与复用判定, 所以移动过的行会重渲染 (gen 变), 没动的原样 */}
-          <For each={() => tags()} key={(t) => t}>
+          <For each={tags} key={(t) => t}>
             {(t, i) => {
               const g = bump();
               return <text font={12} color="#3a4450">{"[gen " + g + "] " + (i + 1) + ". " + t}</text>;
@@ -218,7 +220,7 @@ render(
         <text font={11} color="#7a8391">{() => (open() ? "在面板里打字, 然后隐藏" : "隐藏中: 状态没丢, 秒表还在走")}</text>
       </row>
       <Show
-        when={() => open()}
+        when={open}
         fallback={
           <text font={12} color="#a0522d" wrap width={646}>
             panel hidden — 这是 fallback 分支。面板本身没被销毁: 再显示时你输入的字和秒表都还在。
@@ -269,7 +271,7 @@ render(
       <column gap={2}>
         <text font={11} color="#8a93a0">what just happened</text>
         {/* 无 key 的列表: 前置插入会把内容顶下去, 按值比较 ⇒ 该重建的行才重建 */}
-        <For each={() => log()}>
+        <For each={log}>
           {(line) => <text font={11} color="#4a5560">{"· " + line}</text>}
         </For>
       </column>
