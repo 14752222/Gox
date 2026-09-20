@@ -118,6 +118,11 @@ render(
 > 颜色属性（`background` / `border` / `color`）在组件标签上有语义差异：`background` 表示"选中/填充的强调色"，
 > 在 `button` / `rect` 上才是普通填充色；`color` 沿祖先链继承，因此 `<button color="#fff">文字</button>` 生效。
 
+> 受控组件（`input` / `textarea` / `slider` / `select` / `checkbox` / `switch` / `radio`）另有一条
+> **`model` 指令**：`<input model={draft} />` 一次接好读（`value`）与写（`onInput`），不用再手写
+> `value={() => draft()} onInput={(e) => setDraft(e.value)}`。语义表见 [6.0](#60-一条指令搞定读写model)，
+> 完整设计见 [gui-model-binding.md](gui-model-binding.md)。
+
 ## 5. 布局
 
 ### 5.1 弹性布局：百分比 / min-max / flexShrink / 折行 / 网格
@@ -183,6 +188,43 @@ h("rect", {
 - 渐变面不参与 button 悬停提亮（提亮只定义在纯色面），`disabled` 降饱和对两者都生效
 
 ## 6. 受控组件与文本输入
+
+### 6.0 一条指令搞定读写：`model`
+
+受控组件是**完全受控**的：显示只看 `value`/`checked`，改动只派发 `onInput`/`onChange`/`onClick`，
+值落地要等脚本写回 signal。`model` 把这两件事收成一条指令（等价于 Vue 的 `v-model`）：
+
+```js
+const [draft, setDraft] = createSignal("")
+
+// 旧：两个 prop，漏掉 onInput 就"打不进字"（不报错）
+h("input", { value: () => draft(), onInput: (e) => setDraft(e.value) })
+
+// 新：一条指令，读写都由内核接好
+h("input", { model: draft })
+```
+
+| 标签 | 读方向 | 写方向事件 | 写进去的值 |
+|---|---|---|---|
+| `input` / `textarea` | `value` | `onInput({value})` | 字符串 |
+| `slider` | `value` | `onInput({value})` | 数字（不转换） |
+| `select` | `value` | `onChange({value})` | 字符串 |
+| `checkbox` / `switch` | `checked` | `onClick()` | 布尔（写入取反） |
+| `radio` | `checked`（= `model() === value`） | `onClick()` | 属性 `value` 原样写入 |
+
+`model` 收 **signal**（`createSignal` 的 getter 自带 `set`）或 **[get, set] 二元组**：
+
+```js
+h("input", { model: draft })                                    // signal
+h("input", { model: [() => user().name, (v) => setUser({ ...user(), name: v })] })  // 自定义来源
+```
+
+三条不静默的规则：① 同时给 `model` 与 `value`/`checked` ⇒ `model` 覆盖并警告；
+② 同时给 `onInput` 等 ⇒ **两个都跑**（model 写回在前），所以 `<input model={q} onInput={(e) => search(e.value)} />`
+是合法组合；③ 传标量 / 无 setter 的函数 / 不支持的标签 ⇒ 降级（只读或忽略）并打 stderr 警告。
+
+可跑示例 `testdata/model_demo.js`；接口设计、与 Vue 的逐条对照、反例清单见
+[gui-model-binding.md](gui-model-binding.md)。
 
 ### 6.1 受控文本输入
 
@@ -638,6 +680,7 @@ import { devSnapshot } from "gx/dev";
 | [dialog_demo.js](../testdata/dialog_demo.js) | 模态对话框与右上角 toast |
 | [tabs_demo.js](../testdata/tabs_demo.js) | 条件渲染切面板 |
 | [list_demo.js](../testdata/list_demo.js) | 数组信号增删列表 |
+| [model_demo.js](../testdata/model_demo.js) | `model` 双向绑定：八类控件一条指令 + 手写写法对照 |
 
 **窗口、菜单与系统能力**
 
@@ -661,6 +704,8 @@ import { devSnapshot } from "gx/dev";
 | [jsx_demo.js](../testdata/jsx_demo.js) | JSX 语法降级 + `gx/solid` 响应式（用 debug `h` 构建纯数据节点树，不开窗口） |
 | [rx_demo.js](../testdata/rx_demo.js) | GetX 风格响应式：`obs` / `computed` / `ever` / `once` |
 | [view_demo.js](../testdata/view_demo.js) | 声明式视图：For / Show / Switch |
+| [view_demo2.js](../testdata/view_demo2.js) | 同上，改写版：把"复用还是重建"做成可读的 gen / builds 计数（`gfx/view_demo2_test.go`） |
+| [model_demo.js](../testdata/model_demo.js) | 受控组件的 `model` 双向绑定：八类控件一条指令 + 手写写法对照 |
 | [resource_demo.js](../testdata/resource_demo.js) | createResource 异步资源三态 |
 | [kit_demo.js](../testdata/kit_demo.js) | 设计套件：令牌主题与变体工厂 |
 
@@ -671,6 +716,7 @@ import { devSnapshot } from "gx/dev";
 | [README.md](../README.md) | 项目总览、安装、语言示例、打包与发版 |
 | [gui-component-status.md](gui-component-status.md) | 组件实现现状、逐批落地记录与设计取舍（§编号最权威） |
 | [gui-patterns.md](gui-patterns.md) | 用户态模式手册（路由、状态、主题等惯用法） |
+| [gui-model-binding.md](gui-model-binding.md) | `model` 双向绑定：接口设计、语义表、与 Vue 的对照、反例 |
 | [gui-prompts.md](gui-prompts.md) | GUI 需求/提示词记录 |
 | [gui-styling-options.md](gui-styling-options.md) | 样式方案调研（含 §20 可动画属性的取舍理由） |
 | [desktop-distribution.md](desktop-distribution.md) | 各平台分发注意事项（图标、签名、打包格式） |

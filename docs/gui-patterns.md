@@ -292,7 +292,7 @@ const dark  = { surface: "#242b33", ink: "#dfe6ee", accent: "#6c8fd9", padX: 14,
 const [themeName, setThemeName] = createSignal("light");
 const t = () => (themeName() === "dark" ? dark : light);
 
-const Btn = (p) => {
+const Btn = (p, ...kids) => {
   const [hover, setHover] = createSignal(false);           // 悬停近似 (方案 F)
   return (
     <button
@@ -301,10 +301,11 @@ const Btn = (p) => {
       background={() => p.variant === "primary" ? t().accent : t().surface}
       onMouseMove={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
-    >{p.children}</button>
+    >{kids}</button>
   );
 };
-const Card = (p) => <column background={() => t().surface} padding={() => t().padX}>{p.children}</column>;
+// 注意: 组件子节点是**变参** —— <Btn>x</Btn> 降级成 Btn(props, x), 不是 p.children
+const Card = (p, ...kids) => <column background={() => t().surface} padding={() => t().padX}>{kids}</column>;
 ```
 
 **能力边界必须诚实**（❌ 清单，内核把值写死）：焦点虚线框颜色 / 滚动条与

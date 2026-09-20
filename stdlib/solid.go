@@ -102,6 +102,12 @@ func newSignalPair(init object.Value) (*solidSignal, object.Value, object.Value)
 	setter := object.NewBuiltin("setSignal", func(args ...object.Value) object.Value {
 		return solidSignalSet(sig, args...)
 	})
+	// getter 自带 setter。两个用途, 一个约定:
+	//   - 脚本侧: `draft.set(5)` 与 `setDraft(5)` 等价 (少一次配对传递);
+	//   - 绑定侧: <input model={draft} /> 只拿到 getter 这一个值, 它必须能从
+	//     getter 身上找到写方向 —— 这就是 model 指令认的凭据 (见 gfx/model.go)。
+	// 没有 setter 的函数 (createMemo / 手写取值函数) 因此天然是只读的。
+	getter.SetProperty("set", setter)
 	return sig, getter, setter
 }
 

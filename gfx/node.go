@@ -211,6 +211,10 @@ func JSBuiltinH(args ...object.Value) object.Value {
 	// 再跑任何 effect。
 	if len(args) > 1 {
 		if props, ok := args[1].(*object.Object); ok {
+			// model= 先展开成该标签的受控 prop (model.go): 它补上去的
+			// value/checked 与 onInput/onChange/onClick 要一起参与下面两轮接线,
+			// 所以必须排在这之前 —— 顺序错了这两个键就白补了。
+			expandModelProp(node, props)
 			for _, reactive := range []bool{false, true} {
 				for name, desc := range props.Properties {
 					if isReactiveProp(name, desc.Value) != reactive {
