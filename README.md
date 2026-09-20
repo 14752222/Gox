@@ -69,7 +69,8 @@ flex 布局 + JSX + 信号驱动更新，win32 / X11 窗口后端）、一组宿
   （`setStrictTimeout` 等）；GUI 模式下事件循环接入窗口消息泵
 - **响应式编程** —— Dart GetX 风格的 `obs` / `computed` / `ever` / `once`，以及 SolidJS 风格的
   `gx/solid` 信号（`createSignal` / `createEffect` / `createMemo` / `createResource` / `onMount` /
-  `onCleanup`）；声明式视图 `gx/view`（`For` keyed 列表复用 / `Show` 保活显隐 / `Switch`+`Match` 多分支）
+  `onCleanup`）；声明式界面是**元素级指令**：`model` 双向绑定、`each` 列表（keyed 复用）、
+  `show` 条件保活显隐，多分支用 `gx/view` 的 `Switch` + `Match`
 - **npm 分发** —— [`@goxjs/goxjs`](https://www.npmjs.com/package/@goxjs/goxjs) 内置
   macOS x64/arm64、Linux x64/arm64、Windows x64 五个平台的预编译二进制，
   `npm i -g @goxjs/goxjs` 即得 `goxjs` 命令
@@ -265,7 +266,8 @@ render(
 返回窗口句柄，可调用多次开多窗口（各有独立元素树与焦点，全关才退出进程）。
 
 完整参考 —— 事件模型、内置元素属性表、弹性布局与装饰绘制、受控组件与输入法、过渡动画、
-`gx/view` 声明式视图、原生对话框 / 剪贴板 / 持久化存储 / 菜单栏、多窗口语义与平台差异 ——
+元素级指令（`model` / `each` / `show`）与 `gx/view` 多分支、原生对话框 / 剪贴板 / 持久化存储 /
+菜单栏、多窗口语义与平台差异 ——
 见 **[docs/gui-guide.md](docs/gui-guide.md)**，可直接运行的示例见
 [`testdata/`](testdata/)（`counter_demo.js`、`form_demo.js`、`multiwindow_demo.js`、
 `menu_demo.js`、`view_demo.js` 等 30+ 个）。
@@ -472,6 +474,8 @@ ci(release): 打包闸改回 tar 校验，不再解析 npm 的输出
 | [docs/js-runtime-api-tutorial.md](docs/js-runtime-api-tutorial.md) | 运行时 API 教程：函数类型、回调桥、内存管理、新增 API 的完整流程 |
 | [docs/gui-component-status.md](docs/gui-component-status.md) | GUI 组件实现现状、逐批落地记录与设计取舍（§编号最权威） |
 | [docs/gui-patterns.md](docs/gui-patterns.md) | 用户态模式手册（路由、状态、主题等惯用法） |
+| [docs/gui-model-binding.md](docs/gui-model-binding.md) | `model` 双向绑定：接口设计、语义表、与 Vue 的对照、反例 |
+| [docs/npm-release.md](docs/npm-release.md) | `@goxjs/goxjs` 发版手册：版本号策略、构建步骤、OIDC 配置要求、验收口径 |
 | [docs/desktop-distribution.md](docs/desktop-distribution.md) | 桌面应用分发：图标、签名、各平台打包格式 |
 | [docs/undecided-and-unimplemented.md](docs/undecided-and-unimplemented.md) | 未决与未实现清单 |
 | [官网](https://14752222.github.io/Gox/) | 安装、运行脚本、写 GUI 应用与打包的在线教程 |
