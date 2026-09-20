@@ -206,36 +206,43 @@ jobs:
           set -euo pipefail
           cd npm
 
-          # 用 npm 自己的列举逻辑取"真要发布"的清单：与 publish 用的是同一份结果，
-          # 且比解析 tar 输出更平台无关。失败时把完整清单写进 ::error:: 注解，
-          # 这样即使没有仓库权限、读不了 Actions 日志也能看到包内容。
-          LIST=$(npm pack --dry-run --json 2>/dev/null | node -e '
-            let s = "";
-            process.stdin.on("data", (d) => (s += d)).on("end", () => {
-              const files = (JSON.parse(s)[0].files || []).map((f) => f.path).sort();
-              process.stdout.write(files.join("\n"));
-            });')
-          echo "将要发布的文件："
-          echo "$LIST"
+          # tarball 名由包名 + 版本推导，不去解析 npm 的 stdout（各版本输出格式不同；
+          # 上一版 `npm pack --dry-run --json | node` 就是死在这里，且没留下可读信息）。
+          # pack 目标用**相对路径**：Windows 的 Git Bash 里 /tmp 不会被转换，npm 会把包
+          # 写到别处、后面 tar 找不到（本地实测踩到）。dist/ 已在 .gitignore 中。
+          NAME=$(node -p "require('./package.json').name.replace(/^@/, '').replace('/', '-')")
+          VERSION=$(node -p "require('./package.json').version")
+          DEST="../dist/npm-pack"
+          mkdir -p "$DEST"
+          rm -f "$DEST/$NAME-$VERSION.tgz"
+
+          npm pack --pack-destination "$DEST"
+          TARBALL="$DEST/$NAME-$VERSION.tgz"
+          if [ ! -f "$TARBALL" ]; then
+            echo "::error::npm pack 没有产出 $TARBALL ，看上面的 pack 输出"
+            ls -lh "$DEST" || true
+            exit 1
+          fi
+          ls -lh "$TARBALL"
+
+          CONTENT=$(tar -tzf "$TARBALL" | sort)
+          echo "包内容："
+          echo "$CONTENT"
 
           missing=""
-          for want in package.json bin/gox.js README.md \
-                      binaries/linux-x64/gox binaries/linux-arm64/gox \
-                      binaries/darwin-x64/gox binaries/darwin-arm64/gox \
-                      binaries/windows-x64/gox.exe; do
-            if ! printf '%s\n' "$LIST" | grep -qx "$want"; then
-              missing="$missing $want"
+          for want in package/package.json package/bin/gox.js package/README.md \
+                      package/binaries/linux-x64/gox package/binaries/linux-arm64/gox \
+                      package/binaries/darwin-x64/gox package/binaries/darwin-arm64/gox \
+                      package/binaries/windows-x64/gox.exe; do
+            if ! printf '%s\n' "$CONTENT" | grep -qx "$want"; then
+              missing="$missing ${want#package/}"
             fi
           done
           if [ -n "$missing" ]; then
-            echo "::error::包里缺少：$missing ；实际清单：$(printf '%s' "$LIST" | tr '\n' ' ') ; 若是 binaries/ 整目录缺失，检查是否在 .gitignore 里忽略了 npm/ 下的路径"
+            echo "::error::包里缺少：$missing ；实际内容：$(printf '%s' "$CONTENT" | tr '\n' ' ') ；若 binaries/ 整目录缺失，检查 .gitignore / npm/.npmignore 是否把手伸进了包内容"
             exit 1
           fi
-
-          # 再打一次真包，确认落盘内容与清单一致（顺带验证 tar 可读）
-          TARBALL=$(npm pack --pack-destination /tmp | tail -1)
-          echo "tarball: $TARBALL"
-          tar -tzf "/tmp/$TARBALL" | sort
+          echo "::notice::$NAME@$VERSION 内容校验通过，共 $(printf '%s\n' "$CONTENT" | wc -l) 个文件"
 
       - name: 发布到 npm（OIDC）
         if: ${{ !inputs.dry_run }}
