@@ -50,9 +50,13 @@ _commitmsg.txt
 # 注意：只是不再跟踪；若要让它们彻底从 git 历史里消失，必须重写历史（见 memory 台账）。
 .workbuddy/
 
-# 官网源码与 npm 分发目录 —— 仓库完全开源后不对外公开，仅保留本地。
+# 官网源码 —— 仓库完全开源后不对外公开，仅保留本地。
 # 同上：只是不再跟踪；历史提交与 v0.1.0/v0.1.1 标签里仍能看到，彻底清除需重写历史。
 website/
-npm/
 /.zcode/
 /gox-logo-concepts/
+
+# npm 分发：仓库里只跟踪包的定义三件套（package.json / bin/gox.js / README.md）。
+# 二进制（见上方 npm/binaries/）与 tgz 都是构建产物，由 CI 在发版时重建，不进仓库。
+npm/*.tgz
+dist/

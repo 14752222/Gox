@@ -1,0 +1,239 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# @goxjs/goxjs 发版流水线：交叉编译五平台二进制 → 打包 → 发布到 npm
+#
+# 触发条件（四种入口，全部汇入同一个幂等作业）：
+#   * push 到 main      —— 每次推送都会判断一次，但只有 npm/package.json 的版本号
+#                          在 registry 上还不存在时才真发布；日常提交的代价
+#                          只是十几秒的判重
+#   * push 标签 v*      —— 版本号以标签为准，且必须与 npm/package.json 一致
+#   * Release published —— 以 Release 的 tag 为准，同样要求两者一致
+#   * workflow_dispatch —— 手动触发，可勾 dry_run 只构建打包、不上传
+#
+# 幂等：先查 registry，该版本已存在 → 跳过（exit 0 + notice）。所以重复推送、
+#       重跑历史工作流、补跑失败的发版都不会报红，也不会误发。
+#       注意本工作流在 push main 成功后会用 gh 建 Release，那会再触发一次
+#       release 事件 —— 因为判重是幂等的，第二次会直接以 notice 跳过。
+#
+# 认证：npm Trusted Publishing (OIDC)，不需要任何 secret / token。
+#   npmjs.com → 该包 Settings → Trusted Publisher 四个字段必须逐字符相等：
+#     Organization or user = 14752222
+#     Repository           = Gox        ← 大写 G，npm 做大小写敏感的精确匹配
+#     Workflow filename    = release.yml
+#     Environment name     = （留空，本工作流没有 environment:）
+#   失配的症状是**误导性的 404**，不是 403。
+#   另：本工作流里不得出现 NODE_AUTH_TOKEN / registry-url —— .npmrc 里的 token
+#   会压过 OIDC 自动检测，让 npm 继续走旧凭据，最终也是那个 404。
+#
+# 发版动作：改 npm/package.json 的 version → 提交 → push 到 main（或打 tag），
+#           registry 上出现带 provenance 证明的新版本即成功。
+# ─────────────────────────────────────────────────────────────────────────────
+name: release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 只构建 + 打包校验，不真正上传 npm
+        type: boolean
+        default: false
+
+permissions:
+  contents: write # push 到 main 成功后自动打 tag / 建 Release
+  id-token: write # 换取 npm 的 OIDC 发布凭据，必需
+
+# 发版是串行资源：tag 推送与 main 推送可能同时到达，排队而不是并行
+concurrency:
+  group: npm-release
+  cancel-in-progress: false
+
+jobs:
+  decide:
+    name: 判重（版本号 vs registry）
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      publish: ${{ steps.guard.outputs.publish }}
+      version: ${{ steps.guard.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 解析版本号并查 registry
+        id: guard
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+
+          # 历史标签（v0.1.0 / v0.1.1）指向的是包定义纳入仓库之前的提交
+          if [ ! -f npm/package.json ]; then
+            echo "::notice::$REF_NAME 里没有 npm/package.json（早于包定义纳入仓库），跳过"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          PKG_NAME=$(node -p "require('./npm/package.json').name")
+          PKG_VER=$(node -p "require('./npm/package.json').version")
+          echo "包名 $PKG_NAME ，package.json 版本 $PKG_VER"
+
+          if [ "$PKG_NAME" != "@goxjs/goxjs" ]; then
+            echo "::notice::包名是 $PKG_NAME 而不是 @goxjs/goxjs（改名前的历史标签），跳过"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # 标签 / Release 事件以 ref 上的版本为准，且必须与文件里的版本一致
+          case "$EVENT" in
+            push)
+              if [ "${REF#refs/tags/}" != "$REF" ]; then
+                VER="${REF_NAME#v}"
+                if [ "$VER" != "$PKG_VER" ]; then
+                  echo "::error::标签 $REF_NAME 与 npm/package.json 的 $PKG_VER 不一致，发版前先同步版本号"
+                  exit 1
+                fi
+              else
+                VER="$PKG_VER"
+              fi
+              ;;
+            release)
+              VER="${RELEASE_TAG#v}"
+              if [ "$VER" != "$PKG_VER" ]; then
+                echo "::error::Release tag $RELEASE_TAG 与 npm/package.json 的 $PKG_VER 不一致"
+                exit 1
+              fi
+              ;;
+            *)
+              VER="$PKG_VER"
+              ;;
+          esac
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+
+          # 判重：查到该版本 = 已发布；查不到但包本身在 = 版本确实没发过；
+          # 两者都查不到 = 网络抖了，重试（别把网络故障误判成"没发过"而重复发布）
+          exists=no
+          for attempt in 1 2 3 4 5; do
+            if npm view "$PKG_NAME@$VER" version >/dev/null 2>&1; then
+              exists=yes; break
+            fi
+            if npm view "$PKG_NAME" version >/dev/null 2>&1; then
+              exists=no; break
+            fi
+            echo "registry 查询失败（第 $attempt 次），3s 后重试"
+            sleep 3
+          done
+
+          if [ "$exists" = yes ]; then
+            echo "::notice::$PKG_NAME@$VER 已在 registry 上，跳过发布"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::准备发布 $PKG_NAME@$VER"
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  publish:
+    name: 构建并发布
+    needs: decide
+    if: needs.decide.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      # 故意不写 registry-url：它会让 setup-node 往 .npmrc 里塞一行
+      # //registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN} 占位符，npm 会据此
+      # 认为"用户要走 token 认证"从而跳过 OIDC 交换，最终以那个 404 收场。
+      # 默认 registry 本来就是 npmjs.org，不写这一行没有任何损失。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Trusted Publishing 需要 npm >= 11.5.1，而 Node 22 自带的是 10.x
+      - name: 升级 npm
+        run: |
+          npm install -g npm@latest
+          echo "npm $(npm --version)"
+          NPM_MAJOR=$(npm --version | cut -d. -f1)
+          if [ "$NPM_MAJOR" -lt 11 ]; then
+            echo "::error::npm $NPM_MAJOR 过低，OIDC 发布需要 >= 11.5.1"
+            exit 1
+          fi
+
+      - name: 交叉编译五平台二进制
+        run: bash ./scripts/build-npm.sh
+
+      - name: 校验二进制齐全
+        run: |
+          set -euo pipefail
+          for d in darwin-x64 darwin-arm64 linux-x64 linux-arm64 windows-x64; do
+            BIN="npm/binaries/$d/gox"
+            if [ "$d" = windows-x64 ]; then BIN="$BIN.exe"; fi
+            if [ ! -f "$BIN" ]; then
+              echo "::error::缺少 $BIN"
+              exit 1
+            fi
+            ls -lh "$BIN"
+          done
+
+      - name: 冒烟测试（跑打包后的入口，而不是裸二进制）
+        run: |
+          set -euo pipefail
+          printf 'console.log("goxjs smoke:", [1, 2, 3].map(v => v * 2).join(","));\n' > /tmp/smoke.js
+          OUT=$(node npm/bin/gox.js /tmp/smoke.js)
+          echo "$OUT"
+          echo "$OUT" | grep -q '2,4,6' || { echo "::error::冒烟测试输出不符"; exit 1; }
+
+      - name: 打包校验（发布前的最后一道闸）
+        run: |
+          set -euo pipefail
+          cd npm
+          TARBALL=$(npm pack --pack-destination /tmp | tail -1)
+          echo "tarball: $TARBALL"
+          tar -tzf "/tmp/$TARBALL" | sort
+          for want in package/package.json package/bin/gox.js package/README.md \
+                      package/binaries/linux-x64/gox package/binaries/linux-arm64/gox \
+                      package/binaries/darwin-x64/gox package/binaries/darwin-arm64/gox \
+                      package/binaries/windows-x64/gox.exe; do
+            if ! tar -tzf "/tmp/$TARBALL" | grep -qx "$want"; then
+              echo "::error::包里缺少 $want"
+              exit 1
+            fi
+          done
+
+      - name: 发布到 npm（OIDC）
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          # 这三行是排障口：不看它们，OIDC 失败和"trusted publisher 没配对"是同一个 404
+          echo "npm：$(npm --version)"
+          echo "NODE_AUTH_TOKEN 为空：$([ -z "${NODE_AUTH_TOKEN:-}" ] && echo yes || echo no)"
+          echo "OIDC 端点可用：$([ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] && echo yes || echo no)"
+          cd npm
+          npm publish --access public --provenance
+
+      - name: 打 tag + 建 Release（仅 push 到 main 且真发布时）
+        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && !inputs.dry_run }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERSION: ${{ needs.decide.outputs.version }}
+        run: |
+          set -euo pipefail
+          TAG="v$VERSION"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::notice::Release $TAG 已存在，跳过"
+          elif git ls-remote --tags origin "refs/tags/$TAG" | grep -q .; then
+            gh release create "$TAG" --title "$TAG" --generate-notes
+          else
+            gh release create "$TAG" --title "$TAG" --generate-notes --target "$GITHUB_SHA"
+          fi

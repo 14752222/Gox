@@ -768,6 +768,9 @@ Options:
 | `packager/` | jsbuild 打包器（GUI 应用、交叉编译） |
 | `docs/` | 文档 |
 | `test/` | 测试相关：`bench/` 性能剖析基准（fib、函数调用、对象操作、数值解析） |
+| `npm/` | npm 包 `@goxjs/goxjs` 的定义（`package.json` / `bin/gox.js` / 包说明），二进制由发版流水线现场编译，不进仓库 |
+| `scripts/` | 构建脚本：`build-npm.sh` 交叉编译五个平台的二进制 |
+| `.github/workflows/` | CI：`release.yml` 发版流水线（push main / tag / Release → npm） |
 
 ## 开发
 
@@ -778,6 +781,24 @@ go run ./test/bench   # 生成 cpu.prof 性能剖析
 
 深入参与开发（新增标准库 API、理解回调桥与内存管理）请阅读
 [docs/js-runtime-api-tutorial.md](docs/js-runtime-api-tutorial.md)。
+
+## 发版
+
+`@goxjs/goxjs` 由 GitHub Actions 自动发布（`.github/workflows/release.yml`），认证走 npm Trusted Publishing (OIDC)，仓库里不需要任何 secret / token：
+
+```bash
+# 1. 改版本号（npm/package.json 的 version 是唯一真源）
+# 2. 提交推送
+git commit -am "release: v0.2.1" && git push Gox main:main
+# 3. 剩下交给 CI：交叉编译五平台二进制 → 冒烟测试 → 打包校验 → npm publish --provenance
+#    发布成功后自动打 v0.2.1 标签并建 Release
+```
+
+- **触发**：push 到 `main`、推送 `v*` 标签、发布 Release，以及手动 `workflow_dispatch`（可勾 `dry_run` 只构建打包、不上传）
+- **幂等**：CI 先查 registry，该版本已存在则跳过并留一条 notice —— 重复推送、重跑历史工作流都不会报红，也不会重复发布
+- **版本号**：日常提交不会触发真发布，只有 registry 上还没有的版本才会被发出去；打标签时标签号必须与 `package.json` 一致，否则直接失败
+- **本地手工发版**（应急用，需要 OTP）：`bash scripts/build-npm.sh && cd npm && npm publish --access public`
+- **排障**：OIDC 失败与"Trusted Publisher 没配对"返回的是同一个误导性 404，先核对 npm 侧那四个字段（见 workflow 头部注释）；每次发布的日志里都会打印 npm 版本、`NODE_AUTH_TOKEN` 是否为空、OIDC 端点是否可用
 
 ## 许可证
 
