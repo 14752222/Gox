@@ -93,30 +93,34 @@ DX 差的根因 —— 不是不会写，是写错了没人告诉你。
    区别在于这次全部出声。警告做了去重：`h()` 在每次重建时都会跑（列表行的渲染函数、
    响应式分支换代），不去重会刷屏。
 
-## 5. 控制流（`For / Show / Switch`）为什么不加**新概念**
+## 5. 控制流（`each` / `show` / `Switch`）：也做成了指令，但不加**新概念**
 
-三个组件的现有 API 已经是**声明的 1:1 翻译**，没有"两种差不多的写法"：
+2026-09-20 跟进的第二批：列表与条件从包装组件改成了**元素级指令**
+（`<For>` / `<Show>` 组件已移除），于是"指令写在元素上"这条心智覆盖了全部三件事 ——
+`model` 绑值、`each` 重复、`show` 显隐：
 
 ```jsx
-<For each={rows} key="id" stable fallback={<text>空</text>}>{(row) => <Row row={row} />}</For>
-<Show when={open} fallback={<text>隐藏中</text>}>…</Show>
+<view each={rows} key="id" stable fallback={<text>空</text>}>{(row) => <Row row={row} />}</view>
+<view show={open} fallback={<text>隐藏中</text>}>…</view>
 <Switch fallback={<text>未知</text>}>
   <Match when={() => phase() === "loading"}>…</Match>
 </Switch>
 ```
 
-它们的问题不在写法，而在**文档之前没人知道 `each` 要传取值函数**（见
-`docs/gui-patterns.md` §9）。给它们再加一层糖（例如 `<Match is="loading" on={phase}>`）
-只会引入**第二套调用约定** —— 而"同一组组件里并存多种传法"正是这次要消灭的东西。
+指令化解决的是"同一个能力有两种写法"（组件 vs 指令），但它**不引入新概念**：
+键还是 `each` / `key` / `stable` / `fallback`，条件还是 keep-alive 显隐，多分支仍是
+`Switch` / `Match`（多分支没有对应的元素语义，保持组件）。`view` 是布局透明的容器
+（Fragment），`<view each={rows}>` 与旧的 `<For>` 逐像素一致；换成 `<row each={rows}>`
+就是"每一项一个盒子"。指令层在 `gfx/directive.go`（`each → jsViewFor`、
+`show → jsViewShow`，只做键名翻译 + 元素副本构造）。
 
-所以这一批对控制流做的是**同一套原则下的两件事，不引入任何新概念**：
+同一批还做了**误用出声**（判定口径在 `gfx/view.go` 末尾，断言在 `gfx/view_guard_test.go`）：
 
 | 做的事 | 内容 | 语义变化 |
 |---|---|---|
-| **短写法** | `each={rows}` / `when={open}`（signal 本身就是取值函数）、`key="id"`（= `key={(r) => r.id}`） | 无（同一机制的表达） |
-| **误用出声** | `each` 收到字符串/对象、`when` 收到字符串或忘了括号的静态布尔、`key` 收到非函数非字段名、`stable` 传函数 ⇒ 各打一条去重警告 | 无（降级行为逐字不变，只是不再静默） |
-
-判定口径写在 `gfx/view.go` 末尾的"误用出声"一节；断言在 `gfx/view_guard_test.go`。
+| **短写法** | `each={rows}` / `show={open}`（signal 本身就是取值函数）、`key="id"`（= `key={(r) => r.id}`） | 无（同一机制的表达） |
+| **误用出声** | `each` 收到字符串/对象、`show` 收到字符串或忘了括号的静态布尔、`key` 收到非函数非字段名、`stable` 传函数 ⇒ 各打一条去重警告 | 无（降级行为逐字不变，只是不再静默） |
+| **透明容器公开** | `view` 标签（与内部 slot 同一套语义），指令的透明宿主/元素模板 | 新增标签，不动既有语义 |
 
 顺带一条已经可用、但很少人知道的简写：**signal 本身就是函数**，所以任何"要取值函数"的
 位置都可以裸传 signal，不用包箭头：
@@ -124,8 +128,8 @@ DX 差的根因 —— 不是不会写，是写错了没人告诉你。
 ```jsx
 <input model={draft} />      {/* 读写一体 */}
 <text>{draft}</text>         {/* 响应式子节点 */}
-<For each={rows}>…</For>     {/* 等价于 each={() => rows()} */}
-<Show when={open}>…</Show>   {/* 等价于 when={() => open()} */}
+<view each={rows}>…</view>   {/* 等价于 each={() => rows()} */}
+<view show={open}>…</view>   {/* 等价于 show={() => open()} */}
 ```
 
 `model={draft}` 正是这条简写的自然延伸 —— 既然 signal 能当取值函数传遍全场，那它也该能
@@ -186,9 +190,9 @@ DX 差的根因 —— 不是不会写，是写错了没人告诉你。
 ### 7.5 与控制流共存（用法完全不变）
 
 ```jsx
-<Show when={open}>
+<view show={open}>
   <input model={draft} />
-</Show>
+</view>
 <Switch fallback={<text>未知状态</text>}>
   <Match when={() => phase() === "editing"}><input model={title} /></Match>
   <Match when={() => phase() === "saved"}><text>已保存: {(title)}</text></Match>

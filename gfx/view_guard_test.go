@@ -21,7 +21,6 @@ func TestViewBareSignalAndFieldKey(t *testing.T) {
 	v, fake := evalUI(t, `
 		import { createSignal } from "gx/solid";
 		import { h, render } from "gx/gfx";
-		import { For, Show } from "gx/view";
 
 		let renders = 0;
 		const [rows, setRows] = createSignal([
@@ -36,12 +35,12 @@ func TestViewBareSignalAndFieldKey(t *testing.T) {
 		render(
 			<window title="guard" width={400} height={220}>
 				<column gap={4}>
-					<For each={rows} key="id" stable fallback={<row note="empty"><text>暂无</text></row>}>
+					<view each={rows} key="id" stable fallback={<row note="empty"><text>暂无</text></row>}>
 						{Row}
-					</For>
-					<Show when={open} fallback={<row note="off"><text>隐藏中</text></row>}>
+					</view>
+					<view show={open} fallback={<row note="off"><text>隐藏中</text></row>}>
 						<row note="body"><text>面板</text></row>
-					</Show>
+					</view>
 				</column>
 			</window>
 		);
@@ -102,7 +101,7 @@ func TestViewMisuseWarns(t *testing.T) {
 	v, fake := evalUI(t, `
 		import { createSignal } from "gx/solid";
 		import { h, render } from "gx/gfx";
-		import { For, Show, Switch, Match } from "gx/view";
+		import { Switch, Match } from "gx/view";
 
 		const [rows, setRows] = createSignal([{ id: "a" }]);
 		const [open, setOpen] = createSignal(true);
@@ -110,9 +109,9 @@ func TestViewMisuseWarns(t *testing.T) {
 		render(
 			<window title="guard" width={400} height={220}>
 				<column gap={4}>
-					<For each="oops">{() => <text>x</text>}</For>
-					<For each={rows} key={42} stable={() => true}>{() => <text>y</text>}</For>
-					<Show when={open()}><text>z</text></Show>
+					<view each="oops">{() => <text>x</text>}</view>
+					<view each={rows} key={42} stable={() => true}>{() => <text>y</text>}</view>
+					<view show={open()}><text>z</text></view>
 					<Switch fallback={<text>fb</text>}>
 						<Match when={phase()}><text>m</text></Match>
 					</Switch>
@@ -125,11 +124,11 @@ func TestViewMisuseWarns(t *testing.T) {
 	runPumpSteps(t, v, fake, []func(){
 		func() {
 			want := []string{
-				"each 需要取值函数",      // each="oops" (字符串)
-				"key 需要取值函数或字段名简写", // key={42}
-				"stable 只认字面量布尔",   // stable={() => true}
-				"when 收到静态布尔",      // when={open()}  <- 最像正确的那个错误
-				"它会被当成固定真值/假值",     // when={phase()} (字符串)
+				"each 指令: 需要取值函数",        // each="oops" (字符串)
+				"key 需要取值函数或字段名简写",       // key={42}
+				"stable 只认字面量布尔",         // stable={() => true}
+				"show 指令: 收到静态布尔",        // show={open()}  <- 最像正确的那个错误
+				"Switch 的 Match: 需要取值函数", // when={phase()} (字符串)
 			}
 			var missing []string
 			for _, frag := range want {

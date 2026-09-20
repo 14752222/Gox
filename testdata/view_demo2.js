@@ -24,7 +24,7 @@
 //     行里不显示位置才加 stable, 代价是下标参数停在挂载时的值 (别拿 i 拼静态文本)。
 //   · Show / Switch 是 keep-alive 显隐 (隐藏 = 摘出布局流, 子树保活), 不是 v-if。
 //     要 v-if (每次显示都全新构建) 用函数子节点: {() => cond() ? <column/> : null}
-import { h, render, createSignal, onCleanup, For, Show, Switch, Match } from "gox";
+import { h, render, createSignal, onCleanup, Switch, Match } from "gox";
 
 // ===== 状态 (界面全部派生自这几个 signal, 不存第二份) =====
 
@@ -184,7 +184,7 @@ render(
         <scroll height={142}>
           {/* each 传 signal 本身 (它本来就是取值函数); key="id" 是 key={(r) => r.id} 的简写;
               stable = 行不显示位置, 于是下标不参与复用判定 */}
-          <For
+          <view
             each={rows}
             key="id"
             stable
@@ -195,18 +195,18 @@ render(
             }
           >
             {(row) => <Row row={row} />}
-          </For>
+          </view>
         </scroll>
 
         <row gap={8} alignItems="center">
           <text font={11} color="#7a8391" width={166}>positional — For (no stable)</text>
           {/* 不带 stable: 下标参与复用判定, 所以移动过的行会重渲染 (gen 变), 没动的原样 */}
-          <For each={tags} key={(t) => t}>
+          <view each={tags} key={(t) => t}>
             {(t, i) => {
               const g = bump();
               return <text font={12} color="#3a4450">{"[gen " + g + "] " + (i + 1) + ". " + t}</text>;
             }}
-          </For>
+          </view>
           <button padding={4} onClick={swapFirstTwo}>swap 1st / 2nd</button>
         </row>
       </column>
@@ -219,8 +219,7 @@ render(
         </button>
         <text font={11} color="#7a8391">{() => (open() ? "在面板里打字, 然后隐藏" : "隐藏中: 状态没丢, 秒表还在走")}</text>
       </row>
-      <Show
-        when={open}
+      <view show={open}
         fallback={
           <text font={12} color="#a0522d" wrap width={646}>
             panel hidden — 这是 fallback 分支。面板本身没被销毁: 再显示时你输入的字和秒表都还在。
@@ -228,7 +227,7 @@ render(
         }
       >
         {Panel}
-      </Show>
+      </view>
 
       {/* ---- 3 · 多状态 (Switch / Match) ---- */}
       <row gap={8} alignItems="center">
@@ -271,9 +270,9 @@ render(
       <column gap={2}>
         <text font={11} color="#8a93a0">what just happened</text>
         {/* 无 key 的列表: 前置插入会把内容顶下去, 按值比较 ⇒ 该重建的行才重建 */}
-        <For each={log}>
+        <view each={log}>
           {(line) => <text font={11} color="#4a5560">{"· " + line}</text>}
-        </For>
+        </view>
       </column>
     </column>
   </window>

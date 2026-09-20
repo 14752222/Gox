@@ -78,7 +78,7 @@ func layoutNode(n *GuiNode) {
 		layoutMenuPopup(n)
 	case "menu-item":
 		layoutMenuItem(n)
-	case "slot":
+	case "slot", "view":
 		// 动态子节点占位容器: 单子时子节点直接占满 slot 的盒子 (slot 的尺寸
 		// 就是按这个子节点算出来的, 等价于子节点直接挂在祖父下面); 多子
 		// (列表渲染) 时按父容器方向堆叠。
@@ -149,7 +149,7 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 		if h == 0 {
 			h = ch
 		}
-	case "slot":
+	case "slot", "view":
 		if c := n.slotChild(); c != nil {
 			// 单子 slot 对布局透明: 尺寸完全跟随子节点
 			cw, ch := c.intrinsicSize()
@@ -506,12 +506,12 @@ func placeAbsoluteIn(n *GuiNode, area Rect) {
 	}
 }
 
-// gapOf 读取容器的子节点间距。slot 没有自己的 gap 时跟随父容器: 列表渲染
-// 写进 gap 容器后, 列表项的间距与直接写子元素时一致 (否则 slot 只能用
-// 默认 0, 写 <column gap={4}>{() => items.map(...)}</column> 会挤在一起)。
+// gapOf 读取容器的子节点间距。透明容器 (slot / view) 没有自己的 gap 时跟随父容器:
+// 列表渲染写进 gap 容器后, 列表项的间距与直接写子元素时一致 (否则只能用默认 0,
+// 写 <column gap={4}>{() => items.map(...)}</column> 会挤在一起)。
 func (n *GuiNode) gapOf() int {
 	v, ok := n.PropNum("gap")
-	if !ok && n.Tag == "slot" && n.Parent != nil {
+	if !ok && n.isPassthrough() && n.Parent != nil {
 		v, _ = n.Parent.PropNum("gap")
 	}
 	if v < 0 {
@@ -872,7 +872,7 @@ func layoutGrid(n *GuiNode) {
 			if !e.ew {
 				w = colW
 			}
-			if !e.eh && (h == 0 || c.isContainer() || c.Tag == "slot") {
+			if !e.eh && (h == 0 || c.isContainer() || c.isPassthrough()) {
 				h = rowH[row]
 			}
 		}
@@ -1144,7 +1144,7 @@ func (n *GuiNode) isContainer() bool {
 // 下拉项也占满: 它是"整行"元素, 高亮底色只有铺满弹层宽度才像一条选项
 // (只盖住文字宽度会显得像文本背景色)。
 func (n *GuiNode) stretchesCross() bool {
-	if n.Tag == "slot" {
+	if n.isPassthrough() {
 		if c := n.slotChild(); c != nil {
 			return c.stretchesCross()
 		}
@@ -1174,7 +1174,7 @@ func (n *GuiNode) stretchesCross() bool {
 // 交叉轴为高, 否则为宽): 显式值即"定死", 不参与 stretch 拉伸。
 // 单子 slot 委托给子节点, 保持"透明"。
 func (n *GuiNode) hasExplicitCross(parentHorizontal bool) bool {
-	if n.Tag == "slot" {
+	if n.isPassthrough() {
 		if c := n.slotChild(); c != nil {
 			return c.hasExplicitCross(parentHorizontal)
 		}

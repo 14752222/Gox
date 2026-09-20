@@ -156,6 +156,12 @@ var knownTags = map[string]struct{}{
 	// 窗口根元素: 只在 render() 的根位置有意义 (拆包成窗口配置, 不进树),
 	// 登记在这里是为了让 h() 不对它的正常用法报未知标签警告
 	"window": {},
+	// view: **布局透明的容器** (Fragment / Vue 的 <template>)。语义与内核内部的
+	// slot 占位节点完全相同 —— 单子时尺寸与交叉轴行为完全跟随子节点, 多子时按
+	// 父容器方向堆叠, 自己不占盒子; 想装饰 (background/border) 也能画。
+	// 它是 each / show 指令的"无盒子模板": <view each={rows}> 等价于旧的 <For>,
+	// 而 <row each={rows}> 会为每一项多出一层 row 盒子 (那是它字面上的意思)。
+	"view": {},
 }
 
 var (
@@ -211,7 +217,13 @@ func JSBuiltinH(args ...object.Value) object.Value {
 	// 再跑任何 effect。
 	if len(args) > 1 {
 		if props, ok := args[1].(*object.Object); ok {
-			// model= 先展开成该标签的受控 prop (model.go): 它补上去的
+			// 元素级指令 (each / show) 先展开 (directive.go): 它们决定"这棵树长
+			// 什么样" (复制元素 / 决定建不建), 所以排在一切接线之前。返回非 nil
+			// 就表示这个元素被指令接管了 —— 元素副本由指令自己造, 这里直接收工。
+			if host := expandElementDirective(tagStr.Value, props, args[2:]); host != nil {
+				return host
+			}
+			// model= 再展开成该标签的受控 prop (model.go): 它补上去的
 			// value/checked 与 onInput/onChange/onClick 要一起参与下面两轮接线,
 			// 所以必须排在这之前 —— 顺序错了这两个键就白补了。
 			expandModelProp(node, props)
@@ -680,7 +692,7 @@ func (n *GuiNode) TextContent() string {
 		switch c.Tag {
 		case "#text":
 			s += c.Text
-		case "slot":
+		case "slot", "view":
 			s += c.TextContent()
 		}
 	}
@@ -692,10 +704,21 @@ func (n *GuiNode) TextContent() string {
 // slot 由 wireReactiveChild 内部创建, 不对应任何内置标签, JS 侧看不到。
 // 布局语义是"透明": 单子时尺寸与交叉轴行为完全跟随子节点, 多子 (列表)
 // 时按父容器的方向堆叠。
+//
+// 2026-09-20: 同一套语义对外开了一个公开标签 `view` (见 knownTags 与
+// isPassthrough) —— 脚本需要一个"不占盒子"的容器时用它, each / show 指令
+// 也需要它来保持"列表宿主 / 条件分支不凭空多一个盒子"这条既有承诺。
 
-// slotChild 返回 slot 的唯一子节点 (非 slot / 空 / 多子时返回 nil)。
+// isPassthrough 报告节点是不是**布局透明的容器**: 内部 slot 占位节点与公开的
+// view 标签走同一套透明语义 (尺寸跟随单子 / 多子按父向堆叠 / gap 缺省跟随父容器 /
+// stretch 委托给单子)。所有原来写 `n.Tag == "slot"` 的地方都该用这个判定。
+func (n *GuiNode) isPassthrough() bool {
+	return n.Tag == "slot" || n.Tag == "view"
+}
+
+// slotChild 返回透明容器的唯一子节点 (非透明容器 / 空 / 多子时返回 nil)。
 func (n *GuiNode) slotChild() *GuiNode {
-	if n.Tag != "slot" || len(n.Children) != 1 {
+	if !n.isPassthrough() || len(n.Children) != 1 {
 		return nil
 	}
 	return n.Children[0]

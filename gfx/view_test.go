@@ -109,7 +109,7 @@ func TestViewForKeyedReuseAndReindex(t *testing.T) {
 	v, fake := evalUI(t, `
 		import { createSignal } from "gx/solid";
 		import { h, render } from "gx/gfx";
-		import { For } from "gx/view";
+		
 
 		let probes = 0;
 		const [rows, setRows] = createSignal([
@@ -124,7 +124,7 @@ func TestViewForKeyedReuseAndReindex(t *testing.T) {
 		render(
 			<window title="view" width={400} height={300}>
 				<column gap={2}>
-					<For each={() => rows()} key={(r) => r.id}>{Row}</For>
+					<view each={() => rows()} key={(r) => r.id}>{Row}</view>
 				</column>
 			</window>
 		);
@@ -189,7 +189,7 @@ func TestViewForStableModeReusesAcrossReorder(t *testing.T) {
 	v, fake := evalUI(t, `
 		import { createSignal } from "gx/solid";
 		import { h, render } from "gx/gfx";
-		import { For } from "gx/view";
+		
 
 		let probes = 0;
 		const [rows, setRows] = createSignal([
@@ -204,7 +204,7 @@ func TestViewForStableModeReusesAcrossReorder(t *testing.T) {
 		render(
 			<window title="view" width={400} height={300}>
 				<column gap={2}>
-					<For each={() => rows()} key={(r) => r.id} stable>{Row}</For>
+					<view each={() => rows()} key={(r) => r.id} stable>{Row}</view>
 				</column>
 			</window>
 		);
@@ -254,7 +254,7 @@ func TestViewForDisposesRemovedRowsAndRunsCleanup(t *testing.T) {
 	v, fake := evalUI(t, `
 		import { createSignal, onCleanup } from "gx/solid";
 		import { h, render } from "gx/gfx";
-		import { For } from "gx/view";
+		
 
 		let probes = 0;
 		let log = "";
@@ -271,7 +271,7 @@ func TestViewForDisposesRemovedRowsAndRunsCleanup(t *testing.T) {
 		render(
 			<window title="view" width={400} height={300}>
 				<column gap={2}>
-					<For each={() => rows()} key={(r) => r.id}>{Row}</For>
+					<view each={() => rows()} key={(r) => r.id}>{Row}</view>
 				</column>
 			</window>
 		);
@@ -311,7 +311,7 @@ func TestViewForMiddleRemovalRerendersTail(t *testing.T) {
 	v, fake := evalUI(t, `
 		import { createSignal, onCleanup } from "gx/solid";
 		import { h, render } from "gx/gfx";
-		import { For } from "gx/view";
+		
 
 		let probes = 0;
 		let log = "";
@@ -328,7 +328,7 @@ func TestViewForMiddleRemovalRerendersTail(t *testing.T) {
 		render(
 			<window title="view" width={400} height={300}>
 				<column gap={2}>
-					<For each={() => rows()} key={(r) => r.id}>{Row}</For>
+					<view each={() => rows()} key={(r) => r.id}>{Row}</view>
 				</column>
 			</window>
 		);
@@ -363,7 +363,7 @@ func TestViewForFallbackAcrossEmptyCycles(t *testing.T) {
 	v, fake := evalUI(t, `
 		import { createSignal } from "gx/solid";
 		import { h, render } from "gx/gfx";
-		import { For } from "gx/view";
+		
 
 		let probes = 0;
 		const [rows, setRows] = createSignal([]);
@@ -371,9 +371,9 @@ func TestViewForFallbackAcrossEmptyCycles(t *testing.T) {
 		render(
 			<window title="view" width={400} height={300}>
 				<column>
-					<For each={() => rows()} fallback={<row note="empty"><text>{() => hint()}</text></row>}>
+					<view each={() => rows()} fallback={<row note="empty"><text>{() => hint()}</text></row>}>
 						{(row) => { probes = probes + 1; return <row note={row.id}><text>{row.title}</text></row>; }}
-					</For>
+					</view>
 				</column>
 			</window>
 		);
@@ -423,7 +423,7 @@ func TestViewForUnkeyedReusesByPosition(t *testing.T) {
 	v, fake := evalUI(t, `
 		import { createSignal } from "gx/solid";
 		import { h, render } from "gx/gfx";
-		import { For } from "gx/view";
+		
 
 		let probes = 0;
 		const [rows, setRows] = createSignal([
@@ -438,7 +438,7 @@ func TestViewForUnkeyedReusesByPosition(t *testing.T) {
 		render(
 			<window title="view" width={400} height={300}>
 				<column gap={2}>
-					<For each={() => rows()}>{Row}</For>
+					<view each={() => rows()}>{Row}</view>
 				</column>
 			</window>
 		);
@@ -484,7 +484,7 @@ func TestViewForDuplicateKeysStayDistinct(t *testing.T) {
 	v, fake := evalUI(t, `
 		import { createSignal } from "gx/solid";
 		import { h, render } from "gx/gfx";
-		import { For } from "gx/view";
+		
 
 		const [rows, setRows] = createSignal([
 			{ id: "dup", title: "First" },
@@ -493,9 +493,9 @@ func TestViewForDuplicateKeysStayDistinct(t *testing.T) {
 		render(
 			<window title="view" width={400} height={300}>
 				<column gap={2}>
-					<For each={() => rows()} key={(r) => r.id}>
+					<view each={() => rows()} key={(r) => r.id}>
 						{(row) => <row note={row.title}><text>{row.title}</text></row>}
-					</For>
+					</view>
 				</column>
 			</window>
 		);
@@ -528,7 +528,7 @@ func TestViewForEachNumber(t *testing.T) {
 	v, fake := evalUI(t, `
 		import { createSignal } from "gx/solid";
 		import { h, render } from "gx/gfx";
-		import { For } from "gx/view";
+		
 
 		let probes = 0;
 		const [n, setN] = createSignal(2);
@@ -538,7 +538,7 @@ func TestViewForEachNumber(t *testing.T) {
 		};
 		render(
 			<window title="view" width={400} height={300}>
-				<column gap={2}><For each={() => n()}>{Cell}</For></column>
+				<column gap={2}><view each={() => n()}>{Cell}</view></column>
 			</window>
 		);
 		globalThis.probeCount = () => probes;
@@ -584,16 +584,16 @@ func TestViewShowKeepsBranchesAlive(t *testing.T) {
 	v, fake := evalUI(t, `
 		import { createSignal } from "gx/solid";
 		import { h, render } from "gx/gfx";
-		import { Show } from "gx/view";
+		
 
 		const [on, setOn] = createSignal(true);
 		const [tag, setTag] = createSignal("x");
 		render(
 			<window title="view" width={400} height={300}>
 				<column>
-					<Show when={() => on()} fallback={<row note="fb"><text>隐藏中</text></row>}>
+					<view show={() => on()} fallback={<row note="fb"><text>隐藏中</text></row>}>
 						<row note="body"><text>{() => tag()}</text></row>
-					</Show>
+					</view>
 				</column>
 			</window>
 		);
@@ -642,7 +642,7 @@ func TestViewBranchCleanupOnHostDispose(t *testing.T) {
 	v, fake := evalUI(t, `
 		import { createSignal, onCleanup } from "gx/solid";
 		import { h, render } from "gx/gfx";
-		import { For, Show } from "gx/view";
+		
 
 		let log = "";
 		const [rows, setRows] = createSignal([{ id: "a" }]);
@@ -653,14 +653,14 @@ func TestViewBranchCleanupOnHostDispose(t *testing.T) {
 		};
 		const Row = (row) => (
 			<row note={row.id}>
-				<Show when={() => open()} fallback={<row note="off"><text>off</text></row>}>
+				<view show={() => open()} fallback={<row note="off"><text>off</text></row>}>
 					{Panel}
-				</Show>
+				</view>
 			</row>
 		);
 		render(
 			<window title="view" width={400} height={300}>
-				<column><For each={() => rows()} key={(r) => r.id}>{Row}</For></column>
+				<column><view each={() => rows()} key={(r) => r.id}>{Row}</view></column>
 			</window>
 		);
 		globalThis.cleanupLog = () => log;
@@ -689,17 +689,21 @@ func TestViewBranchCleanupOnHostDispose(t *testing.T) {
 
 // TestViewShowWithoutWhenAndStaticFallback 缺 when 只警告不炸; 没有 fallback
 // 时条件为假就是空宿主 (零尺寸, 对布局透明)。
-func TestViewShowWithoutWhenAndStaticFallback(t *testing.T) {
+// TestViewShowStaticFallbackAndPlainElement 两个边界 (指令化之后重写):
+//   - show={false} + fallback: 只渲染 fallback (分支同样懒构建);
+//   - 元素上**没有** show: 它就不是指令, 元素照常渲染 —— 旧 <Show> 那种
+//     "缺 when 就当 false" 的情况在指令形态下不存在了。
+func TestViewShowStaticFallbackAndPlainElement(t *testing.T) {
 	v, fake := evalUI(t, `
 		import { h, render } from "gx/gfx";
-		import { Show } from "gx/view";
+
 		render(
 			<window title="view" width={400} height={300}>
 				<column>
-					<Show><row note="never"><text>不该出现</text></row></Show>
-					<Show when={() => false} fallback={<row note="fb"><text>兜底</text></row>}>
+					<view show={false} fallback={<row note="fb"><text>兜底</text></row>}>
 						<row note="body"><text>正文</text></row>
-					</Show>
+					</view>
+					<row note="plain"><text>没有指令的元素照常渲染</text></row>
 				</column>
 			</window>
 		);
@@ -707,10 +711,7 @@ func TestViewShowWithoutWhenAndStaticFallback(t *testing.T) {
 
 	runPumpSteps(t, v, fake, []func(){
 		func() {
-			viewAssertLayout(t, uiRoot(t), "fb", "兜底")
-			if !viewWarned("Show: 缺少 when") {
-				t.Fatalf("缺 when 应留下警告")
-			}
+			viewAssertLayout(t, uiRoot(t), "fb|plain", "兜底|没有指令的元素照常渲染")
 		},
 	})
 }
@@ -767,14 +768,14 @@ func TestViewForIsLayoutTransparent(t *testing.T) {
 	v, fake := evalUI(t, `
 		import { createSignal } from "gx/solid";
 		import { h, render } from "gx/gfx";
-		import { For } from "gx/view";
+		
 
 		const [rows, setRows] = createSignal([{ id: "a" }, { id: "b" }]);
 		const Row = (row) => <rect note={row.id} width={50} height={10}></rect>;
 		render(
 			<window title="view" width={400} height={300}>
 				<column gap={4} padding={6}>
-					<For each={() => rows()}>{Row}</For>
+					<view each={() => rows()}>{Row}</view>
 				</column>
 			</window>
 		);

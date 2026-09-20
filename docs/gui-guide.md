@@ -93,6 +93,7 @@ render(
 | 元素 | 主要属性 | 说明 |
 |---|---|---|
 | `column` / `row` | `gap` / `padding` / `margin`(子级) / `alignItems` / `justifyContent` / `flexGrow` / `flexShrink`(子级) / `wrap` / `width` / `height` | flex 风格容器，尺寸按内容确定（交叉轴默认 stretch）；`row` 加 `wrap` 放不下折行，`gap` 兼作行内间距与行间距 |
+| `view` | `each` / `show` / `fallback` / `key` / `stable` / `gap` | **布局透明的容器**（Fragment）：单子时尺寸完全跟随子节点、多子（列表）按父容器方向堆叠，自己不占盒子；**元素级指令就写在这类元素上** —— `each={rows}` 按列表重复本元素（keyed 复用 / `stable` / `fallback`），`show={open}` keep-alive 显隐。指令对任何内置元素标签都有效，写在 `<column>` / `<row>` 上就是"每一项一个盒子" |
 | `grid` | `columns`（1~32） | 等宽列网格：声明序逐行填格，列宽均分内容宽，格子无显式高时拉到行高；不做轨道语法 / colSpan（不等宽列用 `row` + 百分比组合） |
 | `text` | `font` / `color` / `width` / `wrap` / `ellipsis` | 默认单行文本、超宽硬截断；加 `wrap` 变成文本块（按宽度贪心折行、`\n` 强制换行），`ellipsis={n}` 只留 n 行并在末行补 `...` |
 | `rect` | `width` / `height` / `background` / `border` / `radius` / `shadow` / `borderWidth` / `borderStyle` | 通用盒子；未特判的标签也走这条绘制路径；装饰属性（圆角 / 阴影 / 渐变 / 边框宽度）见 [5.3](#53-装饰绘制) |
@@ -424,23 +425,24 @@ h("column", null,
 不会打断其他子节点的布局。
 
 > 函数子节点 map 出来的列表，内容变化按"清空重建"处理 —— 要 keyed 复用（行内状态保留、
-> 只重渲染变化的行）用 `gx/view` 的 `<For>`，见下节。
+> 只重渲染变化的行）用 `each` 指令，见下节。
 
-### 8.2 声明式视图（gx/view）
+### 8.2 列表、条件与多分支（元素级指令 + gx/view）
 
-`gx/view` 把"循环 + 条件"写成声明（对标 Vue 的 `v-for` + `:key` / `v-show` / `v-if` 链）：
+列表与条件渲染是**元素级指令**（写在元素上，对标 Vue 的 `v-for` / `v-show`）；
+多分支用 `gx/view` 的 `Switch` / `Match`：
 
 ```js
-import { For, Show, Switch, Match } from "gx/view"
+import { Switch, Match } from "gx/view"      // each / show 是 h() 层的指令, 不用 import
 
 <column gap={8}>
-  <For each={rows} key="id" fallback={<text>暂无数据</text>}>
+  <view each={rows} key="id" fallback={<text>暂无数据</text>}>
     {(row, i) => <text>{(i + 1) + ". " + row.title}</text>}
-  </For>
+  </view>
 
-  <Show when={open}>
+  <view show={open}>
     <input width={150} model={draft} />
-  </Show>
+  </view>
 
   <Switch>
     <Match when={() => phase() === "loading"}><progress value={0.5} /></Match>
@@ -449,17 +451,23 @@ import { For, Show, Switch, Match } from "gx/view"
 </column>
 ```
 
-- **三个短写法**：`each={rows}` / `when={open}`（signal 本身就是取值函数，不用再包箭头）、
+> **迁移（2026-09-20）**：`<For>` / `<Show>` 组件已移除，改用元素级指令 ——
+> `<For each={x} key={k}>…</For>` → `<view each={x} key={k}>…</view>`，
+> `<Show when={x} fallback={f}>…</Show>` → `<view show={x} fallback={f}>…</view>`。
+> 语义（keyed 复用 / `stable` / `fallback` / keep-alive / 懒构建）一字未改；
+> 指令可以写在任何内置元素上，换标签就是"每一项一个盒子"（`<row each={rows}>`）。
+
+- **短写法**：`each={rows}` / `show={open}`（signal 本身就是取值函数，不用再包箭头）、
   `key="id"`（等价于 `key={(r) => r.id}`）。需要派生/过滤时再写函数：`each={() => rows().filter(ok)}`
-- `For` 的复用判定是 **key 配对 + item 引用同一性 + 下标**：命中的行原样复用（行内输入框、
+- `each` 的复用判定是 **key 配对 + item 引用同一性 + 下标**：命中的行原样复用（行内输入框、
   滚动位置、局部 signal 全留着），只就地重渲染真正变了的行；`each` 也接受数字（生成 0..n-1）。
   `stable` 可把下标移出判定（重排 / 中间删除不重建，代价是下标参数停在挂载值）；
   重复 key 会降级为位置键并警告一次（不写坏树）
-- `each` / `when` **要收取值函数**：传 `rows()` 只拿到一张快照，之后信号再变也不重渲染 ——
+- `each` / `show` **要收取值函数**：传 `rows()` / `open()` 只拿到一张快照，之后信号再变也不重渲染 ——
   与受控 input 的 `value` 必须传函数是同一条纪律。**写错会出警告**（`each` 收到字符串/对象、
-  `when` 收到字符串、忘了括号的 `when={open()}`、`key` 收到数字、`stable` 传函数），
+  `show` 收到字符串、忘了括号的 `show={open()}`、`key` 收到数字、`stable` 传函数），
   降级行为不变、只是不再静默
-- `Show` / `Switch` 走 **keep-alive**：分支懒构建且只构建一次，隐藏只是摘出布局流（子树保活，再显示状态原样）。
+- `show` / `Switch` 走 **keep-alive**：分支懒构建且只构建一次，隐藏只是摘出布局流（子树保活，再显示状态原样）。
   刻意不做 v-if —— 静态子树销毁后重新挂回去是"看着一样但不再响应式"的死树；要该语义用函数子节点
   `{() => cond() ? <X/> : null}`（函数体内每次求值都新建元素）
 - 宿主是**透明占位节点**：放进 column 竖排、放进 row 横排，自己不多一层盒子；

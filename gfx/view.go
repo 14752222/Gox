@@ -7,21 +7,23 @@ import (
 	"github.com/14752222/Gox/object"
 )
 
-// ===== gx/view: 声明式视图机制 (列表循环 / 条件渲染) =====
+// ===== gx/view: 列表循环与条件渲染 (each / show 指令 + Switch 组件) =====
 //
 // 目标: 让"循环"和"条件"在 JSX 里写出来就是**声明**, 而不是一片手写的
 // map / 三元 / 短路表达式, 并且把"这一轮该重建哪几行"交给内核判断。
 //
-//	import { For, Show, Switch, Match } from "gx/view";
+// 2026-09-20 起它们是**元素级指令** (写法与 model 同层, 展开见 directive.go):
 //
-//	<For each={rows} key="id" fallback={<text>暂无数据</text>}>
+//	<view each={rows} key="id" fallback={<text>暂无数据</text>}>
 //	  {(row, i) => <row gap={6}><text>{`${i + 1}. ${row.title}`}</text></row>}
-//	</For>
+//	</view>
 //
-//	<Show when={user} fallback={<text>请先登录</text>}>
+//	<view show={user} fallback={<text>请先登录</text>}>
 //	  <column gap={4}><text>{() => user().name}</text></column>
-//	</Show>
+//	</view>
 //
+//	// 多分支仍是组件 (没有对应的元素语义), 需要 import
+//	import { Switch, Match } from "gx/view";
 //	<Switch>
 //	  <Match when={() => phase() === "loading"}><text>加载中…</text></Match>
 //	  <Match when={() => phase() === "error"}><text>出错了</text></Match>
@@ -31,14 +33,17 @@ import (
 // 三个短写法先记住, 语义与展开式完全一致 (理由见下面两节):
 //
 //	each={rows}   signal 本身就是取值函数 ⇒ 不用再包一层 () => rows()
-//	when={open}   同上 (Show / Match 都适用)
+//	show={open}   同上 (Switch 里 Match 的 when= 同理)
 //	key="id"      等价于 key={(r) => r.id}
 //
 // 与 Vue 的对应关系 (以及一处刻意的差异):
 //
-//	For          ≈ v-for (带 :key)          列表循环 + 复用
-//	Show         ≈ v-show / <keep-alive>    条件显隐 (隐藏 = 摘出布局流, 子树保活)
-//	Switch/Match ≈ v-if / v-else-if / v-else
+//	each         ≈ v-for (带 :key)          列表循环 + 复用
+//	show         ≈ v-show / <keep-alive>    条件显隐 (隐藏 = 摘出布局流, 子树保活)
+//	Switch/Match ≈ v-if / v-else-if / v-else   多分支 (仍是组件)
+//
+// 指令写在哪个元素上, 就重复 / 显隐哪个元素: `<view each={rows}>` 的 view 是布局
+// 透明容器 (Fragment), 与旧的 <For> 逐像素一致; `<row each={rows}>` 则每项一个盒子。
 //
 // Show/Switch 刻意**不做** v-if 那种"隐藏即销毁": 本引擎的静态子树一旦被
 // dispose, 它的响应式接线 (reactiveProps) 就永久断了 —— 重新挂回去也只是一棵
@@ -53,17 +58,17 @@ import (
 // 元素在函数体里新建 ⇒ 每次求值都是新节点 (这是一直以来就有的写法, For 的行
 // 渲染函数也是同一回事)。
 //
-// ## each / when 收**取值函数** —— 最简写法是直接传 signal
+// ## each / show 收**取值函数** —— 最简写法是直接传 signal
 //
-// `each` / `when` 传的是**取值函数** (`() => rows()`), 不是快照值。JSX 的属性
+// 两个指令收到的都是**取值函数** (`() => rows()`), 不是快照值。JSX 的属性
 // 表达式在 h()/组件调用的当场求值, 写 `each={rows()}` 只会把列表的第一份快照交给
 // 内核, 之后 signal 再变也不会重渲染 —— 这是本运行时最常见的静默失效陷阱
 // (受控 input 的 value 必须传函数是同一条纪律)。
 //
 // 而 **signal 本身就是一个函数**, 所以最简写法是直接传它:
 //
-//	<For each={rows} key="id">…</For>
-//	<Show when={open}>…</Show>
+//	<view each={rows} key="id">…</view>
+//	<view show={open}>…</view>
 //	<text>{draft}</text>          (函数子节点同理: 响应式子节点就是"每次求值")
 //
 // 包一层的写法仍然合法, 需要派生/过滤时用它: each={() => rows().filter(ok)}。
@@ -71,8 +76,8 @@ import (
 // 例外: 传数组字面量 / 数字字面量是**合法的静态列表** (渲染一次, 不再变化),
 // 拿不准就一律传 signal 或函数。
 //
-// 写错时内核**会出声**: 合法形态之外的值 (each 收到字符串/对象, when 收到字符串,
-// 尤其 when={open()} 这种"忘了括号"的静态布尔) 都记一条 stderr 警告并去重
+// 写错时内核**会出声**: 合法形态之外的值 (each 收到字符串/对象, show 收到字符串,
+// 尤其 show={open()} 这种"忘了括号"的静态布尔) 都记一条 stderr 警告并去重
 // (viewCheckEach / viewCheckWhen, 见文件末尾的"误用出声")。语义照旧降级 ——
 // 改不了已经写下的表达式, 至少让"它冻在第一帧"这件事有据可查。
 //
@@ -148,11 +153,14 @@ import (
 //     viewCheckStable): 非法形态的降级行为与从前逐字一致 (空列表 / 恒真恒假 /
 //     按位置匹配 / stable 当 false), 只是多一条去重警告。要升级成"直接报错"
 //     得等一次 breaking change 窗口。
+//
+// 2026-09-20 起: 控制流从"包装组件"改成**元素级指令** (each / show), 与 model
+// 同一层 —— 都在 h() 里展开 (见 directive.go)。本文件里保留的是两个**引擎**:
+// jsViewFor (列表) 与 jsViewShow (条件显隐), 指令层只做"指令键 → 引擎 prop"的
+// 翻译 + 元素副本的构造。Switch / Match 仍是组件 (多分支没有对应的元素语义)。
 func init() {
 	object.RegisterBuiltinModule("gx/view", func() map[string]object.Value {
 		return map[string]object.Value{
-			"For":    object.NewBuiltin("For", jsViewFor),
-			"Show":   object.NewBuiltin("Show", jsViewShow),
 			"Switch": object.NewBuiltin("Switch", jsViewSwitch),
 			"Match":  object.NewBuiltin("Match", jsViewMatch),
 		}
@@ -487,15 +495,15 @@ func viewKeyString(v object.Value) (string, bool) {
 
 // ===== 误用出声: 取值函数类 prop 的写法校验 =====
 //
-// 为什么值得单独一块: 控制流的三个 prop (each / when / key) 都收**取值函数**,
-// 而写成快照 (each={rows()} / when={open()}) 与正确写法在屏幕上只差一对括号,
+// 为什么值得单独一块: 控制流的三个键 (each / show / key) 都收**取值函数**,
+// 而写成快照 (each={rows()} / show={open()}) 与正确写法在屏幕上只差一对括号,
 // 后果却是静默的 —— 列表与条件从此不再变化, 没有任何报错。与 gfx/model.go 同一条
 // 纪律: 改不了已经写下的表达式, 至少让"写错了"这件事出声。
 //
 // 合法形态各自独立, 不合并成一条"通用规则" (合并只会得到一条谁也记不住的规则):
 //
 //	each    取值函数 (传 signal 本身也行) / 数组字面量 / 数字   —— 静态列表是合法写法
-//	when    取值函数 / 布尔字面量
+//	show    取值函数 / 布尔字面量  (Switch 里 Match 的 when= 同理)
 //	key     取值函数 / 字段名字符串 (key="id")
 //	stable  字面量布尔 (它压根不是响应式 prop)
 //
@@ -536,25 +544,26 @@ func viewCheckEach(v object.Value) {
 	case *object.Array, *object.Number:
 		return
 	}
-	viewWarnOnce("each", "gx/view For: each 需要取值函数 (传 signal 本身也行) 或数组/数字字面量, "+
+	viewWarnOnce("each", "each 指令: 需要取值函数 (传 signal 本身也行) 或数组/数字字面量, "+
 		"收到 %s —— 它会一直渲染成空列表", v.Type())
 }
 
-// viewCheckWhen 校验 when: 取值函数 / 布尔字面量。
+// viewCheckWhen 校验 when (来自 show 指令的 show= 与 Switch 里 Match 的 when=):
+// 取值函数 / 布尔字面量。
 //
-// 布尔字面量单独给一条文案: `when={open()}` 就是这么写出来的, 而它的现象是
+// 布尔字面量单独给一条文案: `show={open()}` 就是这么写出来的, 而它的现象是
 // "条件冻在第一帧" —— 只喊"要传函数"用户未必对得上号。
-func viewCheckWhen(tag string, v object.Value) {
+func viewCheckWhen(what string, v object.Value) {
 	if v == nil || object.IsCallable(v) {
 		return
 	}
 	if _, ok := v.(*object.Boolean); ok {
-		viewWarnOnce("when:"+tag, "gx/view %s: when 收到静态布尔 (%s) —— 刻意的常量条件可忽略; "+
-			"若是忘了函数括号, 条件之后不会再跟着 signal 变", tag, v.Inspect())
+		viewWarnOnce("when:"+what, "%s: 收到静态布尔 (%s) —— 刻意的常量条件可忽略; "+
+			"若是忘了函数括号, 条件之后不会再跟着 signal 变", what, v.Inspect())
 		return
 	}
-	viewWarnOnce("when:"+tag, "gx/view %s: when 需要取值函数 (传 signal 本身也行), 收到 %s —— "+
-		"它会被当成固定真值/假值, 条件不会再变", tag, v.Type())
+	viewWarnOnce("when:"+what, "%s: 需要取值函数 (传 signal 本身也行), 收到 %s —— "+
+		"它会被当成固定真值/假值, 条件不会再变", what, v.Type())
 }
 
 // viewCheckKey 校验 key: 取值函数 / 字段名字符串。
@@ -565,7 +574,7 @@ func viewCheckKey(v object.Value) {
 	if _, ok := v.(*object.String); ok {
 		return
 	}
-	viewWarnOnce("key", "gx/view For: key 需要取值函数或字段名简写 (key=\"id\"), 收到 %s —— "+
+	viewWarnOnce("key", "each 指令: key 需要取值函数或字段名简写 (key=\"id\"), 收到 %s —— "+
 		"该行会退化为按位置匹配", v.Type())
 }
 
@@ -577,7 +586,7 @@ func viewCheckStable(v object.Value) {
 	if _, ok := v.(*object.Boolean); ok {
 		return
 	}
-	viewWarnOnce("stable", "gx/view For: stable 只认字面量布尔, 收到 %s —— "+
+	viewWarnOnce("stable", "each 指令: stable 只认字面量布尔, 收到 %s —— "+
 		"它会被静默当成 false (位置变化仍会重建行)", v.Type())
 }
 
@@ -728,9 +737,9 @@ func jsViewShow(args ...object.Value) object.Value {
 	when := viewProp(props, "when")
 	fallback := viewProp(props, "fallback")
 	if when == nil {
-		recordWarn("gx/view Show: 缺少 when (条件), 按 false 渲染")
+		recordWarn("show 指令: 缺少 show= 条件, 按隐藏处理")
 	}
-	viewCheckWhen("Show", when)
+	viewCheckWhen("show 指令", when)
 
 	body := viewBranchNew(args[1:])
 	fb := viewBranchNew(viewBranchKids(fallback))
@@ -782,9 +791,9 @@ func jsViewMatch(args ...object.Value) object.Value {
 	props := viewPropsArg(args)
 	when := viewProp(props, "when")
 	if when == nil {
-		recordWarn("gx/view Match: 缺少 when (条件), 按 false 处理")
+		recordWarn("Switch 的 Match: 缺少 when (条件), 按 false 处理")
 	}
-	viewCheckWhen("Match", when)
+	viewCheckWhen("Switch 的 Match", when)
 	return &viewMatchValue{when: when, kids: args[1:]}
 }
 

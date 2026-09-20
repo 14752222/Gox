@@ -321,25 +321,26 @@ switch 滑块 / disabled 降饱和 / 光标闪烁周期——套件在这些地�
 > 套件的 Btn/Card 可以直接用它们收口观感（kit_demo 的 Decor 卡是示例），
 > 其余 ❌ 项维持。
 
-## 9. 视图：声明的循环与条件（gx/view 的 For / Show / Switch）
+## 9. 视图：元素级指令 each / show（+ gx/view 的 Switch / Match）
 
 **问题**：列表与条件渲染此前只有两种写法 —— 函数子节点里 map 一遍
 （`{() => rows().map((r, i) => <Row r={r} />)}`：列表一变整表拆掉重建，行内的
 输入焦点、滚动位置、局部 signal 全丢），或三元/短路表达式堆在 JSX 里（不可读、
 也没有"哪几行该重建"的概念）。
 
-**模块依赖**（2026-09-19 落地，`gfx/view.go` 注册为 `gx/view`）：
+**两条指令**（2026-09-20 从 `<For>` / `<Show>` 组件改成元素级指令，语义未变）：
+写在元素上，`gx/view` 只需要 import `Switch` / `Match`：
 
 ```js
-import { For, Show, Switch, Match } from "gx/view";
+import { Switch, Match } from "gx/view";
 
-<For each={rows} key="id" fallback={<text>暂无数据</text>}>
+<view each={rows} key="id" fallback={<text>暂无数据</text>}>
   {(row, i) => <RowCard row={row} i={i} />}
-</For>
+</view>
 
-<Show when={open} fallback={<text>已隐藏</text>}>
+<view show={open} fallback={<text>已隐藏</text>}>
   <column gap={4}><input model={draft} /></column>      {/* 双向绑定见 gui-model-binding.md */}
-</Show>
+</view>
 
 <Switch fallback={<text>未知状态</text>}>
   <Match when={() => phase() === "loading"}><progress value={0.5} /></Match>
@@ -347,19 +348,23 @@ import { For, Show, Switch, Match } from "gx/view";
 </Switch>
 ```
 
-三个短写法（`each={rows}` / `when={open}` / `key="id"`）与展开式语义完全一致：
+`view` 是布局透明的容器（Fragment）：`<view each={rows}>` 与旧的 `<For>` 逐像素一致；
+换成别的标签就是"每一项一个盒子"（`<row each={rows}>`）。指令写在哪个元素上，
+就重复/显隐哪个元素。
+
+三个短写法（`each={rows}` / `show={open}` / `key="id"`）与展开式语义完全一致：
 signal 本身就是取值函数，所以不用再包一层箭头；`key="id"` 就是 `key={(r) => r.id}`。
 需要派生/过滤时再写函数：`each={() => rows().filter(ok)}`。
 
 `each` 也接受数字：`each={() => 5}` → 0..4（Vue 的 `v-for="n in 5"`）。
 
-**四条必须记住的语义**（完整理由见 `gfx/view.go` 文件头）：
+**四条必须记住的语义**（完整理由见 `gfx/view.go` 与 `gfx/directive.go` 文件头）：
 
-1. **`each` / `when` 收取值函数**，而 **signal 本身就是最简的那个取值函数**。
-   JSX 属性在调用当场求值：`each={rows()}` 只是一张快照，之后 signal 再变不会
-   重渲染 —— 与"受控 input 的 value 必须传函数"是同一条纪律。传数组/数字字面量
+1. **`each` / `show` 收取值函数**，而 **signal 本身就是最简的那个取值函数**。
+   JSX 属性在调用当场求值：`each={rows()}` / `show={open()}` 只是一张快照，之后 signal
+   再变不会重渲染 —— 与"受控 input 的 value 必须传函数"是同一条纪律。传数组/数字字面量
    是合法的**静态**列表（渲染一次）。写错现在**会出声**：非法形态（`each` 收到
-   字符串/对象、`when` 收到字符串、尤其是 `when={open()}` 这种忘了括号的静态布尔、
+   字符串/对象、`show` 收到字符串、尤其是 `show={open()}` 这种忘了括号的静态布尔、
    `key` 收到数字、`stable` 传函数）各打一条去重警告 —— 降级行为不变，只是不再
    静默；警告进 stderr 与 `gx/dev` 的缓冲（§7）。
 2. **复用按「key + 引用同一性 + 下标」判定**。同 key、同行引用、同下标 ⇒ 原样
