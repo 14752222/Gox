@@ -11,8 +11,9 @@
 #
 # 幂等：先查 registry，该版本已存在 → 跳过（exit 0 + notice）。所以重复推送、
 #       重跑历史工作流、补跑失败的发版都不会报红，也不会误发。
-#       注意本工作流在 push main 成功后会用 gh 建 Release，那会再触发一次
-#       release 事件 —— 因为判重是幂等的，第二次会直接以 notice 跳过。
+#       注：本工作流在 push main 成功后用 gh（GITHUB_TOKEN）建 Release —— 这**不会**
+#       再触发一次工作流运行（GitHub 规定 token 发起的事件不自激）；人工在界面上
+#       发布的 Release 才会触发，那一次会因判重命中而直接以 notice 跳过。
 #
 # 认证：npm Trusted Publishing (OIDC)，不需要任何 secret / token。
 #   npmjs.com → 该包 Settings → Trusted Publisher 四个字段必须逐字符相等：
