@@ -1223,18 +1223,20 @@ setInterval(() =&gt; setTick(tick() + 1), 500);</code></pre>
       <span class="badge ok">稳定</span>
     </div>
     <p class="comp-lead">
-      来自 <code class="inline">gx/solid</code> 的三个 API,是"界面为什么会更新"的答案。
+      来自 <code class="inline">gx/solid</code> 的这几个 API,是"界面为什么会更新"的答案。
+      完整导出、签名与边界见 <a href="api.html#m-solid">API 参考 · gx/solid</a>。
     </p>
 
     <table class="props">
       <thead><tr><th>API</th><th>签名</th><th>说明</th></tr></thead>
       <tbody>
-        <tr><td>createSignal</td><td>(initial) =&gt; [get, set]</td><td>创建信号。调用 <code class="inline">get()</code> 读值(同时登记依赖),<code class="inline">set(v)</code> 或 <code class="inline">set(fn)</code> 写值</td></tr>
-        <tr><td>createEffect</td><td>(fn) =&gt; void</td><td>立即跑一次 <code class="inline">fn</code>,并订阅其中读到的所有信号</td></tr>
-        <tr><td>createMemo</td><td>(fn) =&gt; getter</td><td>派生计算值,依赖变化时自动重算并缓存</td></tr>
+        <tr><td>createSignal</td><td>(initial) =&gt; [get, set]</td><td>创建信号。调用 <code class="inline">get()</code> 读值(同时登记依赖),<code class="inline">set(v)</code> 或 <code class="inline">set(fn)</code> 写值;<strong>新旧值 <code class="inline">===</code> 相同不通知</strong></td></tr>
+        <tr><td>createEffect</td><td>(fn) =&gt; dispose</td><td>立即跑一次 <code class="inline">fn</code>,并订阅其中读到的所有信号;<strong>返回值是注销函数</strong></td></tr>
+        <tr><td>createMemo</td><td>(fn) =&gt; getter</td><td>派生计算值,<strong>惰性</strong>:依赖变化只标脏,读取时才重算</td></tr>
         <tr><td>createResource</td><td>(fetcher) =&gt; [data, res]</td><td>异步取数三件套。<code class="inline">data()</code> 取当前值;<code class="inline">res.state()</code> 为 <code class="inline">"pending"</code> / <code class="inline">"ready"</code> / <code class="inline">"refreshing"</code> / <code class="inline">"error"</code>;<code class="inline">res.error()</code> 取错误;<code class="inline">res.refetch()</code> 重取(保留旧值显示)。<strong>controls 必须作为第二个元素取出</strong>——嵌套解构 <code class="inline">[data, {refetch}]</code> 引擎不支持</td></tr>
         <tr><td>onMount</td><td>(fn)</td><td>本代子树挂载后执行一次</td></tr>
         <tr><td>onCleanup</td><td>(fn)</td><td>本代子树被替换 / 销毁时执行 —— 用来收定时器、解绑回调</td></tr>
+        <tr><td>untrack</td><td>(fn) =&gt; value</td><td>在<strong>不登记依赖</strong>的前提下执行 <code class="inline">fn</code> 并返回结果。路由内部靠它调页面组件,避免"页面体里读的信号变成路由 effect 的依赖"</td></tr>
         <tr><td>devStats</td><td>() =&gt; object</td><td>开发期统计(信号数 / 订阅数等),配合 <code class="inline">gx/dev</code> 的调试面板</td></tr>
       </tbody>
     </table>
@@ -1701,32 +1703,51 @@ render(
     </p>
 
     <table class="props">
-      <thead><tr><th>导出</th><th>说明</th></tr></thead>
+      <thead><tr><th>导出</th><th>签名 / 返回</th><th>说明</th></tr></thead>
       <tbody>
-        <tr><td>screens()</td><td>显示器表(每项含 <code class="inline">id</code> / <code class="inline">x</code> / <code class="inline">y</code> / <code class="inline">width</code> / <code class="inline">height</code> 与分割区 <code class="inline">regions</code>)</td></tr>
-        <tr><td>primaryScreen()</td><td>主显示器</td></tr>
-        <tr><td>screen(id)</td><td>按 id 取某块显示器</td></tr>
-        <tr><td>screenOf(win?)</td><td>窗口所在显示器;省略参数表示"最近挂载的窗口"</td></tr>
-        <tr><td>useScreen(win?) / useScreens()</td><td>响应式取值函数:放进函数 prop / 函数子节点,显示器或姿态一变就重算</td></tr>
-        <tr><td>windowInfo(win?) / useWindowInfo(win?)</td><td>窗口几何与所属屏</td></tr>
-        <tr><td>posture() / usePosture()</td><td>折叠姿态(平展 / 半折 / 展开等)</td></tr>
-        <tr><td>hinge() / regions()</td><td>折痕几何(<code class="inline">{x, y, width, height, orientation}</code>)与分割区。<strong>hinge 是设备几何,不随 posture 清除</strong> —— 折回平展再折回来比例不会变成 0.5</td></tr>
-        <tr><td>platform()</td><td>当前后端平台标识</td></tr>
-        <tr><td>reportPosture(p)</td><td>宿主上报折叠姿态(移动宿主接入时走这里)</td></tr>
-        <tr><td>resetDisplays()</td><td>清空显示器表回退到后端枚举</td></tr>
-        <tr><td>onDisplayChange(fn) / offDisplayChange(fn)</td><td>显示器变化订阅</td></tr>
+        <tr><td>screens()</td><td>Display[]</td><td>全部显示器,字段见下</td></tr>
+        <tr><td>primaryScreen()</td><td>Display</td><td>主显示器</td></tr>
+        <tr><td>screen(id)</td><td>Display | null</td><td>按 id 取一块屏</td></tr>
+        <tr><td>screenOf(win?)</td><td>Display | null</td><td>窗口所在显示器;省略参数 = 最近挂载的窗口(没有窗口时为 <code class="inline">null</code>)</td></tr>
+        <tr><td>useScreen(win?) / useScreens()</td><td><strong>getter</strong></td><td>响应式版。<strong>返回的是取值函数,要再调一次</strong>:<code class="inline">const f = useScreens(); f()</code></td></tr>
+        <tr><td>windowInfo(win?) / useWindowInfo(win?)</td><td>object / <strong>getter</strong></td><td>窗口尺寸与所属屏:<code class="inline">{width, height, scale, screenWidth, screenHeight, workWidth, workHeight, screenId, platform}</code></td></tr>
+        <tr><td>posture(win?) / usePosture(win?)</td><td>string / <strong>getter</strong></td><td>折叠姿态:<code class="inline">"flat"</code> / <code class="inline">"half-open"</code> / <code class="inline">"folded"</code> / <code class="inline">"unknown"</code></td></tr>
+        <tr><td>hinge(win?) / regions(win?)</td><td>object | null / array</td><td>折痕 <code class="inline">{x, y, width, height, orientation}</code> 与分段面板 <code class="inline">[{id, x, y, width, height}]</code>。<strong>hinge 是设备几何,不随 posture 清除</strong> —— 折回平展再折回来比例不会变成 0.5</td></tr>
+        <tr><td>platform()</td><td>string</td><td><code class="inline">"win32"</code> / <code class="inline">"x11"</code> / <code class="inline">"cocoa"</code> / <code class="inline">"headless"</code></td></tr>
+        <tr><td>reportPosture(opts)</td><td>undefined</td><td>宿主上报姿态。字段:<code class="inline">{display?, posture?, foldable?, width?, height?, hinge?&#123;x, y, <strong>w</strong>, <strong>h</strong>, orientation&#125;, regions?}</code></td></tr>
+        <tr><td>resetDisplays()</td><td>undefined</td><td>清掉上报覆盖,回退到后端枚举</td></tr>
+        <tr><td>onDisplayChange(fn)</td><td>off()</td><td>显示器 / 姿态变化订阅;<strong>返回值就是注销函数</strong>(也可用 <code class="inline">offDisplayChange(fn)</code>)</td></tr>
       </tbody>
     </table>
 
-    <pre class="code"><code data-lang="js">import { usePosture, hinge, screens } from "gx/screen";
+    <div class="callout warn">
+      <b>两处最容易踩的写法</b>
+      <p>
+        <strong>① <code class="inline">useXxx</code> 返回的是取值函数</strong>,不是值本身 ——
+        写 <code class="inline">usePosture() === "half-open"</code> 永远为 <code class="inline">false</code>
+        (拿函数比字符串)。要先 <code class="inline">const getPosture = usePosture()</code>。<br>
+        <strong>② 折痕写入用 <code class="inline">w</code> / <code class="inline">h</code>,读出是 <code class="inline">width</code> / <code class="inline">height</code></strong> ——
+        把 <code class="inline">hinge()</code> 的结果直接回填给 <code class="inline">reportPosture</code> 会得到 0 宽的折痕。
+      </p>
+    </div>
+
+    <pre class="code"><code data-lang="js">import { usePosture, hinge, screens, reportPosture, screenOf } from "gx/screen";
 import { createMemo } from "gx/solid";
 
-// usePosture 是取值函数:写在函数 prop / 函数子节点里就能跟着姿态自动重算
-const folded = createMemo(() =&gt; usePosture() === "half");
-const h = createMemo(() =&gt; hinge());        // {x, y, width, height, orientation} | null
+// usePosture() 先拿到取值函数,再放进函数 prop / 函数子节点才会跟着姿态重算
+const getPosture = usePosture();
+const folded = createMemo(() =&gt; getPosture() === "half-open");
 
-&lt;text&gt;{() =&gt; `${screens().length} 屏,折痕 ${h() ? "有" : "无"}`}&lt;/text&gt;
-&lt;text show={folded}&gt;半折:左右分栏&lt;/text&gt;</code></pre>
+&lt;text&gt;{() =&gt; `${screens().length} 屏`}&lt;/text&gt;
+&lt;text&gt;{() =&gt; `折痕:${hinge() ? "有" : "无"}`}&lt;/text&gt;
+&lt;text show={folded}&gt;半折:左右分栏&lt;/text&gt;
+
+// 宿主上报 —— 桌面没有姿态查询 API,只能这样告诉内核
+reportPosture({
+  display: screenOf().id,
+  posture: "half-open",
+  hinge: { x: 980, y: 0, w: 40, h: 1400, orientation: "vertical" },
+});</code></pre>
 
     <ul class="limits">
       <li>半折时 <a href="#router">RouterView</a> 会自动变双栏(左栏放历史的上一条),分割比例的分母是<strong>显示器长度</strong>而不是折痕长度。</li>
@@ -1745,11 +1766,33 @@ const h = createMemo(() =&gt; hinge());        // {x, y, width, height, orientat
       帧统计、图像与字形缓存占用、当前节点树、存活的 effect、最近的警告(含
       <a href="#concepts">未知标签</a>与指令误用的去重警告)。
     </p>
+    <table class="props">
+      <thead><tr><th>字段</th><th>内容</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">snap.frame</code></td><td><code class="inline">{count, full, partial, fullRatio}</code> —— 帧数与整帧 / 局部占比</td></tr>
+        <tr><td><code class="inline">snap.imageCache</code></td><td><code class="inline">{size, cap, hits, misses, evicts}</code></td></tr>
+        <tr><td><code class="inline">snap.glyphCache</code></td><td><code class="inline">{size, cap, hits, misses, evicts}</code>(字形缓存)</td></tr>
+        <tr><td><code class="inline">snap.tree</code></td><td><code class="inline">{windows, nodes, depth}</code></td></tr>
+        <tr><td><code class="inline">snap.solid</code></td><td><code class="inline">{effects}</code> —— 存活 effect 数;gx/solid 未注册时为 <code class="inline">-1</code></td></tr>
+        <tr><td><code class="inline">snap.warnings</code></td><td><code class="inline">[{at, text}]</code> —— 最近若干条内核警告</td></tr>
+      </tbody>
+    </table>
+
     <pre class="code"><code data-lang="js">import { devSnapshot } from "gx/dev";
 
-const snap = devSnapshot();
-console.log(snap.frames, snap.glyphCache, snap.warnings);</code></pre>
-    <p>可运行的调试面板见演示脚本 <code class="inline">testdata/dev_panel_demo.js</code>。</p>
+// 拉取式:面板自己按间隔读,不推送。别用 requestAnimationFrame(会和渲染抢帧)
+setInterval(() =&gt; {
+  const s = devSnapshot();
+  console.log("frames:", s.frame.count, "整帧率:", Math.round(s.frame.fullRatio * 100) + "%");
+  console.log("字形缓存:", s.glyphCache.size + "/" + s.glyphCache.cap, "节点:", s.tree.nodes);
+  if (s.warnings.length) console.log("最近警告:", s.warnings[s.warnings.length - 1].text);
+}, 1000);</code></pre>
+    <p>
+      三个要点:<strong>字段名是 API</strong>(结构有专门用例锁住,可放心当数据源)、
+      <strong>一次调用返回整棵 JSON 形状的纯对象</strong>、
+      <strong>不 import 就是零成本的死代码路径</strong>。
+      可运行的调试面板见演示脚本 <code class="inline">testdata/dev_panel_demo.js</code>。
+    </p>
 
     <div class="cat" id="cat-limits">分类 8</div>
     <h2 id="limits"><span class="step-num">8</span>全局限制与常见误区</h2>

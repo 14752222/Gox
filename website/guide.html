@@ -572,6 +572,41 @@ render(
         输入法(IME)与原生对话框目前仅 Windows 后端提供,其余平台会安全降级。</p>
     </div>
 
+    <h3>内置模块速查:该 import 什么</h3>
+    <p>
+      <code class="inline">gx/*</code> 是<strong>内置模块</strong>(优先于文件系统解析),一共 8 个细分模块,
+      外加一个把它们合起来的聚合入口 <code class="inline">gox</code>。应用代码可以一行拿常用的那批,
+      库代码按细分模块导入更清楚 —— 两种写法指向的是同一份实现。
+    </p>
+    <table>
+      <thead><tr><th>要做什么</th><th>import 什么</th></tr></thead>
+      <tbody>
+        <tr><td>响应式信号、异步资源</td><td><code class="inline">import &#123; createSignal, createMemo, createResource &#125; from "gx/solid"</code></td></tr>
+        <tr><td>建元素树、开窗口、帧回调、剪贴板、动画</td><td><code class="inline">import &#123; h, render, requestAnimationFrame, clipboardWriteText, animate &#125; from "gx/gfx"</code></td></tr>
+        <tr><td>多分支条件</td><td><code class="inline">import &#123; Switch, Match &#125; from "gx/view"</code></td></tr>
+        <tr><td>路由</td><td><code class="inline">import &#123; createRouter, RouterView, RouterLink, useRoute &#125; from "gx/router"</code></td></tr>
+        <tr><td>多屏 / 折叠姿态</td><td><code class="inline">import &#123; screens, screenOf, usePosture, reportPosture &#125; from "gx/screen"</code></td></tr>
+        <tr><td>原生消息框 / 选文件</td><td><code class="inline">import &#123; alert, confirm, openFile &#125; from "gx/dialog"</code></td></tr>
+        <tr><td>本地持久化</td><td><code class="inline">import &#123; setAppName, setStorage, getStorage &#125; from "gx/storage"</code></td></tr>
+        <tr><td>开发期调试面板</td><td><code class="inline">import &#123; devSnapshot &#125; from "gx/dev"</code></td></tr>
+        <tr><td>懒得记模块名</td><td><code class="inline">import &#123; h, render, createSignal, createRouter &#125; from "gox"</code>(上面 8 个的并集)</td></tr>
+      </tbody>
+    </table>
+    <div class="callout warn">
+      <b>三个最容易记错的地方</b>
+      <p>
+        <strong>①</strong> <code class="inline">alert</code> / <code class="inline">confirm</code> /
+        <code class="inline">openFile</code> 在 <strong><code class="inline">gx/dialog</code></strong>,
+        <strong>不在 <code class="inline">gx/gfx</code></strong>(从后者取会得到 <code class="inline">undefined</code>)。<br>
+        <strong>②</strong> <code class="inline">each</code> / <code class="inline">show</code> /
+        <code class="inline">model</code> 是<strong>元素级指令</strong>,写在元素上、<strong>不需要 import</strong>;
+        <code class="inline">gx/view</code> 只导出 <code class="inline">Switch</code> 与 <code class="inline">Match</code>。<br>
+        <strong>③</strong> <code class="inline">gx/screen</code> 的 <code class="inline">useXxx</code>
+        <strong>返回取值函数</strong>,要再调一次:<code class="inline">const r = usePosture(); r()</code>。
+      </p>
+      <p>逐个导出、签名与调用约定见 <a href="api.html#modules">API 参考 · 内置模块 gx/*</a>。</p>
+    </div>
+
     <h3>列表与条件:元素级指令</h3>
     <p>循环与显隐是<strong>写在元素上的指令</strong>,由 <code class="inline">h()</code> 层展开,不需要 import;
       多分支用 <code class="inline">gx/view</code> 的 <code class="inline">Switch</code> / <code class="inline">Match</code>。

@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>API 参考 — Gox</title>
-  <meta name="description" content="Gox JavaScript 运行时 API 参考:全局环境与作用域、标准内建对象、全局函数、定时器、宿主模块(fs / path / process / http / fetch)、内置 gx/* 模块,以及与 Node.js / 浏览器的差异清单。">
+  <meta name="description" content="Gox JavaScript 运行时 API 参考:全局环境与作用域、标准内建对象、全局函数、定时器、宿主模块(fs / path / process / http / fetch)、内置 gx/* 模块(逐个导出带签名与调用约定),以及与 Node.js / 浏览器的差异清单。">
   <link rel="icon" type="image/png" href="assets/favicon.png">
   <link rel="stylesheet" href="assets/style.css">
 </head>
@@ -63,6 +63,17 @@
     <a class="toc-sub" href="#h-http">http</a>
     <a class="toc-sub" href="#h-fetch">fetch</a>
     <a href="#modules">7. 内置模块 gx/*</a>
+    <a class="toc-sub" href="#m-map">模块地图与导入路径</a>
+    <a class="toc-sub" href="#m-not-here">不在 gx/* 里的东西</a>
+    <a class="toc-sub" href="#m-solid">gx/solid</a>
+    <a class="toc-sub" href="#m-gfx">gx/gfx</a>
+    <a class="toc-sub" href="#m-view">gx/view</a>
+    <a class="toc-sub" href="#m-router">gx/router</a>
+    <a class="toc-sub" href="#m-screen">gx/screen</a>
+    <a class="toc-sub" href="#m-dialog">gx/dialog</a>
+    <a class="toc-sub" href="#m-storage">gx/storage</a>
+    <a class="toc-sub" href="#m-dev">gx/dev</a>
+    <a class="toc-sub" href="#m-pitfalls">模块层常见误用</a>
     <a href="#reactive-globals">8. 响应式全局 API</a>
     <a href="#diff">9. 与 Node / 浏览器差异</a>
     <a href="#cheatsheet-miss">10. 缺失 API 一览</a>
@@ -628,103 +639,530 @@ const r2 = await fetch("https://httpbin.org/post", {
 const data = await r2.json();</code></pre>
 
     <h2 id="modules"><span class="step-num">7</span>内置模块 gx/*</h2>
-    <p>
-      这些模块需要在脚本里 <code class="inline">import</code>,它们优先于文件系统解析。
-      完整的参数表与示例见<a href="components.html">组件参考</a>。
-    </p>
 
     <p>
-      <strong>聚合入口 <code class="inline">gox</code></strong>:下面全部模块导出的并集,
-      应用代码一行导入即可 —— <code class="inline">import &#123; h, render, createSignal &#125; from "gox"</code>。
-      细分模块仍是唯一实现,库代码按需细粒度导入的写法继续可用。
+      内置模块一共 <strong>9 个</strong>:<strong>8 个细分模块</strong>(按职责划分)加
+      <strong>1 个聚合入口 <code class="inline">gox</code></strong>(8 个的并集)。
+      它们需要 <code class="inline">import</code>,并且<strong>优先于文件系统解析</strong> ——
+      <code class="inline">gx/</code> 与 <code class="inline">gox</code> 是保留命名空间,拼错会直接报"未知模块"并列出可用模块,
+      不会退化成"读某个同名文件"。
+    </p>
+    <p>
+      下面每个模块都给出<strong>完整导出清单 + 签名 + 返回值 + 调用约定</strong>。
+      全部条目都对着 <code class="inline">RegisterBuiltinModule</code> 的注册表核过,
+      并用真实运行时枚举了一遍(<code class="inline">Object.keys(import * as ns)</code>)。
     </p>
 
-    <p>
-      <code class="inline">model</code> / <code class="inline">each</code> /
-      <code class="inline">show</code> 是 <code class="inline">h()</code> 层的<strong>元素级指令</strong>
-      (写在元素上,如 <code class="inline">&lt;input model=&#123;draft&#125; /&gt;</code>、
-      <code class="inline">&lt;view each=&#123;rows&#125;&gt;</code>),
-      <strong>不需要 import,也不在任何导出表里</strong>。
-    </p>
+    <h3 id="m-map">模块地图与导入路径</h3>
 
     <table class="props">
-      <thead><tr><th>模块</th><th>导出</th><th>用途</th></tr></thead>
+      <thead><tr><th>模块</th><th>导出数</th><th>管什么</th><th>平台</th></tr></thead>
       <tbody>
-        <tr>
-          <td>gox</td>
-          <td>下列全部模块导出的并集</td>
-          <td>聚合入口:一行导入常用 API(应用代码推荐;细分导入见下)</td>
-        </tr>
-        <tr>
-          <td>gx/solid</td>
-          <td><code class="inline">createSignal</code> <code class="inline">createEffect</code> <code class="inline">createMemo</code> <code class="inline">createResource</code> <code class="inline">onMount</code> <code class="inline">onCleanup</code> <code class="inline">untrack</code> <code class="inline">devStats</code></td>
-          <td>响应式原语(信号 / 副作用 / 派生值 / 异步资源 / 生命周期 / 脱离追踪)</td>
-        </tr>
-        <tr>
-          <td>gx/gfx</td>
-          <td><code class="inline">h</code> <code class="inline">render</code> <code class="inline">requestAnimationFrame</code> <code class="inline">animate</code> <code class="inline">clipboardReadText</code> <code class="inline">clipboardWriteText</code> <code class="inline">openContextMenu</code> <code class="inline">alert</code> <code class="inline">confirm</code> <code class="inline">openFile</code></td>
-          <td>界面:元素树构造、窗口挂载、帧回调、补间动画、剪贴板、右键菜单。后三个原生对话框的导出是 <code class="inline">gx/dialog</code> 的同一份实现,从 <code class="inline">gx/gfx</code> 也能取到</td>
-        </tr>
-        <tr>
-          <td>gx/view</td>
-          <td><code class="inline">Switch</code> <code class="inline">Match</code></td>
-          <td>多分支条件(声明序取第一个为真的 <code class="inline">Match</code>)。列表与显隐已改为元素级指令 <code class="inline">each</code> / <code class="inline">show</code>(见上)</td>
-        </tr>
-        <tr>
-          <td>gx/router</td>
-          <td><code class="inline">createRouter</code> <code class="inline">RouterView</code> <code class="inline">RouterLink</code> <code class="inline">lazy</code> <code class="inline">useRoute</code> <code class="inline">useRouter</code> <code class="inline">useRouteState</code></td>
-          <td>路由:路由表 / <code class="inline">:param</code> 匹配 / 三级守卫 / 历史栈 / 懒加载 / 多窗口作用域。<strong>2026-09-21 起是内置模块</strong>,详见 <a href="https://github.com/14752222/Gox/blob/main/docs/gui-router.md" target="_blank" rel="noopener">gx/router 手册</a></td>
-        </tr>
-        <tr>
-          <td>gx/screen</td>
-          <td><code class="inline">screens</code> <code class="inline">primaryScreen</code> <code class="inline">screen</code> <code class="inline">screenOf</code> <code class="inline">useScreen</code> <code class="inline">useScreens</code> <code class="inline">windowInfo</code> <code class="inline">useWindowInfo</code> <code class="inline">posture</code> <code class="inline">usePosture</code> <code class="inline">hinge</code> <code class="inline">regions</code> <code class="inline">platform</code> <code class="inline">reportPosture</code> <code class="inline">resetDisplays</code> <code class="inline">onDisplayChange</code> <code class="inline">offDisplayChange</code></td>
-          <td>屏幕信息:显示器枚举 / 窗口所在屏 / 折叠姿态与折痕(姿态由宿主经 <code class="inline">reportPosture</code> 上报,桌面后端不猜);半折时 <code class="inline">RouterView</code> 自动变双栏</td>
-        </tr>
-        <tr>
-          <td>gx/dialog</td>
-          <td><code class="inline">alert</code> <code class="inline">confirm</code> <code class="inline">openFile</code></td>
-          <td>原生系统对话框,均返回 Promise <span class="badge win">仅 Windows 原生</span></td>
-        </tr>
-        <tr>
-          <td>gx/storage</td>
-          <td><code class="inline">setAppName</code> <code class="inline">appDataDir</code> <code class="inline">setStorage</code> <code class="inline">getStorage</code> <code class="inline">removeStorage</code> <code class="inline">clearStorage</code> <code class="inline">getStorageInfo</code></td>
-          <td>应用级键值持久化(写入系统应用数据目录)</td>
-        </tr>
-        <tr>
-          <td>gx/dev</td>
-          <td><code class="inline">devSnapshot</code></td>
-          <td>开发期快照(帧统计 / 图像与字形缓存 / 节点树 / 存活 effect / 最近警告),配合调试面板使用</td>
-        </tr>
+        <tr><td><code class="inline">gox</code></td><td>52</td><td>聚合入口:下列 8 个模块导出的<strong>并集</strong></td><td>—</td></tr>
+        <tr><td><code class="inline">gx/solid</code></td><td>8</td><td>响应式原语(信号 / 副作用 / 派生值 / 异步资源 / 生命周期)</td><td>全平台</td></tr>
+        <tr><td><code class="inline">gx/gfx</code></td><td>7</td><td>元素树构造、窗口挂载、帧回调、补间动画、剪贴板、右键菜单</td><td>需要窗口后端</td></tr>
+        <tr><td><code class="inline">gx/view</code></td><td>2</td><td>多分支条件(<code class="inline">Switch</code> / <code class="inline">Match</code>)</td><td>全平台</td></tr>
+        <tr><td><code class="inline">gx/router</code></td><td>7</td><td>路由:路由表 / 参数匹配 / 守卫 / 历史栈 / 懒加载 / 多窗口作用域</td><td>全平台</td></tr>
+        <tr><td><code class="inline">gx/screen</code></td><td>17</td><td>显示器枚举、窗口几何、折叠姿态与折痕</td><td>枚举需后端;姿态靠上报</td></tr>
+        <tr><td><code class="inline">gx/dialog</code></td><td>3</td><td>原生系统对话框</td><td><span class="badge win">仅 Windows 原生</span></td></tr>
+        <tr><td><code class="inline">gx/storage</code></td><td>7</td><td>应用级键值持久化</td><td>全平台</td></tr>
+        <tr><td><code class="inline">gx/dev</code></td><td>1</td><td>开发期只读快照(帧 / 缓存 / 树 / 警告)</td><td>全平台</td></tr>
       </tbody>
     </table>
 
-    <h3>gx/storage 示例</h3>
-    <pre class="code"><code data-lang="js">import { setAppName, setStorage, getStorage, getStorageInfo } from "gx/storage";
+    <h4>选哪条导入路径</h4>
+    <pre class="code"><code data-lang="js">// 应用代码:一行拿到常用的那批
+import { h, render, createSignal, createRouter, RouterView } from "gox";
 
-setAppName("MyApp");                          // 决定数据落在哪个子目录
-setStorage("theme", "dark");
-console.log(getStorage("theme"));             // dark(不存在时返回 undefined —— 没有默认值参数)
-console.log(getStorage("lang") ?? "zh");      // 默认值得自己用 ?? 兜
-console.log(getStorageInfo());                // { keys, currentSize, limit }
-</code></pre>
+// 库代码 / 想精确表达依赖:用细分模块
+import { h, render } from "gx/gfx";
+import { createSignal } from "gx/solid";</code></pre>
+    <ul>
+      <li><strong><code class="inline">gox</code> 不是一个新模块,只是并集</strong> —— 每个名字的实现唯一(来自它所属的细分模块),
+        混用两种写法不会产生两个副本,也不会冲突(导出名跨模块无重名)。</li>
+      <li>拆出细分模块的意义是<strong>可读性与分层</strong>:一眼看出这个文件依赖界面、响应式还是存储。</li>
+      <li><strong>无头宿主</strong>(没链接 GUI 后端的构建)里 <code class="inline">gx/gfx</code> 之类不存在,
+        <code class="inline">gox</code> 的并集会自动退化成宿主实际提供的那部分,<strong>不会因此报错</strong>。</li>
+    </ul>
 
-    <div class="callout note">
-      <b>路由与状态机</b>
+    <h3 id="m-not-here">不在 gx/* 里的东西(最容易找错的地方)</h3>
+    <table>
+      <thead><tr><th>你想找的</th><th>实际在哪</th><th>怎么用</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">model</code> / <code class="inline">each</code> / <code class="inline">show</code></td><td><code class="inline">h()</code> 层的<strong>元素级指令</strong></td><td>写在元素上,如 <code class="inline">&lt;input model=&#123;draft&#125; /&gt;</code>、<code class="inline">&lt;view each=&#123;rows&#125;&gt;</code>。<strong>不 import,也不在任何导出表里</strong></td></tr>
+        <tr><td><code class="inline">obs</code> / <code class="inline">computed</code> / <code class="inline">ever</code> / <code class="inline">once</code></td><td><strong>全局函数</strong>(GetX 风格)</td><td>直接调用,见 <a href="#reactive-globals">§8</a></td></tr>
+        <tr><td><code class="inline">fs</code> / <code class="inline">path</code> / <code class="inline">process</code> / <code class="inline">http</code> / <code class="inline">fetch</code> / <code class="inline">console</code></td><td><strong>全局宿主模块</strong></td><td>直接调用,见 <a href="#host">§6</a></td></tr>
+        <tr><td><code class="inline">alert</code> / <code class="inline">confirm</code> / <code class="inline">openFile</code></td><td><strong><code class="inline">gx/dialog</code></strong></td><td><code class="inline">import &#123; alert &#125; from "gx/dialog"</code>。<strong>注意:它们不在 <code class="inline">gx/gfx</code> 里</strong> —— 从 <code class="inline">gx/gfx</code> 取会得到 <code class="inline">undefined</code></td></tr>
+        <tr><td><code class="inline">createSignal</code> 家族</td><td><code class="inline">gx/solid</code></td><td>见 <a href="#m-solid">gx/solid</a></td></tr>
+        <tr><td><code class="inline">&lt;window&gt;</code> / <code class="inline">&lt;column&gt;</code> 等元素</td><td>JSX 内置标签,由 <code class="inline">gx/gfx</code> 的 <code class="inline">h</code> 解析</td><td>见<a href="components.html">组件参考</a></td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout warn">
+      <b>三个最容易记错的点</b>
       <p>
-        <strong>路由自 2026-09-21 起是内置模块 <code class="inline">gx/router</code></strong>
-        (另配套 <code class="inline">gx/screen</code> 提供显示器与折叠姿态):路由表、
-        <code class="inline">:param</code> 匹配、三级守卫、历史栈、懒加载、多窗口作用域都在模块里,
-        渲染内核一行未改。用法见<a href="components.html#router">组件参考的路由一节</a>与
-        <a href="https://github.com/14752222/Gox/blob/main/docs/gui-router.md" target="_blank" rel="noopener">docs/gui-router.md</a>。
-      </p>
-      <p>
-        <strong>状态机</strong>仍是<strong>用户态模式</strong> —— 用一个 <code class="inline">createSignal</code>
-        存当前状态、普通对象做迁移表,内核零参与。<strong>三页以内的切页</strong>用同样的用户态写法
-        (一个 signal 存当前页 + 普通对象存页面表)依然更省事,见
-        <a href="https://github.com/14752222/Gox/blob/main/docs/gui-patterns.md" target="_blank" rel="noopener">用户态模式手册</a>与
-        <code class="inline">testdata/routing_demo.js</code>。
+        <strong>①</strong> <code class="inline">alert</code> / <code class="inline">confirm</code> /
+        <code class="inline">openFile</code> 只在 <code class="inline">gx/dialog</code>;
+        <code class="inline">gx/gfx.alert</code> 是 <code class="inline">undefined</code>。<br>
+        <strong>②</strong> <code class="inline">gx/view</code> <strong>只导出 <code class="inline">Switch</code> 与
+        <code class="inline">Match</code></strong> —— 列表与显隐是元素级指令 <code class="inline">each</code> /
+        <code class="inline">show</code>,不在这个模块里。<br>
+        <strong>③</strong> <code class="inline">gx/screen</code> 的 <code class="inline">useXxx</code>
+        <strong>返回一个取值函数,要再调一次</strong>:<code class="inline">const r = usePosture(); r()</code>。
+        详见下面 gx/screen 一节。
       </p>
     </div>
+
+    <h3 id="m-solid">gx/solid — 响应式原语</h3>
+    <pre class="code"><code data-lang="js">import {
+  createSignal, createEffect, createMemo, createResource,
+  onMount, onCleanup, untrack, devStats,
+} from "gx/solid";</code></pre>
+
+    <table class="props">
+      <thead><tr><th>导出</th><th>签名 / 返回</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>createSignal</td><td>(initial) =&gt; [get, set]</td><td>创建信号。<code class="inline">get()</code> 读值<strong>并登记依赖</strong>;<code class="inline">set(v)</code> 或 <code class="inline">set(prev =&gt; v)</code> 写值。新旧值 <code class="inline">===</code> 相同则不通知订阅者</td></tr>
+        <tr><td>createEffect</td><td>(fn) =&gt; dispose</td><td><strong>立即执行一次</strong> <code class="inline">fn</code>,执行期间读到的 getter 成为依赖;依赖变化时重跑,<strong>每轮重新收集依赖</strong>(上轮不再被引用的依赖退订)。返回值是注销函数</td></tr>
+        <tr><td>createMemo</td><td>(fn) =&gt; getter</td><td>惰性派生值:依赖变化只标脏,<strong>下次读取时才重算</strong>。下游读 memo 同样会被记为依赖</td></tr>
+        <tr><td>createResource</td><td>(fetcher) =&gt; [data, res]</td><td>异步资源。见下方专表</td></tr>
+        <tr><td>onMount</td><td>(fn) =&gt; void</td><td>本代子树挂载后执行一次</td></tr>
+        <tr><td>onCleanup</td><td>(fn) =&gt; void</td><td>本代子树被替换 / 销毁时执行 —— 用来收定时器、解绑回调</td></tr>
+        <tr><td>untrack</td><td>(fn) =&gt; value</td><td>在<strong>不登记依赖</strong>的前提下执行 <code class="inline">fn</code> 并返回其结果。路由内部就靠它调页面组件,避免"页面体里读的信号变成路由 effect 的依赖"。<strong>参数必须靠闭包捕获</strong>:取值函数用零参调用拿到的那个,转发包装层不要把自己的形参再传一遍</td></tr>
+        <tr><td>devStats</td><td>() =&gt; object</td><td>开发期统计(信号数 / 订阅数等);也出现在 <code class="inline">devSnapshot().solid</code> 里</td></tr>
+      </tbody>
+    </table>
+
+    <p><strong>createResource 的契约</strong>(与 Solid 有几处刻意不同,属公共 API 承诺):</p>
+    <table class="props">
+      <thead><tr><th>成员</th><th>取值</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">data()</code></td><td><code class="inline">undefined</code>(从未成功过 / pending) | 成功值 | 上一次的值(refreshing / error 期间)</td></tr>
+        <tr><td><code class="inline">res.state()</code></td><td><code class="inline">"pending"</code> | <code class="inline">"ready"</code> | <code class="inline">"refreshing"</code> | <code class="inline">"error"</code></td></tr>
+        <tr><td><code class="inline">res.error()</code></td><td>仅 error 态有值,其余为 <code class="inline">undefined</code></td></tr>
+        <tr><td><code class="inline">res.refetch()</code></td><td>重取(保留旧值显示,即 refreshing)</td></tr>
+      </tbody>
+    </table>
+    <ul class="limits">
+      <li><strong>controls 必须写成第二个元素</strong>:<code class="inline">const [data, res] = createResource(f)</code>。
+        引擎不支持数组解构里嵌对象模式,所以不要照抄 Solid 的 <code class="inline">const [data, &#123; refetch &#125;] = …</code>。</li>
+      <li><strong>error 态下 <code class="inline">data()</code> 不抛异常</strong>:返回上一次的值(从未成功过则 <code class="inline">undefined</code>),错误只从 <code class="inline">res.error()</code> 读。
+        这样做是因为 v1 没有 ErrorBoundary,抛出去会冒泡进任意 effect。</li>
+      <li><code class="inline">state()</code> / <code class="inline">error()</code> 不挂在 <code class="inline">data</code> 函数上
+        (本引擎函数值不带属性),都在 <code class="inline">res</code> 上。</li>
+      <li>fetcher 返回非 Promise(同步值)时按"立即可用"处理;<strong>不做 source signal 自动重取</strong>,需要联动就用 <code class="inline">createEffect</code> 手动串。</li>
+      <li>连续性有保证:每次取数递增 token,回来的响应 token 不符直接丢弃(<strong>latest-wins</strong>),快速连点 refetch 不会让旧响应盖掉新状态。</li>
+    </ul>
+
+    <pre class="code"><code data-lang="js">import { createSignal, createEffect, createMemo, createResource } from "gx/solid";
+
+const [count, setCount] = createSignal(0);
+const dispose = createEffect(() =&gt; console.log("count is", count()));  // 立即跑一次
+setCount(5);                       // → count is 5
+setCount(v =&gt; v + 1);              // setter 也接受更新函数
+dispose();                         // 注销这个 effect
+
+const doubled = createMemo(() =&gt; count() * 2);
+setCount(10);
+console.log(doubled());            // 20(惰性:读的时候才算)
+
+const [user, res] = createResource(async function () {
+  const r = await fetch("https://example.com/me");
+  return await r.json();
+});
+// res.state(): "pending" → "ready"
+// 失败后 data() 仍是上一次的值,错误读 res.error()</code></pre>
+
+    <div class="callout note">
+      <b>同一个 effect 里既读 signal 又读它的 memo ⇒ 每轮跑两次</b>
+      <p>
+        源 signal 与 memo 各自触发一次通知,引擎不合并。只读其中之一就是一次。
+        症状是"计数类断言多了一倍",写测试或做耗时操作时留意。
+      </p>
+    </div>
+
+    <h3 id="m-gfx">gx/gfx — 界面与窗口</h3>
+    <pre class="code"><code data-lang="js">import {
+  h, render, requestAnimationFrame,
+  clipboardReadText, clipboardWriteText,
+  animate, openContextMenu,
+} from "gx/gfx";</code></pre>
+
+    <table class="props">
+      <thead><tr><th>导出</th><th>签名 / 返回</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>h</td><td>(tag, props, ...children) =&gt; node</td><td>创建元素。JSX 编译后就是它,所以<strong>用了 JSX 的文件必须 import</strong>(哪怕一次都没显式调用)</td></tr>
+        <tr><td>render</td><td>(vnode, config?) =&gt; 窗口句柄</td><td>挂载元素树并开窗口。<strong>可多次调用 = 多窗口</strong>。三种形态见下</td></tr>
+        <tr><td>requestAnimationFrame</td><td>(fn) =&gt; id</td><td>以 ~60fps 帧间隔把回调挂到事件循环(内部就是 16ms 定时器)。也用来让事件泵保持醒着(驱动光标闪烁)</td></tr>
+        <tr><td>clipboardReadText</td><td>() =&gt; string</td><td><strong>同步</strong>读剪贴板;读不到返回空串,不抛异常</td></tr>
+        <tr><td>clipboardWriteText</td><td>(text) =&gt; boolean</td><td><strong>同步</strong>写剪贴板;失败返回 false</td></tr>
+        <tr><td>animate</td><td>两种形态,返回 cancel 函数</td><td><code class="inline">animate(node, prop, to, ms)</code> 让某节点的某属性动到目标值;<code class="inline">animate(from, to, ms, onUpdate, onDone)</code> 自己拿插值。<strong>声明式过渡走 <code class="inline">transition</code> prop,不经这个函数</strong></td></tr>
+        <tr><td>openContextMenu</td><td>(x, y, items) =&gt; void</td><td>就地弹出右键菜单。这是<strong>数据式 API,不是 <code class="inline">contextMenu</code> prop</strong>(同一个 JSX 元素只能有一个宿主)</td></tr>
+      </tbody>
+    </table>
+
+    <h4>render 的三种形态</h4>
+    <pre class="code"><code data-lang="js">// ① JSX:窗口配置写在根元素属性上(最常用)
+render(&lt;window title="Counter" width={400} height={300}&gt;...&lt;/window&gt;);
+
+// ② h() 手拼树:窗口配置作为第二个参数
+render(h("column", { gap: 10 }, ...), { title: "Slider demo", width: 260, height: 260 });
+
+// ③ 省略配置:用缺省 Gox 400x300
+render(h("text", null, "hello"));</code></pre>
+    <p>
+      返回的<strong>窗口句柄</strong>提供 <code class="inline">close()</code> /
+      <code class="inline">isClosed()</code> / <code class="inline">title()</code> /
+      <code class="inline">setTitle(t)</code> / <code class="inline">resize(w, h)</code>,
+      详见<a href="components.html#multiwindow">组件参考 · 多窗口</a>。
+    </p>
+
+    <h4>剪贴板是同步 API</h4>
+    <pre class="code"><code data-lang="js">const ok = clipboardWriteText(text());
+const s  = clipboardReadText();        // 读不到是空串</code></pre>
+    <p>
+      脚本与窗口在<strong>同一个 OS 线程</strong>,直接调原生 API 就是正确的线程,不需要
+      <code class="inline">await</code>。后端不支持时静默降级(写返回 <code class="inline">false</code>、读返回空串)。
+    </p>
+
+    <div class="callout warn">
+      <b>原生对话框不在这个模块里</b>
+      <p>
+        <code class="inline">alert</code> / <code class="inline">confirm</code> /
+        <code class="inline">openFile</code> 由 <strong><code class="inline">gx/dialog</code></strong> 导出。
+        从 <code class="inline">gx/gfx</code> 取会得到 <code class="inline">undefined</code>。
+      </p>
+    </div>
+
+    <h3 id="m-view">gx/view — 多分支</h3>
+    <pre class="code"><code data-lang="js">import { Switch, Match } from "gx/view";</code></pre>
+    <table class="props">
+      <thead><tr><th>导出</th><th>签名</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>Switch</td><td>(&#123;fallback?&#125;, ...&lt;Match/&gt;)</td><td>取声明序里第一个 <code class="inline">when</code> 为真的分支;都不真用 <code class="inline">fallback</code></td></tr>
+        <tr><td>Match</td><td>(&#123;when&#125;, ...children)</td><td>单个分支;<code class="inline">when</code> 要传<strong>函数</strong>。<strong>只在 Switch 里有意义</strong> —— 挂到别处会渲染成一行 <code class="inline">[view Match]</code> 文本(误用可见,不静默)</td></tr>
+      </tbody>
+    </table>
+    <div class="callout note">
+      <b>这个模块为什么只有两个导出</b>
+      <p>
+        列表(<code class="inline">each</code>)与显隐(<code class="inline">show</code>)是<strong>元素级指令</strong> ——
+        写在元素上、由 <code class="inline">h()</code> 展开,不需要 import。只有"多分支"没有对应的元素语义,
+        所以留成了组件。用法见<a href="components.html#view">组件参考 · 列表与条件</a>。
+      </p>
+    </div>
+
+    <h3 id="m-router">gx/router — 路由</h3>
+    <pre class="code"><code data-lang="js">import { createRouter, RouterView, RouterLink, lazy, useRoute, useRouter, useRouteState } from "gx/router";</code></pre>
+    <table class="props">
+      <thead><tr><th>导出</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">createRouter(&#123;routes, initial, backKeys, foldable&#125;)</code></td><td>建路由器。路由记录字段:<code class="inline">path</code> / <code class="inline">name</code> / <code class="inline">component</code> / <code class="inline">children</code> / <code class="inline">meta</code> / <code class="inline">redirect</code> / <code class="inline">props</code> / <code class="inline">beforeEnter</code> / <code class="inline">keepAlive</code> / <code class="inline">dualPane</code></td></tr>
+        <tr><td><code class="inline">&lt;RouterView /&gt;</code></td><td>当前路由的挂载点;可传 <code class="inline">loading</code> / <code class="inline">error</code> 分支与 <code class="inline">scope</code>(显式作用域,一个窗口里放两套独立导航)</td></tr>
+        <tr><td><code class="inline">&lt;RouterLink to="…" /&gt;</code></td><td>导航链接;<code class="inline">to</code> 收路径串或 <code class="inline">&#123;name, params&#125;</code>(一律按<strong>绝对路径</strong>解析)</td></tr>
+        <tr><td><code class="inline">router.push / replace / back / forward / go</code></td><td>导航,均返回 Promise(<code class="inline">&#123;ok, route&#125;</code>,被守卫拦下是 <code class="inline">&#123;ok:false, reason&#125;</code>)</td></tr>
+        <tr><td><code class="inline">useRoute() / useRouter() / useRouteState()</code></td><td>页面体内取当前路由 / 路由器 / 挂在历史栈项上的状态袋</td></tr>
+        <tr><td><code class="inline">lazy(() =&gt; import(…))</code></td><td>懒加载页面模块。<strong>推荐显式包一层</strong> —— 不包的话首次进入拿不到组件级守卫</td></tr>
+      </tbody>
+    </table>
+    <pre class="code"><code data-lang="js">import { createRouter, RouterView, RouterLink } from "gx/router";
+
+const router = createRouter({
+  routes: [
+    { path: "/",           name: "home",   component: HomePage },
+    { path: "/list",       name: "list",   component: ListPage, keepAlive: true },
+    { path: "/detail/:id", name: "detail", component: DetailPage },
+    { path: "*",           name: "nf",     component: NotFound },
+  ],
+  initial: "/",
+});
+
+render(
+  &lt;window title="app" width={480} height={360}&gt;
+    &lt;column gap={8} padding={12}&gt;
+      &lt;RouterLink to="/list"&gt;&lt;text font={13}&gt;列表&lt;/text&gt;&lt;/RouterLink&gt;
+      &lt;RouterView /&gt;
+    &lt;/column&gt;
+  &lt;/window&gt;
+);</code></pre>
+    <ul class="limits">
+      <li><strong>没有 URL,也没有 history 模式</strong>:桌面应用没有地址栏,"历史"是内存里的一个栈;deep-link 用 <code class="inline">process.argv</code> 解析后传给 <code class="inline">initial</code>。</li>
+      <li>正则路径约束 / <code class="inline">alias</code> 不做,参数校验写在 <code class="inline">beforeEnter</code> 里。</li>
+      <li>状态保留两档:路由记录 <code class="inline">keepAlive: true</code> 保住整棵子树(滚动位置 / 焦点 / 草稿),<code class="inline">useRouteState()</code> 只存值。保活页常驻内存,只给真正需要的页开。</li>
+      <li>默认绑定 <code class="inline">Alt+←</code> / <code class="inline">Alt+→</code>;实现是<strong>包装</strong>根节点脚本自己的 <code class="inline">onKeyDown</code>(两层都跑),<code class="inline">backKeys: false</code> 可关。</li>
+      <li>多窗口是<strong>作用域</strong>:窗口自动作用域是 <code class="inline">win:N</code>;<code class="inline">&lt;RouterView scope="x"&gt;</code> 用具名作用域,此时句柄指认不到它,要用 <code class="inline">router.sync([wa, "x"])</code>。</li>
+      <li>完整手册:<a href="https://github.com/14752222/Gox/blob/main/docs/gui-router.md" target="_blank" rel="noopener">docs/gui-router.md</a>(含 <code class="inline">createRouter</code> 全部选项与守卫表)。</li>
+    </ul>
+
+    <h3 id="m-screen">gx/screen — 屏幕与折叠姿态</h3>
+    <pre class="code"><code data-lang="js">import {
+  screens, primaryScreen, screen, screenOf,
+  useScreen, useScreens, windowInfo, useWindowInfo,
+  posture, usePosture, hinge, regions, platform,
+  reportPosture, resetDisplays, onDisplayChange, offDisplayChange,
+} from "gx/screen";</code></pre>
+
+    <div class="callout warn">
+      <b>调用约定:<code class="inline">useXxx</code> 返回的是取值函数,要再调一次</b>
+      <p>
+        <code class="inline">screens()</code> / <code class="inline">posture()</code> 这类是<strong>直接读数</strong>;
+        而 <code class="inline">useScreen()</code> / <code class="inline">useScreens()</code> /
+        <code class="inline">usePosture()</code> / <code class="inline">useWindowInfo()</code>
+        <strong>返回一个取值函数</strong>,并且只有调用那个取值函数才会登记依赖:
+      </p>
+      <pre class="code"><code data-lang="js">const getPosture = usePosture();      // ← 拿到取值函数
+&lt;text&gt;{() =&gt; getPosture()}&lt;/text&gt;      // 姿态一变,这行文本跟着变</code></pre>
+      <p>设计动机:显示器表结构较大,做成整表 signal 不划算,于是用"版本号 + 取值函数"的组合 —— 取值函数每次调用都重读当前状态并订阅版本号,与 <code class="inline">useRoute()</code> 同构。</p>
+    </div>
+
+    <table class="props">
+      <thead><tr><th>导出</th><th>签名 / 返回</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>screens</td><td>() =&gt; Display[]</td><td>全部显示器</td></tr>
+        <tr><td>primaryScreen</td><td>() =&gt; Display</td><td>主显示器</td></tr>
+        <tr><td>screen</td><td>(id) =&gt; Display | null</td><td>按 id 取一块屏;找不到返回 <code class="inline">null</code></td></tr>
+        <tr><td>screenOf</td><td>(win?) =&gt; Display | null</td><td><strong>窗口所在</strong>的显示器。<code class="inline">win</code> 省略 = 最近挂载的窗口;没有窗口时返回 <code class="inline">null</code></td></tr>
+        <tr><td>useScreen</td><td>(win?) =&gt; <strong>getter</strong></td><td><code class="inline">screenOf</code> 的响应式版</td></tr>
+        <tr><td>useScreens</td><td>() =&gt; <strong>getter</strong></td><td><code class="inline">screens()</code> 的响应式版</td></tr>
+        <tr><td>windowInfo</td><td>(win?) =&gt; object</td><td>窗口尺寸 / 缩放 / 所属屏的直接读数,字段见下</td></tr>
+        <tr><td>useWindowInfo</td><td>(win?) =&gt; <strong>getter</strong></td><td>同上,响应式</td></tr>
+        <tr><td>posture</td><td>(win?) =&gt; string</td><td>折叠姿态:<code class="inline">"flat"</code> / <code class="inline">"half-open"</code> / <code class="inline">"folded"</code> / <code class="inline">"unknown"</code></td></tr>
+        <tr><td>usePosture</td><td>(win?) =&gt; <strong>getter</strong></td><td>同上,响应式</td></tr>
+        <tr><td>hinge</td><td>(win?) =&gt; object | null</td><td>折痕矩形 <code class="inline">{x, y, width, height, orientation}</code>;没有折痕时 <code class="inline">null</code></td></tr>
+        <tr><td>regions</td><td>(win?) =&gt; array</td><td>折叠分段面板 <code class="inline">[{id, x, y, width, height}]</code></td></tr>
+        <tr><td>platform</td><td>() =&gt; string</td><td>窗口后端名:<code class="inline">"win32"</code> / <code class="inline">"x11"</code> / <code class="inline">"cocoa"</code> / <code class="inline">"headless"</code></td></tr>
+        <tr><td>reportPosture</td><td>(opts) =&gt; undefined</td><td><strong>宿主 / 模拟器上报</strong>姿态。收 opts 对象、返回 <code class="inline">undefined</code> —— 与 <code class="inline">posture()</code> 是两条不同的路</td></tr>
+        <tr><td>resetDisplays</td><td>() =&gt; undefined</td><td>清掉上报覆盖,回退到后端枚举结果</td></tr>
+        <tr><td>onDisplayChange</td><td>(fn) =&gt; off()</td><td>订阅显示器 / 姿态变化;<strong>返回值就是注销函数</strong>(可重复调用),也可以用 <code class="inline">offDisplayChange(fn)</code></td></tr>
+        <tr><td>offDisplayChange</td><td>(fn) =&gt; undefined</td><td>按回调函数注销</td></tr>
+      </tbody>
+    </table>
+
+    <h4>Display 对象的字段</h4>
+    <table class="props">
+      <thead><tr><th>字段</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>id / name</td><td>显示器标识(如 <code class="inline">\\.\DISPLAY1</code>;上报的自定义屏就是上报时给的名字,如 <code class="inline">"fold-0"</code>)</td></tr>
+        <tr><td>x / y / width / height</td><td>整块屏的几何(虚拟桌面坐标,副屏可能是负数)</td></tr>
+        <tr><td>workX / workY / workWidth / workHeight</td><td>工作区(扣掉任务栏)</td></tr>
+        <tr><td>scale</td><td>每屏 DPI 缩放</td></tr>
+        <tr><td>primary</td><td>是否主屏</td></tr>
+        <tr><td>foldable</td><td>是否折叠设备</td></tr>
+        <tr><td>posture</td><td>折叠姿态字符串</td></tr>
+        <tr><td>hinge</td><td>折痕矩形或 <code class="inline">null</code></td></tr>
+        <tr><td>regions</td><td>分段面板数组</td></tr>
+      </tbody>
+    </table>
+
+    <h4>windowInfo() 的字段</h4>
+    <pre class="code"><code data-lang="js">// {width, height, scale, screenWidth, screenHeight, workWidth, workHeight, screenId, platform}
+const info = windowInfo();
+console.log(info.width, info.screenWidth, info.screenId, info.platform);</code></pre>
+
+    <h4>reportPosture(opts) 的字段</h4>
+    <table class="props">
+      <thead><tr><th>字段</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>display</td><td>目标显示器 id。<strong>省略则作用于当前窗口所在的那块屏</strong>(再退化为第一块)</td></tr>
+        <tr><td>posture</td><td><code class="inline">"flat"</code> / <code class="inline">"half-open"</code> / <code class="inline">"folded"</code>。
+          大小写与空格不敏感,<code class="inline">halfopen</code> / <code class="inline">half_open</code> 也认;
+          <strong>不认识的字符串会被归一成 <code class="inline">"unknown"</code></strong> 而不是报错</td></tr>
+        <tr><td>foldable</td><td>是否折叠设备。不传但报了非 <code class="inline">flat</code> 姿态时自动置 <code class="inline">true</code></td></tr>
+        <tr><td>width / height</td><td>屏尺寸(上报自定义屏时用;已存在的屏不传则保持原值)</td></tr>
+        <tr><td>hinge</td><td><code class="inline">{x, y, w, h, orientation}</code> —— <strong>注意这里是 <code class="inline">w</code> / <code class="inline">h</code></strong></td></tr>
+        <tr><td>regions</td><td><code class="inline">[{id, x, y, width, height}]</code></td></tr>
+      </tbody>
+    </table>
+
+    <div class="callout warn">
+      <b>写入用 <code class="inline">w</code>/<code class="inline">h</code>,读出是 <code class="inline">width</code>/<code class="inline">height</code></b>
+      <p>
+        <code class="inline">reportPosture</code> 的 <code class="inline">hinge</code> 读 <code class="inline">w</code> /
+        <code class="inline">h</code>,而 <code class="inline">hinge()</code> 读出来的是
+        <code class="inline">width</code> / <code class="inline">height</code>。
+        把读出的对象直接喂回去会得到一块 0 宽的折痕 —— 这是最容易踩的一处命名不一致。
+      </p>
+    </div>
+
+    <ul class="limits">
+      <li><strong>桌面后端没有姿态查询 API</strong>(Windows 无 WinRT ⇒ 零 cgo 不可达),框架<strong>不猜姿态</strong>:
+        只提供上报通道,没人上报就恒为平展。</li>
+      <li><strong>折痕不随姿态清除</strong>:折痕是设备几何,不是姿态的属性。回到 <code class="inline">flat</code> 时折痕留着,
+        否则"折回去再折回来"分栏比例会变成 0.5。是否分栏由姿态决定,折痕只决定"怎么分"。</li>
+      <li>上报一块表里没有的屏时:<strong>第一次上报且后端枚举为空</strong> ⇒ 换掉整张表(宿主的显示环境由它定义);
+        已经有过上报或后端能枚举 ⇒ 追加一块。</li>
+      <li>分割比例的分母是<strong>显示器长度</strong>,不是折痕长度。</li>
+      <li>半折时 <code class="inline">&lt;RouterView&gt;</code> 自动变双栏(左栏放历史的上一条),见 <a href="#m-router">gx/router</a>。</li>
+    </ul>
+
+    <pre class="code"><code data-lang="js">import { reportPosture, resetDisplays, screenOf, posture, hinge, usePosture } from "gx/screen";
+import { createMemo } from "gx/solid";
+
+// 宿主上报:先问"窗口在哪块屏",再报那块屏的姿态
+const wa = render(&lt;window title="A"&gt;...&lt;/window&gt;);
+reportPosture({
+  display: screenOf(wa).id,
+  foldable: true,
+  width: 2000,
+  posture: "half-open",
+  hinge: { x: 980, y: 0, w: 40, h: 1400, orientation: "vertical" },   // ← w / h
+});
+
+console.log(posture(wa));        // "half-open"
+console.log(hinge(wa));          // { x:980, y:0, width:40, height:1400, orientation:"vertical" }
+
+// 响应式:useXxx() 先拿到取值函数,再放进函数 prop / 函数子节点
+const getPosture = usePosture(wa);
+const folded = createMemo(() =&gt; getPosture() === "half-open");
+
+resetDisplays();                 // 撤销上报,回到后端枚举</code></pre>
+
+    <h3 id="m-dialog">gx/dialog — 原生系统对话框</h3>
+    <pre class="code"><code data-lang="js">import { alert, confirm, openFile } from "gx/dialog";</code></pre>
+    <table class="props">
+      <thead><tr><th>导出</th><th>返回</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>alert(msg, title?)</td><td>Promise&lt;void&gt;</td><td>系统消息框,只有一个"确定"</td></tr>
+        <tr><td>confirm(msg, title?)</td><td>Promise&lt;boolean&gt;</td><td>确定 / 取消,返回用户选择</td></tr>
+        <tr><td>openFile(&#123;title, filter&#125;)</td><td>Promise&lt;string | null&gt;</td><td>系统"打开文件"对话框;<strong>取消返回 null,不抛异常</strong></td></tr>
+      </tbody>
+    </table>
+    <p>
+      <code class="inline">filter</code> 是 <code class="inline">{name, pattern}</code> 数组,
+      pattern 里多个通配符用 <code class="inline">;</code> 分隔。
+    </p>
+    <pre class="code"><code data-lang="js">import { confirm, openFile } from "gx/dialog";
+
+// ⚠ 只支持 async function,不支持 async () => {}
+h("button", {
+  onClick: async function () {
+    const yes = await confirm("Proceed with the operation?", "Please confirm");
+    log("confirm -&gt; " + (yes ? "yes" : "no"));
+  }
+}, "Confirm");
+
+h("button", {
+  onClick: async function () {
+    const p = await openFile({
+      title: "Pick a file",
+      filter: [
+        { name: "Text files", pattern: "*.txt;*.md" },
+        { name: "All files", pattern: "*.*" }
+      ]
+    });
+    log(p === null ? "cancelled" : "picked " + p);
+  }
+}, "Open file");</code></pre>
+    <ul class="limits">
+      <li>只有这三个 API:无自定义按钮、无多选、无选目录。</li>
+      <li>模态期间界面仍会重绘(系统替我们泵消息),但<strong>不派发任何 JS 回调</strong>。</li>
+      <li>非 Windows 后端会降级:内容打到 stderr 并立即返回 —— <code class="inline">confirm</code> 取 <strong>true</strong>、<code class="inline">openFile</code> 取 <strong>null</strong>(视作已取消)。</li>
+      <li>这个模块不依赖元素树,只依赖"当前有没有窗口",所以从 <code class="inline">gx/gfx</code> 拆了出来。</li>
+    </ul>
+
+    <h3 id="m-storage">gx/storage — 本地持久化</h3>
+    <pre class="code"><code data-lang="js">import {
+  setAppName, appDataDir, setStorage, getStorage,
+  removeStorage, clearStorage, getStorageInfo,
+} from "gx/storage";</code></pre>
+    <table class="props">
+      <thead><tr><th>导出</th><th>返回</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>setAppName(name)</td><td>void</td><td>指定应用名(数据目录的一段);<strong>推荐在任何 storage 调用前先调</strong></td></tr>
+        <tr><td>appDataDir()</td><td>string</td><td>数据目录绝对路径(<code class="inline">UserConfigDir/Gox/&lt;appName&gt;</code>)</td></tr>
+        <tr><td>setStorage(key, value)</td><td>void</td><td>写入。value 只能是纯数据(对象 / 数组 / 标量);<strong>写穿透立即落盘</strong></td></tr>
+        <tr><td>getStorage(key)</td><td>value</td><td>读回。<strong>不存在返回 <code class="inline">undefined</code>,并且没有"默认值参数"</strong> —— 要默认值自己写 <code class="inline">?? fallback</code></td></tr>
+        <tr><td>removeStorage(key)</td><td>void</td><td>删一个键</td></tr>
+        <tr><td>clearStorage()</td><td>void</td><td>清空</td></tr>
+        <tr><td>getStorageInfo()</td><td>&#123;keys, currentSize, limit&#125;</td><td>键列表与字节数;<code class="inline">limit</code> 恒 -1(v1 不做配额)</td></tr>
+      </tbody>
+    </table>
+    <pre class="code"><code data-lang="js">import { setAppName, setStorage, getStorage, getStorageInfo } from "gx/storage";
+
+setAppName("my-app");              // → %APPDATA%/Gox/my-app (Linux: ~/.config/Gox/my-app)
+setStorage("theme", "dark");
+setStorage("profile", { name: "gox", level: 3 });   // 对象也行,序列化后整存整取
+
+const t = getStorage("theme");         // "dark";首次运行为 undefined
+const theme = t ?? "light";            // ← 默认值要自己兜,getStorage 没有第二参数
+console.log(getStorageInfo());         // { keys, currentSize, limit }</code></pre>
+    <ul class="limits">
+      <li>全部<strong>同步</strong> API,无 Promise —— 本地小文件读写,不需要异步仪式。</li>
+      <li>单文件 <code class="inline">storage.json</code> 整读整写,临时文件 + rename 原子替换;文件损坏按<strong>空存储</strong>处理并打告警,应用照常起。</li>
+      <li>存函数 / 循环引用会在写入时抛 <code class="inline">TypeError</code>(而不是静默存成 null 读不回来)。</li>
+      <li><code class="inline">GOX_STORAGE_DIR</code> 环境变量可整体替换根目录(测试隔离 / 便携部署)。</li>
+    </ul>
+
+    <h3 id="m-dev">gx/dev — 开发期快照</h3>
+    <pre class="code"><code data-lang="js">import { devSnapshot } from "gx/dev";
+const snap = devSnapshot();</code></pre>
+    <table class="props">
+      <thead><tr><th>字段</th><th>内容</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">snap.frame</code></td><td><code class="inline">{count, full, partial, fullRatio}</code> —— 帧数与整帧 / 局部占比</td></tr>
+        <tr><td><code class="inline">snap.imageCache</code></td><td><code class="inline">{size, cap, hits, misses, evicts}</code></td></tr>
+        <tr><td><code class="inline">snap.glyphCache</code></td><td><code class="inline">{size, cap, hits, misses, evicts}</code></td></tr>
+        <tr><td><code class="inline">snap.tree</code></td><td><code class="inline">{windows, nodes, depth}</code></td></tr>
+        <tr><td><code class="inline">snap.solid</code></td><td><code class="inline">{effects}</code> —— 存活 effect 数;gx/solid 未注册时为 <code class="inline">-1</code></td></tr>
+        <tr><td><code class="inline">snap.warnings</code></td><td><code class="inline">[{at, text}]</code> —— 最近若干条内核警告(含未知标签与指令误用的去重警告)</td></tr>
+      </tbody>
+    </table>
+    <ul class="limits">
+      <li><strong>拉取式</strong>:不推送,面板自己用 <code class="inline">setInterval</code> 拉(示例 1s)。
+        <strong>别用 <code class="inline">requestAnimationFrame</code></strong> —— 会和真实渲染抢帧。</li>
+      <li>一次调用返回整棵 JSON 形状的纯对象,构建在调用线程内联完成(脚本线程就是 GUI 线程)。</li>
+      <li><strong>字段名是 API</strong>,结构有专门用例锁住,可以放心当数据源用。</li>
+      <li>生产零成本:<strong>不 import 就没有这条代码路径</strong>(模块惰性构建)。</li>
+      <li>可运行的调试面板见演示脚本 <code class="inline">testdata/dev_panel_demo.js</code>。</li>
+    </ul>
+    <pre class="code"><code data-lang="js">import { devSnapshot } from "gx/dev";
+
+setInterval(() =&gt; {
+  const s = devSnapshot();
+  console.log(
+    "frames:", s.frame.count,
+    "整帧率:", Math.round(s.frame.fullRatio * 100) + "%",
+    "字形缓存:", s.glyphCache.size + "/" + s.glyphCache.cap,
+    "节点:", s.tree.nodes,
+    "effect:", s.solid.effects,
+  );
+  if (s.warnings.length) console.log("最近警告:", s.warnings[s.warnings.length - 1].text);
+}, 1000);</code></pre>
+
+    <h3 id="m-pitfalls">模块层常见误用速查</h3>
+    <table>
+      <thead><tr><th>现象</th><th>原因与解法</th></tr></thead>
+      <tbody>
+        <tr>
+          <td>用了 JSX 但窗口起不来,报 <code class="inline">h is not defined</code></td>
+          <td>JSX 降级成 <code class="inline">h(...)</code> 调用,<strong>每个用了 JSX 的文件都要 import <code class="inline">h</code></strong>(<code class="inline">import &#123; h, render &#125; from "gx/gfx"</code>)。只 import <code class="inline">render</code> 能编译但挂载即失败</td>
+        </tr>
+        <tr>
+          <td><code class="inline">alert is not a function</code> / 拿到 <code class="inline">undefined</code></td>
+          <td>从 <code class="inline">gx/gfx</code> 取了。<strong>改从 <code class="inline">gx/dialog</code> 取</strong>(或用 <code class="inline">gox</code> 聚合)</td>
+        </tr>
+        <tr>
+          <td><code class="inline">usePosture()</code> 拿到的不是字符串</td>
+          <td>它返回取值函数,再调一次:<code class="inline">const r = usePosture(); r()</code></td>
+        </tr>
+        <tr>
+          <td><code class="inline">each</code> / <code class="inline">show</code> 从 <code class="inline">gx/view</code> 里 import 不到</td>
+          <td>它们是<strong>元素级指令</strong>,不 import、不在导出表里;从 <code class="inline">gx/view</code> 取出来是 <code class="inline">undefined</code></td>
+        </tr>
+        <tr>
+          <td><code class="inline">const [data, &#123;refetch&#125;] = createResource(f)</code> 不起作用</td>
+          <td>不支持嵌套解构。<strong>分成两个元素</strong>:<code class="inline">const [data, res] = createResource(f)</code>,用 <code class="inline">res.refetch()</code></td>
+        </tr>
+        <tr>
+          <td>折叠双栏不生效</td>
+          <td>姿态没人上报 ⇒ 恒为平展。宿主侧调 <code class="inline">reportPosture</code>;排查时先用 <code class="inline">posture(win)</code> 确认读到的是 <code class="inline">"half-open"</code></td>
+        </tr>
+        <tr>
+          <td>折痕宽度读出来是 0</td>
+          <td>把 <code class="inline">hinge()</code> 读出的 <code class="inline">{width,height}</code> 直接回填进了 <code class="inline">reportPosture</code> 的 <code class="inline">hinge</code> —— 那里要的是 <code class="inline">{w,h}</code></td>
+        </tr>
+      </tbody>
+    </table>
 
     <h2 id="reactive-globals"><span class="step-num">8</span>响应式全局 API</h2>
     <p>
@@ -814,6 +1252,7 @@ count = 2</code></pre>
         <tr><td>剪贴板</td><td>✅</td><td>❌ 降级(读空串 / 写 false)</td><td>—</td></tr>
         <tr><td>原生对话框</td><td>✅</td><td>❌ 降级(<code class="inline">confirm</code> 取 true、<code class="inline">openFile</code> 取 null)</td><td>—</td></tr>
         <tr><td>显示器枚举 / 窗口归属</td><td>✅</td><td>未实机验证</td><td>—</td></tr>
+        <tr><td>折叠姿态</td><td>靠 <code class="inline">reportPosture</code> 上报</td><td>靠上报</td><td>—</td></tr>
       </tbody>
     </table>
 
@@ -833,6 +1272,7 @@ count = 2</code></pre>
         <tr><td>Node 模块</td><td><code class="inline">stream</code>、<code class="inline">child_process</code>、<code class="inline">os</code>、<code class="inline">crypto</code>、<code class="inline">net</code>、<code class="inline">events</code>、<code class="inline">util</code>、<code class="inline">url</code>、<code class="inline">querystring</code></td></tr>
         <tr><td>响应式(需 import)</td><td><code class="inline">batch</code>、<code class="inline">createContext</code>、<code class="inline">useContext</code>、<code class="inline">createStore</code>(<code class="inline">untrack</code> 有,已在 <code class="inline">gx/solid</code> 里)</td></tr>
         <tr><td>内置模块</td><td><code class="inline">gx/machine</code>、<code class="inline">gx/device</code>、<code class="inline">gx/kit</code>(状态机与设备能力仍是用户态模式;<code class="inline">gx/router</code> 与 <code class="inline">gx/screen</code> 已于 2026-09-21 落地,不再是缺口)</td></tr>
+        <tr><td>模块里没有的</td><td><code class="inline">gx/gfx.alert</code>、<code class="inline">gx/gfx.confirm</code>、<code class="inline">gx/gfx.openFile</code>、<code class="inline">gx/view.each</code>、<code class="inline">gx/view.show</code>(前者去 <code class="inline">gx/dialog</code>,后者是元素级指令)</td></tr>
       </tbody>
     </table>
 
@@ -840,7 +1280,10 @@ count = 2</code></pre>
       <b>想确认某个 API 到底有没有</b>
       <p>
         最直接的办法是在 REPL 里问一句:<code class="inline">typeof someName</code>
-        —— 得到 <code class="inline">"undefined"</code> 就是没有。完整的实现级说明见
+        —— 得到 <code class="inline">"undefined"</code> 就是没有。
+        想列一个模块的全部导出,用命名空间导入 + <code class="inline">Object.keys</code>:
+        <code class="inline">import * as s from "gx/solid"; Object.keys(s)</code>。
+        完整的实现级说明见
         <a href="https://github.com/14752222/Gox/blob/main/docs/js-runtime-api-tutorial.md" target="_blank" rel="noopener">JavaScript Runtime API 实现教程</a>。
       </p>
     </div>
