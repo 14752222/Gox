@@ -336,6 +336,13 @@ func drawNode(img *image.RGBA, n *GuiNode) {
 	}
 	if n.Tag == "#text" {
 		// 文本节点: 在自身框内绘制 (超宽截断)
+		//
+		// 例外: 这段文本若已由祖先 <text> 容器画过就不再画 —— 容器是按
+		// 自己的 font / wrap 画的, 而 #text 没有 font 就落到默认 16,
+		// 两遍字号不同 ⇒ 文字重影 (见 textDrawnByTextAncestor)。
+		if n.textDrawnByTextAncestor() {
+			return
+		}
 		DrawText(img, clipRect, n.Text, n.Box.X, n.Box.Y, n.FontSize(),
 			tint(n.textColor(), disabled), n.Box.W)
 		return
@@ -421,6 +428,35 @@ func drawNode(img *image.RGBA, n *GuiNode) {
 		}
 		drawNode(sub, c)
 	}
+}
+
+// textDrawnByTextAncestor 报告这个 #text 节点的内容是否已经由某个祖先
+// <text> 容器画过了 (drawNode 的 "text" 分支按容器自己的 font / wrap 画整段
+// 内容)。命中时必须跳过, 否则同一个字被画两遍。
+//
+// 遍历口径与 node.go 的 TextContent() **逐字对应**: 它只拼接**直接**的
+// #text 子节点, 并看穿 slot / view 两层间接 (动态文本挂在 slot 里)。所以这里
+// 也只穿过 slot / view, 遇到 text 就判"已画"; 遇到别的元素 (button / column …)
+// 立即停 —— 那些元素里的 #text 仍然由自己那条分支绘制, 因为对它们来说 #text
+// 是**唯一**的绘制路径 (button 的标签就是靠它画的, 跳掉就成了空按钮)。
+//
+// 为什么要修: 容器那一遍用的是容器自己的字号 (比如 font={11} 的页脚), #text
+// 那一遍没有 font 就落默认 16 —— 同一段文字差 5px 叠在一起, 症状是文字
+// "重影 / 发虚 / 边缘有第二层轮廓" (2026-09-21 的 gox_demo 截图: 标题、
+// `count = 0`、底部提示行都是双份)。字号恰好等于 16 的 text 看不出来,
+// 所以这个 bug 能长期潜伏 —— 只有显式给 text 写了 font 才会现形。
+func (n *GuiNode) textDrawnByTextAncestor() bool {
+	for p := n.Parent; p != nil; p = p.Parent {
+		switch p.Tag {
+		case "slot", "view":
+			continue
+		case "text":
+			return true
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 // backgroundFor 返回节点纯色填充面: 显式 background prop 优先 (渐变写法
