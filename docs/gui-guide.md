@@ -557,7 +557,7 @@ import { setAppName, setStorage, getStorage, getStorageInfo } from "gx/storage"
 
 setAppName("MyApp")                     // 决定数据落在哪个子目录（缺省从脚本文件名推）
 setStorage("theme", "dark")
-getStorage("theme", "light")            // → dark（读不到时返回默认值）
+getStorage("theme") ?? "light"           // → dark（缺失时返回 undefined, 没有默认值参数）
 getStorageInfo()                        // → { keys, currentSize, limit }
 ```
 
