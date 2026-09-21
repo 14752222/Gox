@@ -1,0 +1,92 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Gox 官网发布：把 website/ 部署到 GitHub Pages (https://14752222.github.io/Gox/)
+#
+# 为什么需要这个文件：website/ 长期被 .gitignore 排除、只在本地改，于是线上一直是
+#   那份旧快照（导航还写着 v0.1.1，缺 gx/router、gx/screen、gox create）。
+#   2026-09-21 把 website/ 收回版本库并加上这条流水线 —— 此后「改 website/ → 推 main」
+#   就等于上线，不再需要手工同步。
+#
+# 一次性前置（仓库设置，代码改不了）：Settings → Pages → Build and deployment →
+#   Source 必须选 **GitHub Actions**。若这里选的是 "Deploy from a branch"，
+#   本工作流会成功但站点仍显示旧内容 —— 排查旧内容问题时先看这个开关。
+#
+# 与 release.yml 的关系：完全独立，互不触发。release.yml 只管 npm 发版（先查 registry
+#   判重，幂等）；本工作流只管官网。两者都用默认 GITHUB_TOKEN，不需要任何 secret。
+#
+# 失败时怎么查：本工作流每个校验步骤都把**实际证据**塞进 ::error:: 注解里，
+#   所以即使拿不到 job 日志（无 gh CLI），从 Actions 页面的 annotations 也能读到原因。
+# ─────────────────────────────────────────────────────────────────────────────
+name: pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'website/**'
+      - 'scripts/check-site.py'
+      - '.github/workflows/pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 官网发布是串行资源：连续两次推送只跑最后一次，避免旧构建覆盖新构建
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: 静态检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 站点文件齐全性
+        run: |
+          set -euo pipefail
+          missing=0
+          for f in index.html guide.html components.html api.html \
+                   assets/style.css assets/site.js assets/logo.png assets/favicon.png; do
+            if [ ! -f "website/$f" ]; then
+              echo "::error::缺少 website/$f"
+              missing=1
+            fi
+          done
+          if [ "$missing" != "0" ]; then exit 1; fi
+          echo "站点文件齐全："
+          ls -la website
+          ls -la website/assets
+
+      - name: 标签配对 / 版本号 / 链接 / 锚点
+        run: |
+          set -euo pipefail
+          python3 scripts/check-site.py
+
+  deploy:
+    name: 部署到 GitHub Pages
+    needs: check
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 配置 Pages
+        uses: actions/configure-pages@v5
+
+      - name: 打包站点产物
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: website
+
+      - name: 部署
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: 回显线上地址
+        run: |
+          echo "已发布：${{ steps.deployment.outputs.page_url }}"

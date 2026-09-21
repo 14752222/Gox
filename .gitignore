@@ -47,9 +47,10 @@ _commitmsg.txt
 # 注意：只是不再跟踪；若要让它们彻底从 git 历史里消失，必须重写历史（见 memory 台账）。
 .workbuddy/
 
-# 官网源码 —— 仓库完全开源后不对外公开，仅保留本地。
-# 同上：只是不再跟踪；历史提交与 v0.1.0/v0.1.1 标签里仍能看到，彻底清除需重写历史。
-website/
+# 官网源码 —— 2026-09-21 起重新纳入版本库并自动发布：
+# 推 main 后由 .github/workflows/pages.yml 把 website/ 部署到 GitHub Pages
+# （https://14752222.github.io/Gox/）。改完 website/** 直接提交推送即上线。
+# 注：历史提交与 v0.1.0/v0.1.1 标签里本来就有这份源码。
 /.zcode/
 /gox-logo-concepts/
 
