@@ -21,6 +21,9 @@ import (
 // rune → glyph 掩码做 LRU 缓存 (键 = 字号|rune)。不做复杂 shaping: 中西文按
 // 码位直排 (任务书 P3 约定; 连字/复杂脚本不支持)。
 //
+// **缓存进去的掩码必须是深拷贝** (cloneAlpha): face.Glyph 复用同一块 Pix 并
+// 反复返回同一个 *image.Alpha, 直接缓存它的指针 = 整屏文字同一个字形。见 cloneAlpha。
+//
 // 候选字体按平台组装 (见 fontCandidatesForOS)。Windows 的字体目录与文件名
 // 稳定, 可以写死; Linux 各发行版差异极大 (Noto / WenQuanYi / Droid 命名毫无
 // 规律), 只能真去扫目录 —— 这就是 P3-7 修的"Linux 上文字完全不渲染"。
@@ -349,13 +352,45 @@ func glyph(size int, r rune) (*glyphEntry, error) {
 		return &glyphEntry{advance: advance.Ceil()}, nil
 	}
 	e := &glyphEntry{
-		mask:    alpha,
+		// **必须深拷贝**: face.Glyph 返回的 *image.Alpha 是 face 自己的字段,
+		// 每次调用都复写同一块 Pix (见 cloneAlpha 的说明)。直接缓存这个指针
+		// 会让所有 rune 共享"最后一次光栅化"的结果。
+		mask:    cloneAlpha(alpha),
 		offX:    dr.Min.X,
 		offY:    dr.Min.Y,
 		advance: advance.Ceil(),
 	}
 	glyphLRU.put(size, r, e)
 	return e, nil
+}
+
+// cloneAlpha 深拷贝一个 glyph 掩码。
+//
+// **必须拷贝, 不能直接存 face.Glyph 返回的那个 *image.Alpha**:
+// x/image/font/opentype 的 Face 把掩码缓冲放在自己身上, 每次 Glyph 调用都是
+//
+//	f.mask.Pix = f.mask.Pix[:nPixels]   // 复用同一块底层数组
+//	... f.rast.Draw(&f.mask, ...)
+//	return dr, &f.mask, f.mask.Rect.Min, advance, x != 0
+//
+// ⇒ 同一个 *image.Alpha (和同一块 Pix) 被反复返回并反复覆写, 只有 Rect.Max
+// 随字形大小变化。把它塞进 LRU 的次数等于缓存了多少个"别名", 每个别名的像素
+// 都指向"最后一次光栅化的那个字" —— 症状是**界面上所有字都长成同一个字形**
+// (字距/布局/字号全对, 只有字形是错的; 首帧里每个字首次出现时还是对的, 之后
+// 任何一次重绘就整屏同形)。
+//
+// 2026-09-21 修的"文本显示异常"就是这个: 截图里每个汉字都是同一个"置"。
+// 上游实现见 opentype.go 的 Glyph (x/image v0.46.0, 注释 "re-allocating its
+// buffer if necessary") —— 这是**接口约定**, 不是上游的 bug: font.Face 文档
+// 明确说掩码只在"下一次 Glyph 调用前"有效。
+func cloneAlpha(src *image.Alpha) *image.Alpha {
+	b := src.Bounds()
+	dst := image.NewAlpha(b)
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		copy(dst.Pix[dst.PixOffset(b.Min.X, y):dst.PixOffset(b.Max.X, y)],
+			src.Pix[src.PixOffset(b.Min.X, y):src.PixOffset(b.Max.X, y)])
+	}
+	return dst
 }
 
 // ascentCache 记录每字号 ascent (基线到顶部距离, px)。
