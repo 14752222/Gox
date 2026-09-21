@@ -77,12 +77,65 @@ render(
 > `<Show when={x} fallback={f}>…</Show>` → `<view show={x} fallback={f}>…</view>`。
 > `gx/view` 现在只导出 `Switch` / `Match`。
 
-GUI 示例（仓库 `testdata/` 下有 30+ 个可直接运行的演示）：
+GUI 示例（仓库 `testdata/` 下有 35+ 个可直接运行的演示）：
 
 ```bash
 goxjs testdata/view_demo2.js      # 列表复用 / 条件保活 / 多分支
 goxjs testdata/model_demo.js      # 八类受控组件的双向绑定
+goxjs testdata/router_demo.js     # 路由表 / 参数匹配 / 三级守卫 / 懒加载
 ```
+
+## 路由与屏幕（`gx/router` / `gx/screen`）
+
+**0.4.0 新增模块**：路由不用再自己手写 signal 切页了 ——
+
+```jsx
+import { h, render } from "gx/gfx";
+import { createRouter, RouterView, RouterLink } from "gx/router";
+
+function HomePage()        { return <text font={15}>home</text>; }
+function ListPage()        { return <text font={15}>list</text>; }
+function DetailPage(props) { return <text font={15}>{"detail id=" + props.param.id}</text>; }
+
+const router = createRouter({
+  routes: [
+    { path: "/",           name: "home",   component: HomePage },
+    { path: "/list",       name: "list",   component: ListPage, keepAlive: true },
+    { path: "/detail/:id", name: "detail", component: DetailPage },
+    { path: "*",           name: "nf",     component: HomePage },
+  ],
+  initial: "/",
+});
+
+render(
+  <window title="app" width={480} height={360}>
+    <column gap={8} padding={12}>
+      <text font={12}>{() => "route: " + router.currentRoute().path}</text>
+      <row gap={10}>
+        <RouterLink to="/list"><text font={13}>列表</text></RouterLink>
+        <RouterLink to={{ name: "detail", params: { id: 7 } }}><text font={13}>详情</text></RouterLink>
+      </row>
+      <RouterView />
+    </column>
+  </window>
+);
+```
+
+开箱就有：`:param` / `:param?` / `*` 匹配（优先级不依赖声明序）、三级守卫
+（`beforeEach` / `beforeEnter` / `beforeRouteLeave` …，可返回 Promise 做异步）、`push` 返回
+Promise（`{ok:false, reason}` 表达被拦截）、`Alt+←` / `Alt+→` 后退前进、`lazy(() => import(…))`
+懒加载、**两档状态保留**（路由记录 `keepAlive: true` 保住整棵子树；`useRouteState()` 存住值）、
+多窗口独立导航栈与 `sync()` 同步组（mirror / share / follow）。
+
+`gx/screen` 提供显示器枚举、窗口所在屏、折叠姿态上报；**半折时 `RouterView` 自动变双栏**
+（左栏历史的上一条，通常是列表）。
+
+> 三处与浏览器路由的刻意差异：**没有 URL，也没有 history 模式**（桌面应用没有地址栏，"历史"
+> 是内存里的一个栈）；`to` 一律按**绝对路径**解析；正则路径约束 / `alias` / 相对路径不做，
+> 参数校验写在 `beforeEnter`。Windows / X11 没有折叠姿态查询 API —— 框架只提供 `reportPosture()`
+> 通道而不猜姿态，没人上报就恒为平展屏。
+>
+> 完整手册：[`docs/gui-router.md`](https://github.com/14752222/Gox/blob/main/docs/gui-router.md)。
 
 完整文档与语言示例见 [GitHub 仓库](https://github.com/14752222/Gox)。
 

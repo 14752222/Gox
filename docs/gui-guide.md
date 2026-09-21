@@ -714,7 +714,6 @@ import { devSnapshot } from "gx/dev";
 | [clipboard_demo.js](../testdata/clipboard_demo.js) | 剪贴板：同步读写与失败降级 |
 | [dialog_native_demo.js](../testdata/dialog_native_demo.js) | 原生对话框：alert / confirm / 打开文件，全 async await |
 | [storage_demo.js](../testdata/storage_demo.js) | gx/storage 持久化读写 |
-| [routing_demo.js](../testdata/routing_demo.js) | 用户态路由：signal 切页 + 未保存拦截守卫 |
 | [dev_panel_demo.js](../testdata/dev_panel_demo.js) | gx/dev 调试面板：帧 / 缓存 / 树 / 警告 |
 
 **响应式与视图**
@@ -731,11 +730,21 @@ import { devSnapshot } from "gx/dev";
 | [resource_demo.js](../testdata/resource_demo.js) | createResource 异步资源三态 |
 | [kit_demo.js](../testdata/kit_demo.js) | 设计套件：令牌主题与变体工厂 |
 
+**路由与屏幕**
+
+| 示例 | 内容 |
+|---|---|
+| [router_demo.js](../testdata/router_demo.js) | `gx/router` 核心：路由表 / `:param` 匹配 / 三级守卫 / 懒加载 / `keepAlive` / 状态袋 / `*` 兜底 |
+| [router_window_demo.js](../testdata/router_window_demo.js) | 多窗口独立导航栈 + 镜像同步 + 多屏姿态 + 折叠双栏 |
+| [router_page_detail.js](../testdata/router_page_detail.js) | 懒加载页面模块（被 `router_demo.js` 的 `lazy(() => import(…))` 加载，不是独立入口） |
+| [routing_demo.js](../testdata/routing_demo.js) | **无模块时代**的用户态写法（signal 切页 + 未保存拦截）；3 页以内的小工具仍推荐，更多页面用上面的 `gx/router` |
+
 ## 12. 相关文档
 
 | 文档 | 内容 |
 |---|---|
 | [README.md](../README.md) | 项目总览、安装、语言示例、打包与发版 |
+| [gui-router.md](gui-router.md) | `gx/router` + `gx/screen` 使用手册（路由表 / 三级守卫 / 懒加载 / 两档状态保留 / 多窗口作用域 / 折叠双栏 / 排障表） |
 | [gui-component-status.md](gui-component-status.md) | 组件实现现状、逐批落地记录与设计取舍（§编号最权威） |
 | [gui-patterns.md](gui-patterns.md) | 用户态模式手册（路由、状态、主题等惯用法） |
 | [gui-model-binding.md](gui-model-binding.md) | `model` 双向绑定：接口设计、语义表、与 Vue 的对照、反例 |

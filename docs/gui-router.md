@@ -369,7 +369,8 @@ router.unsync();                              // 清掉全部同步组
 | `platform()` | `"win32"` / `"x11"` / `"cocoa"` / `"headless"` |
 | `reportPosture(opts)` | **宿主/模拟器上报**姿态（见 §9.2） |
 | `resetDisplays()` | 撤销全部上报，交还给后端枚举 |
-| `onDisplayChange(fn)` | 显示器/姿态变化通知，返回注销函数 |
+| `onDisplayChange(fn)` | 显示器/姿态变化通知，返回注销函数（另导出 `offDisplayChange(fn)`，可显式注销） |
+| `primaryScreen()` | 主屏（等价于 `screens()` 里 `primary` 为真的那块） |
 
 字段名口径（一次定好）：**窗口**尺寸是 `width/height`（与 `render` 配置、`onResize` 同词），
 **屏幕**尺寸是 `screenWidth/screenHeight` —— 两组名字不同，因为它们回答的是不同的问题。

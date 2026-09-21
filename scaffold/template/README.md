@@ -66,7 +66,11 @@ goxjs src/main.js
 ## 下一步
 
 - 完整 API：`docs/gui-guide.md`（内置元素、布局、事件、宿主能力的权威参考）
-- 用户态模式：`docs/gui-patterns.md`（路由、主题、状态等惯用法）
+- **路由**：页数多、要参数路由（`/detail/:id`）、守卫、历史栈或懒加载时，用内置模块
+  `gx/router` —— 手册见 `docs/gui-router.md`。
+  注意本模板的页签用的是 `show` 指令（**keep-alive 显隐**，状态保活），**不是路由**：
+  三页以内的小工具这样最省事，再多就该换 `gx/router` 了。
+- 用户态模式：`docs/gui-patterns.md`（状态、主题、屏幕适配等惯用法）
 - 持久化：`gx/storage` 的 `setAppName` / `setStorage` / `getStorage`
 - 系统能力：`gx/dialog` 的 `alert` / `confirm` / `openFile`（async，用 `async function`，
   运行时**不支持** `async () => {}`）
