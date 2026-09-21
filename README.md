@@ -410,7 +410,7 @@ REPL 内建命令：`:help`（帮助）、`:clear`（重置全局环境）、`:e
 | `scaffold/` | `gox create` 的项目脚手架：`template/` 是**真实文件**（`go:embed` 进二进制），`scaffold.go` 负责占位符替换与目录校验 |
 | `test/` | 测试相关：`bench/` 性能剖析基准（fib、函数调用、对象操作、数值解析） |
 | `testdata/` | 可直接运行的示例脚本（语言特性、宿主 API、GUI 示例） |
-| `docs/` | 文档（GUI 指南、运行时 API 教程、分发与缺口清单） |
+| `docs/` | **对外文档**（GUI 指南、运行时 API 教程、分发与发版手册）——过程性材料在 `agent_doc/`（不随仓库发布） |
 | `npm/` | npm 包 `@goxjs/goxjs` 的**定义**（`package.json` / `bin/gox.js` / 包说明），二进制由发版流水线现场编译，不进仓库 |
 | `scripts/` | 构建脚本：`build-npm.sh` 交叉编译五个平台的二进制 |
 | `.github/workflows/` | CI：`release.yml` 发版流水线（push main / tag / Release → npm） |
@@ -489,23 +489,24 @@ ci(release): 打包闸改回 tar 校验，不再解析 npm 的输出
 - `gx/*` 的 JSX 属性与子节点在调用当场求值一次 —— 需要响应式就必须传**函数**（`value: () => sig()`），
   传值只是一张快照
 - 新增标准库 API 请同步更新 [docs/js-runtime-api-tutorial.md](docs/js-runtime-api-tutorial.md)；
-  未决与未实现项记入 [docs/undecided-and-unimplemented.md](docs/undecided-and-unimplemented.md)
-- 涉及 GUI 组件的改动，请在 [docs/gui-component-status.md](docs/gui-component-status.md) 追加一条落地记录
+  未决与未实现项记入 `agent_doc/undecided-and-unimplemented.md`（过程性台账，不随仓库发布）
+- 涉及 GUI 组件的改动，请在 `agent_doc/gui-component-status.md` 追加一条落地记录（同上）
 - 示例脚本放在 `testdata/` 并确保可直接运行
 
 ## 相关文档
+
+> 下表只列 `docs/` 里**已定稿、对外发布**的文档。技术选型、开发计划、现状台账等
+> **未定稿的过程性材料**统一放在 `agent_doc/`，已被 `.gitignore` 排除，不会进远端。
 
 | 文档 | 内容 |
 |---|---|
 | [docs/tutorial.md](docs/tutorial.md) | **实战教程**：API 调用与参数、内置模块导入、`gox create` 建工程、路由定义与注册（配可直接运行的示例脚本） |
 | [docs/gui-guide.md](docs/gui-guide.md) | GUI 开发指南：元素/事件参考、布局、动画、宿主能力、示例索引 |
 | [docs/js-runtime-api-tutorial.md](docs/js-runtime-api-tutorial.md) | 运行时 API 教程：函数类型、回调桥、内存管理、新增 API 的完整流程 |
-| [docs/gui-component-status.md](docs/gui-component-status.md) | GUI 组件实现现状、逐批落地记录与设计取舍（§编号最权威） |
 | [docs/gui-patterns.md](docs/gui-patterns.md) | 用户态模式手册（路由、状态、主题等惯用法） |
 | [docs/gui-model-binding.md](docs/gui-model-binding.md) | `model` 双向绑定：接口设计、语义表、与 Vue 的对照、反例 |
 | [docs/npm-release.md](docs/npm-release.md) | `@goxjs/goxjs` 发版手册：版本号策略、构建步骤、OIDC 配置要求、验收口径 |
 | [docs/desktop-distribution.md](docs/desktop-distribution.md) | 桌面应用分发：图标、签名、各平台打包格式 |
-| [docs/undecided-and-unimplemented.md](docs/undecided-and-unimplemented.md) | 未决与未实现清单 |
 | [官网](https://14752222.github.io/Gox/) | 安装、运行脚本、写 GUI 应用与打包的在线教程 |
 
 ## 许可证

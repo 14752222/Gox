@@ -393,7 +393,7 @@ h("row", { transition: 350, opacity: () => (visible() ? 1 : 0.15) }, /* ... */)
 ```
 
 可动画属性只有 `width` / `height` / `left` / `top` / `opacity` 五个（`value`、`padding`、`gap` 等
-刻意排除，理由见 [gui-component-status.md](gui-component-status.md) §20）。**首次赋值不做过渡**
+刻意排除，理由见 `agent_doc/gui-component-status.md` §20）。**首次赋值不做过渡**
 （与 CSS 一致），想要入场动画用命令式 API：
 
 ```js
@@ -746,10 +746,9 @@ import { devSnapshot } from "gx/dev";
 | [README.md](../README.md) | 项目总览、安装、语言示例、打包与发版 |
 | [tutorial.md](tutorial.md) | 实战教程：API 调用方式与参数、内置模块导入、`gox create` 建工程、路由定义与注册 |
 | [gui-router.md](gui-router.md) | `gx/router` + `gx/screen` 使用手册（路由表 / 三级守卫 / 懒加载 / 两档状态保留 / 多窗口作用域 / 折叠双栏 / 排障表） |
-| [gui-component-status.md](gui-component-status.md) | 组件实现现状、逐批落地记录与设计取舍（§编号最权威） |
 | [gui-patterns.md](gui-patterns.md) | 用户态模式手册（路由、状态、主题等惯用法） |
 | [gui-model-binding.md](gui-model-binding.md) | `model` 双向绑定：接口设计、语义表、与 Vue 的对照、反例 |
-| [gui-prompts.md](gui-prompts.md) | GUI 需求/提示词记录 |
-| [gui-styling-options.md](gui-styling-options.md) | 样式方案调研（含 §20 可动画属性的取舍理由） |
 | [desktop-distribution.md](desktop-distribution.md) | 各平台分发注意事项（图标、签名、打包格式） |
-| [undecided-and-unimplemented.md](undecided-and-unimplemented.md) | 未决与未实现清单 |
+
+> 组件现状台账、需求提示词、样式/选型调研、未决清单等**过程性文档**在仓库根目录的
+> `agent_doc/` 下，已被 `.gitignore` 排除、不随仓库发布。

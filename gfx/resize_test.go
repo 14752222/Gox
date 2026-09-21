@@ -12,7 +12,7 @@ import (
 // EventResize 在"标脏整帧"之外, 还要派发 onResize({width, height}) 给布局根
 // —— resize 是窗口级事件, 与焦点在哪无关, 所以从根节点链上找处理器
 // (与 onKeyDown 的焦点链是两条路)。载荷字段名与设备 API 的 getSystemInfo
-// 统一为 width/height (两处词汇一次定好, 见 docs/gui-responsive-screen-options.md §3.1)。
+// 统一为 width/height (两处词汇一次定好, 见 agent_doc/gui-responsive-screen-options.md §3.1)。
 
 // TestResizeDispatchesOnResizeToRoot 全链路: 注入 EventResize → 根上的
 // onResize 收到 {width, height} → signal 更新 → 响应式 prop 重算 → 按新窗口

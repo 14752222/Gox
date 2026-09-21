@@ -8,7 +8,7 @@
 //   3. 底部进度条 flexGrow 拉伸但 maxWidth=360 钳位 ("拉伸但有上限");
 //      再窄时 minWidth=160 兜底。
 //
-// 词汇表 (gui-component-status.md §3.4 / gui-responsive-screen-options.md §3.4):
+// 词汇表 (agent_doc/gui-component-status.md §3.4 / agent_doc/gui-responsive-screen-options.md §3.4):
 //   width="50%" / height="50%"   按父容器内容区解析; 百分比子节点不撑大父容器
 //   minWidth/maxWidth/minHeight/maxHeight   终钳位 (在 stretch/grow/shrink 之后)
 //   flexShrink   主轴溢出时按 系数×基础尺寸 加权收缩 (flexGrow 的对称面)

@@ -6,7 +6,7 @@
 > 只增加了"窗口号"这一个小身份（见 §8.1）。
 > **示例**：`testdata/router_demo.js`（核心）、`testdata/router_page_detail.js`（懒加载模块）、
 > `testdata/router_window_demo.js`（多窗口 + 多屏 + 折叠）。
-> **前置阅读**：`docs/gui-routing-options.md`（选型对比，本文是它的落地结果）、
+> **前置阅读**：`agent_doc/gui-routing-options.md`（选型对比，本文是它的落地结果）、
 > `docs/gui-patterns.md` §1-§2（无路由时代的用户态写法，仍适用于 3 页以内的小工具）。
 
 ---
@@ -196,7 +196,7 @@ router.beforeEach(async (to) => {   // 注意: 运行时只支持 async function
 ```
 
 > 运行时边界：**只支持 `async function`，不支持 `async () => {}`**（见
-> `docs/undecided-and-unimplemented.md`）。箭头函数要返回 Promise 时请显式
+> `agent_doc/undecided-and-unimplemented.md`）。箭头函数要返回 Promise 时请显式
 > `return Promise.resolve(...)` 或改写成 `function`。
 
 ### 4.2 组件级守卫写在哪
@@ -454,7 +454,7 @@ reportPosture({
 | 切页转场动画 | 给页面根元素挂 `transition`（P3-2），或按 `route` 变化自己驱动 |
 | 长列表虚拟化 | 列表页自己分页 |
 | 命名视图（一个路由多个具名 RouterView） | 一个窗口里放多个 `<RouterView scope="x">` |
-| 完整 media query / 逻辑像素层 | 见 `docs/gui-responsive-screen-options.md`（B/D 方案仍未做） |
+| 完整 media query / 逻辑像素层 | 见 `agent_doc/gui-responsive-screen-options.md`（B/D 方案仍未做） |
 
 ---
 

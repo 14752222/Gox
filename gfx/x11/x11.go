@@ -223,7 +223,7 @@ func internAtom(conn *xgb.Conn, name string) xproto.Atom {
 func (s *surface) Events() <-chan gfx.Event { return s.events }
 
 // SetTitle 实现 gfx 的可选 windowController 接口: 改 WM_NAME。
-// (X11 未实机验证 —— 与本文件其余部分同一状态, 见 gui-component-status §1.6)
+// (X11 未实机验证 —— 与本文件其余部分同一状态, 见 agent_doc/gui-component-status.md §1.6)
 func (s *surface) SetTitle(title string) {
 	xproto.ChangeProperty(s.conn, xproto.PropModeReplace, s.win, xproto.AtomWmName,
 		xproto.AtomString, 8, uint32(len(title)), []byte(title))

@@ -8,7 +8,7 @@ import (
 
 // ===== 布局弹性词汇 (2026-09-19): 百分比 / min-max / flexShrink =====
 //
-// 词汇语义 (gui-responsive-screen-options.md §3.4 → §四 布局缺口):
+// 词汇语义 (agent_doc/gui-responsive-screen-options.md §3.4 → §四 布局缺口):
 //   - width="50%" 按父容器**内容区**解析; 百分比子节点不撑大父容器
 //     (auto 尺寸下贡献 0, 与 CSS 一致)。
 //   - minWidth/maxWidth/minHeight/maxHeight 在 stretch/grow/shrink/百分比

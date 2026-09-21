@@ -17,7 +17,7 @@ import (
 //	// snap.solid       → { effects }   (gx/solid 的 devStats; 未注册时 effects=-1)
 //	// snap.warnings    → [{ at, text }]  最近 N 条内核警告
 //
-// 设计要点 (gui-devtools-options.md §3.1):
+// 设计要点 (agent_doc/gui-devtools-options.md §3.1):
 //   - **快照是纯对象**: 一次调用返回整棵 JSON 形状数据, 构建在调用线程内联
 //     完成 (脚本线程就是 GUI 线程, 与剪贴板"同步 API"同一论证)。
 //   - **拉取式刷新**: 不推送, 面板自己 setInterval 拉取 (示例 1s), 观察者

@@ -173,7 +173,7 @@ var (
 // 便于单测替换为计数器断言 (同一标签只警告一次的行为见 warnUnknownTagOnce;
 // 默认出口经 recordWarn 进警告环形缓冲, gx/dev 可读)。
 var warnUnknownTag = func(tag string) {
-	recordWarn("unknown tag %q (rendered as a plain box; see docs/gui-component-status.md)", tag)
+	recordWarn("unknown tag %q (rendered as a plain box; see docs/gui-guide.md)", tag)
 }
 
 // warnUnknownTagOnce 同一标签只警告一次: 函数值 prop 驱动的重建会反复

@@ -47,6 +47,18 @@ _commitmsg.txt
 # 注意：只是不再跟踪；若要让它们彻底从 git 历史里消失，必须重写历史（见 memory 台账）。
 .workbuddy/
 
+# Agent 内部工作文档（原 docs/ 下的过程性材料）—— 不对外公开，永久排除。
+# 2026-09-21 从 docs/ 迁出：技术选型（gui-*-options / runtime-gui-split-options）、
+# 开发计划与提示词（mobile-port-plan / gui-prompts）、现状台账与缺口清单
+# （gui-component-status / undecided-and-unimplemented）。
+# 这些是**未定稿**的过程记录，随时会被推翻，不适合作为对外承诺，故不再跟踪。
+# docs/ 里留下的是一律**已定稿的对外手册**（官网、README、npm 包页、gox create 模板都引用它们）。
+#
+# ⚠️ 重要：迁移时已同步清掉所有指向这些文件的公开链接（README / website / docs 内部交叉引用）
+#    与 gfx 的 unknown-tag 警告文案 —— 否则线上会出现 404 而 check-site.py 查不出来
+#    （它只校验站内相对链接，外链 github.com/... 一律跳过）。
+agent_doc/
+
 # 官网源码 —— 2026-09-21 起重新纳入版本库并自动发布：
 # 推 main 后由 .github/workflows/pages.yml 把 website/ 部署到 GitHub Pages
 # （https://14752222.github.io/Gox/）。改完 website/** 直接提交推送即上线。

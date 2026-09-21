@@ -209,7 +209,7 @@ import { h, render } from "gx/gfx";</code></pre>
     <p>
       <code class="inline">h()</code> 对标签名做白名单校验,集合外的标签会往 stderr 打印<strong>一次</strong>警告并渲染成普通盒子:
     </p>
-    <pre class="code"><code data-lang="text">gfx: unknown tag "foo" (rendered as a plain box; see docs/gui-component-status.md)</code></pre>
+    <pre class="code"><code data-lang="text">gfx: unknown tag "foo" (rendered as a plain box; see docs/gui-guide.md)</code></pre>
     <p>
       这是刻意设计的 —— 没登记的组件此前会静默渲染成空白,最难排查。看到这行警告就说明标签名拼错了或用了未实现的组件。
     </p>
@@ -1896,9 +1896,9 @@ setInterval(() =&gt; {
         <span class="dir">← 上一页</span>
         <span class="title">使用教程</span>
       </a>
-      <a class="next" href="https://github.com/14752222/Gox/blob/main/docs/gui-component-status.md" target="_blank" rel="noopener">
+      <a class="next" href="api.html">
         <span class="dir">下一页 →</span>
-        <span class="title">组件现状与缺口清单</span>
+        <span class="title">API 参考</span>
       </a>
     </div>
 

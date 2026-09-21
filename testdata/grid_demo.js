@@ -7,7 +7,7 @@
 //      连续收缩; 想要"放不下就变 2 列"再叠一层响应式 (onResize 切 columns)。
 //   3. 每张卡片用了装饰批 (status §29) 的 radius/渐变/阴影 —— 两批能力组合。
 //
-// 词汇 (gui-component-status.md §30): columns={n} (钳 1..32)、gap/padding 照常;
+// 词汇 (agent_doc/gui-component-status.md §30): columns={n} (钳 1..32)、gap/padding 照常;
 // 格内: 显式宽/高用自己的, 容器与零高节点拉伸到行高, alignItems 两轴生效;
 // 不做: 轨道语法 / colSpan / 区域命名 (不等宽列用 row + 百分比/min-max 组合)。
 import { createSignal } from "gx/solid";

@@ -15,7 +15,7 @@ import (
 // 弹性词汇 (2026-09-19, 屏幕 D → §四 布局缺口的第一批): 百分比尺寸
 // width="50%"、minWidth/maxWidth/minHeight/maxHeight、flexShrink。
 // 第二批: 容器级 wrap (主轴折行, 见 layoutWrapStack)。
-// 不支持: order、alignSelf、align-content (见 gui-component-status.md §3.4)。
+// 不支持: order、alignSelf、align-content (见 agent_doc/gui-component-status.md §3.4)。
 
 // Layout 以给定画布尺寸对根节点做一次布局 (自顶向下写 Box)。
 func Layout(root *GuiNode, w, h int) {

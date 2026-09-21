@@ -9,7 +9,7 @@ import (
 
 // ===== gx/dev (devtools 方案 A): 快照 schema + 基础设施 1-3 =====
 
-// TestDevSnapshotShape 锁住快照的结构 —— 字段名是 API (gui-devtools-options.md
+// TestDevSnapshotShape 锁住快照的结构 —— 字段名是 API (agent_doc/gui-devtools-options.md
 // §3.1: "快照的结构有专门用例锁住")。
 func TestDevSnapshotShape(t *testing.T) {
 	resetDevState()

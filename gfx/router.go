@@ -13,7 +13,7 @@ import (
 //
 // 路由需要的一切机制在内核里**已经有了**: 条件渲染 (函数子节点)、响应式
 // (gx/solid)、透明宿主 (slot)、布局每帧重跑、整帧标脏。真正的缺口只有三块
-// (docs/gui-routing-options.md §1.2 的 R-a/R-b/R-c), 本模块把这三块补齐,
+// (agent_doc/gui-routing-options.md §1.2 的 R-a/R-b/R-c), 本模块把这三块补齐,
 // 但**全部落在模块层**:
 //
 //	R-c 路径与参数匹配 → router_match.go (纯函数, 可脱离 VM 单测)

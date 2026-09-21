@@ -11,7 +11,7 @@ import (
 
 // ===== gx/screen: 显示器 / 屏幕信息 / 折叠姿态 (多屏与折叠屏适配的地基) =====
 //
-// 这个模块解决的是 docs/gui-responsive-screen-options.md 里 G-b / G-d 那一类
+// 这个模块解决的是 agent_doc/gui-responsive-screen-options.md 里 G-b / G-d 那一类
 // 缺口: 脚本此前完全看不见"我在哪块屏幕上、多大、缩放多少、是不是折着的"。
 // 响应式布局的全部机制 (signal + 条件渲染 + 函数 prop) 早就到位, 缺的只是
 // "屏幕尺寸/姿态成为信号" 这一步 —— 本文件补上它, 并把它做成 gx/router
@@ -31,7 +31,7 @@ import (
 // Windows.Devices.Sensors 不在纯 syscall + 零 cgo 的可达范围内)。所以本模块
 // 的立场是: 框架提供**姿态通道**, 而不是假装能检测姿态。
 //
-//   - 移动宿主 (Android / 鸿蒙 / iOS, 见 docs/mobile-port-plan.md) 从系统
+//   - 移动宿主 (Android / 鸿蒙 / iOS, 见 agent_doc/mobile-port-plan.md) 从系统
 //     API 读到姿态后调 reportPosture 上报;
 //   - 桌面上的折叠屏模拟器 / 开发者工具 / 自动化测试同样调 reportPosture;
 //   - 没有任何上报时姿态恒为 "flat" —— 与今天的桌面行为完全一致 (零影响)。
@@ -746,7 +746,7 @@ func (r *windowRefValue) SetProperty(string, object.Value) {}
 
 // windowInfoToJS 组装 {width,height,scale,screenWidth,screenHeight,platform}。
 //
-// 字段名一次定好 (gui-responsive-screen-options.md §3.1 列的那条): 窗口尺寸用
+// 字段名一次定好 (agent_doc/gui-responsive-screen-options.md §3.1 列的那条): 窗口尺寸用
 // width/height (与 render 的窗口配置、onResize 事件同词), **屏幕**尺寸用
 // screenWidth/screenHeight —— 两组名字不同, 因为它们回答的是不同的问题,
 // 混用一个名字是以后最容易踩的坑。
