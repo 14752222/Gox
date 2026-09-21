@@ -242,6 +242,22 @@ console.log(res.status, await res.text())
 `gx/gfx` + `gx/solid` 提供 JSX 声明式 UI 与信号驱动的响应式更新，渲染器为纯 Go 软件光栅化
 （无 cgo、无动态库依赖）。
 
+用脚手架起一个新工程 —— 生成出来的默认工程开箱即跑，目录布局就是脚手架的默认输出：
+
+```bash
+gox create my-app                          # 同为 goxjs create / npx @goxjs/goxjs create
+cd my-app && npm install && npm run dev
+```
+
+生成 `package.json`、入口 `src/main.js`、根组件 `src/app.js`、共享状态 `src/store.js`、
+设计令牌 `src/theme.js` 与 `src/components/` 下三个示例组件（计数器 / 待办列表 / 多状态），
+把信号、元素级指令（`each` / `show`）、`model` 双向绑定与 `Switch` / `Match` 各演示一遍。
+模板是 [`scaffold/template/`](scaffold/template/) 下的**真实文件**，由 `go:embed` 嵌进二进制
+（改模板要重新编译才生效；`scaffold/scaffold_test.go` 会保证生成出来的 JS 仍能过
+lexer → parser → compiler，`gfx/scaffold_project_test.go` 会真的把它挂载起来点一遍）。
+
+最省事的最小手写版：
+
 ```js
 import { h, render, createSignal } from "gox"        // 聚合入口：所有 gx/* 导出的并集
 // 等价的细分写法：import { h, render } from "gx/gfx"; import { createSignal } from "gx/solid"
@@ -307,8 +323,15 @@ Gox 不使用配置文件，全部行为由**命令行参数**、**少量环境�
 | 命令 | 参数 | 说明 |
 |---|---|---|
 | `Gox` / `goxjs` | 无 | 启动交互式 REPL |
+| `Gox` / `goxjs` | `create <目录>` | 按默认模板生成一个 GUI 工程；别名 `new` / `init` |
 | `Gox` / `goxjs` | `<script.js>` | 执行脚本文件；报错写 stderr 并以非零码退出 |
+| `Gox` / `goxjs` | `help` / `version` | 显示用法 / 版本号 |
 | `go run ./packager` | 见 [打包](#打包为独立可执行文件) | jsbuild 打包器参数表 |
+
+`create` 的选项：`--name <名字>`（覆盖项目名，缺省取目录名）、`-f` / `--force`
+（目标目录已存在且非空时才需要，缺省拒绝覆盖）。参数只在本参数**不像脚本路径**时
+才当子命令认（判据是扩展名与路径分隔符），所以 `gox help.js`、`gox src/create.js`
+仍然老老实实当脚本执行。
 
 REPL 内建命令：`:help`（帮助）、`:clear`（重置全局环境）、`:exit` / `:quit`（退出）。
 
@@ -381,6 +404,7 @@ REPL 内建命令：`:help`（帮助）、`:clear`（重置全局环境）、`:e
 | `stdlib/` | 标准库与宿主 API 实现（含 `gx/solid` 响应式信号） |
 | `gfx/` | 自研 GUI 渲染层（软件光栅化、布局、命中测试、win32 / X11 后端） |
 | `packager/` | jsbuild 打包器（GUI 应用、交叉编译） |
+| `scaffold/` | `gox create` 的项目脚手架：`template/` 是**真实文件**（`go:embed` 进二进制），`scaffold.go` 负责占位符替换与目录校验 |
 | `test/` | 测试相关：`bench/` 性能剖析基准（fib、函数调用、对象操作、数值解析） |
 | `testdata/` | 可直接运行的示例脚本（语言特性、宿主 API、GUI 示例） |
 | `docs/` | 文档（GUI 指南、运行时 API 教程、分发与缺口清单） |

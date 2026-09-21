@@ -1,0 +1,13 @@
+{
+  "name": "__PROJECT_NAME__",
+  "version": "0.0.0",
+  "private": true,
+  "description": "A Gox desktop GUI app (scaffolded by `gox create`)",
+  "scripts": {
+    "dev": "goxjs src/main.js",
+    "start": "goxjs src/main.js"
+  },
+  "devDependencies": {
+    "@goxjs/goxjs": "^0.3.0"
+  }
+}

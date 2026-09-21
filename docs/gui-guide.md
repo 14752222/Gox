@@ -24,6 +24,16 @@ API 语义与已知取舍；上手最短路径见 [README 的 GUI 章节](../REA
 
 ## 1. 快速上手
 
+从零新建一个工程用脚手架 —— 生成 `package.json` + `src/` 布局的默认工程，开箱即跑：
+
+```bash
+gox create my-app          # 同为 goxjs create / npx @goxjs/goxjs create
+cd my-app && npm install && npm run dev
+```
+
+下面是最小骨架，直接存成一个 `.js` 文件也能跑（JSX 会被降级成 `h(...)` 调用，
+所以**用了 JSX 的文件必须 import `h`**）：
+
 模块导入有两种写法：聚合入口 `gox` 一行拿全常用 API（`gox` 是所有 `gx/*` 模块导出的并集，
 应用代码推荐）；细分模块按需导入（库代码推荐）。
 

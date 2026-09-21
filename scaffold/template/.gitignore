@@ -1,0 +1,8 @@
+# 依赖目录（npm i 只为拿到 goxjs 命令，运行时本身不需要 Node）
+node_modules/
+
+# 打包产物（jsbuild 打出的可执行文件）
+dist/
+build/
+*.exe
+*.log

@@ -27,6 +27,7 @@
 |---|---|---|
 | `npm/README.md` | **必改**：新 API 示例、破坏性变更说明 | 它是 npm 包页面，用户看到的第一份文档；CI 的内容校验也要求包里必须有 `README.md` |
 | `npm/package.json` | `version`；必要时 `description` / `keywords` | `version` 是唯一发版开关 |
+| `main.go` 的 `const version` | 与上一条的 `version` 一起改 | `gox version` 报的就是它；两处不一致时排障会先被版本号误导 |
 | `README.md`（仓库） | 特性清单、GUI 指引段落 | 仓库首页 |
 | `docs/gui-guide.md` | §4 元素表（新标签）、§6 绑定、§8 视图、§11 示例索引 | 用户手册 |
 | `docs/gui-patterns.md` | §9 视图 | 模式手册 |
