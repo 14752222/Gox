@@ -672,10 +672,23 @@ func (n *GuiNode) PropHandler(name string) object.Value {
 
 // ===== 文本相关辅助 =====
 
-// FontSize 返回节点字号 (prop "font", 默认 16)。
+// FontSize 返回节点字号 (prop "font", 未写则**沿父链继承**, 都没有才落默认 16)。
+//
+// 为什么继承: `#text` 节点自身永远不带 font prop (它是内容载体, 由 JSX 的字符串
+// 生成), 所以"不继承"等于父元素上写的 font 一辈子不生效 —— 典型症状是
+// `<button font={13}>标签</button>` 的标签仍按 16 画 (kit_demo 就是这么写的),
+// 而且测量 (intrinsicSize) 与绘制 (drawNode) 都走同一个 FontSize(), 所以两边
+// 一致地"错", 不会自己暴露出来。
+//
+// 继承是"最近祖先优先": 显式 font 就近生效, 中间任何一层都能覆盖。
 func (n *GuiNode) FontSize() int {
 	if v, ok := n.PropNum("font"); ok && v >= 8 {
 		return int(v)
+	}
+	for p := n.Parent; p != nil; p = p.Parent {
+		if v, ok := p.PropNum("font"); ok && v >= 8 {
+			return int(v)
+		}
 	}
 	return 16
 }
