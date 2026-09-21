@@ -1,6 +1,6 @@
 {
   "name": "@goxjs/goxjs",
-  "version": "0.4.2",
+  "version": "0.4.3",
   "description": "Gox — 用 Go 从零实现的 JavaScript 运行时（lexer → parser → 字节码 VM），单二进制零外部依赖",
   "license": "Apache-2.0",
   "repository": {

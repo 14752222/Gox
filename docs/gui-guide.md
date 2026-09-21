@@ -105,9 +105,9 @@ render(
 | `column` / `row` | `gap` / `padding` / `margin`(子级) / `alignItems` / `justifyContent` / `flexGrow` / `flexShrink`(子级) / `wrap` / `width` / `height` | flex 风格容器，尺寸按内容确定（交叉轴默认 stretch）；`row` 加 `wrap` 放不下折行，`gap` 兼作行内间距与行间距 |
 | `view` | `each` / `show` / `fallback` / `key` / `stable` / `gap` | **布局透明的容器**（Fragment）：单子时尺寸完全跟随子节点、多子（列表）按父容器方向堆叠，自己不占盒子；**元素级指令就写在这类元素上** —— `each={rows}` 按列表重复本元素（keyed 复用 / `stable` / `fallback`），`show={open}` keep-alive 显隐。指令对任何内置元素标签都有效，写在 `<column>` / `<row>` 上就是"每一项一个盒子" |
 | `grid` | `columns`（1~32） | 等宽列网格：声明序逐行填格，列宽均分内容宽，格子无显式高时拉到行高；不做轨道语法 / colSpan（不等宽列用 `row` + 百分比组合） |
-| `text` | `font` / `color` / `width` / `wrap` / `ellipsis` | 默认单行文本、超宽硬截断；加 `wrap` 变成文本块（按宽度贪心折行、`\n` 强制换行），`ellipsis={n}` 只留 n 行并在末行补 `...` |
+| `text` | `font` / `color` / `width` / `wrap` / `ellipsis` | 默认单行文本、超宽硬截断；加 `wrap` 变成文本块（按宽度贪心折行、`\n` 强制换行），`ellipsis={n}` 只留 n 行并在末行补 `...`。**`font` 沿父链继承**（自身 > 最近祖先 > 默认 16），所以写在 `column` / `row` / `button` 上的 `font` 对其内全部文本生效 |
 | `rect` | `width` / `height` / `background` / `border` / `radius` / `shadow` / `borderWidth` / `borderStyle` | 通用盒子；未特判的标签也走这条绘制路径；装饰属性（圆角 / 阴影 / 渐变 / 边框宽度）见 [5.3](#53-装饰绘制) |
-| `button` | `onClick` / `disabled` / `background` / `border` / `color` / `padding` | 缺省浅灰底 + 深灰边框，文字子节点垂直居中；`disabled` 时整体变灰且不响应点击 |
+| `button` | `onClick` / `disabled` / `background` / `border` / `color` / `font` / `padding` | 缺省浅灰底 + 深灰边框，文字子节点垂直居中；`disabled` 时整体变灰且不响应点击。标签字号同样走 `font` 继承（`font={13}` 写在这里就管标签） |
 | `checkbox` / `radio` | `checked` / `onClick` / `border` / `background` / `color` | 18×18 受控控件；`background` 是选中填充色，radio 互斥在 JS 侧用 signal 实现 |
 | `switch` | `checked` / `onClick` | 36×20 受控开关（方形轨道），`background` 覆盖打开态轨道色 |
 | `progress` | `value`(0~1，越界自动钳位) / `background` / `width` / `height` | 缺省 200×8，轨道浅灰 + 前景主题绿 |
