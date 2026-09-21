@@ -237,6 +237,10 @@ console.log(res.status, await res.text())
 异步 I/O 的实现模型是**跨 goroutine I/O + 投递回 VM 单线程**：网络读写不触碰 VM 状态，结果经
 零延时定时器回到事件循环执行 JS 回调，因此回调里访问 VM 无需加锁。
 
+一份完整的 HTTP 示例（起服务于端口 0、路由/查询参数/JSON 请求体/404-405-500 各状态码、
+回调式 `http.get`·`http.request` 与 Promise 式 `fetch` 对照、异步响应与 `server.close` 收尾）：
+[`testdata/http_demo.js`](testdata/http_demo.js) —— `gox testdata/http_demo.js` 即可运行。
+
 ### GUI 桌面应用
 
 `gx/gfx` + `gx/solid` 提供 JSX 声明式 UI 与信号驱动的响应式更新，渲染器为纯 Go 软件光栅化

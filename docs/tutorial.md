@@ -602,6 +602,7 @@ gox testdata/tutorial_router.js
 | 文件 | 内容 | 回归用例 |
 |---|---|---|
 | [`testdata/tutorial_api.js`](../testdata/tutorial_api.js) | §1 同步/异步/回调/定时器/HTTP | `TestTutorialHeadlessScripts` |
+| [`testdata/http_demo.js`](../testdata/http_demo.js) | §1.5 展开: `http.createServer` 最小 REST 服务 + 两种客户端风格全链路 | `TestHTTPDemoScript` |
 | [`testdata/tutorial_modules.js`](../testdata/tutorial_modules.js) + [`tutorial_util.js`](../testdata/tutorial_util.js) | §2 四种导入形态 + 各模块导出 + gx/solid + gx/storage | `TestTutorialHeadlessScripts` |
 | [`testdata/tutorial_gui.js`](../testdata/tutorial_gui.js) | §1 GUI 骨架: render + signal + model + each + show | `TestTutorialGuiScript` |
 | [`testdata/tutorial_router.js`](../testdata/tutorial_router.js) | §4 路由表 / 守卫 / keepAlive / 重定向 / 兜底 | `TestTutorialRouterScript` |
