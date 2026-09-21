@@ -42,6 +42,7 @@ import (
 // 键盘事件由平台投递到具体窗口, 天然隔离。
 type app struct {
 	mu         sync.Mutex
+	id         int // 窗口身份 (P3-7): Mount 时分配, 用于路由作用域等"按窗口记账"的设施
 	surface    Surface
 	root       *GuiNode
 	img        *image.RGBA
@@ -86,6 +87,12 @@ var (
 	// 多窗口时它们指向最新窗口 —— 这是有意的取舍: 剪贴板本就是进程级资源,
 	// 而对话框需要一个 owner (传最近窗口比"传第一个"更符合直觉)。
 	activeApp *app
+	// appSeq 是窗口号发号器 (P3-7): 每 Mount 一个窗口 +1。
+	//
+	// 为什么要有稳定的窗口号: gx/router 的"每窗口独立导航栈"需要一个身份 ——
+	// Surface 指针脚本看不见 (也不该看见), 而注册表顺序会随关窗而变。窗口号
+	// 一旦分配就不再复用, 于是"窗口 A 的路由作用域"在整个生命周期里稳定。
+	appSeq int
 )
 
 // Active 报告是否有已挂载的 GUI (宿主入口据此选择事件循环模式)。
@@ -107,6 +114,10 @@ func registerApp(a *app) {
 	appMu.Lock()
 	if apps == nil {
 		apps = map[Surface]*app{}
+	}
+	if a.id == 0 {
+		appSeq++
+		a.id = appSeq
 	}
 	apps[a.surface] = a
 	activeApp = a
@@ -1151,6 +1162,11 @@ func maxInt(a, b int) int {
 
 // redraw 布局 + 光栅化 + 上屏 (仅 GUI 线程调用)。
 func (a *app) redraw() {
+	// 待绑定的 RouterView 在这里收尾 (见 router_view.go 的 flushRouterViews)。
+	// **必须在读脏标记之前跑**: 它会挂上页面子树并整帧标脏, 顺序反了就等于
+	// 让本次调用把那次标脏吞掉 —— 症状是"首帧空白, 下一帧才有内容"。
+	flushRouterViews(a)
+
 	a.mu.Lock()
 	a.needDraw = false
 	full := a.fullDirty

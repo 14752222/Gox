@@ -114,6 +114,12 @@ const (
 	WM_ACTIVATE    = 0x0006
 	WA_INACTIVE    = 0
 
+	// 显示器环境变化 (2026-09-21, 多屏/折叠适配):
+	//   WM_DISPLAYCHANGE 插拔屏 / 改分辨率;  WM_DPICHANGED 跨屏后缩放变了。
+	// 两者都只做一件事: 通知内核"环境变了", 具体有哪些屏由 gx/screen 重新枚举。
+	WM_DISPLAYCHANGE = 0x007E
+	WM_DPICHANGED    = 0x02E0
+
 	WS_OVERLAPPEDWINDOW = 0x00CF0000
 	WS_VISIBLE          = 0x10000000
 
@@ -550,6 +556,14 @@ func globalWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 		}
 		procEndPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))
 		return 0
+	case WM_DISPLAYCHANGE, WM_DPICHANGED:
+		// **不能在这里直接通知**: WndProc 跑在消息排空阶段 (WaitEvents 里),
+		// 那一刻不在 VM 的执行上下文中, 直接触发脚本回调等于在错误的地方
+		// 执行 JS。统一经 Post 排到 Pump 的 DrainTasks —— 与仓库既有的
+		// "WndProc 绝不执行 JS, 一律投递任务" 纪律一致。
+		gfx.Post(func() { gfx.NotifyDisplaysChanged() })
+		r, _, _ := procDefWindowProcW.Call(hwnd, uintptr(msg), wParam, lParam)
+		return r
 	case WM_CLOSE:
 		procDestroyWindow.Call(hwnd)
 		return 0

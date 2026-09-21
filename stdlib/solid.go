@@ -34,6 +34,7 @@ func setupSolid(env *runtime.Environment) {
 			"createResource": object.NewBuiltin("createResource", solidCreateResource),
 			"onMount":        object.NewBuiltin("onMount", solidOnMount),
 			"onCleanup":      object.NewBuiltin("onCleanup", solidOnCleanup),
+			"untrack":        object.NewBuiltin("untrack", solidUntrack),
 			"devStats":       object.NewBuiltin("devStats", solidDevStats),
 		}
 	})
@@ -449,6 +450,37 @@ func callbackArg(args []object.Value) object.Value {
 // v1 边界 (文档写明): 只在响应式子树内有意义; 顶层脚本直接调用是 no-op
 // (打一次警告)。列表渲染里同一代多个组件的登记在同一批执行, 粒度是"代"
 // 而不是"组件实例"。
+
+// ===== untrack =====
+//
+// untrack(fn) 在**不收集依赖**的前提下执行 fn 并返回它的返回值。
+//
+// 为什么需要它 (Solid 同名 API, 语义对齐): 本引擎的"函数 prop / 函数子节点"
+// 都是 createEffect 包一层求值 —— 里面读过的任何 signal 都会变成依赖。这对
+// 绝大多数场景是对的, 但有一类代码是**在外层 effect 里调用一个组件体**:
+//
+//	createEffect(() => {
+//	  const r = route();                 // 想依赖: 路由变了才重跑
+//	  return untrack(() => Page(r));     // 不想依赖: 页面体内部读了什么 signal 都与本 effect 无关
+//	})
+//
+// 没有 untrack 的话, 页面体里一个 `const n = count()` 就会让整个页面在 count
+// 变化时被**重建**(状态丢失)。gx/router 的页面挂载正是这种形状, 所以这条
+// 不是可选项。嵌套调用 (untrack 里再 createEffect) 不受影响: 内层 effect
+// 自己会压栈成为新的收集目标, 出栈后回到"不收集"状态。
+//
+// 与 Solid 的差异: 只此一个 (Solid 还有 createRoot / batch / on 等)。
+// 不做 batch: 本引擎没有批量调度, setter 同步通知, batch 会名不副实。
+func solidUntrack(args ...object.Value) object.Value {
+	if len(args) == 0 || !object.IsCallable(args[0]) {
+		return object.NewTypeError("untrack: fn must be a function")
+	}
+	saved := solidStack
+	solidStack = nil
+	res := object.CallFunction(args[0], nil)
+	solidStack = saved
+	return res
+}
 
 var lifecycleOutsideWarned bool
 

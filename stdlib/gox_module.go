@@ -17,6 +17,10 @@ import (
 //
 //	import { h, render, createSignal, For, Show } from "gox";
 //
+// 路由与屏幕同样在并集里 (2026-09-21 起):
+//
+//	import { createRouter, RouterView, RouterLink, useRoute, useScreen } from "gox";
+//
 // 语义: "gox" 是 gx/* 全部导出的并集, 不是新的 API 表 —— 各细分模块
 // 仍然是唯一实现, 按需细粒度导入的写法继续可用 (推荐库代码用细分模块,
 // 应用代码用聚合入口)。
@@ -31,6 +35,8 @@ func setupGoxUmbrella(env *runtime.Environment) {
 			"gx/solid",
 			"gx/gfx",
 			"gx/view",
+			"gx/router",
+			"gx/screen",
 			"gx/dialog",
 			"gx/storage",
 			"gx/dev",

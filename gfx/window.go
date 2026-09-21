@@ -1,6 +1,7 @@
 package gfx
 
 import (
+	"strconv"
 	"sync"
 
 	"github.com/14752222/Gox/object"
@@ -53,6 +54,30 @@ type windowController interface {
 
 // App 返回底层 app (Go 侧持有句柄时用; 测试用它断言窗口状态)。
 func (w *Window) App() *app { return w.a }
+
+// ID 返回窗口号 (Mount 时分配, 永不复用)。
+//
+// 脚本侧的对应物是句柄上的 `id()`; 之所以 Go 侧也要一个, 是因为
+// "按窗口记账"的设施 (gx/router 的导航栈、gx/screen 的所在显示器)
+// 都活在内核里, 它们需要的是一个不依赖 Surface 指针的稳定身份。
+func (w *Window) ID() int {
+	if w == nil || w.a == nil {
+		return 0
+	}
+	return w.a.id
+}
+
+// appScope 返回一个窗口的路由作用域标识 ("win:<id>")。
+//
+// 命名规则 (以及为什么不是裸 id): 作用域既可能是自动的窗口作用域, 也可能是
+// 脚本显式起的名字 ("main" / "popup"), 两者共用一个名字空间。加前缀让
+// "自动的"与"显式的"在调试输出里一眼可分, 也避免脚本用 "win:1" 撞上自动值。
+func appScope(a *app) string {
+	if a == nil {
+		return ""
+	}
+	return "win:" + strconv.Itoa(a.id)
+}
 
 // Close 关闭本窗口。可在任意 goroutine 调用 (内部经 Post 投回 GUI 线程),
 // 重复调用无副作用 (底下的 close 是幂等的)。
@@ -133,6 +158,21 @@ func (w *Window) jsObject() object.Value {
 		return w.obj
 	}
 	o := object.NewObject()
+	// 窗口身份 (P3-7): id() 是稳定窗口号; scope() 是它在 gx/router 里的路由
+	// 作用域名 (两者都是方法而不是属性 —— 属性会被快照, 而句柄对象可能在
+	// 窗口创建前后被复用, 方法永远读的是当前值)。
+	o.SetProperty("id", object.NewBuiltin("id", func(args ...object.Value) object.Value {
+		return object.NewNumber(float64(w.ID()))
+	}))
+	o.SetProperty("scope", object.NewBuiltin("scope", func(args ...object.Value) object.Value {
+		return object.NewString(appScope(w.a))
+	}))
+	// __goxWindow 是给内核自己用的内省口 (gx/screen 的 screenOf(win) /
+	// gx/router 的 sync([wa, wb]) 都靠它把句柄还原成 Go 指针)。
+	// 下划线开头 + 返回一个不可用的内部值: 脚本即使调到也拿不到任何东西。
+	o.SetProperty("__goxWindow", object.NewBuiltin("__goxWindow", func(args ...object.Value) object.Value {
+		return &windowRefValue{w: w}
+	}))
 	o.SetProperty("close", object.NewBuiltin("close", func(args ...object.Value) object.Value {
 		w.Close()
 		return object.UndefinedSingleton
