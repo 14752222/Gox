@@ -497,6 +497,7 @@ ci(release): 打包闸改回 tar 校验，不再解析 npm 的输出
 
 | 文档 | 内容 |
 |---|---|
+| [docs/tutorial.md](docs/tutorial.md) | **实战教程**：API 调用与参数、内置模块导入、`gox create` 建工程、路由定义与注册（配可直接运行的示例脚本） |
 | [docs/gui-guide.md](docs/gui-guide.md) | GUI 开发指南：元素/事件参考、布局、动画、宿主能力、示例索引 |
 | [docs/js-runtime-api-tutorial.md](docs/js-runtime-api-tutorial.md) | 运行时 API 教程：函数类型、回调桥、内存管理、新增 API 的完整流程 |
 | [docs/gui-component-status.md](docs/gui-component-status.md) | GUI 组件实现现状、逐批落地记录与设计取舍（§编号最权威） |

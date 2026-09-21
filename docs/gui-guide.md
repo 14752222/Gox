@@ -744,6 +744,7 @@ import { devSnapshot } from "gx/dev";
 | 文档 | 内容 |
 |---|---|
 | [README.md](../README.md) | 项目总览、安装、语言示例、打包与发版 |
+| [tutorial.md](tutorial.md) | 实战教程：API 调用方式与参数、内置模块导入、`gox create` 建工程、路由定义与注册 |
 | [gui-router.md](gui-router.md) | `gx/router` + `gx/screen` 使用手册（路由表 / 三级守卫 / 懒加载 / 两档状态保留 / 多窗口作用域 / 折叠双栏 / 排障表） |
 | [gui-component-status.md](gui-component-status.md) | 组件实现现状、逐批落地记录与设计取舍（§编号最权威） |
 | [gui-patterns.md](gui-patterns.md) | 用户态模式手册（路由、状态、主题等惯用法） |
