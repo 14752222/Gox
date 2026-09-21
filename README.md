@@ -282,11 +282,14 @@ render(
 返回窗口句柄，可调用多次开多窗口（各有独立元素树与焦点，全关才退出进程）。
 
 完整参考 —— 事件模型、内置元素属性表、弹性布局与装饰绘制、受控组件与输入法、过渡动画、
-元素级指令（`model` / `each` / `show`）与 `gx/view` 多分支、原生对话框 / 剪贴板 / 持久化存储 /
-菜单栏、多窗口语义与平台差异 ——
+元素级指令（`model` / `each` / `show`）与 `gx/view` 多分支、**路由（`gx/router`：路由表 / 参数匹配 /
+三级守卫 / 懒加载 / 历史栈 / 多窗口作用域 / 折叠屏双栏）与屏幕信息（`gx/screen`）**、
+原生对话框 / 剪贴板 / 持久化存储 / 菜单栏、多窗口语义与平台差异 ——
 见 **[docs/gui-guide.md](docs/gui-guide.md)**，可直接运行的示例见
 [`testdata/`](testdata/)（`counter_demo.js`、`form_demo.js`、`multiwindow_demo.js`、
-`menu_demo.js`、`view_demo.js` 等 30+ 个）。
+`menu_demo.js`、`view_demo.js`、`router_demo.js`、`router_window_demo.js` 等 35+ 个）。
+
+路由与屏幕适配另有一份专门手册：**[docs/gui-router.md](docs/gui-router.md)**。
 
 ### 打包为独立可执行文件
 

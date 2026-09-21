@@ -472,6 +472,11 @@ func TestExampleScriptsMount(t *testing.T) {
 		// 目录运行 (而本用例的 cwd 是 gfx/)。由 TestImageDemoScript 专职覆盖。
 		// storage_demo.js 同理: 它会真实写存储文件, 需 GOX_STORAGE_DIR 隔离,
 		// 由 TestStorageDemoScript 专职覆盖。
+		// router_demo.js / router_window_demo.js 同理: 前者含懒加载
+		// import("./router_page_detail.js") —— 相对脚本所在目录解析, 需要把
+		// 模块基准路径设成 testdata/; 后者开两个窗口。分别由
+		// TestRouterDemoScript / TestRouterWindowDemoScript 专职覆盖 (它们
+		// 额外断言交互与状态保留, 比"挂载不报错"强得多)。
 	}
 	for _, name := range scripts {
 		t.Run(name, func(t *testing.T) {

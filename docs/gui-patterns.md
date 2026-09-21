@@ -21,6 +21,12 @@
 
 ## 1. 路由：一个 signal 切页
 
+> **2026-09-21 起有模块版了**：页数多、要参数路由 / 守卫 / 历史栈 / 懒加载时，
+> 直接用内置模块 **[`gx/router`](gui-router.md)**（`createRouter` + `<RouterView>` +
+> `<RouterLink>` + `useRoute`）。本节的模式在 **3 页以内的小工具**里依然是最省事的
+> 写法（零 import、概念为零），且 §2 的守卫思路与 `gx/router` 的守卫完全同源 ——
+> 从本节迁到模块是"把同一件事换成声明"，不是换心智。
+
 **问题**：多页应用（设置页 / 主列表 / 详情）在 Gox 里怎么组织。
 
 **模式**：路由状态就是一个普通 signal，页面表是普通对象，当前页靠函数子节点条件渲染。
@@ -398,8 +404,8 @@ shuffle / drop last 之后文字跟着行走）；改写版 `testdata/view_demo2
 
 | 模式 | 升级动作 | 触发条件 |
 |---|---|---|
-| §1 路由 | 固化为 `gx/router` 模块 | ≥3 个应用重复抄同一路由模式 |
-| §1 切页即卸载 | 内核 `hidden` prop（唯一动内核项） | 真实应用抱怨切页丢状态 |
+| §1 路由 | ✅ **已固化**：`gx/router`（2026-09-21，见 [gui-router.md](gui-router.md)） | 触发条件已满足 |
+| §1 切页即卸载 | ✅ **已在模块层解决**：路由记录 `keepAlive` + `useRouteState()`；内核 `hidden` prop **不做**（理由见 gui-routing-options 的落地记录） | 触发条件已满足 |
 | §3 useWindowSize | 并入 `gx/device` 的 `getSystemInfo` | 移动端 M1 或第二个平台能力出现 |
 | §3 断点 | 声明式断点（样式体系的一部分） | 样式体系 F+C+B 落地之后（此前单独做会发明第二套样式通道） |
 | §4 createResource | source signal 自动重取（Solid 二参形态） | 出现 ≥3 个"手动 createEffect 串 refetch"的应用 |
