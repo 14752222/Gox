@@ -48,7 +48,7 @@ flex 布局 + JSX + 信号驱动更新，win32 / X11 窗口后端）、一组宿
 
 ## 功能特性
 
-- **完整编译管线** —— 自研 lexer / parser / compiler / bytecode VM，108 个操作码，定长 3 字节指令编码
+- **完整编译管线** —— 自研 lexer / parser / compiler / bytecode VM，109 个操作码，定长 3 字节指令编码
   （`[操作码 1B][操作数 2B 大端]`），解码即取即用
 - **ES6+ 语言子集** —— `let`/`const`（不支持 `var`）、函数与箭头函数、闭包、`class`、`async`/`await`、
   解构赋值、剩余/默认参数、展开、模板字符串、`for...of`、`try`/`catch`/`throw`、可选链 `?.`、
@@ -65,6 +65,11 @@ flex 布局 + JSX + 信号驱动更新，win32 / X11 窗口后端）、一组宿
 - **原生感的交互组件** —— 表单控件（`input`/`textarea`/`select`/`slider`/`checkbox`/`radio`/`switch`）、
   弹层（`dialog`/`toast`）、滚动容器、自绘画布，以及**自绘菜单栏与右键菜单**（下拉/子菜单/快捷键/禁用项，
   不依赖系统菜单 API）
+- **原生能力层** —— 六个模块共用一个宿主契约（`NativeHost`）：`gx/device`（设备信息 / 电量 / 网络 /
+  震动 / 屏幕亮度）、`gx/app`（前后台 / 返回键 / 分享）、`gx/geo`（定位，含持续监听）、
+  `gx/media`（拍照 / 选图 / 选视频 / 保存）、`gx/permission`（权限查询与申请）、`gx/viewport`
+  （安全区 / 软键盘高度 / 分屏与多窗口形态）。桌面由 win32 宿主直接实现，移动端原生壳只需实现
+  同一个契约即可接入；**缺能力时明说缺**（`canIUse` + 8 个统一错误码），不返回假数据
 - **事件循环** —— `setTimeout` / `setInterval` / `requestIdleCallback`，以及精度可控的严格定时器变体
   （`setStrictTimeout` 等）；GUI 模式下事件循环接入窗口消息泵
 - **响应式编程** —— Dart GetX 风格的 `obs` / `computed` / `ever` / `once`，以及 SolidJS 风格的
@@ -240,6 +245,38 @@ console.log(res.status, await res.text())
 一份完整的 HTTP 示例（起服务于端口 0、路由/查询参数/JSON 请求体/404-405-500 各状态码、
 回调式 `http.get`·`http.request` 与 Promise 式 `fetch` 对照、异步响应与 `server.close` 收尾）：
 [`testdata/http_demo.js`](testdata/http_demo.js) —— `gox testdata/http_demo.js` 即可运行。
+
+### 原生能力模块 `gx/*`
+
+`gx/device` / `gx/app` / `gx/geo` / `gx/media` / `gx/permission` / `gx/viewport` 需要 `import`
+（不是全局对象）。三种调用形态要在写代码时区分开：
+
+```js
+import { deviceInfo, battery, isOnline, canIUse } from "gx/device";   // 拉取型 + 上报型
+import { getLocation, watchLocation } from "gx/geo";
+import { takePhoto } from "gx/media";                                  // 动作型
+
+const info = deviceInfo();                    // 同步可得
+console.log(info.platform, info.model, battery().level + "%", isOnline());
+// battery()/isOnline() 读的是快照；useBattery() 返回取值函数，宿主上报时自动刷新
+
+if (canIUse("camera")) {                      // 事前判断能力，不要靠 catch 兜底
+  const photo = await takePhoto({ count: 1 });      // 失败会 reject，带 errCode
+}
+
+const stop = watchLocation((loc) => console.log(loc.latitude, loc.longitude));
+try {
+  await getLocation({ highAccuracy: true });
+} catch (e) {
+  if (e.errCode === "permission-denied") console.warn(e.message);
+}
+```
+
+桌面后端直接实现其中能实现的部分（电量 / 网络 / 亮度 / 屏幕常亮 / 打开系统设置页），
+给不出的一律诚实报 `unsupported`；**移动端原生壳实现同一个 `NativeHost` 契约即可接入**，
+不必改内核。语义、8 个错误码与各模块导出表见
+[GUI 开发指南 §9.6](docs/gui-guide.md#96-原生能力层)；三种形态的完整演示：
+[`testdata/native_demo.js`](testdata/native_demo.js)。
 
 ### GUI 桌面应用
 

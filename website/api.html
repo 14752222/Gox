@@ -14,7 +14,7 @@
   <div class="container nav">
     <a class="brand" href="index.html">
       <img class="brand-logo" src="assets/logo.png" alt="Gox" width="30" height="30">
-      Gox <span class="ver">v0.4.3</span>
+      Gox <span class="ver">v0.5.0</span>
     </a>
     <button class="nav-toggle" aria-label="菜单">☰</button>
     <ul class="nav-links">
@@ -73,6 +73,7 @@
     <a class="toc-sub" href="#m-dialog">gx/dialog</a>
     <a class="toc-sub" href="#m-storage">gx/storage</a>
     <a class="toc-sub" href="#m-dev">gx/dev</a>
+    <a class="toc-sub" href="#m-native">原生能力层（device / app / geo / media / permission / viewport）</a>
     <a class="toc-sub" href="#m-pitfalls">模块层常见误用</a>
     <a href="#reactive-globals">8. 响应式全局 API</a>
     <a href="#diff">9. 与 Node / 浏览器差异</a>
@@ -229,7 +230,7 @@ console.log(globalThis.Math === Math);   // true</code></pre>
         </tr>
         <tr>
           <td>内置模块(需 import)</td>
-          <td><code class="inline">gx/solid</code> <code class="inline">gx/gfx</code> <code class="inline">gx/view</code> <code class="inline">gx/router</code> <code class="inline">gx/screen</code> <code class="inline">gx/dialog</code> <code class="inline">gx/storage</code> <code class="inline">gx/dev</code>,以及聚合入口 <code class="inline">gox</code></td>
+          <td><code class="inline">gx/solid</code> <code class="inline">gx/gfx</code> <code class="inline">gx/view</code> <code class="inline">gx/router</code> <code class="inline">gx/screen</code> <code class="inline">gx/dialog</code> <code class="inline">gx/storage</code> <code class="inline">gx/dev</code> <code class="inline">gx/device</code> <code class="inline">gx/app</code> <code class="inline">gx/geo</code> <code class="inline">gx/media</code> <code class="inline">gx/permission</code> <code class="inline">gx/viewport</code>,以及聚合入口 <code class="inline">gox</code></td>
         </tr>
         <tr>
           <td>命令行子命令</td>
@@ -658,7 +659,7 @@ const data = await r2.json();</code></pre>
     <table class="props">
       <thead><tr><th>模块</th><th>导出数</th><th>管什么</th><th>平台</th></tr></thead>
       <tbody>
-        <tr><td><code class="inline">gox</code></td><td>52</td><td>聚合入口:下列 8 个模块导出的<strong>并集</strong></td><td>—</td></tr>
+        <tr><td><code class="inline">gox</code></td><td>139</td><td>聚合入口:下列 14 个模块导出的<strong>并集</strong></td><td>—</td></tr>
         <tr><td><code class="inline">gx/solid</code></td><td>8</td><td>响应式原语(信号 / 副作用 / 派生值 / 异步资源 / 生命周期)</td><td>全平台</td></tr>
         <tr><td><code class="inline">gx/gfx</code></td><td>7</td><td>元素树构造、窗口挂载、帧回调、补间动画、剪贴板、右键菜单</td><td>需要窗口后端</td></tr>
         <tr><td><code class="inline">gx/view</code></td><td>2</td><td>多分支条件(<code class="inline">Switch</code> / <code class="inline">Match</code>)</td><td>全平台</td></tr>
@@ -667,6 +668,12 @@ const data = await r2.json();</code></pre>
         <tr><td><code class="inline">gx/dialog</code></td><td>3</td><td>原生系统对话框</td><td><span class="badge win">仅 Windows 原生</span></td></tr>
         <tr><td><code class="inline">gx/storage</code></td><td>7</td><td>应用级键值持久化</td><td>全平台</td></tr>
         <tr><td><code class="inline">gx/dev</code></td><td>1</td><td>开发期只读快照(帧 / 缓存 / 树 / 警告)</td><td>全平台</td></tr>
+        <tr><td><code class="inline">gx/device</code></td><td>24</td><td>设备信息、电量、网络、震动、屏幕亮度与常亮、打开系统设置页</td><td>部分需宿主</td></tr>
+        <tr><td><code class="inline">gx/app</code></td><td>14</td><td>前后台状态、内存告警、返回键、分享、退出、屏幕方向</td><td>需宿主</td></tr>
+        <tr><td><code class="inline">gx/geo</code></td><td>10</td><td>定位(取一次 / 持续监听)、两点距离</td><td>需宿主;桌面报 unavailable</td></tr>
+        <tr><td><code class="inline">gx/media</code></td><td>8</td><td>拍照、选图 / 选视频、保存图片、预览</td><td>需宿主;桌面报 unsupported</td></tr>
+        <tr><td><code class="inline">gx/permission</code></td><td>10</td><td>权限查询 / 申请 / 打开应用设置页</td><td>需宿主</td></tr>
+        <tr><td><code class="inline">gx/viewport</code></td><td>21</td><td>安全区、软键盘、分屏与多窗口形态、宽度档</td><td>靠宿主上报</td></tr>
       </tbody>
     </table>
 
@@ -1129,6 +1136,143 @@ setInterval(() =&gt; {
   if (s.warnings.length) console.log("最近警告:", s.warnings[s.warnings.length - 1].text);
 }, 1000);</code></pre>
 
+    <h3 id="m-native">原生能力层 — gx/device · gx/app · gx/geo · gx/media · gx/permission · gx/viewport</h3>
+    <p>
+      六个模块(共 87 个导出)共用<strong>同一个宿主契约</strong>，不是六套机制。调用形态只有三种：
+      <strong>拉取型</strong>(同步读返回值)、<strong>动作型</strong>(<code class="inline">await</code>，失败 reject)、
+      <strong>上报型</strong>(宿主主动告知，<code class="inline">useXxx()</code> 响应式刷新)。
+    </p>
+    <pre class="code"><code data-lang="js">import { deviceInfo, battery, isOnline, canIUse } from "gx/device";
+import { getLocation, watchLocation } from "gx/geo";
+import { takePhoto } from "gx/media";
+
+console.log(deviceInfo().platform, battery().level, isOnline());   // 拉取型 / 上报型
+
+if (canIUse("camera")) {                     // 事前判断，不要靠 catch 兜底
+  const photo = await takePhoto({ count: 1 });
+}
+
+const stop = watchLocation((loc) =&gt; console.log(loc.latitude, loc.longitude));
+try {
+  await getLocation({ highAccuracy: true });
+} catch (e) {
+  if (e.errCode === "permission-denied") console.warn(e.message);
+}</code></pre>
+
+    <h4>缺能力时不软降级 —— 八个统一错误码</h4>
+    <table class="props">
+      <thead><tr><th>错误码</th><th>含义</th></tr></thead>
+      <tbody>
+        <tr><td><code class="inline">unsupported</code></td><td>宿主没实现这个能力—— <code class="inline">canIUse()</code> 会是 <code class="inline">false</code>，应该事前判断而不是靠 catch 兜底</td></tr>
+        <tr><td><code class="inline">permission-denied</code></td><td>用户或系统拒了权限(可提示去设置页开)</td></tr>
+        <tr><td><code class="inline">cancelled</code></td><td>用户在系统 UI 里主动取消 —— <strong>它不是失败</strong></td></tr>
+        <tr><td><code class="inline">timeout</code> / <code class="inline">busy</code> / <code class="inline">unavailable</code></td><td>宿主没回填 / 上一次还没结束 / 设备当前不可用(飞行模式下定位、没有相机硬件)</td></tr>
+        <tr><td><code class="inline">platform-error</code></td><td>原生侧报错，细节在 <code class="inline">errMsg</code> 里(不要解析，只用于显示)</td></tr>
+        <tr><td><code class="inline">invalid-arg</code></td><td>参数不合法(比如 <code class="inline">count</code> 为负)</td></tr>
+      </tbody>
+    </table>
+    <ul class="limits">
+      <li>异常对象同时带 <code class="inline">errCode</code>+<code class="inline">errMsg</code>(判断用)与 <code class="inline">name</code>+<code class="inline">message</code>(打印用)，都是普通对象(当 <code class="inline">Error</code> 用也能读 <code class="inline">.message</code>)。</li>
+      <li>拉取型对象名是 <code class="inline">&lt;能力&gt;.&lt;动作&gt;</code>(例如 <code class="inline">camera.takePhoto</code>)，能力 ID 就是第一个点之前那段 —— <code class="inline">canIUse</code> 的判据也是它。</li>
+    </ul>
+
+    <h4>gx/device — 设备信息与系统状态(24 个导出)</h4>
+    <pre class="code"><code data-lang="js">import {
+  deviceInfo, useDeviceInfo, deviceId,
+  battery, useBattery, isCharging, onBatteryChange, offBatteryChange,
+  network, useNetwork, isOnline, onNetworkChange, offNetworkChange,
+  vibrate, vibrateShort, vibrateLong,
+  keepScreenOn, getBrightness, setBrightness, openSystemSettings,
+  canIUse, capabilities, reportBattery, reportNetwork,
+} from "gx/device";</code></pre>
+    <table class="props">
+      <thead><tr><th>导出</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>deviceInfo() / useDeviceInfo() / deviceId()</td><td>平台 / 系统 / 机型 / 设备 ID / 区域 / 屏幕等;宿主未覆盖的字段取本机缺省值</td></tr>
+        <tr><td>battery() / useBattery() / isCharging()</td><td>电量与充电状态。<strong>上报型</strong> —— 没人上报时是 <code class="inline">&#123;supported: false&#125;</code> 这种明确的缺省值，不是错误</td></tr>
+        <tr><td>network() / useNetwork() / isOnline()</td><td>连接类型与在线状态;同为上报型</td></tr>
+        <tr><td>vibrate(ms?) / vibrateShort() / vibrateLong()</td><td>震动;桌面软降级(不报错)</td></tr>
+        <tr><td>keepScreenOn(on) / getBrightness() / setBrightness(v)</td><td>屏幕常亮开关、亮度读写</td></tr>
+        <tr><td>openSystemSettings(kind)</td><td>打开系统设置页;<code class="inline">kind</code> 词表共 11 项(含 <code class="inline">privacy</code>),桌面上 10 项有 URI 映射</td></tr>
+        <tr><td>canIUse(cap) / capabilities()</td><td>能力判断与清单。判据依次是“宿主声明过 → 有对应内置模块 → 有对应原生注册”，因此声明与实现不一致时会说谎</td></tr>
+        <tr><td>onBatteryChange / onNetworkChange(fn)</td><td>订阅变化,返回取消函数;<code class="inline">offXxx(fn)</code> 亦可</td></tr>
+        <tr><td>reportBattery(o) / reportNetwork(o)</td><td><strong>上报口</strong>(宿主 / 模拟器 / 测试):桌面没有真设备时靠它驱动响应式刷新</td></tr>
+      </tbody>
+    </table>
+
+    <h4>gx/app — 应用生命周期(14 个导出)</h4>
+    <pre class="code"><code data-lang="js">import {
+  appState, useAppState, onAppStateChange, offAppStateChange,
+  onMemoryWarning, offMemoryWarning, onBackPress, offBackPress,
+  share, exitApp, setOrientation,
+  reportAppState, reportMemoryWarning, reportBackPress,
+} from "gx/app";</code></pre>
+    <ul class="limits">
+      <li><code class="inline">appState()</code> / <code class="inline">useAppState()</code>:<code class="inline">"active"</code> / <code class="inline">"background"</code> / <code class="inline">"inactive"</code>(词表已归一化)。</li>
+      <li><code class="inline">onBackPress(fn)</code>:返回键。<strong>回调返回真值 = 已处理</strong>，宿主据此决定要不要关界面。</li>
+      <li><code class="inline">share(opts)</code> / <code class="inline">exitApp()</code> / <code class="inline">setOrientation(o)</code>:分享、退出、屏幕方向(桌面宿主未实现后者)。</li>
+      <li>三个 <code class="inline">reportXxx</code> 是上报口；<code class="inline">onBackPress</code> 在“脚本返回真值”与“宿主主动上报”两种通道下的优先级有专用用例锁住。</li>
+    </ul>
+
+    <h4>gx/geo — 定位(10 个导出)</h4>
+    <pre class="code"><code data-lang="js">import {
+  getLocation, watchLocation, clearWatch, clearAllWatches,
+  lastLocation, useLastLocation, hasLocation,
+  distanceBetween, locationPlatform, reportLocation,
+} from "gx/geo";</code></pre>
+    <ul class="limits">
+      <li><code class="inline">getLocation(opts)</code> 取一次，<code class="inline">watchLocation(fn)</code> 持续监听并返回停止函数(宿主进程级会话,<code class="inline">clearAllWatches()</code> 一次清完)。</li>
+      <li><code class="inline">lastLocation()</code> / <code class="inline">hasLocation()</code> 读最近一次得到的位置；<code class="inline">distanceBetween(a, b)</code> 走 haversine，返回米。</li>
+      <li>桌面上“没有定位”是<strong>诚实的缺失</strong>：<code class="inline">getLocation()</code> 报 <code class="inline">unavailable</code>，而不是编一个坐标出来。</li>
+    </ul>
+
+    <h4>gx/media — 相机与相册(8 个导出)</h4>
+    <pre class="code"><code data-lang="js">import {
+  takePhoto, chooseImage, chooseOneImage, chooseVideo,
+  saveImage, previewImage, mediaInfo, humanSize,
+} from "gx/media";</code></pre>
+    <ul class="limits">
+      <li><code class="inline">takePhoto(&#123;count&#125;)</code> / <code class="inline">chooseImage(&#123;count&#125;)</code> 多张时返回数组，<code class="inline">chooseOneImage()</code> 只要一张（返回单个对象）。</li>
+      <li>用户取消走 <code class="inline">cancelled</code> 错误码( 不是 <code class="inline">null</code> )，与 <code class="inline">gx/dialog.openFile</code> 的取消语义不同的原因在这里。</li>
+      <li><code class="inline">mediaInfo()</code> 列举当前平台可用的能力；<code class="inline">humanSize(bytes)</code> 是纯函数(字节数 → 可读字符串)。</li>
+    </ul>
+
+    <h4>gx/permission — 权限(10 个导出)</h4>
+    <pre class="code"><code data-lang="js">import {
+  checkPermission, authorize, requestPermissions, openAppSettings,
+  getSetting, permissionState, permissionKinds,
+  onPermissionChange, offPermissionChange, reportPermission,
+} from "gx/permission";</code></pre>
+    <ul class="limits">
+      <li><code class="inline">checkPermission(kind)</code> 查状态，<code class="inline">authorize(kind)</code> 申请单个，<code class="inline">requestPermissions(kinds)</code> 批量，<code class="inline">openAppSettings()</code> 跳到应用设置页。</li>
+      <li><code class="inline">permissionKinds()</code> 给出平台词表(宿主可报的权限类型)。</li>
+      <li><code class="inline">onPermissionChange(fn)</code> 订阅状态变化(用户去设置页开完回来会触发)。</li>
+    </ul>
+
+    <h4>gx/viewport — 安全区 / 键盘 / 分屏(21 个导出)</h4>
+    <pre class="code"><code data-lang="js">import {
+  viewport, useViewport, insets, useInsets,
+  keyboardHeight, useKeyboardHeight, keyboardVisible,
+  contentArea, safeAreaStyle,
+  widthClass, isCompactWidth, isTabletLayout,
+  multiWindow, useMultiWindow, isSplit, splitInfo,
+  onViewportChange, offViewportChange, reportViewport, resetViewport,
+  viewportModes,
+} from "gx/viewport";</code></pre>
+    <ul class="limits">
+      <li><strong>与 <code class="inline">gx/screen</code> 分工</strong>:前者答“我这台设备是什么样”(显示器 / 姿态 / 折痕)，后者答“我这个窗口被怎么摆”(安全区 / 键盘 / 分屏)。</li>
+      <li><code class="inline">insets()</code> / <code class="inline">keyboardHeight()</code> / <code class="inline">splitInfo()</code> 全部<strong>靠宿主上报</strong>，桌面拿不到这些值(默认全 0 / 非分屏)。</li>
+      <li><code class="inline">useInsets()</code> / <code class="inline">useViewport()</code> 同样<strong>返回取值函数</strong>，要再调一次。</li>
+      <li><code class="inline">safeAreaStyle(v, withKeyboard?)</code> 直接给出可用于 <code class="inline">padding</code> 的四边值；第二个参数为 <code class="inline">true</code> 时把键盘高度也算进下边距。</li>
+    </ul>
+
+    <h4>桌面上的行为(不要把它当移动端用)</h4>
+    <ul class="limits">
+      <li>能真实给出的就给真值:电量、网络、亮度、屏幕常亮、打开系统设置页、震动(软降级)。</li>
+      <li>给不出的一律明说:相机 / 定位 / 相册 / 权限<code class="inline">reject</code> 报 <code class="inline">unsupported</code> 或 <code class="inline">unavailable</code>，<strong>不返回假数据</strong>。</li>
+      <li>移动端接入时只需实现同一个宿主契约(新增能力 = 内核加一个方法名 + 宿主加一个分支)，<strong>不必改内核</strong>。语义与用法详见 <a href="https://github.com/14752222/Gox/blob/main/docs/gui-guide.md" target="_blank" rel="noopener">GUI 开发指南 §9.6</a>。</li>
+    </ul>
+
     <h3 id="m-pitfalls">模块层常见误用速查</h3>
     <table>
       <thead><tr><th>现象</th><th>原因与解法</th></tr></thead>
@@ -1271,7 +1415,7 @@ count = 2</code></pre>
         <tr><td>Node 特有</td><td><code class="inline">require</code>、<code class="inline">module</code>、<code class="inline">exports</code>、<code class="inline">__dirname</code>、<code class="inline">Buffer</code>、<code class="inline">process.nextTick</code>、<code class="inline">setImmediate</code>、<code class="inline">queueMicrotask</code></td></tr>
         <tr><td>Node 模块</td><td><code class="inline">stream</code>、<code class="inline">child_process</code>、<code class="inline">os</code>、<code class="inline">crypto</code>、<code class="inline">net</code>、<code class="inline">events</code>、<code class="inline">util</code>、<code class="inline">url</code>、<code class="inline">querystring</code></td></tr>
         <tr><td>响应式(需 import)</td><td><code class="inline">batch</code>、<code class="inline">createContext</code>、<code class="inline">useContext</code>、<code class="inline">createStore</code>(<code class="inline">untrack</code> 有,已在 <code class="inline">gx/solid</code> 里)</td></tr>
-        <tr><td>内置模块</td><td><code class="inline">gx/machine</code>、<code class="inline">gx/device</code>、<code class="inline">gx/kit</code>(状态机与设备能力仍是用户态模式;<code class="inline">gx/router</code> 与 <code class="inline">gx/screen</code> 已于 2026-09-21 落地,不再是缺口)</td></tr>
+        <tr><td>内置模块</td><td><code class="inline">gx/machine</code>、<code class="inline">gx/kit</code>(状态机仍是用户态模式;<code class="inline">gx/device</code> / <code class="inline">gx/app</code> / <code class="inline">gx/geo</code> / <code class="inline">gx/media</code> / <code class="inline">gx/permission</code> / <code class="inline">gx/viewport</code> 六个原生能力模块已于 2026-09-21 落地,<code class="inline">gx/router</code> 与 <code class="inline">gx/screen</code> 同批落地,均不再是缺口)</td></tr>
         <tr><td>模块里没有的</td><td><code class="inline">gx/gfx.alert</code>、<code class="inline">gx/gfx.confirm</code>、<code class="inline">gx/gfx.openFile</code>、<code class="inline">gx/view.each</code>、<code class="inline">gx/view.show</code>(前者去 <code class="inline">gx/dialog</code>,后者是元素级指令)</td></tr>
       </tbody>
     </table>
@@ -1304,7 +1448,7 @@ count = 2</code></pre>
 
 <footer class="site-footer">
   <div class="container footer-row">
-    <div>Gox v0.4.3 — Apache License 2.0 · 用 ❤ 和 Go 编写</div>
+    <div>Gox v0.5.0 — Apache License 2.0 · 用 ❤ 和 Go 编写</div>
     <div class="links">
       <a href="index.html">首页</a>
       <a href="guide.html">使用教程</a>

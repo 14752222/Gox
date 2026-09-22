@@ -14,7 +14,7 @@
   <div class="container nav">
     <a class="brand" href="index.html">
       <img class="brand-logo" src="assets/logo.png" alt="Gox" width="30" height="30">
-      Gox <span class="ver">v0.4.3</span>
+      Gox <span class="ver">v0.5.0</span>
     </a>
     <button class="nav-toggle" aria-label="菜单">☰</button>
     <ul class="nav-links">
@@ -1872,11 +1872,13 @@ setInterval(() =&gt; {
         <tr><td>剪贴板</td><td>✅</td><td>❌ 降级(读空串 / 写 false)</td><td>—</td></tr>
         <tr><td>原生对话框</td><td>✅</td><td>❌ 降级(confirm 取 true、openFile 取 null)</td><td>—</td></tr>
         <tr><td>字体</td><td>✅ 静态候选</td><td>✅ 惰性扫描字体目录,CJK 优先</td><td>—</td></tr>
+        <tr><td>原生能力(电量 / 网络 / 亮度 / 设置页)</td><td>✅ 走 win32 宿主</td><td>—</td><td>—</td></tr>
+        <tr><td>原生能力(相机 / 定位 / 相册 / 权限)</td><td>❌ 明说缺(报 unsupported)</td><td>—</td><td>—</td></tr>
       </tbody>
     </table>
 
     <div class="callout tip">
-      <b>完整演示脚本(共 40 个,都在仓库 testdata/ 下)</b>
+      <b>完整演示脚本(共 42 个,都在仓库 testdata/ 下)</b>
       <p>
         命令行里 <code class="inline">gox testdata/&lt;名字&gt;.js</code> 即可运行,例如
         <code class="inline">gox testdata/menu_demo.js</code>。
@@ -1886,7 +1888,7 @@ setInterval(() =&gt; {
         <li><strong>列表与条件</strong>:<code class="inline">view_demo.js</code>、<code class="inline">view_demo2.js</code>、<code class="inline">list_demo.js</code>、<code class="inline">tabs_demo.js</code>、<code class="inline">resource_demo.js</code></li>
         <li><strong>布局与样式</strong>:<code class="inline">grid_demo.js</code>、<code class="inline">elastic_layout_demo.js</code>、<code class="inline">model_demo.js</code>、<code class="inline">jsx_demo.js</code></li>
         <li><strong>交互与动画</strong>:<code class="inline">events_demo.js</code>、<code class="inline">focus_demo.js</code>、<code class="inline">hover_demo.js</code>、<code class="inline">transition_demo.js</code>、<code class="inline">resize_demo.js</code>、<code class="inline">clipboard_demo.js</code>、<code class="inline">ime_demo.js</code></li>
-        <li><strong>模块能力</strong>:<code class="inline">router_demo.js</code>(+ 懒加载模块 <code class="inline">router_page_detail.js</code>)、<code class="inline">router_window_demo.js</code>、<code class="inline">routing_demo.js</code>、<code class="inline">multiwindow_demo.js</code>、<code class="inline">storage_demo.js</code>、<code class="inline">dev_panel_demo.js</code>、<code class="inline">counter_demo.js</code>、<code class="inline">rx_demo.js</code>、<code class="inline">kit_demo.js</code>、<code class="inline">gui_demo.js</code></li>
+        <li><strong>模块能力</strong>:<code class="inline">router_demo.js</code>(+ 懒加载模块 <code class="inline">router_page_detail.js</code>)、<code class="inline">router_window_demo.js</code>、<code class="inline">routing_demo.js</code>、<code class="inline">multiwindow_demo.js</code>、<code class="inline">storage_demo.js</code>、<code class="inline">dev_panel_demo.js</code>、<code class="inline">native_demo.js</code>、<code class="inline">counter_demo.js</code>、<code class="inline">rx_demo.js</code>、<code class="inline">kit_demo.js</code>、<code class="inline">gui_demo.js</code></li>
       </ul>
       <p>另有 <code class="inline">routing_demo.js</code> 是不依赖 <code class="inline">gx/router</code> 的"用户态路由"写法(一个 signal + 页面表),适合三页以内的小工具对照着看。</p>
     </div>

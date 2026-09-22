@@ -14,7 +14,7 @@
   <div class="container nav">
     <a class="brand" href="index.html">
       <img class="brand-logo" src="assets/logo.png" alt="Gox" width="30" height="30">
-      Gox <span class="ver">v0.4.3</span>
+      Gox <span class="ver">v0.5.0</span>
     </a>
     <button class="nav-toggle" aria-label="菜单">☰</button>
     <ul class="nav-links">
@@ -182,7 +182,7 @@ Type :exit to quit, :help for help
         </tr>
         <tr>
           <td>内置模块<br><small>需 import</small></td>
-          <td><code class="inline">gx/solid</code> · <code class="inline">gx/gfx</code> · <code class="inline">gx/view</code> · <code class="inline">gx/router</code> · <code class="inline">gx/screen</code> · <code class="inline">gx/dialog</code> · <code class="inline">gx/storage</code> · <code class="inline">gx/dev</code>,以及聚合入口 <code class="inline">gox</code></td>
+          <td><code class="inline">gx/solid</code> · <code class="inline">gx/gfx</code> · <code class="inline">gx/view</code> · <code class="inline">gx/router</code> · <code class="inline">gx/screen</code> · <code class="inline">gx/dialog</code> · <code class="inline">gx/storage</code> · <code class="inline">gx/dev</code> · <code class="inline">gx/device</code> · <code class="inline">gx/app</code> · <code class="inline">gx/geo</code> · <code class="inline">gx/media</code> · <code class="inline">gx/permission</code> · <code class="inline">gx/viewport</code>,以及聚合入口 <code class="inline">gox</code></td>
           <td><a href="api.html#modules">API §7</a></td>
         </tr>
         <tr>
@@ -343,11 +343,15 @@ render(
   <div class="container">
     <div class="section-head">
       <h2>版本与现状</h2>
-      <p>当前版本 <code class="inline">0.4.3</code>。下面是最近几个版本真正加了什么,详细条目见 GitHub Releases。</p>
+      <p>当前版本 <code class="inline">0.5.0</code>。下面是最近几个版本真正加了什么,详细条目见 GitHub Releases。</p>
     </div>
     <table class="cap-table">
       <thead><tr><th>版本</th><th>内容</th></tr></thead>
       <tbody>
+        <tr>
+          <td><code class="inline">0.5.0</code></td>
+          <td>原生能力层:六个内置模块 <code class="inline">gx/device</code> · <code class="inline">gx/app</code> · <code class="inline">gx/geo</code> · <code class="inline">gx/media</code> · <code class="inline">gx/permission</code> · <code class="inline">gx/viewport</code>(共用一个宿主契约);<code class="inline">padding</code> 支持四边分别指定</td>
+        </tr>
         <tr>
           <td><code class="inline">0.4.0</code></td>
           <td>脚手架 <code class="inline">gox create</code>(并新增 <code class="inline">gox</code> 命令别名);路由 <code class="inline">gx/router</code> 与屏幕 <code class="inline">gx/screen</code> 成为内置模块</td>
@@ -368,7 +372,7 @@ render(
     </table>
     <div class="callout note">
       <b>已知缺口</b>
-      <p>macOS 的 GUI 后端尚未实现(CLI 不受影响);X11 后端已实现但未做实机验证;虚拟化长列表、表格、tooltip、图标、富文本等仍未封装。
+      <p>macOS 的 GUI 后端尚未实现(CLI 不受影响);X11 后端已实现但未做实机验证;虚拟化长列表、表格、tooltip、图标、富文本等仍未封装;原生能力层里依赖真机的部分(相机 / 定位 / 相册 / 权限)在桌面上诚实报 <code class="inline">unsupported</code>，需移动宿主实现。
         组件级的详细支持现状见<a href="components.html">组件参考</a>。</p>
     </div>
   </div>
@@ -392,7 +396,7 @@ render(
 
 <footer class="site-footer">
   <div class="container footer-row">
-    <div>Gox v0.4.3 — Apache License 2.0 · 用 ❤ 和 Go 编写</div>
+    <div>Gox v0.5.0 — Apache License 2.0 · 用 ❤ 和 Go 编写</div>
     <div class="links">
       <a href="guide.html">使用教程</a>
       <a href="components.html">组件参考</a>

@@ -77,7 +77,7 @@ render(
 > `<Show when={x} fallback={f}>…</Show>` → `<view show={x} fallback={f}>…</view>`。
 > `gx/view` 现在只导出 `Switch` / `Match`。
 
-GUI 示例（仓库 `testdata/` 下有 35+ 个可直接运行的演示）：
+GUI 示例（仓库 `testdata/` 下有 40+ 个可直接运行的演示）：
 
 ```bash
 goxjs testdata/view_demo2.js      # 列表复用 / 条件保活 / 多分支
@@ -136,6 +136,46 @@ Promise（`{ok:false, reason}` 表达被拦截）、`Alt+←` / `Alt+→` 后退
 > 通道而不猜姿态，没人上报就恒为平展屏。
 >
 > 完整手册：[`docs/gui-router.md`](https://github.com/14752222/Gox/blob/main/docs/gui-router.md)。
+
+## 原生能力层（`gx/device` · `gx/app` · `gx/geo` · `gx/media` · `gx/permission` · `gx/viewport`）
+
+**0.5.0 新增模块**：设备信息、电量、网络、定位、相机 / 相册、权限、安全区与软键盘 —— 六个模块
+共用一个宿主契约，调用形态只有三种：
+
+```js
+import { deviceInfo, battery, isOnline, canIUse } from "gx/device";   // 拉取型 + 上报型
+import { getLocation, watchLocation } from "gx/geo";
+import { takePhoto } from "gx/media";                                  // 动作型
+
+const info = deviceInfo();                    // 同步可得
+console.log(info.platform, info.model, battery().level + "%", isOnline());
+// battery() / isOnline() 读快照；useBattery() 返回取值函数，宿主上报时自动刷新
+
+if (canIUse("camera")) {                      // 事前判断能力，不要靠 catch 兜底
+  const photo = await takePhoto({ count: 1 });      // 失败会 reject，带 errCode
+}
+
+const stop = watchLocation((loc) => console.log(loc.latitude, loc.longitude));
+try {
+  await getLocation({ highAccuracy: true });
+} catch (e) {
+  if (e.errCode === "permission-denied") console.warn(e.message);
+}
+```
+
+- **三种形态**：拉取型（同步读）· 动作型（`await`，失败 reject）· 上报型（宿主主动告知，
+  `useXxx()` 响应式刷新）。
+- **缺能力不软降级**：动作型一律 reject，错误码共八个（`unsupported` / `permission-denied` /
+  `cancelled` / `timeout` / `busy` / `unavailable` / `platform-error` / `invalid-arg`），
+  先用 `canIUse()` 判断即可。只有纯上报型状态在没人上报时给明确的缺省值。
+- **桌面 vs 移动**：桌面后端实现能实现的部分（电量 / 网络 / 亮度 / 屏幕常亮 / 打开系统设置页），
+  给不出的一律诚实报 `unsupported`（不返回假数据）；移动端原生壳实现同一个 `NativeHost`
+  契约即可接入，不必改内核。
+- **`gx/screen` 与 `gx/viewport` 分工**：前者是设备（显示器 / 姿态 / 折痕），后者是窗口
+  （安全区 / 软键盘 / 分屏形态）。
+
+演示：`goxjs testdata/native_demo.js`。语义与导出表见
+[`docs/gui-guide.md` §9.6](https://github.com/14752222/Gox/blob/main/docs/gui-guide.md#96-原生能力层)。
 
 完整文档与语言示例见 [GitHub 仓库](https://github.com/14752222/Gox)。
 

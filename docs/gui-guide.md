@@ -77,6 +77,7 @@ render(
 | 剪贴板 | 支持 | 暂不支持 | 见 [9.2](#92-剪贴板) |
 | 原生对话框 | 支持 | 降级为写 stderr | 见 [9.1](#91-原生系统对话框) |
 | 菜单栏 / 右键菜单 | 支持 | 支持 | gfx **自绘**，不依赖系统菜单 API，三平台观感一致 |
+| 原生能力层<br>（`gx/device` · `app` · `geo` · `media` · `permission` · `viewport`） | 部分：电量 / 网络 / 亮度 / 屏幕常亮 / 打开系统设置页 / 震动（软降级）走宿主；相机 / 定位 / 相册 / 权限**诚实缺省** | 同 Windows 口径 | 见 [9.6](#96-原生能力层)。**没有的能力就报没有** —— 缺能力时异步 API 报 `unsupported`（先用 `canIUse` 判断），不返回假数据 |
 
 找不到可用字体时文字整体不渲染，错误里会给出候选条数与最后一个失败原因。
 
@@ -658,6 +659,69 @@ const wB = render(counter("Window B"), { title: "B", width: 320, height: 200 });
 示例：[testdata/multiwindow_demo.js](../testdata/multiwindow_demo.js)（开两个窗口各自计数，
 `File - Close window` / `Ctrl+Q` 关掉当前窗口，关一个另一个继续跑）。
 
+### 9.6 原生能力层
+
+六个模块（`gx/device` · `gx/app` · `gx/geo` · `gx/media` · `gx/permission` · `gx/viewport`）
+共用**同一个宿主契约**，不是六套机制：
+
+    gx/device      设备信息、电量、网络、震动、屏幕亮度与常亮、打开系统设置页
+    gx/app         前后台状态、内存告警、返回键、分享、退出、屏幕方向
+    gx/geo         定位（取一次 / 持续监听）、两点距离
+    gx/media       拍照、选图 / 选视频、保存图片、预览
+    gx/permission  权限查询 / 申请 / 打开应用设置页
+    gx/viewport    安全区 insets、软键盘高度、分屏与多窗口形态、宽度档
+
+**三种调用形态**是这一层的设计核心，示例脚本里各演示一遍：
+
+| 形态 | 例子 | 写法 |
+|---|---|---|
+| 拉取型（同步可得） | `deviceInfo()` | 直接读返回值 |
+| 动作型（要等用户 / 系统） | `takePhoto()` / `getLocation()` | `await`；失败 reject |
+| 上报型（宿主主动告知） | `battery()` / `useBattery()` | 同步读快照；`useXxx()` 返回**取值函数**，宿主上报时自动刷新 |
+
+```js
+import { deviceInfo, battery, canIUse } from "gx/device";
+import { getLocation } from "gx/geo";
+import { takePhoto } from "gx/media";
+
+console.log(deviceInfo().platform, battery().level);   // 拉取型 / 上报型
+
+if (canIUse("camera")) {            // ← 事前判断，而不是靠 catch 兜底
+  const photo = await takePhoto({ count: 1 });
+}
+
+try {
+  const loc = await getLocation({ highAccuracy: true });
+} catch (e) {
+  if (e.errCode === "permission-denied") console.warn(e.message);
+}
+```
+
+**错误码一共八个**（跨平台统一，平台差异被压进这几个词里）：`unsupported` /
+`permission-denied` / `cancelled` / `timeout` / `busy` / `unavailable` / `platform-error` /
+`invalid-arg`。异常对象同时带 `errCode`+`errMsg`（做判断用）与 `name`+`message`（直接打印用）。
+**`cancelled` 是用户主动取消，不是失败。**
+
+**缺能力时不软降级**：静默返回假数据会污染业务逻辑（你以为拍到了，其实没有）。所以动作型 API
+缺能力一律 reject（先用 `canIUse` 判断）；只有"纯上报型"状态（电池 / 网络 / 前后台 / 安全区）
+在没人上报时给**明确的缺省值**（`supported: false` / `connected: false` / insets 全 0），
+这与 `canIUse` 的结论一致。
+
+**桌面上的行为**：这一层主要为移动端设计。桌面上能真实给出的（电量、网络、亮度、屏幕常亮、
+打开设置页、震动软降级）就给真值；给不出的一律明说 —— 异步 API 报 `unsupported`。桌面**不实现**
+相机 / 定位 / 相册，也不瞎编。
+
+**`gx/screen` 与 `gx/viewport` 别混**：前者答"我这台设备是什么样"（显示器 / 姿态 / 折痕），
+后者答"我这个窗口被怎么摆"（安全区 / 键盘 / 分屏）。折叠屏展开后刘海在左上、折起来在顶部 ——
+同一台设备两种 insets，所以后者挂在**窗口**上。
+
+> 写宿主或做测试时才需要碰上报通道：`gfx.ReportBattery` / `ReportNetwork` / `ReportAppState` /
+> `ReportPermission` / `ReportLocation` / `ReportViewport`，在系统回调里调（GUI 线程），
+> 内核存快照并把环境版本 +1，脚本侧 `useXxx()` 跟着变 —— 与 `gx/screen` 的 `reportPosture`
+> 同一套机制。
+
+示例：[testdata/native_demo.js](../testdata/native_demo.js)（设备信息面板，三种形态各一遍）。
+
 ## 10. 调试
 
 `gx/dev` 提供运行时快照 `devSnapshot()`（帧统计 / 缓存命中 / 最近警告，可做调试面板）：
@@ -715,6 +779,7 @@ import { devSnapshot } from "gx/dev";
 | [dialog_native_demo.js](../testdata/dialog_native_demo.js) | 原生对话框：alert / confirm / 打开文件，全 async await |
 | [storage_demo.js](../testdata/storage_demo.js) | gx/storage 持久化读写 |
 | [dev_panel_demo.js](../testdata/dev_panel_demo.js) | gx/dev 调试面板：帧 / 缓存 / 树 / 警告 |
+| [native_demo.js](../testdata/native_demo.js) | 原生能力层（§9.6）：设备信息 / 电量 / 网络 / 定位 / 能力检测，拉取型·动作型·上报响应型三种形态 |
 
 **响应式与视图**
 

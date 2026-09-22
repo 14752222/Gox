@@ -14,7 +14,7 @@
   <div class="container nav">
     <a class="brand" href="index.html">
       <img class="brand-logo" src="assets/logo.png" alt="Gox" width="30" height="30">
-      Gox <span class="ver">v0.4.3</span>
+      Gox <span class="ver">v0.5.0</span>
     </a>
     <button class="nav-toggle" aria-label="菜单">☰</button>
     <ul class="nav-links">
@@ -574,7 +574,7 @@ render(
 
     <h3>内置模块速查:该 import 什么</h3>
     <p>
-      <code class="inline">gx/*</code> 是<strong>内置模块</strong>(优先于文件系统解析),一共 8 个细分模块,
+      <code class="inline">gx/*</code> 是<strong>内置模块</strong>(优先于文件系统解析),一共 14 个细分模块,
       外加一个把它们合起来的聚合入口 <code class="inline">gox</code>。应用代码可以一行拿常用的那批,
       库代码按细分模块导入更清楚 —— 两种写法指向的是同一份实现。
     </p>
@@ -589,11 +589,17 @@ render(
         <tr><td>原生消息框 / 选文件</td><td><code class="inline">import &#123; alert, confirm, openFile &#125; from "gx/dialog"</code></td></tr>
         <tr><td>本地持久化</td><td><code class="inline">import &#123; setAppName, setStorage, getStorage &#125; from "gx/storage"</code></td></tr>
         <tr><td>开发期调试面板</td><td><code class="inline">import &#123; devSnapshot &#125; from "gx/dev"</code></td></tr>
-        <tr><td>懒得记模块名</td><td><code class="inline">import &#123; h, render, createSignal, createRouter &#125; from "gox"</code>(上面 8 个的并集)</td></tr>
+        <tr><td>设备信息 / 电量 / 网络 / 震动 / 亮度</td><td><code class="inline">import &#123; deviceInfo, battery, isOnline, canIUse &#125; from "gx/device"</code></td></tr>
+        <tr><td>前后台 / 返回键 / 分享退出</td><td><code class="inline">import &#123; appState, onBackPress, share, exitApp &#125; from "gx/app"</code></td></tr>
+        <tr><td>定位</td><td><code class="inline">import &#123; getLocation, watchLocation &#125; from "gx/geo"</code></td></tr>
+        <tr><td>拍照 / 选图 / 选视频</td><td><code class="inline">import &#123; takePhoto, chooseImage, chooseVideo &#125; from "gx/media"</code></td></tr>
+        <tr><td>权限</td><td><code class="inline">import &#123; checkPermission, authorize, requestPermissions &#125; from "gx/permission"</code></td></tr>
+        <tr><td>安全区 / 软键盘 / 分屏</td><td><code class="inline">import &#123; insets, keyboardHeight, isSplit &#125; from "gx/viewport"</code></td></tr>
+        <tr><td>懒得记模块名</td><td><code class="inline">import &#123; h, render, createSignal, createRouter &#125; from "gox"</code>(上面 14 个的并集)</td></tr>
       </tbody>
     </table>
     <div class="callout warn">
-      <b>三个最容易记错的地方</b>
+      <b>四个最容易记错的地方</b>
       <p>
         <strong>①</strong> <code class="inline">alert</code> / <code class="inline">confirm</code> /
         <code class="inline">openFile</code> 在 <strong><code class="inline">gx/dialog</code></strong>,
@@ -602,7 +608,8 @@ render(
         <code class="inline">model</code> 是<strong>元素级指令</strong>,写在元素上、<strong>不需要 import</strong>;
         <code class="inline">gx/view</code> 只导出 <code class="inline">Switch</code> 与 <code class="inline">Match</code>。<br>
         <strong>③</strong> <code class="inline">gx/screen</code> 的 <code class="inline">useXxx</code>
-        <strong>返回取值函数</strong>,要再调一次:<code class="inline">const r = usePosture(); r()</code>。
+        <strong>返回取值函数</strong>,要再调一次:<code class="inline">const r = usePosture(); r()</code>。<br>
+        <strong>④</strong> 原生能力模块的 <code class="inline">useBattery()</code> / <code class="inline">useInsets()</code> 同样<strong>返回取值函数</strong>;动作型 API(拍照 / 定位)缺能力时<strong>会 reject</strong>,先用 <code class="inline">canIUse("camera")</code> 判断。
       </p>
       <p>逐个导出、签名与调用约定见 <a href="api.html#modules">API 参考 · 内置模块 gx/*</a>。</p>
     </div>
@@ -671,7 +678,7 @@ const theme = getStorage("theme") ?? "light";   // 不存在返回 undefined,没
       表单 <code class="inline">form_demo.js</code>、菜单 <code class="inline">menu_demo.js</code>、
       画布 <code class="inline">canvas_demo.js</code>、滑动条 <code class="inline">slider_demo.js</code>、
       多窗口 <code class="inline">multiwindow_demo.js</code>、路由 <code class="inline">router_demo.js</code> 等
-      <strong>40 个</strong>演示脚本,每个都可直接 <code class="inline">gox testdata/xxx_demo.js</code> 运行。</p>
+      <strong>42 个</strong>演示脚本,每个都可直接 <code class="inline">gox testdata/xxx_demo.js</code> 运行。</p>
 
     <h2 id="package"><span class="step-num">11</span>打包成独立可执行文件</h2>
 
@@ -739,7 +746,7 @@ go run ./packager -h   # 打包器用法</code></pre>
 
 <footer class="site-footer">
   <div class="container footer-row">
-    <div>Gox v0.4.3 — Apache License 2.0 · 用 ❤ 和 Go 编写</div>
+    <div>Gox v0.5.0 — Apache License 2.0 · 用 ❤ 和 Go 编写</div>
     <div class="links">
       <a href="index.html">首页</a>
       <a href="guide.html">使用教程</a>
