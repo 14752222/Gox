@@ -26,16 +26,45 @@ func Layout(root *GuiNode, w, h int) {
 	layoutNode(root)
 }
 
-// inner 返回节点内容区 (减去 padding)。
-func inner(n *GuiNode) Rect {
-	pad, _ := n.PropNum("padding")
-	if pad < 0 {
-		pad = 0
+// paddingOf 读节点四边的内边距 (像素, 非负)。
+//
+// 语义: 统一的 `padding` 是**基准值**, 四边的 paddingTop/Right/Bottom/Left 在它
+// 之上做**覆盖** (给了哪边就用哪边, 没给就跟随 padding)。所以
+// `padding={12} paddingTop={40}` 得到的是 上 40 / 其余 12 —— 这正是安全区
+// (`safeAreaStyle()`) 需要的形态: 应用写的是"通用内边距", 只有被状态栏/刘海
+// 压住的那一边需要额外让开。
+//
+// 为什么不做成"四边相加": 相加会让 `padding={12} paddingTop={40}` 变成 52 ——
+// 一个谁都想不到的数字, 而且没有任何一处能解释它。覆盖语义与 CSS 的
+// padding vs padding-top 直觉一致。
+//
+// 返回值取 int 而不是 float64: 像素是整数, 且历史上这个包的四则运算里
+// float 反复被误当成 int 用 (见 raster.go 的历史记录)。
+func paddingOf(n *GuiNode) (top, right, bottom, left int) {
+	base, _ := n.PropNum("padding")
+	if base < 0 {
+		base = 0
 	}
-	p := int(pad)
+	p := int(base)
+	side := func(name string) int {
+		v, ok := n.PropNum(name)
+		if !ok {
+			return p
+		}
+		if v < 0 {
+			return 0
+		}
+		return int(v)
+	}
+	return side("paddingTop"), side("paddingRight"), side("paddingBottom"), side("paddingLeft")
+}
+
+// inner 返回节点内容区 (减去四边内边距)。
+func inner(n *GuiNode) Rect {
+	t, r, b, l := paddingOf(n)
 	return Rect{
-		X: n.Box.X + p, Y: n.Box.Y + p,
-		W: n.Box.W - 2*p, H: n.Box.H - 2*p,
+		X: n.Box.X + l, Y: n.Box.Y + t,
+		W: n.Box.W - l - r, H: n.Box.H - t - b,
 	}
 }
 
@@ -453,11 +482,7 @@ func (n *GuiNode) contentSize() (w, h int) {
 // column/row 容器与多子 slot (列表渲染) 共用同一套算法。
 // 绝对定位/弹层子节点不参与: 它们不占位, 不能把容器撑大。
 func stackContentSize(n *GuiNode, horizontal bool) (w, h int) {
-	pad, _ := n.PropNum("padding")
-	p := int(pad)
-	if p < 0 {
-		p = 0
-	}
+	pt, pr, pb, pl := paddingOf(n)
 	g := n.gapOf()
 	var contentMain, contentCross int
 	placed := 0
@@ -484,9 +509,9 @@ func stackContentSize(n *GuiNode, horizontal bool) (w, h int) {
 		}
 	}
 	if horizontal {
-		return contentMain + 2*p, contentCross + 2*p
+		return contentMain + pl + pr, contentCross + pt + pb
 	}
-	return contentCross + 2*p, contentMain + 2*p
+	return contentCross + pl + pr, contentMain + pt + pb
 }
 
 // placeAbsoluteIn 摆放容器内"脱离常规流"的直系子节点 (P2-2):
@@ -771,11 +796,7 @@ func (n *GuiNode) gridColumns() int {
 // gridContentSize 网格的固有尺寸: 列宽/行高按内容轨道取最大者 (百分比子节点
 // 在固有口径下贡献 0, 与栈容器一致)。
 func gridContentSize(n *GuiNode) (w, h int) {
-	pad, _ := n.PropNum("padding")
-	p := int(pad)
-	if p < 0 {
-		p = 0
-	}
+	pt, pr, pb, pl := paddingOf(n)
 	g := n.gapOf()
 	cols := n.gridColumns()
 	colW := make([]int, cols)
@@ -806,7 +827,7 @@ func gridContentSize(n *GuiNode) (w, h int) {
 	for _, rh := range rowH {
 		h += rh
 	}
-	return w + 2*p, h + 2*p
+	return w + pl + pr, h + pt + pb
 }
 
 // layoutGrid 布局网格容器。
@@ -993,15 +1014,11 @@ func wrapStackCrossTotal(n *GuiNode, mainAvailable int) int {
 	if mainAvailable <= 0 {
 		return 0
 	}
-	pad, _ := n.PropNum("padding")
-	p := int(pad)
-	if p < 0 {
-		p = 0
-	}
+	pt, pr, pb, pl := paddingOf(n)
 	g := n.gapOf()
 	// 测量遍: areaH 传 0 (真实高度正是要求的量) —— 百分比高的子节点按
 	// 固有值 (通常 0) 计, 放置遍才按容器盒解析, 已知偏差记录在案。
-	lines := wrapLines(wrapCollect(n, mainAvailable-2*p, 0), g, mainAvailable-2*p)
+	lines := wrapLines(wrapCollect(n, mainAvailable-pl-pr, 0), g, mainAvailable-pl-pr)
 	total := 0
 	for li, line := range lines {
 		if li > 0 {
@@ -1015,7 +1032,7 @@ func wrapStackCrossTotal(n *GuiNode, mainAvailable int) int {
 		}
 		total += lineCross
 	}
-	return total + 2*p
+	return total + pt + pb
 }
 
 // layoutWrapStack 布局折行容器 (仅 row 派发到这里)。
