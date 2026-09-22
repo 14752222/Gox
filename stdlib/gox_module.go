@@ -37,9 +37,18 @@ func setupGoxUmbrella(env *runtime.Environment) {
 			"gx/view",
 			"gx/router",
 			"gx/screen",
+			"gx/viewport",
 			"gx/dialog",
 			"gx/storage",
 			"gx/dev",
+			// 统一应用能力层 (2026-09-21): 设备/生命周期/定位/媒体/权限。
+			// 五者都只依赖 NativeHost 契约 (gfx/native.go), 无头宿主里
+			// 它们照常存在 —— 只是 canIUse 全 false、异步 API 报 unsupported。
+			"gx/device",
+			"gx/app",
+			"gx/geo",
+			"gx/media",
+			"gx/permission",
 		}
 		merged := map[string]object.Value{}
 		for _, name := range submodules {
