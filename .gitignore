@@ -37,10 +37,11 @@ go.work.sum
 # Mimosa 安全扫描产物
 .mimosa/
 
-# npm 打包产物：tgz 是 npm pack 的产物，另两个是本地手工发版的辅助文件
+# npm 打包产物：tgz 是 npm pack 在包目录里留下的文件。
+# （0.1.0 时代那两个本地手工发版辅助脚本 publish-*.bat / fix-tarball-modes.py
+#   已于 2026-09-22 删除 —— 现在只走 .github/workflows/release.yml 的 OIDC 发布，
+#   Windows 上 pack 会丢 POSIX 权限位的问题在 Linux CI 上不存在。）
 npm/*.tgz
-npm/publish-*.bat
-npm/fix-tarball-modes.py
 _commitmsg.txt
 
 # WorkBuddy 内部工作笔记（逐日日志、MEMORY.md、gfx-invariants 等）—— 不对外公开。
