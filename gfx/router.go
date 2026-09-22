@@ -217,6 +217,10 @@ type router struct {
 	// 的环境版本分开: 姿态变化走环境版本, 而"脚本自己要求重排"与显示器无关。
 	revGet object.Value
 	revSet object.Value
+	// rev 是 revGet 的当前版本号。每次 bump 都必须**换一个新身份**再发 ——
+	// signal setter 按严格相等判重, 复用同一个值对象会让第二次及以后的 bump
+	// 被静默丢弃 (见 bumpRevSignal)。
+	rev int
 	// initJS 是"还没有任何会话"时 currentRoute() 的读数 (见 initialSnapshot)
 	initJS object.Value
 
@@ -1377,9 +1381,17 @@ func (r *router) addHook(list *[]object.Value, args []object.Value, name string)
 // bumpRevSignal 只抬版本号 (通知订阅者重算), 不主动触发视图重绘 ——
 // 视图自己会经会话的 signal 收到通知, 这里再来一次就是多余的重排。
 func (r *router) bumpRevSignal() {
-	if r.revSet != nil {
-		object.CallFunction(r.revSet, nil, object.NewNumber(1))
+	if r.revSet == nil {
+		return
 	}
+	// 版本号必须**每次都换新身份**。signal 的 setter 按严格相等判重, 而
+	// NewNumber(1) 命中小整数缓存 (object/number.go), 每次返回的是同一个
+	// 指针 —— 传它的话第二次 bump 起就被静默判重丢弃, 订阅了 revGet 的
+	// effect 只在第一次导航时醒一次。症状实例: RouterLink 的
+	// activeBackground 高亮冻在首帧 (2026-09-22 脚手架冒烟实测)。
+	// 单调递增保证相邻两次值恒不同 (缓存指针不同), >256 后走新分配。
+	r.rev++
+	object.CallFunction(r.revSet, nil, object.NewNumber(float64(r.rev)))
 }
 
 // bumpRevision 抬高视图重算信号 (router.rebuild: 脚本主动要求全量重排,

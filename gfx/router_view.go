@@ -965,6 +965,14 @@ func jsRouterLink(args ...object.Value) object.Value {
 		node.wireProp("background", object.NewBuiltin("active-bg", func(args ...object.Value) object.Value {
 			// create=false: 这个取值函数会在 h() 阶段就被 effect 立刻求值一次,
 			// 若它顺手建会话, 每个应用都会凭空多出一个没人用的 "default" 作用域。
+			//
+			// 必须先订阅 router 版本号 (与 jsCurrentRoute 记的是同一笔账):
+			// isActive 走 current() 的纯 Go 读栈, 不碰任何 signal —— 不订阅的话
+			// 本 effect 没有依赖, 只在接线时跑一次, 高亮从此冻在第一帧
+			// (2026-09-22 脚手架冒烟实测: 活动页签永远不亮, 三个页签全是底色)。
+			if r.revGet != nil {
+				object.CallFunction(r.revGet, nil)
+			}
 			s := linkSessionForNode(r, node, scope, false)
 			if s != nil && s.isActive(to) {
 				return ab
