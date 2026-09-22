@@ -104,3 +104,31 @@ func TestJSXAutoImportSurvivesFullPipeline(t *testing.T) {
 		t.Fatalf("带元素级指令的 JSX 也应能自动补工厂并编译通过: %v", err)
 	}
 }
+
+// TestJSXAutoImportWorksInModuleMode 模块模式 (带 import/export 的模块, 顶层绑定走
+// 局部 slot 而不是共享全局) 是编译导入的另一条分支 —— 这条也得走得通,
+// 否则脚手架那种多文件工程里"忘了 import h"仍然会挂。
+func TestJSXAutoImportWorksInModuleMode(t *testing.T) {
+	p := parser.New(lexer.New(`export function App() { return <column><text>hi</text></column>; }`))
+	program := p.ParseProgram()
+	if p.Errors().HasErrors() {
+		t.Fatalf("parser errors: %s", p.Errors().String())
+	}
+	if !program.UsesJSX {
+		t.Fatal("函数体里的 JSX 也该置上 UsesJSX")
+	}
+	c := New()
+	c.SetModuleMode(true)
+	if err := c.Compile(program); err != nil {
+		t.Fatalf("模块模式下应能自动补工厂并编译通过: %v", err)
+	}
+	got := []string{}
+	for i := 0; i < c.Constants().Len(); i++ {
+		if s, ok := c.Constants().Get(uint16(i)).(*object.String); ok {
+			got = append(got, s.Value)
+		}
+	}
+	if !hasConstant(got, jsxFactoryModule) {
+		t.Fatalf("模块模式下也该补 %q: %v", jsxFactoryModule, got)
+	}
+}
