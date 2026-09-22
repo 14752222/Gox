@@ -58,28 +58,33 @@ func TestScaffoldTemplateProject(t *testing.T) {
 		}
 	}
 
-	// ---- show 是 keep-alive + **懒构建**: 没显示过的分支根本还没建 ----
+	// ---- 路由是懒构建 + keepAlive: 没去过的页面根本还没建 ----
 	//
-	// 这条断言同时是"待办面板确实懒构建"的凭据, 也是下面必须先切页签的原因。
+	// 这条断言同时是"待办页面确实懒构建"的凭据, 也是下面必须先切页签的原因。
+	// (路由记录 keepAlive: true 与原 show 指令的 keep-alive 同义 —— 离开只是把
+	// 子树摘出布局流, 页面内的局部状态保活。)
 	for _, tag := range []string{"input", "scroll", "checkbox"} {
 		if n := countTag(root, tag); n != 0 {
-			t.Errorf("待办面板还没显示过, 却已经建出了 %d 个 <%s>（懒构建失效?）", n, tag)
+			t.Errorf("待办页面还没去过, 却已经建出了 %d 个 <%s>（懒构建失效?）", n, tag)
 		}
 	}
 
-	// ---- 响应式接线: 这部分防的是本工程最常见的坑 ----
+	// ---- 页签 = RouterLink, 用 __routeTo 内省属性定位 ----
 	//
-	// 把 getter 写成快照（background={colors.accent} 而不是 () => ...）时,
-	// 挂载、布局、首帧全都正常, 只是之后永远不再更新 —— 属于"看着能跑"的错误。
-	// 接线成功的节点会留下 effect（node.go 的 reactiveProp）, 所以这里能直接断它。
-	for _, label := range []string{"计数器", "待办列表", "状态"} {
-		btn := buttonByLabel(root, label)
-		if btn == nil {
-			t.Fatalf("找不到页签按钮 %q", label)
+	// (gfx/router_view.go 给每个链接都写了这个属性, 注释里明确说"测试按它定位链接"。)
+	// 响应式接线防的还是本工程最常见的坑: 把 getter 写成快照（background={colors.accent}
+	// 而不是 () => ...）时, 挂载、布局、首帧全都正常, 只是之后永远不再更新 —— 属于
+	// "看着能跑"的错误。接线成功的节点会留下 effect（node.go 的 reactiveProp）。
+	links := map[string]*GuiNode{}
+	for _, path := range []string{"/", "/todos", "/status"} {
+		lnk := routerLinkByPath(root, path)
+		if lnk == nil {
+			t.Fatalf("找不到指向 %q 的 RouterLink", path)
 		}
-		if len(btn.effects) == 0 {
-			t.Errorf("页签按钮 %q 没有响应式接线（background / color 大概写成快照了）", label)
+		if len(lnk.effects) == 0 {
+			t.Errorf("页签链接 %q 没有响应式接线（activeBackground / color 大概写成快照了）", path)
 		}
+		links[path] = lnk
 	}
 	if sl := findFirst(root, "slider"); sl == nil || len(sl.effects) == 0 {
 		t.Error("滑块没有响应式接线（value 大概写成快照了）")
@@ -100,14 +105,12 @@ func TestScaffoldTemplateProject(t *testing.T) {
 	// 且每个 pump 轮次只消费一个唤醒 token —— 一轮里连投多个会让 push 永久阻塞,
 	// 整个用例挂到 "panic: test timed out"。只为断言的轮次也补一个无害唤醒
 	// （EventMouseLeave 语义上幂等）, 否则泵会白等到 wait 上限。
-	tabBtn := buttonByLabel(root, "待办列表")
-	if tabBtn == nil {
-		t.Fatal("找不到待办页签按钮")
-	}
+	tabBtn := links["/todos"]
 	var (
 		tabX, tabY, cbX, cbY int
 		before, after        string
 		panelChecked         bool
+		activeBG, idleBG     string
 	)
 
 	steps := []func(){
@@ -116,12 +119,26 @@ func TestScaffoldTemplateProject(t *testing.T) {
 		func() { fake.push(Event{Kind: EventMouseLeave}) },
 		// 2-3: 点待办页签（按下 / 抬起）
 		func() {
+			// 切页前记下两个页签的背景色: 下面要用它们断言"高亮跟着路由走"。
+			// 回归背景: bumpRevSignal 曾把小整数缓存的同一个 *Number 指针反复
+			// 发给 signal, 第二次起被按身份判重丢弃 —— activeBackground 冻在首帧。
+			activeBG = propString(links["/"], "background")
+			idleBG = propString(links["/todos"], "background")
+			if activeBG == "" || activeBG == idleBG {
+				t.Errorf("初始高亮没点亮: 活动页签背景 %q, 非活动页签背景 %q", activeBG, idleBG)
+			}
 			tabX, tabY = centerOf(tabBtn)
 			fake.push(Event{Kind: EventMouseDown, X: tabX, Y: tabY})
 		},
 		func() { fake.push(Event{Kind: EventMouseUp, X: tabX, Y: tabY}) },
-		// 4: 上一轮的重绘已落地 ⇒ 断言面板被懒构建出来了
+		// 4: 上一轮的重绘已落地 ⇒ 断言高亮随路由迁移 + 面板被懒构建出来了
 		func() {
+			if got := propString(links["/"], "background"); got != idleBG {
+				t.Errorf("切页后计数器页签没有回到非活动色: got %q want %q", got, idleBG)
+			}
+			if got := propString(links["/todos"], "background"); got != activeBG {
+				t.Errorf("切页后待办页签没有点亮: got %q want %q", got, activeBG)
+			}
 			if n := countTag(root, "checkbox"); n != 3 {
 				t.Errorf("切到待办页签后 checkbox 数 = %d, 期望 3（each 指令没展开?）", n)
 			}
@@ -190,11 +207,24 @@ func centerOf(n *GuiNode) (int, int) {
 	return n.Box.X + n.Box.W/2, n.Box.Y + n.Box.H/2
 }
 
-// buttonByLabel 按按钮里的文本找按钮（模板里按钮的可见文字就是它的身份）。
-func buttonByLabel(root *GuiNode, label string) *GuiNode {
+// routerLinkByPath 按 __routeTo 找 RouterLink（gfx/router_view.go 给每个链接
+// 写了这个内省属性, 注释里明确说"测试按它定位链接"）。
+func routerLinkByPath(root *GuiNode, path string) *GuiNode {
 	return findFirstWhere(root, func(n *GuiNode) bool {
-		return n.Tag == "button" && nodeText(n) == label
+		if n.Tag != "view" {
+			return false
+		}
+		s, ok := n.Props["__routeTo"].(*object.String)
+		return ok && s.Value == path
 	})
+}
+
+// propString 读节点 props 里的字符串值（响应式 prop 每次求值的结果都写在 Props 上）。
+func propString(n *GuiNode, name string) string {
+	if s, ok := n.Props[name].(*object.String); ok {
+		return s.Value
+	}
+	return ""
 }
 
 // nodeText 拼出子树里所有 #text 的内容。

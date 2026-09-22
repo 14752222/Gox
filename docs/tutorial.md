@@ -387,17 +387,17 @@ gox my-app/src/main.js
 ```
 my-app/
 ├── package.json          # 元信息 + dev/start 两个脚本 (devDependencies: @goxjs/goxjs)
-├── README.md             # 工程说明 + 四条最容易踩的坑
+├── README.md             # 工程说明 + 五条最容易踩的坑
 ├── .gitignore            # node_modules / dist / *.exe
 └── src/
     ├── main.js           # 入口: 建窗口 + 挂根组件 (render(<window ...><App/></window>))
-    ├── app.js            # 根组件: 页签 + 面板组合 (演示 show 指令 = keep-alive 显隐)
+    ├── app.js            # 根组件: 路由表 + 页签(RouterLink) + 页面出口(RouterView)
     ├── store.js          # 共享状态: signal 建在模块作用域, 组件读它就订阅
     ├── theme.js          # 设计令牌: 颜色 / 间距 / 字号
     └── components/
         ├── counter.js     # 局部状态 + 受控滑块 (响应式 prop 要传函数)
         ├── todo-list.js   # <view each={todos} key="id"> + <input model={draft} />
-        └── status-bar.js  # 派生值 + Switch / Match 多分支
+        └── status-bar.js  # 派生值 + Switch / Match 多分支 + useRoute 读本页路由
 ```
 
 生成后 `make it yours` 的推荐改动顺序: `src/theme.js` 换配色 → `src/app.js` 减页签 →
