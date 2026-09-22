@@ -12,6 +12,8 @@
 //
 // For / Show / Switch / Match 的用法一个字都没变 —— 这条指令只作用于受控组件本身
 // (它的每一次读写在界面上都看得见: 第 ③ 行 state 是全部绑定的投影)。
+// 注: For / Show 自 2026-09-20 起改为元素级指令 each / show (不再是模块导出),
+// 见 docs/gui-guide.md §8.2; Switch / Match 仍是 gx/view 导出的组件。
 //
 // 语义表 (每个标签一行, 没有例外):
 //   input · textarea    model ⇄ value      onInput({value})   字符串
@@ -20,7 +22,7 @@
 //   checkbox · switch   model ⇄ checked    onClick()          布尔 (写入取反)
 //   radio               model ⇄ checked    onClick()          选中时把 value 属性写进 model
 //   model 可传: signal (自带 setter) 或 [get, set] 二元组 (自定义来源)
-import { h, render, createSignal, For, Show, Switch, Match } from "gox";
+import { h, render, createSignal, Switch, Match } from "gox";
 
 // ===== 状态 (界面全部派生自这几个 signal, 不存第二份) =====
 

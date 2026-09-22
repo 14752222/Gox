@@ -19,7 +19,13 @@ import (
 //
 // 约定:
 //   - 小写开头的标签降级为字符串; 大写开头视为组件, 降级为作用域内的
-//     标识符引用 (词法解析, 引擎不做任何自动注入)。
+//     标识符引用 (词法解析 —— 组件的**绑定**不自动注入, 只有下面说的
+//     JSX 工厂 h 例外)。
+//   - 元素标签用到的工厂名恒为 `h`。若本文件没有绑定 h, compiler 会自动补
+//     一条 `import { h } from "gx/gfx"` (ast.Program.UsesJSX 这个标记就是
+//     为此留的) —— 于是"用了 JSX 却忘了 import h"不再是一次挂载期崩溃
+//     (ReferenceError: h is not defined), 而是照常出窗口。本文件已绑定 h
+//     (import / let / const / function ...) 时一个字节都不动: 自定义工厂优先。
 //   - 属性名含 - 或 : 时用字符串键 (data-id), 否则用标识符键。
 //   - 无属性时第二个参数传 null。
 //   - 子节点按出现顺序作为 h 的后续参数; 函数子节点原样传递不求值
@@ -43,6 +49,14 @@ func (p *Parser) parseJSXElement() ast.Expression {
 	p.nextToken() // cur = 标签名
 	nameTok := p.curToken()
 	p.nextToken() // cur = 第一个属性名 / GT / JSX_SELF_CLOSE
+
+	// 小写标签 (元素) 要降级成 h(...) 调用 ⇒ 本文件必须有一个 h 在作用域里。
+	// 记下来是为了让 compiler 在缺 h 时自动补 `import { h } from "gx/gfx"`,
+	// 而不是等到挂载那一刻才 ReferenceError (见 buildJSXCall 的说明)。
+	// 大写标签 (<Counter/>) 只是组件调用, 不需要 h。
+	if jsxDesugarsToFactory(nameTok) {
+		p.usedJSXFactory = true
+	}
 
 	// ---- 属性区 ----
 	props := []*ast.Property{}
@@ -192,6 +206,14 @@ func jsxTagArg(nameTok lexer.Token) ast.Expression {
 		return &ast.Identifier{Token: nameTok, Value: name}
 	}
 	return &ast.StringLiteral{Token: nameTok, Value: name}
+}
+
+// jsxDesugarsToFactory 报告一个标签是否会降级成 h(...) 调用:
+// 小写开头的是元素 (走 h), 大写开头的是组件 (直接调用标识符)。
+// 与 buildJSXCall 同源 (都从 jsxTagArg 的返回值判类型), 不重复分类规则。
+func jsxDesugarsToFactory(nameTok lexer.Token) bool {
+	_, isComponent := jsxTagArg(nameTok).(*ast.Identifier)
+	return !isComponent
 }
 
 // jsxPropKey 生成属性键。本引擎的对象属性键统一用 Identifier 承载,

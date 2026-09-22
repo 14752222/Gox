@@ -363,9 +363,10 @@ router.unsync();                              // 清掉全部同步组
 | `useScreen(win?)` | 上面这个的响应式取值函数 |
 | `windowInfo(win?)` | `{width,height,scale,screenWidth,screenHeight,workWidth,workHeight,screenId,platform}` |
 | `useWindowInfo(win?)` | 同上，响应式 |
-| `posture(win?)` / `usePosture(win?)` | 折叠姿态：`"flat"` / `"half-open"` / `"folded"` / `"unknown"` |
-| `hinge(win?)` | 折痕矩形 `{x,y,width,height,orientation}`，无则 `null` |
-| `regions(win?)` | 折叠分段面板 |
+| `posture(win?)` | 折叠姿态（**字符串**）：`"flat"` / `"half-open"` / `"folded"` / `"unknown"` |
+| `usePosture(win?)` | 上面这个的**响应式**版 —— 返回的是取值函数，要 `const r = usePosture(); r()` 才是值；只要"此刻的值"就用 `posture(win?)`。别把它直接当字符串比（`usePosture() === "half-open"` 永远为 false，且不报错） |
+| `hinge(win?)` | 折痕矩形 `{x,y,width,height,orientation}`，无则 `null`。**注意是 `width/height`**：直接回填给 `reportPosture` 也认（两种拼法都行，见 §9.2） |
+| `regions(win?)` | 折叠分段面板（`{id,x,y,width,height}`） |
 | `platform()` | `"win32"` / `"x11"` / `"cocoa"` / `"headless"` |
 | `reportPosture(opts)` | **宿主/模拟器上报**姿态（见 §9.2） |
 | `resetDisplays()` | 撤销全部上报，交还给后端枚举 |
@@ -408,6 +409,20 @@ reportPosture({
 - **折痕不随姿态清除**：宿主常见写法是"只改姿态"，所以 `{posture:"flat"}` 之后
   折痕/尺寸都记得，再折回来比例不变。
 - 一旦上报过，那张表就是权威；`resetDisplays()` 交还给后端枚举。
+- **尺寸两种拼法都认**（2026-09-22 起）：`hinge` / `regions` 里写 `w`/`h` 或
+  `width`/`height` 都行（同时给时短名优先）。这条是为了让"反手回填"能直接用：
+  `hinge()` / `regions()` 的输出用 `width/height`，而这里历史上只读 `w/h` ——
+  于是 `reportPosture({ hinge: hinge() })` 会把折痕宽度**静默**读成 0（只影响分栏
+  比例，什么都不报，症状是"折痕宽度读出来是 0"）。
+
+**双栏不生效时的三步排查**（顺序别换，一步排除一类原因）：
+
+```js
+import { posture, screenOf } from "gx/screen";
+posture(win);        // ① 姿态是不是 "half-open"? 是 "flat" ⇒ 没人上报 (§9.2)
+screenOf(win).foldable; // ② 这块屏是不是折叠屏? 上报姿态时不带 foldable 也会自动置 true
+                     // ③ 都不是 ⇒ 看路由记录: dualPane:false / 页签没进双栏 (§9.3)
+```
 
 ### 9.3 折叠态下的路由：双栏
 
@@ -465,7 +480,9 @@ reportPosture({
 | 页面一片空白，控制台什么都没有 | 页面组件抛错了（stderr 与 `gx/dev` 的警告缓冲里会有 `gx/router 页面组件抛错`）；或路由记录的 `component` 不是函数 |
 | 懒加载页第一次进去空、第二次正常 | `beforeRouteEnter` 没生效 → 改用 `lazy(() => import(…))`（§5.1） |
 | 顶部显示的路由永远停在初始值 | 在窗口根上读了 `router.currentRoute()` 却期望"本窗口" —— 用 `useRoute()` 写在页面体里 |
-| 折叠了但没变双栏 | 姿态没上报（Windows 上没人报就是 `flat`）；或路由记录 `dualPane:false`；或 `foldable:false` |
+| 折叠了但没变双栏 | 姿态没上报（Windows 上没人报就是 `flat`）—— 先 `posture(win)` 确认读到的是 `"half-open"`；或路由记录 `dualPane:false`；或 `foldable:false`（排查三步见 §9.2） |
+| `hinge()` 的宽度是 0，回填后折痕像丢了 | 回填进了 `reportPosture` 的 `hinge`：`hinge()` 输出 `width/height`、入参老写法只读 `w/h` ⇒ 静默读成 0。**已修**：两种拼法都认，`reportPosture({hinge: hinge()})` 可以直接写 |
+| `usePosture()` 比较结果总是不对 | 它返回取值函数（响应式），不是字符串 —— `usePosture()()` 才是值；只要当前值用 `posture(win)` |
 | 分栏比例怪异（左栏极窄/极宽） | `hinge.x/y` 传成了"折痕长度"而不是"折痕在屏上的位置"（比例按显示器长度算，已钳到 0.2~0.8） |
 | `sync([wa, wb])` 没同步 | 那个窗口的 RouterView 写了显式 `scope=`，句柄代表的是自动作用域 `win:N` —— 用作用域名指认，`gx/dev` 里有一条提示 |
 | 页面里改个 signal 就把整页重建了 | 页面体直接读了 signal（`const n = count()`）。改成 `{() => count()}` 或放进函数 prop；路由已用 `untrack` 屏蔽，但组件体内的直接读取仍会成立 |

@@ -2,9 +2,12 @@ package compiler
 
 import (
 	"fmt"
+	"sort"
+	"strings"
 
 	"github.com/14752222/Gox/ast"
 	"github.com/14752222/Gox/bytecode"
+	"github.com/14752222/Gox/lexer"
 	"github.com/14752222/Gox/object"
 )
 
@@ -111,7 +114,129 @@ func (c *Compiler) NumLocals() int { return c.scope.NumLocals() }
 
 // Compile 编译一个 AST 程序。
 func (c *Compiler) Compile(program *ast.Program) error {
-	return c.compileStatements(program.Statements)
+	return c.compileStatements(programStatements(program))
+}
+
+// jsxFactoryModule / jsxFactoryName 是 JSX 的缺省工厂: parser 把小写标签降级成
+// h(...) 调用 (见 parser/jsx.go), 而 h 的家在 gx/gfx。
+const (
+	jsxFactoryModule = "gx/gfx"
+	jsxFactoryName   = "h"
+)
+
+// programStatements 返回待编译的语句列表, 必要时在最前面补一条缺省工厂导入。
+//
+// 为什么需要这一步: JSX 降级发生在 parser, 于是"用了 JSX 但没导入 h"的脚本
+// **能编译通过**, 直到挂载那一刻才 `ReferenceError: h is not defined` ——
+// 症状 (窗口起不来) 与原因 (某个 import 少了) 隔得很远。这里把它当缺省运行时
+// 补齐 (与 Babel 的 automatic runtime 同一思路): 只要本文件出现过小写标签的
+// JSX, 就补一条 `import { h } from "gx/gfx"`。
+//
+// 两种不补的情况:
+//   - 本文件已经绑定了 h (import / let / const / function / class, 含解构):
+//     用户自己指定了工厂, 一律尊重 —— 一个字节都不动;
+//   - 程序里没有小写标签的 JSX (纯 <Comp/> 是组件调用, 根本用不到 h)。
+//
+// 补出来的这条 import 与手写的完全等价 (同样走 OP_IMPORT + 导出绑定), 所以显式
+// `import { h } from "gox"` 之类的写法照旧可用, 也照旧优先。
+func programStatements(program *ast.Program) []ast.Statement {
+	if !program.UsesJSX || bindsNameAtTopLevel(program.Statements, jsxFactoryName) {
+		return program.Statements
+	}
+	imp := &ast.ImportDeclaration{
+		Token:        lexer.Token{Type: lexer.IMPORT, Literal: "import", Line: 1, Column: 1},
+		NamedImports: []string{jsxFactoryName},
+		Source:       jsxFactoryModule,
+	}
+	return append([]ast.Statement{imp}, program.Statements...)
+}
+
+// bindsNameAtTopLevel 报告顶层语句里有没有对 name 的绑定。
+//
+// 只看**顶层**: 函数体内的同名绑定管不到顶层的 JSX, 而顶层补进来的 import 会被
+// 内层的同名声明按普通作用域规则遮蔽。
+func bindsNameAtTopLevel(stmts []ast.Statement, name string) bool {
+	for _, stmt := range stmts {
+		switch s := stmt.(type) {
+		case *ast.ImportDeclaration:
+			if s.DefaultName == name || s.Namespace == name {
+				return true
+			}
+			for _, n := range s.NamedImports {
+				if n == name {
+					return true
+				}
+			}
+		case *ast.LetStatement:
+			if declaratorBindsName(s.Name, s.Value, name) {
+				return true
+			}
+			for _, d := range s.More {
+				if declaratorBindsName(d.Name, d.Value, name) {
+					return true
+				}
+			}
+		case *ast.ConstStatement:
+			if declaratorBindsName(s.Name, s.Value, name) {
+				return true
+			}
+			for _, d := range s.More {
+				if declaratorBindsName(d.Name, d.Value, name) {
+					return true
+				}
+			}
+		case *ast.FunctionDeclaration:
+			if s.Name != nil && s.Name.Value == name {
+				return true
+			}
+		case *ast.ClassDeclaration:
+			if s.Name != nil && s.Name.Value == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// declaratorBindsName 判断一个声明项 (含解构) 是否绑定了 name —— 解构声明在 AST
+// 里是 Name="__destructure__" + Value=AssignmentExpression (Left 是模式),
+// 所以这里要走一遍模式: `const { h } = gfx` 同样是"用户自己指定了 h"。
+func declaratorBindsName(ident *ast.Identifier, value ast.Expression, name string) bool {
+	if ident == nil {
+		return false
+	}
+	if ident.Value == name {
+		return true
+	}
+	if ident.Value != destructureSyntheticName {
+		return false
+	}
+	assign, ok := value.(*ast.AssignmentExpression)
+	if !ok {
+		return false
+	}
+	return patternBindsName(assign.Left, name)
+}
+
+// patternBindsName 在解构模式里找绑定名 (数组 / 对象 / 嵌套都走一遍)。
+func patternBindsName(pattern ast.Expression, name string) bool {
+	switch p := pattern.(type) {
+	case *ast.Identifier:
+		return p.Value == name
+	case *ast.ArrayPattern:
+		for _, el := range p.Elements {
+			if el != nil && patternBindsName(el.Target, name) {
+				return true
+			}
+		}
+	case *ast.ObjectPattern:
+		for _, prop := range p.Properties {
+			if prop != nil && patternBindsName(prop.Value, name) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // compileStatements 编译一个语句列表，并实现 ECMAScript 的声明提升。
@@ -1185,6 +1310,10 @@ func (c *Compiler) compileClassMethodToObject(m *ast.ClassMethod, superName stri
 }
 
 func (c *Compiler) compileImportDeclaration(stmt *ast.ImportDeclaration) error {
+	// 先校验"从内置模块导入的名字" (不发射任何指令就返回错误, 不留半截字节码)
+	if err := checkBuiltinImportNames(stmt); err != nil {
+		return err
+	}
 	// 编译模块导入: 加载模块并绑定导出
 	// OP_IMPORT 操作数 = 模块路径常量索引
 	sourceIdx := c.constants.AddConstant(object.NewString(stmt.Source))
@@ -1260,6 +1389,150 @@ func (c *Compiler) compileImportDeclaration(stmt *ast.ImportDeclaration) error {
 	}
 
 	return nil
+}
+
+// ===== 内置模块的命名导入校验 =====
+
+// checkBuiltinImportNames 校验"从内置模块导入的名字"确实在那个模块的导出表里。
+//
+// 命名导入在运行时只是一次 GET_PROP, 名字错了就**静默拿到 undefined** ——
+// 症状离原因很远, 实测踩到的两类:
+//
+//	import { alert } from "gx/gfx";   // alert 在 gx/dialog ⇒ 调用时 "alert is not a function"
+//	import { each } from "gx/view";   // each 是元素级指令, 没有任何模块导出它 ⇒ 静默失效
+//	import x from "gox";              // 内置模块没有 default ⇒ x 恒为 undefined
+//
+// 内置模块的导出表在编译进程里是现成的 (object 注册表), 所以这条能在编译期拦住
+// —— 报错里带上"它在哪个模块 / 是不是元素级指令 / 是不是拼错"。
+//
+// **只对已注册的内置模块生效**: 宿主没链接那个模块 (导出表不可知) 与文件模块
+// 一律放行。也就是说这个检查只会让原本"编译通过但运行时静默出错"的程序变成
+// 编译期报错, 不会改变任何能正常工作的程序的字节码。
+func checkBuiltinImportNames(stmt *ast.ImportDeclaration) error {
+	// 与 vm.loadModule 的保留命名空间一致: "gox" 与 "gx/..." 才是内置模块
+	if stmt.Source != "gox" && !strings.HasPrefix(stmt.Source, "gx/") {
+		return nil
+	}
+	exports, ok := object.LookupBuiltinModule(stmt.Source)
+	if !ok {
+		// 没注册 (宿主没链接 / 名字写错): 交给运行时 loadModule 报"未知的内置模块",
+		// 那里会列出全部可用的模块名, 信息更全
+		return nil
+	}
+	for _, name := range stmt.NamedImports {
+		if _, ok := exports[name]; ok {
+			continue
+		}
+		return fmt.Errorf("import {%s} from \"%s\": %s 没有导出 %q%s",
+			name, stmt.Source, stmt.Source, name, importMissHint(stmt.Source, name, exports))
+	}
+	if stmt.DefaultName != "" {
+		if _, ok := exports["default"]; !ok {
+			return fmt.Errorf("import %s from \"%s\": 内置模块没有 default 导出%s",
+				stmt.DefaultName, stmt.Source, importMissHint(stmt.Source, "default", exports))
+		}
+	}
+	return nil
+}
+
+// importMissStaticHints 收那些"根本不是导出、但最容易被 import"的名字。
+// 它们不在任何模块的导出表里, 所以只能在名字上硬编码 (与跨模块提示互斥:
+// 跨模块命中的名字不会走到这里)。
+var importMissStaticHints = map[string]string{
+	"each":     "元素级指令: 写成 JSX 属性 each={rows}, 不从模块 import",
+	"show":     "元素级指令: 写成 JSX 属性 show={cond}, 不从模块 import",
+	"fallback": "元素级指令的配套属性: 写在带 each / show 的元素上",
+	"key":      "元素级指令的配套属性: 写在带 each 的元素上",
+	"stable":   "元素级指令的配套属性: 写在带 each 的元素上",
+	"For":      "已改名为元素级指令 each (2026-09-20, 见 docs/gui-guide.md §8.2)",
+	"Show":     "已改名为元素级指令 show (2026-09-20, 见 docs/gui-guide.md §8.2)",
+	"window":   "window 是内置元素标签 <window>, 不是模块导出",
+}
+
+// importMissHint 拼出"这个不存在的导出名到底该怎么写"的提示后缀。
+// 优先级: 跨模块 (它在 gx/dialog) > 静态提示 (元素级指令) > 拼写相近 > 列出可用导出。
+func importMissHint(spec, name string, exports map[string]object.Value) string {
+	for _, other := range object.RegisteredBuiltinModules() {
+		if other == spec {
+			continue
+		}
+		otherExports, ok := object.LookupBuiltinModule(other)
+		if !ok {
+			continue
+		}
+		if _, ok := otherExports[name]; ok {
+			return fmt.Sprintf(" (它在 %s)", other)
+		}
+	}
+	if hint, ok := importMissStaticHints[name]; ok {
+		return " (" + hint + ")"
+	}
+	if near := nearestExportName(name, exports); near != "" {
+		return fmt.Sprintf(" (想写的是 %q? 可用导出: %s)", near, exportNameList(exports))
+	}
+	return fmt.Sprintf(" (可用导出: %s)", exportNameList(exports))
+}
+
+// nearestExportName 在导出表里找与 name 最接近的名字 (大小写差异或编辑距离 ≤2)。
+// 找不到返回 ""。
+func nearestExportName(name string, exports map[string]object.Value) string {
+	best := ""
+	bestDist := 3
+	for candidate := range exports {
+		if strings.EqualFold(candidate, name) {
+			return candidate
+		}
+		if d := editDistance(name, candidate); d < bestDist {
+			best, bestDist = candidate, d
+		}
+	}
+	return best
+}
+
+// editDistance 是标准 Levenshtein 距离 (两行滚动数组, O(n*m) 时间 O(m) 空间)。
+func editDistance(a, b string) int {
+	ra, rb := []rune(a), []rune(b)
+	if len(ra) == 0 {
+		return len(rb)
+	}
+	prev := make([]int, len(rb)+1)
+	curr := make([]int, len(rb)+1)
+	for j := range prev {
+		prev[j] = j
+	}
+	for i := 1; i <= len(ra); i++ {
+		curr[0] = i
+		for j := 1; j <= len(rb); j++ {
+			cost := 1
+			if ra[i-1] == rb[j-1] {
+				cost = 0
+			}
+			curr[j] = minInt(prev[j]+1, minInt(curr[j-1]+1, prev[j-1]+cost))
+		}
+		prev, curr = curr, prev
+	}
+	return prev[len(rb)]
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+// exportNameList 按字典序列出导出名 (gox 这种并集模块太长, 截断到 12 个)。
+func exportNameList(exports map[string]object.Value) string {
+	names := make([]string, 0, len(exports))
+	for name := range exports {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	const max = 12
+	if len(names) > max {
+		return strings.Join(names[:max], ", ") + ", …"
+	}
+	return strings.Join(names, ", ")
 }
 
 func (c *Compiler) compileExportDeclaration(stmt *ast.ExportDeclaration) error {

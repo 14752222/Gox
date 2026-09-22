@@ -30,6 +30,11 @@ type Parser struct {
 	inLoop        bool // 是否在循环体内 (用于 break/continue)
 	depth         int  // 当前语法嵌套深度 (表达式/语句递归层数)
 	depthExceeded bool // 已触发嵌套深度上限 (后续解析短路，防错误洪水)
+
+	// usedJSXFactory 记录"本文件出现过需要 h 的 JSX"(小写标签被降级成
+	// h(...) 调用)。ParseProgram 把它交到 ast.Program.UsesJSX 上，由 compiler
+	// 决定要不要补 `import { h } from "gx/gfx"` —— 见 parser/jsx.go 的约定说明。
+	usedJSXFactory bool
 }
 
 // maxNestingDepth 是语法嵌套深度上限。
@@ -271,6 +276,8 @@ func (p *Parser) ParseProgram() *ast.Program {
 		}
 		p.nextToken()
 	}
+	// 用了小写标签的 JSX 就要有 h: 带上标记, 交给 compiler 补缺省工厂导入
+	program.UsesJSX = p.usedJSXFactory
 	return program
 }
 
@@ -1761,8 +1768,14 @@ func (p *Parser) parseArrayPattern() *ast.ArrayPattern {
 			p.nextToken()
 		} else if p.curTokenIs(lexer.LBRACKET) {
 			elem.Target = p.parseArrayPattern()
+			// 嵌套模式解析器把 cur 停在**它自己**的闭合符上 (与顶层调用约定一致),
+			// 所以这里必须越过它才能回到本层的元素流 —— 不越过的话本层会在
+			// 内层 ']' 上误判"元素结束", 于是 `const [a, [b]] = x` 报
+			// "expected = after destructuring, got RBRACKET"。
+			p.nextToken()
 		} else if p.curTokenIs(lexer.LBRACE) {
 			elem.Target = p.parseObjectPattern()
+			p.nextToken() // 同上: 越过内层 '}'
 		} else {
 			p.addError(fmt.Sprintf("unexpected token: %s", p.curToken().Type))
 			return nil
@@ -1823,8 +1836,10 @@ func (p *Parser) parseObjectPattern() *ast.ObjectPattern {
 				}
 			} else if p.curTokenIs(lexer.LBRACKET) {
 				prop.Value = p.parseArrayPattern()
+				p.nextToken() // 越过内层 ']' (见 parseArrayPattern 里的同一说明)
 			} else if p.curTokenIs(lexer.LBRACE) {
 				prop.Value = p.parseObjectPattern()
+				p.nextToken() // 越过内层 '}'
 			}
 		} else if p.curTokenIs(lexer.ASSIGN) {
 			prop.Shorthand = true

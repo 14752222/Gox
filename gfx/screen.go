@@ -438,9 +438,11 @@ func reportPostureGo(args ...object.Value) object.Value {
 	}
 	if h := objProp(opts, "hinge"); h != nil {
 		if ho, ok := h.(*object.Object); ok {
+			// 尺寸按 w/h 读, 同时认 width/height —— 理由见 objPropSize 的注释:
+			// `reportPosture({ hinge: hinge() })` 这种最自然的回填写法必须能用。
 			d.Hinge = &DisplayHinge{
 				X: int(objPropNum(ho, "x")), Y: int(objPropNum(ho, "y")),
-				W: int(objPropNum(ho, "w")), H: int(objPropNum(ho, "h")),
+				W: objPropSize(ho, "w", "width"), H: objPropSize(ho, "h", "height"),
 				Orientation: objPropStr(ho, "orientation"),
 			}
 			if d.Hinge.Orientation == "" {
@@ -464,7 +466,7 @@ func reportPostureGo(args ...object.Value) object.Value {
 			d.Regions = append(d.Regions, DisplayRegion{
 				ID: objPropStr(ro, "id"),
 				X:  int(objPropNum(ro, "x")), Y: int(objPropNum(ro, "y")),
-				W: int(objPropNum(ro, "w")), H: int(objPropNum(ro, "h")),
+				W: objPropSize(ro, "w", "width"), H: objPropSize(ro, "h", "height"),
 			})
 		}
 	}
@@ -871,4 +873,25 @@ func objPropNum(o *object.Object, name string) float64 {
 		return n.Value
 	}
 	return 0
+}
+
+// objPropSize 读一个像素尺寸, 同时接受 `w`/`h` 与 `width`/`height` 两种拼法
+// (先试短名, 缺失时退到长名)。
+//
+// 为什么必须认两种: 这是**同一个物理量的两个名字**, 不是两套 API ——
+// hinge() / regions() 的**输出**用 width/height (与 displayToJS 的
+// 显示器几何一致), 而 reportPosture 的**输入**历史上只读 w/h。于是最自然
+// 的回填写法
+//
+//	reportPosture({ hinge: hinge() });   // hinge() 给的是 width/height
+//
+// 会把折痕宽度静默读成 0 (症状: "折痕宽度读出来是 0") —— 折痕宽度只影响
+// 双栏的分割比例, 所以除了折痕变窄什么都不会报, 属于典型的静默失效。
+// 认别名比在输出里加一遍同义字段干净: 输出的键名不动, 脚本里
+// `hinge().width` 照旧可读。
+func objPropSize(o *object.Object, short, long string) int {
+	if v := objProp(o, short); v != nil {
+		return int(objPropNum(o, short))
+	}
+	return int(objPropNum(o, long))
 }

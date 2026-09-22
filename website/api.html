@@ -1279,34 +1279,41 @@ try {
       <tbody>
         <tr>
           <td>用了 JSX 但窗口起不来,报 <code class="inline">h is not defined</code></td>
-          <td>JSX 降级成 <code class="inline">h(...)</code> 调用,<strong>每个用了 JSX 的文件都要 import <code class="inline">h</code></strong>(<code class="inline">import &#123; h, render &#125; from "gx/gfx"</code>)。只 import <code class="inline">render</code> 能编译但挂载即失败</td>
+          <td><strong>已在框架里修掉(2026-09-22)</strong>:JSX 仍是降级成 <code class="inline">h(...)</code> 调用,但文件里没有 <code class="inline">h</code> 时编译器会自动补 <code class="inline">import &#123; h &#125; from "gx/gfx"</code>。显式写 <code class="inline">import &#123; h, render &#125; from "gx/gfx"</code> 仍推荐、也仍优先,自己定义/导入的 <code class="inline">h</code> 不会被顶掉。老引擎上手动加那一行即可</td>
         </tr>
         <tr>
           <td><code class="inline">alert is not a function</code> / 拿到 <code class="inline">undefined</code></td>
-          <td>从 <code class="inline">gx/gfx</code> 取了。<strong>改从 <code class="inline">gx/dialog</code> 取</strong>(或用 <code class="inline">gox</code> 聚合)</td>
+          <td>从 <code class="inline">gx/gfx</code> 取了 —— <code class="inline">alert</code> / <code class="inline">confirm</code> / <code class="inline">openFile</code> 在 <strong><code class="inline">gx/dialog</code></strong>(或直接用 <code class="inline">gox</code> 聚合)。命名导入取不到时只会静默拿到 <code class="inline">undefined</code>,所以<strong>现在从内置模块 import 不存在的名字是编译期报错</strong>,并会指出它在哪个模块 / 是不是拼错</td>
         </tr>
         <tr>
           <td><code class="inline">usePosture()</code> 拿到的不是字符串</td>
-          <td>它返回取值函数,再调一次:<code class="inline">const r = usePosture(); r()</code></td>
+          <td>这是设计:所有 <code class="inline">useXxx()</code> 返回的都是<strong>取值函数</strong>(信号语义,放进函数 prop / 函数子节点才会跟着变),再调一次:<code class="inline">const r = usePosture(); r()</code>。只要"此刻的值"就用 <code class="inline">posture(win)</code>(返回字符串)。别把它直接当字符串比 —— 恒为 false 且不报错</td>
         </tr>
         <tr>
           <td><code class="inline">each</code> / <code class="inline">show</code> 从 <code class="inline">gx/view</code> 里 import 不到</td>
-          <td>它们是<strong>元素级指令</strong>,不 import、不在导出表里;从 <code class="inline">gx/view</code> 取出来是 <code class="inline">undefined</code></td>
+          <td>这是设计:它们是<strong>元素级指令</strong>(写在 JSX 属性上、在 <code class="inline">h()</code> 里展开),<strong>不在任何模块的导出表里</strong>;<code class="inline">gx/view</code> 只导出 <code class="inline">Switch</code> / <code class="inline">Match</code>。误 import 现在编译期报错</td>
         </tr>
         <tr>
           <td><code class="inline">const [data, &#123;refetch&#125;] = createResource(f)</code> 不起作用</td>
-          <td>不支持嵌套解构。<strong>分成两个元素</strong>:<code class="inline">const [data, res] = createResource(f)</code>,用 <code class="inline">res.refetch()</code></td>
+          <td><strong>已在框架里修掉(2026-09-22)</strong>:嵌套解构(数组里套对象)当年是 parser 的 bug,现在直接可写。等价写法 <code class="inline">const [data, res] = createResource(f)</code> + <code class="inline">res.refetch()</code> 照旧可用</td>
         </tr>
         <tr>
           <td>折叠双栏不生效</td>
-          <td>姿态没人上报 ⇒ 恒为平展。宿主侧调 <code class="inline">reportPosture</code>;排查时先用 <code class="inline">posture(win)</code> 确认读到的是 <code class="inline">"half-open"</code></td>
+          <td>这是设计:Windows / X11 没有折叠姿态查询 API,<strong>没人上报 ⇒ 姿态恒为 <code class="inline">flat</code></strong> ⇒ 不分栏。宿主侧调 <code class="inline">reportPosture</code>;排查第一步用 <code class="inline">posture(win)</code> 确认读到的是 <code class="inline">"half-open"</code>,三步排查见 GUI 路由手册 §9.2</td>
         </tr>
         <tr>
           <td>折痕宽度读出来是 0</td>
-          <td>把 <code class="inline">hinge()</code> 读出的 <code class="inline">{width,height}</code> 直接回填进了 <code class="inline">reportPosture</code> 的 <code class="inline">hinge</code> —— 那里要的是 <code class="inline">{w,h}</code></td>
+          <td><strong>已在框架里修掉(2026-09-22)</strong>:<code class="inline">hinge()</code> / <code class="inline">regions()</code> 的输出用 <code class="inline">width/height</code>,而 <code class="inline">reportPosture</code> 的入参历史上只读 <code class="inline">w/h</code> ⇒ 回填时静默读成 0(只影响分栏比例,什么都不报)。现在<strong>两种拼法都认</strong>(短名优先),<code class="inline">reportPosture(&#123; hinge: hinge() &#125;)</code> 可以直接写</td>
         </tr>
       </tbody>
     </table>
+    <div class="callout tip">
+      <b>标注"已在框架里修掉"的四条</b>
+      <p>
+        JSX 缺省工厂、缺名导入、嵌套解构、折痕键名这四件事都修在了内核里(parser / compiler / <code class="inline">gx/screen</code>),
+        换成新版引擎后不必再按"解法"那栏绕行;文档与手册里其它地方若还写着"必须自己 import <code class="inline">h</code>""嵌套解构不支持",以本表为准。
+      </p>
+    </div>
 
     <h2 id="reactive-globals"><span class="step-num">8</span>响应式全局 API</h2>
     <p>

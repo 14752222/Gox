@@ -172,3 +172,48 @@ func TestWindowHandleIntrospection(t *testing.T) {
 		t.Fatalf("字符串不该被当成窗口句柄")
 	}
 }
+
+// TestReportPostureAcceptsJSGeometryKeyNames 钉住"同一个量的两种拼法都认"。
+//
+// hinge() / regions() 的输出用 width/height (与 displayToJS 的显示器几何一致),
+// 而 reportPosture 的入参最初只读 w/h —— 于是最自然的回填
+//
+//	reportPosture({ hinge: hinge() });
+//
+// 会把折痕宽度读成 0, 但它只影响双栏分割比例, 不报任何错 (静默失效)。
+// 这里同时钉住: 长名能读进来; 短名与长名同给时短名优先。
+func TestReportPostureAcceptsJSGeometryKeyNames(t *testing.T) {
+	resetScreenStateForTest()
+	t.Cleanup(resetScreenStateForTest)
+	SetDefaultFactory(nil)
+
+	// 这一坨就是 hinge() / regions() 的字面输出形状 (键名一个不改)。
+	reportPostureGo(routeObj("display", "fold-1", "foldable", true,
+		"width", object.NewNumber(1600), "height", object.NewNumber(1000),
+		"posture", "half-open",
+		"hinge", routeObj("x", object.NewNumber(700), "y", object.NewNumber(0),
+			"width", object.NewNumber(24), "height", object.NewNumber(1000),
+			"orientation", "vertical"),
+		"regions", object.NewArray([]object.Value{
+			routeObj("id", "A", "x", object.NewNumber(0), "y", object.NewNumber(0),
+				"width", object.NewNumber(700), "height", object.NewNumber(1000)),
+			routeObj("id", "B", "x", object.NewNumber(724), "y", object.NewNumber(0),
+				"width", object.NewNumber(876), "height", object.NewNumber(1000)),
+		})))
+
+	d := allDisplays()[0]
+	if d.Hinge == nil || d.Hinge.W != 24 || d.Hinge.H != 1000 || d.Hinge.X != 700 {
+		t.Fatalf("width/height 形式的折痕没读进来: %+v", d.Hinge)
+	}
+	if len(d.Regions) != 2 || d.Regions[0].W != 700 || d.Regions[1].H != 1000 {
+		t.Fatalf("width/height 形式的区域没读进来: %+v", d.Regions)
+	}
+
+	// 显式短名优先: 两种拼法都不缺时以 w/h 为准 (避免"多写了一个键就换语义")
+	reportPostureGo(routeObj("display", "fold-1", "hinge",
+		routeObj("x", object.NewNumber(700), "w", object.NewNumber(30), "width", object.NewNumber(24),
+			"h", object.NewNumber(1000), "height", object.NewNumber(900))))
+	if got := allDisplays()[0].Hinge.W; got != 30 {
+		t.Fatalf("两种拼法同给时短名 w 应优先, 实际 W=%d", got)
+	}
+}

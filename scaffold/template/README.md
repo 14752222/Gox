@@ -57,9 +57,11 @@ goxjs src/main.js
 
 ## 五条最容易踩的坑
 
-1. **用了 JSX 就要 import `h`**：JSX 在 parser 层被降级成 `h("column", {...}, ...)` 调用，
-   所以**每个用了 JSX 的文件**都要有 `h` 在作用域里（`import { h, render } from "gox"`）。
-   只 import `render` 也能编译，但挂载时会当场 `ReferenceError: h is not defined`。
+1. **JSX 的渲染工厂 `h` 会自动补上**：JSX 在 parser 层被降级成 `h("column", {...}, ...)`
+   调用，所以文件里要有一个 `h`。**文件里没绑定时编译器会自动补一条
+   `import { h } from "gx/gfx"`** —— 于是"忘了 import `h` ⇒ 只 import `render` 能编译、
+   挂载当场 `ReferenceError: h is not defined`"这条路已经堵上了。显式写
+   `import { h, render } from "gox"` 仍然推荐、也仍然优先；自己定义/导入的 `h` 不会被顶掉。
 2. **响应式的东西一律传函数**：`value` / `disabled` / `background` / `each` / `show` / `when` 收到的是
    **取值函数**。写成快照（`disabled={count() === 0}`、`each={todos()}`）只有第一帧是对的 —— 之后
    信号再变也不会重渲染。内核会就非法形态打一条警告（去重），行为降级但不静默。

@@ -20,7 +20,8 @@ API 语义与已知取舍；上手最短路径见 [README 的 GUI 章节](../REA
 - [9. 宿主能力](#9-宿主能力)
 - [10. 调试](#10-调试)
 - [11. 示例索引](#11-示例索引)
-- [12. 相关文档](#12-相关文档)
+- [12. 症状速查（窗口起不来 / 值不对时先看这里）](#12-症状速查窗口起不来--值不对时先看这里)
+- [13. 相关文档](#13-相关文档)
 
 ## 1. 快速上手
 
@@ -789,7 +790,7 @@ import { devSnapshot } from "gx/dev";
 | [gui_demo.js](../testdata/gui_demo.js) | 响应式基础（综合） |
 | [jsx_demo.js](../testdata/jsx_demo.js) | JSX 语法降级 + `gx/solid` 响应式（用 debug `h` 构建纯数据节点树，不开窗口） |
 | [rx_demo.js](../testdata/rx_demo.js) | GetX 风格响应式：`obs` / `computed` / `ever` / `once` |
-| [view_demo.js](../testdata/view_demo.js) | 声明式视图：For / Show / Switch |
+| [view_demo.js](../testdata/view_demo.js) | 声明式视图：`each` / `show` 指令 + `Switch` / `Match` |
 | [view_demo2.js](../testdata/view_demo2.js) | 同上，改写版：把"复用还是重建"做成可读的 gen / builds 计数（`gfx/view_demo2_test.go`） |
 | [model_demo.js](../testdata/model_demo.js) | 受控组件的 `model` 双向绑定：八类控件一条指令 + 手写写法对照 |
 | [resource_demo.js](../testdata/resource_demo.js) | createResource 异步资源三态 |
@@ -804,7 +805,26 @@ import { devSnapshot } from "gx/dev";
 | [router_page_detail.js](../testdata/router_page_detail.js) | 懒加载页面模块（被 `router_demo.js` 的 `lazy(() => import(…))` 加载，不是独立入口） |
 | [routing_demo.js](../testdata/routing_demo.js) | **无模块时代**的用户态写法（signal 切页 + 未保存拦截）；3 页以内的小工具仍推荐，更多页面用上面的 `gx/router` |
 
-## 12. 相关文档
+## 12. 症状速查（窗口起不来 / 值不对时先看这里）
+
+这些坑的共同点是**不报错或报错离原因很远**（静默 `undefined`、第一帧对之后不对），
+所以先按现象查，再翻对应的正文小节。
+
+| 症状 | 根因 | 正解 |
+|---|---|---|
+| 窗口起不来，控制台 `h is not defined` | JSX 在 parser 层被降级成 `h(...)` 调用，而脚本没绑定 `h` —— 只 `import { render }` 能编译通过，挂载那一刻才炸 | **已自动补齐**（2026-09-22 起）：文件里没有 `h` 时编译器补一条 `import { h } from "gx/gfx"`。显式 `import { h, render }` 仍推荐、也仍优先；自己定义/导入的 `h` 一个字节都不动 |
+| `alert is not a function`，或某个导入名拿到的恒是 `undefined` | 名字取错了模块（`alert` 在 `gx/dialog`，不在 `gx/gfx`）；命名导入取不到时**只会静默拿到 `undefined`** | 改从 `gx/dialog` 取，或用 `gox` 聚合入口。**从内置模块 import 不存在的名字现在是编译期报错**，并会直接指出它在哪个模块 / 是不是拼错 |
+| `usePosture()` 拿到的不是字符串 | 所有 `useXxx()` 返回的都是**取值函数**（信号语义：放进函数 prop / 函数子节点才能跟着变），不是当前值 | `const r = usePosture(); r()`。只要"此刻的值"就直接用 `posture(win)`（返回字符串） |
+| `each` / `show` 从 `gx/view` 里 `import` 不到 | 它们是**元素级指令**：写在 JSX 属性上、在 `h()` 里展开，**不在任何模块的导出表里** | 不 import：`<view each={rows} key="id">{…}</view>`。`gx/view` 只导出 `Switch` / `Match`。误 import 现在编译期报错（见 §8.2） |
+| `const [data, {refetch}] = createResource(f)` 不起作用 | 嵌套解构（数组里套对象）当年解析失败，直接是 parser 报错 | **已修**（2026-09-22）：嵌套解构照常能用。等价写法 `const [data, res] = createResource(f)` + `res.refetch()`（见 §8.3） |
+| 折叠屏折起来但没变双栏 | 姿态**没人上报** ⇒ 恒为平展。Windows / X11 没有姿态查询 API，框架的立场是"提供通道不猜姿态" | 宿主侧调 `reportPosture({posture:"half-open"})`；排查第一步用 `posture(win)` 确认读到的确实是 `"half-open"`（见 [gui-router.md](gui-router.md) §9.2 / §9.4） |
+| `hinge()` 的宽度读出来是 0，回填后折痕像丢了 | `hinge()` / `regions()` 的**输出**用 `width`/`height`，而 `reportPosture` 的**入参**只读 `w`/`h` ⇒ 回填时静默读成 0（折痕宽度只影响双栏比例，所以什么错都不报） | 两种拼法现在都认（2026-09-22 起，短名优先）：`reportPosture({ hinge: hinge() })` 可以直接回填 |
+| 响应式 prop / 条件 / 列表只有第一帧是对的 | prop 收到的是**取值函数**，写成快照（`disabled={count() === 0}`、`each={rows()}`）之后就再也不同步 | 一律传函数：`disabled={() => count() === 0}` / `each={rows}` / `show={cond}`。内核会对非法形态打去重警告（见 §8.1） |
+
+> 这七条里的"JSX 缺省工厂"、"缺名导入"、"嵌套解构"、"折痕键名"四件事都在 2026-09-22
+> 修在框架里了；文档里其它地方若还写着"必须自己 import h""嵌套解构不支持"，以本节为准。
+
+## 13. 相关文档
 
 | 文档 | 内容 |
 |---|---|

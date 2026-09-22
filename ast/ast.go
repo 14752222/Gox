@@ -28,6 +28,15 @@ type Expression interface {
 // Program 是 AST 的根节点，包含一个语句列表。
 type Program struct {
 	Statements []Statement
+
+	// UsesJSX 报告本程序里是否有**小写标签**的 JSX (如 <view> / <column>)。
+	//
+	// 那些元素在 parser 层被降级成 h(...) 调用 (见 parser/jsx.go)，所以程序
+	// 需要一个 h 在作用域里；而大写标签 (<Counter/>) 只是组件调用，用不到 h。
+	// compiler 按这个标记决定要不要补一条 `import { h } from "gx/gfx"` ——
+	// 没有它的话，"用了 JSX 却没导入 h"的脚本能编译通过，却在挂载那一刻炸
+	// ReferenceError: h is not defined。
+	UsesJSX bool
 }
 
 func (p *Program) TokenLiteral() string {

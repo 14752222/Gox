@@ -237,9 +237,10 @@ import describe, { VERSION, shout } from "./tutorial_util.js"; // ④ 相对路�
   而且"文件最后一条语句是 import"会把模块对象当顶层表达式的值回显出来。
 - 命名导出用 `{}`, 默认导出改名写 (`import 名字 from`)。`export { a, b }` 这类**解构后再导出**
   是推荐的共享状态写法(`export const [x, setX] = ...` 不走)。
-- 用了 JSX 的文件**必须让 `h` 在作用域里**(`import { h } from "gox"` / `"gx/gfx"`),
-  因为 JSX 在 parser 层降级成 `h(...)` 调用; 只 import `render` 能编译, 挂载时当场
-  `ReferenceError: h is not defined`。
+- 用了 JSX 的文件**推荐**显式写 `import { h, render } from "gx/gfx"`(或 `gox`): JSX 在
+  parser 层降级成 `h(...)` 调用, `h` 就是渲染工厂。忘了也不会炸 —— 文件里没有 `h` 时
+  编译器会自动补一条 `import { h } from "gx/gfx"`(2026-09-22 起), 自己定义/导入的 `h`
+  优先, 一个字节都不动。
 
 ### 2.3 各内置模块的导出清单 (实测输出)
 
@@ -423,7 +424,10 @@ my-app/
 | `gox create: 无法从目录 "." 推导项目名，请用 --name 指定` | 目标写成了 `.` / `..` 这类没有名字的位置 ⇒ 给 `--name` |
 | `gox create: 只能指定一个目标目录` | 多写了一个路径参数 |
 | `package.json` 里 `name` 变成 `gox-app` | 目录名/`--name` 全是中文等非字母数字字符, 收敛后为空 ⇒ 用 `--name` 指定一个 ASCII 名字 |
-| `ReferenceError: h is not defined` | 用了 JSX 却没 import `h`(JSX 降级成 `h(...)` 调用) |
+| `ReferenceError: h is not defined`（旧版本才会见到） | 用了 JSX 却没 import `h`。**2026-09-22 起编译器会自动补** `import { h } from "gx/gfx"`；老引擎上加一行 `import { h } from "gox"` 即可 |
+| `alert is not a function` / 某个导入名恒为 `undefined` | 名字取错了模块（`alert` / `confirm` / `openFile` 在 `gx/dialog`，不在 `gx/gfx`）—— 见 §2.3 的导出清单。**现在从内置模块 import 不存在的名字会直接编译报错**，并告诉你它在哪个模块 |
+| `import { each } from "gx/view"` 拿到 `undefined` | `each` / `show` 是**元素级指令**（写 JSX 属性，不用 import），任何模块都不导出它们；现在会编译期报错 |
+| `const [a, {b}] = …` 报 "unexpected token" | 嵌套解构在 2026-09-22 前解析不了；现已支持，可直接写 |
 | 点了按钮界面没反应 | 响应式属性写成了快照 —— `value={x()}` / `show={x()}` / `each={xs()}` 要传**函数**: `value={() => x()}` / `show={x}` / `each={xs}` |
 
 ---
