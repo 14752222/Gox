@@ -3102,7 +3102,7 @@ func (c *Compiler) compileFunction(name string, params []*ast.Parameter, body *a
 func (c *Compiler) compileFunctionSelf(name, selfName string, params []*ast.Parameter, body *ast.BlockStatement, isArrow, isGenerator, isAsync bool) (*bytecode.FunctionMetadata, error) {
 	// async 函数: 编译为 wrapper (返回 __spawn(generator)), 内层 generator 处理 await→yield
 	if isAsync {
-		return c.compileAsyncFunctionSelf(name, selfName, params, body)
+		return c.compileAsyncFunctionSelf(name, selfName, params, body, isArrow)
 	}
 
 	// 创建新的作用域
@@ -3257,13 +3257,20 @@ func (c *Compiler) compileFunctionSelf(name, selfName string, params []*ast.Para
 //	CALL 1                 ; __spawn(gen) → Promise
 //	RETURN
 func (c *Compiler) compileAsyncFunction(name string, params []*ast.Parameter, body *ast.BlockStatement) (*bytecode.FunctionMetadata, error) {
-	return c.compileAsyncFunctionSelf(name, "", params, body)
+	// 非箭头入口 (async function 声明/表达式走这里)。
+	return c.compileAsyncFunctionSelf(name, "", params, body, false)
 }
 
-func (c *Compiler) compileAsyncFunctionSelf(name, selfName string, params []*ast.Parameter, body *ast.BlockStatement) (*bytecode.FunctionMetadata, error) {
+// compileAsyncFunctionSelf 把异步函数编译成两段: wrapper + 内层 generator。
+//
+// isArrow 必须由调用方如实传入 —— 它决定 wrapper 与内层 generator 两个
+// FunctionMetadata 的 IsArrow。箭头函数在调用时**不重绑 this**(vm 按
+// Closure.IsArrow 判断), 漏了这个, `async () => this.x` 里的 this 就会变成
+// 调用时的接收者。
+func (c *Compiler) compileAsyncFunctionSelf(name, selfName string, params []*ast.Parameter, body *ast.BlockStatement, isArrow bool) (*bytecode.FunctionMetadata, error) {
 	// 1. 编译内层 generator (同一参数, await 编译为 yield)
 	// 自引用绑定传播到内层: await 所在的用户代码在内层执行
-	genMeta, err := c.compileFunctionSelf(name, selfName, params, body, false, true, false)
+	genMeta, err := c.compileFunctionSelf(name, selfName, params, body, isArrow, true, false)
 	if err != nil {
 		return nil, err
 	}
@@ -3325,7 +3332,7 @@ func (c *Compiler) compileAsyncFunctionSelf(name, selfName string, params []*ast
 	c.controlStack = prevControlStack
 	c.pendingLabel = prevPendingLabel
 
-	meta := bytecode.NewFunctionMetadata(name, wrapperIns, wrapperScope.NumLocals(), len(params), paramSpecs, false)
+	meta := bytecode.NewFunctionMetadata(name, wrapperIns, wrapperScope.NumLocals(), len(params), paramSpecs, isArrow)
 	meta.BaseSlot = baseSlot
 	meta.ArgumentsSlot = argumentsSlot
 	meta.IsAsync = true
@@ -3351,7 +3358,9 @@ func (c *Compiler) compileFunctionExpression(node *ast.FunctionExpression) error
 
 func (c *Compiler) compileArrowFunctionExpression(node *ast.ArrowFunctionExpression) error {
 	name := "arrow"
-	meta, err := c.compileFunction(name, node.Parameters, getBlockFromBody(node.Body), true, false, false)
+	// isAsync 走 compileAsyncFunctionSelf (wrapper + 内层 generator), 但 isArrow
+	// 一路传下去 —— 否则 `async () => this.x` 的 this 会被调用时的接收者覆盖。
+	meta, err := c.compileFunction(name, node.Parameters, getBlockFromBody(node.Body), true, false, node.IsAsync)
 	if err != nil {
 		return err
 	}

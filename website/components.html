@@ -970,7 +970,7 @@ const notify = () =&gt; {
 
     <pre class="code"><code data-lang="js">import { alert, confirm, openFile } from "gx/dialog";
 
-// ⚠ 只支持 async function,不支持 async () =&gt; {}
+// 事件处理器的两种写法都可以: async function () {} 与 async () => {}
 h("button", {
   onClick: async function () {
     const yes = await confirm("Proceed with the operation?", "Please confirm");
@@ -990,14 +990,6 @@ h("button", {
     log(path === null ? "cancelled" : "picked " + path);
   }
 }, "Open file")</code></pre>
-
-    <div class="callout warn">
-      <b>语法陷阱:不支持 <code class="inline">async () =&gt; {}</code></b>
-      <p>
-        解析器只实现 <code class="inline">async function</code>。要给事件处理器写异步箭头函数,必须写成
-        <code class="inline">async function () { ... }</code>(匿名 async 函数表达式)。
-      </p>
-    </div>
 
     <ul class="limits">
       <li>只有这三个 API:无自定义按钮、无多选、无选目录。</li>
@@ -1801,10 +1793,6 @@ setInterval(() =&gt; {
     <table>
       <thead><tr><th>现象</th><th>原因与解法</th></tr></thead>
       <tbody>
-        <tr>
-          <td><code class="inline">async () =&gt; {}</code> 报语法错</td>
-          <td>解析器只实现 <code class="inline">async function</code>。改用 <code class="inline">async function () { ... }</code></td>
-        </tr>
         <tr>
           <td>标签渲染成空白并打印 <code class="inline">unknown tag</code></td>
           <td>标签名拼错或用了未实现的组件。已实现的标签见本页各节标题</td>

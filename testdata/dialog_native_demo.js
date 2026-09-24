@@ -21,9 +21,8 @@
 // 注意: 这个演示在自动化测试里由**假后端**应答 (见 gfx/dialog_test.go),
 // 不会真的弹框。
 //
-// 语法提示: 运行时**只支持 `async function`**, 不支持 `async () => {}`
-// (parser/parser.go 的 parseAsyncExpression 显式降级报错)。所以下面写成
-// `async function () { ... }` —— 匿名 async 函数表达式, 等价可用。
+// 语法提示: 异步函数写 `async function () { ... }` 或 `async () => { ... }` 都可以
+// (2026-09-24 起箭头形式也支持)。下面保持匿名 async 函数表达式的写法。
 import { createSignal } from "gx/solid";
 import { h, render } from "gx/gfx";
 import { alert, confirm, openFile } from "gx/dialog";

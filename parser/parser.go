@@ -1255,19 +1255,22 @@ func (p *Parser) parseGroupedOrArrow() ast.Expression {
 	return expr
 }
 
-// isArrowFunction 扫描从 ( 开始的令牌流，找到匹配的 ) 后检查是否跟 =>。
+// isArrowFunction 报告「cur 位置上的 ( 」是否为箭头函数的参数列表。
 func (p *Parser) isArrowFunction() bool {
-	if !p.curTokenIs(lexer.LPAREN) {
-		return false
-	}
+	return p.curTokenIs(lexer.LPAREN) && p.parenGroupFollowedByArrow(0)
+}
 
-	// 扫描匹配的括号 (有距离上限: 不闭合的括号会一路扫到 EOF，
-	// 大量 `(` 组合下构成平方级解析开销)
+// parenGroupFollowedByArrow 从偏移 start 上的 ( 开始扫描到配对的 ), 报告它后面
+// 是否紧跟 =>。
+//
+// start 是 peekTokenAt 的口径 (相对 cur 的偏移): 0 = cur 自己, 1 = peek。
+// 之所以要带偏移: `async (a) => …` 里 `(` 落在 peek 上 (cur 是 async), 判定逻辑
+// 与普通箭头逐字相同, 只有起点不同 —— 与其抄一份, 不如把起点参数化。
+//
+// 扫描有距离上限: 括号不闭合时会一路扫到 EOF, 配合大量 `(` 构成平方级解析开销。
+func (p *Parser) parenGroupFollowedByArrow(start int) bool {
 	depth := 0
-	for i := 0; i+p.pos < len(p.tokens); i++ {
-		if i > maxArrowScanLimit {
-			return false
-		}
+	for i := start; i <= start+maxArrowScanLimit; i++ {
 		tok := p.peekTokenAt(i)
 		if tok.Type == lexer.EOF {
 			return false
@@ -1278,8 +1281,7 @@ func (p *Parser) isArrowFunction() bool {
 			depth--
 			if depth == 0 {
 				// 检查 ) 后是否跟 =>
-				next := p.peekTokenAt(i + 1)
-				return next.Type == lexer.ARROW
+				return p.peekTokenAt(i+1).Type == lexer.ARROW
 			}
 		}
 	}
@@ -1337,11 +1339,15 @@ func (p *Parser) parseFunctionExpression() ast.Expression {
 	return fn
 }
 
-// parseAsyncExpression 处理 async 前缀:
-// - async function f() {} → async 函数表达式/声明
-// - async (args) => {} → async 箭头函数 (暂不支持, 直接报错降级)
+// parseAsyncExpression 处理 async 前缀 (cur 落在 async 上):
+//   - async function f() {}  → async 函数表达式/声明
+//   - async (a, b) => …       → async 箭头函数
+//   - async x => …            → 单参数不加括号的 async 箭头
+//
+// 前两类在 peeking 时的区别就是「`function` 还是 `(`」, 第三类是「标识符 + =>」。
+// 三种都不匹配时按写法分别报错: 括号组后面缺 `=>` 与其它乱写分开说, 因为前者是
+// 真的漏了 `=>`, 后者才是"根本没实现这种形状"。
 func (p *Parser) parseAsyncExpression() ast.Expression {
-	// 只支持 async function
 	if p.peekTokenIs(lexer.FUNCTION) {
 		p.nextToken() // 移到 function
 		fn := &ast.FunctionExpression{Token: p.curToken()}
@@ -1365,8 +1371,46 @@ func (p *Parser) parseAsyncExpression() ast.Expression {
 		fn.Body = p.parseBlockStatement()
 		return fn
 	}
-	p.addError(fmt.Sprintf("unsupported async expression after 'async'"))
+
+	// async 箭头函数: async () => … / async (a, b) => …
+	// cur 是 async, 所以 `(` 落在 peek 上 —— 扫描起点用 1。
+	if p.peekTokenIs(lexer.LPAREN) {
+		if !p.parenGroupFollowedByArrow(1) {
+			// ES 里 `async(x)` 是「调用一个名叫 async 的函数」, 但本运行时 async 是
+			// 保留字, 那个函数不可能存在 —— 所以这里一定是漏写了 =>, 直接点名,
+			// 别让人去猜 "unsupported async expression" 到底哪里不支持。
+			p.addError("expected '=>' after async parameter list")
+			return nil
+		}
+		p.nextToken() // cur = (
+		return p.finishAsyncArrow(p.parseArrowFunction())
+	}
+
+	// async x => … (单参数不带括号)
+	if p.peekTokenIs(lexer.IDENTIFIER) && p.peek2TokenIs(lexer.ARROW) {
+		p.nextToken() // cur = 标识符
+		ident := &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
+		p.nextToken() // cur = =>
+		return p.finishAsyncArrow(p.parseArrowFunctionBody([]*ast.Parameter{{
+			Token: ident.Token, Name: ident.Value,
+		}}))
+	}
+
+	p.addError("unsupported async expression after 'async' (only 'async function' " +
+		"and async arrow functions are supported)")
 	return nil
+}
+
+// finishAsyncArrow 给箭头函数打上 async 前缀。
+// parseArrowFunction / parseArrowFunctionBody 返回 Expression, 失败时是 nil 且
+// 内部已经报过具体错, 这里统一转换一次, 免得两个分支各写一遍类型断言。
+func (p *Parser) finishAsyncArrow(expr ast.Expression) ast.Expression {
+	af, ok := expr.(*ast.ArrowFunctionExpression)
+	if !ok {
+		return nil
+	}
+	af.IsAsync = true
+	return af
 }
 
 // parseYieldExpression 解析 yield 表达式。

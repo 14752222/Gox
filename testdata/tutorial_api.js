@@ -46,7 +46,7 @@ try {
 // 1.3 异步 API: 省略回调返回 Promise, 末参给函数走回调式
 // ---------------------------------------------------------------------------
 // 两句语法纪律: ① 顶层不能 await, 异步逻辑要放进 async function;
-//              ② 运行时只支持 `async function`, **不支持 `async () => {}`**。
+//              ② 异步函数两种写法都支持: `async function` 与 `async () => {}`。
 
 async function io() {
   console.log("\n== 1.3 异步 API: await / 回调式 ==");

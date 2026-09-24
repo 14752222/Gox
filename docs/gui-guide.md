@@ -532,8 +532,8 @@ const path = await openFile({                               // → 完整路径 
 - **取消不是错误**：`openFile` 取消返回 `null`（与浏览器 File System Access API 一致），不必 try/catch。
   **没有原生能力的后端会降级**：内容写到 stderr 并立刻返回（`confirm` 取 true、`openFile` 取 null）。
 
-> 语法提示：运行时只支持 `async function`，**不支持 `async () => {}`**。
-> 事件处理器要写成 `onClick: async function () { ... }`。
+> 语法提示：事件处理器的两种写法都可以：`onClick: async function () { ... }` 或
+> `onClick: async () => { ... }`（箭头形式的 `this` 是词法的，要拿外层 `this` 就用它）。
 
 示例：[testdata/dialog_native_demo.js](../testdata/dialog_native_demo.js)。
 

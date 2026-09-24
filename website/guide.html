@@ -198,7 +198,6 @@ let host2 = cfg?.db?.host ?? "127.0.0.1"</code></pre>
       <thead><tr><th>写法</th><th>Gox 的行为</th></tr></thead>
       <tbody>
         <tr><td><code class="inline">var</code></td><td>不支持。用 <code class="inline">let</code> / <code class="inline">const</code></td></tr>
-        <tr><td><code class="inline">async () =&gt; {}</code></td><td>不支持。需要匿名就用 <code class="inline">async function () {}</code></td></tr>
         <tr><td><code class="inline">import { x as y }</code></td><td>不支持。别名会被当成一个额外的命名导入,<code class="inline">y</code> <strong>静默为 <code class="inline">undefined</code></strong>。要改名字就写 <code class="inline">import { x } from "…"</code> 之后自己赋给新变量</td></tr>
         <tr><td><code class="inline">Date</code> / <code class="inline">Intl</code></td><td>没有。用 <code class="inline">Temporal</code></td></tr>
         <tr><td><code class="inline">encodeURI</code> / <code class="inline">btoa</code> 等</td><td>没有。需要时自己用 <code class="inline">String</code> 方法拼</td></tr>

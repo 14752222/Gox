@@ -422,14 +422,20 @@ func (fe *FunctionExpression) expressionNode() {}
 
 // ArrowFunctionExpression 表示 ES6 箭头函数。
 // 例如: (a, b) => a + b  或  (x) => { return x * 2; }
+// async 箭头: async () => … / async (a, b) => … / async x => …
 type ArrowFunctionExpression struct {
 	Token      lexer.Token // ARROW (=>)
+	IsAsync    bool        // async 箭头函数 (IsAsync 与普通箭头共用同一份编译路径)
 	Parameters []*Parameter
 	Body       Node // *BlockStatement 或 Expression (隐式返回)
 }
 
 func (af *ArrowFunctionExpression) TokenLiteral() string { return af.Token.Literal }
 func (af *ArrowFunctionExpression) String() string {
+	prefix := ""
+	if af.IsAsync {
+		prefix = "async "
+	}
 	params := ""
 	for i, p := range af.Parameters {
 		if i > 0 {
@@ -437,7 +443,7 @@ func (af *ArrowFunctionExpression) String() string {
 		}
 		params += p.String()
 	}
-	return "(" + params + ") => " + af.Body.String()
+	return prefix + "(" + params + ") => " + af.Body.String()
 }
 func (af *ArrowFunctionExpression) expressionNode() {}
 

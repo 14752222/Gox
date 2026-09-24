@@ -190,14 +190,10 @@ router.beforeEach((to, from) => {
 });
 
 // 异步: 检查远端是否有未提交内容
-router.beforeEach(async (to) => {   // 注意: 运行时只支持 async function
+router.beforeEach(async (to) => {
   return await checkRemote(to.path) ? true : false;
 });
 ```
-
-> 运行时边界：**只支持 `async function`，不支持 `async () => {}`**（见
-> `agent_doc/undecided-and-unimplemented.md`）。箭头函数要返回 Promise 时请显式
-> `return Promise.resolve(...)` 或改写成 `function`。
 
 ### 4.2 组件级守卫写在哪
 

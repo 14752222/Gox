@@ -325,6 +325,120 @@ func TestArrowFunctionWithBlockBody(t *testing.T) {
 	}
 }
 
+// TestAsyncArrowFunction 钉住 async 箭头函数的各种写法。
+//
+// 判定难点全在开头那一个 token: `async` 是独立 token, 所以 parser 走到这里时
+// cur 是 async、参数列表的 `(` 落在 **peek** 上 —— isArrowFunction 里那条
+// "cur 必须是 ( " 的检查天然为假, 直接调用它永远得到 false。解法是把括号扫描的
+// 起点参数化 (parenGroupFollowedByArrow), 而不是另抄一份扫描: 抄一份迟早分叉。
+func TestAsyncArrowFunction(t *testing.T) {
+	tests := []struct {
+		input   string
+		nparams int
+	}{
+		{`let f = async () => 1;`, 0},
+		{`let f = async (a, b) => a + b;`, 2},
+		{`let f = async (x) => { return x; };`, 1},
+		{`let f = async x => x + 1;`, 1},
+		{`let f = async (a, b = 5) => a + b;`, 2},
+		{`let f = async (...xs) => xs.length;`, 1},
+		{`let f = async ([a, b]) => a + b;`, 1},
+		{`let f = async ({ n }) => n;`, 1},
+		{`let f = async (a, b,) => a * b;`, 2}, // 尾逗号: 与上一个功能交叉
+	}
+	for _, tt := range tests {
+		l := lexer.New(tt.input)
+		p := New(l)
+		program := p.ParseProgram()
+		if p.Errors().HasErrors() {
+			t.Fatalf("%q: parser errors: %s", tt.input, p.Errors().String())
+		}
+		letStmt, ok := program.Statements[0].(*ast.LetStatement)
+		if !ok {
+			t.Fatalf("%q: expected LetStatement, got %T", tt.input, program.Statements[0])
+		}
+		af, ok := letStmt.Value.(*ast.ArrowFunctionExpression)
+		if !ok {
+			t.Fatalf("%q: expected ArrowFunctionExpression, got %T", tt.input, letStmt.Value)
+		}
+		if !af.IsAsync {
+			t.Fatalf("%q: expected IsAsync=true", tt.input)
+		}
+		if len(af.Parameters) != tt.nparams {
+			t.Fatalf("%q: expected %d params, got %d", tt.input, tt.nparams, len(af.Parameters))
+		}
+		if af.Body == nil {
+			t.Fatalf("%q: expected body", tt.input)
+		}
+	}
+
+	// String() 要把 async 前缀带上, 否则调试输出会看不出它是异步的
+	l := lexer.New(`let f = async (a) => a;`)
+	p := New(l)
+	program := p.ParseProgram()
+	checkParserErrors(t, p)
+	af := program.Statements[0].(*ast.LetStatement).Value.(*ast.ArrowFunctionExpression)
+	if got := af.String(); got != "async (a) => a" {
+		t.Fatalf("String() = %q, want %q", got, "async (a) => a")
+	}
+
+	// 对照 1: 普通箭头不能被染成 async (判定走的是同一条 parenGroupFollowedByArrow)
+	l = lexer.New(`let f = (a) => a;`)
+	p = New(l)
+	program = p.ParseProgram()
+	checkParserErrors(t, p)
+	plain := program.Statements[0].(*ast.LetStatement).Value.(*ast.ArrowFunctionExpression)
+	if plain.IsAsync {
+		t.Fatal("普通箭头函数的 IsAsync 应为 false")
+	}
+	if got := plain.String(); got != "(a) => a" {
+		t.Fatalf("普通箭头 String() = %q, want %q", got, "(a) => a")
+	}
+
+	// 对照 2: async function 仍然走老的 FunctionExpression 分支
+	l = lexer.New(`let f = async function (a) { return a; };`)
+	p = New(l)
+	program = p.ParseProgram()
+	checkParserErrors(t, p)
+	fef, ok := program.Statements[0].(*ast.LetStatement).Value.(*ast.FunctionExpression)
+	if !ok {
+		t.Fatalf("async function 应仍是 FunctionExpression")
+	}
+	if !fef.IsAsync {
+		t.Fatal("async function 的 IsAsync 应为 true")
+	}
+}
+
+// TestAsyncArrowFunctionRejected 覆盖 async 后面那些写错的形状。
+//
+// 三件事都要钉住: (1) 括号组后面没有 => 要**点名**, 别让人对着
+// "unsupported async expression" 猜; (2) 括号不闭合时扫描有上限, 必须报错返回
+// 而不是一路扫到 EOF 卡在那里; (3) 其余非法形状仍给通用文案。
+func TestAsyncArrowFunctionRejected(t *testing.T) {
+	const generic = "unsupported async expression after 'async' (only 'async function' " +
+		"and async arrow functions are supported)"
+	tests := []struct{ input, want string }{
+		// ES 里 `async(x)` 是「调用一个名叫 async 的函数」; 本运行时 async 是保留字,
+		// 那个函数不可能存在 ⇒ 这一定是漏写了 =>
+		{`let f = async (a, b);`, "expected '=>' after async parameter list"},
+		{`let f = async () ;`, "expected '=>' after async parameter list"},
+		{`let f = async (a, b => 1;`, "expected '=>' after async parameter list"},
+		{`let f = async 42;`, generic},
+		{`let f = async;`, generic},
+	}
+	for _, tt := range tests {
+		l := lexer.New(tt.input)
+		p := New(l)
+		p.ParseProgram()
+		if !p.Errors().HasErrors() {
+			t.Fatalf("%q: expected an error", tt.input)
+		}
+		if got := p.Errors().Errors[0].Message; got != tt.want {
+			t.Fatalf("%q: first error = %q, want %q", tt.input, got, tt.want)
+		}
+	}
+}
+
 func TestArrowFunctionDefaultParams(t *testing.T) {
 	input := `let f = (a, b = 5) => a + b;`
 

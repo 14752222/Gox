@@ -181,7 +181,7 @@ Promise { <pending> }     ← 顶层回显：main() 调用的返回值
 timer done                ← 定时器到期后，await 继续执行
 ```
 
-> 语法提示：运行时只支持 `async function`，**不支持 `async () => {}`**。
+> 语法提示：异步函数写 `async function` 或 async 箭头 `async () => {}` 都行；顶层不能 `await`。
 
 **ES 模块** —— `lib.js`：
 

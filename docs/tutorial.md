@@ -112,8 +112,8 @@ fs.readFile(f, "utf8", (err, data) => {
 - **顶层不能 `await`**, 异步逻辑要放进 `async function`; (顶层 `main()` 的返回值会被
   回显成 `Promise { <pending> }` —— 不想要这行噪音就写成 `const boot = main()`, 赋值语句
   不算"顶层表达式回显"。)
-- 运行时**只支持 `async function`, 不支持 `async () => {}`** ⇒ 事件处理器要写成
-  `onClick: async function () { ... }`。
+- 异步函数两种写法都支持: `async function () { ... }` 与 `async () => { ... }`
+  —— 要与外层共用 `this` 就用箭头形式。
 
 **异步 API 速查**: `fs.readFile / writeFile / appendFile / stat / readdir / mkdir / unlink / rm`
 的参数与同步版一一对应, 只是多了末位回调; `http.get(url, options?, cb?)` 与
@@ -162,7 +162,6 @@ await new Promise((resolve) => server.close(resolve))                  // 收好
 | 不支持的写法 | 替代 |
 |---|---|
 | `var` | 一律 `let` / `const` |
-| `async () => {}` | `async function () {}` |
 | 顶层 `await` | 放进 `async function` 后调用 |
 | `import { x as y } from "..."` | **别名会被静默忽略**(`y` 拿到 `undefined`, 还多声明一个 `as` 绑定) ⇒ 用原名, 或用命名空间 `import * as m` |
 | `getStorage(key, 默认值)` | 第二参数被忽略、缺失时返回 `undefined` ⇒ `getStorage(k) ?? 默认值` |

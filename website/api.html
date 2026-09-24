@@ -294,7 +294,7 @@ console.log(/^(\d+)-(\w+)$/.exec("42-abc")[2]);              // abc</code></pre>
       <thead><tr><th>对象</th><th>要点</th></tr></thead>
       <tbody>
         <tr><td>Promise</td><td><code class="inline">new Promise(fn)</code>、<code class="inline">then</code> / <code class="inline">catch</code> / <code class="inline">finally</code>,静态 <code class="inline">resolve</code> / <code class="inline">reject</code> / <code class="inline">all</code> / <code class="inline">allSettled</code> / <code class="inline">race</code> / <code class="inline">any</code></td></tr>
-        <tr><td>async / await</td><td>语法层支持。<strong>只支持 <code class="inline">async function</code></strong>,不支持 <code class="inline">async () =&gt; {}</code></td></tr>
+        <tr><td>async / await</td><td>语法层支持。<code class="inline">async function</code> 与 async 箭头(<code class="inline">async () =&gt; {}</code> / <code class="inline">async x =&gt; x</code>)都可以;顶层不能 <code class="inline">await</code></td></tr>
         <tr><td>delay</td><td>Gox 特有的便捷函数:<code class="inline">delay(ms, value?)</code> 返回一个延时 resolve 的 Promise</td></tr>
       </tbody>
     </table>
@@ -1041,7 +1041,7 @@ resetDisplays();                 // 撤销上报,回到后端枚举</code></pre>
     </p>
     <pre class="code"><code data-lang="js">import { confirm, openFile } from "gx/dialog";
 
-// ⚠ 只支持 async function,不支持 async () => {}
+// 事件处理器的两种写法都可以: async function () {} 与 async () => {}
 h("button", {
   onClick: async function () {
     const yes = await confirm("Proceed with the operation?", "Please confirm");
@@ -1358,7 +1358,6 @@ count = 2</code></pre>
       <thead><tr><th>项目</th><th>Gox 的行为</th></tr></thead>
       <tbody>
         <tr><td><code class="inline">var</code></td><td><strong>不支持</strong>。只用 <code class="inline">let</code> / <code class="inline">const</code></td></tr>
-        <tr><td><code class="inline">async () =&gt; {}</code></td><td><strong>不支持</strong>。只支持 <code class="inline">async function</code>;需要匿名就用 <code class="inline">async function () {}</code></td></tr>
         <tr><td><code class="inline">import &#123; x as y &#125;</code></td><td><strong>不生效</strong>(且不报错):<code class="inline">y</code> 静默为 <code class="inline">undefined</code>。命名空间导入 <code class="inline">import * as ns</code> 与默认导出正常</td></tr>
         <tr><td><code class="inline">Date</code></td><td><strong>没有</strong>。用 <code class="inline">Temporal</code></td></tr>
         <tr><td><code class="inline">Intl</code></td><td><strong>没有</strong>。数字与日期格式化要自己写</td></tr>
