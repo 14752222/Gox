@@ -37,11 +37,7 @@ go.work.sum
 # Mimosa 安全扫描产物
 .mimosa/
 
-# npm 打包产物：tgz 是 npm pack 在包目录里留下的文件。
-# （0.1.0 时代那两个本地手工发版辅助脚本 publish-*.bat / fix-tarball-modes.py
-#   已于 2026-09-22 删除 —— 现在只走 .github/workflows/release.yml 的 OIDC 发布，
-#   Windows 上 pack 会丢 POSIX 权限位的问题在 Linux CI 上不存在。）
-npm/*.tgz
+# 提交信息草稿（git 是原生 Windows 二进制，喂长提交信息时先落成文件）
 _commitmsg.txt
 
 # WorkBuddy 内部工作笔记（逐日日志、MEMORY.md、gfx-invariants 等）—— 不对外公开。
@@ -60,23 +56,32 @@ _commitmsg.txt
 #    （它只校验站内相对链接，外链 github.com/... 一律跳过）。
 agent_doc/
 
-# 官网源码 —— 2026-09-21 起重新纳入版本库并自动发布：
-# 推 main 后由 .github/workflows/pages.yml 把 website/ 部署到 GitHub Pages
-# （https://14752222.github.io/Gox/）。改完 website/** 直接提交推送即上线。
-# 注：历史提交与 v0.1.0/v0.1.1 标签里本来就有这份源码。
 /.zcode/
-/gox-logo-concepts/
 
-# npm 分发：仓库只跟踪包的定义三件套（package.json / bin/gox.js / README.md）。
-# 二进制与 tgz 都是构建产物，一律落在 dist/（scripts/build-npm.sh 产出），不进仓库。
-#
-# ⚠️ 不要在这份文件里写任何 npm/ 下面的路径！npm 打包时若在包目录里找不到
-# .npmignore，会回退把 .gitignore 当忽略规则用，于是被它忽略的目录即使写在
-# package.json 的 files 白名单里也进不了包 —— 0.2.0 就是这么发出一个没有二进制
-# 的空壳包的（2026-09-20：本地 Windows 不复现、Linux CI 上必现）。
-# 包目录里的 npm/.npmignore 专门用来掐断这条回退路径，这里再退一步避开它。
+# 构建产物：交叉编译出来的二进制与 npm 打包中间物都落在 dist/（scripts/*.sh 产出）
 dist/
 
-# 仓库顶部 Go 模板自带的 `*.exe` 会连包里的 Windows 二进制一起匹配掉，
-# 必须在包目录内显式取消忽略（父目录没被忽略，否定式才有效）。
-!npm/binaries/**/*.exe
+# ─────────────────────────────────────────────────────────────────────────────
+# 子模块（2026-09-24 从本仓库拆出去，各自成为独立仓库）
+#
+#   npm/                → https://github.com/14752222/gox-npm
+#   website/            → https://github.com/14752222/gox-website
+#   gox-logo-concepts/  → https://github.com/14752222/gox-logo-concepts
+#
+# ⚠️ 永远不要把这三条路径（或它们下面的任何路径）写进这份 .gitignore。
+#    子模块在父仓库里是一个必须可跟踪的 gitlink：路径一旦被忽略，
+#    `git submodule add` 会被拒绝，已存在的指针也会在提交时被静默丢掉。
+#
+# ⚠️ 原先写在这里的 `npm/*.tgz` 与 `!npm/binaries/**/*.exe` 两条规则已随拆分作废 ——
+#    它们防的是「这份 .gitignore 会被 npm 打包当成忽略规则读走」，而拆出去之后
+#    包目录里读到的是 gox-npm 仓库自己的 .gitignore。完整的教训说明
+#    （2026-09-20：因为忽略规则把包内容吃掉，发过一个没有二进制的空壳包）
+#    已随规则一起搬到 gox-npm/.gitignore。
+#
+# website/ 曾经长期被本文件排除、只在本地改，于是线上一直是那份旧快照（导航还写着
+#    v0.1.1）—— 2026-09-21 收回版本库并加了 pages.yml 自动发布。现在它是子模块，
+#    改完要在 website 仓库里提交推送，再回本仓库更新指针，两处都要推。
+#
+# 克隆方式：git clone --recurse-submodules git@github.com:14752222/Gox.git
+# 已有克隆补子模块：git submodule update --init
+# ─────────────────────────────────────────────────────────────────────────────

@@ -1,0 +1,9 @@
+[submodule "npm"]
+	path = npm
+	url = git@github.com:14752222/gox-npm.git
+[submodule "website"]
+	path = website
+	url = git@github.com:14752222/gox-website.git
+[submodule "gox-logo-concepts"]
+	path = gox-logo-concepts
+	url = git@github.com:14752222/gox-logo-concepts.git
