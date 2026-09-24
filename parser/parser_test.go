@@ -957,6 +957,67 @@ func TestTraditionalForVariants(t *testing.T) {
 	}
 }
 
+// TestTraditionalForConstDestructuringInit 钉住 const 解构声明作传统 for 的 init。
+//
+// 回归背景: parseConstStatement 的解构分支重复调了一次 consumeSemicolon (与
+// parseDestructuringLet 末尾那次重复), 而 consumeSemicolon 只看 peek 是不是 ';'。
+// 单看无害, 但在 for 头里遇到**相邻的两个 ';'** 就会多吞一个:
+//
+//	for (const [a] = [1];;)  →  错报 "no prefix parse function for RPAREN found"
+//	                             (错在"少写分号"上, 而写法本身是合法的)
+//	for (const {a} = {a: 1};; n = n + 1)  →  不报错, 但 update 被吃成 condition
+//
+// 两个失败模式的严重程度不一样, 所以两张都断言。let 写法走 parseLetStatement (没有
+// 那次重复调用) 作对照, 它一直是好的 —— 差异只出在 const 上, 正是这条线索把
+// 范围圈到那一行。
+func TestTraditionalForConstDestructuringInit(t *testing.T) {
+	tests := []struct {
+		input     string
+		hasCond   bool
+		hasUpdate bool
+	}{
+		// 空 condition + 空 update: 以前这里是硬报错
+		{`for (const [a] = [1];;) { break; }`, false, false},
+		{`for (const {a} = {a: 1};;) { break; }`, false, false},
+		// 空 update + 有 condition: 以前也对, 但它证明修复没有反向破坏
+		{`for (const [a] = [1]; a < 3;) { break; }`, true, false},
+		// 空 condition + 有 update: 以前 update 被静默吃成 condition
+		{`for (const {a} = {a: 1};; n = n + 1) { break; }`, false, true},
+		// 三段齐全的常规写法
+		{`for (const [a] = [1]; a < 3; a = a + 1) { }`, true, true},
+		// let 写法的对照 (走 parseLetStatement, 本来就没有那次重复调用)
+		{`for (let [a] = [1];;) { break; }`, false, false},
+	}
+	for _, tt := range tests {
+		l := lexer.New(tt.input)
+		p := New(l)
+		program := p.ParseProgram()
+		if p.Errors().HasErrors() {
+			t.Fatalf("%q: parser errors: %s", tt.input, p.Errors().String())
+		}
+		if len(program.Statements) != 1 {
+			t.Fatalf("%q: expected 1 statement, got %d", tt.input, len(program.Statements))
+		}
+		fs, ok := program.Statements[0].(*ast.ForStatement)
+		if !ok {
+			t.Fatalf("%q: expected ForStatement, got %T", tt.input, program.Statements[0])
+		}
+		if (fs.Condition != nil) != tt.hasCond {
+			t.Fatalf("%q: condition presence mismatch, got %v", tt.input, fs.Condition != nil)
+		}
+		if (fs.Update != nil) != tt.hasUpdate {
+			t.Fatalf("%q: update presence mismatch, got %v", tt.input, fs.Update != nil)
+		}
+		// init 必须真的被收下 —— 多吞一个分号时它会连人带声明一起被丢掉
+		switch fs.Init.(type) {
+		case *ast.ConstStatement, *ast.LetStatement:
+			// ok
+		default:
+			t.Fatalf("%q: expected destructuring declaration init, got %T", tt.input, fs.Init)
+		}
+	}
+}
+
 func TestWhileStatement(t *testing.T) {
 	input := `while (x < 10) { x = x + 1; }`
 

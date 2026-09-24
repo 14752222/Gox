@@ -443,7 +443,14 @@ func (p *Parser) parseConstStatement() *ast.ConstStatement {
 		}
 		stmt.Name = letStmt.Name
 		stmt.Value = letStmt.Value
-		p.consumeSemicolon()
+		// 此处**不能**再调一次 consumeSemicolon: parseDestructuringLet 末尾已经调过。
+		// 而 consumeSemicolon 只在 peek 是 ';' 时才前进 (见文件末尾的定义), 于是
+		// 第二次调用时 cur 正停在那一个 ';' 上, 一旦**紧跟另一个 ';'** 就会多走一步。
+		// 典型写法就是传统 for 的头部 `for (const [a] = [1];;)`: 空 condition 被
+		// 跳过一格, ')' 落进 parseExpression, 报 "no prefix parse function for
+		// RPAREN found" —— 错在"少写了个分号"上, 而写法本身没问题; 若是空 update
+		// 那一支 (`for (const {a} = {a: 1};; n = n + 1)`) 更糟: 不报错, 而是把
+		// update 表达式静默吃成 condition。
 		return stmt
 	}
 
