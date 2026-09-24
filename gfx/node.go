@@ -123,7 +123,15 @@ func (n *GuiNode) SetProperty(string, object.Value) {}
 // 消除"未实现组件静默渲染成空盒子"的陷阱 (不会报错, 用户只能看到空白)。
 // 渲染行为不因告警改变: 未知标签仍走通用盒子分支 (背景/边框 + 子节点叠放)。
 //
-// !!! 每新增一个内置组件 (含布局/绘制分支) 时必须同步在此登记 !!!
+// !!! 每新增一个内置组件 (含布局/绘制分支) 时必须同步登记四处 !!!
+//
+//	knownTags (本处) / layoutNode / intrinsicSize / drawNode
+//
+// 四处**不是恒等** (叶子控件走 layoutNode 的 default、容器走 drawNode 的通用盒),
+// 但每一处"该有却没有"都是静默失效 —— 组件照旧渲染成空盒子, 不报错。
+// 这条守则已经做成 CI 闸门: scripts/check-registries.py 拿一张显式豁免表与代码
+// **双向核对** (表里说豁免就必须真没分支, 没豁免就必须有分支), 漏一个站点就红。
+// 新增组件后先跑它; 改了那张表或抽取逻辑, 再跑 scripts/check-registries-selftest.py。
 var knownTags = map[string]struct{}{
 	// 布局容器 (P3 / §四): 纵横堆叠 + 折行 + 等宽网格
 	"column": {}, "row": {}, "grid": {},

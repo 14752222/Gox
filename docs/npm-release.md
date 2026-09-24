@@ -1,7 +1,8 @@
 # @goxjs/goxjs 发版手册（npm）
 
 > **一句话**：改 `npm/package.json` 的 `version` → 提交 → push 到 `main`。剩下的由
-> `.github/workflows/release.yml` 全自动完成：判重（版本已在 registry 上就跳过）→ 交叉编译
+> `.github/workflows/release.yml` 全自动完成：判重（版本已在 registry 上就跳过）→
+> 注册表一致性校验（内置组件四处 / gx 模块三处 / 版本号 / npm 清单）→ 交叉编译
 > 五平台二进制 → 打包内容校验 → OIDC 发布 → 打 tag + 建 Release。
 > **本机不需要 token、不需要 `npm login`、不需要手工 `npm publish`。**
 
@@ -22,6 +23,17 @@
 就等于发版，"没改版本号推 main"绝不会误发。
 
 ## 2. 发版前要同步的文档（本次 0.2.0 → 0.3.0 的清单）
+
+> 先跑一遍静态闸门，它会替你抓出"改了 `main.go` 的版本号没改 `package.json`"这类
+> 手工同步遗漏（CI 里是 `release.yml` 的第一道步骤，本地等价命令）：
+>
+> ```bash
+> python3 scripts/check-registries.py          # 四项静态一致性
+> python3 scripts/check-registries.py --list   # 只对表，不判定
+> ```
+>
+> 新增/删改 Gox 内置标签或 `gx/*` 模块之后，还要跑一次负向自测
+> （`python3 scripts/check-registries-selftest.py`）—— 确认这把闸门还会红。
 
 | 文件 | 改什么 | 为什么 |
 |---|---|---|
@@ -125,6 +137,9 @@ curl -s "https://registry.npmjs.org/-/npm/v1/attestations/@goxjs%2Fgoxjs@0.3.0" 
 ## 7. 相关文件
 
 - `.github/workflows/release.yml` —— 流水线本体（文件头有同一份说明）
+- `.github/workflows/ci.yml` —— 常规闸门：注册表一致性 + `go build`/`vet`/`test`
+- `scripts/check-registries.py` —— 四项静态一致性（内置组件四处 / gx 模块三处 / 版本号 / npm 清单）
+- `scripts/check-registries-selftest.py` —— 上一条的负向自测，证明它真的会红
 - `scripts/build-npm.sh` —— 五平台交叉编译 + 可选 `--into-package`
 - `npm/package.json` / `npm/bin/gox.js` / `npm/README.md` —— 仓库跟踪的包定义三件套
 - `agent_doc/gui-component-status.md` —— 每次能力落地后追加的「落地记录」

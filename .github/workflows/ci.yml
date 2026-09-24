@@ -1,0 +1,82 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# 常规检查闸门：注册表一致性 + 编译 + 静态检查 + 测试
+#
+# 为什么需要这个文件：Gox 有几处**必须手工同步**的注册表，漏改一律不报错 ——
+#   内置组件漏登记某个站点 → 渲染成空盒子；gx/* 模块漏进 submodules → 聚合入口
+#   少一半导出；main.go 与 npm/package.json 版本号脱钩 → `gox version` 撒谎。
+#   release.yml 只管发版（且在发布时才发现版本号对不上），pages.yml 只管官网，
+#   都不管这些。本工作流把它们一次性拦在推送阶段。
+#
+# 为什么测试跑在 windows-latest：Windows 是本仓库的主开发平台，也是 README 里
+#   写明的本地闸门（`go test ./...`）已经全绿的平台；Linux 无头环境下的测试行为
+#   没有验证过（gfx 有一批窗口/字体相关用例靠 t.Skip 兜无桌面，行为随 runner 变）。
+#   宁可先把测试钉在一个已知全绿的平台上，也不要抄一个没验证过的 ubuntu 测试作业。
+#   静态检查（注册表 + vet）放在 ubuntu 上跑，因为那部分与平台无关、且最快。
+#
+# 与其它工作流的关系：互不触发、也互不阻塞，需要用同一把闸门时靠分支保护规则
+#   把这里的作业设成 required check（那是仓库设置，代码里写不了）。只读，无 secret。
+#
+# 失败时怎么查：注册表检查把**具体文件 + 标签 + 缺哪个站点**写进输出（脚本内部
+#   已经带证据，这里只补一句 ::error:: 便于从 Actions 的 annotations 直接读到）。
+# ─────────────────────────────────────────────────────────────────────────────
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 同一分支的连续推送只跑最后一次 —— 这是检查闸门，不是发版流水线，不需要排队
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  registries:
+    name: 注册表一致性 / 版本号同步
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 内置组件四处同步 / gx 模块三处同步 / 版本号一致 / npm 清单自洽
+        run: |
+          set -euo pipefail
+          # 不加 `| tee` 之类的管道：失败时退出码会被管道后的命令吃掉，
+          # 而这一行本身就是「编译/测试之前」的那道闸门，必须让它真的拦住。
+          if ! python3 scripts/check-registries.py; then
+            echo "::error::注册表一致性检查未通过 —— 具体是哪个标签缺哪个站点见上一条输出；本地可先跑 python3 scripts/check-registries.py --list 对表"
+            exit 1
+          fi
+
+  build-test:
+    name: 编译 / vet / 测试 (windows)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: go build ./...
+        run: go build ./...
+
+      - name: go vet ./...
+        run: go vet ./...
+
+      # 零 cgo 是硬约束，所以 -race 在本项目不可用（Go 会要求 cgo 支持），
+      # 这里也就没有 -race 这一档。
+      - name: go test ./...
+        run: go test ./...
+
+      - name: 冒烟：命令行能起来并报版本号
+        run: |
+          go build -o dist/ci-gox.exe .
+          ./dist/ci-gox.exe version

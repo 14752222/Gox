@@ -453,8 +453,8 @@ REPL 内建命令：`:help`（帮助）、`:clear`（重置全局环境）、`:e
 | `testdata/` | 可直接运行的示例脚本（语言特性、宿主 API、GUI 示例） |
 | `docs/` | **对外文档**（GUI 指南、运行时 API 教程、分发与发版手册）——过程性材料在 `agent_doc/`（不随仓库发布） |
 | `npm/` | npm 包 `@goxjs/goxjs` 的**定义**（`package.json` / `bin/gox.js` / 包说明），二进制由发版流水线现场编译，不进仓库 |
-| `scripts/` | 构建脚本：`build-npm.sh` 交叉编译五个平台的二进制 |
-| `.github/workflows/` | CI：`release.yml` 发版流水线（push main / tag / Release → npm） |
+| `scripts/` | 构建与检查脚本：`build-npm.sh` 交叉编译五个平台的二进制；`check-site.py` 官网静态检查；`check-registries.py` 注册表一致性（内置组件四处 / gx 模块三处 / 版本号 / npm 清单），配 `check-registries-selftest.py` 做负向自测 |
+| `.github/workflows/` | CI：`ci.yml` 常规闸门（注册表一致性 + `go build`/`vet`/`test`）；`release.yml` 发版流水线（push main / tag / Release → npm）；`pages.yml` 官网发布 |
 
 ## 开发与测试
 
