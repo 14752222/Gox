@@ -63,7 +63,10 @@ func TestConstStatements(t *testing.T) {
 }
 
 func TestVarDeclarationRejected(t *testing.T) {
-	// var 声明在语句层被拒绝; 包括 for (var ...) 形式
+	// var 是**有意**不支持的边界, 不是漏做 (2026-09-24 评估后维持; 理由见
+	// parser.go 的 VAR 分支与官网 guide.html 的「为什么不支持 var?」)。
+	// 这里除了"拒绝", 还钉住**文案**: 它本身就是给用户的行动指引, 改了会让
+	// 排障的人失去唯一线索。声明在语句层被拒绝, 包括 for (var ...) 形式。
 	inputs := []string{
 		`var x = 5;`,
 		`for (var i = 0; i < 3; i++) { }`,
@@ -75,6 +78,9 @@ func TestVarDeclarationRejected(t *testing.T) {
 		p.ParseProgram()
 		if !p.Errors().HasErrors() {
 			t.Fatalf("expected parse error for %q, but got none", input)
+		}
+		if got := p.Errors().Errors[0].Message; got != "var is not supported, use let or const instead" {
+			t.Fatalf("%q: 报错文案变了 (它对用户就是行动指引): %q", input, got)
 		}
 	}
 }
@@ -992,6 +998,85 @@ func TestUnaryExpression(t *testing.T) {
 		_, ok := stmt.Expression.(*ast.UnaryExpression)
 		if !ok {
 			t.Fatalf("input %q: expected UnaryExpression, got %T", input, stmt.Expression)
+		}
+	}
+}
+
+// 尾逗号: 实参列表与形参列表。
+//
+// 2026-09-24 修: 数组/对象字面量与解构**一直**收尾逗号 (那几个循环用
+// `for !curTokenIs(闭括号)` 收尾), 只有实参/形参列表不收 —— 同一个文件里两种
+// 口径。ES 里尾逗号与不收时语义逐字节相同, 所以该收; 而**不收**时的报错还特别
+// 有误导性, 报错点落在逗号之后:
+//
+//	f(a, b,)              → no prefix parse function for RPAREN
+//	function (a, b,) {}   → expected parameter name, got RPAREN
+//
+// 看着像"参数写漏了"。
+//
+// 这里同时钉住两侧: "该收的收" 与 "非法写法仍然报错"。放宽实现只是把一处
+// `p.nextToken()` 换成 `break`, 顺手把 f(,) / f(a,,b) 也放过去太容易了。
+func TestTrailingCommaInArgumentAndParameterLists(t *testing.T) {
+	// 收了尾逗号, 但形状必须与不收时逐字一致 —— 实参个数不能变成 3
+	for _, tc := range []struct {
+		src  string
+		want int
+	}{
+		{`f(a, b,);`, 2},
+		{`f(a,);`, 1},
+		{`f(a, b, c,);`, 3},
+		{`f();`, 0},
+		{`f(...rest,);`, 1},
+		{`new F(a, b,);`, 2},
+	} {
+		p := New(lexer.New(tc.src))
+		program := p.ParseProgram()
+		checkParserErrors(t, p)
+
+		stmt, ok := program.Statements[0].(*ast.ExpressionStatement)
+		if !ok {
+			t.Fatalf("%s: 不是表达式语句: %T", tc.src, program.Statements[0])
+		}
+		var args []ast.Expression
+		switch e := stmt.Expression.(type) {
+		case *ast.CallExpression:
+			args = e.Arguments
+		case *ast.NewExpression:
+			args = e.Arguments
+		default:
+			t.Fatalf("%s: 期望调用/new 表达式, got %T", tc.src, stmt.Expression)
+		}
+		if len(args) != tc.want {
+			t.Fatalf("%s: 实参个数 = %d, want %d", tc.src, len(args), tc.want)
+		}
+	}
+
+	// 形参列表: 声明式 / 函数表达式 / 箭头 / 方法简写 四处都要能过
+	for _, src := range []string{
+		`function g(a, b,) { return a; }`,
+		`const h = function (a, b,) { return a; };`,
+		`const k = (a, b,) => a;`,
+		`const o = { m(a, b,) { return a; } };`,
+		`function r(a, ...rest,) { return a; }`,
+	} {
+		p := New(lexer.New(src))
+		p.ParseProgram()
+		checkParserErrors(t, p)
+	}
+
+	// 放宽的那一处不能把非法写法也放过去
+	for _, src := range []string{
+		`f(,);`,
+		`f(a,, b);`,
+		`f(a,,);`,
+		`function g(,) {}`,
+		`function g(a, , b) {}`,
+		`const k = (, ) => 1;`,
+	} {
+		p := New(lexer.New(src))
+		p.ParseProgram()
+		if !p.Errors().HasErrors() {
+			t.Fatalf("%s: 应当报错但通过了", src)
 		}
 	}
 }

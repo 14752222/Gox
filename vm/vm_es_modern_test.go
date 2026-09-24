@@ -169,3 +169,27 @@ func TestMiscNewAPIs(t *testing.T) {
 	// AggregateError
 	assertJS(t, `new AggregateError([1,2], "multi").name`, "AggregateError")
 }
+
+// ===== 实参 / 形参列表的尾逗号 =====
+//
+// 解析层放宽在 parser/parser.go 的 parseArguments 与 parseParameters; 这里钉住
+// **行为**: 尾逗号不能多出一个实参、也不能把形参个数算错 (形参个数直接影响
+// arguments.length 与函数的 length 属性)。
+func TestTrailingCommaInLists(t *testing.T) {
+	// 实参
+	assertNumber(t, evalJS(t, `function f(a, b) { return a + b } f(1, 2,)`), 3)
+	assertNumber(t, evalJS(t, `function F(x) { this.x = x } new F(7,).x`), 7)
+	assertNumber(t, evalJS(t, `let s = (x) => x; s(...[7],)`), 7)
+	// 形参: 声明式 / 函数表达式 / 箭头 / 方法简写 / 剩余参数
+	assertNumber(t, evalJS(t, `function g(a, b,) { return a * b } g(3, 4)`), 12)
+	assertNumber(t, evalJS(t, `let h = function (a, b,) { return a - b }; h(9, 4)`), 5)
+	assertNumber(t, evalJS(t, `let k = (a, b,) => a + b; k(1, 2)`), 3)
+	assertNumber(t, evalJS(t, `let o = { m(a, b,) { return a + b } }; o.m(2, 3)`), 5)
+	assertNumber(t, evalJS(t, `(function (a, ...r,) { return a + r.length })(1, 2, 3,)`), 3)
+	// 个数不能被尾逗号带偏
+	assertNumber(t, evalJS(t, `function n(a, b,) { return arguments.length } n(1, 2,)`), 2)
+	assertNumber(t, evalJS(t, `(function (a, b,) { }).length`), 2)
+	// 字面量/解构那四处本来就收尾逗号, 一起钉住以免"统一口径"时反向改坏
+	assertNumber(t, evalJS(t, `let a = [1, 2, 3,]; let o = { v: 1, };
+		let [p, q,] = a; let { v, } = o; a.length + o.v + p + q + v`), 8)
+}

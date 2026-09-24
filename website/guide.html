@@ -198,7 +198,6 @@ let host2 = cfg?.db?.host ?? "127.0.0.1"</code></pre>
       <tbody>
         <tr><td><code class="inline">var</code></td><td>不支持。用 <code class="inline">let</code> / <code class="inline">const</code></td></tr>
         <tr><td><code class="inline">async () =&gt; {}</code></td><td>不支持。需要匿名就用 <code class="inline">async function () {}</code></td></tr>
-        <tr><td><code class="inline">f(a, b,)</code></td><td>调用参数<strong>尾逗号</strong>不支持,会报 <code class="inline">no prefix parse function for RPAREN</code></td></tr>
         <tr><td><code class="inline">import { x as y }</code></td><td>不支持。别名会被当成一个额外的命名导入,<code class="inline">y</code> <strong>静默为 <code class="inline">undefined</code></strong>。要改名字就写 <code class="inline">import { x } from "…"</code> 之后自己赋给新变量</td></tr>
         <tr><td><code class="inline">for (const [a, b] of pairs)</code></td><td>不支持(<code class="inline">for...of</code> 与解构的组合)。用普通的 <code class="inline">for (const p of pairs)</code> 再解构 <code class="inline">p</code>,或改用下标循环</td></tr>
         <tr><td><code class="inline">Date</code> / <code class="inline">Intl</code></td><td>没有。用 <code class="inline">Temporal</code></td></tr>

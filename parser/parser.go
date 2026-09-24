@@ -290,7 +290,15 @@ func (p *Parser) parseStatement() ast.Statement {
 	case lexer.CONST:
 		return p.parseConstStatement()
 	case lexer.VAR:
-		// 本运行时拒绝 var 声明 (var 的函数级作用域/提升语义与 let/const 冲突)。
+		// **有意不支持的边界, 不是漏做** (2026-09-24 评估后维持; 与官网
+		// api.html / guide.html 的「语言边界」表、README 的口径一致)。
+		//
+		// 理由: var 的函数级作用域 + 变量提升 + 允许重复声明, 与 let/const 的
+		// 块级作用域是两套语义。真做得在编译器里另加一套作用域解析; 而"当 let
+		// 用"是最省事也最坏的选项 —— 没有提升/重复声明的写法下看起来完全正常,
+		// 只在用到那两条语义时才露馅, 属于本仓库一直在剿的**静默语义偏差**。
+		// 所以这里给的是编译期明确报错, 并且文案本身就是行动指引。
+		//
 		// 词法层仍识别 VAR, 以支持 var 作为属性名 (obj.var, {var: 1})。
 		p.addError("var is not supported, use let or const instead")
 		return nil
@@ -889,6 +897,13 @@ func (p *Parser) parseParameters(close lexer.TokenType) []*ast.Parameter {
 			break
 		}
 		p.nextToken() // skip ,
+		// 尾逗号 function (a, b,) {} / (a, b,) => … —— 与 parseArguments
+		// 同一口径 (ES 允许, 语义无差异; 字面量与解构早就支持)。
+		// 不收它时的报错是 "expected parameter name, got RPAREN", 看着像
+		// 参数写漏了, 实际只是多了一个逗号。
+		if p.peekTokenIs(close) {
+			break // 交给下面统一的 expectPeek(close) 收尾
+		}
 		p.nextToken()
 	}
 
@@ -1621,7 +1636,15 @@ func (p *Parser) parseArguments() []ast.Expression {
 			}
 		}
 		if p.peekTokenIs(lexer.COMMA) {
-			p.nextToken()
+			p.nextToken() // 移到 ,
+			// 尾逗号 f(a, b,)：ES 允许，语义与 f(a, b) 逐字节相同，没有
+			// 任何"支持了就要解释差异"的负担。而**不收**它是有代价的：
+			// 数组 / 对象字面量与解构本来就收尾逗号（那几个循环用
+			// `for !curTokenIs(闭括号)` 收尾），只有参数/实参列表例外 ——
+			// 同一个文件里两种口径，用户会以为是别的地方写错了。
+			if p.peekTokenIs(lexer.RPAREN) {
+				break // 交给下面统一的 expectPeek(RPAREN) 收尾
+			}
 			p.nextToken()
 		} else {
 			break
