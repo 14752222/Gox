@@ -332,8 +332,17 @@ def extract_version():
 
 
 def load_pkg():
+    # npm/ 2026-09-24 起是独立仓库（gox-npm）的子模块：裸 clone 时这里会缺文件，
+    # 所以先给一条能直接照做的提示，而不是把 FileNotFoundError 包成一句"读取失败"。
+    path = os.path.join(ROOT, "npm", "package.json")
+    if not os.path.exists(path):
+        raise Fail(
+            "npm/package.json 不存在 —— npm/ 现在是独立仓库的子模块，"
+            "请先跑 git submodule update --init"
+            "（克隆时用 git clone --recurse-submodules）"
+        )
     try:
-        with open(os.path.join(ROOT, "npm", "package.json"), encoding="utf-8") as f:
+        with open(path, encoding="utf-8") as f:
             return json.load(f)
     except (OSError, ValueError) as e:
         raise Fail("读 npm/package.json 失败：%s" % e)

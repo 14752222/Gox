@@ -94,8 +94,12 @@ flex 布局 + JSX + 信号驱动更新，win32 / X11 窗口后端）、一组宿
 
 ### 从源码构建
 
+> `npm/` · `website/` · `gox-logo-concepts/` 是三个**独立仓库**，以 git submodule 挂在
+> 本仓库里。克隆必须带 `--recurse-submodules`；已有克隆补 `git submodule update --init`。
+> 否则这三个目录是空的，`scripts/check-registries.py` 会因为读不到 `npm/package.json` 而失败。
+
 ```bash
-git clone https://github.com/14752222/Gox.git
+git clone --recurse-submodules https://github.com/14752222/Gox.git
 cd Gox
 go build          # 生成可执行文件；Windows 下为 Gox.exe
 ```
@@ -452,9 +456,11 @@ REPL 内建命令：`:help`（帮助）、`:clear`（重置全局环境）、`:e
 | `test/` | 测试相关：`bench/` 性能剖析基准（fib、函数调用、对象操作、数值解析） |
 | `testdata/` | 可直接运行的示例脚本（语言特性、宿主 API、GUI 示例） |
 | `docs/` | **对外文档**（GUI 指南、运行时 API 教程、分发与发版手册）——过程性材料在 `agent_doc/`（不随仓库发布） |
-| `npm/` | npm 包 `@goxjs/goxjs` 的**定义**（`package.json` / `bin/gox.js` / 包说明），二进制由发版流水线现场编译，不进仓库 |
+| `npm/` | **子模块** → [gox-npm](https://github.com/14752222/gox-npm)：npm 包 `@goxjs/goxjs` 的**定义**（`package.json` / `bin/gox.js` / 包说明），二进制由发版流水线现场编译，不进仓库 |
 | `scripts/` | 构建与检查脚本：`build-npm.sh` 交叉编译五个平台的二进制；`check-site.py` 官网静态检查；`check-registries.py` 注册表一致性（内置组件四处 / gx 模块三处 / 版本号 / npm 清单），配 `check-registries-selftest.py` 做负向自测 |
 | `.github/workflows/` | CI：`ci.yml` 常规闸门（注册表一致性 + `go build`/`vet`/`test`）；`release.yml` 发版流水线（push main / tag / Release → npm）；`pages.yml` 官网发布 |
+| `website/` | **子模块** → [gox-website](https://github.com/14752222/gox-website)：官网源码，推 main 后由 `pages.yml` 发布到 GitHub Pages |
+| `gox-logo-concepts/` | **子模块** → [gox-logo-concepts](https://github.com/14752222/gox-logo-concepts)：logo 概念稿与官网资产生成脚本（`make_assets.py`） |
 
 ## 开发与测试
 
@@ -474,9 +480,11 @@ go run ./test/bench    # 生成 cpu.prof 性能剖析
 认证走 npm Trusted Publishing (OIDC)，仓库里不需要任何 secret / token：
 
 ```bash
-# 1. 改版本号（npm/package.json 的 version 是唯一真源）
-# 2. 提交推送
-git commit -am "release: v0.2.1" && git push origin main
+# 1. 改版本号 —— npm/package.json 的 version 是唯一真源，而 npm/ 是独立仓库：
+$EDITOR npm/package.json
+git -C npm commit -am "chore(release): 0.2.1" && git -C npm push
+# 2. 回主仓库提交子模块指针并推送（这一推才触发发版）
+git add npm && git commit -m "chore(release): 0.2.1" && git push origin main
 # 3. 剩下交给 CI：交叉编译五平台二进制 → 冒烟测试 → 打包校验 → npm publish --provenance
 #    发布成功后自动打 v0.2.1 标签并建 Release
 ```

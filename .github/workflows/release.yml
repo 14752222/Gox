@@ -67,7 +67,10 @@ jobs:
       publish: ${{ steps.guard.outputs.publish }}
       version: ${{ steps.guard.outputs.version }}
     steps:
+      # npm/ 等目录是独立仓库的子模块，判重与打包都要读到里面的 package.json。
       - uses: actions/checkout@v7
+        with:
+          submodules: true
 
       - name: 解析版本号并查 registry
         id: guard
@@ -151,7 +154,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
+      # npm/ 等目录是独立仓库的子模块，判重与打包都要读到里面的 package.json。
       - uses: actions/checkout@v7
+        with:
+          submodules: true
 
       # 发版前的第一道闸门：注册表 / 版本号静态一致性（与 ci.yml 同一份判据）。
       # 必须放在这里，因为 tag 推送、Release 发布、workflow_dispatch 这三条入口

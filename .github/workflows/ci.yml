@@ -41,7 +41,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
+      # website/ · npm/ · gox-logo-concepts/ 是独立仓库的子模块，
+      # 不显式拉取就是空目录 —— 让 CI 环境与真实工作副本保持一致。
       - uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - name: 内置组件四处同步 / gx 模块三处同步 / 版本号一致 / npm 清单自洽
         run: |
@@ -58,7 +62,11 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
+      # website/ · npm/ · gox-logo-concepts/ 是独立仓库的子模块，
+      # 不显式拉取就是空目录 —— 让 CI 环境与真实工作副本保持一致。
       - uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - uses: actions/setup-go@v5
         with:

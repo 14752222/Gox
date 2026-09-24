@@ -22,6 +22,10 @@ on:
   push:
     branches: [main]
     paths:
+      # website/ 是子模块：官网改动提交在 gox-website 仓库里，主仓库这边只看到
+      # gitlink 指针变化，而它的路径是 `website`（没有斜杠）—— `website/**` 匹配
+      # 不到（GitHub 的路径模式要求整段匹配），所以必须单独列一条。
+      - 'website'
       - 'website/**'
       - 'scripts/check-site.py'
       - '.github/workflows/pages.yml'
@@ -42,7 +46,11 @@ jobs:
     name: 静态检查
     runs-on: ubuntu-latest
     steps:
+      # website/ · npm/ · gox-logo-concepts/ 是独立仓库的子模块，
+      # 不显式拉取就是空目录（check-registries.py 读 npm/package.json 会直接缺文件）。
       - uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - name: 站点文件齐全性
         run: |
@@ -73,7 +81,11 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
+      # website/ · npm/ · gox-logo-concepts/ 是独立仓库的子模块，
+      # 不显式拉取就是空目录（check-registries.py 读 npm/package.json 会直接缺文件）。
       - uses: actions/checkout@v4
+        with:
+          submodules: true
 
       - name: 配置 Pages
         uses: actions/configure-pages@v5

@@ -125,20 +125,39 @@ def pages(extra: list[str]) -> list[str]:
     )
 
 
+SUBMODULE_HINT_NPM = (
+    "npm/package.json 不存在 —— npm/ 现在是独立仓库的子模块，"
+    "请先跑 git submodule update --init（克隆时用 git clone --recurse-submodules）"
+)
+
+
 def pkg_version() -> str:
+    """读 npm/package.json 的 version。
+
+    读不到时**直接失败**，不再返回空串 —— 2026-09-24 起 npm/ 是独立仓库的子模块，
+    裸 clone（没带 --recurse-submodules）的仓库里这个文件是缺的。若沿用「返回空串」
+    的旧行为，下面第 2 步会因为 want 为空而**静默跳过版本比对并打出 [ok]** ——
+    恰恰是在这个检查最该拦住的时候不吭声。
+    """
     if not os.path.exists(PKG):
-        return ""
+        print("::error::" + SUBMODULE_HINT_NPM)
+        sys.exit(1)
     try:
         with open(PKG, encoding="utf-8") as f:
             return str(json.load(f).get("version", ""))
-    except (OSError, ValueError):
-        return ""
+    except (OSError, ValueError) as e:
+        print("::error::读 npm/package.json 失败：%s" % e)
+        sys.exit(1)
 
 
 def main(argv: list[str]) -> int:
     targets = pages(argv)
     if not targets:
         print("没有找到任何页面")
+        if not os.path.isdir(SITE) or not os.listdir(SITE):
+            print("::error::website/ 不存在或为空 —— 它现在是独立仓库的子模块，"
+                  "请先跑 git submodule update --init"
+                  "（克隆时用 git clone --recurse-submodules）")
         return 1
 
     print("== 1/4 HTML 标签配对 ==")
