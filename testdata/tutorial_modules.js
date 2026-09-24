@@ -36,8 +36,8 @@ console.log("本地模块  ./xxx.js   -> VERSION:", VERSION, "| shout:", shout("
 // ---- 2.2 各内置模块的导出清单 (只 import 用到的名字即可) -------------------
 console.log("\n== 2.2 各内置模块的导出 ==");
 
-// 注意: 运行时**不支持** `for (const [a, b] of pairs)` 这种"for-of + 解构"的组合;
-// 普通解构赋值 (`const [a, b] = pair`) 是支持的。
+// for-of 的绑定也可以直接解构 (`for (const [a, b] of pairs)`, 2026-09-24 起支持);
+// 这里顺手用它把每项拆成 [模块名, 模块对象]。
 const mods = [
   ["gx/solid", solid],
   ["gx/gfx", gfx],
@@ -48,8 +48,8 @@ const mods = [
   ["gx/storage", storage],
   ["gx/dev", dev],
 ];
-for (const entry of mods) {
-  console.log(entry[0], "->", Object.keys(entry[1]).sort().join(", "));
+for (const [name, mod] of mods) {
+  console.log(name, "->", Object.keys(mod).sort().join(", "));
 }
 
 // ---- 2.3 gx/solid: 无界面也能用的信号 -------------------------------------

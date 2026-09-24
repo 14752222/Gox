@@ -180,8 +180,9 @@ function greet(name = "world", ...tags) { return `hi ${name} ${tags}` }
 let merged = [...[1, 2], ...[3, 4]]        // [1, 2, 3, 4]
 let { host, port } = { host: "127.0.0.1", port: 8080 }
 
-// 模板字符串、for...of、try/catch
+// 模板字符串、for...of(绑定可解构)、try/catch
 for (const v of [1, 2, 3]) console.log(`v = ${v}`)
+for (const [k, v] of [["a", 1]]) console.log(`k = ${k}, v = ${v}`)   // → k = a, v = 1
 try {
   throw new Error("boom")
 } catch (e) {
@@ -199,7 +200,6 @@ let host2 = cfg?.db?.host ?? "127.0.0.1"</code></pre>
         <tr><td><code class="inline">var</code></td><td>不支持。用 <code class="inline">let</code> / <code class="inline">const</code></td></tr>
         <tr><td><code class="inline">async () =&gt; {}</code></td><td>不支持。需要匿名就用 <code class="inline">async function () {}</code></td></tr>
         <tr><td><code class="inline">import { x as y }</code></td><td>不支持。别名会被当成一个额外的命名导入,<code class="inline">y</code> <strong>静默为 <code class="inline">undefined</code></strong>。要改名字就写 <code class="inline">import { x } from "…"</code> 之后自己赋给新变量</td></tr>
-        <tr><td><code class="inline">for (const [a, b] of pairs)</code></td><td>不支持(<code class="inline">for...of</code> 与解构的组合)。用普通的 <code class="inline">for (const p of pairs)</code> 再解构 <code class="inline">p</code>,或改用下标循环</td></tr>
         <tr><td><code class="inline">Date</code> / <code class="inline">Intl</code></td><td>没有。用 <code class="inline">Temporal</code></td></tr>
         <tr><td><code class="inline">encodeURI</code> / <code class="inline">btoa</code> 等</td><td>没有。需要时自己用 <code class="inline">String</code> 方法拼</td></tr>
       </tbody>

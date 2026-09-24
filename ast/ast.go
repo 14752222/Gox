@@ -236,19 +236,28 @@ func (fs *ForStatement) statementNode() {}
 // ==================== for...of 语句 ====================
 
 // ForOfStatement 表示 for...of 循环。
-// 例如: for (let x of arr) { ... }
+// 例如: for (let x of arr) { ... }  /  for (const [a, b] of pairs) { ... }
+//
+// 绑定有两种, 互斥: 简单绑定用 Variable; **解构绑定**用 Pattern。
+// 解构时 VarDecl 只留一个带合成名 (__destructure__) 的空壳, 唯一的用途是让
+// 编译器分辨 let / const —— 与 let [a, b] = … 那条路径的口径一致。
 type ForOfStatement struct {
 	Token    lexer.Token // FOR
 	Keyword  lexer.Token // OF
-	VarDecl  Statement   // let x (LetStatement 或 ConstStatement)
-	Variable *Identifier // 迭代变量名
+	VarDecl  Statement   // let x / const x（解构绑定见上）
+	Variable *Identifier // 迭代变量名; 解构绑定时为 nil
+	Pattern  Expression  // ArrayPattern / ObjectPattern; 简单绑定时为 nil
 	Iterable Expression
 	Body     *BlockStatement
 }
 
 func (fos *ForOfStatement) TokenLiteral() string { return fos.Token.Literal }
 func (fos *ForOfStatement) String() string {
-	return "for (" + fos.VarDecl.String() + " of " + fos.Iterable.String() + ") " + fos.Body.String()
+	head := fos.VarDecl.String()
+	if fos.Pattern != nil {
+		head = fos.Pattern.String()
+	}
+	return "for (" + head + " of " + fos.Iterable.String() + ") " + fos.Body.String()
 }
 func (fos *ForOfStatement) statementNode() {}
 

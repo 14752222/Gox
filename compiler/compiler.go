@@ -632,13 +632,33 @@ func (c *Compiler) compileForOfStatement(stmt *ast.ForOfStatement) error {
 	prevScope := c.scope
 	c.scope = NewSymbolScope(prevScope)
 
-	// 声明循环变量
+	// 绑定本次迭代的值 (栈顶)。两种形状:
+	//   简单绑定 for (let x of arr)          → 直接存进新建的槽位
+	//   解构绑定 for (const [a, b] of pairs) → 交给 compilePatternBind 按模式拆开
+	// 两边进来时栈都是 [.., value]、离开时都回到 [..] —— compilePatternBind 末尾
+	// 自带 POP, 与 OP_STORE 消耗栈顶值的语义对齐。
 	varKind := bytecode.OP_STORE
 	if _, ok := stmt.VarDecl.(*ast.ConstStatement); ok {
 		varKind = bytecode.OP_STORE_CONST
 	}
-	sym := c.scope.Define(stmt.Variable.Value, varKind == bytecode.OP_STORE_CONST)
-	c.emitter.Emit(varKind, uint16(sym.Slot))
+	if stmt.Pattern != nil {
+		// isDecl=true: 每轮迭代是新的块作用域 (上面已 PUSH_SCOPE), 解构出来的
+		// 名字声明进这个作用域, 所以各轮的绑定互不影响 —— 闭包捕获到的是各自
+		// 的槽位。
+		//
+		// 注: 解构出来的名字按 let 语义登记 (compilePatternBind 内部是
+		// declareOnce(…, false, …)), 与 const [a, b] = … 的现有口径一致。本运行时
+		// 的 const **只在全局词法绑定上强制** (见 vm.go 的 OP_STORE_GLOBAL);
+		// 局部槽位根本不查 (compiler.Symbol.IsConst 目前无人读取), 所以
+		// for (const [a, b] of …) 的 a/b 可被重新赋值 —— 这是既有边界, 不是本次
+		// 解构支持引入的。
+		if err := c.compilePatternBind(stmt.Pattern, true); err != nil {
+			return err
+		}
+	} else {
+		sym := c.scope.Define(stmt.Variable.Value, varKind == bytecode.OP_STORE_CONST)
+		c.emitter.Emit(varKind, uint16(sym.Slot))
+	}
 
 	ctx := c.pushControl(c.takePendingLabel(), true)
 

@@ -423,6 +423,69 @@ func TestForOf(t *testing.T) {
 	assertNumber(t, result, 15)
 }
 
+// for (const [a, b] of pairs) —— for-of 与解构的组合。
+//
+// 2026-09-24 前这是记录在案的边界 (官网「语言边界」表里的一条)。之前失败的样子
+// 还特别容易把人带偏: 头部 `[a, b]` 被当成解构声明去要 `=`, 报
+// "expected = after destructuring, got OF"。
+//
+// 实现上只把「每轮迭代把栈顶的值绑定给谁」从"存进一个槽位"换成"交给
+// compilePatternBind 按模式拆开" —— 编译器本就能编译解构, 缺的只是 parser 层的
+// 识别与 AST 上的一个 Pattern 字段。
+func TestForOfDestructuring(t *testing.T) {
+	// 数组模式 / 对象模式 / 嵌套模式 / 剩余元素 / 默认值 / 重命名
+	assertNumber(t, testEval(t, `
+		let s = 0;
+		for (const [a, b] of [[1, 2], [3, 4]]) { s = s + a * b; }
+		s;`), 14)
+	assertNumber(t, testEval(t, `
+		let s = 0;
+		for (const { n } of [{ n: 1 }, { n: 2 }]) { s = s + n; }
+		s;`), 3)
+	assertNumber(t, testEval(t, `
+		let s = 0;
+		for (const [k, [x, y]] of [["a", [1, 2]], ["b", [3, 4]]]) { s = s + x + y; }
+		s;`), 10)
+	assertNumber(t, testEval(t, `
+		let s = 0;
+		for (const [a, ...rest] of [[1, 2, 3], [4, 5, 6]]) { s = s + a + rest.length; }
+		s;`), 9)
+	assertNumber(t, testEval(t, `
+		let s = 0;
+		for (const [a = 9] of [[undefined], [1]]) { s = s + a; }
+		s;`), 10)
+	assertNumber(t, testEval(t, `
+		let s = 0;
+		for (const { a: alias } of [{ a: 7 }]) { s = s + alias; }
+		s;`), 7)
+	// let 绑定同样支持
+	assertNumber(t, testEval(t, `
+		let s = 0;
+		for (let [n] of [[5], [6]]) { s = s + n; }
+		s;`), 11)
+	// 每轮迭代是**独立的绑定**: 闭包各自捕获自己的槽位 (靠循环头的 PUSH_SCOPE
+	// 与迭代边界的 ITER_BOUNDARY 定版)。这条最容易被"所有轮次复用同一个槽位"
+	// 的实现做错 —— 那种实现下两个函数都会读到 20。
+	// (用下标赋值收集, 不用 push —— testEval 是裸环境, 没有宿主 API 那套方法)
+	assertNumber(t, testEval(t, `
+		let fns = [];
+		let i = 0;
+		for (const [n] of [[10], [20]]) {
+			fns[i] = function () { return n; };
+			i = i + 1;
+		}
+		fns[0]() + fns[1]();`), 30)
+	// 循环体里的 break / continue 不受解构影响
+	assertNumber(t, testEval(t, `
+		let s = 0;
+		for (const [n] of [[1], [2], [3]]) {
+			if (n === 2) { continue; }
+			if (n === 3) { break; }
+			s = s + n;
+		}
+		s;`), 1)
+}
+
 // ===== typeof =====
 
 func TestTypeof(t *testing.T) {

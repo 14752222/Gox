@@ -1360,7 +1360,6 @@ count = 2</code></pre>
         <tr><td><code class="inline">var</code></td><td><strong>不支持</strong>。只用 <code class="inline">let</code> / <code class="inline">const</code></td></tr>
         <tr><td><code class="inline">async () =&gt; {}</code></td><td><strong>不支持</strong>。只支持 <code class="inline">async function</code>;需要匿名就用 <code class="inline">async function () {}</code></td></tr>
         <tr><td><code class="inline">import &#123; x as y &#125;</code></td><td><strong>不生效</strong>(且不报错):<code class="inline">y</code> 静默为 <code class="inline">undefined</code>。命名空间导入 <code class="inline">import * as ns</code> 与默认导出正常</td></tr>
-        <tr><td><code class="inline">for (const [a, b] of pairs)</code></td><td><strong>不支持</strong>(<code class="inline">for...of</code> + 解构的组合)。普通解构赋值可用</td></tr>
         <tr><td><code class="inline">Date</code></td><td><strong>没有</strong>。用 <code class="inline">Temporal</code></td></tr>
         <tr><td><code class="inline">Intl</code></td><td><strong>没有</strong>。数字与日期格式化要自己写</td></tr>
         <tr><td><code class="inline">encodeURI</code> / <code class="inline">decodeURI</code></td><td><strong>没有</strong>。需要时自己用 <code class="inline">String</code> 方法拼</td></tr>

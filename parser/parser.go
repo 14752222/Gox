@@ -574,17 +574,77 @@ func (p *Parser) parseForStatement() ast.Statement {
 	}
 	p.nextToken()
 
-	// 检查 for...of: for (let x of arr) / for (const x of arr)
-	if (p.curTokenIs(lexer.LET) || p.curTokenIs(lexer.CONST)) &&
-		p.peekTokenIs(lexer.IDENTIFIER) && p.peek2TokenIs(lexer.OF) {
-		return p.parseForOfStatement()
-	}
-	// 检查 for...in: for (let k in obj) / for (const k in obj)
-	if (p.curTokenIs(lexer.LET) || p.curTokenIs(lexer.CONST)) &&
-		p.peekTokenIs(lexer.IDENTIFIER) && p.peek2TokenIs(lexer.IN) {
-		return p.parseForInStatement()
+	// for...of / for...in 的头部: let/const 后跟**绑定**, 绑定之后是 of / in。
+	// 绑定可以是标识符, 也可以是解构模式 —— 后者要跳过配对的 ]/} 才看得到关键字,
+	// 所以判定统一交给 forBindingKeyword。
+	if p.curTokenIs(lexer.LET) || p.curTokenIs(lexer.CONST) {
+		kw := p.forBindingKeyword()
+		destructuring := p.peekTokenIs(lexer.LBRACKET) || p.peekTokenIs(lexer.LBRACE)
+		if kw == lexer.OF {
+			return p.parseForOfStatement()
+		}
+		if kw == lexer.IN {
+			if destructuring {
+				// ES 允许 for (const [k, v] in obj); 本运行时只做了解构 + for-of。
+				// 显式报出来 —— 否则它会掉进 parseForInStatement, 报一句
+				// "expected variable name in for...in", 看不出真正的原因。
+				p.addError("destructuring binding in for...in is not supported, " +
+					"use for...of or bind a single key variable")
+				return nil
+			}
+			return p.parseForInStatement()
+		}
 	}
 	return p.parseTraditionalFor()
+}
+
+// forBindingKeyword 报告 `for (` 之后的 let/const 头部到底是 for...of / for...in
+// (返回 OF / IN), 还是传统 for 的第一段 (返回 ILLEGAL)。
+//
+// 为什么不能只做 peek2 判定: 解构绑定的 `[a, b]` / `{a}` 后面隔着一整个模式才是
+// 关键字, peek2 看到的是 `[` / `{`。当初就是因为只看 peek2, `for (const [a, b] of
+// pairs)` 被判成传统 for, 于是 `[a, b]` 被当成解构声明去要 `=`, 报出
+// 「expected = after destructuring, got OF」—— 照这句话排查会以为自己少写了等号。
+func (p *Parser) forBindingKeyword() lexer.TokenType {
+	peek := p.peekToken()
+	if peek.Type == lexer.IDENTIFIER {
+		if p.peek2TokenIs(lexer.OF) {
+			return lexer.OF
+		}
+		if p.peek2TokenIs(lexer.IN) {
+			return lexer.IN
+		}
+		return lexer.ILLEGAL
+	}
+	if peek.Type != lexer.LBRACKET && peek.Type != lexer.LBRACE {
+		return lexer.ILLEGAL
+	}
+	open, close := lexer.LBRACKET, lexer.RBRACKET
+	if peek.Type == lexer.LBRACE {
+		open, close = lexer.LBRACE, lexer.RBRACE
+	}
+	// 扫描到配对的闭合符 (有距离上限: 不闭合的写法会一路扫到 EOF)
+	depth := 0
+	for i := 1; i <= maxArrowScanLimit; i++ {
+		switch p.peekTokenAt(i).Type {
+		case lexer.EOF:
+			return lexer.ILLEGAL
+		case open:
+			depth++
+		case close:
+			depth--
+			if depth == 0 {
+				switch p.peekTokenAt(i + 1).Type {
+				case lexer.OF:
+					return lexer.OF
+				case lexer.IN:
+					return lexer.IN
+				}
+				return lexer.ILLEGAL
+			}
+		}
+	}
+	return lexer.ILLEGAL
 }
 
 func (p *Parser) parseForInStatement() *ast.ForInStatement {
@@ -627,17 +687,36 @@ func (p *Parser) parseForOfStatement() *ast.ForOfStatement {
 	isLet := p.curTokenIs(lexer.LET)
 	p.nextToken() // skip let/const
 
-	if !p.curTokenIs(lexer.IDENTIFIER) {
-		p.addError("expected variable name in for...of")
-		return nil
-	}
-	variable := &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
-	stmt.Variable = variable
-
-	if isLet {
-		stmt.VarDecl = &ast.LetStatement{Token: stmt.Token, Name: variable}
+	if p.curTokenIs(lexer.LBRACKET) || p.curTokenIs(lexer.LBRACE) {
+		// 解构绑定: for (const [a, b] of pairs) / for (const {a} of objs)
+		pattern := p.parseDestructuringPattern(p.curTokenIs(lexer.LBRACKET))
+		if pattern == nil {
+			return nil
+		}
+		stmt.Pattern = pattern
+		// VarDecl 是个只有合成名的空壳: 编译器只用它分辨 let / const (与
+		// let [a, b] = … 的口径一致), 这个名字本身不代表任何绑定。
+		name := &ast.Identifier{Token: stmt.Token, Value: "__destructure__"}
+		if isLet {
+			stmt.VarDecl = &ast.LetStatement{Token: stmt.Token, Name: name}
+		} else {
+			stmt.VarDecl = &ast.ConstStatement{Token: stmt.Token, Name: name}
+		}
 	} else {
-		stmt.VarDecl = &ast.ConstStatement{Token: stmt.Token, Name: variable}
+		if !p.curTokenIs(lexer.IDENTIFIER) {
+			p.addError(fmt.Sprintf(
+				"expected variable name or destructuring pattern in for...of, got %s",
+				p.curToken().Type))
+			return nil
+		}
+		variable := &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
+		stmt.Variable = variable
+
+		if isLet {
+			stmt.VarDecl = &ast.LetStatement{Token: stmt.Token, Name: variable}
+		} else {
+			stmt.VarDecl = &ast.ConstStatement{Token: stmt.Token, Name: variable}
+		}
 	}
 
 	if !p.expectPeek(lexer.OF) {

@@ -164,7 +164,6 @@ await new Promise((resolve) => server.close(resolve))                  // 收好
 | `var` | 一律 `let` / `const` |
 | `async () => {}` | `async function () {}` |
 | 顶层 `await` | 放进 `async function` 后调用 |
-| `for (const [a, b] of pairs)` | `for (const p of pairs) { p[0] }` (普通解构赋值 `const [a,b] = p` 可用) |
 | `import { x as y } from "..."` | **别名会被静默忽略**(`y` 拿到 `undefined`, 还多声明一个 `as` 绑定) ⇒ 用原名, 或用命名空间 `import * as m` |
 | `getStorage(key, 默认值)` | 第二参数被忽略、缺失时返回 `undefined` ⇒ `getStorage(k) ?? 默认值` |
 

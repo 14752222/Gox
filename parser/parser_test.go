@@ -751,6 +751,125 @@ func TestForOfStatement(t *testing.T) {
 	if forOf.Variable == nil || forOf.Variable.Value != "x" {
 		t.Fatalf("expected variable 'x'")
 	}
+	// 简单绑定的反面: 解构字段必须是 nil, 否则编译器会两边都绑
+	// (绑完 Variable 又绑 Pattern), 而 Variable 是 __destructure__ 这种空壳。
+	if forOf.Pattern != nil {
+		t.Fatalf("expected nil Pattern for simple binding, got %T", forOf.Pattern)
+	}
+}
+
+// TestForOfDestructuringBinding 钉住 `for (const [a, b] of pairs)` 这类解构绑定。
+//
+// 回归背景: 判定 for...of / for...in 时若只看 peek2, 解构绑定的 peek2 是 `[` / `{`,
+// 于是整条被当成传统 for 的第一段, `[a, b]` 走解构声明路径去要 `=`, 报出
+// 「expected = after destructuring, got OF」。这个测试的第一个断言就是钉死那句话。
+func TestForOfDestructuringBinding(t *testing.T) {
+	tests := []struct {
+		input     string
+		pattern   string // 期望的 Pattern.String()
+		isLet     bool   // true = let, false = const
+		expectVar bool   // Pattern 之外是否还有 Variable (恒为 false)
+	}{
+		{`for (let [a, b] of pairs) { x = a; }`, "[a, b]", true, false},
+		{`for (const [a, b] of pairs) { x = a; }`, "[a, b]", false, false},
+		{`for (let {a, b} of objs) { x = a; }`, "{a, b}", true, false},
+		{`for (const {a: x, b: y} of objs) { z = x; }`, "{a: x, b: y}", false, false},
+		{`for (const [a, [b, c]] of nested) { x = a; }`, "[a, [b, c]]", false, false},
+		{`for (const [a, ...rest] of list) { x = a; }`, "[a, ...rest]", false, false},
+		{`for (const [a = 1] of list) { x = a; }`, "[a = 1]", false, false},
+		{`for (const [a, {b}] of mixed) { x = a; }`, "[a, {b}]", false, false},
+	}
+	for _, tt := range tests {
+		l := lexer.New(tt.input)
+		p := New(l)
+		program := p.ParseProgram()
+		// 错误信息里带原始输入, 不然表驱动测试挂掉时分不清是哪一行
+		if p.Errors().HasErrors() {
+			t.Fatalf("%q: parser errors: %s", tt.input, p.Errors().String())
+		}
+		if len(program.Statements) != 1 {
+			t.Fatalf("%q: expected 1 statement, got %d", tt.input, len(program.Statements))
+		}
+		forOf, ok := program.Statements[0].(*ast.ForOfStatement)
+		if !ok {
+			t.Fatalf("%q: expected ForOfStatement, got %T", tt.input, program.Statements[0])
+		}
+		if forOf.Pattern == nil {
+			t.Fatalf("%q: expected Pattern, got nil", tt.input)
+		}
+		if got := forOf.Pattern.String(); got != tt.pattern {
+			t.Fatalf("%q: Pattern.String() = %q, want %q", tt.input, got, tt.pattern)
+		}
+		if (forOf.Variable != nil) != tt.expectVar {
+			t.Fatalf("%q: Variable presence mismatch, got %v", tt.input, forOf.Variable)
+		}
+		// let / const 的区分由 VarDecl 的类型承担 (Variable 解构时为 nil)
+		_, isLet := forOf.VarDecl.(*ast.LetStatement)
+		if isLet != tt.isLet {
+			t.Fatalf("%q: expected isLet=%v, VarDecl is %T", tt.input, tt.isLet, forOf.VarDecl)
+		}
+		if forOf.Body == nil || len(forOf.Body.Statements) != 1 {
+			t.Fatalf("%q: expected 1 body statement", tt.input)
+		}
+		if forOf.Iterable == nil {
+			t.Fatalf("%q: expected iterable", tt.input)
+		}
+	}
+}
+
+// TestForHeaderBindingKeywordBoundary 覆盖 forBindingKeyword 的边界:
+// 传统 for 的 `let [a, b] = …` 不能被误判成 for...of; 解构 + in 要给专门文案;
+// 不闭合的模式不能一路扫到 EOF 还装没事。
+func TestForHeaderBindingKeywordBoundary(t *testing.T) {
+	// 传统 for 的第一段也可以是解构声明 —— 后面的 `=` 说明它不是 of/in。
+	// (配对扫描看到 ] 后面是 `=`, 返回 ILLEGAL, 落回 parseTraditionalFor)
+	assertTraditionalFor := func(input string) {
+		t.Helper()
+		l := lexer.New(input)
+		p := New(l)
+		program := p.ParseProgram()
+		if p.Errors().HasErrors() {
+			t.Fatalf("%q: parser errors: %s", input, p.Errors().String())
+		}
+		if _, ok := program.Statements[0].(*ast.ForStatement); !ok {
+			t.Fatalf("%q: expected ForStatement, got %T", input, program.Statements[0])
+		}
+	}
+	assertTraditionalFor(`for (let [a, b] = [1, 2]; a < 3; a = a + 1) {}`)
+	assertTraditionalFor(`for (const {a} = {a: 1}; a < 3; a = a + 1) {}`)
+
+	// 解构 + for...in: 显式拒绝, 并给出与 "expected variable name in for...in" 不同的文案
+	for _, input := range []string{
+		`for (const [k, v] in obj) {}`,
+		`for (let [k, v] in obj) {}`,
+		`for (const {a} in obj) {}`,
+	} {
+		l := lexer.New(input)
+		p := New(l)
+		p.ParseProgram()
+		if !p.Errors().HasErrors() {
+			t.Fatalf("%q: expected an error", input)
+		}
+		got := p.Errors().Errors[0].Message
+		const want = "destructuring binding in for...in is not supported, " +
+			"use for...of or bind a single key variable"
+		if got != want {
+			t.Fatalf("%q: first error = %q, want %q", input, got, want)
+		}
+	}
+
+	// 模式不闭合: 扫描有距离上限, 必须返回而不是卡住; 报错要能指出问题所在
+	for _, input := range []string{
+		`for (const [a, b of pairs) {}`,
+		`for (const {a of objs) {}`,
+	} {
+		l := lexer.New(input)
+		p := New(l)
+		p.ParseProgram()
+		if !p.Errors().HasErrors() {
+			t.Fatalf("%q: expected an error for unterminated pattern", input)
+		}
+	}
 }
 
 func TestTraditionalForStatement(t *testing.T) {
