@@ -215,12 +215,18 @@ class MainActivity : Activity(), SurfaceHolder.Callback, GoxHost {
     /**
      * 把按键交给引擎, **只对"真的送过去了"的键返回 true**。
      *
-     * 为什么不能一律返回 true: 返回 true 等于吃掉这次按键, 而 KEYCODE_BACK 也走
-     * onKeyDown —— 一律吞掉的写法会让返回键彻底失效 (用户退不出应用)。音量键同理。
-     * 所以: 返回键放回系统; 引擎认不出的键 (keyName 为空) 也放回系统。
+     * 返回键有两个坑, 都实测踩过 (2026-09-24):
+     *   1. 一律 return true 会把 BACK 吃掉, 用户退不出应用;
+     *   2. 对 BACK `return false` 也不行 —— `onBackPressed()` 活在
+     *      `Activity.onKeyDown` 的**默认分支**里, 自己 override 之后不走 super
+     *      就把这条路径整个跳过了, 症状同样是返回键失效。
+     * 正确写法只有一种: BACK 交给 super 的默认实现, 引擎认不出的键才 return false
+     * (默认实现对那些键本来也返回 false, 音量键由框架处理, 行为一致)。
      */
     private fun dispatchKey(ev: KeyEvent, down: Boolean): Boolean {
-        if (ev.keyCode == KeyEvent.KEYCODE_BACK) return false
+        if (ev.keyCode == KeyEvent.KEYCODE_BACK) {
+            return if (down) super.onKeyDown(ev.keyCode, ev) else super.onKeyUp(ev.keyCode, ev)
+        }
         val name = keyName(ev)
         if (name.isEmpty()) return false
         GoxRuntime.nativeKey(name, down)

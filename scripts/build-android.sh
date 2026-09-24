@@ -9,7 +9,8 @@
 # 壳工程拷进 jniLibs/。
 #
 # 用法：
-#     bash scripts/build-android.sh                 # 自动找 NDK
+#     bash scripts/build-android.sh                 # arm64-v8a（真机）
+#     bash scripts/build-android.sh --abi x86_64    # 模拟器（x86 主机上是原生执行，比转译 arm 快得多）
 #     bash scripts/build-android.sh --ndk H:/AndroidSDK/ndk/28.2.13676358
 #     ANDROID_NDK_HOME=... bash scripts/build-android.sh
 #
@@ -52,10 +53,16 @@ if [ -z "$NDK" ] || [ ! -d "$NDK" ]; then
   exit 1
 fi
 
+# ABI → (NDK 三元组, GOARCH, ELF e_machine 字节, 人读的名字)
+#
+# **两列必须一起给**：曾经只按 ABI 选了编译器三元组而 GOARCH 写死 arm64，于是
+# `--abi x86_64` 会"成功"编出一份 arm64 的库、放在 x86_64 目录里 —— 直到装进
+# 模拟器才以 `UnsatisfiedLinkError: 找不到 native 方法` 炸掉，归因要多绕一大圈。
+# ELF 那两列同理：校验必须知道"这一次应该看到哪种机器码"，否则换个 ABI 就误报。
 case "$ABI" in
-  arm64-v8a) TRIPLE=aarch64-linux-android ;;
-  armeabi-v7a) TRIPLE=armv7a-linux-androideabi ;;
-  x86_64) TRIPLE=x86_64-linux-android ;;
+  arm64-v8a)   TRIPLE=aarch64-linux-android    GOARCH=arm64  MACHINE="03 00 b7 00" MACHINE_NAME="AArch64" ;;
+  armeabi-v7a) TRIPLE=armv7a-linux-androideabi GOARCH=arm    MACHINE="03 00 28 00" MACHINE_NAME="ARM" ;;
+  x86_64)      TRIPLE=x86_64-linux-android     GOARCH=amd64  MACHINE="03 00 3e 00" MACHINE_NAME="x86-64" ;;
   *) echo "error: 不支持的 ABI $ABI" >&2; exit 2 ;;
 esac
 
@@ -79,20 +86,24 @@ fi
 command -v go >/dev/null 2>&1 || { echo "error: go not found in PATH" >&2; exit 1; }
 
 mkdir -p "$OUT"
-echo "==> NDK  $NDK"
-echo "==> CC   $CC_PATH"
-echo "==> ABI  $ABI"
+echo "==> NDK   $NDK"
+echo "==> CC    $CC_PATH"
+echo "==> ABI   $ABI (GOARCH=$GOARCH)"
 
-GOOS=android GOARCH=arm64 CGO_ENABLED=1 CC="$CC_PATH" \
+GOOS=android GOARCH="$GOARCH" CGO_ENABLED=1 CC="$CC_PATH" \
   go build -buildmode=c-shared -o "$OUT/libgox.so" ./gfx/android/libgox
 
-# 产出必须是真· AArch64 共享库：交叉编译"成功"但链错目标这种事，只看退出码
-# 是发现不了的（ELF header 里 e_type=3 DYN、e_machine=183 AArch64）。
+# 产出必须是这个 ABI 对应的共享库：交叉编译"成功"但链错目标这种事，只看退出码
+# 是发现不了的（ELF 头前 20 字节：e_type=03 00 DYN + e_machine）。
 if command -v od >/dev/null 2>&1; then
   HDR=$(od -An -tx1 -N20 "$OUT/libgox.so" | tr -s ' \n' ' ')
   case "$HDR" in
-    *"03 00 b7 00"*) echo "[ok] ELF 校验通过：AArch64 (e_machine=0xb7) 共享库" ;;
-    *) echo "::error::libgox.so 不是 AArch64 共享库，ELF 头：$HDR" >&2; exit 1 ;;
+    *"$MACHINE"*) echo "[ok] ELF 校验通过：$MACHINE_NAME 共享库" ;;
+    *)
+      echo "::error::libgox.so 不是 $MACHINE_NAME 共享库（ABI=$ABI），ELF 头：$HDR" >&2
+      echo "       期望的 e_type+e_machine 字节：$MACHINE" >&2
+      exit 1
+      ;;
   esac
 fi
 

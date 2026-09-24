@@ -29,13 +29,18 @@
 ## 构建（四步）
 
 ```bash
-# 1) 编 Go 侧 —— 唯一支持 cgo 的那条路, 产物带 ELF 目标校验 (发现"编成功了但不是 AArch64"这类错)
-bash scripts/build-android.sh
+# 1) 编 Go 侧 —— 唯一支持 cgo 的那条路, 产物带 ELF 目标校验 (发现"编成功了但链错目标"这类错)
+bash scripts/build-android.sh                 # arm64-v8a (真机)
+bash scripts/build-android.sh --abi x86_64    # 模拟器: x86 主机上**原生**执行,
+#                                             # arm64 在模拟器里是转译, 软光栅 + 转译慢到没法用
 #    找不到 NDK 时: bash scripts/build-android.sh --ndk H:/AndroidSDK/ndk/28.2.13676358
+#    ⚠️ GOARCH 由脚本按 ABI 推导 —— 别手工写 GOARCH=arm64 去编 x86_64, 那会
+#       "成功"产出一份装上去才炸 (UnsatisfiedLinkError) 的错架构库
 
 # 2) 拷进壳工程 (jniLibs/ 本身被 gitignore, 每次重建都要重新拷)
-mkdir -p app/android/app/src/main/jniLibs/arm64-v8a
+mkdir -p app/android/app/src/main/jniLibs/arm64-v8a app/android/app/src/main/jniLibs/x86_64
 cp dist/android/arm64-v8a/libgox.so app/android/app/src/main/jniLibs/arm64-v8a/
+cp dist/android/x86_64/libgox.so   app/android/app/src/main/jniLibs/x86_64/
 
 # 3) 打 APK
 cd app/android && gradle assembleDebug        # 或 Android Studio 打开本目录后 Build
@@ -84,7 +89,30 @@ adb logcat -s Gox:I
    Skia 的预乘语义不会造成色差。）
 4. **点得动** → 点按钮，第二行文本从 `计数 0` 变 `计数 1`。这就是 M1 的验收标准。
 5. **有 FPS** → 每秒一行 `fps=NN surface=WxH`。移动端软光栅是纯 CPU 活，这个数字决定
-   后面值不值得做脏区上传优化。
+   后面值不值得做脏区上传优化。静态界面 `fps=0` 是**对的**（没有脏区就没有帧），别误读成卡。
+6. **返回键能退出** → 按 BACK 回到 Launcher；重进后是新会话（计数归 0）。
+   这条测的是"返回键没被吞"与"引擎会话能干净销毁/重建"两件事。
+
+## M1 实测记录（2026-09-24，模拟器 x86_64 / API 34 / Android 14）
+
+上面六条全部走通：启动日志、渲染（白底黑字、中文正常）、颜色无红蓝互换、
+连点三次 `计数 3`、`fps` 有输出、横竖屏切换（`surface=2560x1440`，会话保住、无崩溃）、
+BACK 退出后重进归 0。取证工具是本目录的 `tools/screencap.py`（纯标准库解析
+`screencap` 原始帧）：
+
+```bash
+export ADB=H:/AndroidSDK/platform-tools/adb.exe
+# 定位控件: 把屏幕一角压成 ASCII 色块图, 按格子换算出像素坐标
+python tools/screencap.py map 0 0 360 180 90
+# 客观断言"界面真的变了": 点击前后对同一区域取哈希比对 (不靠肉眼)
+python tools/screencap.py hash 20 58 170 82
+# 导出 PNG 肉眼复核 (crop 支持整数放大, 看清小字)
+python tools/screencap.py crop out.png 10 20 260 120 4
+```
+
+已知观感：**所有东西都偏小** —— `font={20}` 就是 20 个物理像素，在 density 4.0 的屏上
+只有 5dp。这正是 v1 边界里"density 只上报不换算"那条，属于 M1 的渲染侧剩余工作，
+不是 bug。
 
 ## 桌面能守住的部分（先跑它，再上真机）
 

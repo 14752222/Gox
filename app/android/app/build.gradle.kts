@@ -17,10 +17,13 @@ android {
         versionCode = 1
         versionName = "1.0"
 
-        // 只出 arm64: libgox.so 目前只交叉编译了这一档 (见 scripts/build-android.sh 的 --abi)。
-        // 要出 armeabi-v7a 就加 --abi armeabi-v7a 再把它加进这一行。
+        // 两档都打进去:
+        //   arm64-v8a —— 真机 (手机/平板);
+        //   x86_64    —— 模拟器。x86 主机上的模拟器**原生**跑 x86_64, 而 arm64 是靠
+        //                转译 (abilist 里虽然列着 arm64-v8a, 但软光栅 + 转译会慢到
+        //                没法用)。开发验证走模拟器, 所以这一档不是可选项。
         ndk {
-            abiFilters += listOf("arm64-v8a")
+            abiFilters += listOf("arm64-v8a", "x86_64")
         }
     }
 
