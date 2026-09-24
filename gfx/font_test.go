@@ -228,3 +228,85 @@ func TestFontLexiconHelpers(t *testing.T) {
 		}
 	}
 }
+
+// TestSetFontPathInjectsHostFont 宿主注入字体 (移动端唯一可控的字体来源)。
+//
+// 移动端为什么必须走它: Android 定制 ROM 的字体命名无规律、iOS 沙箱读不到系统
+// 字体 —— 唯一可控的做法是随包带一份字体、由宿主把沙箱路径交进来。所以这里要
+// 断言的是**优先级与生效性**, 不是"某个文件在不在"。
+func TestSetFontPathInjectsHostFont(t *testing.T) {
+	host := firstUsableFontPath(t)
+	if host == "" {
+		t.Skip("本机没有可解析的字体文件")
+	}
+
+	// 测试会改包级字体状态 (候选表/基础字体/掩码缓存), 收尾必须还原 ——
+	// 否则后续用例会拿着被改过的候选表下结论。
+	t.Cleanup(func() {
+		fontMu.Lock()
+		injectedFonts = nil
+		scannedFonts = nil
+		rebuildCandidatesLocked()
+		baseFont = nil
+		// 就地清空, 免得为了写 map[int]font.Face{} 再引入一个 import
+		for k := range faceBySize {
+			delete(faceBySize, k)
+		}
+		fontMu.Unlock()
+		glyphLRU.reset()
+	})
+
+	before := len(fontCandidates)
+	SetFontPath(host)
+	if len(fontCandidates) != before+1 || fontCandidates[0] != host {
+		t.Fatalf("注入的字体应排在最前: len=%d first=%q", len(fontCandidates), fontCandidates[0])
+	}
+	SetFontPath(host) // 重复注入同一个路径应幂等
+	if len(fontCandidates) != before+1 {
+		t.Fatalf("重复注入不该重复添加: len=%d want=%d", len(fontCandidates), before+1)
+	}
+	SetFontPath("") // 空路径忽略
+	if len(fontCandidates) != before+1 {
+		t.Fatalf("空路径应被忽略: len=%d", len(fontCandidates))
+	}
+
+	// 先让字体真的加载过 (缓存非空), 再注入**另一个**可解析的字体:
+	// 此时必须清掉 face 与字形掩码 —— 掩码是旧字体渲染的, 留着会中新 face 配
+	// 旧字形。这是注入"看起来没生效"最常见的根因。
+	if _, err := loadBaseFont(); err != nil {
+		t.Fatalf("loadBaseFont: %v", err)
+	}
+	if _, err := fontFace(14); err != nil {
+		t.Fatalf("fontFace: %v", err)
+	}
+	second := ""
+	for _, p := range fontCandidates {
+		if p == host {
+			continue
+		}
+		if _, err := os.Stat(p); err == nil {
+			if _, err := parseFontFile(p); err == nil {
+				second = p
+				break
+			}
+		}
+	}
+	if second == "" {
+		t.Skip("本机只有一个可解析字体, 跳过缓存重置断言")
+	}
+	SetFontPath(second)
+	fontMu.Lock()
+	base, faces := baseFont, len(faceBySize)
+	fontMu.Unlock()
+	if base != nil || faces != 0 {
+		t.Fatalf("注入新字体后应清掉基础字体与 face 缓存: base=%v faces=%d", base != nil, faces)
+	}
+	// 清完必须还能立刻重建 (不能出现"缓存清了但重载失败"的坏状态)
+	if _, err := fontFace(14); err != nil {
+		t.Fatalf("重置后 fontFace 应能重建: %v", err)
+	}
+	// 注入顺序即优先级: 先注入的仍排在前面 (后注入的不会插队)
+	if fontCandidates[0] != host || fontCandidates[1] != second {
+		t.Fatalf("两次注入应按先后顺序排在候选最前: %v", fontCandidates[:2])
+	}
+}

@@ -29,8 +29,67 @@ import (
 // 规律), 只能真去扫目录 —— 这就是 P3-7 修的"Linux 上文字完全不渲染"。
 
 // fontCandidates 系统字体候选, 依次尝试首个可解析者。
-// 进程内只增不改: 静态候选在 init 期定下, 扫描结果由 initFontCandidates 前置。
+// 有效顺序恒为: 宿主注入 > 目录扫描 > 静态候选 (由 rebuildCandidatesLocked 组装)。
 var fontCandidates = fontCandidatesForOS()
+
+// injectedFonts 是宿主通过 SetFontPath 注入的字体 (优先级最高)。
+// 移动端的常见用法: APK/IPA 自带字体 → 解到沙箱 → 把绝对路径交进来。
+var injectedFonts []string
+
+// scannedFonts 是目录扫描的结果 (initFontCandidates 填, 只填一次)。
+var scannedFonts []string
+
+// rebuildCandidatesLocked 重算生效候选表。调用方必须持有 fontMu。
+func rebuildCandidatesLocked() {
+	next := make([]string, 0, len(injectedFonts)+len(scannedFonts)+4)
+	next = append(next, injectedFonts...)
+	next = append(next, scannedFonts...)
+	next = append(next, fontCandidatesForOS()...)
+	fontCandidates = next
+}
+
+// SetFontPath 注入宿主自带的字体文件, 排在所有候选之前 (先试注入的, 再退到系统字体)。
+//
+// 为什么移动端必须有它: Android 定制 ROM 的字体命名无规律, iOS 的沙箱根本读不到
+// 系统字体 —— "随包分发一份字体"是这两个平台上唯一可控的做法 (也正好顺带满足
+// App Store 关于脚本/资源随包分发的约束)。
+//
+// 时机与代价: 首次渲染前调用是零成本的。若在字体已加载之后调用, 本函数会清掉
+// 已缓存的 face 与字形掩码 (旧掩码属于旧字体) 并立即重载, 所以**别在动画中间调**。
+// 重复注入同一路径幂等。
+func SetFontPath(paths ...string) {
+	fontMu.Lock()
+	defer fontMu.Unlock()
+	added := false
+	for _, p := range paths {
+		if p == "" || containsString(injectedFonts, p) {
+			continue
+		}
+		injectedFonts = append(injectedFonts, p)
+		added = true
+	}
+	if !added {
+		return
+	}
+	rebuildCandidatesLocked()
+	// 已有缓存说明字体已经用过: 不重置的话新字体不会生效 (baseFont 是缓存值),
+	// 或者更糟 —— 新 face 配旧字形掩码。
+	if baseFont != nil || len(faceBySize) > 0 {
+		baseFont = nil
+		faceBySize = map[int]font.Face{}
+		glyphLRU.reset()
+	}
+}
+
+// containsString 小工具: 判断切片里是否已有该字符串 (候选表只有几十条, 线性扫即可)。
+func containsString(list []string, s string) bool {
+	for _, v := range list {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
 
 // fontCandsOnce 保证扫描型候选只收集一次 (扫描要真解析字体头, 不便宜)。
 var fontCandsOnce sync.Once
@@ -55,6 +114,25 @@ func fontCandidatesForOS() []string {
 			"/System/Library/Fonts/Supplemental/Arial.ttf",
 			"/Library/Fonts/Arial.ttf",
 		}
+	case "android":
+		// Android 的系统字体在只读系统分区, 路径稳定。顺序即优先级: 先官方 CJK
+		// (NotoSansCJK, 中文机型必装), 再老设备的 DroidSansFallback, 最后
+		// Roboto —— 它只是"至少有字"的拉丁兜底, 中文会画成豆腐块, 所以绝不能
+		// 排在任何 CJK 字体前面。
+		return []string{
+			"/system/fonts/NotoSansCJK-Regular.ttc",
+			"/system/fonts/NotoSansCJK-VF.otf.ttc",
+			"/system/fonts/DroidSansFallback.ttf",
+			"/system/fonts/NotoSansSC-Regular.otf",
+			"/system/fonts/Roboto-Regular.ttf",
+		}
+	case "ios":
+		// iOS 的沙箱读不到系统字体文件 (路径存在但 open 会被拒), 所以移动端
+		// 真正可靠的做法是**宿主注入随包字体** (gfx.SetFontPath, 见下)。这里留
+		// 一条尽力而为的路径, 失败就靠注入兜底。
+		return []string{
+			"/System/Library/Fonts/PingFang.ttc",
+		}
 	default:
 		// 常见发行版的兜底路径; 主力候选靠目录扫描补齐。
 		return []string{
@@ -72,6 +150,11 @@ func fontCandidatesForOS() []string {
 func fontScanDirs() []string {
 	if runtime.GOOS == "windows" {
 		return nil
+	}
+	if runtime.GOOS == "android" {
+		// Android 也扫: 静态候选只覆盖官方机型, 定制 ROM 的字体命名无规律
+		// (与 Linux 同一理由)。代价是首帧前解析一批字体头, 一次性开销。
+		return []string{"/system/fonts", "/product/fonts"}
 	}
 	var dirs []string
 	if runtime.GOOS == "darwin" {
@@ -99,12 +182,10 @@ func fontScanDirs() []string {
 // 放在加载首个字体之前而不是 init(): 从不用 GUI 的脚本不该为扫描付钱。
 func initFontCandidates() {
 	fontCandsOnce.Do(func() {
-		found := scanSystemFonts(fontScanDirs(), fontScanLimit)
-		if len(found) > 0 {
-			// 扫描结果排在静态候选之前: 它们来自"这台机器上确实存在"的目录,
-			// 而静态路径在部分发行版/精简镜像里根本不存在。
-			fontCandidates = append(found, fontCandidates...)
-		}
+		scannedFonts = scanSystemFonts(fontScanDirs(), fontScanLimit)
+		// 扫描结果排在静态候选之前: 它们来自"这台机器上确实存在"的目录,
+		// 而静态路径在部分发行版/精简镜像里根本不存在。宿主注入的仍排最前。
+		rebuildCandidatesLocked()
 	})
 }
 
@@ -326,6 +407,16 @@ func (c *glyphCache) put(size int, r rune, e *glyphEntry) {
 }
 
 // stats 返回缓存统计 (gx/dev 的 devSnapshot 用)。
+// reset 清空缓存 (宿主换字体后必须清: 掩码是**旧字体**渲染出来的字形,
+// 留着会中新 face 配旧字形 —— 画面表现为"换字体没生效"或文字串型)。
+func (c *glyphCache) reset() {
+	c.mu.Lock()
+	c.order = nil
+	c.entry = map[glyphKey]*glyphEntry{}
+	c.hits, c.misses, c.evicts = 0, 0, 0
+	c.mu.Unlock()
+}
+
 func (c *glyphCache) stats() (size, cap, hits, misses, evicts int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
