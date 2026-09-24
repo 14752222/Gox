@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      configChanges 全列出来是**故意的**: 旋转/折叠/分屏时不要重建 Activity
+      —— 重建会让 Go 侧那段会话 (VM + 事件泵 + 当前帧缓冲) 整个作废, 表现为
+      "一转屏脚本从头开始跑"。正确的做法是让 surfaceChanged 回调站出来,
+      我们据此调 nativeResize + 重新绑定帧缓冲 (见 MainActivity.onSurfaceSize)。
+    -->
+    <application
+        android:allowBackup="false"
+        android:label="Gox"
+        android:supportsRtl="true">
+        <activity
+            android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|density|uiMode"
+            android:exported="true"
+            android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>

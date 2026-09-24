@@ -109,6 +109,26 @@ func WindowCount() int {
 	return len(apps)
 }
 
+// ActiveRoot 返回当前活动窗口的**布局根节点** (没有窗口时为 nil)。
+//
+// 为什么要有这个出口: 脚本每次操作节点都从**自己所属**的窗口出发
+// (appOfNode 沿 Parent 上溯), 内核自己也从不"猜窗口"; 于是 gfx 之外的观察者
+// (gfx/mobile 的桌面回归、宿主侧的冒烟脚本) 手上没有 app 指针, 就完全看不到
+// 节点树 —— 它们要么自己重算一遍布局坐标 (脆弱且必然与内核脱节), 要么只能
+// 放弃断言 (那就什么都守不住)。
+//
+// 与 Active / WindowCount 同性质: **只读、不参与渲染逻辑**。注意它返回的是
+// "最近挂载的窗口", 多窗口下这个语义会随挂载顺序变 —— 生产路径不要用它找
+// 节点 (节点归属一律走 appOfNode); 拿自己 Mount 时得到的 *Window / 节点指针
+// 才是稳的。
+func ActiveRoot() *GuiNode {
+	a := currentApp()
+	if a == nil {
+		return nil
+	}
+	return a.rootNode()
+}
+
 // registerApp 把新窗口写入注册表并把 activeApp 指向它。
 func registerApp(a *app) {
 	appMu.Lock()

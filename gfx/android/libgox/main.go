@@ -34,8 +34,6 @@ static void gox_release_utf(JNIEnv *env, jstring s, const char *c) {
 import "C"
 
 import (
-	"fmt"
-	"os"
 	"runtime"
 	"sync"
 	"unsafe"
@@ -100,6 +98,10 @@ func Java_com_gox_GoxRuntime_nativeInit(e *C.JNIEnv, clazz C.jclass,
 	mu.Lock()
 	surface = s
 	mu.Unlock()
+	// 一行启动日志: 真机上"什么尺寸、density 多少、有没有真的走到这"全看它
+	// (`adb logcat -s Gox:I`)。
+	gfxandroid.Logf("libgox 启动: %dx%d density=%.2f, surface 已注册为默认窗口后端",
+		int(w), int(h), float64(density))
 	return 0
 }
 
@@ -146,7 +148,9 @@ func Java_com_gox_GoxRuntime_nativeRunScript(e *C.JNIEnv, clazz C.jclass,
 		defer runtime.UnlockOSThread()
 
 		if err := runScript(source, label); err != nil {
-			fmt.Fprintf(os.Stderr, "gox: %s: %v\n", label, err)
+			// 走 Logf 而不是 fmt.Fprintf(os.Stderr): 真机上 stderr 被接到 /dev/null,
+			// 而这里正是"脚本起不来"唯一能留下原因的地方。
+			gfxandroid.Logf("%s: %v", label, err)
 			gfxandroid.NotifyFinished(1, err.Error())
 			return
 		}
@@ -252,7 +256,7 @@ func currentSurface() *mobile.Surface {
 // jerr 把 Go 侧初始化错误变成 JNI 返回码并打印。Kotlin 拿到非 0 应当直接报错
 // 退出, 而不是继续跑一个没有帧缓冲的会话 (那样的症状是"界面全黑但日志正常")。
 func jerr(err error) C.jint {
-	fmt.Fprintf(os.Stderr, "gox: android init 失败: %v\n", err)
+	gfxandroid.Logf("android init 失败: %v", err)
 	return 1
 }
 

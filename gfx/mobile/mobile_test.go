@@ -1,7 +1,10 @@
 package mobile
 
 import (
+	"fmt"
 	"image"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -286,4 +289,136 @@ func TestTouchDrivesButtonClick(t *testing.T) {
 	if uploads == 0 {
 		t.Fatalf("触摸点击这一轮应至少上屏一帧")
 	}
+}
+
+// collectText 递归收集整棵树里的文本节点内容。
+func collectText(n *gfx.GuiNode) []string {
+	if n == nil {
+		return nil
+	}
+	var out []string
+	if n.Tag == "#text" && n.Text != "" {
+		out = append(out, n.Text)
+	}
+	for _, c := range n.Children {
+		out = append(out, collectText(c)...)
+	}
+	return out
+}
+
+func hasText(list []string, want string) bool {
+	for _, s := range list {
+		if s == want {
+			return true
+		}
+	}
+	return false
+}
+
+// TestAndroidAssetScriptClickDrivesCounter 直接跑**要打进 APK 的那份 asset 脚本**。
+//
+// 它与 TestTouchDrivesButtonClick 的区别在于脚本来源: 这里读的是
+// app/android/app/src/main/assets/app.js —— 真机上唯一会被执行的脚本。安卓侧没法单测,
+// 所以把"asset 能不能跑、点得动、界面会不会更新"这件事拉到开发机上来守:
+// 谁把 asset 改坏了 (JSX 写错、用了相对 import、引用了不存在的模块), 这里当场红。
+func TestAndroidAssetScriptClickDrivesCounter(t *testing.T) {
+	src, err := os.ReadFile(filepath.Join("..", "..", "app", "android", "app", "src", "main", "assets", "app.js"))
+	if err != nil {
+		t.Fatalf("读取 asset 脚本: %v", err)
+	}
+
+	s := New(Config{Width: 400, Height: 600, Density: 2})
+	s.Register()
+	defer gfx.SetDefaultFactory(nil)
+
+	v, err := vm.EvalVM(string(src))
+	if err != nil {
+		t.Fatalf("EvalVM: %v", err)
+	}
+
+	// 断言全部攒到泵外再做: t.Fatalf 走 runtime.Goexit, 在 pump 回调里调用会把
+	// RunTimersWithPump 连同已挂载的窗口一起丢在半路 —— 报告出来的现象是
+	// "测试卡住" 而不是 "断言失败"。所以泵内只记录, 泵后统一判。
+	//
+	// 失败路径也要走一次关窗: 挂着不放的窗口会留在包级注册表里, 后面的用例
+	// 调 gfx.Pump 时会去等一个已经不存在的宿主。
+	var (
+		before  []string // 点击前的界面文本
+		after   []string // 点击并重绘后的界面文本
+		problem string   // 泵内发现的第一个问题
+	)
+	closeAndPump := func(maxWait time.Duration) bool {
+		s.Post(gfx.Event{Kind: gfx.EventClose})
+		return gfx.Pump(maxWait)
+	}
+	round := 0
+	pump := func(maxWait time.Duration) bool {
+		round++
+		switch round {
+		case 1:
+			// 首帧: 让 render 挂上的树走完布局 + 首绘 —— 坐标要到这之后才算得出来。
+			s.Tick()
+			return gfx.Pump(maxWait)
+		case 2:
+			root := gfx.ActiveRoot()
+			if root == nil {
+				problem = "首帧之后仍拿不到窗口根节点"
+				return closeAndPump(maxWait)
+			}
+			before = collectText(root)
+			btn := lastButton(root)
+			if btn == nil {
+				problem = fmt.Sprintf("asset 里没找到 button 节点, 树上文本: %v", before)
+				return closeAndPump(maxWait)
+			}
+			if btn.Box.W == 0 || btn.Box.H == 0 {
+				problem = fmt.Sprintf("button 未完成布局 (Box=%+v)", btn.Box)
+				return closeAndPump(maxWait)
+			}
+			// 脚本里只有一个 button: 把它的中心当一根手指的落点。
+			cx, cy := btn.Box.X+btn.Box.W/2, btn.Box.Y+btn.Box.H/2
+			s.Touch(TouchDown, cx, cy)
+			s.Touch(TouchUp, cx, cy)
+			return gfx.Pump(maxWait)
+		case 3:
+			// 点击已在上一轮 Pump 里派发完 (setCount → 信号 → effect → 文本节点),
+			// 这一轮读到的就是更新后的树; 读完立刻关窗, 让泵自己收敛退出。
+			after = collectText(gfx.ActiveRoot())
+			return closeAndPump(maxWait)
+		default:
+			problem = fmt.Sprintf("关窗后事件泵未收敛 (已到第 %d 轮)", round)
+			return false
+		}
+	}
+	if err := v.RunTimersWithPump(pump); err != nil {
+		t.Fatalf("RunTimersWithPump: %v", err)
+	}
+	if problem != "" {
+		t.Fatal(problem)
+	}
+	// 先确认点击前是 0: 否则"点击后是 1"可能是脚本一上来就写着 1 (断言空转),
+	// 那样这条回归等于什么都没守。
+	if !hasText(before, "触摸链路已通: 计数 0") {
+		t.Fatalf("点击前界面应显示计数 0, 实际: %v", before)
+	}
+	if !hasText(after, "触摸链路已通: 计数 1") {
+		t.Fatalf("点一次按钮后界面应显示计数 1; 点击前=%v 点击后=%v", before, after)
+	}
+}
+
+// lastButton 深度优先找最后一个 button 节点 (asset 只放了一个)。
+func lastButton(n *gfx.GuiNode) *gfx.GuiNode {
+	if n == nil {
+		return nil
+	}
+	var found *gfx.GuiNode
+	if n.Tag == "button" {
+		found = n
+	}
+	for _, c := range n.Children {
+		if b := lastButton(c); b != nil {
+			found = b
+		}
+	}
+	return found
 }

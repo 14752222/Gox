@@ -42,9 +42,21 @@
 package android
 
 /*
+#cgo LDFLAGS: -llog
 #include <jni.h>
+#include <android/log.h>
 #include <stdlib.h>
 #include <string.h>
+
+// gox_log_write 把一条消息写进 logcat。
+//
+// 为什么不直接用 os.Stderr: Android 上 **zygote 在 fork 应用进程前把 stdout/stderr
+// 接到了 /dev/null** —— 原生代码往 fd 2 写的字节在真机上人间蒸发, 而这类日志恰恰是
+// 首帧失败时唯一能说明原因的东西 ("黑屏 + 无日志" 是没法查的)。
+// tag 固定 "Gox", 跟 Kotlin 侧 Log.i(TAG) 一致 ⇒ `adb logcat -s Gox:I` 一网打尽。
+static void gox_log_write(const char *msg) {
+	__android_log_write(ANDROID_LOG_INFO, "Gox", msg);
+}
 
 static JavaVM *gox_jvm = NULL;
 
@@ -150,6 +162,20 @@ var (
 	warnedFlushErr bool
 )
 
+// Logf 写一条日志到 logcat (tag "Gox"), 同时照旧写一份 stderr —— 真机上 stderr
+// 是 /dev/null (见 C 侧 gox_log_write 的注释), 但在开发机的桌面测试/别的宿主里
+// 它还能被捕获, 两边都留着成本为零。
+//
+// 为什么需要它: gfx/android 里所有 "跳过了、失败了" 的分支都是**静默降级**,
+// 不留痕迹就等于 (例如) 帧缓冲没绑上却只看到一块黑屏。
+func Logf(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	fmt.Fprintln(os.Stderr, "gox: "+msg)
+	cs := C.CString(msg)
+	C.gox_log_write(cs)
+	C.free(unsafe.Pointer(cs))
+}
+
 // SetJavaVM 保存 JVM 指针 (由 libgox 的 JNI_OnLoad 调用一次)。
 func SetJavaVM(vm unsafe.Pointer) {
 	mu.Lock()
@@ -206,6 +232,10 @@ func BindFrameBuffer(buf unsafe.Pointer, capBytes int) error {
 	}
 	obj := unsafe.Pointer(C.gox_new_global_ref(e, C.jobject(buf)))
 	mu.Lock()
+	// 换地址与新全局引用在**同一段临界区**里落地, 且 uploadFrame 是持同一把锁做
+	// 整段拷贝的 —— 所以这里一定等"正往旧地址写的那一帧"写完才换。
+	// 同时, 旧缓冲的最后一个 JNI 全局引用也在此刻被替换掉: 从这一刻起旧地址不再
+	// 被任何一方碰, Java 侧可以放心让它被回收 (见 uploadFrame 的注释)。
 	frameBuf, framePtr, frameCap = obj, ptr, capBytes
 	mu.Unlock()
 	return nil
@@ -223,28 +253,38 @@ func uploadFrame(img *image.RGBA, rects []image.Rectangle) {
 	if img == nil {
 		return
 	}
+	w, h := img.Bounds().Dx(), img.Bounds().Dy()
+	need := w * h * 4
+
+	// **整段拷贝都在锁里** —— BindFrameBuffer 换地址时拿的是同一把锁, 于是
+	// "宿主把裸地址交给引擎"与"引擎还在往旧地址写"不可能重叠。少了这层, 旋转/
+	// 分屏时旧缓冲区会在换绑那一刻失去最后一个 JNI 全局引用 (可被 JVM 释放),
+	// 而渲染线程可能仍有一帧正往它的地址上写: 症状是**偶发**的 JVM 堆损坏
+	// (最难查的一类崩溃), 而加固成本只是一次 mutex。
+	//
+	// 锁**不能跨到 flush**: flush 自己要拿 mu 读回调句柄, 而 Go 的 Mutex 不可重入。
 	mu.Lock()
 	ptr, capacity := framePtr, frameCap
+	ok := ptr != nil && capacity >= need
+	if ok {
+		// 按行拷: img.Stride 是分配对齐后的行宽, 可能大于 w*4, 整体 memcpy 会把
+		// 行尾填充算进画面 (表现为图像斜切)。
+		row := w * 4
+		for y := 0; y < h; y++ {
+			dst := unsafe.Pointer(uintptr(ptr) + uintptr(y*row))
+			src := unsafe.Pointer(&img.Pix[y*img.Stride])
+			C.gox_copy_pixels(dst, src, C.int(row))
+		}
+	}
 	mu.Unlock()
 
-	w, h := img.Bounds().Dx(), img.Bounds().Dy()
-	if ptr == nil || capacity < w*h*4 {
+	if !ok {
 		// 只出声一次: 每次上屏都打会把 logcat 淹掉。
 		if !warnedNoBuffer {
 			warnedNoBuffer = true
-			fmt.Fprintf(os.Stderr,
-				"android: 帧缓冲不可用 (cap=%d need=%d), 上屏被跳过; 检查 nativeInit 是否已调用\n",
-				capacity, w*h*4)
+			Logf("帧缓冲不可用 (cap=%d need=%d), 上屏被跳过; 检查 nativeInit 是否已调用", capacity, need)
 		}
 		return
-	}
-	// 按行拷: img.Stride 是分配对齐后的行宽, 可能大于 w*4, 整体 memcpy 会把
-	// 行尾填充算进画面 (表现为图像斜切)。
-	row := w * 4
-	for y := 0; y < h; y++ {
-		dst := unsafe.Pointer(uintptr(ptr) + uintptr(y*row))
-		src := unsafe.Pointer(&img.Pix[y*img.Stride])
-		C.gox_copy_pixels(dst, src, C.int(row))
 	}
 	flush(rects)
 }
@@ -287,7 +327,7 @@ func flush(rects []image.Rectangle) {
 	C.gox_call_void(e, C.jobject(obj), mid, C.jobject(arr))
 	if C.gox_clear_exception(e) != 0 && !warnedFlushErr {
 		warnedFlushErr = true
-		fmt.Fprintln(os.Stderr, "android: GoxHost.flush 抛了异常 (已清除, 上屏可能停在旧帧)")
+		Logf("GoxHost.flush 抛了异常 (已清除, 上屏可能停在旧帧)")
 	}
 }
 

@@ -1,0 +1,11 @@
+# Gradle 构建产物 —— 壳工程只跟踪源码与配置, 任何产出都不进仓库。
+.gradle/
+build/
+local.properties
+.idea/
+*.iml
+
+# libgox.so 是构建产物: `bash scripts/build-android.sh` 产出后手工拷进来 (见 README)。
+# 根 .gitignore 里的 `*.so` 其实已经覆盖它, 这里显式重申一遍 —— 免得下次有人
+# 看到 jniLibs/ 是空的, 以为"仓库少了个文件"而去把二进制提交上来。
+app/src/main/jniLibs/
