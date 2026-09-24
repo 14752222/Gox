@@ -781,10 +781,11 @@ const [user, res] = createResource(async function () {
 // 失败后 data() 仍是上一次的值,错误读 res.error()</code></pre>
 
     <div class="callout note">
-      <b>同一个 effect 里既读 signal 又读它的 memo ⇒ 每轮跑两次</b>
+      <b>同一个 effect 里既读 signal 又读它的 memo ⇒ 每轮只跑一次</b>
       <p>
-        源 signal 与 memo 各自触发一次通知,引擎不合并。只读其中之一就是一次。
-        症状是"计数类断言多了一倍",写测试或做耗时操作时留意。
+        该 effect 同时经两条路订阅了同一次变更(直接订阅 signal + 经 memo 的 cell),引擎按"一趟通知"
+        去重:先把链上 memo 标脏,再跑 effect。2026-09-24 之前的版本每轮会跑两次,症状是"计数类断言
+        多了一倍";现在只跑一次,且读到的 memo 值必然已是新的。
       </p>
     </div>
 

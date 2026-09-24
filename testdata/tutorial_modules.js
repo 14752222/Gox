@@ -77,14 +77,15 @@ createEffect(() => {
 setCount(10);
 console.log("untrack 内的读取不建立依赖 → reads =", reads);
 
-// 一条实测口径: **同一个 effect 里既读 signal 又读它的 memo 时, 该 effect 每轮会跑两次**
-// (memo 重算与源 signal 各自触发一次通知, 未合并)。要精确的次数计数就别把两者放进同一个 effect。
+// 实测口径: 同一个 effect 里既读 signal 又读它的 memo —— 该 effect 每轮只跑一次。
+// 它同时经两条路订阅了同一次变更 (直接订阅 signal + 经 memo 的 cell), 引擎按"一趟
+// 通知"去重。(2026-09-24 之前这里是每轮两次, 计数类断言会多一倍。)
 const [n, setN] = createSignal(1);
 const nm = createMemo(() => n() * 10);
 const both = [];
 createEffect(() => both.push(n() + "|" + nm()));
 setN(2);
-console.log("同时读 signal 与 memo →", JSON.stringify(both), "(每轮两次)");
+console.log("同时读 signal 与 memo →", JSON.stringify(both), "(每轮一次)");
 
 // ---- 2.4 gx/storage: 应用级持久化 -----------------------------------------
 console.log("\n== 2.4 gx/storage 持久化 ==");

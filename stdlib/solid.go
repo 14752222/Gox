@@ -49,6 +49,10 @@ type solidObserver struct {
 	disposed bool
 	isMemo   bool
 
+	// ranGen 是最近一次执行所属的通知趟代数。一个 effect 既直接订阅 signal,
+	// 又经 memo 的 cell 订阅同一次变更时, 靠它压掉重复的那一轮。
+	ranGen int
+
 	// memo 专有: 值挂在 cell 上, 下游观察者订阅 cell 而不是 memo 本身
 	cell  *solidSignal
 	dirty bool
@@ -67,6 +71,10 @@ var (
 	// 深度, 防止 effect 互相触发的死循环
 	solidNotifyDepth int
 	solidChainRuns   int
+
+	// solidPassGen 是"通知趟"的代数: 每次 setter 通知前自增, 同一趟里
+	// 每个观察者至多跑一次 (见 solidNotify / solidRunEffectsDeep)。
+	solidPassGen int
 )
 
 const solidMaxChainRuns = 1000
@@ -136,6 +144,7 @@ func solidSignalSet(sig *solidSignal, args ...object.Value) object.Value {
 		solidChainRuns = 0
 	}
 	solidNotifyDepth++
+	solidPassGen++ // 新的一趟
 	err := solidNotify(sig)
 	solidNotifyDepth--
 	return err
@@ -158,35 +167,74 @@ func solidCallbackError() object.Value {
 }
 
 // solidNotify 通知 signal 的所有订阅者, 返回首个观察者异常。
+//
+// **一趟分两相, 顺序不能换** (2026-09-24 修「同一个 effect 里既读 signal 又读
+// 它的 memo, 每轮跑两次」):
+//  1. 标脏相 —— 沿 memo 链把所有受影响的 memo 标脏 (纯 Go 标记, 不跑 JS);
+//  2. 执行相 —— 再逐个跑 effect。
+//
+// 旧实现按订阅者逐个唤醒, effect 会被两条路各叫一次 (它直接订阅了 signal, 又经
+// memo 的 cell 订阅同一次变更) ⇒ 每轮跑两遍。分相之后一趟内每个观察者至多跑
+// 一次, 且跑的时候链上 memo 必然已标脏 —— 不会出现"先跑一轮旧值, 再被 memo
+// 叫醒跑一轮新值"这种更坏的形态。
 func solidNotify(sig *solidSignal) object.Value {
 	if len(sig.subscribers) == 0 {
 		return nil
 	}
-	// 快照后遍历: 重跑过程中订阅关系可能增删
-	observers := make([]*solidObserver, 0, len(sig.subscribers))
+	solidMarkDirtyDeep(sig, map[*solidObserver]struct{}{})
+	return solidRunEffectsDeep(sig, map[*solidObserver]struct{}{})
+}
+
+// solidMarkDirtyDeep 标脏相: 把 sig 下游的 memo 逐个标脏, 并沿它们的 cell 继续。
+// 这一相不执行 JS, 订阅关系不会变, 因此不需要快照。
+func solidMarkDirtyDeep(sig *solidSignal, seen map[*solidObserver]struct{}) {
 	for obs := range sig.subscribers {
-		observers = append(observers, obs)
+		if obs.disposed {
+			continue
+		}
+		if _, ok := seen[obs]; ok {
+			continue
+		}
+		seen[obs] = struct{}{}
+		if !obs.isMemo {
+			continue // effect 归执行相
+		}
+		obs.dirty = true
+		solidMarkDirtyDeep(obs.cell, seen)
 	}
+}
+
+// solidRunEffectsDeep 执行相: 跑 sig 下游的 effect, 经 memo 的 cell 继续下探。
+//
+// 去重靠两件事: seen 保证一趟内同一观察者只处理一次; ranGen >= 本趟代数 表示
+// 它在**本趟里更晚的嵌套趟**中已经跑过 (嵌套 setter 会开新趟, 代数更大), 数据
+// 只会更新, 不必再跑。订阅关系会被 effect 的执行改变 (它会重建依赖、创建新
+// effect), 所以逐层读的是当前订阅表; 趟内新建的 effect 在创建时已经跑过
+// (ranGen == 本趟) 因而被跳过。
+func solidRunEffectsDeep(sig *solidSignal, seen map[*solidObserver]struct{}) object.Value {
 	var firstErr object.Value
-	for _, obs := range observers {
-		if err := solidRefresh(obs); err != nil && firstErr == nil {
+	for obs := range sig.subscribers {
+		if obs.disposed {
+			continue
+		}
+		if _, ok := seen[obs]; ok {
+			continue
+		}
+		seen[obs] = struct{}{}
+		if obs.isMemo {
+			if err := solidRunEffectsDeep(obs.cell, seen); err != nil && firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		if obs.ranGen >= solidPassGen {
+			continue
+		}
+		if err := solidExecute(obs); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
 	return firstErr
-}
-
-// solidRefresh 依赖变更唤醒观察者:
-// effect → 立即重跑; memo → 只标脏并通知下游 (惰性重算)。
-func solidRefresh(obs *solidObserver) object.Value {
-	if obs.disposed {
-		return nil
-	}
-	if obs.isMemo {
-		obs.dirty = true
-		return solidNotify(obs.cell)
-	}
-	return solidExecute(obs)
 }
 
 // solidExecute 执行观察者函数并同步订阅关系 (effect 重跑 / memo 重算共用)。
@@ -209,6 +257,7 @@ func solidExecute(obs *solidObserver) object.Value {
 	}
 
 	obs.running = true
+	obs.ranGen = solidPassGen
 	prevDeps := obs.deps
 	obs.deps = nil
 	solidStack = append(solidStack, obs)

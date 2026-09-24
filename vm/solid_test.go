@@ -129,3 +129,45 @@ func TestSolidEffectErrorPropagates(t *testing.T) {
 		r;
 	`), "boom")
 }
+
+// TestSolidEffectReadsSignalAndMemo 同一个 effect 里既读 signal 又读它的 memo,
+// 每轮变更只能重跑**一次** (2026-09-24 修): 该 effect 同时经两条路订阅了同一次
+// 变更 —— 直接订阅 signal, 以及经 memo 的 cell —— 旧实现会各叫它一次。
+func TestSolidEffectReadsSignalAndMemo(t *testing.T) {
+	// 单个 memo: 直接读 n() 与 d()
+	assertString(t, evalJS(t, `
+		import { createSignal, createEffect, createMemo } from "gx/solid";
+		const [n, setN] = createSignal(1);
+		const d = createMemo(() => n() * 10);
+		let log = "";
+		createEffect(() => { log += "," + n() + ":" + d(); });
+		setN(2);
+		setN(3);
+		log;
+	`), ",1:10,2:20,3:30")
+
+	// memo 链 (n → m1 → m2) + effect 三个都读: 仍然每轮一次, 且读到的值不落后
+	assertString(t, evalJS(t, `
+		import { createSignal, createEffect, createMemo } from "gx/solid";
+		const [n, setN] = createSignal(1);
+		const m1 = createMemo(() => n() + 1);
+		const m2 = createMemo(() => m1() * 10);
+		let log = "";
+		createEffect(() => { log += "," + n() + "/" + m1() + "/" + m2(); });
+		setN(2);
+		log;
+	`), ",1/2/20,2/3/30")
+
+	// 两个 effect 各读一套: 一个只在 memo 链上, 一个两路都走 —— 互不干扰
+	assertString(t, evalJS(t, `
+		import { createSignal, createEffect, createMemo } from "gx/solid";
+		const [n, setN] = createSignal(1);
+		const d = createMemo(() => n() * 2);
+		let a = "";
+		let b = "";
+		createEffect(() => { a += "A" + d(); });
+		createEffect(() => { b += "B" + n() + d(); });
+		setN(4);
+		a + "|" + b;
+	`), "A2A8|B12B48")
+}

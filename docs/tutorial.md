@@ -284,8 +284,10 @@ storage.removeStorage("theme");
 
 - **`getStorage` 没有默认值参数**: `getStorage("k", "default")` 的第二参数被忽略, 缺失时返回
   `undefined`(与 [gui-guide §9.3](gui-guide.md) 的文字描述不一致, 以代码为准)。
-- **同一个 effect 里既读 signal 又读它的 memo 时, 该 effect 每轮会跑两次**(源 signal 与 memo
-  各自触发一次通知, 未合并)。要精确的调用次数就别把两者放进同一个 effect。
+- **(2026-09-24 已修) 同一个 effect 里既读 signal 又读它的 memo**: 旧实现每轮跑两次 —— 该 effect
+  同时经两条路订阅了同一次变更(直接订阅 signal + 经 memo 的 cell), 各自叫它一次, 症状是"计数类
+  断言多了一倍"。现在通知按"一趟"去重(先把链上 memo 标脏, 再跑 effect), **每轮只跑一次**, 且读到的
+  memo 值必然已是新的。实测输出见下方 §2.3。
 
 完整可运行示例: [`testdata/tutorial_modules.js`](../testdata/tutorial_modules.js) (配
 [`testdata/tutorial_util.js`](../testdata/tutorial_util.js) 演示相对路径导入)。
@@ -304,7 +306,7 @@ GOX_STORAGE_DIR=./tutorial-storage gox testdata/tutorial_modules.js
 == 2.3 gx/solid 无界面用法 ==
 effect 收到的值序列: [2,3,4]
 memo 惰性求值: count = 4 doubled = 8
-同时读 signal 与 memo → ["1|10","2|20","2|20"] (每轮两次)
+同时读 signal 与 memo → ["1|10","2|20"] (每轮一次)
 
 == 2.4 gx/storage 持久化 ==
 数据目录: tutorial-storage\gox-tutorial-demo
