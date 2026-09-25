@@ -121,6 +121,9 @@ func TestLocalDeviceInfoDefaults(t *testing.T) {
 
 func TestLocaleFromEnv(t *testing.T) {
 	t.Setenv("LC_ALL", "")
+	// LC_MESSAGES 也要显式清空: macOS 的 shell 环境常带 LC_MESSAGES=C,
+	// 不清的话 raw 取到它, 用例就随环境抖动。
+	t.Setenv("LC_MESSAGES", "")
 	t.Setenv("LANG", "zh_CN.UTF-8")
 	lang, region := localeFromEnv()
 	if lang != "zh" || region != "CN" {

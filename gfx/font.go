@@ -43,8 +43,19 @@ var scannedFonts []string
 func rebuildCandidatesLocked() {
 	next := make([]string, 0, len(injectedFonts)+len(scannedFonts)+4)
 	next = append(next, injectedFonts...)
-	next = append(next, scannedFonts...)
-	next = append(next, fontCandidatesForOS()...)
+	if runtime.GOOS == "darwin" {
+		// macOS 静态候选排在扫描结果之前: 苹果管控的字体路径恒存在
+		// (PingFang.ttc 覆盖 CJK+拉丁), 而目录扫描会先撞上 .SF Numeric
+		// 这类"专用子字体" (ADTNumeric.ttc 的 face 0, 只有数字/大写/标点,
+		// 小写与 CJK 全缺字) —— 实测整屏小写与中文不渲染, 只有 ": 0"。
+		next = append(next, fontCandidatesForOS()...)
+		next = append(next, scannedFonts...)
+	} else {
+		// 其余平台保持"扫描优先": 静态路径在部分发行版/精简镜像里根本不存在,
+		// 扫描到的"这台机器上确实存在"的字体更可靠。
+		next = append(next, scannedFonts...)
+		next = append(next, fontCandidatesForOS()...)
+	}
 	fontCandidates = next
 }
 
@@ -109,8 +120,13 @@ func fontCandidatesForOS() []string {
 			`C:\Windows\Fonts\segoeui.ttf`,
 		}
 	case "darwin":
+		// 顺序即优先级, 首个可解析者成为 baseFont: 需同时覆盖 CJK 与拉丁。
+		// PingFang.ttc 在旧版 macOS 存在, 新版 (26+) 已并入 dyld 共享缓存
+		// 读不到文件 —— Hiragino Sans GB / STHeiti 是新版实测存在的 CJK。
 		return []string{
 			"/System/Library/Fonts/PingFang.ttc",
+			"/System/Library/Fonts/Hiragino Sans GB.ttc",
+			"/System/Library/Fonts/STHeiti Medium.ttc",
 			"/System/Library/Fonts/Supplemental/Arial.ttf",
 			"/Library/Fonts/Arial.ttf",
 		}
@@ -196,6 +212,8 @@ var cjkFontHints = []string{
 	"notosanscjk", "notoserifcjk", "wenquanyi", "wqy", "droidsansfallback",
 	"sourcehansans", "sourcehanserif", "fireflysung", "uming", "ukai", "arphic",
 	"notosansmonocjk", "sarasa",
+	// macOS 系统目录扫描用 (命名与 Linux 完全不同): 苹果内置 CJK 字体。
+	"pingfang", "hiragino", "songti", "stheiti", "heiti", "libian", "lantinghei",
 }
 
 // looksCJK 按文件名猜测是否覆盖中文。

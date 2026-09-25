@@ -31,7 +31,7 @@ Gox 是一个用**纯 Go** 实现的 JavaScript（ES6+ 子集）运行时。整�
 字节码生成、栈式虚拟机 —— 都从零实现，不依赖 V8/QuickJS 等任何现成引擎，也不依赖 cgo。
 
 在此之上，Gox 补齐了脚本语言通常缺失的那一层：一套**自研的桌面 GUI 渲染层**（纯 Go 软件光栅化，
-flex 布局 + JSX + 信号驱动更新，win32 / X11 窗口后端）、一组宿主能力模块（文件、HTTP、剪贴板、
+flex 布局 + JSX + 信号驱动更新，win32 / X11 / cocoa 窗口后端）、一组宿主能力模块（文件、HTTP、剪贴板、
 原生对话框、持久化存储），以及**把脚本打包成独立可执行文件**的工具链。
 
 它的定位是"小而完整"：一个 `go build` 得到一个可执行文件，可以把 JS 当脚本层嵌进 Go 程序，
@@ -60,7 +60,7 @@ flex 布局 + JSX + 信号驱动更新，win32 / X11 窗口后端）、一组宿
 - **宿主能力模块** —— 以全局对象注入：`fs`（Node 风格，同步 + 异步两套）、`path`、`http`
   （客户端 `get`/`request` + 服务端 `createServer`）、`fetch`、`process`、`stats`
 - **自研 GUI 渲染层** —— `gx/gfx` 模块：flex 风格布局（`column`/`row`/`grid`、百分比尺寸、min-max 钳位、
-  `flexShrink`、折行）、圆角/线性渐变/阴影装饰、命中测试、脏矩形局部重绘；win32（纯 syscall）与 X11
+  `flexShrink`、折行）、圆角/线性渐变/阴影装饰、命中测试、脏矩形局部重绘；win32（纯 syscall）、X11 与 macOS（cocoa, purego）
   窗口后端。详见 **[GUI 开发指南](docs/gui-guide.md)**
 - **原生感的交互组件** —— 表单控件（`input`/`textarea`/`select`/`slider`/`checkbox`/`radio`/`switch`）、
   弹层（`dialog`/`toast`）、滚动容器、自绘画布，以及**自绘菜单栏与右键菜单**（下拉/子菜单/快捷键/禁用项，
@@ -90,7 +90,7 @@ flex 布局 + JSX + 信号驱动更新，win32 / X11 窗口后端）、一组宿
 |---|---|
 | 从源码构建 | Go 1.26.2 或更高（零 cgo，无需 C 工具链） |
 | 仅运行脚本 | 无 —— npm 包已内置各平台预编译二进制，只需 Node.js ≥ 14 |
-| GUI 应用 | Windows（win32）或 Linux（X11）；macOS 后端尚未实现 |
+| GUI 应用 | Windows（win32）、Linux（X11）或 macOS（cocoa） |
 
 ### 从源码构建
 
@@ -450,7 +450,7 @@ REPL 内建命令：`:help`（帮助）、`:clear`（重置全局环境）、`:e
 | `object/` | 运行时对象系统（Number / Array / Map / Promise / Observable…） |
 | `runtime/` | 全局环境 Environment |
 | `stdlib/` | 标准库与宿主 API 实现（含 `gx/solid` 响应式信号） |
-| `gfx/` | 自研 GUI 渲染层（软件光栅化、布局、命中测试、win32 / X11 后端） |
+| `gfx/` | 自研 GUI 渲染层（软件光栅化、布局、命中测试、win32 / X11 / cocoa 后端） |
 | `packager/` | jsbuild 打包器（GUI 应用、交叉编译） |
 | `scaffold/` | `gox create` 的项目脚手架：`template/` 是**真实文件**（`go:embed` 进二进制），`scaffold.go` 负责占位符替换与目录校验 |
 | `test/` | 测试相关：`bench/` 性能剖析基准（fib、函数调用、对象操作、数值解析） |
