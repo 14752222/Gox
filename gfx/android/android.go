@@ -109,12 +109,20 @@ static void gox_call_void(JNIEnv *env, jobject o, jmethodID m, jobject arg) {
 static void gox_call_void_int_str(JNIEnv *env, jobject o, jmethodID m, jint i, jstring s) {
 	(*env)->CallVoidMethod(env, o, m, i, s);
 }
+static void gox_call_void_bool(JNIEnv *env, jobject o, jmethodID m, jboolean b) {
+	(*env)->CallVoidMethod(env, o, m, b);
+}
 // 方法名与签名写死在 C 里, 免得每次绑定都 C.CString 一遍再想不起来 free。
 static jmethodID gox_flush_mid(JNIEnv *env, jobject c) {
 	return (*env)->GetMethodID(env, c, "flush", "([I)V");
 }
 static jmethodID gox_finished_mid(JNIEnv *env, jobject c) {
 	return (*env)->GetMethodID(env, c, "finished", "(ILjava/lang/String;)V");
+}
+// 软键盘开关 (M2): GoxHost.imeShow(show: Boolean) —— 找不到不算错 (老宿主
+// 没有, 降级成"软键盘不可开关"), 用 gox_clear_exception 兜住。
+static jmethodID gox_ime_mid(JNIEnv *env, jobject c) {
+	return (*env)->GetMethodID(env, c, "imeShow", "(Z)V");
 }
 static jstring gox_new_utf(JNIEnv *env, const char *utf) {
 	return (*env)->NewStringUTF(env, utf);
@@ -148,10 +156,12 @@ import (
 // 都不能和 nil 比较 —— 所以句柄一律以 unsafe.Pointer 保存, 用前再转回去。
 var (
 	mu sync.Mutex
-	// hostObj / flushMID / finMID 是宿主回调 GoxHost 的全局引用与方法 id
+	// hostObj / flushMID / finMID 是宿主回调 GoxHost 的全局引用与方法 id;
+	// imeMID 是软键盘开关 (老宿主没有则为 nil, 降级)
 	hostObj  unsafe.Pointer
 	flushMID C.jmethodID
 	finMID   C.jmethodID
+	imeMID   C.jmethodID
 	// frameBuf 是 Java 侧 allocateDirect 的那块内存 (全局引用, 只为持有它),
 	// framePtr 是它的裸地址 —— 引擎直接往里写。
 	frameBuf unsafe.Pointer
@@ -199,15 +209,20 @@ func BindHost(host unsafe.Pointer) error {
 	clazz := C.gox_object_class(e, C.jobject(obj))
 	mid := C.gox_flush_mid(e, clazz)
 	fin := C.gox_finished_mid(e, clazz)
+	ime := C.gox_ime_mid(e, clazz)
 	if C.gox_clear_exception(e) != 0 || mid == nil {
 		return fmt.Errorf("android: GoxHost.flush([I)V 找不到 (Kotlin 侧签名必须逐字符对上)")
 	}
 	if fin == nil {
 		C.gox_clear_exception(e)
 	}
+	if ime == nil {
+		C.gox_clear_exception(e)
+		Logf("GoxHost.imeShow(Z)V 找不到: 软键盘不可开关 (老宿主?)")
+	}
 
 	mu.Lock()
-	hostObj, flushMID, finMID = obj, mid, fin
+	hostObj, flushMID, finMID, imeMID = obj, mid, fin, ime
 	mu.Unlock()
 	return nil
 }
@@ -329,6 +344,29 @@ func flush(rects []image.Rectangle) {
 		warnedFlushErr = true
 		Logf("GoxHost.flush 抛了异常 (已清除, 上屏可能停在旧帧)")
 	}
+}
+
+// CallIMEShow 通知宿主开/收软键盘 (焦点进/出编辑框时内核调)。
+// 没绑到 imeShow 方法 (老宿主) 时静默跳过。
+func CallIMEShow(on bool) {
+	e, done, err := env()
+	if err != nil {
+		return
+	}
+	defer done()
+
+	mu.Lock()
+	obj, mid := hostObj, imeMID
+	mu.Unlock()
+	if obj == nil || mid == nil {
+		return
+	}
+	// jboolean 是 uint8, cgo 不会把 Go bool 自动转过去, 手动归一。
+	var o C.jboolean = 0
+	if on {
+		o = 1
+	}
+	C.gox_call_void_bool(e, C.jobject(obj), mid, o)
 }
 
 // NotifyFinished 通知宿主脚本已结束 (errMsg 为空表示正常结束)。

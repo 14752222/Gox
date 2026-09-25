@@ -38,6 +38,7 @@ package ios
 
 typedef void (*gox_flush_fn)(void *ctx, const int32_t *rects, int32_t n);
 typedef void (*gox_finished_fn)(void *ctx, int32_t code, const char *msg);
+typedef void (*gox_ime_fn)(void *ctx, int32_t on);
 
 static void gox_call_flush(void *ctx, void *fn, const int32_t *rects, int32_t n) {
 	((gox_flush_fn)fn)(ctx, rects, n);
@@ -45,6 +46,10 @@ static void gox_call_flush(void *ctx, void *fn, const int32_t *rects, int32_t n)
 
 static void gox_call_finished(void *ctx, void *fn, int32_t code, const char *msg) {
 	((gox_finished_fn)fn)(ctx, code, msg);
+}
+
+static void gox_call_ime(void *ctx, void *fn, int32_t on) {
+	((gox_ime_fn)fn)(ctx, on);
 }
 
 static void gox_copy_pixels(void *dst, const void *src, int n) {
@@ -74,6 +79,9 @@ var (
 	// framePtr/frameCap 是 Swift malloc 的帧缓冲 (归宿主所有, 引擎只写)
 	framePtr unsafe.Pointer
 	frameCap int
+	// imeCtx/imeFn 是软键盘开关回调 (SetIMEHost 绑定)
+	imeCtx unsafe.Pointer
+	imeFn  unsafe.Pointer
 
 	warnedNoBuffer bool
 	warnedFlushErr bool
@@ -189,6 +197,30 @@ func flush(ctx, fn unsafe.Pointer, rects []image.Rectangle) {
 		n = C.int32_t(len(vals))
 	}
 	C.gox_call_flush(ctx, fn, arr, n)
+}
+
+// SetIMEHost 绑定软键盘开关回调 (Swift 在 gox_init 后、gox_run_script 前调;
+// fn 为 nil 时不开关软键盘)。回调发生在内核 GUI 线程 —— UIKit 操作必须由
+// Swift 侧 dispatch 到主队列。
+func SetIMEHost(ctx, fn unsafe.Pointer) {
+	mu.Lock()
+	imeCtx, imeFn = ctx, fn
+	mu.Unlock()
+}
+
+// CallIME 通知宿主开关软键盘 (on=false 收起)。没有绑定回调时静默跳过。
+func CallIME(on bool) {
+	mu.Lock()
+	ctx, fn := imeCtx, imeFn
+	mu.Unlock()
+	if fn == nil {
+		return
+	}
+	o := C.int32_t(0)
+	if on {
+		o = 1
+	}
+	C.gox_call_ime(ctx, fn, o)
 }
 
 // NotifyFinished 通知宿主脚本已结束 (errMsg 为空表示正常结束)。

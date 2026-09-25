@@ -81,6 +81,9 @@ type Surface struct {
 
 	uploader Uploader
 
+	// imeHost 是宿主的软键盘开关回调 (SetIMEHost 绑定, 可为 nil)。
+	imeHost func(on bool)
+
 	events chan gfx.Event
 	// wake 是 WaitEvents 的唤醒信号, 容量 1: 宿主每帧 Tick 一次叫醒泵,
 	// 重复的 Tick 合并成一次 (泵醒来后会把该做的事做完, 不需要计数)。
@@ -249,6 +252,41 @@ func (s *Surface) Touch(action, x, y int) {
 			s.Post(gfx.Event{Kind: gfx.EventMouseUp, X: x, Y: y})
 		}
 	}
+}
+
+// ===== IME / 软键盘 =====
+//
+// 内核 (gfx/ime.go) 只认两条契约: 焦点进/出编辑框时调 SetIMEEnabled (可选
+// imeController 接口), 输入法提交一批文本时后端投 EventIMECommit 事件。
+// 本包负责把这两条翻译给宿主: 开关软键盘走宿主回调, 提交从宿主进来。
+
+// SetIMEHost 绑定软键盘开关回调 (libgox 装配层在创建表面后调, nil = 不开关)。
+// 回调在内核 GUI 线程上执行 —— 宿主侧若要求主线程 (iOS UIKit 正是), 由宿主
+// 自己 dispatch, 本包不做跨线程假设 (与 flush 回调同一分工)。
+func (s *Surface) SetIMEHost(fn func(on bool)) {
+	s.mu.Lock()
+	s.imeHost = fn
+	s.mu.Unlock()
+}
+
+// SetIMEEnabled 实现 gfx 的可选 imeController 接口: 焦点落在 input/textarea
+// 上就弹软键盘, 离开就收。没有宿主回调时静默跳过 (无头测试)。
+func (s *Surface) SetIMEEnabled(on bool) {
+	s.mu.Lock()
+	fn := s.imeHost
+	s.mu.Unlock()
+	if fn != nil {
+		fn(on)
+	}
+}
+
+// IMECommit 宿主提交一批输入法文本 (可能是"你好"这样的整词, 也可能是单个
+// 字符)。整批插入、光标一次跨过全批的语义在 gfx/ime.go —— 这里只投事件。
+func (s *Surface) IMECommit(text string) {
+	if text == "" || s.isClosed() {
+		return
+	}
+	s.Post(gfx.Event{Kind: gfx.EventIMECommit, Text: text})
 }
 
 // Resize 报告表面尺寸/密度变化 (旋转、分屏、折叠态切换)。

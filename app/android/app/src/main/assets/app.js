@@ -17,6 +17,7 @@ const k = useDeviceInfo().pixelRatio > 0 ? useDeviceInfo().pixelRatio : 1;
 const px = (v) => Math.round(v * k);
 
 const [count, setCount] = createSignal(0);
+const [name, setName] = createSignal("");
 const ins = useInsets;
 
 render(
@@ -32,6 +33,14 @@ render(
       <text font={px(20)}>Gox on Android</text>
       <text font={px(14)}>{() => "触摸链路已通: 计数 " + count()}</text>
       <button onClick={() => setCount((c) => c + 1)}>点我加一</button>
+      <text font={px(14)}>点输入框弹软键盘, 试试中文输入:</text>
+      <input
+        height={px(36)}
+        placeholder="点我输入"
+        value={() => name()}
+        onInput={(e) => setName(e.value)}
+      />
+      <text font={px(14)}>{() => "输入内容: " + name()}</text>
     </column>
   </window>
 );

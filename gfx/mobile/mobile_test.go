@@ -291,9 +291,21 @@ func TestTouchDrivesButtonClick(t *testing.T) {
 	}
 }
 
+// dbg 读脚本全局 val 的当前值 (调试探针)。
+func dbg(v *vm.VM) string {
+	return dbgGlobal(v, "val") + " history=" + dbgGlobal(v, "history")
+}
+
+func dbgGlobal(v *vm.VM, name string) string {
+	val, _ := v.Globals().Get(name)
+	if val == nil {
+		return "<nil>"
+	}
+	return val.Inspect()
+}
+
 // collectText 递归收集整棵树里的文本节点内容。
-func collectText(n *gfx.GuiNode) []string {
-	if n == nil {
+func collectText(n *gfx.GuiNode) []string {	if n == nil {
 		return nil
 	}
 	var out []string
@@ -421,4 +433,89 @@ func lastButton(n *gfx.GuiNode) *gfx.GuiNode {
 		}
 	}
 	return found
+}
+
+// TestIMECommitEndToEnd 端到端 (M2): 触摸聚焦输入框 → 内核开 IME (软键盘回调) →
+// 宿主提交整批文本 → 光标跨批插入 → 退格删除。
+//
+// 这就是移动端 IME 在开发机上的等价验收 —— 真机/模拟器额外要验的只有
+// "软键盘弹出与 commitText 传输" (UIKit/JNI 胶水), 内核与 mobile 胶水这条链
+// 在这里已经是真的。
+func TestIMECommitEndToEnd(t *testing.T) {
+	var uploads int
+	var imeCalls []bool
+	s := New(Config{
+		Width: 400, Height: 300, Density: 2,
+		Uploader: func(img *image.RGBA, rects []image.Rectangle) { uploads++ },
+	})
+	s.Register()
+	defer gfx.SetDefaultFactory(nil)
+	// 宿主的软键盘开关会被内核经 SetIMEEnabled 调到, 记录每次的开关值。
+	s.SetIMEHost(func(on bool) { imeCalls = append(imeCalls, on) })
+
+	v, err := vm.EvalVM(`
+		import { createSignal } from "gx/solid";
+		import { h, render } from "gx/gfx";
+		const [val, setVal] = createSignal("");
+		let history = "";
+		let lastVal = "";
+		const ui = h("column", {gap: 0, padding: 20},
+			h("input", {width: 300, height: 40, value: () => val(),
+				onInput: (e) => { setVal(e.value); history = history + "[" + e.value + "]"; lastVal = e.value; }}));
+		render(ui, {title: "ime", width: 400, height: 300});
+	`)
+	if err != nil {
+		t.Fatalf("EvalVM: %v", err)
+	}
+	uiVal, _ := v.Globals().Get("ui")
+	ui, ok := uiVal.(*gfx.GuiNode)
+	if !ok || len(ui.Children) == 0 {
+		t.Fatalf("ui 结构不对: %T %v", uiVal, uiVal)
+	}
+	box := ui.Children[0]
+	if box.Box.W == 0 || box.Box.H == 0 {
+		t.Fatalf("输入框应先完成布局, got %+v", box.Box)
+	}
+	cx, cy := box.Box.X+box.Box.W/2, box.Box.Y+box.Box.H/2
+
+	round := 0
+	pump := func(maxWait time.Duration) bool {
+		round++
+		switch round {
+		case 1:
+			// 点一下输入框: 焦点进去, 软键盘应该被打开
+			s.Touch(TouchDown, cx, cy)
+			s.Touch(TouchUp, cx, cy)
+		case 2:
+			// 输入法提交一批 ("你好" 整词)
+			s.IMECommit("你好")
+		case 3:
+			t.Logf("round3 val=%q imeCalls=%v", dbg(v), imeCalls)
+			// 软键盘退格: 删掉"好"
+			s.Post(gfx.Event{Kind: gfx.EventKeyDown, Key: "Backspace"})
+		case 4:
+			t.Logf("round4 val=%q imeCalls=%v", dbg(v), imeCalls)
+			// 再提交一批, 接在"你"后面
+			s.IMECommit("!!")
+		case 5:
+			t.Logf("round5 val=%q imeCalls=%v", dbg(v), imeCalls)
+			s.Post(gfx.Event{Kind: gfx.EventClose})
+		}
+		return gfx.Pump(maxWait)
+	}
+	if err := v.RunTimersWithPump(pump); err != nil {
+		t.Fatalf("RunTimersWithPump: %v", err)
+	}
+
+	t.Logf("final history=%s imeCalls=%v", dbgGlobal(v, "history"), imeCalls)
+	got := dbgGlobal(v, "lastVal")
+	if got != "你!!" {
+		t.Fatalf("最终输入应为 你!!, got %q (history=%s)", got, dbgGlobal(v, "history"))
+	}
+	if len(imeCalls) == 0 || !imeCalls[0] {
+		t.Fatalf("聚焦输入框时应先收到 SetIMEEnabled(true), got %v", imeCalls)
+	}
+	if uploads == 0 {
+		t.Fatalf("IME 输入过程中应至少上屏一帧")
+	}
 }

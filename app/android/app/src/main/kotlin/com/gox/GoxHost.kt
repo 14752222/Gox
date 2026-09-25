@@ -22,4 +22,10 @@ interface GoxHost {
 
     /** 脚本结束。code != 0 时 error 有值 (脚本异常或引擎初始化失败)。 */
     fun finished(code: Int, error: String?)
+
+    /**
+     * 软键盘开关 (M2): 焦点进/出 input/textarea 时内核调。
+     * 没有实现也不致命 —— Go 侧找不到本方法时降级成"软键盘不可开关"。
+     */
+    fun imeShow(show: Boolean)
 }

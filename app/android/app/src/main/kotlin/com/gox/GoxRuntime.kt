@@ -65,6 +65,51 @@ object GoxRuntime {
      */
     external fun nativeSetInsets(top: Int, right: Int, bottom: Int, left: Int)
 
+    /**
+     * 输入法提交一批文本 (软键盘 commitText, 可能是整词)。任意线程可调,
+     * Go 侧只投事件 —— 整批插入的语义在内核 gfx/ime.go。
+     */
+    external fun nativeIMECommit(text: String)
+
+    // ── NativeHost 回填/上报通道 (Go 侧 //export 见 gfx/android/libgox/main.go) ──
+    //
+    // 全部可从任意线程调用: Go 侧一律 gfx.Post 投回 GUI 线程 (ResolveNative /
+    // Report* 会同步跑脚本回调, 绝不在调用方线程执行 JS)。
+
+    /**
+     * 交付一次异步原生调用的结果 ([GoxNativeHost.nativeCall] 返回 "__pending__"
+     * 之后用)。id 照抄 args 里的 `__id`; errCode 非空表示失败 —— **必须是 8 个
+     * 统一错误码之一** (unsupported / permission-denied / cancelled / timeout /
+     * busy / unavailable / platform-error / invalid-arg), Go 侧会把不认识的词
+     * 归一成 platform-error。
+     */
+    external fun nativeResolveNative(id: String, resultJson: String, errCode: String, errMsg: String)
+
+    /** 电池上报。json 字段: supported/level/charging/chargingType/temperature/lowPowerMode。 */
+    external fun nativeReportBattery(json: String)
+
+    /** 网络上报。json 字段: connected/type/metered/ssid/strength/carrier/generation。 */
+    external fun nativeReportNetwork(json: String)
+
+    /** 定位上报 (一般不用: 一次定位/监听的结果走 [nativeResolveNative])。 */
+    external fun nativeReportLocation(json: String)
+
+    /** 应用生命周期上报: "active" | "background" | "inactive"。 */
+    external fun nativeReportAppState(state: String)
+
+    /** 内存警告上报 (onTrimMemory)。 */
+    external fun nativeReportMemoryWarning()
+
+    /** 单个权限状态上报 (启动时批量报一遍 / 从设置页回来补报)。 */
+    external fun nativeReportPermission(kind: String, state: String)
+
+    /**
+     * 返回键询问脚本: 返回 true = 脚本已处理 (宿主不要退出)。
+     * **同步阻塞最多 500ms** 等脚本线程答复 (内部 gfx.Post + 泵唤醒 + 限时等待),
+     * 超时按未处理返回 —— 见 libgox 里该导出的注释。
+     */
+    external fun nativeReportBackPress(): Boolean
+
     /** 结束会话: 唤醒事件泵使其收尾。幂等。 */
     external fun nativeDestroy()
 }

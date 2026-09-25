@@ -56,7 +56,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, GoxHost {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        surfaceView = SurfaceView(this)
+        surfaceView = GoxSurfaceView(this)
         surfaceView.holder.addCallback(this)
         surfaceView.setOnTouchListener { _: View, ev: MotionEvent ->
             // 直接透传 actionMasked: Go 侧按 Android 的动作值映射 (Down/Up/Move/Cancel,
@@ -201,6 +201,56 @@ class MainActivity : Activity(), SurfaceHolder.Callback, GoxHost {
             Log.i(TAG, "fps=${frames * 1000 / span} surface=${width}x$height")
             frames = 0
             fpsSince = now
+        }
+    }
+
+    // ===== 软键盘 / IME (M2) =====
+
+    /** 焦点进/出编辑框时内核调 (Go 渲染线程), 碰输入法必须回主线程。 */
+    override fun imeShow(show: Boolean) {
+        ui.post {
+            val imm = getSystemService(INPUT_METHOD_SERVICE) as? android.view.inputmethod.InputMethodManager
+                ?: return@post
+            if (show) {
+                surfaceView.requestFocus()
+                imm.showSoftInput(surfaceView, 0)
+            } else {
+                imm.hideSoftInputFromWindow(surfaceView.windowToken, 0)
+            }
+        }
+    }
+
+    /**
+     * 能吃软键盘的 SurfaceView: 默认的 SurfaceView 没有 InputConnection, 输入法
+     * 根本不弹。这里给一个 BaseInputConnection 并只接"结果提交" (与内核 v1 口径
+     * 一致): 拼音组合过程由输入法自己显示, commitText 到达才转发; 组合中的
+     * setComposingText 忽略; 删除走 deleteSurroundingText / KEYCODE_DEL。
+     */
+    private inner class GoxSurfaceView(context: android.content.Context) : SurfaceView(context) {
+
+        override fun onCreateInputConnection(outAttrs: android.view.inputmethod.EditorInfo): android.view.inputmethod.InputConnection? {
+            outAttrs.inputType = android.text.InputType.TYPE_CLASS_TEXT
+            outAttrs.imeOptions = android.view.inputmethod.EditorInfo.IME_FLAG_NO_EXTRACT_UI
+            return object : android.view.inputmethod.BaseInputConnection(this, false) {
+                override fun commitText(text: CharSequence, newCursorPosition: Int): Boolean {
+                    GoxRuntime.nativeIMECommit(text.toString())
+                    return true
+                }
+
+                override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
+                    // 输入法删除走这里; 退一格就是一条 Backspace 按键事件
+                    repeat(beforeLength) {
+                        GoxRuntime.nativeKey("Backspace", true)
+                        GoxRuntime.nativeKey("Backspace", false)
+                    }
+                    return true
+                }
+
+                override fun setComposingText(text: CharSequence, newCursorPosition: Int): Boolean {
+                    // v1 不做内联预编辑: 组合过程留在输入法里, 到 commitText 才转发
+                    return true
+                }
+            }
         }
     }
 

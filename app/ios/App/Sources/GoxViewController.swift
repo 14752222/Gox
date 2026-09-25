@@ -76,6 +76,7 @@ final class GoxViewController: UIViewController {
         }
         inited = true
         reportSafeAreaInsets()
+        setupIME()
 
         // 加载并运行随包脚本 (脚本里 render() 挂窗口树, 首帧经 flush 上屏)
         if let url = Bundle.main.url(forResource: "app", withExtension: "js"),
@@ -130,6 +131,9 @@ final class GoxViewController: UIViewController {
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         stopTicker()
+        // 回到桌面/切页时把软键盘一起收掉 (引擎的 SetIMEEnabled(false) 只在
+        // 焦点变化时调, 这里是宿主自发的隐藏时机)。
+        imeField?.resignFirstResponder()
     }
 
     override func viewWillAppear(_ animated: Bool) {
@@ -185,6 +189,62 @@ final class GoxViewController: UIViewController {
         let scale = renderScale
         let p = t.location(in: view)
         gox_touch(action, Float(p.x * scale), Float(p.y * scale))
+    }
+
+    // MARK: - 软键盘 / IME
+
+    /// 承载软键盘输入的隐藏文本框。
+    ///
+    /// 为什么不用 UITextInput 协议自己实现一套: v1 内核只做"结果提交"
+    /// (gfx/ime.go 头注释) —— 拼音组合过程由系统在 field 里显示, 我们只在
+    /// 组合结束 (markedTextRange 清空) 后把**已提交文本**整批发给引擎。
+    /// 这个取舍换来: 组合窗、候选栏、光标、长按选择全部是系统原生行为。
+    private var imeField: GoxField?
+
+    /// gox_init 之后调: 建隐藏输入框 + 把软键盘开关回调绑给引擎。
+    /// fn 会在 **Go 的 GUI 线程**上被调 (内核焦点切换), UIKit 操作必须回主队列。
+    fileprivate func setupIME() {
+        let f = GoxField(frame: CGRect(x: 0, y: view.bounds.height + 40, width: 10, height: 10))
+        f.autocorrectionType = .no
+        f.spellCheckingType = .no
+        f.target = self
+        f.addTarget(self, action: #selector(imeEditingChanged), for: .editingChanged)
+        view.addSubview(f)
+        imeField = f
+
+        let ctx = Unmanaged.passUnretained(self).toOpaque()
+        let fn = unsafeBitCast(GoxViewController.onIME, to: UnsafeMutableRawPointer.self)
+        gox_bind_ime(ctx, fn)
+    }
+
+    /// 内核焦点进/出编辑框 → 开/收软键盘。在 Go 线程被调, 必须 dispatch 主队列。
+    private static let onIME: @convention(c) (UnsafeMutableRawPointer?, Int32) -> Void = { ctx, on in
+        guard let ctx else { return }
+        let vc = Unmanaged<GoxViewController>.fromOpaque(ctx).takeUnretainedValue()
+        DispatchQueue.main.async {
+            if on != 0 {
+                vc.imeField?.becomeFirstResponder()
+            } else {
+                vc.imeField?.resignFirstResponder()
+            }
+        }
+    }
+
+    /// 软键盘提交了一批文本 (拼音组合结束 / 直接键入) → 整批发给引擎。
+    /// 在主线程被调 (UIKit 回调)。
+    fileprivate func imeCommit(_ text: String) {
+        text.withCString { p in
+            gox_ime_commit(UnsafeMutablePointer(mutating: p))
+        }
+    }
+
+    /// 退格: 空框上按删除不会有文本变化, 引擎侧光标移动靠这个补。
+    fileprivate func imeBackspace() {
+        // gox_key 要可变 C 指针, withCString 给的是 const —— strdup/free 绕开。
+        guard let p = strdup("Backspace") else { return }
+        gox_key(p, 1)
+        gox_key(p, 0)
+        free(p)
     }
 
     // MARK: - 帧缓冲
@@ -259,5 +319,30 @@ final class GoxViewController: UIViewController {
         let a = UIAlertController(title: "Gox", message: text, preferredStyle: .alert)
         a.addAction(UIAlertAction(title: "好", style: .default))
         present(a, animated: true)
+    }
+
+    /// 隐藏输入框的 .editingChanged 回调: 非组合状态且有文本 = 输入法提交了一批,
+    /// 整批转发并清空 (引擎侧渲染自己的光标与内容, field 只当输入管道)。
+    @objc private func imeEditingChanged() {
+        guard let f = imeField, f.markedTextRange == nil,
+              let t = f.text, !t.isEmpty else { return }
+        imeCommit(t)
+        f.text = ""
+    }
+}
+
+/// 隐藏输入框本体。子类化的唯一原因是拿到 `deleteBackward` —— 空框上按删除
+/// 不会产生任何文本变化事件, 而引擎侧的光标回退需要知道这件事。
+final class GoxField: UITextField {
+    weak var target: GoxViewController?
+
+    override func deleteBackward() {
+        // 组合中 (拼音还没选定) 的退格由 super 自己改 marked text, 不转发 ——
+        // 转了会把引擎侧已提交的字符误删一个。
+        let composing = markedTextRange != nil
+        super.deleteBackward()
+        if !composing {
+            target?.imeBackspace()
+        }
     }
 }
