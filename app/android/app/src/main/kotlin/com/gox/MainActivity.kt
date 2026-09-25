@@ -65,6 +65,26 @@ class MainActivity : Activity(), SurfaceHolder.Callback, GoxHost {
             true
         }
         setContentView(surfaceView)
+        // 安全区 → 引擎 (gx/viewport 的 insets): 状态栏/刘海/手势条的占位。
+        // WindowInsets 本身就是**像素**, 与内核设备像素口径一致, 不用换算。
+        // 报告时机除了这里, onSurfaceSize 里会补报一次 (listener 可能早于 nativeInit)。
+        surfaceView.setOnApplyWindowInsetsListener { _, insets ->
+            reportInsets(insets)
+            insets // 不消费: Activity 未开 fitSystemWindows, 布局不受影响
+        }
+    }
+
+    private fun reportInsets(insets: android.view.WindowInsets) {
+        if (!inited) return
+        // systemWindowInset 系列 API 21 起就有且够用 (v1 不引 androidx);
+        // 标记 @Suppress 而不是换 API: 换了就得连依赖一起升级, 不值。
+        @Suppress("DEPRECATION")
+        GoxRuntime.nativeSetInsets(
+            insets.systemWindowInsetTop,
+            insets.systemWindowInsetRight,
+            insets.systemWindowInsetBottom,
+            insets.systemWindowInsetLeft,
+        )
     }
 
     // ===== SurfaceHolder.Callback =====
@@ -104,6 +124,7 @@ class MainActivity : Activity(), SurfaceHolder.Callback, GoxHost {
                 return
             }
             inited = true
+            window.decorView.rootWindowInsets?.let { reportInsets(it) }
             runScript()
             return
         }

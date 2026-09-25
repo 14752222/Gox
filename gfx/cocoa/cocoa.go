@@ -138,6 +138,7 @@ var (
 	selStringWithUTF8     = objc.RegisterName("stringWithUTF8String:")
 	selMainScreen         = objc.RegisterName("mainScreen")
 	selBackingScale       = objc.RegisterName("backingScaleFactor")
+	selScreenFrame        = objc.RegisterName("frame") // NSScreen 的几何 (不是 bounds!)
 	selSetSubmenu         = objc.RegisterName("setSubmenu:")
 	selAddItem            = objc.RegisterName("addItem:")
 	selSetKeyEquivalent   = objc.RegisterName("setKeyEquivalent:")
@@ -404,7 +405,10 @@ func (f *factory) Displays() []gfx.Display {
 		if s := objc.Send[float64](scr, selBackingScale); s > 0 {
 			scale = s
 		}
-		frame := objc.Send[nsRect](scr, selBounds)
+		// 注意 NSScreen 的几何 selector 是 **frame** (bounds 是 NSView/NSWindow
+		// 的) —— 用错会 objc 异常 "unrecognized selector sent to instance"。
+		// 此前 counter_demo 不查屏幕信息所以没暴露, 脚本一碰 gx/screen 就崩。
+		frame := objc.Send[nsRect](scr, selScreenFrame)
 		w, h = frame.Size.Width*scale, frame.Size.Height*scale
 	}
 	return []gfx.Display{{

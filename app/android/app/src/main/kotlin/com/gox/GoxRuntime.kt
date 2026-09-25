@@ -59,6 +59,12 @@ object GoxRuntime {
     /** 表面尺寸/密度变化 (旋转、分屏、折叠)。 */
     external fun nativeResize(w: Int, h: Int, density: Float)
 
+    /**
+     * 安全区上报 (设备像素): 状态栏/刘海/导航栏/手势条占掉的边缘。
+     * Go 侧经 gfx.Post 投回 GUI 线程再报内核 (gx/viewport), 任意线程可调。
+     */
+    external fun nativeSetInsets(top: Int, right: Int, bottom: Int, left: Int)
+
     /** 结束会话: 唤醒事件泵使其收尾。幂等。 */
     external fun nativeDestroy()
 }

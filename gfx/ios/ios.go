@@ -60,6 +60,7 @@ import (
 	"sync"
 	"unsafe"
 
+	"github.com/14752222/Gox/gfx"
 	"github.com/14752222/Gox/gfx/mobile"
 )
 
@@ -96,6 +97,20 @@ func Init(w, h int, buf unsafe.Pointer, fCtx, fFn, doneCtx, doneFn unsafe.Pointe
 	finCtx, finFn = doneCtx, doneFn
 	framePtr, frameCap = buf, w*h*4
 	return nil
+}
+
+// SetInsets 宿主上报安全区 (设备像素): 状态栏 / 刘海 / 圆角 / Home 指示条
+// 占掉的边缘。脚本侧经 useInsets() / safeAreaStyle() 响应式读 (gx/viewport)。
+//
+// 必须经 gfx.Post 投回 GUI 线程: ReportViewport 会**同步**跑脚本侧订阅回调
+// —— 事件纪律: 平台回调只投递任务, 绝不跨线程执行 JS (与触摸/tick 回调
+// 只塞事件是同一条纪律)。win 传 nil 走全局缺省键, 移动端单窗口够用。
+func SetInsets(top, right, bottom, left int) {
+	gfx.Post(func() {
+		gfx.ReportViewport(nil, gfx.Viewport{Insets: gfx.Insets{
+			Top: top, Right: right, Bottom: bottom, Left: left,
+		}})
+	})
 }
 
 // BindFrameBuffer 尺寸变化时重绑宿主缓冲 (Swift 重新 malloc 后调)。

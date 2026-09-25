@@ -200,6 +200,19 @@ func Java_com_gox_GoxRuntime_nativeResize(e *C.JNIEnv, clazz C.jclass,
 	}
 }
 
+//export Java_com_gox_GoxRuntime_nativeSetInsets
+func Java_com_gox_GoxRuntime_nativeSetInsets(e *C.JNIEnv, clazz C.jclass,
+	top C.jint, right C.jint, bottom C.jint, left C.jint) {
+
+	// 经 gfx.Post 投回 GUI 线程再报内核: ReportViewport 会同步跑脚本侧的
+	// onViewportChange 订阅回调, 事件纪律 —— JNI 回调线程绝不直接执行 JS。
+	gfx.Post(func() {
+		gfx.ReportViewport(nil, gfx.Viewport{Insets: gfx.Insets{
+			Top: int(top), Right: int(right), Bottom: int(bottom), Left: int(left),
+		}})
+	})
+}
+
 //export Java_com_gox_GoxRuntime_nativeDestroy
 func Java_com_gox_GoxRuntime_nativeDestroy(e *C.JNIEnv, clazz C.jclass) {
 	s := currentSurface()

@@ -75,6 +75,7 @@ final class GoxViewController: UIViewController {
             return
         }
         inited = true
+        reportSafeAreaInsets()
 
         // 加载并运行随包脚本 (脚本里 render() 挂窗口树, 首帧经 flush 上屏)
         if let url = Bundle.main.url(forResource: "app", withExtension: "js"),
@@ -91,6 +92,26 @@ final class GoxViewController: UIViewController {
         }
 
         startTicker()
+    }
+
+    // MARK: - 安全区
+
+    /// 把当前 safeAreaInsets (点 → 设备像素) 报给引擎 (gx/viewport 的 insets)。
+    ///
+    /// 两个触发时机都要: ① viewSafeAreaInsetsDidChange (启动后首次布局、
+    /// 旋转/分屏) —— 但它可能早于 gox_init, 那时只能吞掉; ② startEngine
+    /// 成功后补报一次, 保证引擎拿到的第一份 insets 就是启动时的真实值。
+    private func reportSafeAreaInsets() {
+        let s = renderScale
+        let i = view.safeAreaInsets
+        gox_set_insets(Int32(i.top * s), Int32(i.right * s),
+                       Int32(i.bottom * s), Int32(i.left * s))
+    }
+
+    override func viewSafeAreaInsetsDidChange() {
+        super.viewSafeAreaInsetsDidChange()
+        guard inited else { return }
+        reportSafeAreaInsets()
     }
 
     override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {

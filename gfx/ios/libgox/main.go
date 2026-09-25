@@ -177,6 +177,14 @@ func gox_resize(w, h int32, density float32) {
 	}
 }
 
+//export gox_set_insets
+//gox_set_insets 宿主上报安全区 (设备像素): 状态栏/刘海/圆角/Home 指示条。
+//内部经 gfx.Post 投回 GUI 线程再报给内核 (gx/viewport 的订阅回调只准在
+//GUI 线程跑), 所以本函数在任意线程调用都安全。
+func gox_set_insets(top, right, bottom, left int32) {
+	gfxios.SetInsets(int(top), int(right), int(bottom), int(left))
+}
+
 //export gox_destroy
 //gox_destroy 结束会话: 关闭表面 (唤醒睡在 WaitEvents 里的泵 → 脚本线程收尾)。
 func gox_destroy() {
