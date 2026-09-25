@@ -58,6 +58,9 @@ func TestMain(m *testing.M) {
 	if err := runE2E(); err != nil {
 		e2eFail = err.Error()
 	}
+	if err := runV1Scenarios(); err != nil {
+		v1Fail = err.Error()
+	}
 	os.Exit(m.Run())
 }
 

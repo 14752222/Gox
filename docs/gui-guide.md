@@ -74,17 +74,17 @@ render(
 |---|---|---|---|---|
 | 窗口 | 支持 | 支持（Wayland 走 XWayland） | 支持 | 多窗口见 [9.5](#95-多窗口)；macOS 上 `w.close()` 只解除注册不销毁平台窗口（与 win32 同语义） |
 | 字体 | 静态候选路径 | 惰性扫描系统字体目录 | 静态候选优先 + 目录扫描 | Linux 扫 `/usr/share/fonts`、`~/.local/share/fonts` 等，**CJK 字体优先**，条目上限 2000；macOS 静态候选（PingFang / Hiragino Sans GB 等）排在扫描结果之前 |
-| 输入法（IME） | 支持 | 暂不支持 | 暂不支持（英文/符号键入与功能键可用） | 见 [6.2](#62-输入法-ime)；macOS 需 NSTextInputClient 协议，v1 未做 |
+| 输入法（IME） | 支持 | 暂不支持 | 支持（组合过程不在框内内联绘制） | 见 [6.2](#62-输入法-ime)；macOS 经 NSTextInputClient 协议（消息转发实现），焦点在编辑框上时开启 |
 | 剪贴板 | 支持 | 暂不支持 | 支持（纯文本） | 见 [9.2](#92-剪贴板) |
-| 原生对话框 | 支持 | 降级为写 stderr | 降级为写 stderr | 见 [9.1](#91-原生系统对话框) |
+| 原生对话框 | 支持 | 降级为写 stderr | 支持（NSAlert/NSOpenPanel/NSSavePanel，runModal 模态） | 见 [9.1](#91-原生系统对话框) |
 | 菜单栏 / 右键菜单 | 支持 | 支持 | 支持 | gfx **自绘**，不依赖系统菜单 API，三平台观感一致；应用主菜单只有最小项（含 Cmd+Q） |
 | 原生能力层<br>（`gx/device` · `app` · `geo` · `media` · `permission` · `viewport`） | 部分：电量 / 网络 / 亮度 / 屏幕常亮 / 打开系统设置页 / 震动（软降级）走宿主；相机 / 定位 / 相册 / 权限**诚实缺省** | 同 Windows 口径 | 同 Windows 口径 | 见 [9.6](#96-原生能力层)。**没有的能力就报没有** —— 缺能力时异步 API 报 `unsupported`（先用 `canIUse` 判断），不返回假数据 |
 
 macOS 后端（cocoa）已知限制：
 
-- **IME 中文输入不可用**（需实现 NSTextInputClient 协议，与 X11 后端同因）；英文/符号键入与全部功能键经 `event.characters`/`keyCode` 直通可用。
-- **原生对话框**（消息框 / 打开文件）未接 NSAlert/NSOpenPanel，与 X11 同为降级路径。
-- **显示器枚举只报主屏**（`gx/screen` 的多屏语义等有真机多屏需求再补）。
+- **IME 组合过程不在框内内联绘制**（与 Windows 同口径：候选词上屏前由系统候选窗回显拼音，选定后整批提交）；正在组合时全部按键交给输入法（Enter 提交原串 / Esc 取消）。英文/符号键入与全部功能键经 `event.characters`/`keyCode` 直通，行为与旧版一致。
+- **保存文件对话框（NSSavePanel）已接但脚本侧暂无入口**：`gx/dialog` 目前只有 `openFile` 一条文件 API，`ShowSaveFile` 作为后端能力预置，等契约补 `saveFile` 后接上。
+- **多屏枚举已支持**（`gx/screen` 可见全部 NSScreen：frame/visibleFrame/缩放/主屏标记，ID 取 `NSScreenNumber` 稳定标识）；显示器插拔暂不派发 `onDisplayChange`（win32 有，cocoa 待补）。
 - 拖动（slider 等）在光标离开窗口后**仍然跟手**：AppKit 按住按键期间会持续投递 `mouseDragged:`，等价于天然鼠标捕获。
 
 找不到可用字体时文字整体不渲染，错误里会给出候选条数与最后一个失败原因。
@@ -273,7 +273,8 @@ h("input", {
 光标一次跨过整批（不会把下一个词插到前一个词中间）。焦点不在编辑框上时输入法自动关闭，
 在按钮/画布上敲字不会弹候选窗。`textarea` 里同样可用，且"提交内容自带换行"会正确把光标落到新行。
 
-已知取舍：Linux（X11）后端暂无 IME；组合过程不在框内内联绘制。
+已知取舍：Linux（X11）后端暂无 IME；组合过程不在框内内联绘制（Windows 与 macOS 同口径，
+macOS 的候选窗由系统绘制、选定后整批提交，纯键盘布局（ABC 等）下英文照旧直入）。
 示例见 [testdata/ime_demo.js](../testdata/ime_demo.js)。
 
 ### 6.3 多行文本与自动换行
@@ -534,8 +535,8 @@ const path = await openFile({                               // → 完整路径 
 
 - **是 async 的**（与同步的剪贴板不同）。实现是"同步落地 + 异步外观"：Go 侧真的阻塞到用户作答，
   Promise 的 resolve 投回脚本事件循环 —— 所以 `await` 之后的代码在对话框关掉前不会执行。
-- **模态期间界面不冻结**：消息框以主窗口为 owner，Windows 会自动替我们泵模态消息，
-  重绘 / 拖动都正常，也**不需要**自己写 goroutine 或消息循环。
+- **模态期间界面不冻结**：Windows 以主窗口为 owner 自动泵模态消息；macOS 走 NSAlert/NSPanel 的
+  `runModal`（AppKit 官方嵌套 run loop），重绘 / 拖动都正常，也**不需要**自己写 goroutine 或消息循环。
 - **取消不是错误**：`openFile` 取消返回 `null`（与浏览器 File System Access API 一致），不必 try/catch。
   **没有原生能力的后端会降级**：内容写到 stderr 并立刻返回（`confirm` 取 true、`openFile` 取 null）。
 

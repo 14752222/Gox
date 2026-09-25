@@ -49,10 +49,12 @@
 //  6. 脚本侧 w.close() 的语义与 win32 相同: gfx 只解除注册不再泵这个
 //     窗口, 平台窗口本身不销毁 (Surface 无销毁回调可走)。
 //
-// v1 边界 (明确写下, 免得被当成 bug):
-//   - IME 中文输入不可用 (需 NSTextInputClient 协议, 与 x11 的 TODO 同因);
-//     英文/符号键入与全部功能键经 event.characters/keyCode 直通可用;
-//   - 显示器枚举只报主屏 (gx/screen 的多屏语义等有真机多屏需求再补)。
+// v1.1 (补齐上一轮记录的三项边界):
+//   - IME 中文输入: NSTextInputClient 协议经消息转发实现 (结构体参数不进
+//     IMP, 见 ime.go), keyDown 按输入源分流 —— 英文直入照旧;
+//   - 原生对话框: NSAlert/NSOpenPanel/NSSavePanel 经 runModal (见 dialog.go
+//     的选型理由);
+//   - 显示器枚举: NSScreen 全量枚举 (见 display.go)。
 package cocoa
 
 import (
@@ -236,7 +238,11 @@ func unregSurface(ids ...objc.ID) {
 func init() {
 	var err error
 	viewClass, err = objc.RegisterClass("GoxGfxView",
-		objc.GetClass("NSView"), nil, nil,
+		objc.GetClass("NSView"),
+		// 声明实现 NSTextInputClient: conformsToProtocol 探测与能力探测
+		// (respondsToSelector, 见 ime.go 的转发挂钩) 双通道都放行
+		[]*objc.Protocol{objc.GetProtocol("NSTextInputClient")},
+		nil,
 		[]objc.MethodDef{
 			{Cmd: selIsFlipped, Fn: impIsFlipped},
 			{Cmd: selAcceptsFirstResp, Fn: impAcceptsFirstResp},
@@ -251,6 +257,10 @@ func init() {
 			{Cmd: objc.RegisterName("keyDown:"), Fn: impKeyDown},
 			{Cmd: objc.RegisterName("keyUp:"), Fn: impKeyUp},
 			{Cmd: objc.RegisterName("mouseExited:"), Fn: impMouseExited},
+			// IME 转发三挂钩 (NSTextInputClient 的结构体参数方法经此生效)
+			{Cmd: selMethodSignature, Fn: impMethodSignatureForSelector},
+			{Cmd: selForwardInv, Fn: impForwardInvocation},
+			{Cmd: selResponds, Fn: impRespondsToSelector},
 		})
 	if err != nil {
 		panic("cocoa: register view class: " + err.Error())
@@ -350,8 +360,15 @@ func impScrollWheel(self objc.ID, cmd objc.SEL, ev objc.ID) uintptr {
 // impKeyDown/impKeyUp 键盘: 功能键按 keyCode 查表, 可打印字符取
 // event.characters。Ctrl 组合产生的控制字符 (<0x20) 还原成对应字母,
 // 修饰键状态随事件附带 —— 与 win32 后端同一约定。
+//
+// IME 分流见 ime.go 的 routeIMEKeyDown: 输入法开着 (焦点在编辑框上) 且
+// 当前输入源非纯键盘布局时, 按键交 NSTextInputContext.handleEvent, 不投
+// 内核按键事件 —— 否则拼音字母会被当成英文打进输入框。
 func impKeyDown(self objc.ID, cmd objc.SEL, ev objc.ID) uintptr {
 	if s := surfaceOf(self); s != nil {
+		if s.routeIMEKeyDown(self, ev) {
+			return 0
+		}
 		s.sendKeyEvent(ev, gfx.EventKeyDown)
 	}
 	return 0
@@ -359,6 +376,11 @@ func impKeyDown(self objc.ID, cmd objc.SEL, ev objc.ID) uintptr {
 
 func impKeyUp(self objc.ID, cmd objc.SEL, ev objc.ID) uintptr {
 	if s := surfaceOf(self); s != nil {
+		// 与 keyDown 同口径: 被输入法吃掉的按键不发 KeyUp (内核只按
+		// KeyDown 插入字符, 悬空的 KeyUp 只会造成重复消费)
+		if s.imeEnabled && (s.imeMarked != "" || (isIMEActive() && firstCharacter(ev) > 0x20)) {
+			return 0
+		}
 		s.sendKeyEvent(ev, gfx.EventKeyUp)
 	}
 	return 0
@@ -396,36 +418,7 @@ func (f *factory) Create(cfg gfx.WindowConfig) (gfx.Surface, error) {
 	return newSurface(cfg)
 }
 
-// Displays 实现 factory 级 displayProvider: 还没有任何窗口时给 gx/screen
-// 兜底的主屏信息 (有窗口后走 surface 的同名方法)。
-func (f *factory) Displays() []gfx.Display {
-	scr := objc.ID(objc.GetClass("NSScreen")).Send(selMainScreen)
-	scale, w, h := 1.0, 1280.0, 800.0
-	if scr != 0 {
-		if s := objc.Send[float64](scr, selBackingScale); s > 0 {
-			scale = s
-		}
-		// 注意 NSScreen 的几何 selector 是 **frame** (bounds 是 NSView/NSWindow
-		// 的) —— 用错会 objc 异常 "unrecognized selector sent to instance"。
-		// 此前 counter_demo 不查屏幕信息所以没暴露, 脚本一碰 gx/screen 就崩。
-		frame := objc.Send[nsRect](scr, selScreenFrame)
-		w, h = frame.Size.Width*scale, frame.Size.Height*scale
-	}
-	return []gfx.Display{{
-		ID: "main", Name: "Main Display",
-		W: int(w), H: int(h),
-		WorkW: int(w), WorkH: int(h),
-		Scale: scale, Primary: true,
-	}}
-}
-
-// DisplayOf 报告窗口在哪块屏上 —— v1 只报主屏, 恒命中。
-func (f *factory) DisplayOf(surf gfx.Surface) (string, bool) {
-	if _, ok := surf.(*surface); ok {
-		return "main", true
-	}
-	return "", false
-}
+// Displays / DisplayOf 已移至 display.go (NSScreen 全量枚举版)。
 
 type surface struct {
 	win      objc.ID
@@ -436,11 +429,17 @@ type surface struct {
 	rep   objc.ID // NSBitmapImageRep (像素缓冲的宿主)
 	nsimg objc.ID // NSImage (挂到 layer.contents 的载体)
 
+	inputCtx objc.ID // NSTextInputContext (IME, 见 ime.go)
+
 	// buf 是持久后台缓冲 (w*h*4, RGBA): ShowRegions 只拷脏区进来,
 	// 上屏仍整帧 —— 见文件头决策 2。实际宿主内存是 rep 的 bitmapData。
 	buf []byte
 
 	events chan gfx.Event
+
+	// IME 状态 (仅 GUI 线程读写: 全部回调都发生在 WaitEvents 的泵循环里)
+	imeEnabled bool
+	imeMarked  string // 组合串 (setMarkedText, v1 不内联绘制)
 
 	mu     sync.Mutex
 	closed bool
@@ -491,6 +490,9 @@ func newSurface(cfg gfx.WindowConfig) (gfx.Surface, error) {
 		events: make(chan gfx.Event, 256),
 		w:      w, h: h,
 		scale: scale,
+		// IME 缺省关闭: 焦点落进 input/textarea 时内核经 SetIMEEnabled(true)
+		// 打开 (render.go 的 setFocus)。在编辑框获焦之前, 键盘永远直入。
+		imeEnabled: false,
 	}
 	// 注册表: view 与 delegate 两个 ObjC 身份都映射到 s (IMP 回调经
 	// surfaceOf 查回); close 时解除。
@@ -891,6 +893,15 @@ var (
 	_ interface {
 		ReadClipboardText() (string, error)
 		WriteClipboardText(string) error
+	} = (*surface)(nil)
+	// imeController (gfx/ime.go): SetIMEEnabled 在 ime.go
+	_ interface {
+		SetIMEEnabled(bool)
+	} = (*surface)(nil)
+	// nativeDialogHost (gfx/dialog.go): ShowMessage/ShowOpenFile 在 dialog.go
+	_ interface {
+		ShowMessage(gfx.NativeDialogKind, string, string) (bool, error)
+		ShowOpenFile(gfx.NativeFileOptions) (string, bool, error)
 	} = (*surface)(nil)
 	_ interface {
 		Displays() []gfx.Display
