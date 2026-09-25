@@ -4,7 +4,7 @@
 API 语义与已知取舍；上手最短路径见 [README 的 GUI 章节](../README.md#gui-桌面应用)。
 
 - **适用前提**：Go 1.26+ 构建的 Gox（或 npm 安装的 `goxjs`）。
-- **后端支持**：Windows（win32，纯 syscall、无 cgo）与 Linux（X11，Wayland 下走 XWayland）；macOS 后端尚未实现。
+- **后端支持**：Windows（win32，纯 syscall、无 cgo）、Linux（X11，Wayland 下走 XWayland）与 macOS（cocoa，purego 桥接 Objective-C Runtime，无 cgo）。
 - **渲染模型**：纯 Go 软件光栅化，无动态库依赖，产物为静态单文件。
 
 ## 目录
@@ -70,15 +70,22 @@ render(
 
 ## 2. 运行时行为与平台支持
 
-| 能力 | Windows（win32） | Linux（X11） | 说明 |
-|---|---|---|---|
-| 窗口 | 支持 | 支持（Wayland 走 XWayland） | 多窗口见 [9.5](#95-多窗口) |
-| 字体 | 静态候选路径 | 惰性扫描系统字体目录 | Linux 扫 `/usr/share/fonts`、`~/.local/share/fonts` 等，**CJK 字体优先**，条目上限 2000 |
-| 输入法（IME） | 支持 | 暂不支持 | 见 [6.2](#62-输入法-ime) |
-| 剪贴板 | 支持 | 暂不支持 | 见 [9.2](#92-剪贴板) |
-| 原生对话框 | 支持 | 降级为写 stderr | 见 [9.1](#91-原生系统对话框) |
-| 菜单栏 / 右键菜单 | 支持 | 支持 | gfx **自绘**，不依赖系统菜单 API，三平台观感一致 |
-| 原生能力层<br>（`gx/device` · `app` · `geo` · `media` · `permission` · `viewport`） | 部分：电量 / 网络 / 亮度 / 屏幕常亮 / 打开系统设置页 / 震动（软降级）走宿主；相机 / 定位 / 相册 / 权限**诚实缺省** | 同 Windows 口径 | 见 [9.6](#96-原生能力层)。**没有的能力就报没有** —— 缺能力时异步 API 报 `unsupported`（先用 `canIUse` 判断），不返回假数据 |
+| 能力 | Windows（win32） | Linux（X11） | macOS（cocoa） | 说明 |
+|---|---|---|---|---|
+| 窗口 | 支持 | 支持（Wayland 走 XWayland） | 支持 | 多窗口见 [9.5](#95-多窗口)；macOS 上 `w.close()` 只解除注册不销毁平台窗口（与 win32 同语义） |
+| 字体 | 静态候选路径 | 惰性扫描系统字体目录 | 静态候选优先 + 目录扫描 | Linux 扫 `/usr/share/fonts`、`~/.local/share/fonts` 等，**CJK 字体优先**，条目上限 2000；macOS 静态候选（PingFang / Hiragino Sans GB 等）排在扫描结果之前 |
+| 输入法（IME） | 支持 | 暂不支持 | 暂不支持（英文/符号键入与功能键可用） | 见 [6.2](#62-输入法-ime)；macOS 需 NSTextInputClient 协议，v1 未做 |
+| 剪贴板 | 支持 | 暂不支持 | 支持（纯文本） | 见 [9.2](#92-剪贴板) |
+| 原生对话框 | 支持 | 降级为写 stderr | 降级为写 stderr | 见 [9.1](#91-原生系统对话框) |
+| 菜单栏 / 右键菜单 | 支持 | 支持 | 支持 | gfx **自绘**，不依赖系统菜单 API，三平台观感一致；应用主菜单只有最小项（含 Cmd+Q） |
+| 原生能力层<br>（`gx/device` · `app` · `geo` · `media` · `permission` · `viewport`） | 部分：电量 / 网络 / 亮度 / 屏幕常亮 / 打开系统设置页 / 震动（软降级）走宿主；相机 / 定位 / 相册 / 权限**诚实缺省** | 同 Windows 口径 | 同 Windows 口径 | 见 [9.6](#96-原生能力层)。**没有的能力就报没有** —— 缺能力时异步 API 报 `unsupported`（先用 `canIUse` 判断），不返回假数据 |
+
+macOS 后端（cocoa）已知限制：
+
+- **IME 中文输入不可用**（需实现 NSTextInputClient 协议，与 X11 后端同因）；英文/符号键入与全部功能键经 `event.characters`/`keyCode` 直通可用。
+- **原生对话框**（消息框 / 打开文件）未接 NSAlert/NSOpenPanel，与 X11 同为降级路径。
+- **显示器枚举只报主屏**（`gx/screen` 的多屏语义等有真机多屏需求再补）。
+- 拖动（slider 等）在光标离开窗口后**仍然跟手**：AppKit 按住按键期间会持续投递 `mouseDragged:`，等价于天然鼠标捕获。
 
 找不到可用字体时文字整体不渲染，错误里会给出候选条数与最后一个失败原因。
 
@@ -805,6 +812,14 @@ import { devSnapshot } from "gx/dev";
 | [router_page_detail.js](../testdata/router_page_detail.js) | 懒加载页面模块（被 `router_demo.js` 的 `lazy(() => import(…))` 加载，不是独立入口） |
 | [routing_demo.js](../testdata/routing_demo.js) | **无模块时代**的用户态写法（signal 切页 + 未保存拦截）；3 页以内的小工具仍推荐，更多页面用上面的 `gx/router` |
 
+**导航壳（PC / 移动自适应）**
+
+| 示例 | 内容 |
+|---|---|
+| [tabbar_demo.js](../testdata/tabbar_demo.js) | `AppShell` + `TabBar`/`SideNav`：宽窄断点自动切形态、badge、快捷键、折叠（组件库见 [gui-tabbar.md](gui-tabbar.md)） |
+| [tabbar_logic_test.js](../testdata/tabbar_logic_test.js) | 导航组件库纯逻辑验证（badge 格式化 / DPI 换算 / 断点分派 / createTabs），不开窗口 |
+| [tabbar_smoke_test.js](../testdata/tabbar_smoke_test.js) | headless 挂载冒烟：桌面形态挂载 → 跨断点 resize 切 TabBar → 切回 → 退出 |
+
 ## 12. 症状速查（窗口起不来 / 值不对时先看这里）
 
 这些坑的共同点是**不报错或报错离原因很远**（静默 `undefined`、第一帧对之后不对），
@@ -831,6 +846,7 @@ import { devSnapshot } from "gx/dev";
 | [README.md](../README.md) | 项目总览、安装、语言示例、打包与发版 |
 | [tutorial.md](tutorial.md) | 实战教程：API 调用方式与参数、内置模块导入、`gox create` 建工程、路由定义与注册 |
 | [gui-router.md](gui-router.md) | `gx/router` + `gx/screen` 使用手册（路由表 / 三级守卫 / 懒加载 / 两档状态保留 / 多窗口作用域 / 折叠双栏 / 排障表） |
+| [gui-tabbar.md](gui-tabbar.md) | 导航壳：TabBar（移动）/ SideNav（桌面）/ AppShell 分派器，安全区、软键盘、返回键、断点等平台差异的收口 |
 | [gui-patterns.md](gui-patterns.md) | 用户态模式手册（路由、状态、主题等惯用法） |
 | [gui-model-binding.md](gui-model-binding.md) | `model` 双向绑定：接口设计、语义表、与 Vue 的对照、反例 |
 | [desktop-distribution.md](desktop-distribution.md) | 各平台分发注意事项（图标、签名、打包格式） |

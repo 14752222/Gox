@@ -501,3 +501,63 @@ screenOf(win).foldable; // ② 这块屏是不是折叠屏? 上报姿态时不�
 > 而 `router_demo.js` 的懒加载写的是 `import("./router_page_detail.js")`（相对脚本自身
 > 目录）。与 `image_demo.js` / `storage_demo.js` 同一情形，由上面的专职用例覆盖
 > （它们额外把模块基准路径设成 `testdata/`，等价于用户从仓库根目录 `go run . testdata/router_demo.js`）。
+
+---
+
+## 13. tab 场景：底部导航 / 侧边导航 + 路由（keepAlive + 返回键组合写法）
+
+> 导航壳组件（TabBar / SideNav / AppShell）的完整 API 见
+> [gui-tabbar.md](gui-tabbar.md)；本节只讲**路由这一半**怎么配合。
+
+tab 型应用的路由表有一条固定套路：**tab 根页 `keepAlive` + tab 间 `replace` +
+详情页才 `push`**。
+
+```js
+const tabs = createTabs([
+  { path: "/home",     title: "首页", icon: icons.home },
+  { path: "/discover", title: "发现", icon: icons.chat, badge: () => unread() },
+  { path: "/mine",     title: "我的", icon: icons.user },
+]);
+
+const router = createRouter({
+  routes: [
+    // ① tab 根页: 全部 keepAlive —— 来回切, 滚动/草稿/局部 signal 原样 (§7)
+    { path: "/home",     name: "home",     component: HomePage,     keepAlive: true },
+    { path: "/discover", name: "discover", component: DiscoverPage, keepAlive: true },
+    { path: "/mine",     name: "mine",     component: MinePage,     keepAlive: true },
+    // ② tab 内详情页: push 进入, 不保活 (每次进是新的栈项, 状态用 useRouteState)
+    { path: "/detail/:id", name: "detail", component: DetailPage },
+    { path: "*", name: "nf", component: HomePage },
+  ],
+  initial: "/home",
+});
+```
+
+**为什么 tab 间必须 `replace` 而不是 `push`**：`push` 每次都在栈顶压一项（§6），
+来回切 20 次 tab 后栈深 20，Android 返回键要按 20 次才能退出。
+`replace` 只换当前栈项 —— 栈深恒 1，返回键语义保持"详情页 → tab 根 → 退出"。
+切 tab 的动作由 AppShell 的 `select` 内置（`router.replace(tab.path, scope)`），
+业务不要再手动 push 根页。
+
+**返回键组合写法**（AppShell 已内置，自己写壳时照抄）：
+
+```js
+import { onBackPress } from "gx/app";
+
+onBackPress(() => {
+  // gx/router 没有 canBack(): 能否后退用 index(scope) > 0 判断 (§6)
+  if (router.index() > 0) { router.back(); return true; }  // 详情页: 退栈, 已消费
+  if (active() !== 0)     { router.replace(tabs[0].path); return true; }  // tab 根: 回首页
+  return false;                                            // 首页根: 放行, 宿主退出
+});
+```
+
+- `onBackPress` 的**返回值有意义**（全框架唯一）：真值 = 已消费，宿主不关界面；
+  写错的症状是"按返回直接退 App、路由栈还在"。
+- `router.index()` / `router.back()` 都接受可选的作用域参数（窗口句柄或 scope
+  名，§8.1）—— 多窗口各自一套栈时必须带上，否则操作落在"最近用到的会话"。
+- keepAlive 根页 + `replace` 是安全组合：replace 换的只是栈项指向的记录，
+  被换下的根页按 keepAlive 语义摘出保活（§7），切回来原样恢复。
+
+现成组件：`<AppShell tabs={router 绑好的 tabs} content={() => <RouterView />} />`
+（`testdata/tabbar_demo.js` 是完整可跑的组装示例）。

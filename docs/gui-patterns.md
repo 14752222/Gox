@@ -421,3 +421,37 @@ shuffle / drop last 之后文字跟着行走）；改写版 `testdata/view_demo2
 
 在那之前，本手册的写法就是**官方推荐用法**：内核 API 面不增长，模式演进
 （加参数路由、加嵌套路由）只是改示例，不是改兼容承诺。
+
+## 11. 导航壳：AppShell（PC / 移动自适应的官方组装）
+
+> **2026-09-25 起**：这一章从"每个应用抄一遍的模式"升级成了**现成的用户态组件库**
+> （`testdata/ui/` 下的 TabBar / SideNav / AppShell，纯 JS 零内核改动），
+> 完整 API、差异矩阵与坑位清单见 [gui-tabbar.md](gui-tabbar.md)；
+> 与路由的组合写法见 [gui-router.md](gui-router.md) §13。本节保留组装思路，
+> 供"不想引组件库"或要自己改造的场景。
+
+**问题**：§3 的断点布局解决"窗口多大摆什么"，但一套代码同时跑移动端（要底部
+TabBar、安全区、软键盘、返回键）与桌面端（要侧边栏、折叠、快捷键）时，
+差异逻辑散落在每个应用里抄来抄去。
+
+**模式**：差异全部可以被"平台 + 宽度断点 + viewport 上报"三件事解释 ——
+做一个 Shell 承担全部分派，业务只声明 tabs：
+
+- **分派**：逻辑宽 ≥ 断点（缺省 720）→ SideNav；否则 → TabBar。
+  注意 `onResize` 是**物理像素**，比较前除以 `useWindowInfo().scale`（§3 的
+  "尺寸语义 v1 是物理像素"在这里必须处理，不是可选优化）。
+- **安全区 / 键盘**（§9.6 宿主能力层）：底栏 `paddingBottom = useInsets().bottom`
+  （桌面恒 0 无需分支）；`useViewport().keyboard > 0` → `show={false}` 隐藏底栏
+  （keep-alive，恢复时状态原样）。键盘 insets 与底部 insets **取大不取和**
+  （内核 `safeAreaStyle` 注释明确相加会顶出一截）；底栏隐藏时二者不同时生效。
+- **返回键**（Android）：`onBackPress` 返回真值 = 已消费。栈里有上一页
+  → `router.back()`；已在 tab 根 → 切回首个 tab；再按放行退出。
+- **tab 与路由**：tab 根页之间 `router.replace`（防栈无限深）+ `keepAlive`；
+  tab 内详情页才 `push`。组合写法见 gui-router.md §13。
+- **桌面增强**：`Ctrl+1..9` 挂在壳的根 `onKeyDown`（键盘事件沿祖先链派发，
+  根是所有节点的祖先；要免焦点用 `menuitem shortcut` 的事件泵表）；折叠态
+  记忆到 `gx/storage`；低频项用 `<spacer>` 沉底。
+- **多窗口**：active 信号在 Shell 组件函数体内创建 —— 每窗口各跑一遍组件函数，
+  天然独立；路由栈隔离沿用 router 的 scope 概念。
+
+demo：`testdata/tabbar_demo.js`（拖窗口宽度过断点，形态自动切换，业务零改动）。
