@@ -2430,25 +2430,28 @@ func (vm *VM) loadModule(spec string) (*ModuleExports, error) {
 	savedBase := vm.moduleBase
 	vm.moduleBase = dirOf(absPath)
 
+	// 循环导入防线: 先注册导出对象再执行 —— 执行期间模块再 import 自己/形成
+	// 环时, 命中缓存拿到这份(填充中的)导出对象, 而不是无限重新编译执行
+	// (此前缓存写在执行后, 循环导入会一路递归到栈溢出)。
+	vm.modules[absPath] = vm.currentExports
+
 	modVM := NewWithGlobals(c.Bytes(), c.Constants(), c.NumLocals(), vm.globals)
 	modVM.modules = vm.modules
 	modVM.moduleBase = vm.moduleBase
 	modVM.currentExports = vm.currentExports
 	if err := modVM.RunCompiled(c); err != nil {
+		// 执行失败不缓存半成品, 便于上层重试时报出同样错误
+		delete(vm.modules, absPath)
 		vm.currentExports = savedExports
 		vm.moduleBase = savedBase
 		return nil, fmt.Errorf("Module execution error: %v", err)
 	}
 
-	// 缓存模块
-	exports := vm.currentExports
-	vm.modules[absPath] = exports
-
 	// 恢复状态
 	vm.currentExports = savedExports
 	vm.moduleBase = savedBase
 
-	return exports, nil
+	return vm.modules[absPath], nil
 }
 
 // SetModuleBase 设置模块基准路径。
