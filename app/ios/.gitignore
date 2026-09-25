@@ -1,0 +1,4 @@
+dist/
+libs/
+*.xcodeproj
+.DS_Store

@@ -372,6 +372,32 @@ func (f *Factory) Create(cfg gfx.WindowConfig) (gfx.Surface, error) {
 	return f.s, nil
 }
 
+// Displays / DisplayOf 实现 factory 级 displayProvider:
+// gx/device 的 pixelRatio 与 gx/screen 的显示器表在没有窗口注册表条目时
+// (脚本刚启动、或查询发生在 Mount 之前) 走 factory —— 不实现的话返回值
+// 落到虚拟屏兜底 (Scale=1), 高分屏上脚本按 pixelRatio 做的 dp→px 换算
+// 全部失效 (实测 iOS 模拟器上 UI 缩成一小块)。
+func (f *Factory) Displays() []gfx.Display {
+	f.mu.Lock()
+	s := f.s
+	f.mu.Unlock()
+	if s == nil {
+		return nil
+	}
+	return s.Displays()
+}
+
+// DisplayOf 委托给绑定的表面 (单表面恒命中, 与 Surface.DisplayOf 同语义)。
+func (f *Factory) DisplayOf(surf gfx.Surface) (string, bool) {
+	f.mu.Lock()
+	s := f.s
+	f.mu.Unlock()
+	if s == nil {
+		return "", false
+	}
+	return s.DisplayOf(surf)
+}
+
 // Register 把自己注册成 gfx 的默认窗口后端 (宿主在启动脚本前调一次)。
 // 与 win32 的 init() 等价, 只是移动端的时机必须由宿主决定 ("JNI attach 完成、
 // Surface 已创建" 才成立)。

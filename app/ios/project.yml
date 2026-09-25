@@ -1,0 +1,46 @@
+# XcodeGen 工程定义: `xcodegen generate` 生成 Gox.xcodeproj。
+#
+# 前置: 先跑 `bash scripts/build-ios.sh`（真机）或 `--sim`（模拟器）,
+# 脚本会把产物 (libgox.a + libgox.h) 拷进 libs/<sdk>-<arch>/ —— README 有完整流程。
+#
+# 静态库必须 -force_load: Go 的 c-archive 靠符号表拉对象会漏掉只被运行时
+# 引用的初始化段, 症状是启动即挂。
+name: Gox
+options:
+  bundleIdPrefix: com.gox
+  deploymentTarget:
+    iOS: "15.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_OBJC_BRIDGING_HEADER: App/Sources/Gox-Bridging-Header.h
+    HEADER_SEARCH_PATHS: $(inherited) $(SRCROOT)/libs/iphonesimulator-arm64 $(SRCROOT)/libs/iphoneos-arm64
+    # Go 运行时需要的系统库 (gomobile 同款清单的子集; v1 用到的就这些)
+    OTHER_LDFLAGS: $(inherited) -lresolv
+  configs:
+    Debug:
+      OTHER_LDFLAGS[sdk=iphonesimulator*]: $(inherited) -force_load $(SRCROOT)/libs/iphonesimulator-arm64/libgox.a
+      OTHER_LDFLAGS[sdk=iphoneos*]: $(inherited) -force_load $(SRCROOT)/libs/iphoneos-arm64/libgox.a
+    Release:
+      OTHER_LDFLAGS[sdk=iphonesimulator*]: $(inherited) -force_load $(SRCROOT)/libs/iphonesimulator-arm64/libgox.a
+      OTHER_LDFLAGS[sdk=iphoneos*]: $(inherited) -force_load $(SRCROOT)/libs/iphoneos-arm64/libgox.a
+
+targets:
+  Gox:
+    type: application
+    platform: iOS
+    sources:
+      - path: App/Sources
+      - path: App/assets      # 随包脚本 (与 Android 壳的 assets/app.js 同角色)
+        buildPhase: resources
+    info:
+      path: App/Info.plist
+      properties:
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        # 新 SDK (iOS 27) 强制 scene 生命周期: 必须声明 scene manifest,
+        # 否则启动即失败 ("UIScene life cycle is required")。
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false

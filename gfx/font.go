@@ -43,11 +43,11 @@ var scannedFonts []string
 func rebuildCandidatesLocked() {
 	next := make([]string, 0, len(injectedFonts)+len(scannedFonts)+4)
 	next = append(next, injectedFonts...)
-	if runtime.GOOS == "darwin" {
-		// macOS 静态候选排在扫描结果之前: 苹果管控的字体路径恒存在
-		// (PingFang.ttc 覆盖 CJK+拉丁), 而目录扫描会先撞上 .SF Numeric
-		// 这类"专用子字体" (ADTNumeric.ttc 的 face 0, 只有数字/大写/标点,
-		// 小写与 CJK 全缺字) —— 实测整屏小写与中文不渲染, 只有 ": 0"。
+	if runtime.GOOS == "darwin" || runtime.GOOS == "ios" {
+		// 苹果系静态候选排在扫描结果之前: 路径受系统管控恒存在 (模拟器
+		// 实测), 而目录扫描会先撞上 .SF Numeric 这类"专用子字体"
+		// (ADTNumeric.ttc face 0, 只有数字/大写/标点, 小写与 CJK 全缺字)
+		// —— 实测整屏小写与中文不渲染, 只有 ": 0"。
 		next = append(next, fontCandidatesForOS()...)
 		next = append(next, scannedFonts...)
 	} else {
@@ -143,11 +143,17 @@ func fontCandidatesForOS() []string {
 			"/system/fonts/Roboto-Regular.ttf",
 		}
 	case "ios":
-		// iOS 的沙箱读不到系统字体文件 (路径存在但 open 会被拒), 所以移动端
-		// 真正可靠的做法是**宿主注入随包字体** (gfx.SetFontPath, 见下)。这里留
-		// 一条尽力而为的路径, 失败就靠注入兜底。
+		// iOS 的沙箱在真机上读不到系统字体文件 (字体在 dyld 共享缓存里),
+		// 所以真机真正可靠的做法是**宿主注入随包字体** (gfx.SetFontPath, 见下),
+		// 这里的候选只是尽力而为。模拟器读得到文件, 且新 runtime (26+) 的
+		// 字体布局与新版 macOS 同代: PingFang 已不存在, Hiragino 系列在
+		// Core/ 子目录 (实测)。
 		return []string{
 			"/System/Library/Fonts/PingFang.ttc",
+			"/System/Library/Fonts/Core/HiraginoKakuGothic.ttc",
+			"/System/Library/Fonts/CoreUI/HiraginoMaruGothProN.ttc",
+			"/System/Library/Fonts/AppFonts/HiraginoMincho.ttc",
+			"/System/Library/Fonts/Core/SFUI.ttf", // 拉丁兜底
 		}
 	default:
 		// 常见发行版的兜底路径; 主力候选靠目录扫描补齐。
@@ -171,6 +177,11 @@ func fontScanDirs() []string {
 		// Android 也扫: 静态候选只覆盖官方机型, 定制 ROM 的字体命名无规律
 		// (与 Linux 同一理由)。代价是首帧前解析一批字体头, 一次性开销。
 		return []string{"/system/fonts", "/product/fonts"}
+	}
+	if runtime.GOOS == "ios" {
+		// 模拟器读得到 runtime 的字体目录 (真机沙箱读不到, 静默失败后
+		// 靠静态候选/宿主注入兜底); 递归扫覆盖 Core/AppFonts/CoreUI 子目录。
+		return []string{"/System/Library/Fonts", "/Library/Fonts"}
 	}
 	var dirs []string
 	if runtime.GOOS == "darwin" {
