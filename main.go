@@ -44,6 +44,18 @@ func main() {
 		case "create", "new", "init":
 			runCreate(args[1:])
 			return
+		case "dev":
+			runDev(args[1:])
+			return
+		case "sync":
+			runSync(args[1:])
+			return
+		case "icon":
+			runIcon(args[1:])
+			return
+		case "build":
+			runBuild(args[1:])
+			return
 		case "help", "--help", "-h":
 			printUsage(os.Stdout)
 			return
@@ -78,6 +90,10 @@ func printUsage(w io.Writer) {
 用法:
   gox create <目录>            按默认模板生成一个 GUI 工程（脚手架）
   gox <文件.js>                执行脚本文件（GUI 脚本会开窗口）
+  gox dev [入口.js]            开发模式: 监听 .js 变更并热重载（见 docs/dev-workflow.md）
+  gox sync [目录]              把 gox.json 的权限声明注入 Android/iOS 清单
+  gox icon [目录]              从 1024 源图一键生成全平台图标
+  gox build <android|ios|windows|macos>  统一构建入口（sync → icon → 平台打包）
   gox                          启动交互式 REPL
   gox help                     显示这份帮助
   gox version                  显示版本号
@@ -116,6 +132,11 @@ func runCreate(args []string) {
   src/store.js        共享状态（signal）
   src/theme.js        设计令牌
   src/components/*.js 组件（计数器 / 列表 / 多状态）
+  gox.json            项目级配置（appId/版本/权限/各平台子配置）
+  assets/icon.png     1024×1024 源图标（全平台图标由它生成）
+  android/            Android 骨架（Manifest 权限区块 + gradle + mipmap）
+  ios/                iOS 骨架（Info.plist 权限区块 + AppIconSet）
+  desktop/            桌面资源（Info.plist 模板 + icon.ico/.icns）
 
 选项:
   --name <名字>   指定项目名（缺省取目录名；不合法的字符会被收敛成短横线）
@@ -161,6 +182,9 @@ func runCreate(args []string) {
 	}
 	fmt.Printf("\n下一步:\n  cd %s\n  npm install\n  npm run dev\n", dir)
 	fmt.Printf("\n不用 npm 也行: gox %s\n", filepath.ToSlash(filepath.Join(dir, "src", "main.js")))
+	fmt.Printf("\n多平台配置（gox.json）: 改 permissions 后跑 `gox sync` 注入权限;\n")
+	fmt.Printf("换图标: 替换 assets/icon.png（1024×1024）后跑 `gox icon`;\n")
+	fmt.Printf("打包: `gox build windows|macos|android|ios`。详见 docs/platform-config.md\n")
 	fmt.Printf("完整 API 见 docs/gui-guide.md\n")
 }
 
