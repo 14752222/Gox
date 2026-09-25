@@ -189,11 +189,17 @@ go run ./packager app.js --gui --target darwin/arm64 \
      确认系统弹出相机权限弹窗且文案正确；
    - 删除 `camera` → `gox sync` → 重新构建 → 确认不再弹窗且设置里无该权限。
 2. **iOS**
-   - `gox build ios`（需 Xcode），用 Xcode 打开 `ios/` 工程安装到真机/模拟器；
-   - 确认 App 图标、`CFBundleIdentifier`（= gox.json 的 appId）、版本号；
+   - ~~`gox build ios`（需 Xcode），用 Xcode 打开 `ios/` 工程安装到真机/模拟器~~
+     **模拟器链路已验收**（2026-09-25，Xcode 27 / iPhone 15 Pro 模拟器）：
+     `gox build ios --simulator` 一条命令出 `dist/<name>.app`
+     （sync → icon → libgox.a → xcodebuild → 组装），simctl 安装启动后
+     图标上屏、bundle id/版本/图标资源合并正确、渲染管线出画面；
+     入口必须是**单文件**（不能 import 相对路径，脚本会快速失败并指引）；
+   - 真机剩余项：`gox build ios --device` 签名安装、桌面图标遮罩目视；
    - 声明 `camera` 并自定义文案 → 重新构建 → 确认弹窗显示**自定义文案**
      而不是默认兜底文案；
-   - 检查 `Info.plist` 的 `NSxxxUsageDescription` 与 gox.json 一致。
+   - 检查 `Info.plist` 的 `NSxxxUsageDescription` 与 gox.json 一致
+     （打包时已自动合并用户工程权限文案、删除未声明的壳占位键）。
 3. **Windows**
    - `gox build windows`，把 `dist/<name>` 拷到 Windows 资源管理器：
      右键属性应看到版本号（详细信息页签），exe 与任务栏显示自定义图标；
