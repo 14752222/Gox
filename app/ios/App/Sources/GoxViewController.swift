@@ -76,6 +76,11 @@ final class GoxViewController: UIViewController {
         }
         inited = true
         reportSafeAreaInsets()
+
+        // NativeHost 六模块注册 (gx/native.go 契约): gox_init 成功后把 Swift 侧
+        // 的 capabilities/nativeCall 回调挂进内核 (gfx/ios/libgox/main.go)。
+        // 之后脚本里的 device/app/geo/media/permission 调用都从这条通道进来。
+        GoxNativeHost.start(presenter: self)
         setupIME()
 
         // 加载并运行随包脚本 (脚本里 render() 挂窗口树, 首帧经 flush 上屏)

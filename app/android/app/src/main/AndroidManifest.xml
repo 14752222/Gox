@@ -2,6 +2,32 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <!--
+      NativeHost 权限声明 (gx/permission 的 kind 白名单里 Android 用得到的):
+        CAMERA               相机拍照 (camera.takePhoto)
+        VIBRATE              震动 (device.vibrate, 普通权限)
+        ACCESS_*_LOCATION    定位 (location.get / location.watch)
+        POST_NOTIFICATIONS   通知权限查询/申请 (Android 13+)
+      相册读选择经系统选择器 (ACTION_PICK / ACTION_GET_CONTENT), 不需要读存储
+      权限; media.save 在 API 29+ 走 MediaStore, 也不需要写权限。
+    -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <!--
+      Package visibility (targetSdk 30+): 相机可用的判定走
+      intent.resolveActivity(MediaStore.ACTION_IMAGE_CAPTURE), 不声明 queries
+      的话永远返回 null。
+    -->
+    <queries>
+        <intent>
+            <action android:name="android.media.action.IMAGE_CAPTURE" />
+        </intent>
+    </queries>
+
+    <!--
       configChanges 全列出来是**故意的**: 旋转/折叠/分屏时不要重建 Activity
       —— 重建会让 Go 侧那段会话 (VM + 事件泵 + 当前帧缓冲) 整个作废, 表现为
       "一转屏脚本从头开始跑"。正确的做法是让 surfaceChanged 回调站出来,
@@ -21,6 +47,17 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!--
+          GoxFileProvider: 相机输出/分享/看图的 content:// 通道
+          (API 24+ 禁止 file:// 跨应用共享; androidx 不可用, 自带最小实现,
+          见 GoxFileProvider.kt)。grantUriPermissions 必须开, exported 必须关。
+        -->
+        <provider
+            android:name=".GoxFileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true" />
     </application>
 
 </manifest>

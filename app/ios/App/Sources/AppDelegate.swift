@@ -28,11 +28,13 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         return config
     }
 
-    /// 只支持竖屏的初始版本: 旋转走 viewWillTransition 的重绑缓冲路径,
-    /// 方向锁先收窄, 等旋转实测没问题再放开。
+    /// 界面方向: 初始只竖屏; gx/app 的 setOrientation() 会改
+    /// GoxNativeHost.orientationMask ("portrait"/"landscape"/"auto"), 这里跟着
+    /// 返回。注意 Info.plist 的 UISupportedInterfaceOrientations 必须包含请求
+    /// 的方向, 否则系统直接忽略 (横屏请求需要那两个键)。
     func application(_ application: UIApplication,
                      supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
-        .portrait
+        GoxNativeHost.orientationMask
     }
 }
 

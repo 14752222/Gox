@@ -1,6 +1,9 @@
 package com.gox
 
 import android.app.Activity
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Rect
@@ -29,9 +32,22 @@ import java.nio.ByteBuffer
  *   - 软键盘 (IME) 未接: 输入框在真机上只能看不能输 (M2, 工作量最大的一块)。
  *   - 多指手势不支持: 第二根手指按下即作废整个手势 (见 gfx/mobile.Touch 的注释)。
  */
-class MainActivity : Activity(), SurfaceHolder.Callback, GoxHost {
+class MainActivity : Activity(), SurfaceHolder.Callback, GoxHost, GoxNativeHost {
 
     private val ui = Handler(Looper.getMainLooper())
+
+    // NativeHost 六模块实现 (device/app/geo/media/permission), 本类只做转发与
+    // 系统回调接线 (onActivityResult / onRequestPermissionsResult / 生命周期上报)。
+    private val nativeHost = GoxNativeHostImpl(this)
+
+    /** 电池广播接收器 (gx/device 的 battery 上报, 系统粘性广播, 主线程回调)。 */
+    private val batteryReceiver = object : android.content.BroadcastReceiver() {
+        override fun onReceive(ctx: Context, intent: Intent) {
+            if (intent.action == Intent.ACTION_BATTERY_CHANGED) {
+                nativeHost.reportBatteryFrom(intent)
+            }
+        }
+    }
 
     private lateinit var surfaceView: SurfaceView
     private var buffer: ByteBuffer? = null
@@ -72,6 +88,46 @@ class MainActivity : Activity(), SurfaceHolder.Callback, GoxHost {
             reportInsets(insets)
             insets // 不消费: Activity 未开 fitSystemWindows, 布局不受影响
         }
+
+        // ── NativeHost 上报通道接线 ──
+        // 电池: ACTION_BATTERY_CHANGED 是粘性系统广播, 注册即收到一份当前值 ——
+        // 启动后 useBattery() 读到的就是真值而不是缺省。
+        registerReceiver(batteryReceiver, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        // 网络: ConnectivityManager 回调 + 启动时先报一次当前状态。
+        nativeHost.registerNetworkCallback()
+        reportNetworkInitial()
+    }
+
+    /** 启动时的网络初值 (activeNetwork 的 capabilities, 没有就报未连接)。 */
+    private fun reportNetworkInitial() {
+        val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager ?: return
+        val net = cm.activeNetwork
+        val caps = if (net != null) cm.getNetworkCapabilities(net) else null
+        nativeHost.reportNetwork(caps != null && caps.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED), caps)
+    }
+
+    // ===== GoxNativeHost (内核经 JNI 调入, Go 的脚本线程) =====
+
+    override fun nativeCapabilities(): String = nativeHost.nativeCapabilities()
+
+    override fun nativeCall(method: String, argsJson: String): String =
+        nativeHost.nativeCall(method, argsJson)
+
+    // ===== 系统回调 → NativeHost (主线程) =====
+
+    @Deprecated("Deprecated in Java")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        nativeHost.onMediaResult(requestCode, resultCode, data)
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray,
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        nativeHost.onPermissionResult(requestCode, permissions, grantResults)
     }
 
     private fun reportInsets(insets: android.view.WindowInsets) {
@@ -259,16 +315,41 @@ class MainActivity : Activity(), SurfaceHolder.Callback, GoxHost {
     override fun onResume() {
         super.onResume()
         startTicker()
+        // gx/app: 前后台由宿主上报 (native_app.go 的分工)。
+        GoxRuntime.nativeReportAppState("active")
+        // gx/permission: 用户可能刚从设置页回来 —— 全量重报一遍 (内核状态没变
+        // 时不会惊动订阅)。
+        nativeHost.reportAllPermissions()
     }
 
     override fun onPause() {
         // 切后台停掉 vsync 驱动: 泵会睡在 WaitEvents 里, 不空转 (M3 的省电口径)。
         stopTicker()
+        GoxRuntime.nativeReportAppState("background")
         super.onPause()
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        // gx/app onBackPress: 脚本回调返回真值 = 已处理, 宿主不退出
+        // (native_app.go ReportBackPress 的用法示例)。同步等脚本答复 (≤500ms)。
+        if (!GoxRuntime.nativeReportBackPress()) {
+            super.onBackPressed()
+        }
+    }
+
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        // gx/app 内存警告: TRIM_MEMORY_RUNNING_LOW 及更严重级别都值得告知脚本。
+        if (level >= TRIM_MEMORY_RUNNING_LOW) {
+            GoxRuntime.nativeReportMemoryWarning()
+        }
     }
 
     override fun onDestroy() {
         stopTicker()
+        nativeHost.stopAllWatches()
+        unregisterReceiver(batteryReceiver)
         if (inited) {
             GoxRuntime.nativeDestroy()
             inited = false

@@ -2,3 +2,4 @@ dist/
 libs/
 *.xcodeproj
 .DS_Store
+build/
