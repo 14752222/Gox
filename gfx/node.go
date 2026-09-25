@@ -680,7 +680,32 @@ func (n *GuiNode) PropHandler(name string) object.Value {
 
 // ===== 文本相关辅助 =====
 
-// FontSize 返回节点字号 (prop "font", 未写则**沿父链继承**, 都没有才落默认 16)。
+// defaultFontSize 是"没有任何 font prop"时的兜底字号 (16dp 的语义)。
+//
+// 为什么不恒返回 16: 内核的坐标约定是**设备像素** (脚本坐标 = 像素, 见各
+// 后端的 Size 注释), 而 16dp 是"物理上应该有 16 点大"的直觉值。高分屏上
+// (macOS Retina scale=2、iPhone scale=3) 若仍画 16 像素, 物理字号只剩
+// 8pt/5.3pt —— 实测移动端整个 UI 挤成一小块。所以兜底值按窗口所在显示器
+// 的 Scale 放大, 让"没写 font"的控件在任何屏上物理大小一致。
+//
+// 桌面 1x (x11/win32 Scale=1) 不变; 没有活动窗口 (纯节点测试) 也不变 ——
+// font_inherit_test 的"默认 16"口径依赖这一点。
+func defaultFontSize() int {
+	a := currentApp()
+	if a == nil || a.surface == nil {
+		return 16
+	}
+	if dp, ok := defaultFactory.(displayProvider); ok {
+		if id, hit := dp.DisplayOf(a.surface); hit && id != "" {
+			if d, found := findDisplay(id); found && d.Scale > 1.0 {
+				return int(16*d.Scale + 0.5)
+			}
+		}
+	}
+	return 16
+}
+
+// FontSize 返回节点字号 (prop "font", 未写则**沿父链继承**, 都没有才落默认)。
 //
 // 为什么继承: `#text` 节点自身永远不带 font prop (它是内容载体, 由 JSX 的字符串
 // 生成), 所以"不继承"等于父元素上写的 font 一辈子不生效 —— 典型症状是
@@ -698,7 +723,7 @@ func (n *GuiNode) FontSize() int {
 			return int(v)
 		}
 	}
-	return 16
+	return defaultFontSize()
 }
 
 // TextContent 拼接直接或经 slot 间接的 #text 子节点文本 (text 元素的内容)。
