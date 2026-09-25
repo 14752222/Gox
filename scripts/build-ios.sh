@@ -35,6 +35,33 @@ else
   SDK_NAME=iphoneos
 fi
 
+# ---- 读取项目级配置 gox.json（存在时）----
+# 提取 appId/version/icon 导出到 GOX_APP_ID / GOX_VERSION / GOX_ICON,
+# 供后续 xcodebuild/Info.plist 注入使用; 顺带校验源图标存在。
+# gox.json 只做数据, 这里不执行其中任何字段。
+PROJECT_DIR=${GOX_PROJECT_DIR:-$ROOT}
+if [ -f "$PROJECT_DIR/gox.json" ]; then
+  if command -v python3 >/dev/null 2>&1; then
+    eval "$(python3 - "$PROJECT_DIR/gox.json" <<'PYEOF'
+import json, os, sys
+cfg = json.load(open(sys.argv[1]))
+def q(s): return "'" + str(s).replace("'", "'\\''") + "'"
+print("GOX_APP_ID=" + q(cfg.get("appId", "")))
+print("GOX_VERSION=" + q(cfg.get("version", "")))
+print("GOX_ICON=" + q(os.path.join(os.path.dirname(sys.argv[1]), cfg.get("icon", "assets/icon.png"))))
+PYEOF
+)"
+    export GOX_APP_ID GOX_VERSION GOX_ICON
+    echo "==> gox.json: appId=$GOX_APP_ID version=$GOX_VERSION icon=$GOX_ICON"
+    if [ ! -f "$GOX_ICON" ]; then
+      echo "error: gox.json 指向的源图标不存在: ${GOX_ICON}（先跑 gox icon）" >&2
+      exit 1
+    fi
+  else
+    echo "警告: 未安装 python3, 跳过 gox.json 读取" >&2
+  fi
+fi
+
 SDK=$(xcrun -sdk "$SDK_NAME" --show-sdk-path)
 CC=$(xcrun -sdk "$SDK_NAME" --find clang)
 OUT="dist/ios/$SDK_NAME-$ARCH"

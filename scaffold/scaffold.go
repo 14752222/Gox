@@ -19,6 +19,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/14752222/Gox/config"
 )
 
 // templateFS 嵌入整个模板目录。必须用 all: 前缀 —— 否则 go:embed 会跳过
@@ -33,9 +35,13 @@ const templateRoot = "template"
 // 模板占位符。刻意分成"合法包名"与"展示标题"两个:
 // 项目目录名可能是中文或大写，直接用进 package.json 的 name 字段是非法的
 // （npm 要求小写、URL 安全），所以两者不能共用一个占位符。
+// __APP_ID__ / __VERSION__ 服务于平台骨架（Android applicationId、iOS
+// BundleID、各处 plist/gradle 的版本号），与 gox.json 的同名字段一致。
 const (
-	placeholderName  = "__PROJECT_NAME__"  // npm 合法名: 小写 + 数字 + 短横线
-	placeholderTitle = "__PROJECT_TITLE__" // 展示用标题: 用户给什么就是什么
+	placeholderName    = "__PROJECT_NAME__"  // npm 合法名: 小写 + 数字 + 短横线
+	placeholderTitle   = "__PROJECT_TITLE__" // 展示用标题: 用户给什么就是什么
+	placeholderAppID   = "__APP_ID__"        // 反向域名应用标识: com.gox.<name>
+	placeholderVersion = "__VERSION__"       // 语义化版本号
 )
 
 // Options 控制一次生成。
@@ -44,6 +50,10 @@ type Options struct {
 	Dir string
 	// Name 覆盖项目名（用于 package.json）；留空则从 Dir 的基名推导。
 	Name string
+	// AppID 覆盖应用标识（gox.json / Android / iOS 共用）；留空取缺省 com.gox.<name>。
+	AppID string
+	// Version 覆盖版本号；留空取缺省 1.0.0。
+	Version string
 	// Force 允许目标目录已存在且非空时仍然写入（会覆盖同名文件，不清理其它文件）。
 	Force bool
 }
@@ -76,6 +86,14 @@ func Create(opts Options) ([]File, error) {
 		return nil, fmt.Errorf("无法从目录 %q 推导项目名，请用 --name 指定", opts.Dir)
 	}
 	pkgName := npmSafeName(title)
+	appID := strings.TrimSpace(opts.AppID)
+	if appID == "" {
+		appID = config.DefaultAppID(pkgName)
+	}
+	appVersion := strings.TrimSpace(opts.Version)
+	if appVersion == "" {
+		appVersion = config.DefaultVersion
+	}
 
 	if err := ensureWritableDir(dir, opts.Force); err != nil {
 		return nil, err
@@ -99,7 +117,7 @@ func Create(opts Options) ([]File, error) {
 		if readErr != nil {
 			return readErr
 		}
-		data = expandPlaceholders(data, pkgName, title)
+		data = expandPlaceholders(data, pkgName, title, appID, appVersion)
 
 		dest := filepath.Join(dir, filepath.FromSlash(rel))
 		if mkErr := os.MkdirAll(filepath.Dir(dest), 0o755); mkErr != nil {
@@ -147,14 +165,16 @@ func ensureWritableDir(dir string, force bool) error {
 	}
 }
 
-// expandPlaceholders 替换模板里的两个占位符。
+// expandPlaceholders 替换模板里的占位符。
 //
 // 逐个字符串替换而不是走模板引擎: 模板里 `{` `}` 遍地都是（JSX 属性、CSS 数值），
 // 任何模板语法都得先过一遍转义，得不偿失。
-func expandPlaceholders(data []byte, pkgName, title string) []byte {
+func expandPlaceholders(data []byte, pkgName, title, appID, version string) []byte {
 	s := string(data)
 	s = strings.ReplaceAll(s, placeholderName, pkgName)
 	s = strings.ReplaceAll(s, placeholderTitle, title)
+	s = strings.ReplaceAll(s, placeholderAppID, appID)
+	s = strings.ReplaceAll(s, placeholderVersion, version)
 	return []byte(s)
 }
 

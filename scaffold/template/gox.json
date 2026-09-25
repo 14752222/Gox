@@ -1,0 +1,19 @@
+{
+  "name": "__PROJECT_NAME__",
+  "title": "__PROJECT_TITLE__",
+  "appId": "__APP_ID__",
+  "version": "__VERSION__",
+  "icon": "assets/icon.png",
+  "permissions": [],
+  "android": {
+    "minSdk": 24,
+    "targetSdk": 35,
+    "adaptiveBackground": "#18243B"
+  },
+  "ios": {
+    "deploymentTarget": "15.0"
+  },
+  "desktop": {
+    "windowed": true
+  }
+}

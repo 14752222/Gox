@@ -21,6 +21,41 @@ import (
 var wantFiles = []string{
 	".gitignore",
 	"README.md",
+	"android/AndroidManifest.xml",
+	"android/build.gradle.kts",
+	"android/res/mipmap-anydpi-v26/ic_launcher.xml",
+	"android/res/mipmap-anydpi-v26/ic_launcher_round.xml",
+	"android/res/mipmap-hdpi/ic_launcher.png",
+	"android/res/mipmap-hdpi/ic_launcher_foreground.png",
+	"android/res/mipmap-mdpi/ic_launcher.png",
+	"android/res/mipmap-mdpi/ic_launcher_foreground.png",
+	"android/res/mipmap-xhdpi/ic_launcher.png",
+	"android/res/mipmap-xhdpi/ic_launcher_foreground.png",
+	"android/res/mipmap-xxhdpi/ic_launcher.png",
+	"android/res/mipmap-xxhdpi/ic_launcher_foreground.png",
+	"android/res/mipmap-xxxhdpi/ic_launcher.png",
+	"android/res/mipmap-xxxhdpi/ic_launcher_foreground.png",
+	"android/res/values/colors.xml",
+	"android/res/values/strings.xml",
+	"assets/icon.png",
+	"desktop/Info.plist",
+	"desktop/icon.icns",
+	"desktop/icon.ico",
+	"favicon.png",
+	"gox.json",
+	"ios/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png",
+	"ios/Assets.xcassets/AppIcon.appiconset/AppIcon-120.png",
+	"ios/Assets.xcassets/AppIcon.appiconset/AppIcon-152.png",
+	"ios/Assets.xcassets/AppIcon.appiconset/AppIcon-167.png",
+	"ios/Assets.xcassets/AppIcon.appiconset/AppIcon-180.png",
+	"ios/Assets.xcassets/AppIcon.appiconset/AppIcon-40.png",
+	"ios/Assets.xcassets/AppIcon.appiconset/AppIcon-58.png",
+	"ios/Assets.xcassets/AppIcon.appiconset/AppIcon-60.png",
+	"ios/Assets.xcassets/AppIcon.appiconset/AppIcon-80.png",
+	"ios/Assets.xcassets/AppIcon.appiconset/AppIcon-87.png",
+	"ios/Assets.xcassets/AppIcon.appiconset/Contents.json",
+	"ios/Assets.xcassets/Contents.json",
+	"ios/Info.plist",
 	"package.json",
 	"src/app.js",
 	"src/components/counter.js",
@@ -90,11 +125,33 @@ func TestCreateReplacesPlaceholders(t *testing.T) {
 	if strings.Contains(txt, "__PROJECT_") {
 		t.Errorf("生成结果里残留占位符:\n%s", excerpt(txt, "__PROJECT_"))
 	}
+	if strings.Contains(txt, "__APP_ID__") || strings.Contains(txt, "__VERSION__") {
+		t.Errorf("平台骨架占位符未替换:\n%s", excerpt(txt, "__APP_ID__"))
+	}
 	if !strings.Contains(txt, `"name": "my-app"`) {
 		t.Errorf("package.json 的 name 不是 my-app")
 	}
 	if !strings.Contains(txt, `title="my-app"`) {
 		t.Errorf("入口的窗口标题不是 my-app")
+	}
+	// gox.json / gradle / iOS plist 三处必须与占位符推导一致
+	gj := readFile(t, filepath.Join(plain, "gox.json"))
+	if !strings.Contains(gj, `"appId": "com.gox.my_app"`) || !strings.Contains(gj, `"version": "1.0.0"`) {
+		t.Errorf("gox.json 的 appId/version 不符:\n%s", gj)
+	}
+	gradle := readFile(t, filepath.Join(plain, "android", "build.gradle.kts"))
+	if !strings.Contains(gradle, `applicationId = "com.gox.my_app"`) || !strings.Contains(gradle, `versionName = "1.0.0"`) {
+		t.Errorf("build.gradle.kts 的 applicationId/versionName 不符:\n%s", gradle)
+	}
+	plist := readFile(t, filepath.Join(plain, "ios", "Info.plist"))
+	if !strings.Contains(plist, "<string>com.gox.my_app</string>") || !strings.Contains(plist, "<string>1.0.0</string>") {
+		t.Errorf("Info.plist 的 BundleID/版本不符:\n%s", plist)
+	}
+	// 二进制资产必须真的存在且非空（占位符替换不能破坏 PNG）
+	for _, bin := range []string{"assets/icon.png", "desktop/icon.ico", "desktop/icon.icns", "favicon.png"} {
+		if data, err := os.ReadFile(filepath.Join(plain, filepath.FromSlash(bin))); err != nil || len(data) == 0 {
+			t.Errorf("二进制资产 %s 缺失或为空: %v", bin, err)
+		}
 	}
 
 	// 中文 + 大写目录名: package.json 必须被收敛成合法包名，标题保持原样

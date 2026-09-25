@@ -20,6 +20,8 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+
+	"github.com/14752222/Gox/icongen"
 )
 
 // importRe 匹配 import/export ... from "./xxx" 的相对路径模块。
@@ -271,6 +273,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "      --gui            GUI 应用: 窗口消息泵事件循环 (配合 gx/gfx render)\n")
 		fmt.Fprintf(os.Stderr, "      --target <os>/<arch>  交叉编译目标 (windows|linux|darwin / amd64|arm64|386),\n")
 		fmt.Fprintf(os.Stderr, "                          如 linux/amd64; 非 Windows 目标默认输出不带 .exe\n")
+		fmt.Fprintf(os.Stderr, "      --icon <path>     应用图标: .png（1024 源图, 自动生成 .ico/.icns）或\n")
+		fmt.Fprintf(os.Stderr, "                          现成的 .ico/.icns。Windows 内嵌图标+版本资源 (.syso),\n")
+		fmt.Fprintf(os.Stderr, "                          darwin 产出 .app bundle\n")
+		fmt.Fprintf(os.Stderr, "      --version <v>     版本号 (x.y.z, 写进 Windows 版本资源与 .app Info.plist)\n")
 		fmt.Fprintf(os.Stderr, "  -v, --verbose        显示构建过程输出\n")
 		fmt.Fprintf(os.Stderr, "  -h, --help           显示帮助\n")
 	}
@@ -284,6 +290,9 @@ func main() {
 		verbose    bool
 		targetOS   string
 		targetArch string
+		iconPath   string
+		versionStr string
+		appID      string
 		positional []string
 	)
 	args := os.Args[1:]
@@ -335,6 +344,24 @@ func main() {
 			}
 		case a == "--verbose" || a == "-v":
 			verbose = true
+		case a == "--icon":
+			if i+1 >= len(args) {
+				fatal("flag %s requires a value", a)
+			}
+			i++
+			iconPath = args[i]
+		case a == "--version":
+			if i+1 >= len(args) {
+				fatal("flag %s requires a value", a)
+			}
+			i++
+			versionStr = args[i]
+		case a == "--appid":
+			if i+1 >= len(args) {
+				fatal("flag %s requires a value", a)
+			}
+			i++
+			appID = args[i]
 		case strings.HasPrefix(a, "-"):
 			fatal("unknown flag: %s", a)
 		default:
@@ -420,6 +447,31 @@ func main() {
 		}
 	}
 
+	// 图标/版本注入: Windows 走 .syso（随 go build 自动链接）,
+	// darwin 在构建后组装 .app bundle。目标缺省按宿主平台处理。
+	effectiveOS := targetOS
+	if effectiveOS == "" {
+		effectiveOS = runtime.GOOS
+	}
+	effectiveArch := targetArch
+	if effectiveArch == "" {
+		effectiveArch = runtime.GOARCH
+	}
+	var appBundle string
+	if iconPath != "" {
+		switch effectiveOS {
+		case "windows":
+			generated := generateWinResources(tmp, iconPath, versionStr, name, effectiveArch, verbose)
+			if generated != "" {
+				if verbose {
+					fmt.Printf("syso: %s\n", generated)
+				}
+			}
+		case "darwin":
+			// 构建后再包 bundle（需要产物路径, 见下方 build 之后）
+		}
+	}
+
 	// 确定输出路径: 非 Windows 目标默认不带 .exe 后缀
 	output := out
 	if output == "" {
@@ -478,6 +530,21 @@ func main() {
 		fatal("go build failed: %v", err)
 	}
 
+	// darwin: 组装 .app bundle（二进制搬进 Contents/MacOS, 附 Info.plist + .icns）
+	if iconPath != "" && effectiveOS == "darwin" {
+		icnsPath := prepareICNS(tmp, iconPath)
+		appName := appNameFor(name, absInput)
+		var err error
+		appBundle, err = icongen.BuildMacAppBundle(
+			outputAbs,
+			strings.TrimSuffix(outputAbs, filepath.Ext(outputAbs)),
+			appName, appName, appID, versionOr(versionStr), icnsPath,
+		)
+		if err != nil {
+			fatal("cannot create .app bundle: %v", err)
+		}
+	}
+
 	target := ""
 	if targetOS != "" {
 		target = " [" + targetOS
@@ -487,6 +554,9 @@ func main() {
 		target += "]"
 	}
 	fmt.Printf("OK: %s%s (%d JS files embedded)\n", outputAbs, target, len(files))
+	if appBundle != "" {
+		fmt.Printf("OK: %s (.app bundle, 同一构建产物)\n", appBundle)
+	}
 }
 
 // collectModules 递归收集 source 中相对 import 的模块文件。
@@ -515,4 +585,72 @@ func collectModules(entry string, source []byte, files map[string][]byte, verbos
 func fatal(format string, args ...interface{}) {
 	fmt.Fprintf(os.Stderr, "jsbuild: "+format+"\n", args...)
 	os.Exit(1)
+}
+
+// generateWinResources 把图标+版本资源生成为 .syso 放进构建目录,
+// go build 会自动拾取 rsrc_windows_<arch>.syso 链入 exe。
+// icon 支持 .png（先生成 .ico）或现成 .ico。返回 .syso 路径（失败返回空串并打警告,
+// 不让图标问题阻塞整个打包 —— 可执行文件本身不需要图标也能跑）。
+func generateWinResources(buildDir, icon, version, name, arch string, verbose bool) string {
+	icoPath := icon
+	tmpIco := ""
+	if strings.EqualFold(filepath.Ext(icon), ".png") {
+		src, err := icongen.LoadSource(icon)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "jsbuild: 警告: 跳过图标注入: %v\n", err)
+			return ""
+		}
+		tmpIco = filepath.Join(buildDir, "app_icon.ico")
+		if err := src.GenerateICO(tmpIco); err != nil {
+			fmt.Fprintf(os.Stderr, "jsbuild: 警告: 跳过图标注入: %v\n", err)
+			return ""
+		}
+		icoPath = tmpIco
+	}
+	coffArch := map[string]string{"amd64": "amd64", "arm64": "arm64", "386": "386"}[arch]
+	if coffArch == "" {
+		fmt.Fprintf(os.Stderr, "jsbuild: 警告: GOARCH %s 不支持 .syso 图标注入, 跳过\n", arch)
+		return ""
+	}
+	out := filepath.Join(buildDir, "rsrc_windows_"+coffArch+".syso")
+	if err := icongen.BuildWindowsSYSO(out, icoPath, versionOr(version), name, name, coffArch); err != nil {
+		fmt.Fprintf(os.Stderr, "jsbuild: 警告: 生成 .syso 失败, 跳过: %v\n", err)
+		return ""
+	}
+	return out
+}
+
+// prepareICNS 把 --icon 归一化为 .icns 路径: .png 现场生成, .icns 直接用。
+func prepareICNS(buildDir, icon string) string {
+	if strings.EqualFold(filepath.Ext(icon), ".icns") {
+		return icon
+	}
+	src, err := icongen.LoadSource(icon)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "jsbuild: 警告: 跳过图标注入: %v\n", err)
+		return ""
+	}
+	icns := filepath.Join(buildDir, "app_icon.icns")
+	if err := src.GenerateICNS(icns); err != nil {
+		fmt.Fprintf(os.Stderr, "jsbuild: 警告: 生成 .icns 失败, 跳过: %v\n", err)
+		return ""
+	}
+	return icns
+}
+
+// appNameFor 应用名: 未指定时取输入文件基名（与既有行为一致）。
+func appNameFor(name, input string) string {
+	if name != "" {
+		return name
+	}
+	base := filepath.Base(input)
+	return strings.TrimSuffix(base, filepath.Ext(base))
+}
+
+// versionOr 版本号缺省 1.0.0。
+func versionOr(v string) string {
+	if strings.TrimSpace(v) == "" {
+		return "1.0.0"
+	}
+	return strings.TrimSpace(v)
 }

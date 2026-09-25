@@ -356,15 +356,33 @@ Options:
       --windowed       窗口模式: 不显示控制台窗口 (仅 Windows)
       --gui            GUI 应用: 窗口消息泵事件循环 (配合 gx/gfx render)
       --target <os>/<arch>  交叉编译目标 (windows|linux|darwin / amd64|arm64|386)
+      --icon <path>    应用图标 (.png 1024 源图或现成 .ico/.icns):
+                       Windows 内嵌图标+版本资源 (.syso), darwin 产出 .app bundle
+      --version <v>    版本号 (x.y.z, 写进 Windows 版本资源与 .app Info.plist)
   -v, --verbose        显示构建过程输出
 ```
 
 各平台的分发注意事项（Windows 图标与签名、Linux 打包格式、macOS `.app` bundle）见
 [docs/desktop-distribution.md](docs/desktop-distribution.md)。
 
+### 多平台配置（gox.json / 权限 / 图标）
+
+`gox create` 生成的工程自带 `gox.json`（应用名、appId、版本、权限、各平台子配置）
+与完整的 Android / iOS / 桌面资源骨架 + 默认图标：
+
+- `gox sync` —— 把 gox.json 里的 `permissions` 幂等注入 AndroidManifest 与
+  iOS Info.plist（默认最小权限, 仅 INTERNET; 未声明的不写入）;
+- `gox icon` —— 以 `assets/icon.png`（1024×1024）为单源生成 Android mipmap、
+  iOS AppIconSet、Windows `.ico`、macOS `.icns`、favicon;
+- `gox build windows|macos|android|ios` —— 统一构建入口（sync → icon → 平台打包）。
+
+字段说明、权限清单与图标规范见 [docs/platform-config.md](docs/platform-config.md)。
+
 ## 配置说明
 
-Gox 不使用配置文件，全部行为由**命令行参数**、**少量环境变量**与**脚本内 API** 控制。
+Gox 运行时本身不使用配置文件，全部行为由**命令行参数**、**少量环境变量**与**脚本内 API** 控制。
+工程级配置（应用名、appId、版本、权限、图标）由 `gox create` 生成的 `gox.json` 承担，
+见下文「多平台配置」一节。
 
 ### 命令行参数
 
@@ -372,6 +390,9 @@ Gox 不使用配置文件，全部行为由**命令行参数**、**少量环境�
 |---|---|---|
 | `Gox` / `goxjs` | 无 | 启动交互式 REPL |
 | `Gox` / `goxjs` | `create <目录>` | 按默认模板生成一个 GUI 工程；别名 `new` / `init` |
+| `Gox` / `goxjs` | `sync [目录]` | 把 gox.json 的权限声明幂等注入 Android/iOS 清单 |
+| `Gox` / `goxjs` | `icon [目录]` | 从 1024 源图一键生成全平台图标 |
+| `Gox` / `goxjs` | `build <android\|ios\|windows\|macos>` | 统一构建入口（sync → icon → 平台打包） |
 | `Gox` / `goxjs` | `<script.js>` | 执行脚本文件；报错写 stderr 并以非零码退出 |
 | `Gox` / `goxjs` | `help` / `version` | 显示用法 / 版本号 |
 | `go run ./packager` | 见 [打包](#打包为独立可执行文件) | jsbuild 打包器参数表 |
@@ -551,6 +572,7 @@ ci(release): 打包闸改回 tar 校验，不再解析 npm 的输出
 |---|---|
 | [docs/tutorial.md](docs/tutorial.md) | **实战教程**：API 调用与参数、内置模块导入、`gox create` 建工程、路由定义与注册（配可直接运行的示例脚本） |
 | [docs/gui-guide.md](docs/gui-guide.md) | GUI 开发指南：元素/事件参考、布局、动画、宿主能力、示例索引 |
+| [docs/platform-config.md](docs/platform-config.md) | 多平台配置：gox.json 字段说明、权限清单表、图标规范、`gox build` 各目标与真机验收步骤 |
 | [docs/js-runtime-api-tutorial.md](docs/js-runtime-api-tutorial.md) | 运行时 API 教程：函数类型、回调桥、内存管理、新增 API 的完整流程 |
 | [docs/gui-patterns.md](docs/gui-patterns.md) | 用户态模式手册（路由、状态、主题等惯用法） |
 | [docs/gui-model-binding.md](docs/gui-model-binding.md) | `model` 双向绑定：接口设计、语义表、与 Vue 的对照、反例 |

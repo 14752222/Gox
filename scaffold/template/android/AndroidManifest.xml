@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+      权限采用声明式注入: `gox sync` 读取 gox.json 的 permissions 字段,
+      幂等地改写下面这个标记区块（整块替换, 重复执行不会重复追加）。
+      默认最小权限 —— 只声明 INTERNET, 未声明的权限一律不出现。
+      手工加的权限请放在区块外, 否则会在下次 sync 时被覆盖。
+    -->
+    <!--GOX:PERMISSIONS:START-->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!--GOX:PERMISSIONS:END-->
+
+    <!--
+      configChanges 全列出来是**故意的**: 旋转/折叠/分屏时不要重建 Activity
+      —— 重建会让 Go 侧那段会话 (VM + 事件泵 + 当前帧缓冲) 整个作废。
+    -->
+    <application
+        android:allowBackup="false"
+        android:label="@string/app_name"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true">
+        <activity
+            android:name=".MainActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|density|uiMode"
+            android:exported="true"
+            android:theme="@android:style/Theme.Black.NoTitleBar.Fullscreen">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+    </application>
+
+</manifest>
