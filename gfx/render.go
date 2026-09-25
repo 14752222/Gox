@@ -299,11 +299,21 @@ func Pump(maxWait time.Duration) bool {
 	// 等待阶段: 逐个窗口等一遍预算 (见 sliceWait)。注意 WaitEvents 的返回值
 	// 不能当作"窗口已关闭"直接退出 —— 只标记即可, 真正的关闭判定放在
 	// processEvents 里 (那里才会看到 EventClose)。
+	wait := sliceWait(maxWait, len(list))
+	// 排队任务 (脚本 w.close() 经 Post 的注销、跨线程 Window.Close 等) 只有
+	// DrainTasks 能执行, 而 DrainTasks 排在等待**之后**。若带着无限期预算
+	// 睡进 WaitEvents, 又恰好没有平台事件来唤醒 (最后一个窗口被脚本 close
+	// 且定时器已清空就是这种场景), 任务永远轮不到执行 —— 真机实测表现为
+	// 进程挂死、窗口留在屏上 (win32 的 MsgWait(INFINITE) 同样中招)。
+	// 所以有排队任务时给等待封一个小上限, 让本轮 DrainTasks 尽快跑。
+	if hasPendingPost() && (wait <= 0 || wait > postDrainCap) {
+		wait = postDrainCap
+	}
 	for _, a := range list {
 		if !a.surfaceAlive() {
 			continue
 		}
-		if !a.surface.WaitEvents(sliceWait(maxWait, len(list))) {
+		if !a.surface.WaitEvents(wait) {
 			a.markSurfaceClosed()
 		}
 	}
@@ -332,6 +342,10 @@ func Pump(maxWait time.Duration) bool {
 // 又足够长, 避免空转轮询把 CPU 烧起来。单窗口路径不受影响 (仍无限期睡在
 // WaitEvents 里, 与 P3-5 完全一致)。
 const multiWindowWaitCap = 32 * time.Millisecond
+
+// postDrainCap 是"有排队 Post 任务"时的等待上限: 短到任务近乎立刻被执行,
+// 又不至于退化成忙等 (排队只在有任务时发生, 空闲期零开销)。
+const postDrainCap = 2 * time.Millisecond
 
 // sliceWait 把一个等待预算切给 n 个窗口。
 //

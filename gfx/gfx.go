@@ -139,6 +139,13 @@ func Post(task func()) {
 	postMu.Unlock()
 }
 
+// hasPendingPost 报告是否有已投递、尚未执行的 Post 任务 (Pump 用)。
+func hasPendingPost() bool {
+	postMu.Lock()
+	defer postMu.Unlock()
+	return len(postQueue) > 0
+}
+
 // DrainTasks 取出并执行全部排队任务 (仅应在 GUI 线程/Pump 内调用)。
 // 多窗口下由 Pump 每轮调用**一次** (不是每个窗口一次), 否则同一批任务
 // 会被执行多遍。

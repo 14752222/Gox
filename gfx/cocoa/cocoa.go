@@ -523,36 +523,45 @@ func newSurface(cfg gfx.WindowConfig) (gfx.Surface, error) {
 	return s, nil
 }
 
+var (
+	nsAppOnce sync.Once
+	nsApp     objc.ID
+)
+
 // ensureNSApp 惰性初始化共享 NSApplication (必须在 GUI 线程 = Mount 锁定
 // 的主 goroutine 上调用)。顺带装一个最小菜单 (含 Cmd+Q 退出), 没有菜单的
 // AppKit 应用连窗口焦点行为都不完整。
+//
+// 用 sync.Once 而不是裸判 nil: NSApplication/菜单只该装一次 —— 多窗口下
+// newSurface 每次都会进来, 重复 finishLaunching + 重建菜单是纯浪费。
 func ensureNSApp() objc.ID {
-	app := objc.ID(objc.GetClass("NSApplication")).Send(selSharedApplication)
-	if app == 0 {
-		panic("cocoa: NSApplication sharedApplication failed")
-	}
-	if app.Send(selFinishLaunching) != 0 {
-		// finishLaunching 无返回值, Send 恒返回 id; 这里只为统一写法
-	}
-	app.Send(selSetActivationPol, uintptr(nsActivationRegular))
-	// 菜单: [Gox] → 退出 (Cmd+Q)。terminate: 在无 delegate 时直接结束进程,
-	// Pump 循环随进程一起结束 —— v1 可接受。
-	mainMenu := objc.ID(objc.GetClass("NSMenu")).Send(selAlloc)
-	mainMenu = mainMenu.Send(selInit)
-	appMenu := objc.ID(objc.GetClass("NSMenu")).Send(selAlloc)
-	appMenu = appMenu.Send(selInit)
-	appItem := objc.ID(objc.GetClass("NSMenuItem")).Send(selAlloc)
-	appItem = appItem.Send(selInit)
-	appItem.Send(selSetSubmenu, appMenu)
-	mainMenu.Send(selAddItem, appItem)
-	quitItem := objc.ID(objc.GetClass("NSMenuItem")).Send(selAlloc)
-	quitItem = quitItem.Send(selInit)
-	quitItem.Send(objc.RegisterName("setTitle:"), nsString("退出 Gox"))
-	quitItem.Send(selSetKeyEquivalent, nsString("q"))
-	quitItem.Send(selSetAction, selTerminate)
-	appMenu.Send(selAddItem, quitItem)
-	app.Send(selSetMainMenu, mainMenu)
-	return app
+	nsAppOnce.Do(func() {
+		app := objc.ID(objc.GetClass("NSApplication")).Send(selSharedApplication)
+		if app == 0 {
+			panic("cocoa: NSApplication sharedApplication failed")
+		}
+		app.Send(selFinishLaunching)
+		app.Send(selSetActivationPol, uintptr(nsActivationRegular))
+		// 菜单: [Gox] → 退出 (Cmd+Q)。terminate: 在无 delegate 时直接结束进程,
+		// Pump 循环随进程一起结束 —— v1 可接受。
+		mainMenu := objc.ID(objc.GetClass("NSMenu")).Send(selAlloc)
+		mainMenu = mainMenu.Send(selInit)
+		appMenu := objc.ID(objc.GetClass("NSMenu")).Send(selAlloc)
+		appMenu = appMenu.Send(selInit)
+		appItem := objc.ID(objc.GetClass("NSMenuItem")).Send(selAlloc)
+		appItem = appItem.Send(selInit)
+		appItem.Send(selSetSubmenu, appMenu)
+		mainMenu.Send(selAddItem, appItem)
+		quitItem := objc.ID(objc.GetClass("NSMenuItem")).Send(selAlloc)
+		quitItem = quitItem.Send(selInit)
+		quitItem.Send(objc.RegisterName("setTitle:"), nsString("退出 Gox"))
+		quitItem.Send(selSetKeyEquivalent, nsString("q"))
+		quitItem.Send(selSetAction, selTerminate)
+		appMenu.Send(selAddItem, quitItem)
+		app.Send(selSetMainMenu, mainMenu)
+		nsApp = app
+	})
+	return nsApp
 }
 
 // ===== gfx.Surface =====
@@ -703,30 +712,6 @@ func (s *surface) ResizeClient(w, h int) {
 	s.win.Send(selSetContentsSize, nsSize{Width: float64(w) / s.scale, Height: float64(h) / s.scale})
 }
 
-// ===== 可选能力: displayProvider =====
-
-// Displays 报告本机唯一的一块屏 (设备像素口径)。
-func (s *surface) Displays() []gfx.Display {
-	s.mu.Lock()
-	scale := s.scale
-	s.mu.Unlock()
-	w, h := s.Size()
-	dw, dh := int(float64(w)*scale), int(float64(h)*scale)
-	return []gfx.Display{{
-		ID: "main", Name: "Main Display",
-		W: dw, H: dh, WorkW: dw, WorkH: dh,
-		Scale: scale, Primary: true,
-	}}
-}
-
-// DisplayOf 报告窗口在哪块屏上 —— v1 只有一块表面, 恒命中。
-func (s *surface) DisplayOf(surf gfx.Surface) (string, bool) {
-	if surf == gfx.Surface(s) {
-		return "main", true
-	}
-	return "", false
-}
-
 // ===== 可选能力: clipboardHost =====
 
 // ReadClipboardText 读系统剪贴板文本 (非文本/无内容返回空串, 不报错)。
@@ -748,6 +733,20 @@ func (s *surface) WriteClipboardText(text string) error {
 	}
 	return nil
 }
+
+// ===== 可选能力: capturer =====
+
+// CapturePointer / ReleasePointer: AppKit 在按住按键期间会把 mouseDragged:
+// 持续投给发生 mouseDown 的窗口 —— 无论光标在不在窗口内, 即"捕获"是
+// 平台天然行为, 两个方法无需任何调用 (与 gfx/mobile 的触摸同理)。
+//
+// 但**必须实现**: 不实现的话内核 hasPointerCapture() 为 false, MouseLeave
+// 时会主动放弃拖动 (代码注释: "没有捕获的后端永远等不到 MouseUp") ——
+// 而 cocoa 恰恰等得到, 拖动就会在光标出窗那一刻被错误掐断。
+func (s *surface) CapturePointer() {}
+
+// ReleasePointer 见 CapturePointer。
+func (s *surface) ReleasePointer() {}
 
 // ===== 内部: 事件投递与翻译 =====
 
@@ -877,6 +876,8 @@ func nsToGo(id objc.ID) string {
 }
 
 // 编译期断言: *surface 满足 gfx.Surface 与全部已实现的可选能力。
+// 注意: displayProvider (Displays/DisplayOf) 实现在 factory 上, 不在 surface 上
+// —— gfx/screen 只认 factory 级能力 (见 gfx/screen.go providerDisplays)。
 var (
 	_ gfx.Surface = (*surface)(nil)
 	_ interface {
@@ -884,11 +885,15 @@ var (
 		ResizeClient(int, int)
 	} = (*surface)(nil)
 	_ interface {
-		Displays() []gfx.Display
-		DisplayOf(gfx.Surface) (string, bool)
+		CapturePointer()
+		ReleasePointer()
 	} = (*surface)(nil)
 	_ interface {
 		ReadClipboardText() (string, error)
 		WriteClipboardText(string) error
 	} = (*surface)(nil)
+	_ interface {
+		Displays() []gfx.Display
+		DisplayOf(gfx.Surface) (string, bool)
+	} = (*factory)(nil)
 )
