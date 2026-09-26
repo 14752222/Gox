@@ -1,20 +1,26 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Gox 官网发布：把 website/ 部署到 GitHub Pages (https://14752222.github.io/Gox/)
+# Gox 官网发布：把 website/（VitePress）构建后部署到 GitHub Pages
+#   线上地址 https://14752222.github.io/Gox/
 #
-# 为什么需要这个文件：website/ 长期被 .gitignore 排除、只在本地改，于是线上一直是
-#   那份旧快照（导航还写着 v0.1.1，缺 gx/router、gx/screen、gox create）。
-#   2026-09-21 把 website/ 收回版本库并加上这条流水线 —— 此后「改 website/ → 推 main」
-#   就等于上线，不再需要手工同步。
+# 历史：2026-09-21 website/ 收回版本库并上这条流水线（当时是 4 页手写 HTML）；
+#   2026-09-25 website 迁移到 VitePress（29 页，独立仓库 gox-website），
+#   流水线随之改为「版本号一致 → pnpm install → vitepress build → 部署 dist」。
+#   旧的 scripts/check-site.py 只认顶层 *.html，对 VitePress 源无效，已不再被
+#   本流水线调用；它的职责（标签配对/版本一致/链接/锚点）中：
+#   - 死链检查由 vitepress build 承担（config.mts 里 ignoreDeadLinks: false，
+#     构建期发现断链直接失败）；
+#   - 版本号一致由下方「版本号一致」步骤承担（npm/package.json ↔
+#     config.mts 的 softwareVersion ↔ index.md 的「当前版本 **vX.Y.Z**」）。
+#
+# website/ · npm/ 是独立仓库的子模块：官网改动提交在 gox-website，主仓库这边
+#   只看到 gitlink 指针变化，路径是 `website`（没有斜杠）—— `website/**` 匹配
+#   不到，所以 paths 里必须单独列一条裸 `website`。只推 gox-website 不触发本
+#   工作流，必须回主仓库提交子模块指针。
 #
 # 一次性前置（仓库设置，代码改不了）：Settings → Pages → Build and deployment →
-#   Source 必须选 **GitHub Actions**。若这里选的是 "Deploy from a branch"，
-#   本工作流会成功但站点仍显示旧内容 —— 排查旧内容问题时先看这个开关。
+#   Source 必须选 **GitHub Actions**。
 #
-# 与 release.yml 的关系：完全独立，互不触发。release.yml 只管 npm 发版（先查 registry
-#   判重，幂等）；本工作流只管官网。两者都用默认 GITHUB_TOKEN，不需要任何 secret。
-#
-# 失败时怎么查：本工作流每个校验步骤都把**实际证据**塞进 ::error:: 注解里，
-#   所以即使拿不到 job 日志（无 gh CLI），从 Actions 页面的 annotations 也能读到原因。
+# 与 release.yml 的关系：完全独立，互不触发。
 # ─────────────────────────────────────────────────────────────────────────────
 name: pages
 
@@ -22,12 +28,8 @@ on:
   push:
     branches: [main]
     paths:
-      # website/ 是子模块：官网改动提交在 gox-website 仓库里，主仓库这边只看到
-      # gitlink 指针变化，而它的路径是 `website`（没有斜杠）—— `website/**` 匹配
-      # 不到（GitHub 的路径模式要求整段匹配），所以必须单独列一条。
       - 'website'
       - 'website/**'
-      - 'scripts/check-site.py'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -42,58 +44,79 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  check:
-    name: 静态检查
+  build:
+    name: 检查 + 构建
     runs-on: ubuntu-latest
     steps:
-      # website/ · npm/ · gox-logo-concepts/ 是独立仓库的子模块，
-      # 不显式拉取就是空目录（check-registries.py 读 npm/package.json 会直接缺文件）。
-      - uses: actions/checkout@v4
+      # website/ · npm/ 是子模块，不显式拉取就是空目录
+      # （版本号一致步骤要读 npm/package.json）。
+      - uses: actions/checkout@v7
         with:
           submodules: true
 
-      - name: 站点文件齐全性
+      - name: 版本号一致（npm ↔ config.mts ↔ index.md）
         run: |
           set -euo pipefail
-          missing=0
-          for f in index.html guide.html components.html api.html \
-                   assets/style.css assets/site.js assets/logo.png assets/favicon.png; do
-            if [ ! -f "website/$f" ]; then
-              echo "::error::缺少 website/$f"
-              missing=1
-            fi
-          done
-          if [ "$missing" != "0" ]; then exit 1; fi
-          echo "站点文件齐全："
-          ls -la website
-          ls -la website/assets
+          PKG=$(node -p "require('./npm/package.json').version")
+          SITE=$(grep -oP "softwareVersion:\s*'\K[0-9][0-9.]*" website/.vitepress/config.mts || true)
+          INDEX=$(grep -oP '当前版本 \*\*v\K[0-9][0-9.]*' website/index.md || true)
+          echo "npm/package.json: $PKG"
+          echo "config.mts softwareVersion: ${SITE:-缺失}"
+          echo "index.md 当前版本: ${INDEX:-缺失}"
+          fail=0
+          if [ -z "$SITE" ]; then
+            echo "::error::website/.vitepress/config.mts 里找不到 softwareVersion"; fail=1
+          fi
+          if [ -z "$INDEX" ]; then
+            echo "::error::website/index.md 里找不到「当前版本 **vX.Y.Z**」"; fail=1
+          fi
+          if [ "$fail" != 0 ]; then exit 1; fi
+          if [ "$PKG" != "$SITE" ] || [ "$PKG" != "$INDEX" ]; then
+            echo "::error::版本号不一致：npm=$PKG config.mts=$SITE index.md=$INDEX —— 发版时三处要一起改"
+            exit 1
+          fi
+          echo "三处版本号一致：$PKG"
 
-      - name: 标签配对 / 版本号 / 链接 / 锚点
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '22'
+
+      - name: 安装 pnpm
         run: |
-          set -euo pipefail
-          python3 scripts/check-site.py
+          npm install -g pnpm@9
+          pnpm --version
+
+      - name: 安装依赖
+        working-directory: website
+        run: pnpm install --frozen-lockfile
+
+      # ignoreDeadLinks: false —— 站内断链在这里直接构建失败（CI 兜底）
+      - name: 构建（含死链检查）
+        working-directory: website
+        run: pnpm build
+
+      - name: 回显构建产物
+        run: |
+          test -f website/.vitepress/dist/index.html || {
+            echo "::error::构建产物里没有 index.html"; exit 1
+          }
+          ls website/.vitepress/dist | head -20
+
+      - name: 打包站点产物
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: website/.vitepress/dist
 
   deploy:
     name: 部署到 GitHub Pages
-    needs: check
+    needs: build
     runs-on: ubuntu-latest
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      # website/ · npm/ · gox-logo-concepts/ 是独立仓库的子模块，
-      # 不显式拉取就是空目录（check-registries.py 读 npm/package.json 会直接缺文件）。
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
-
       - name: 配置 Pages
         uses: actions/configure-pages@v5
-
-      - name: 打包站点产物
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: website
 
       - name: 部署
         id: deployment
