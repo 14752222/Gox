@@ -38,6 +38,7 @@ var wantFiles = []string{
 	"android/res/values/colors.xml",
 	"android/res/values/strings.xml",
 	"assets/icon.png",
+	"certs/README.md",
 	"desktop/Info.plist",
 	"desktop/icon.icns",
 	"desktop/icon.ico",

@@ -188,6 +188,7 @@ func runCreate(args []string) {
 	fmt.Printf("\n不用 npm 也行: gox %s\n", filepath.ToSlash(filepath.Join(dir, "src", "main.js")))
 	fmt.Printf("\n多平台配置（gox.json）: 改 permissions 后跑 `gox sync` 注入权限;\n")
 	fmt.Printf("换图标: 替换 assets/icon.png（1024×1024）后跑 `gox icon`;\n")
+	fmt.Printf("签名证书: certs/ 目录（已 gitignore），`gox cert android|ios|harmony|windows` 一键生成;\n")
 	fmt.Printf("打包: `gox build windows|macos|android|ios`。详见 docs/platform-config.md\n")
 	fmt.Printf("完整 API 见 docs/gui-guide.md\n")
 }
