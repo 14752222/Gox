@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/14752222/Gox/certgen"
 	"github.com/14752222/Gox/config"
 	"github.com/14752222/Gox/icongen"
 )
@@ -27,6 +28,8 @@ func runBuild(args []string) {
 	var target, dir string
 	// iOS 专属参数（其他目标忽略, 便于脚本里统一写 gox build <t> ...）
 	var iosTarget, iosArch, iosEntry string
+	// release 目前只对 android 生效（assembleRelease, 需签名; 见 buildAndroid）
+	release := false
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
@@ -38,6 +41,9 @@ func runBuild(args []string) {
   ios      libgox.a（Xcode 交叉编译）+ xcodebuild 壳工程 → dist/<name>.app
   windows  桌面 exe（图标与版本信息内嵌）
   macos    .app bundle（可执行 + Info.plist + 图标）
+
+android 选项:
+  --release        打 release 包（assembleRelease; 签名自动接入, 见 gox cert）
 
 ios 选项:
   --simulator    构建模拟器包（缺省, 免签名, 可直接 simctl install）
@@ -57,6 +63,8 @@ macos 选项:
 			iosTarget = "device"
 		case a == "--simulator":
 			iosTarget = "simulator"
+		case a == "--release":
+			release = true
 		case a == "--arch":
 			if i+1 >= len(args) {
 				buildFatal("--arch 需要参数（如 arm64 或 arm64,x86_64）")
@@ -113,7 +121,7 @@ macos 选项:
 
 	switch target {
 	case "android":
-		buildAndroid(dir)
+		buildAndroid(dir, cfg, release)
 	case "ios":
 		if iosTarget == "" {
 			iosTarget = "simulator"
@@ -127,7 +135,12 @@ macos 选项:
 }
 
 // buildAndroid: libgox.so → jniLibs → gradle（有工具链时）。
-func buildAndroid(dir string) {
+// release=true 走 assembleRelease（需要签名: 优先 gox.json cert 段的自备证书,
+// 其次 certs/ 下 gox cert 生成的证书, 都没有就自动生成调试证书 —— 见 ensureAndroidSigning）。
+func buildAndroid(dir string, cfg config.Config, release bool) {
+	if err := ensureAndroidSigning(dir, cfg); err != nil {
+		buildFatal("gox build android: 签名配置失败: %v", err)
+	}
 	repo := goxRepoRoot()
 	if repo == "" {
 		fmt.Fprintln(os.Stderr, "gox build android: 找不到 Gox 源码仓库（设 GOX_REPO 或在仓库内运行）, 跳过 libgox.so 交叉编译")
@@ -136,13 +149,19 @@ func buildAndroid(dir string) {
 	}
 
 	// gradle: 项目里有 wrapper 或系统 gradle 时执行; 否则给出明确指引
-	gradleArgs := []string{"assembleDebug"}
+	task := "assembleDebug"
+	outKind := "debug"
+	if release {
+		task = "assembleRelease"
+		outKind = "release"
+	}
+	gradleArgs := []string{task}
 	if _, err := os.Stat(filepath.Join(dir, "android", "gradlew")); err == nil {
 		if err := runStep(filepath.Join(dir, "android"), "./gradlew", gradleArgs...); err != nil {
 			fmt.Fprintf(os.Stderr, "gox build android: gradle 构建失败: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Println("完成: android/app/build/outputs/apk/debug/")
+		fmt.Printf("完成: android/app/build/outputs/apk/%s/\n", outKind)
 		return
 	}
 	if _, err := exec.LookPath("gradle"); err == nil {
@@ -150,12 +169,80 @@ func buildAndroid(dir string) {
 			fmt.Fprintf(os.Stderr, "gox build android: gradle 构建失败: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Println("完成: android/app/build/outputs/apk/debug/")
+		fmt.Printf("完成: android/app/build/outputs/apk/%s/\n", outKind)
 		return
 	}
 	fmt.Println("未检测到 gradle —— APK 构建留给用户执行:")
-	fmt.Println("  cd android && gradle assembleDebug")
+	fmt.Printf("  cd android && gradle %s\n", task)
 	fmt.Println("真机验收步骤见 docs/platform-config.md（Phase 5 验收清单）")
+}
+
+// ensureAndroidSigning 决定签名来源并落 android/keystore.properties（gradle
+// 模板读它给 release 签名）。优先级:
+//  1. gox.json cert.android —— 用户自备 keystore（JKS/PKCS12 均可）
+//  2. certs/android-cert.json —— gox cert 生成的证书元数据
+//  3. 都没有 → 自动生成调试证书（快捷操作, 对标 Android debug.keystore 体验;
+//     正式上架前记得换成自有 keystore, 调试证书也能发商店但换证书即断代）
+func ensureAndroidSigning(dir string, cfg config.Config) error {
+	var props [][2]string // 保持固定写入顺序, diff 友好
+	if s := cfg.Cert.Android; s != nil {
+		if s.Keystore == "" || s.Alias == "" || s.StorePassword == "" {
+			return fmt.Errorf("gox.json 的 cert.android 配置不完整: keystore / alias / storePassword 必填")
+		}
+		ks := s.Keystore
+		if !filepath.IsAbs(ks) {
+			ks = filepath.Join(dir, ks)
+		}
+		if _, err := os.Stat(ks); err != nil {
+			return fmt.Errorf("cert.android.keystore 不可读: %s", ks)
+		}
+		keyPwd := s.KeyPassword
+		if keyPwd == "" {
+			keyPwd = s.StorePassword
+		}
+		props = [][2]string{
+			{"storeFile", ks}, {"storePassword", s.StorePassword},
+			{"keyAlias", s.Alias}, {"keyPassword", keyPwd},
+		}
+	} else {
+		meta, err := certgen.LoadAndroidMeta(dir)
+		if err != nil {
+			return err
+		}
+		if meta == nil {
+			fmt.Println("==> cert: 未配置签名, 自动生成调试证书（自定义: gox cert android）")
+			if _, err := certgen.GenerateAndroid(dir, certgen.Options{CommonName: cfg.Name}); err != nil {
+				return err
+			}
+			if meta, err = certgen.LoadAndroidMeta(dir); err != nil || meta == nil {
+				return fmt.Errorf("读取 certs/android-cert.json 失败")
+			}
+		}
+		ks := meta.File
+		if !filepath.IsAbs(ks) {
+			ks = filepath.Join(dir, ks)
+		}
+		if _, err := os.Stat(ks); err != nil {
+			return fmt.Errorf("keystore 文件丢失: %s（删除 certs/android-cert.json 后重跑可重新生成）", ks)
+		}
+		props = [][2]string{
+			{"storeFile", ks}, {"storePassword", meta.StorePassword},
+			{"keyAlias", meta.Alias}, {"keyPassword", meta.KeyPassword},
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString("# 由 gox build 自动生成（含密码, 严禁提交仓库, 已 gitignore）。\n")
+	b.WriteString("# 改签名: gox.json 的 cert 段（自备证书）或 gox cert android（快捷生成）。\n")
+	for _, kv := range props {
+		fmt.Fprintf(&b, "%s=%s\n", kv[0], kv[1])
+	}
+	// 写进 android/（gradle 模块根）—— file("keystore.properties") 相对模块目录解析
+	path := filepath.Join(dir, "android", "keystore.properties")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(b.String()), 0o600)
 }
 
 // buildIOS: libgox.a 交叉编译 → xcodebuild 构建壳工程 → 组装 dist/<name>.app。

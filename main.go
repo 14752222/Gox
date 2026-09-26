@@ -53,6 +53,9 @@ func main() {
 		case "icon":
 			runIcon(args[1:])
 			return
+		case "cert":
+			runCert(args[1:])
+			return
 		case "build":
 			runBuild(args[1:])
 			return
@@ -93,6 +96,7 @@ func printUsage(w io.Writer) {
   gox dev [入口.js]            开发模式: 监听 .js 变更并热重载（见 docs/dev-workflow.md）
   gox sync [目录]              把 gox.json 的权限声明注入 Android/iOS 清单
   gox icon [目录]              从 1024 源图一键生成全平台图标
+  gox cert <android|windows|harmony|ios>  一键生成平台签名证书（快捷操作, gox cert -h 看详情）
   gox build <android|ios|windows|macos>  统一构建入口（sync → icon → 平台打包）
   gox                          启动交互式 REPL
   gox help                     显示这份帮助

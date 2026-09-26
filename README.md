@@ -374,7 +374,14 @@ Options:
   iOS Info.plist（默认最小权限, 仅 INTERNET; 未声明的不写入）;
 - `gox icon` —— 以 `assets/icon.png`（1024×1024）为单源生成 Android mipmap、
   iOS AppIconSet、Windows `.ico`、macOS `.icns`、favicon;
-- `gox build windows|macos|android|ios` —— 统一构建入口（sync → icon → 平台打包）。
+- `gox cert` —— 一键生成平台签名证书（快捷操作, 纯 Go 实现无需 JDK/openssl）:
+  `android`（PKCS12 keystore, gradle 自动接入签名）、`windows`（自签代码签名
+  .pfx）、`harmony`（ECC P-256 调试 .p12+.cer）、`ios`（密钥对+CSR, 换回 .cer 后
+  `gox cert ios --cer x.cer` 合成 .p12）。产物落在 `certs/`（已 gitignore）;
+  自备正式证书时在 gox.json 的 `cert` 段配置, 不必用本命令;
+- `gox build windows|macos|android|ios` —— 统一构建入口（sync → icon → 平台打包）;
+  `gox build android --release` 走签名发布包（证书: gox.json cert 段 > certs/
+  元数据 > 自动生成调试证书）。
 
 字段说明、权限清单与图标规范见 [docs/platform-config.md](docs/platform-config.md)。
 

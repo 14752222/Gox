@@ -6,3 +6,7 @@ dist/
 build/
 *.exe
 *.log
+
+# 签名证书（gox cert 产物, 含随机密码元数据, 严禁提交）
+certs/
+android/keystore.properties

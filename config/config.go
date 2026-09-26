@@ -66,6 +66,29 @@ type Config struct {
 	IOS IOSConfig `json:"ios,omitempty"`
 	// Desktop 是桌面平台子配置。
 	Desktop DesktopConfig `json:"desktop,omitempty"`
+	// Cert 是签名证书配置。整段缺省 = 使用 certs/ 下 gox cert 生成的
+	// 证书（gox build android 会自动生成调试证书）; 用户自备证书时在这
+	// 里写路径与密码（密码建议走环境变量注入, 避免入库）。
+	Cert CertConfig `json:"cert,omitempty"`
+}
+
+// CertConfig 是证书配置段。v1 只接 android（build 链路里唯一自动签名的
+// 平台）; windows/harmony/ios 的产物由用户手工喂给 signtool/hap-sign-tool/xcode。
+type CertConfig struct {
+	// Android 缺省为 nil: 优先读 certs/android-cert.json（gox cert 的元数据）,
+	// 连它都没有就自动生成调试证书。自备 keystore 时填这里。
+	Android *AndroidSigning `json:"android,omitempty"`
+}
+
+// AndroidSigning 描述一个自备的 Android 签名 keystore。
+type AndroidSigning struct {
+	// Keystore 是 keystore 文件路径（相对项目根或绝对路径）。支持 JKS/PKCS12。
+	Keystore string `json:"keystore,omitempty"`
+	// Alias 是 key 别名。
+	Alias string `json:"alias,omitempty"`
+	// StorePassword / KeyPassword 是 keystore 与 key 密码（PKCS12 下两者一致）。
+	StorePassword string `json:"storePassword,omitempty"`
+	KeyPassword   string `json:"keyPassword,omitempty"`
 }
 
 // AndroidConfig 控制 Android 侧的生成与注入。

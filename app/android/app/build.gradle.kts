@@ -1,6 +1,16 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
+}
+
+// 签名: keystore.properties（app/ 目录下）由 gox build/cert 流程生成或手工填写,
+// 字段 storeFile/storePassword/keyAlias/keyPassword。没有它 release 不签名。
+val keystoreProps = Properties()
+val keystorePropsFile = file("keystore.properties")
+if (keystorePropsFile.exists()) {
+    keystorePropsFile.inputStream().use { keystoreProps.load(it) }
 }
 
 android {
@@ -27,12 +37,26 @@ android {
         }
     }
 
+    signingConfigs {
+        if (keystorePropsFile.exists()) {
+            create("gox") {
+                storeFile = file(keystoreProps.getProperty("storeFile"))
+                storePassword = keystoreProps.getProperty("storePassword")
+                keyAlias = keystoreProps.getProperty("keyAlias")
+                keyPassword = keystoreProps.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         // v1 不混淆: JNI 符号是"包名+类名"的字符串契约, 混淆器改类名会让
         // System.loadLibrary 之后的方法绑定直接失败 (UnsatisfiedLinkError)。
         // 真要开混淆, 必须给 com.gox.GoxRuntime 写 keep 规则。
         release {
             isMinifyEnabled = false
+            if (keystorePropsFile.exists()) {
+                signingConfig = signingConfigs.getByName("gox")
+            }
         }
     }
 

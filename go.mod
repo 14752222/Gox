@@ -6,6 +6,7 @@ require (
 	github.com/ebitengine/purego v0.11.1
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/jezek/xgb v1.3.1
+	golang.org/x/crypto v0.57.0
 	golang.org/x/image v0.46.0
 )
 
