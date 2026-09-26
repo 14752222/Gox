@@ -4,7 +4,7 @@
 > 单二进制、零 cgo、零外部运行时依赖，自带软件光栅化 GUI 与脚本打包器。
 
 [![Go](https://img.shields.io/badge/Go-1.26.2%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 [![npm](https://img.shields.io/npm/v/@goxjs/goxjs)](https://www.npmjs.com/package/@goxjs/goxjs)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)](#环境要求)
 [![Release](https://github.com/14752222/Gox/actions/workflows/release.yml/badge.svg)](https://github.com/14752222/Gox/actions/workflows/release.yml)
@@ -589,4 +589,4 @@ ci(release): 打包闸改回 tar 校验，不再解析 npm 的输出
 
 ## 许可证
 
-[Apache License 2.0](LICENSE)
+[MIT License](LICENSE)
