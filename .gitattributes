@@ -1,0 +1,9 @@
+# icongen golden 文件：测试是逐字节比对，行尾必须与生成器输出（LF）完全一致。
+# Windows 上 autocrlf 会把文本 golden 检出成 CRLF，导致 CI 上 XML/JSON 永远对不上
+# （现象：got 比 want 小 6~69 字节，且只挂 .xml/.json，.png/.ico/.icns 全过）。
+# 所以这里把 golden 目录钉死：二进制关掉转换，文本强制 LF。
+icongen/testdata/golden/**/*.png -text
+icongen/testdata/golden/**/*.ico -text
+icongen/testdata/golden/**/*.icns -text
+icongen/testdata/golden/**/*.xml text eol=lf
+icongen/testdata/golden/**/*.json text eol=lf

@@ -68,10 +68,12 @@ jobs:
         with:
           submodules: true
 
+      # 不写 check-latest: true：测试里有字节级 golden 比对（icongen），
+      # PNG 压缩输出随 Go 补丁版本变化 —— CI 的工具链必须与刷新 golden 时用的
+      # go.mod 版本完全一致，否则每次 Go 发补丁版 ci 就会无意义地红一轮。
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-          check-latest: true
 
       - name: go build ./...
         run: go build ./...
