@@ -134,8 +134,17 @@ Go 为准并修文档。
    API<29 走缩略图兜底 (分辨率低, 属已知限制)。
 3. iOS `onMain` (DispatchQueue.main.sync): 依赖"主线程从不同步等待脚本线程"
    (gox_tick 只叫醒泵); 若未来主线程新增同步等待 Go 的路径需重审。
-4. iOS PHPicker 多选回填顺序、QLPreview 的 iPad popover 行为。
-5. 权限状态: Android 的 not-determined 与 denied 无法区分 (shouldShowRequest-
+4. 权限状态: Android 的 not-determined 与 denied 无法区分 (shouldShowRequest-
    PermissionRationale 两种情况都 false); 若内核后续增加"永久拒绝"语义需平台跟进。
-6. 三平台 battery 的 `chargingType` 词汇 (usb/ac/wireless/none/unknown) 在 iOS
+5. 三平台 battery 的 `chargingType` 词汇 (usb/ac/wireless/none/unknown) 在 iOS
    上不可区分, 恒 unknown (充电中)。
+
+## 已修复 (待回归确认)
+
+- (2026-09-26) iOS PHPicker 多选回填顺序: 结果数组改为按下标预分配 + 回调
+  按下标写入 (原实现并发 append, 顺序取决于 provider 完成时序), 现在回填
+  顺序 = 用户选择顺序。
+- (2026-09-26) iOS media.preview: 由"只预览 index 单文件"改为把列表里全部
+  可访问文件交给 QLPreviewController (可左右滑动, 起点按失效文件数修正),
+  并显式固定 modalPresentationStyle = .pageSheet, iPad 上展示形态不再随
+  容器收折变化。

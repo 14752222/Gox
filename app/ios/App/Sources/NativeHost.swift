@@ -550,17 +550,28 @@ final class GoxNativeHost: NSObject {
     }
 
     /// media.preview {files, index} → QLPreviewController (系统看图/看视频)。
+    /// 列表里所有可访问的文件都交给 QL (可左右滑动切换), 从 index 开始;
+    /// 个别文件失效只跳过 (起点按失效数修正), 全部失效才报错。
     private func preview(_ args: [String: Any], id: String) -> String {
         let files = args["files"] as? [[String: Any]] ?? []
         if files.isEmpty {
             return errJSON(GoxNativeHost.ERR_INVALID_ARG, "media.preview: 文件列表为空")
         }
         let idx = min(max(Int(num(args, "index")), 0), files.count - 1)
-        let f = files[idx]
-        let src = (f["uri"] as? String) ?? (f["path"] as? String) ?? ""
-        guard let fileURL = Self.materialize(src) else {
-            return errJSON(GoxNativeHost.ERR_UNAVAILABLE, "文件不存在或无法访问: \(src)")
+        var urls: [URL] = []
+        var missingBefore = 0
+        for (i, f) in files.enumerated() {
+            let src = (f["uri"] as? String) ?? (f["path"] as? String) ?? ""
+            if let fileURL = Self.materialize(src) {
+                urls.append(fileURL)
+            } else if i < idx {
+                missingBefore += 1
+            }
         }
+        if urls.isEmpty {
+            return errJSON(GoxNativeHost.ERR_UNAVAILABLE, "文件不存在或无法访问")
+        }
+        let startIdx = max(0, min(idx - missingBefore, urls.count - 1))
         DispatchQueue.main.async {
             guard let vc = self.presenter else {
                 self.fail(id, GoxNativeHost.ERR_PLATFORM, "没有可用的窗口来展示预览")
@@ -568,8 +579,12 @@ final class GoxNativeHost: NSObject {
             }
             let ql = QLPreviewController()
             ql.dataSource = self
-            self.previewURLs = [fileURL]
+            self.previewURLs = urls
             self.previewID = id
+            ql.currentPreviewItemIndex = startIdx
+            // iPad 形态固定为 pageSheet (automatic 在 iPad 上的收折行为随容器
+            // 变化; 显式 pageSheet 保证真机/iPad/浮窗下行为一致)。
+            ql.modalPresentationStyle = .pageSheet
             vc.present(ql, animated: true)
             // 预览没有可靠的"看完了"回调, 拉起即 resolve (与 share 同口径)。
             self.resolve(id, [:])
@@ -831,11 +846,13 @@ extension GoxNativeHost: PHPickerViewControllerDelegate {
             return
         }
         // 逐个把 item provider 的字节落成 tmp 文件, 全部完成后一次回填数组。
+        // 结果数组按下标预分配、回调里按下标写入 —— provider 完成顺序不定,
+        // 用 append 会导致多选回填顺序与用户选择顺序不一致。
         let group = DispatchGroup()
-        var files: [[String: Any]] = []
+        var slots = [[String: Any]?](repeating: nil, count: results.count)
         var firstError = ""
         let lock = NSLock()
-        for r in results {
+        for (idx, r) in results.enumerated() {
             let provider = r.itemProvider
             let isVideo = provider.hasItemConformingToTypeIdentifier("public.movie")
             group.enter()
@@ -855,12 +872,12 @@ extension GoxNativeHost: PHPickerViewControllerDelegate {
                     try data.write(to: url)
                     let mime = isVideo ? "video/mp4" : "image/jpeg"
                     lock.lock()
-                    files.append([
+                    slots[idx] = [
                         "path": url.path, "uri": url.path, "name": url.lastPathComponent,
                         "mimeType": mime, "size": data.count,
                         "width": 0, "height": 0, "duration": -1,
                         "createdAt": Int(Date().timeIntervalSince1970 * 1000),
-                    ])
+                    ]
                     lock.unlock()
                 } catch {
                     lock.lock()
@@ -870,6 +887,7 @@ extension GoxNativeHost: PHPickerViewControllerDelegate {
             }
         }
         group.notify(queue: .main) { [self] in
+            let files = slots.compactMap { $0 }
             if !id.isEmpty {
                 if files.isEmpty {
                     fail(id, GoxNativeHost.ERR_PLATFORM, "选择器返回的内容读不出来: \(firstError)")
