@@ -46,6 +46,10 @@ ios 选项:
   --entry <js>   打进 .app 的入口脚本（缺省 src/main.js; iOS 壳只支持单文件入口,
                  可 import 内置 gx/* 模块, 不能 import 相对路径文件）
 
+macos 选项:
+  --arch <arch>  cpu 架构: arm64（缺省, Apple Silicon）/ amd64（Intel）/
+                 universal（fat 二进制, 同时支持两种 Mac）
+
 桌面打包需要 Gox 源码仓库（自动向上查找, 或设 GOX_REPO 指定）。
 `)
 			return
@@ -116,9 +120,9 @@ ios 选项:
 		}
 		buildIOS(dir, cfg, iosTarget, iosArch, iosEntry)
 	case "windows":
-		buildDesktop(dir, cfg, "windows")
+		buildDesktop(dir, cfg, "windows", "")
 	case "macos":
-		buildDesktop(dir, cfg, "darwin")
+		buildDesktop(dir, cfg, "darwin", iosArch)
 	}
 }
 
@@ -194,7 +198,15 @@ func buildIOS(dir string, cfg config.Config, target, arch, entry string) {
 }
 
 // buildDesktop: 走 jsbuild（packager）, windows 内嵌图标/版本, darwin 出 .app。
-func buildDesktop(dir string, cfg config.Config, goos string) {
+// darwin 的 arch 支持 arm64（缺省）/ amd64 / universal（lipo 合并 fat 二进制）。
+func buildDesktop(dir string, cfg config.Config, goos, arch string) {
+	if goos == "darwin" {
+		switch arch {
+		case "", "arm64", "amd64", "universal":
+		default:
+			buildFatal("--arch 仅支持 arm64|amd64|universal（macos）")
+		}
+	}
 	repo := goxRepoRoot()
 	if repo == "" {
 		buildFatal("桌面打包需要 Gox 源码仓库（jsbuild 机制依赖它）—— 设 GOX_REPO 环境变量或在仓库内运行")
@@ -216,19 +228,18 @@ func buildDesktop(dir string, cfg config.Config, goos string) {
 	if err != nil {
 		buildFatal("%v", err)
 	}
-	iconIco, err := filepath.Abs(filepath.Join(dir, "desktop", "icon.ico"))
-	if err != nil {
-		buildFatal("%v", err)
-	}
 	packagerArgs := []string{
 		"run", filepath.ToSlash(filepath.Join(repo, "packager")), entry,
 		"--gui", "--name", cfg.Title, "-o", out,
-		"--icon", iconIco,
 		"--version", cfg.Version,
 		"--appid", cfg.AppID,
 	}
 	if goos == "windows" {
-		packagerArgs = append(packagerArgs, "--target", "windows/amd64")
+		iconIco, err := filepath.Abs(filepath.Join(dir, "desktop", "icon.ico"))
+		if err != nil {
+			buildFatal("%v", err)
+		}
+		packagerArgs = append(packagerArgs, "--icon", iconIco, "--target", "windows/amd64")
 		if cfg.Desktop.IsWindowed() {
 			packagerArgs = append(packagerArgs, "--windowed")
 		}
@@ -237,8 +248,10 @@ func buildDesktop(dir string, cfg config.Config, goos string) {
 		if err != nil {
 			buildFatal("%v", err)
 		}
-		packagerArgs = append(packagerArgs, "--target", "darwin/arm64")
-		packagerArgs = append(packagerArgs, "--icon", iconIcns)
+		if arch == "" {
+			arch = "arm64"
+		}
+		packagerArgs = append(packagerArgs, "--icon", iconIcns, "--target", "darwin/"+arch)
 	}
 	// go run 必须在仓库模块内执行（packager 依赖 Gox 模块解析）;
 	// 传给 packager 的路径全部用绝对路径。

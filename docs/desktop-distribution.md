@@ -11,11 +11,13 @@
 | Windows (无控制台) | `jsbuild app.js --gui --windowed` | `app.exe` |
 | Linux | `jsbuild app.js --gui --target linux/amd64` | `app-linux-amd64` |
 | Linux arm64 | `jsbuild app.js --target linux/arm64` | `app-linux-arm64` |
-| macOS | `jsbuild app.js --target darwin/universal 尚未支持` (见下) | — |
+| macOS | `gox build macos [目录]` | `dist/<name>.app` (darwin/arm64) |
+| macOS universal | `gox build macos --arch universal [目录]` | `dist/<name>.app` (fat: amd64+arm64) |
 
 `--target` 支持的 os/arch: `windows`/`linux`/`darwin` × `amd64`/`arm64`/`386`
-(纯 Go 交叉编译, 无需目标机工具链; darwin GUI 后端尚未实现, 见
-IDLE_TASK_REPORT_P4)。
+(纯 Go 交叉编译, 无需目标机工具链; darwin 另支持 `universal`, 由 packager
+编译 amd64+arm64 两次后 `lipo` 合并)。macOS GUI 后端 (cocoa/purego) 已落地,
+日常分发直接用 `gox build macos`, 无需手写 jsbuild 命令。
 
 ## Windows
 
@@ -43,25 +45,29 @@ IDLE_TASK_REPORT_P4)。
 - 打包格式建议：`.tar.xz` 压缩包 + `sha256sum`；进发行版仓库则按各发行版
   规范 (.deb/.rpm/.AppImage 皆可套壳)。
 
-## macOS (待 GUI 后端落地)
+## macOS
 
-- .app bundle 结构：
+GUI 后端为 cocoa (purego, 无 cgo), 已支持 IME / 原生对话框 / 多屏枚举。
+
+- 构建: `gox build macos [目录]`（缺省 darwin/arm64; `--arch amd64` 出 Intel
+  版, `--arch universal` 出 amd64+arm64 fat 版）, 产物为 .app bundle:
 
   ```
-  Counter.app/
+  <name>.app/
     Contents/
-      MacOS/counter          (Mach-O 可执行)
+      MacOS/<name>           (Mach-O 可执行)
       Info.plist             (CFBundleName/Identifier/Version/MinimumSystemVersion)
       Resources/icon.icns
   ```
 
 - 签名与公证 (Gatekeeper 要求)：
-  1. Apple Developer 账号; `codesign --deep --options runtime --sign "Developer ID Application: ..." Counter.app`
-  2. `xcrun notarytool submit Counter.app.zip --apple-id ... --wait`
-  3. `xcrun stapler staple Counter.app`
+  1. Apple Developer 账号; `codesign --deep --options runtime --sign "Developer ID Application: ..." <name>.app`
+  2. `xcrun notarytool submit <name>.app.zip --apple-id ... --wait`
+  3. `xcrun stapler staple <name>.app`
   - 未签名/未公证：用户需右键打开或 `xattr -d com.apple.quarantine`。
-- 通用二进制：`lipo` 合并 amd64/arm64 产物 (jsbuild 的 `--target` 一次
-  只出一个 arch, 各打一次再合并)。
+- 手动通用二进制 (不经 gox build): jsbuild 的 `--target` 一次只出一个 arch,
+  可 `--target darwin/amd64` 与 `--target darwin/arm64` 各打一次, 再
+  `lipo -create -output <fat> <amd64> <arm64>` 合并。
 
 ## 校验和与更新
 

@@ -271,7 +271,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "      --name <name>    应用名 (用于错误信息显示, 默认取输入文件名)\n")
 		fmt.Fprintf(os.Stderr, "      --windowed       窗口模式: 不显示控制台窗口 (仅 Windows)\n")
 		fmt.Fprintf(os.Stderr, "      --gui            GUI 应用: 窗口消息泵事件循环 (配合 gx/gfx render)\n")
-		fmt.Fprintf(os.Stderr, "      --target <os>/<arch>  交叉编译目标 (windows|linux|darwin / amd64|arm64|386),\n")
+		fmt.Fprintf(os.Stderr, "      --target <os>/<arch>  交叉编译目标 (windows|linux|darwin / amd64|arm64|386,\n")
+		fmt.Fprintf(os.Stderr, "                          darwin 另支持 universal 出 fat 二进制),\n")
 		fmt.Fprintf(os.Stderr, "                          如 linux/amd64; 非 Windows 目标默认输出不带 .exe\n")
 		fmt.Fprintf(os.Stderr, "      --icon <path>     应用图标: .png（1024 源图, 自动生成 .ico/.icns）或\n")
 		fmt.Fprintf(os.Stderr, "                          现成的 .ico/.icns。Windows 内嵌图标+版本资源 (.syso),\n")
@@ -337,9 +338,9 @@ func main() {
 			}
 			if targetArch != "" {
 				switch targetArch {
-				case "amd64", "arm64", "386":
+				case "amd64", "arm64", "386", "universal":
 				default:
-					fatal("--target: unsupported arch %q (amd64|arm64|386)", targetArch)
+					fatal("--target: unsupported arch %q (amd64|arm64|386, darwin 另支持 universal)", targetArch)
 				}
 			}
 		case a == "--verbose" || a == "-v":
@@ -512,22 +513,52 @@ func main() {
 		fatal("go mod tidy failed: %v", err)
 	}
 
-	// 调用 go build (-trimpath 去除本机路径; -H windowsgui 仅对 Windows 目标)
-	ldflags := "-s -w"
-	if windowed && (targetOS == "" || targetOS == "windows") {
-		ldflags += " -H windowsgui"
+	// 调用 go build (-trimpath 去除本机路径; -H windowsgui 仅对 Windows 目标)。
+	// buildOnce 把单次编译抽出来, 供 universal 模式跑两个架构。
+	buildOnce := func(goarch, outPath string) {
+		env := buildEnv
+		if goarch != "" {
+			env = append(append([]string{}, buildEnv...), "GOARCH="+goarch)
+		}
+		ldflags := "-s -w"
+		if windowed && (targetOS == "" || targetOS == "windows") {
+			ldflags += " -H windowsgui"
+		}
+		buildArgs := []string{"build", "-trimpath", "-ldflags", ldflags, "-o", outPath, "."}
+		if verbose {
+			fmt.Printf("go %s\n", strings.Join(buildArgs, " "))
+		}
+		cmd := exec.Command("go", buildArgs...)
+		cmd.Dir = tmp
+		cmd.Env = env
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			fatal("go build failed: %v", err)
+		}
 	}
-	buildArgs := []string{"build", "-trimpath", "-ldflags", ldflags, "-o", outputAbs, "."}
-	if verbose {
-		fmt.Printf("go %s\n", strings.Join(buildArgs, " "))
-	}
-	cmd := exec.Command("go", buildArgs...)
-	cmd.Dir = tmp
-	cmd.Env = buildEnv
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		fatal("go build failed: %v", err)
+
+	if targetArch == "universal" {
+		// universal: 两个架构各编译一次, lipo 合并成单一 fat 二进制
+		// (GUI 走 purego 无 cgo, Go 原生交叉编译即可, 无需目标机工具链)
+		if targetOS != "darwin" {
+			fatal("--target: universal 目前仅支持 darwin")
+		}
+		binAmd64 := filepath.Join(tmp, "jsbuild_amd64")
+		binArm64 := filepath.Join(tmp, "jsbuild_arm64")
+		buildOnce("amd64", binAmd64)
+		buildOnce("arm64", binArm64)
+		lipo := exec.Command("lipo", "-create", "-output", outputAbs, binAmd64, binArm64)
+		lipo.Stdout = os.Stdout
+		lipo.Stderr = os.Stderr
+		if err := lipo.Run(); err != nil {
+			fatal("lipo merge failed: %v", err)
+		}
+		if verbose {
+			fmt.Printf("lipo: %s (amd64 + arm64)\n", outputAbs)
+		}
+	} else {
+		buildOnce(targetArch, outputAbs)
 	}
 
 	// darwin: 组装 .app bundle（二进制搬进 Contents/MacOS, 附 Info.plist + .icns）
