@@ -2,5 +2,8 @@
 <project version="4">
   <component name="VcsDirectoryMappings">
     <mapping directory="" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/gox-logo-concepts" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/npm" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/website" vcs="Git" />
   </component>
 </project>
