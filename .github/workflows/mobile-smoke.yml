@@ -116,6 +116,11 @@ jobs:
 
       # 冒烟走完整用户链路：gox create 铺工程 → gox build ios --simulator
       # （sync 权限注入 + 图标生成 + libgox.a + xcodebuild 壳工程全跑一遍）
+      # 注意两个 2026-09-27 本机实测踩过的点：
+      #   1. --entry 相对的是**工程目录**（smoke/），不是工作目录 —— entry 必须
+      #      写进 smoke/ 里，否则 gox build 直接报"入口脚本不存在"；
+      #   2. 产物 .app 是壳工程 Gox.app 改名而来，bundle 内可执行文件仍叫
+      #      Gox（CFBundleExecutable），断言可执行性要用 plutil 读真名。
       - name: gox create 冒烟工程 + gox build ios --simulator
         env:
           GOX_REPO: ${{ github.workspace }}
@@ -126,7 +131,7 @@ jobs:
           cd "$RUNNER_TEMP/smoke-work"
           "$RUNNER_TEMP/gox" create smoke --name gox-smoke
 
-          cat > smoke-entry.js <<'EOF'
+          cat > smoke/smoke-entry.js <<'EOF'
           // CI 冒烟入口：自包含单文件（只 import 内置模块）。
           // 组件用 text（内置清单里没有 label）—— 用法对齐 app/android 验收脚本。
           import { h, render } from "gx/gfx";
@@ -143,9 +148,10 @@ jobs:
           "$RUNNER_TEMP/gox" build ios smoke --simulator --entry smoke-entry.js
           APP=$(ls -d smoke/dist/*.app)
           echo "==> 产物: $APP"
-          test -x "$APP/$(basename "$APP" .app)"
+          EXE=$(plutil -extract CFBundleExecutable raw "$APP/Info.plist")
+          test -x "$APP/$EXE"
           # 入口脚本必须真的进了 bundle（壳从 bundle 根读 app.js）
-          cmp -s "$APP/app.js" smoke-entry.js
+          cmp -s "$APP/app.js" smoke/smoke-entry.js
           zip -qry gox-smoke-ios-sim.zip "$APP"
 
       - name: 归档 .app（zip）

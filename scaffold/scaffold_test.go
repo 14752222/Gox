@@ -37,6 +37,7 @@ var wantFiles = []string{
 	"android/res/mipmap-xxxhdpi/ic_launcher_foreground.png",
 	"android/res/values/colors.xml",
 	"android/res/values/strings.xml",
+	"android/settings.gradle.kts",
 	"assets/icon.png",
 	"certs/README.md",
 	"desktop/Info.plist",
