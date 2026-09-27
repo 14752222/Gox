@@ -114,6 +114,16 @@ jobs:
           go-version-file: go.mod
           check-latest: true
 
+      # 壳工程 Gox.xcodeproj 是 XcodeGen 生成物（app/ios/.gitignore 刻意忽略
+      # *.xcodeproj，生成源是 project.yml）—— 本机有、CI checkout 没有，
+      # 不生成的话 build-ios.sh 会报"找不到壳工程"。sources 不依赖 libs/ 产物，
+      # checkout 后即可生成（README 流程：cd app/ios && xcodegen generate）。
+      - name: XcodeGen 生成壳工程
+        run: |
+          set -euo pipefail
+          brew install xcodegen
+          cd app/ios && xcodegen generate
+
       # 冒烟走完整用户链路：gox create 铺工程 → gox build ios --simulator
       # （sync 权限注入 + 图标生成 + libgox.a + xcodebuild 壳工程全跑一遍）
       # 注意两个 2026-09-27 本机实测踩过的点：
