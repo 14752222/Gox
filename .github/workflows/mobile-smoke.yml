@@ -1,0 +1,156 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# 移动端构建冒烟：Android 打包（libgox.so + gradle assembleDebug）+ iOS 模拟器编译
+#
+# 为什么需要这个文件（T22）：桌面三平台已有 ci.yml 闸门，但移动端构建完全依赖
+# 本地手工（Windows/macOS 各一套工具链），跨平台编译回归（NDK/Xcode 升级、
+# cgo 标志变化、壳工程配置漂移）只能等真机验收时才发现 —— 发现即返工。
+#
+# 设计取舍（三条，都有理由）：
+#   1. Android/iOS 拆成两个独立 job —— 验收标准要求「1 分钟内定位哪一端失败」，
+#      共用一个 job 的话两端日志混在一起，Annotations 也只报一次。
+#   2. Android 走仓库壳工程 app/android（settings/AGP 8.6.1/Kotlin 1.9.24 是
+#      2026-09 实测过的组合），而不是 gox create 脚手架 —— 脚手架模板的 android/
+#      目前没有 settings.gradle.kts 且 build.gradle.kts 未声明 AGP 版本，
+#      裸 gradle 起不来；壳工程是「打包冒烟」要保真的那条链路。
+#   3. iOS 只编模拟器目标（--simulator 缺省路径，免签名）—— CI runner 没有
+#      签名证书，真机签名链路留给本地与 TestFlight（见 T24 回归矩阵）。
+#
+# iOS 冒烟为什么不用脚手架入口 src/main.js：脚手架入口 import 了 ./app.js，
+# 而 iOS 壳是 EvalVM 单文件执行（无 module base，见 build-ios.sh 尾段校验），
+# 相对 import 会直接报错退出。冒烟用一个自包含 entry，走 --entry 注入。
+#
+# 与其它工作流的关系：与 ci.yml 互不触发、互不阻塞；只读，无 secret。
+# 产物：每次主分支提交可下载 app-debug.apk 与 Gox-smoke.app（zip）。
+# ─────────────────────────────────────────────────────────────────────────────
+name: mobile-smoke
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mobile-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android:
+    name: Android 打包冒烟（libgox.so + APK）
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      # website/ · npm/ · gox-logo-concepts/ 是独立仓库的子模块，与 ci.yml 同理，
+      # 不显式拉取就是空目录。
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      # AGP 8.6 要求 JDK 17（app/android/build.gradle.kts 头部注释里的实测组合）
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      # 固定 Gradle 8.9：与 AGP 8.6.1 / compileSdk 35 的组合在本地真机验收时验证过
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: 交叉编译 libgox.so (arm64-v8a)
+        run: |
+          set -euo pipefail
+          # runner 预装了 NDK 但 ANDROID_NDK_HOME 不一定指向具体版本目录，
+          # 选 $ANDROID_HOME/ndk/ 下最新的一个（目录名即版本号）。
+          if [ -z "${ANDROID_NDK_HOME:-}" ]; then
+            export ANDROID_NDK_HOME="$(ls -d "${ANDROID_HOME:-/usr/local/lib/android/sdk}"/ndk/* 2>/dev/null | sort -V | tail -1)"
+          fi
+          if [ -z "${ANDROID_NDK_HOME:-}" ] || [ ! -d "$ANDROID_NDK_HOME" ]; then
+            echo "::error::找不到 Android NDK（ANDROID_HOME=$ANDROID_HOME）—— runner 镜像变了？"
+            exit 1
+          fi
+          echo "==> NDK: $ANDROID_NDK_HOME"
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME" >> "$GITHUB_ENV"
+          bash scripts/build-android.sh
+          test -f dist/android/arm64-v8a/libgox.so
+
+      # build-android.sh 只产 libgox.so，装进 APK 由壳工程 gradle 负责（见 app/android/README.md）
+      - name: 拷贝 libgox.so 进壳工程 jniLibs
+        run: |
+          set -euo pipefail
+          mkdir -p app/android/app/src/main/jniLibs/arm64-v8a
+          cp dist/android/arm64-v8a/libgox.so app/android/app/src/main/jniLibs/arm64-v8a/
+          ls -la app/android/app/src/main/jniLibs/arm64-v8a/
+
+      - name: gradle assembleDebug 出 APK
+        working-directory: app/android
+        run: gradle assembleDebug --no-daemon
+
+      - name: 归档 APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: gox-android-debug-apk
+          path: app/android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
+
+  ios:
+    name: iOS 模拟器编译冒烟
+    runs-on: macos-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      # 冒烟走完整用户链路：gox create 铺工程 → gox build ios --simulator
+      # （sync 权限注入 + 图标生成 + libgox.a + xcodebuild 壳工程全跑一遍）
+      - name: gox create 冒烟工程 + gox build ios --simulator
+        env:
+          GOX_REPO: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          go build -o "$RUNNER_TEMP/gox" .
+          mkdir -p "$RUNNER_TEMP/smoke-work"
+          cd "$RUNNER_TEMP/smoke-work"
+          "$RUNNER_TEMP/gox" create smoke --name gox-smoke
+
+          cat > smoke-entry.js <<'EOF'
+          // CI 冒烟入口：自包含单文件（只 import 内置模块）。
+          // 组件用 text（内置清单里没有 label）—— 用法对齐 app/android 验收脚本。
+          import { h, render } from "gx/gfx";
+          render(
+            <window title="gox-smoke">
+              <column padding={20}>
+                <text font={16}>gox mobile smoke</text>
+                <button>ok</button>
+              </column>
+            </window>
+          );
+          EOF
+
+          "$RUNNER_TEMP/gox" build ios smoke --simulator --entry smoke-entry.js
+          APP=$(ls -d smoke/dist/*.app)
+          echo "==> 产物: $APP"
+          test -x "$APP/$(basename "$APP" .app)"
+          # 入口脚本必须真的进了 bundle（壳从 bundle 根读 app.js）
+          cmp -s "$APP/app.js" smoke-entry.js
+          zip -qry gox-smoke-ios-sim.zip "$APP"
+
+      - name: 归档 .app（zip）
+        uses: actions/upload-artifact@v4
+        with:
+          name: gox-ios-simulator-app
+          path: ${{ runner.temp }}/smoke-work/gox-smoke-ios-sim.zip
+          if-no-files-found: error
