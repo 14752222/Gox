@@ -126,10 +126,10 @@ jobs:
           GOX_REPO: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          go build -o "$RUNNER_TEMP/gox" .
+          go build -o "$RUNNER_TEMP/gox" . || { echo "::error::go build gox 失败"; exit 1; }
           mkdir -p "$RUNNER_TEMP/smoke-work"
           cd "$RUNNER_TEMP/smoke-work"
-          "$RUNNER_TEMP/gox" create smoke --name gox-smoke
+          "$RUNNER_TEMP/gox" create smoke --name gox-smoke || { echo "::error::gox create 失败"; exit 1; }
 
           cat > smoke/smoke-entry.js <<'EOF'
           // CI 冒烟入口：自包含单文件（只 import 内置模块）。
@@ -145,13 +145,19 @@ jobs:
           );
           EOF
 
-          "$RUNNER_TEMP/gox" build ios smoke --simulator --entry smoke-entry.js
+          # 失败时把末尾输出打成 ::error:: 注解 —— 摘要页可直接看到原因，
+          # 不依赖有日志下载权限（runner Xcode 版本与本机不同，失败点要拿实证）
+          if ! "$RUNNER_TEMP/gox" build ios smoke --simulator --entry smoke-entry.js 2>&1 | tee ios-build.log; then
+            echo "::error::gox build ios 失败，末尾 15 行输出如下（完整日志在步骤日志里）"
+            tail -15 ios-build.log | while IFS= read -r l; do echo "::error::${l:0:500}"; done
+            exit 1
+          fi
           APP=$(ls -d smoke/dist/*.app)
           echo "==> 产物: $APP"
           EXE=$(plutil -extract CFBundleExecutable raw "$APP/Info.plist")
-          test -x "$APP/$EXE"
+          test -x "$APP/$EXE" || { echo "::error::bundle 内找不到可执行文件 $EXE"; exit 1; }
           # 入口脚本必须真的进了 bundle（壳从 bundle 根读 app.js）
-          cmp -s "$APP/app.js" smoke/smoke-entry.js
+          cmp -s "$APP/app.js" smoke/smoke-entry.js || { echo "::error::bundle app.js 与冒烟入口不一致"; exit 1; }
           zip -qry gox-smoke-ios-sim.zip "$APP"
 
       - name: 归档 .app（zip）
