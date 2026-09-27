@@ -1,0 +1,58 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# good-first-issue 播种器：把 .github/ISSUE_DRAFTS/ 下的草案一次性建成 issue。
+#
+# 为什么需要它：issue 模板已上线（T21），但「首批 3 个带 good first issue 标签的
+# 任务」（DoD 要求 ≥3 个）没法在本地建 —— 本机的 GitHub 连接器 token 只有读权限
+# （写 issue 报 403 Resource not accessible by integration），SSH 凭据只能 push。
+# 而 GITHUB_TOKEN 在 Actions 里天然带 issues:write（仓库自己的 token 对自己仓库）。
+#
+# 幂等：按标题精确匹配已有 issue，存在即跳过 —— 重跑、误触发都不会重复建。
+# 一次性：建完这批就把本文件删掉（或者留着也不炸，它只在 push 到 main 时跑一次
+# 判重循环，全部命中时几秒退出）。
+#
+# 草案文件约定：.github/ISSUE_DRAFTS/*.md，文件名即 issue 标题，正文里首行若以
+# `labels: ` 开头则解析为标签列表（JSON 数组格式），其余为 issue 正文。
+# ─────────────────────────────────────────────────────────────────────────────
+name: seed-issues
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+concurrency:
+  group: seed-issues
+  cancel-in-progress: false
+
+jobs:
+  seed:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 从草案创建缺失的 issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          for f in .github/ISSUE_DRAFTS/*.md; do
+            [ -f "$f" ] || { echo "没有草案，跳过"; exit 0; }
+            title=$(basename "$f" .md)
+            # 幂等判重：按标题找已开 issue（-x 全字匹配）
+            if gh issue list -R "$GITHUB_REPOSITORY" --state open --search "in:title $title" --json title -q '.[].title' | grep -Fxq "$title"; then
+              echo "[skip] 已存在：$title"
+              continue
+            fi
+            # 首行 labels: [...] 解析为 --label 参数（其余行是正文）
+            head -1 "$f" | grep -q '^labels: ' || { echo "::error::$f 首行不是 labels: 声明"; exit 1; }
+            labels_json=$(head -1 "$f" | sed 's/^labels: //')
+            labels=$(printf '%s' "$labels_json" | jq -r '.[] | "--label " + @sh' | tr -d "'")
+            body=$(tail -n +2 "$f")
+            # shellcheck disable=SC2086
+            gh issue create -R "$GITHUB_REPOSITORY" --title "$title" $labels --body "$body"
+            echo "[created] $title"
+          done
