@@ -3,7 +3,7 @@
 #
 # 为什么需要这个文件：Gox 有几处**必须手工同步**的注册表，漏改一律不报错 ——
 #   内置组件漏登记某个站点 → 渲染成空盒子；gx/* 模块漏进 submodules → 聚合入口
-#   少一半导出；main.go 与 npm/package.json 版本号脱钩 → `gox version` 撒谎。
+#   少一半导出；cmd/gox/main.go 与 npm/package.json 版本号脱钩 → `gox version` 撒谎。
 #   release.yml 只管发版（且在发布时才发现版本号对不上），pages.yml 只管官网，
 #   都不管这些。本工作流把它们一次性拦在推送阶段。
 #
@@ -88,5 +88,5 @@ jobs:
 
       - name: 冒烟：命令行能起来并报版本号
         run: |
-          go build -o dist/ci-gox.exe .
+          go build -o dist/ci-gox.exe ./cmd/gox
           ./dist/ci-gox.exe version

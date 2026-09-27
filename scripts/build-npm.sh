@@ -36,7 +36,7 @@ for t in $targets; do
   if [ "$os" = "windows" ]; then ext=".exe"; fi
   echo "==> GOOS=$os GOARCH=$goarch"
   GOOS=$os GOARCH=$goarch CGO_ENABLED=0 \
-    go build -trimpath -ldflags '-s -w' -o "$OUT/$os-$arch/gox$ext" .
+    go build -trimpath -ldflags '-s -w' -o "$OUT/$os-$arch/gox$ext" ./cmd/gox
 done
 
 # Unix 二进制需要可执行位（Windows 上打包不保留权限位，所以只在类 Unix 上 chmod）。

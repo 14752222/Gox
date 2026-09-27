@@ -26,9 +26,9 @@
 |---|---|---|
 | npm 安装 | `npm i -g @goxjs/goxjs` | `goxjs` 命令 (各平台预编译二进制) |
 | 不安装 | `npx @goxjs/goxjs app.js` | 临时运行 |
-| 源码构建 | `git clone https://github.com/14752222/Gox.git && cd Gox && go build` | 仓库根的 `Gox` / `Gox.exe` |
+| 源码构建 | `git clone https://github.com/14752222/Gox.git && cd Gox && go build ./cmd/gox` | 仓库根的 `gox` / `gox.exe` |
 
-下文统一写 `gox`, 等价于 npm 包的 `goxjs` 与源码构建出的 `./Gox`(Windows `Gox.exe`)。
+下文统一写 `gox`, 等价于 npm 包的 `goxjs` 与源码构建出的 `./gox`(Windows `gox.exe`)。
 
 ```bash
 gox                    # 交互式 REPL (:help / :clear / :exit)
@@ -178,7 +178,7 @@ gox testdata/tutorial_api.js
 == 1.1 全局对象: 不用 import, 直接可用 ==
 process.platform = windows
 process.cwd()    = F:\desktop\go
-process.argv     = ["F:\desktop\go\Gox.exe", "testdata/tutorial_api.js"]
+process.argv     = ["F:\desktop\go\gox.exe", "testdata/tutorial_api.js"]
 path.sep         = \
 
 == 1.2 同步 API: 返回值 / 异常 ==

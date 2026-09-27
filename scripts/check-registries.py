@@ -26,7 +26,7 @@
    不同子模块不得导出同名 API（`merged[k] = v` 是 last-wins，会静默吞掉前一个）。
    注：模块名走 `gx/` 前缀已被 `vm.loadModule` 的保留命名空间拦下，无需额外登记。
 
-3. **版本号一致**。`main.go` 的 `const version` 必须等于 `npm/package.json` 的
+3. **版本号一致**。`cmd/gox/main.go` 的 `const version` 必须等于 `npm/package.json` 的
    `version`（官网那四个页面里的版本号由 `scripts/check-site.py` 负责）。
 
 4. **npm 包清单自洽**。`package.json` 的 `bin` 指向真实存在的文件，`files`
@@ -324,10 +324,10 @@ def extract_umbrella_submodules():
 
 
 def extract_version():
-    src = strip_comments(read("main.go"))
+    src = strip_comments(read(os.path.join("cmd", "gox", "main.go")))
     m = re.search(r'const version\s*=\s*"([^"]+)"', src)
     if not m:
-        raise Fail('main.go 里找不到 `const version = "…"`')
+        raise Fail('cmd/gox/main.go 里找不到 `const version = "…"`')
     return m.group(1)
 
 
@@ -466,7 +466,7 @@ def check_version():
     go_ver = extract_version()
     pkg_ver = str(load_pkg().get("version", ""))
     if go_ver != pkg_ver:
-        raise Fail("版本号不一致：main.go 的 const version = %r，"
+        raise Fail("版本号不一致：cmd/gox/main.go 的 const version = %r，"
                    "npm/package.json 的 version = %r。"
                    "`gox version` 报的与实际发出去的包不是同一个版本号"
                    % (go_ver, pkg_ver))
@@ -515,7 +515,7 @@ def main():
     checks = [
         ("内置 GUI 组件四处同步", check_components),
         ("内置模块三处同步", check_modules),
-        ("版本号一致 (main.go ↔ npm/package.json)", check_version),
+        ("版本号一致 (cmd/gox/main.go ↔ npm/package.json)", check_version),
         ("npm 包清单自洽", check_npm_manifest),
     ]
 

@@ -11,11 +11,11 @@
 |------|------|
 | 源码目录 | `F:\desktop\go` |
 | Go 运行时 | 1.13+ |
-| 执行入口 | `./Gox.exe <script.js>` |
+| 执行入口 | `./gox.exe <script.js>` |
 
 **运行示例：**
 ```bash
-./Gox.exe testdata/tut/demo.js
+./gox.exe testdata/tut/demo.js
 ```
 
 **测试：**
@@ -242,11 +242,11 @@ m.SetProperty("hypot", object.NewBuiltin("hypot", func(args ...object.Value) obj
 **验证：**
 
 ```bash
-$ ./Gox.exe -e 'console.log(Math.hypot(3, 4))'
+$ ./gox.exe -e 'console.log(Math.hypot(3, 4))'
 5
-$ ./Gox.exe -e 'console.log(Math.hypot("6", 8))'
+$ ./gox.exe -e 'console.log(Math.hypot("6", 8))'
 10
-$ ./Gox.exe -e 'console.log(Math.hypot(1, NaN))'
+$ ./gox.exe -e 'console.log(Math.hypot(1, NaN))'
 NaN
 ```
 

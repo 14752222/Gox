@@ -57,7 +57,7 @@ render(
 ```
 
 ```bash
-./Gox counter.js          # 直接运行，弹出 400x300 窗口
+./gox counter.js          # 直接运行，弹出 400x300 窗口
 ```
 
 - 点击按钮 → `setCount` 更新信号 → 依赖该信号的属性 / 文本节点自动标脏 → 脏矩形合并后只重绘受影响区域。
@@ -743,7 +743,7 @@ import { devSnapshot } from "gx/dev";
 
 ## 11. 示例索引
 
-`testdata/` 下的 GUI 示例均可直接用 `./Gox <file>` 运行：
+`testdata/` 下的 GUI 示例均可直接用 `./gox <file>` 运行：
 
 **布局与绘制**
 

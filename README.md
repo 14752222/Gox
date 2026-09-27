@@ -101,8 +101,10 @@ flex 布局 + JSX + 信号驱动更新，win32 / X11 / cocoa 窗口后端）、�
 ```bash
 git clone --recurse-submodules https://github.com/14752222/Gox.git
 cd Gox
-go build          # 生成可执行文件；Windows 下为 Gox.exe
+go build ./cmd/gox   # 生成可执行文件；Windows 下为 gox.exe
 ```
+
+> 也可以 `go install github.com/14752222/Gox/cmd/gox@latest` 直接装进 GOBIN（需先发布过 tag）。
 
 ### 通过 npm 安装
 
@@ -114,7 +116,7 @@ npx goxjs app.js         # 或不安装，直接运行
 ### 交互式 REPL
 
 ```bash
-./Gox
+./gox                # Unix；Windows 下为 gox.exe
 ```
 
 ```
@@ -134,7 +136,7 @@ REPL 命令：`:help` 查看帮助、`:clear` 重置环境、`:exit` 退出。
 ### 运行脚本
 
 ```bash
-./Gox example.js    # npm 安装的 goxjs 命令用法相同
+./gox example.js    # npm 安装的 goxjs 命令用法相同
 ```
 
 脚本执行完毕后会回显最后一个顶层表达式的值（`undefined` 除外），并等待定时器与异步回调
@@ -320,7 +322,7 @@ render(
 ```
 
 ```bash
-./Gox counter.js          # 直接运行，弹出 400x300 窗口
+./gox counter.js          # 直接运行，弹出 400x300 窗口
 ```
 
 点击按钮 → 信号更新 → 依赖它的属性/文本节点标脏 → 脏矩形合并后只重绘受影响区域。`render()`

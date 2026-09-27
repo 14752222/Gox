@@ -136,7 +136,7 @@ jobs:
           GOX_REPO: ${{ github.workspace }}
         run: |
           set -euo pipefail
-          go build -o "$RUNNER_TEMP/gox" . || { echo "::error::go build gox 失败"; exit 1; }
+          go build -o "$RUNNER_TEMP/gox" ./cmd/gox || { echo "::error::go build gox 失败"; exit 1; }
           mkdir -p "$RUNNER_TEMP/smoke-work"
           cd "$RUNNER_TEMP/smoke-work"
           "$RUNNER_TEMP/gox" create smoke --name gox-smoke || { echo "::error::gox create 失败"; exit 1; }
