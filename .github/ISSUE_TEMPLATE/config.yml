@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 提问与使用讨论
+    url: https://github.com/14752222/Gox/discussions
+    about: 怎么用 gx/* 模块、GUI 写法、选型问题，请发到 Discussions（Issue 区只收缺陷与功能请求）。

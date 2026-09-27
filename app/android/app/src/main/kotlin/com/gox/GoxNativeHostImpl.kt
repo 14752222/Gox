@@ -73,6 +73,10 @@ class GoxNativeHostImpl(private val activity: Activity) : GoxNativeHost {
         /** 一次定位的宿主侧兜底超时 (内核只在脚本传了 timeout 时才设定时器)。 */
         const val LOC_TIMEOUT_MS = 30_000L
 
+        /** 错误信封构造: 委托给接口契约的 [GoxNativeHost.err] (companion 成员
+         *  不进实现类作用域, 裸调 err(...) 编不过 —— 2026-09-27 修)。 */
+        fun err(code: String, msg: String): String = GoxNativeHost.err(code, msg)
+
         val PERMISSION_KINDS = listOf(
             "location", "camera", "gallery", "microphone",
             "notification", "contacts", "calendar", "bluetooth", "storage",
@@ -482,7 +486,11 @@ class GoxNativeHostImpl(private val activity: Activity) : GoxNativeHost {
             }
         }
         if (needRequest.isEmpty()) {
-            resolveString(id, JSONObject(states).toString())
+            // org.json 的 JSONObject(Map) 是 Java 原生类型, Kotlin 的 LinkedHashMap 不被
+            // 平台类型收窄自动接受 (2026-09-27 编译修复), 逐项 put 最直白。
+            val statesJson = JSONObject()
+            for ((k, v) in states) statesJson.put(k, v)
+            resolveString(id, statesJson.toString())
             return GoxNativeHost.PENDING
         }
 
@@ -672,7 +680,7 @@ class GoxNativeHostImpl(private val activity: Activity) : GoxNativeHost {
                     fail(id, GoxNativeHost.ERR_PLATFORM, "选择器没有返回内容")
                     return
                 }
-                resolve(id, list.toString())
+                resolveString(id, list.toString())
             }
         }
     }

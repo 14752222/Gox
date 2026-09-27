@@ -531,14 +531,19 @@ git add npm && git commit -m "chore(release): 0.2.1" && git push origin main
 
 ## 贡献指南
 
-欢迎提交 Issue 与 Pull Request。
+欢迎提交 Issue 与 Pull Request —— 完整的参与方式、本地闸门、与本仓库特有的
+「改一处、同步多处」纪律，见 **[CONTRIBUTING.md](CONTRIBUTING.md)**；
+行为准则见 [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md)。首次贡献可从带
+`good first issue` 标签的 issue 入手。
 
 **开发环境**：Go 1.26.2+，零 cgo（无需 C 工具链）。提交前请确保：
 
 ```bash
 gofmt -l .             # 应无输出
 go build ./...
+go vet ./...
 go test ./...
+python3 scripts/check-registries.py   # 注册表一致性（CI 同款闸门）
 ```
 
 **提交规范**：沿用仓库现有的 Conventional Commits 风格，scope 用受影响的模块或主题，
