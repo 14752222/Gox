@@ -35,6 +35,10 @@ type Parser struct {
 	// h(...) 调用)。ParseProgram 把它交到 ast.Program.UsesJSX 上，由 compiler
 	// 决定要不要补 `import { h } from "gx/gfx"` —— 见 parser/jsx.go 的约定说明。
 	usedJSXFactory bool
+
+	// stmtPos 在 parseStatement 单点收集语句起始位置 (T05 运行时错误
+	// 源码帧)。ParseProgram 把它交到 ast.Program.Positions。
+	stmtPos ast.PositionTable
 }
 
 // maxNestingDepth 是语法嵌套深度上限。
@@ -282,12 +286,32 @@ func (p *Parser) ParseProgram() *ast.Program {
 	}
 	// 用了小写标签的 JSX 就要有 h: 带上标记, 交给 compiler 补缺省工厂导入
 	program.UsesJSX = p.usedJSXFactory
+	program.Positions = p.stmtPos
 	return program
+}
+
+// parseStatement 包装语句解析入口: 记录语句首 token 的行列位置到
+// side-table (T05 运行时错误源码帧的位置来源)。真正的分发在
+// parseStatementBody —— 嵌套块内的语句同样经过这里, 因此全程序
+// 每条语句都有位置。
+func (p *Parser) parseStatement() ast.Statement {
+	startLine, startCol := p.curToken().Line, p.curToken().Column
+	stmt := p.parseStatementBody()
+	if stmt != nil {
+		if p.stmtPos == nil {
+			p.stmtPos = ast.PositionTable{}
+		}
+		if _, dup := p.stmtPos[stmt]; !dup {
+			p.stmtPos[stmt] = ast.Pos{Line: startLine, Col: startCol}
+		}
+	}
+	return stmt
 }
 
 // ==================== 语句解析 ====================
 
-func (p *Parser) parseStatement() ast.Statement {
+// parseStatementBody 是语句解析分发主体 (原 parseStatement 的 switch)。
+func (p *Parser) parseStatementBody() ast.Statement {
 	switch p.curToken().Type {
 	case lexer.LET:
 		return p.parseLetStatement()

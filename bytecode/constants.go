@@ -2,6 +2,7 @@ package bytecode
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/14752222/Gox/object"
@@ -97,6 +98,24 @@ type FunctionMetadata struct {
 	BaseSlot      int             // 函数自身变量的起始槽位 (外层作用域的变量数)
 	ArgumentsSlot int             // arguments 对象槽位 (-1 表示未使用/箭头函数)
 	SelfSlot      int             // 命名函数表达式的自引用槽位 (-1 表示无)
+	// Positions 是函数体语句的源码位置表 (offset 升序, 可为 nil)。
+	// 运行时错误渲染源码帧用 (T05)。
+	Positions []SrcPos
+}
+
+// SrcPos 是语句的源码位置。Offset 是语句首条指令在**所属编译单元**
+// (主脚本或函数体) 指令流里的位置 —— 不同编译单元的 offset 空间独立。
+// (与 object.SrcPos 结构相同但独立定义: bytecode 不能反向依赖 object
+// 之外的包方向约束, 由 vm 层做两套结构的转换。)
+type SrcPos struct {
+	Offset int
+	Line   int
+	Col    int
+}
+
+// SortSrcPos 按 Offset 升序排序 (编译器从 map 转换时调用)。
+func SortSrcPos(s []SrcPos) {
+	sort.Slice(s, func(i, j int) bool { return s[i].Offset < s[j].Offset })
 }
 
 // ParameterSpec 描述函数参数规格。

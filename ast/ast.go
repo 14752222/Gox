@@ -9,6 +9,18 @@ type Node interface {
 	String() string
 }
 
+// Pos 是源码位置 (1 起始的行列)。
+type Pos struct {
+	Line int
+	Col  int
+}
+
+// PositionTable 记录语句节点 → 源码位置。
+// 由 parser 在 parseStatement 单点收集, 编译器据此建立
+// "字节码 offset → 源码位置" 映射, 供运行时错误渲染源码帧 (T05)。
+// 用指针 side-table 而非给几十个节点类型加字段, 保持 AST 定义瘦。
+type PositionTable map[Statement]Pos
+
 // Statement 是所有语句节点的接口。
 // 语句产生副作用，不直接产生值。
 type Statement interface {
@@ -28,6 +40,10 @@ type Expression interface {
 // Program 是 AST 的根节点，包含一个语句列表。
 type Program struct {
 	Statements []Statement
+
+	// Positions 记录每条语句的源码位置 (parseStatement 单点收集)。
+	// 运行时错误渲染源码帧用 (T05); 无位置信息的节点不在表内。
+	Positions PositionTable `json:"-"`
 
 	// UsesJSX 报告本程序里是否有**小写标签**的 JSX (如 <view> / <column>)。
 	//

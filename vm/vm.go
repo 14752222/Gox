@@ -146,6 +146,17 @@ type VM struct {
 	// 不用操作数栈保存段的原因是模板可能作为二元运算的操作数出现——
 	// 栈上模板段之外还有外层操作数，无法区分边界。
 	tplParts [][]object.Value
+
+	// ── 运行时错误源码帧 (T05) ──
+	// srcFile/srcText 是当前执行的脚本文件与文本 (EvalFileVM 注入)。
+	// mainPositions 是主脚本"语句首条指令 offset → 源码位置"的升序表;
+	// 函数体错误查抛出帧闭包的 Positions 表 (offset 空间按编译单元隔离)。
+	srcFile        string
+	srcText        string
+	mainPositions  []object.SrcPos
+	lastThrowPC    int
+	hasThrowPC     bool
+	lastThrowFrame *Frame
 }
 
 // New 创建虚拟机。
@@ -2332,7 +2343,23 @@ func isCallable(v object.Value) bool {
 // 检查 tryStack 中是否有匹配的 catch/finally 处理器。
 // 如果找到: 设置 PC 和栈，返回 true。
 // 如果未找到: 返回 false (异常将传播到上层)。
+// handleThrow 包装异常处理器搜索: 进入搜索前记录抛出点 PC (T05 源码帧)。
+// 若最终无处理器匹配 (返回 false), 该 PC 就是出错指令位置; 若有 catch/
+// finally 匹配, PC 会被改写、异常不算未捕获, 记录值作废 (下次抛出覆盖)。
 func (vm *VM) handleThrow(val object.Value) bool {
+	if vm.frameIdx >= 0 && vm.frameIdx < len(vm.frames) && vm.frames[vm.frameIdx] != nil {
+		vm.lastThrowPC = vm.currentFrame().PC
+		vm.lastThrowFrame = vm.currentFrame()
+		vm.hasThrowPC = true
+	}
+	matched := vm.handleThrowInner(val)
+	if matched {
+		vm.hasThrowPC = false
+	}
+	return matched
+}
+
+func (vm *VM) handleThrowInner(val object.Value) bool {
 	for len(vm.tryStack) > 0 {
 		entry := vm.tryStack[len(vm.tryStack)-1]
 
@@ -3112,8 +3139,11 @@ func EvalFileVM(path string) (*VM, error) {
 
 	vm := NewWithGlobals(c.Bytes(), c.Constants(), c.NumLocals(), stdlib.SetupGlobals())
 	vm.SetModuleBase(filepath.Dir(path))
+	// T05 源码帧: 注入脚本文本与语句位置表, 未捕获异常渲染出错行。
+	vm.SetSourceInfo(path, string(source))
+	vm.SetStmtPositions(c.StmtPositions())
 	if err := vm.RunCompiled(c); err != nil {
-		return nil, fmt.Errorf("vm error: %v", err)
+		return nil, fmt.Errorf("vm error: %v", vm.AttachFrame(err))
 	}
 
 	return vm, nil

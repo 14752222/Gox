@@ -41,6 +41,14 @@ type Compiler struct {
 	// argumentsSlotStack 保存嵌套函数的 arguments 槽位, 用于箭头函数继承外层。
 	argumentsSlotStack []int
 
+	// stmtPosTable 是 parser 侧收集的语句→源码位置 side-table (T05)。
+	// SetStmtPos 注入; compileStatements 据此生成 srcPositions。
+	stmtPosTable ast.PositionTable
+	// srcPositions 记录"语句首条指令 offset → 源码位置"。VM 运行时
+	// 错误用当前 PC 最近(≤PC)的表项渲染源码帧。函数体内的指令在独立
+	// 的 CompiledFunction 里, 不污染主指令流的 offset。
+	srcPositions map[int]ast.Pos
+
 	// currentSuperClass 记录当前 class 方法的父类名 (super 引用目标)。
 	// 仅在编译 class 方法时非空。
 	currentSuperClass string
@@ -285,12 +293,42 @@ func (c *Compiler) compileStatements(stmts []ast.Statement) error {
 		if hoisted[stmt] {
 			continue
 		}
+		// 语句级位置表: 语句首条指令 offset → 该语句的源码位置 (T05)。
+		// 运行时错误按 PC 最近表项回溯到出错语句所在行。
+		start := c.emitter.Pos()
 		if err := c.compileStatement(stmt); err != nil {
 			return err
+		}
+		if pos, ok := c.stmtPosTable[stmt]; ok && c.emitter.Pos() > start {
+			if c.srcPositions == nil {
+				c.srcPositions = make(map[int]ast.Pos)
+			}
+			c.srcPositions[start] = pos
 		}
 	}
 	return nil
 }
+
+// SetStmtPos 注入 parser 收集的语句位置表 (compileSource 接线)。
+func (c *Compiler) SetStmtPos(tbl ast.PositionTable) { c.stmtPosTable = tbl }
+
+// toSrcPosList 把语句位置表转为按 offset 升序的 SrcPos 列表
+// (挂到 FunctionMetadata.Positions, 供 VM 运行时错误回溯)。
+func toSrcPosList(m map[int]ast.Pos) []bytecode.SrcPos {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make([]bytecode.SrcPos, 0, len(m))
+	for off, p := range m {
+		out = append(out, bytecode.SrcPos{Offset: off, Line: p.Line, Col: p.Col})
+	}
+	bytecode.SortSrcPos(out)
+	return out
+}
+
+// StmtPositions 返回生成的字节码位置映射 (可能为 nil —— 无位置信息时
+// VM 侧跳过源码帧渲染)。
+func (c *Compiler) StmtPositions() map[int]ast.Pos { return c.srcPositions }
 
 // varBinding 是一个待提升初始化的 var 绑定。
 type varBinding struct {
@@ -1551,6 +1589,10 @@ func (c *Compiler) compileClassConstructor(node *ast.ClassDeclaration, ctor *ast
 	// 编译函数体
 	prevEmitter := c.emitter
 	c.emitter = NewEmitter()
+	// 函数体的 srcPositions 是独立 offset 空间 (独立 emitter), 切换到新表;
+	// 编译完存进 FunctionMetadata.Positions, 与外层表互不污染 (T05)。
+	prevSrcPositions := c.srcPositions
+	c.srcPositions = nil
 	prevControlStack := c.controlStack
 	c.controlStack = nil
 	prevPendingLabel := c.pendingLabel
@@ -1579,6 +1621,8 @@ func (c *Compiler) compileClassConstructor(node *ast.ClassDeclaration, ctor *ast
 	c.emitter.EmitNoOperand(bytecode.OP_RETURN_VOID)
 
 	fnIns := c.emitter.Bytes()
+	fnSrcPositions := c.srcPositions
+	c.srcPositions = prevSrcPositions
 	c.emitter = prevEmitter
 	c.scope = prevScope
 	c.currentArgumentsSlot = prevArgumentsSlot
@@ -1588,6 +1632,7 @@ func (c *Compiler) compileClassConstructor(node *ast.ClassDeclaration, ctor *ast
 	meta := bytecode.NewFunctionMetadata("constructor", fnIns, fnScope.NumLocals(), len(paramSpecs), paramSpecs, false)
 	meta.BaseSlot = baseSlot
 	meta.ArgumentsSlot = argumentsSlot
+	meta.Positions = toSrcPosList(fnSrcPositions)
 	_ = paramSlots
 	return meta, nil
 }
@@ -3445,6 +3490,10 @@ func (c *Compiler) compileFunctionSelf(name, selfName string, params []*ast.Para
 	// 编译函数体
 	prevEmitter := c.emitter
 	c.emitter = NewEmitter()
+	// 函数体的 srcPositions 是独立 offset 空间 (独立 emitter), 切换到新表;
+	// 编译完存进 FunctionMetadata.Positions, 与外层表互不污染 (T05)。
+	prevSrcPositions := c.srcPositions
+	c.srcPositions = nil
 
 	// 函数边界重置控制流: 标签/break/continue 不能跨函数。
 	prevControlStack := c.controlStack
@@ -3508,6 +3557,8 @@ func (c *Compiler) compileFunctionSelf(name, selfName string, params []*ast.Para
 	c.emitter.EmitNoOperand(bytecode.OP_RETURN_VOID)
 
 	fnIns := c.emitter.Bytes()
+	fnSrcPositions := c.srcPositions
+	c.srcPositions = prevSrcPositions
 	c.emitter = prevEmitter
 	c.scope = prevScope
 	c.currentArgumentsSlot = prevArgumentsSlot
@@ -3526,6 +3577,7 @@ func (c *Compiler) compileFunctionSelf(name, selfName string, params []*ast.Para
 	meta.SelfSlot = selfSlot
 	meta.IsGenerator = isGenerator
 	meta.IsAsync = false
+	meta.Positions = toSrcPosList(fnSrcPositions)
 	return meta, nil
 }
 

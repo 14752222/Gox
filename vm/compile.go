@@ -38,6 +38,7 @@ func compileSource(src string, moduleMode bool) (*compiler.Compiler, error) {
 	}
 	c := compiler.New()
 	c.SetModuleMode(moduleMode)
+	c.SetStmtPos(program.Positions) // T05: 语句位置表 → 运行时错误源码帧
 	if err := c.Compile(program); err != nil {
 		return nil, &sourceError{msg: err.Error()}
 	}
@@ -76,16 +77,17 @@ func lastFunctionMeta(c *compiler.Compiler) *bytecode.FunctionMetadata {
 func metaToCompiledFunction(meta *bytecode.FunctionMetadata, consts []object.Value) *object.CompiledFunction {
 	fn := &object.CompiledFunction{
 		Instructions:  meta.Instructions,
-		NumLocals:     meta.NumLocals,
-		NumParameters: meta.NumParameters,
-		Name:          meta.Name,
-		IsArrow:       meta.IsArrow,
-		IsGenerator:   meta.IsGenerator,
-		IsAsync:       meta.IsAsync,
-		BaseSlot:      meta.BaseSlot,
-		ArgumentsSlot: meta.ArgumentsSlot,
-		SelfSlot:      meta.SelfSlot,
-		Constants:     consts,
+		NumLocals:      meta.NumLocals,
+		NumParameters:  meta.NumParameters,
+		Name:           meta.Name,
+		IsArrow:        meta.IsArrow,
+		IsGenerator:    meta.IsGenerator,
+		IsAsync:        meta.IsAsync,
+		BaseSlot:       meta.BaseSlot,
+		ArgumentsSlot:  meta.ArgumentsSlot,
+		SelfSlot:       meta.SelfSlot,
+		Constants:      consts,
+		Positions:      srcPosList(meta.Positions), // T05: 函数体语句位置表
 	}
 	for _, ps := range meta.Parameters {
 		fn.Parameters = append(fn.Parameters, object.ParameterInfo{
@@ -95,6 +97,19 @@ func metaToCompiledFunction(meta *bytecode.FunctionMetadata, consts []object.Val
 		})
 	}
 	return fn
+}
+
+// srcPosList 把 bytecode 层的位置表转成 object 层的结构 (两包各自定义
+// SrcPos, 避免 object → bytecode 之外的依赖; vm 是唯一同时引用两包的层)。
+func srcPosList(in []bytecode.SrcPos) []object.SrcPos {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]object.SrcPos, len(in))
+	for i, p := range in {
+		out[i] = object.SrcPos{Offset: p.Offset, Line: p.Line, Col: p.Col}
+	}
+	return out
 }
 
 // evalEntryError 保留 Eval/EvalVM/EvalWithGlobals/EvalFileVM 一族的

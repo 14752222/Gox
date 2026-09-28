@@ -1,6 +1,9 @@
 package object
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
 
 // ParameterInfo 存储函数参数的元数据。
 type ParameterInfo struct {
@@ -38,9 +41,27 @@ type CompiledFunction struct {
 	// 函数被调用时 VM 把闭包自身写入该槽，函数体内通过名字
 	// 引用自身 (递归) 即读取此槽。
 	SelfSlot int
+	// Positions 是函数体语句的源码位置表 (offset 升序, 可为 nil)。
+	// 运行时错误渲染源码帧用 (T05)。
+	Positions []SrcPos
 	// Constants 是函数字节码引用的常量池 (用于跨模块调用)
 	// 为 nil 时使用 VM 的全局常量池
 	Constants []Value
+}
+
+// SrcPos 是语句的源码位置。Offset 是语句首条指令在**所属编译单元**
+// (主脚本或函数体) 指令流里的位置 —— 不同编译单元的 offset 空间独立。
+// 与 bytecode.SrcPos 结构相同但独立定义 (object 与 bytecode 互不依赖,
+// 由 vm 层在加载函数时转换)。
+type SrcPos struct {
+	Offset int
+	Line   int
+	Col    int
+}
+
+// SortSrcPos 按 Offset 升序排序。
+func SortSrcPos(s []SrcPos) {
+	sort.Slice(s, func(i, j int) bool { return s[i].Offset < s[j].Offset })
 }
 
 func (f *CompiledFunction) Type() ObjectType { return COMPILED_FUNCTION_OBJ }
