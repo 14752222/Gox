@@ -14,18 +14,32 @@ import (
 	"math/big"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // ===== 原型管理 =====
 
 // temporalProtos 保存各 Temporal 类型的全局原型对象，由 stdlib 初始化。
-var temporalProtos = map[ObjectType]Value{}
+//
+// 并发注意: SetupGlobals 会被多个 goroutine 并发调用（test262 runner 的
+// worker 池、未来任何嵌入多 VM 的宿主），包级 map 裸写会直接
+// "concurrent map writes" fatal —— 注册走写锁、读取走读锁。
+var (
+	temporalProtosMu sync.RWMutex
+	temporalProtos   = map[ObjectType]Value{}
+)
 
 // SetTemporalProto 注册某个 Temporal 类型的原型 (由 stdlib 调用)。
-func SetTemporalProto(t ObjectType, p Value) { temporalProtos[t] = p }
+func SetTemporalProto(t ObjectType, p Value) {
+	temporalProtosMu.Lock()
+	defer temporalProtosMu.Unlock()
+	temporalProtos[t] = p
+}
 
 // GetTemporalProto 返回某个 Temporal 类型的原型。
 func GetTemporalProto(t ObjectType) Value {
+	temporalProtosMu.RLock()
+	defer temporalProtosMu.RUnlock()
 	if v, ok := temporalProtos[t]; ok {
 		return v
 	}

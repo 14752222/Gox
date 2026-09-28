@@ -95,7 +95,7 @@ func New() *Compiler {
 	return &Compiler{
 		emitter:              NewEmitter(),
 		constants:            bytecode.NewConstantPool(),
-		scope:                NewSymbolScope(nil),
+		scope:                NewFunctionScope(nil),
 		currentArgumentsSlot: -1,
 	}
 }
@@ -248,11 +248,25 @@ func patternBindsName(pattern ast.Expression, name string) bool {
 //     let x = 1;            // 提升的 f 需要捕获 x
 //     f(); function f() { return x; }
 //
-//  2. 再编译列表里的 function 声明 (绑定 + 创建函数对象)，其余语句按源码
+//  2. var 提升 (T04): 在**函数作用域层** (含全局) 的语句列表, 先递归收集
+//     列表内**全部** var 声明 (包括嵌套块里的 —— var 穿透块), 对每个新的
+//     var 绑定发射 `OP_UNDEFINED + OP_STORE` (全局层用 OP_DECLARE), 即
+//     `var x` 的 "声明即 undefined" 提升语义。必须先于函数声明提升发射:
+//     同名时函数声明的值要覆盖 var 的 undefined (ES 进入期初始化顺序)。
+//
+//  3. 再编译列表里的 function 声明 (绑定 + 创建函数对象)，其余语句按源码
 //     顺序编译，已提升的声明跳过以免重复创建。
 func (c *Compiler) compileStatements(stmts []ast.Statement) error {
 	if err := c.prescanScope(stmts); err != nil {
 		return err
+	}
+
+	// var 提升初始化: 只在函数作用域层做 (块里编译时不发射 —— var 在函数体
+	// prescan 时已递归收集并登记, 块的 prescan 会命中已有符号直接复用)。
+	if c.scope.IsFuncLayer() {
+		if err := c.emitVarHoistInits(stmts); err != nil {
+			return err
+		}
 	}
 
 	hoisted := make(map[ast.Statement]bool)
@@ -278,6 +292,161 @@ func (c *Compiler) compileStatements(stmts []ast.Statement) error {
 	return nil
 }
 
+// varBinding 是一个待提升初始化的 var 绑定。
+type varBinding struct {
+	name string
+	slot int // 全局层不用 (走 OP_DECLARE)
+}
+
+// emitVarHoistInits 递归收集语句列表里的全部 var 绑定 (不进嵌套函数体),
+// 对函数作用域层里**新出现**的名字发射 undefined 初始化。
+// 层内已有的绑定 (参数 / 函数声明 / 重复 var) 不再初始化 —— 参数不能被
+// undefined 覆盖, 函数声明的值必须保留。
+func (c *Compiler) emitVarHoistInits(stmts []ast.Statement) error {
+	var bindings []varBinding
+	if err := c.collectVarBindings(stmts, &bindings, 0); err != nil {
+		return err
+	}
+	isGlobal := c.isGlobalScope()
+	for _, b := range bindings {
+		c.emitter.EmitNoOperand(bytecode.OP_UNDEFINED)
+		if isGlobal {
+			nameIdx := c.constants.AddConstant(object.NewString(b.name))
+			c.emitter.Emit(bytecode.OP_DECLARE, nameIdx)
+		} else {
+			c.emitter.Emit(bytecode.OP_STORE, uint16(b.slot))
+		}
+	}
+	return nil
+}
+
+// collectVarBindings 递归收集 var 绑定并登记到函数作用域层。
+// 遍历只穿透控制流块 (if/for/while/switch/try/label/block), **不进入**
+// 嵌套函数 (函数声明/函数表达式/箭头/类) —— 那是新的函数作用域。
+func (c *Compiler) collectVarBindings(stmts []ast.Statement, out *[]varBinding, depth int) error {
+	if depth > 64 { // 防御性深度上限 (病态嵌套), 64 层块远超正常代码
+		return nil
+	}
+	for _, stmt := range stmts {
+		if err := c.collectVarBindingsStmt(stmt, out, depth); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Compiler) collectVarBindingsStmt(stmt ast.Statement, out *[]varBinding, depth int) error {
+	declare := func(name string) error {
+		fn := c.scope.FuncLayer()
+		if sym := fn.ResolveLocal(name); sym != nil {
+			// 参数 (IsVarLike) / 函数声明 / 更早的 var 同名: 复用绑定;
+			// let/const 与 var 同层同名 → SyntaxError
+			if !sym.IsVarLike && !sym.IsFnDecl {
+				return fmt.Errorf("SyntaxError: Identifier '%s' has already been declared", name)
+			}
+			return nil
+		}
+		sym := fn.Define(name, false)
+		sym.IsVarLike = true
+		sym.Declared = true
+		*out = append(*out, varBinding{name: name, slot: sym.Slot})
+		return nil
+	}
+
+	switch node := stmt.(type) {
+	case *ast.VarStatement:
+		if node.Name != nil && node.Name.Value != destructureSyntheticName {
+			if err := declare(node.Name.Value); err != nil {
+				return err
+			}
+		}
+		for _, d := range node.More {
+			if d.Name != nil && d.Name.Value != destructureSyntheticName {
+				if err := declare(d.Name.Value); err != nil {
+					return err
+				}
+			}
+		}
+	case *ast.BlockStatement:
+		return c.collectVarBindings(node.Statements, out, depth+1)
+	case *ast.IfStatement:
+		if node.Consequence != nil {
+			if err := c.collectVarBindings(node.Consequence.Statements, out, depth+1); err != nil {
+				return err
+			}
+		}
+		if node.Alternative != nil {
+			if err := c.collectVarBindings(node.Alternative.Statements, out, depth+1); err != nil {
+				return err
+			}
+		}
+	case *ast.ForStatement:
+		if node.Init != nil {
+			if err := c.collectVarBindingsStmt(node.Init, out, depth+1); err != nil {
+				return err
+			}
+		}
+		if node.Body != nil {
+			if err := c.collectVarBindings(node.Body.Statements, out, depth+1); err != nil {
+				return err
+			}
+		}
+	case *ast.ForOfStatement:
+		if _, isVarDecl := node.VarDecl.(*ast.VarStatement); isVarDecl && node.Variable != nil {
+			if err := declare(node.Variable.Value); err != nil {
+				return err
+			}
+		}
+		if node.Body != nil {
+			if err := c.collectVarBindings(node.Body.Statements, out, depth+1); err != nil {
+				return err
+			}
+		}
+	case *ast.ForInStatement:
+		if _, isVarDecl := node.VarDecl.(*ast.VarStatement); isVarDecl && node.Variable != nil {
+			if err := declare(node.Variable.Value); err != nil {
+				return err
+			}
+		}
+		if node.Body != nil {
+			if err := c.collectVarBindings(node.Body.Statements, out, depth+1); err != nil {
+				return err
+			}
+		}
+	case *ast.WhileStatement:
+		if node.Body != nil {
+			if err := c.collectVarBindings(node.Body.Statements, out, depth+1); err != nil {
+				return err
+			}
+		}
+	case *ast.DoWhileStatement:
+		if node.Body != nil {
+			if err := c.collectVarBindings(node.Body.Statements, out, depth+1); err != nil {
+				return err
+			}
+		}
+	case *ast.SwitchStatement:
+		for _, cs := range node.Cases {
+			if err := c.collectVarBindings(cs.Statements, out, depth+1); err != nil {
+				return err
+			}
+		}
+	case *ast.TryStatement:
+		for _, blk := range []*ast.BlockStatement{node.Body, node.CatchBody, node.FinallyBody} {
+			if blk != nil {
+				if err := c.collectVarBindings(blk.Statements, out, depth+1); err != nil {
+					return err
+				}
+			}
+		}
+	case *ast.LabeledStatement:
+		if err := c.collectVarBindingsStmt(node.Body, out, depth+1); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // ===== 语句编译 =====
 
 func (c *Compiler) compileStatement(stmt ast.Statement) error {
@@ -294,6 +463,8 @@ func (c *Compiler) compileStatement(stmt ast.Statement) error {
 		return nil
 	case *ast.LetStatement:
 		return c.compileLetStatement(node)
+	case *ast.VarStatement:
+		return c.compileVarStatement(node)
 	case *ast.ConstStatement:
 		return c.compileConstStatement(node)
 	case *ast.ReturnStatement:
@@ -407,6 +578,85 @@ func (c *Compiler) compileLetStatement(stmt *ast.LetStatement) error {
 				c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
 			}
 		}
+	}
+	return nil
+}
+
+// compileVarStatement 编译 var 声明。
+//
+// 与 let 的根本分野: 绑定登记在**函数作用域层** (FuncLayer), 而不是当前块。
+// 这一个落点同时给出 var 的三条语义:
+//   - 块里声明的 var 在块外可见 (绑定在函数层);
+//   - 重复声明合法 (函数层已有同名 → 复用绑定, 不报错不重复分配槽位);
+//   - 提升 (compileStatements 在函数层 prescan 时已对无值绑定发射 undefined)。
+//
+// 无初始化器的 var 语句不发射任何指令: 提升初始化已把槽位写成 undefined,
+// 而同名函数声明的提升值 (函数对象) 也不能被 var 语句覆盖。
+// 解构 var 借用 let 的合成名路径: 绑定落点经 compileDestructureAssignment
+// 的 declare 分支沿 FuncLayer 登记 (见 patternBindVar 辅助)。
+func (c *Compiler) compileVarStatement(stmt *ast.VarStatement) error {
+	// 解构: var [a, b] = arr / var { x } = obj
+	if stmt.Name.Value == destructureSyntheticName {
+		if assign, ok := stmt.Value.(*ast.AssignmentExpression); ok {
+			return c.compileDestructureAssignment(assign, true)
+		}
+	}
+
+	fn := c.scope.FuncLayer()
+
+	declareVar := func(name string) (*Symbol, error) {
+		if sym := fn.ResolveLocal(name); sym != nil {
+			// let/const 与 var 同层同名 → SyntaxError;
+			// var/var、var/fn、var/参数 → 复用绑定
+			if !sym.IsVarLike && !sym.IsFnDecl {
+				return nil, fmt.Errorf("SyntaxError: Identifier '%s' has already been declared", name)
+			}
+			if sym.IsConst {
+				return nil, fmt.Errorf("SyntaxError: Identifier '%s' has already been declared", name)
+			}
+			return sym, nil
+		}
+		sym := fn.Define(name, false)
+		sym.IsVarLike = true
+		sym.Declared = true
+		return sym, nil
+	}
+
+	emitAssign := func(name string, sym *Symbol) {
+		// 全局函数层: var 是全局属性。提升初始化已 OP_DECLARE 过一次,
+		// 这里必须走 STORE_GLOBAL (存在则赋值) —— 再发 OP_DECLARE 会撞
+		// 运行时的重声明检查。
+		if fn.Parent() == nil && !c.moduleMode {
+			nameIdx := c.constants.AddConstant(object.NewString(name))
+			c.emitter.Emit(bytecode.OP_STORE_GLOBAL, nameIdx)
+		} else {
+			c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
+		}
+	}
+
+	if stmt.Value != nil {
+		if err := c.compileExpression(stmt.Value); err != nil {
+			return err
+		}
+		sym, err := declareVar(stmt.Name.Value)
+		if err != nil {
+			return err
+		}
+		emitAssign(stmt.Name.Value, sym)
+	}
+	for _, d := range stmt.More {
+		if d.Value != nil {
+			if err := c.compileExpression(d.Value); err != nil {
+				return err
+			}
+		} else {
+			c.emitter.EmitNoOperand(bytecode.OP_UNDEFINED)
+		}
+		sym, err := declareVar(d.Name.Value)
+		if err != nil {
+			return err
+		}
+		emitAssign(d.Name.Value, sym)
 	}
 	return nil
 }
@@ -632,9 +882,10 @@ func (c *Compiler) compileForOfStatement(stmt *ast.ForOfStatement) error {
 	prevScope := c.scope
 	c.scope = NewSymbolScope(prevScope)
 
-	// 绑定本次迭代的值 (栈顶)。两种形状:
+	// 绑定本次迭代的值 (栈顶)。三种形状:
 	//   简单绑定 for (let x of arr)          → 直接存进新建的槽位
 	//   解构绑定 for (const [a, b] of pairs) → 交给 compilePatternBind 按模式拆开
+	//   var 绑定 for (var x of arr)          → 存进**函数作用域层**的共享槽位
 	// 两边进来时栈都是 [.., value]、离开时都回到 [..] —— compilePatternBind 末尾
 	// 自带 POP, 与 OP_STORE 消耗栈顶值的语义对齐。
 	varKind := bytecode.OP_STORE
@@ -654,6 +905,23 @@ func (c *Compiler) compileForOfStatement(stmt *ast.ForOfStatement) error {
 		// 解构支持引入的。
 		if err := c.compilePatternBind(stmt.Pattern, true); err != nil {
 			return err
+		}
+	} else if _, isVarDecl := stmt.VarDecl.(*ast.VarStatement); isVarDecl {
+		// var: 所有迭代共享函数作用域层的同一绑定 (闭包捕获同一槽位 ——
+		// 这正是 var 循环的经典语义), 每轮只是重新赋值。
+		fn := c.scope.FuncLayer()
+		sym := fn.ResolveLocal(stmt.Variable.Value)
+		if sym == nil {
+			sym = fn.Define(stmt.Variable.Value, false)
+			sym.IsVarLike = true
+			sym.Declared = true
+		}
+		if fn.Parent() == nil && !c.moduleMode {
+			// 全局函数层: var 存全局环境 (顶层没有 frame locals 槽位存储)
+			nameIdx := c.constants.AddConstant(object.NewString(stmt.Variable.Value))
+			c.emitter.Emit(bytecode.OP_STORE_GLOBAL, nameIdx)
+		} else {
+			c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
 		}
 	} else {
 		sym := c.scope.Define(stmt.Variable.Value, varKind == bytecode.OP_STORE_CONST)
@@ -723,8 +991,25 @@ func (c *Compiler) compileForInStatement(stmt *ast.ForInStatement) error {
 	if _, ok := stmt.VarDecl.(*ast.ConstStatement); ok {
 		varKind = bytecode.OP_STORE_CONST
 	}
-	sym := c.scope.Define(stmt.Variable.Value, varKind == bytecode.OP_STORE_CONST)
-	c.emitter.Emit(varKind, uint16(sym.Slot))
+	if _, isVarDecl := stmt.VarDecl.(*ast.VarStatement); isVarDecl {
+		// var: 共享函数作用域层绑定 (语义与 for-of 的 var 分支一致)
+		fn := c.scope.FuncLayer()
+		sym := fn.ResolveLocal(stmt.Variable.Value)
+		if sym == nil {
+			sym = fn.Define(stmt.Variable.Value, false)
+			sym.IsVarLike = true
+			sym.Declared = true
+		}
+		if fn.Parent() == nil && !c.moduleMode {
+			nameIdx := c.constants.AddConstant(object.NewString(stmt.Variable.Value))
+			c.emitter.Emit(bytecode.OP_STORE_GLOBAL, nameIdx)
+		} else {
+			c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
+		}
+	} else {
+		sym := c.scope.Define(stmt.Variable.Value, varKind == bytecode.OP_STORE_CONST)
+		c.emitter.Emit(varKind, uint16(sym.Slot))
+	}
 
 	ctx := c.pushControl(c.takePendingLabel(), true)
 
@@ -1241,7 +1526,7 @@ func (c *Compiler) compileClassDeclaration(node *ast.ClassDeclaration) error {
 func (c *Compiler) compileClassConstructor(node *ast.ClassDeclaration, ctor *ast.ClassMethod, className, superName string) (*bytecode.FunctionMetadata, error) {
 	prevScope := c.scope
 	baseSlot := prevScope.NumLocals()
-	fnScope := NewSymbolScope(prevScope)
+	fnScope := NewFunctionScope(prevScope)
 	c.scope = fnScope
 
 	paramSpecs := []bytecode.ParameterSpec{}
@@ -1251,6 +1536,7 @@ func (c *Compiler) compileClassConstructor(node *ast.ClassDeclaration, ctor *ast
 			paramSpecs = append(paramSpecs, bytecode.ParameterSpec{Name: param.Name, HasDefault: param.Default != nil, IsRest: param.Rest})
 			sym := fnScope.Define(param.Name, false)
 			sym.Declared = true // 参数是真实声明: 函数体内 let 同名 → SyntaxError
+			sym.IsVarLike = true // 参数即 var 绑定: 函数体内 var 同名复用此绑定
 			paramSlots = append(paramSlots, sym.Slot)
 		}
 	}
@@ -2182,10 +2468,10 @@ func (c *Compiler) prescanScope(stmts []ast.Statement) error {
 
 // prescanDeclare 在声明提升预登记阶段登记绑定名。
 // 名字已存在说明同一作用域内有重复声明 (或与参数重名) → SyntaxError；
-// 函数声明与已有函数声明同名除外。
+// 例外: 函数声明与函数声明/var 同名互容 (var f 与 function f 的提升共存语义)。
 func (c *Compiler) prescanDeclare(name string, isConst, isFnDecl bool) error {
 	if sym := c.scope.ResolveLocal(name); sym != nil {
-		if isFnDecl && sym.IsFnDecl {
+		if isFnDecl && (sym.IsFnDecl || sym.IsVarLike) {
 			return nil
 		}
 		return fmt.Errorf("SyntaxError: Identifier '%s' has already been declared", name)
@@ -2199,11 +2485,11 @@ func (c *Compiler) prescanDeclare(name string, isConst, isFnDecl bool) error {
 //
 // prescan 只登记名字 (Declared=false)，编译到声明语句时在此认领符号，
 // 复用 prescan 分配的槽位。认领时发现符号已被认领 = 同一作用域内
-// 真实的重复声明 → SyntaxError；函数声明与已认领的函数声明同名除外。
-// 解构/class/import 不经 prescan，首次编译到时在此直接登记并认领。
+// 真实的重复声明 → SyntaxError；函数声明与已认领的函数声明/var 绑定
+// 同名除外。解构/class/import 不经 prescan，首次编译到时在此直接登记并认领。
 func (c *Compiler) declareOnce(name string, isConst, isFnDecl bool) (*Symbol, error) {
 	if sym := c.scope.ResolveLocal(name); sym != nil {
-		if sym.Declared && !(isFnDecl && sym.IsFnDecl) {
+		if sym.Declared && !(isFnDecl && (sym.IsFnDecl || sym.IsVarLike)) {
 			return nil, fmt.Errorf("SyntaxError: Identifier '%s' has already been declared", name)
 		}
 		sym.Declared = true
@@ -3108,7 +3394,7 @@ func (c *Compiler) compileFunctionSelf(name, selfName string, params []*ast.Para
 	// 创建新的作用域
 	prevScope := c.scope
 	baseSlot := prevScope.NumLocals() // 函数自身变量的起始槽位
-	fnScope := NewSymbolScope(prevScope)
+	fnScope := NewFunctionScope(prevScope)
 	c.scope = fnScope
 
 	// 定义参数
@@ -3134,6 +3420,7 @@ func (c *Compiler) compileFunctionSelf(name, selfName string, params []*ast.Para
 		}
 		sym := fnScope.Define(param.Name, false)
 		sym.Declared = true // 参数是真实声明: 函数体内 let 同名 → SyntaxError
+		sym.IsVarLike = true // 参数即 var 绑定: 函数体内 var 同名复用此绑定
 		paramSlots[i] = sym.Slot
 	}
 
@@ -3279,7 +3566,7 @@ func (c *Compiler) compileAsyncFunctionSelf(name, selfName string, params []*ast
 	// 2. 创建 wrapper 作用域并定义参数
 	prevScope := c.scope
 	baseSlot := prevScope.NumLocals()
-	wrapperScope := NewSymbolScope(prevScope)
+	wrapperScope := NewFunctionScope(prevScope)
 	c.scope = wrapperScope
 
 	paramSpecs := make([]bytecode.ParameterSpec, len(params))

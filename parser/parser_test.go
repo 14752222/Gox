@@ -62,41 +62,48 @@ func TestConstStatements(t *testing.T) {
 	}
 }
 
-func TestVarDeclarationRejected(t *testing.T) {
-	// var 是**有意**不支持的边界, 不是漏做 (2026-09-24 评估后维持; 理由见
-	// parser.go 的 VAR 分支与官网 guide.html 的「为什么不支持 var?」)。
-	// 这里除了"拒绝", 还钉住**文案**: 它本身就是给用户的行动指引, 改了会让
-	// 排障的人失去唯一线索。声明在语句层被拒绝, 包括 for (var ...) 形式。
+func TestVarDeclarationAccepted(t *testing.T) {
+	// var 已落地 (2026-09-29, T04/Test262 前置): 函数作用域 + 提升 + 重复声明
+	// 在编译器侧实现 (见 compiler.compileVarStatement 与 collectVarBindings),
+	// 解析层现在按与 let 同构的形状接受它。声明在语句层、for 三种头部都合法。
 	inputs := []string{
 		`var x = 5;`,
+		`var x;`,
+		`var a = 1, b = 2;`,
+		`var [p, q] = [1, 2];`,
 		`for (var i = 0; i < 3; i++) { }`,
 		`for (var v of [1, 2]) { }`,
+		`for (var k in obj) { }`,
 	}
 	for _, input := range inputs {
 		l := lexer.New(input)
 		p := New(l)
-		p.ParseProgram()
-		if !p.Errors().HasErrors() {
-			t.Fatalf("expected parse error for %q, but got none", input)
+		program := p.ParseProgram()
+		if p.Errors().HasErrors() {
+			t.Fatalf("%q: expected no parse error, got %v", input, p.Errors())
 		}
-		if got := p.Errors().Errors[0].Message; got != "var is not supported, use let or const instead" {
-			t.Fatalf("%q: 报错文案变了 (它对用户就是行动指引): %q", input, got)
+		if len(program.Statements) == 0 {
+			t.Fatalf("%q: expected statements, got none", input)
 		}
 	}
 }
 
 func TestVarAsPropertyName(t *testing.T) {
-	// var 作为属性名是合法的 (obj.var, {var: 1}, a?.var)
-	input := `{ var: 1 }`
-
-	l := lexer.New(input)
-	p := New(l)
-	program := p.ParseProgram()
-	if p.Errors().HasErrors() {
-		t.Fatalf("expected no parse error for %q, got %v", input, p.Errors())
+	// var 作为属性名仍合法 (obj.var, ({var: 1}), a?.var)。
+	// 注意 { var: 1 } 不加括号会按**块**解析 (isBlockStart 的取舍, 与
+	// let/const 关键字键一致) —— 表达式上下文要括号包裹。
+	inputs := []string{
+		`({ var: 1 })`,
+		`obj.var`,
+		`a?.var`,
 	}
-	if len(program.Statements) == 0 {
-		t.Fatal("expected one statement")
+	for _, input := range inputs {
+		l := lexer.New(input)
+		p := New(l)
+		p.ParseProgram()
+		if p.Errors().HasErrors() {
+			t.Fatalf("expected no parse error for %q, got %v", input, p.Errors())
+		}
 	}
 }
 

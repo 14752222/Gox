@@ -18,6 +18,10 @@ type Symbol struct {
 	// 但 let/const/class 与任何已有声明同名都是编译期错误。
 	IsFnDecl bool
 
+	// IsVarLike 标记 var 绑定 (函数作用域)。var 与 var/function 同名互容；
+	// let/const 与 var 同名（同一作用域层）仍是 SyntaxError。
+	IsVarLike bool
+
 	// Declared 标记声明已被正式编译认领。
 	// prescanScope 先登记名字 (Declared=false)，编译到声明语句时认领；
 	// 认领时发现已 Declared 即同一作用域内的真实重复声明。
@@ -30,6 +34,10 @@ type SymbolScope struct {
 	parent   *SymbolScope       // 外层作用域
 	depth    int                // 作用域深度
 	nextSlot int                // 下一个可用槽位
+
+	// isFunc 标记这是函数作用域层 (函数体/顶层全局)。var 声明沿作用域链
+	// 登记到最近的一层 —— 这就是 var 函数作用域语义在编译期的落点。
+	isFunc bool
 }
 
 // NewSymbolScope 创建新的作用域。
@@ -99,3 +107,27 @@ func (s *SymbolScope) Depth() int { return s.depth }
 
 // Parent 返回父作用域。
 func (s *SymbolScope) Parent() *SymbolScope { return s.parent }
+
+// NewFunctionScope 创建函数作用域层 (函数体 / 顶层全局)。
+// var 声明沿链登记到最近的这一层。
+func NewFunctionScope(parent *SymbolScope) *SymbolScope {
+	sc := NewSymbolScope(parent)
+	sc.isFunc = true
+	return sc
+}
+
+// IsFuncLayer 报告当前作用域是否函数作用域层。
+func (s *SymbolScope) IsFuncLayer() bool { return s.isFunc }
+
+// FuncLayer 返回沿 parent 链向上最近的函数作用域层 (含自身)。
+// 顶层全局 scope 由 NewFunctionScope 构造, 链上必有; 兜底返回最外层。
+func (s *SymbolScope) FuncLayer() *SymbolScope {
+	cur := s
+	for cur != nil && !cur.isFunc {
+		if cur.parent == nil {
+			return cur
+		}
+		cur = cur.parent
+	}
+	return cur
+}

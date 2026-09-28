@@ -240,10 +240,14 @@ func (p *Parser) isBlockStart() bool {
 		return true // 空块 {}
 	}
 	switch p.peekToken().Type {
-	case lexer.LET, lexer.CONST, lexer.RETURN, lexer.IF, lexer.FOR,
+	case lexer.LET, lexer.CONST, lexer.VAR, lexer.RETURN, lexer.IF, lexer.FOR,
 		lexer.WHILE, lexer.BREAK, lexer.CONTINUE, lexer.FUNCTION,
 		lexer.TRY, lexer.THROW, lexer.SWITCH,
 		lexer.SEMICOLON, lexer.DO, lexer.CASE, lexer.DEFAULT:
+		// VAR: { var x = 1 } 是块。对象字面量 { var: 1 } 会被 var 后的
+		// ':' 区分开 —— var 作键的写法在这里让位给块判定 (代价是
+		// { var: 1 } 要写成 ({ var: 1 }) 才能按对象解析, 与 return/if
+		// 等关键字键的既有处理一致)。
 		return true
 	}
 	// 若 peek 是标识符且其后是赋值号/自增/自减 (如 { x = 2; }, { x++; }),
@@ -290,18 +294,11 @@ func (p *Parser) parseStatement() ast.Statement {
 	case lexer.CONST:
 		return p.parseConstStatement()
 	case lexer.VAR:
-		// **有意不支持的边界, 不是漏做** (2026-09-24 评估后维持; 与官网
-		// api.html / guide.html 的「语言边界」表、README 的口径一致)。
-		//
-		// 理由: var 的函数级作用域 + 变量提升 + 允许重复声明, 与 let/const 的
-		// 块级作用域是两套语义。真做得在编译器里另加一套作用域解析; 而"当 let
-		// 用"是最省事也最坏的选项 —— 没有提升/重复声明的写法下看起来完全正常,
-		// 只在用到那两条语义时才露馅, 属于本仓库一直在剿的**静默语义偏差**。
-		// 所以这里给的是编译期明确报错, 并且文案本身就是行动指引。
-		//
-		// 词法层仍识别 VAR, 以支持 var 作为属性名 (obj.var, {var: 1})。
-		p.addError("var is not supported, use let or const instead")
-		return nil
+		// var 声明 (2026-09-29 落地, T04/Test262 前置): 函数作用域 + 提升 +
+		// 允许重复声明, 由编译器登记到最近的函数作用域层 (见
+		// compiler.compileVarStatement 与 symbol_table 的 FuncLayer)。
+		// 词法层本就识别 VAR, var 作为属性名 (obj.var, {var: 1}) 不受影响。
+		return p.parseVarStatement()
 	case lexer.RETURN:
 		return p.parseReturnStatement()
 	case lexer.IF:
@@ -367,6 +364,65 @@ func (p *Parser) parseStatement() ast.Statement {
 	default:
 		return p.parseExpressionStatement()
 	}
+}
+
+// parseVarStatement 解析 var 声明: var x = 5 / var a = 1, b; / var [x, y] = p。
+// 语法形状与 let 完全同构 (复用解构模式的解析), 差别在编译语义: var 登记到
+// 函数作用域层 (见 compiler.compileVarStatement)。
+func (p *Parser) parseVarStatement() *ast.VarStatement {
+	stmt := &ast.VarStatement{Token: p.curToken()}
+	p.nextToken()
+
+	if p.curTokenIs(lexer.LBRACKET) || p.curTokenIs(lexer.LBRACE) {
+		// 解构: 借用 let 的合成名路径, 编译器按 AssignmentExpression 接手。
+		pattern := p.parseDestructuringPattern(p.curTokenIs(lexer.LBRACKET))
+		if pattern == nil {
+			return nil
+		}
+		if !p.peekTokenIs(lexer.ASSIGN) {
+			p.addError(fmt.Sprintf("expected = after destructuring, got %s", p.peekToken().Type))
+			return nil
+		}
+		p.nextToken()
+		p.nextToken()
+		stmt.Name = &ast.Identifier{Token: stmt.Token, Value: "__destructure__"}
+		stmt.Value = &ast.AssignmentExpression{
+			Token: stmt.Token, Left: pattern, Operator: "=", Right: p.parseExpression(LOWEST),
+		}
+		p.consumeSemicolon()
+		return stmt
+	}
+
+	if !p.curTokenIs(lexer.IDENTIFIER) {
+		p.addError(fmt.Sprintf("expected identifier, got %s", p.curToken().Type))
+		return nil
+	}
+	stmt.Name = &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
+
+	if p.peekTokenIs(lexer.ASSIGN) {
+		p.nextToken()
+		p.nextToken()
+		stmt.Value = p.parseExpression(LOWEST)
+	}
+
+	// 多条声明: var a = 1, b = 2;
+	for p.peekTokenIs(lexer.COMMA) {
+		p.nextToken() // 移到 ,
+		p.nextToken() // 移到下一个名字
+		if !p.curTokenIs(lexer.IDENTIFIER) {
+			p.addError(fmt.Sprintf("expected identifier, got %s", p.curToken().Type))
+			return nil
+		}
+		decl := ast.Declarator{Name: &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}}
+		if p.peekTokenIs(lexer.ASSIGN) {
+			p.nextToken()
+			p.nextToken()
+			decl.Value = p.parseExpression(LOWEST)
+		}
+		stmt.More = append(stmt.More, decl)
+	}
+	p.consumeSemicolon()
+	return stmt
 }
 
 func (p *Parser) parseLetStatement() *ast.LetStatement {
@@ -581,10 +637,10 @@ func (p *Parser) parseForStatement() ast.Statement {
 	}
 	p.nextToken()
 
-	// for...of / for...in 的头部: let/const 后跟**绑定**, 绑定之后是 of / in。
+	// for...of / for...in 的头部: let/const/var 后跟**绑定**, 绑定之后是 of / in。
 	// 绑定可以是标识符, 也可以是解构模式 —— 后者要跳过配对的 ]/} 才看得到关键字,
 	// 所以判定统一交给 forBindingKeyword。
-	if p.curTokenIs(lexer.LET) || p.curTokenIs(lexer.CONST) {
+	if p.curTokenIs(lexer.LET) || p.curTokenIs(lexer.CONST) || p.curTokenIs(lexer.VAR) {
 		kw := p.forBindingKeyword()
 		destructuring := p.peekTokenIs(lexer.LBRACKET) || p.peekTokenIs(lexer.LBRACE)
 		if kw == lexer.OF {
@@ -657,7 +713,8 @@ func (p *Parser) forBindingKeyword() lexer.TokenType {
 func (p *Parser) parseForInStatement() *ast.ForInStatement {
 	stmt := &ast.ForInStatement{Token: p.curToken()}
 	isLet := p.curTokenIs(lexer.LET)
-	p.nextToken() // skip let/const
+	isVar := p.curTokenIs(lexer.VAR)
+	p.nextToken() // skip let/const/var
 
 	if !p.curTokenIs(lexer.IDENTIFIER) {
 		p.addError("expected variable name in for...in")
@@ -666,9 +723,12 @@ func (p *Parser) parseForInStatement() *ast.ForInStatement {
 	variable := &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
 	stmt.Variable = variable
 
-	if isLet {
+	switch {
+	case isLet:
 		stmt.VarDecl = &ast.LetStatement{Token: stmt.Token, Name: variable}
-	} else {
+	case isVar:
+		stmt.VarDecl = &ast.VarStatement{Token: stmt.Token, Name: variable}
+	default:
 		stmt.VarDecl = &ast.ConstStatement{Token: stmt.Token, Name: variable}
 	}
 
@@ -692,7 +752,8 @@ func (p *Parser) parseForInStatement() *ast.ForInStatement {
 func (p *Parser) parseForOfStatement() *ast.ForOfStatement {
 	stmt := &ast.ForOfStatement{Token: p.curToken()}
 	isLet := p.curTokenIs(lexer.LET)
-	p.nextToken() // skip let/const
+	isVar := p.curTokenIs(lexer.VAR)
+	p.nextToken() // skip let/const/var
 
 	if p.curTokenIs(lexer.LBRACKET) || p.curTokenIs(lexer.LBRACE) {
 		// 解构绑定: for (const [a, b] of pairs) / for (const {a} of objs)
@@ -704,9 +765,12 @@ func (p *Parser) parseForOfStatement() *ast.ForOfStatement {
 		// VarDecl 是个只有合成名的空壳: 编译器只用它分辨 let / const (与
 		// let [a, b] = … 的口径一致), 这个名字本身不代表任何绑定。
 		name := &ast.Identifier{Token: stmt.Token, Value: "__destructure__"}
-		if isLet {
+		switch {
+		case isLet:
 			stmt.VarDecl = &ast.LetStatement{Token: stmt.Token, Name: name}
-		} else {
+		case isVar:
+			stmt.VarDecl = &ast.VarStatement{Token: stmt.Token, Name: name}
+		default:
 			stmt.VarDecl = &ast.ConstStatement{Token: stmt.Token, Name: name}
 		}
 	} else {
@@ -719,9 +783,12 @@ func (p *Parser) parseForOfStatement() *ast.ForOfStatement {
 		variable := &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
 		stmt.Variable = variable
 
-		if isLet {
+		switch {
+		case isLet:
 			stmt.VarDecl = &ast.LetStatement{Token: stmt.Token, Name: variable}
-		} else {
+		case isVar:
+			stmt.VarDecl = &ast.VarStatement{Token: stmt.Token, Name: variable}
+		default:
 			stmt.VarDecl = &ast.ConstStatement{Token: stmt.Token, Name: variable}
 		}
 	}
@@ -763,9 +830,16 @@ func (p *Parser) parseTraditionalFor() *ast.ForStatement {
 		// 前进一步使其落在 condition 开头。
 		p.nextToken()
 	} else if p.curTokenIs(lexer.VAR) {
-		// for (var ...) 与 var 声明同样被拒绝
-		p.addError("var is not supported, use let or const instead")
-		return nil
+		// for (var i = 0; ...): var 声明语法与 let 同构, 语义 (函数作用域)
+		// 由编译器落点决定
+		varStmt := p.parseVarStatement()
+		if varStmt == nil {
+			return nil
+		}
+		stmt.Init = varStmt
+		// parseVarStatement 内 consumeSemicolon 后 curToken 停在 ';' 上,
+		// 前进一步使其落在 condition 开头。
+		p.nextToken()
 	} else if !p.curTokenIs(lexer.SEMICOLON) {
 		expr := p.parseCommaSequence()
 		stmt.Init = &ast.ExpressionStatement{Token: p.curToken(), Expression: expr}

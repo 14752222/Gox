@@ -101,8 +101,38 @@ func (ls *LetStatement) String() string {
 }
 func (ls *LetStatement) statementNode() {}
 
-// ==================== const 声明 ====================
+// ==================== var 声明 ====================
 
+// VarStatement 表示 var 变量声明语句 (函数作用域 + 提升 + 允许重复声明)。
+// 例如: var x = 5;  或  var a = 1, b;  或  var [x, y] = pair;
+// 与 let 的分野见 parser 对 VAR 的处理与 compiler 的 compileVarStatement ——
+// var 的绑定登记在最近的**函数作用域层**, 而不是当前块。
+type VarStatement struct {
+	Token lexer.Token // VAR 令牌
+	Name  *Identifier
+	Value Expression   // 可为 nil (var x;)
+	More  []Declarator // 额外的声明项 (var a = 1, b = 2; 中的 b = 2)
+}
+
+func (vs *VarStatement) TokenLiteral() string { return vs.Token.Literal }
+func (vs *VarStatement) String() string {
+	var result string
+	result = vs.TokenLiteral() + " " + vs.Name.String()
+	if vs.Value != nil {
+		result += " = " + vs.Value.String()
+	}
+	for _, d := range vs.More {
+		result += ", " + d.Name.String()
+		if d.Value != nil {
+			result += " = " + d.Value.String()
+		}
+	}
+	result += ";"
+	return result
+}
+func (vs *VarStatement) statementNode() {}
+
+// ==================== const 声明 ====================
 // ConstStatement 表示 const 常量声明语句。
 // 例如: const PI = 3.14;
 type ConstStatement struct {

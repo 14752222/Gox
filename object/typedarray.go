@@ -876,12 +876,22 @@ func writeNum(b []byte, kind TAKind, v float64, littleEndian bool) {
 // ===== TypedArray 原型对象注册表 =====
 // 每种 TypedArray 的 prototype 对象由 stdlib 注册, 供实例属性查找回退,
 // 使 Uint8Array.prototype.toBase64 这类反射访问成立。
-var taProtoRegistry = map[string]Value{}
+// 与 temporalProtos 同理: SetupGlobals 可能被并发调用, 读写都过锁。
+var (
+	taProtoRegistryMu sync.RWMutex
+	taProtoRegistry   = map[string]Value{}
+)
 
 // SetTypedArrayProto 注册某类型的 prototype 对象。
-func SetTypedArrayProto(name string, proto Value) { taProtoRegistry[name] = proto }
+func SetTypedArrayProto(name string, proto Value) {
+	taProtoRegistryMu.Lock()
+	defer taProtoRegistryMu.Unlock()
+	taProtoRegistry[name] = proto
+}
 
 func typedArrayProto(name string) (Value, bool) {
+	taProtoRegistryMu.RLock()
+	defer taProtoRegistryMu.RUnlock()
 	v, ok := taProtoRegistry[name]
 	return v, ok
 }
