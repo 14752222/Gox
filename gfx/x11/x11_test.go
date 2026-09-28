@@ -25,7 +25,8 @@ func TestRGBAToXZPixelFormat(t *testing.T) {
 	if data[0] != 0 || data[1] != 0 || data[2] != 0xFF {
 		t.Fatalf("red pixel → BGR = %v", data[0:3])
 	}
-	if data[4] != 0xFF || data[5] != 0xFF || data[6] != 0 {
+	// 绿色 (0,0xFF,0) → BGR = (0,0xFF,0)：B 与 R 均为 0，仅 G 通道点亮
+	if data[4] != 0 || data[5] != 0xFF || data[6] != 0 {
 		t.Fatalf("green pixel → BGR = %v", data[4:7])
 	}
 	if data[8] != 0xFF || data[9] != 0 || data[10] != 0 {

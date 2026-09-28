@@ -58,8 +58,16 @@ jobs:
           fi
 
   build-test:
-    name: 编译 / vet / 测试 (windows)
-    runs-on: windows-latest
+    name: 编译 / vet / 测试 (${{ matrix.os }})
+    # 三平台矩阵 (T02)：Gox 的三个桌面后端各守一个平台 —— win32 / cocoa / x11。
+    # 此前测试只钉 windows（当年 Linux 无头行为未验证）；现在 x11 用例的期望值
+    # 修正 + xvfb 实测全绿之后，ubuntu/macos 正式入列。fail-fast 关掉，让三个
+    # 平台的红互不掩盖 —— 平台相关用例一次看全。
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
       # website/ · npm/ · gox-logo-concepts/ 是独立仓库的子模块，
@@ -83,10 +91,23 @@ jobs:
 
       # 零 cgo 是硬约束，所以 -race 在本项目不可用（Go 会要求 cgo 支持），
       # 这里也就没有 -race 这一档。
+      #
+      # Linux 无头闸门 (xvfb)：x11 后端经 jezek/xgb 走纯 Go 的 X11 协议（零 cgo，
+      # 不需要 libx11-dev），但有一批用例需要真的连上一个 X server —— xvfb
+      # 就是那个"有 X 协议、没有显示器"的最小宿主。fonts-dejavu 是字体测量类
+      # 用例的兜底（runner 裸机可能一个字体都没有）。
+      - name: go test ./... (linux + xvfb 无头 X)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq xvfb fonts-dejavu-core
+          xvfb-run -a -s "-screen 0 1280x800x24" go test ./...
+
       - name: go test ./...
+        if: runner.os != 'Linux'
         run: go test ./...
 
       - name: 冒烟：命令行能起来并报版本号
         run: |
-          go build -o dist/ci-gox.exe ./cmd/gox
-          ./dist/ci-gox.exe version
+          go build -o dist/ci-gox${{ runner.os == 'Windows' && '.exe' || '' }} ./cmd/gox
+          ./dist/ci-gox${{ runner.os == 'Windows' && '.exe' || '' }} version
