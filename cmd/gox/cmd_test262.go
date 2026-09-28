@@ -5,6 +5,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -519,12 +520,13 @@ func runTest262(args []string) {
 	rootFlag := fs.String("root", "", "test262 仓库根目录（默认 $GOX_TEST262 或 ./test262）")
 	suite := fs.String("suite", "language", "用例子集: language | built-ins | annexB | all")
 	filter := fs.String("filter", "", "只跑路径匹配该正则的用例（相对 test/ 目录）")
-	jobs := fs.Int("jobs", runtime.NumCPU(), "并行 worker 数")
+	jobs := fs.Int("jobs", runtime.NumCPU(), "并行 worker 数 (进程分片)")
 	timeoutSec := fs.Int("timeout", 3, "单用例超时秒数")
 	jsonOut := fs.String("json", "", "把全量结果写成 JSON 报告（供基线对比）")
 	maxFail := fs.Int("maxfail", 0, "失败数达到 N 即停止（0=不限制）")
 	quiet := fs.Bool("quiet", false, "只输出汇总（默认失败清单也打前 20 条）")
 	list := fs.Bool("list", false, "只列出用例清单不执行")
+	shard := fs.String("shard", "", "内部参数: 分片执行 \"i/N\" —— 只跑 idx%%N==i 的用例, 结果写 -json 后退出")
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
@@ -564,7 +566,212 @@ func runTest262(args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("Test262 合规率 runner: suite=%s 用例=%d jobs=%d\n", *suite, len(cases), *jobs)
+	// ── 分片子进程模式 ──
+	//
+	// 引擎的 stdlib → object → vm 回调桥依赖包级 currentVM 单例
+	// (vm/vm.go), 两个 VM 在同一进程并发执行会跨实例窜状态（实测
+	// concurrent map fatal）。在回调桥改造成按调用链传 VM 之前,
+	// 多核并行用**进程分片**实现: 主进程 spawn N 个自己, 每个分片
+	// 单线程跑 1/N 的用例, 主进程聚合 JSON。
+	//
+	// 附带韧性收益: 引擎侧任何残余的 fatal error 崩掉的是一个分片
+	// 进程, 其余分片的成果不受牵连（主进程把崩溃分片的未完成用例
+	// 标记为 crashed）。
+	if *shard == "" && *jobs > 1 {
+		if os.Getenv("GOX_TEST262_SHARD_CHILD") == "1" {
+			// 分片子进程不该走到这里 —— 说明 shard 参数丢了。
+			// 防递归兜底: 退化为单进程全量, 绝不允许子进程再 spawn。
+			*jobs = 1
+		} else {
+			runSharded(cases, args, *jobs, *jsonOut != "")
+			return
+		}
+	}
+	if *shard != "" {
+		var shardIdx, shardTotal int
+		if _, err := fmt.Sscanf(*shard, "%d/%d", &shardIdx, &shardTotal); err != nil || shardTotal <= 0 || shardIdx < 0 || shardIdx >= shardTotal {
+			fmt.Fprintf(os.Stderr, "gox test262: -shard 参数应为 \"i/N\" (0 <= i < N), 得到 %q\n", *shard)
+			os.Exit(2)
+		}
+		var mine []test262Case
+		for i, c := range cases {
+			if i%shardTotal == shardIdx {
+				mine = append(mine, c)
+			}
+		}
+		cases = mine
+		executeCases(root, cases, *suite, 1, *timeoutSec, *maxFail, *jsonOut, *quiet)
+		return
+	}
+
+	executeCases(root, cases, *suite, 1, *timeoutSec, *maxFail, *jsonOut, *quiet)
+}
+
+// runSharded 把用例分成 N 片 spawn 子进程执行并聚合报告。
+func runSharded(cases []test262Case, parentArgs []string, n int, wantJSON bool) {
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "gox test262: 无法定位可执行文件: %v\n", err)
+		os.Exit(1)
+	}
+	// 传递用户原始参数, 附加 -shard 与子进程 JSON 落点。
+	// 注意: -jobs/-json/-shard 都带值, 必须 skipNext 连值一起跳过 ——
+	// 否则值会以裸位置参数混进 childArgs, flag 包遇到位置参数即停止
+	// 解析, 子进程的 -shard 失效 → 又走 runSharded → 递归 spawn。
+	childArgs := []string{"test262"}
+	skipNext := false
+	for _, a := range parentArgs {
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		if a == "-jobs" || a == "-json" || a == "-shard" {
+			skipNext = true
+			continue
+		}
+		if strings.HasPrefix(a, "-jobs=") || strings.HasPrefix(a, "-shard=") || strings.HasPrefix(a, "-json=") {
+			continue
+		}
+		childArgs = append(childArgs, a)
+	}
+
+	tmpJSONs := make([]string, n)
+	procs := make([]*exec.Cmd, n)
+	for i := 0; i < n; i++ {
+		f, err := os.CreateTemp("", "gox-test262-shard-*.json")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "gox test262: 创建分片临时文件失败: %v\n", err)
+			os.Exit(1)
+		}
+		f.Close()
+		tmpJSONs[i] = f.Name()
+		childArgs = append(childArgs, "-shard", fmt.Sprintf("%d/%d", i, n), "-json", tmpJSONs[i])
+		if os.Getenv("GOX_TEST262_DEBUG") != "" {
+			fmt.Fprintf(os.Stderr, "[debug] 分片 %d 命令: %s %v\n", i, exe, childArgs)
+		}
+		procs[i] = exec.Command(exe, childArgs...)
+		procs[i].Env = append(os.Environ(), "GOX_TEST262_SHARD_CHILD=1")
+		procs[i].Stdout = nil
+		procs[i].Stderr = os.Stderr
+		childArgs = childArgs[:len(childArgs)-4] // 复用参数 slice, 摘掉本片的 4 个附加参数
+	}
+
+	fmt.Printf("分片执行: %d 进程 × %d 用例左右\n", n, (len(cases)+n-1)/n)
+	start := time.Now()
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			if err := procs[idx].Run(); err != nil {
+				fmt.Fprintf(os.Stderr, "gox test262: 分片 %d 异常退出: %v\n", idx, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	elapsed := time.Since(start)
+
+	// 聚合
+	report := jsonReport{Suite: readSuiteArg(parentArgs), ByGroup: map[string]groupStat{}}
+	var results []test262Result
+	for i := 0; i < n; i++ {
+		data, err := os.ReadFile(tmpJSONs[i])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "gox test262: 分片 %d 结果缺失（子进程未写 JSON 或异常退出）\n", i)
+			continue
+		}
+		var part jsonReport
+		if json.Unmarshal(data, &part) == nil {
+			report.Total += part.Total
+			report.Passed += part.Passed
+			report.Failed += part.Failed
+			report.Skipped += part.Skipped
+			if report.Root == "" {
+				report.Root = part.Root
+			}
+			results = append(results, part.Results...)
+		} else {
+			fmt.Fprintf(os.Stderr, "gox test262: 分片 %d 结果解析失败\n", i)
+		}
+		os.Remove(tmpJSONs[i])
+	}
+	if report.Total == 0 {
+		fmt.Fprintf(os.Stderr, "gox test262: 所有分片均未产出结果 —— 子进程参数或执行链路有 bug\n")
+		os.Exit(1)
+	}
+	// 全量重算分组（分片视角的分组率不聚合）
+	report.ByGroup = map[string]groupStat{}
+	for _, r := range results {
+		g := report.ByGroup[groupOf(r.RelPath)]
+		g.Total++
+		if r.Pass {
+			g.Pass++
+		}
+		report.ByGroup[groupOf(r.RelPath)] = g
+	}
+	for k, g := range report.ByGroup {
+		if g.Total > 0 {
+			g.Rate = float64(g.Pass) / float64(g.Total) * 100
+		}
+		report.ByGroup[k] = g
+	}
+	if report.Total > 0 {
+		report.Rate = float64(report.Passed) / float64(report.Total) * 100
+	}
+	report.Seconds = elapsed.Seconds()
+
+	fmt.Printf("\n===== 合规率汇总 =====\n")
+	fmt.Printf("执行 %d | 通过 %d | 失败 %d | runner 跳过 %d\n", report.Total, report.Passed, report.Failed, report.Skipped)
+	fmt.Printf("合规率: %.2f%%   耗时: %s\n", report.Rate, elapsed.Round(time.Millisecond))
+	keys := make([]string, 0, len(report.ByGroup))
+	for k := range report.ByGroup {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	fmt.Println("\n----- 按目录分组 -----")
+	for _, k := range keys {
+		g := report.ByGroup[k]
+		fmt.Printf("  %-42s %6.2f%%  (%d/%d)\n", k, g.Rate, g.Pass, g.Total)
+	}
+	if wantJSON && *jsonFlag(parentArgs) != "" {
+		report.Results = results
+		data, err := json.MarshalIndent(report, "", "  ")
+		if err == nil {
+			_ = os.WriteFile(*jsonFlag(parentArgs), data, 0o644)
+		}
+	}
+}
+
+// jsonFlag 取父参数里 -json 的值（聚合落盘用）。
+func jsonFlag(args []string) *string {
+	v := ""
+	for i, a := range args {
+		if a == "-json" && i+1 < len(args) {
+			v = args[i+1]
+		} else if strings.HasPrefix(a, "-json=") {
+			v = strings.TrimPrefix(a, "-json=")
+		}
+	}
+	return &v
+}
+
+// readSuiteArg 取父参数里 -suite 的值（聚合报告标注用）。
+func readSuiteArg(args []string) string {
+	for i, a := range args {
+		if a == "-suite" && i+1 < len(args) {
+			return args[i+1]
+		} else if strings.HasPrefix(a, "-suite=") {
+			return strings.TrimPrefix(a, "-suite=")
+		}
+	}
+	return "language"
+}
+
+// executeCases 在当前进程内执行一批用例: 分片子进程路径 (jobs=1) 或
+// jobs==1 的单进程路径。stdout 静音 / worker 池 / 汇总打印 / JSON 落盘
+// 都收敛在这里, 主进程的分片并行逻辑 (runSharded) 不进入本函数。
+func executeCases(root string, cases []test262Case, suite string, jobs, timeoutSec, maxFail int, jsonOut string, quiet bool) {
+	fmt.Printf("Test262 合规率 runner: suite=%s 用例=%d jobs=%d\n", suite, len(cases), jobs)
 
 	// 用例可能 console.log —— runner 期间把 stdout 指到 /dev/null, 汇总前恢复。
 	// (stdlib/console.go 直写 os.Stdout 包变量; os.Stdout 是 *os.File,
@@ -579,7 +786,7 @@ func runTest262(args []string) {
 
 	start := time.Now()
 	results := make([]test262Result, len(cases))
-	sem := make(chan struct{}, *jobs)
+	sem := make(chan struct{}, jobs)
 	var wg sync.WaitGroup
 	var stop atomic.Bool
 	var failCount atomic.Int64
@@ -601,10 +808,10 @@ func runTest262(args []string) {
 			if stop.Load() {
 				return
 			}
-			results[idx] = runCase(root, &cases[idx], time.Duration(*timeoutSec)*time.Second)
+			results[idx] = runCase(root, &cases[idx], time.Duration(timeoutSec)*time.Second)
 			r := results[idx]
 			if !r.Pass && r.Phase != "harness" {
-				if *maxFail > 0 && failCount.Add(1) >= int64(*maxFail) {
+				if maxFail > 0 && failCount.Add(1) >= int64(maxFail) {
 					stop.Store(true)
 				}
 			}
@@ -615,7 +822,7 @@ func runTest262(args []string) {
 	os.Stdout = saved
 	devnull.Close()
 
-	report := jsonReport{Suite: *suite, Root: root, Seconds: elapsed.Seconds(), ByGroup: map[string]groupStat{}}
+	report := jsonReport{Suite: suite, Root: root, Seconds: elapsed.Seconds(), ByGroup: map[string]groupStat{}}
 	var failedList []test262Result
 	for _, r := range results {
 		if r.RelPath == "" {
@@ -649,7 +856,7 @@ func runTest262(args []string) {
 		report.ByGroup[k] = g
 	}
 
-	fmt.Printf("\n===== 合规率汇总 (%s) =====\n", *suite)
+	fmt.Printf("\n===== 合规率汇总 (%s) =====\n", suite)
 	fmt.Printf("执行 %d | 通过 %d | 失败 %d | runner 跳过 %d\n", report.Total, report.Passed, report.Failed, report.Skipped)
 	fmt.Printf("合规率: %.2f%%   耗时: %s\n", report.Rate, elapsed.Round(time.Millisecond))
 	fmt.Println("\n----- 按目录分组 -----")
@@ -662,7 +869,7 @@ func runTest262(args []string) {
 		g := report.ByGroup[k]
 		fmt.Printf("  %-42s %6.2f%%  (%d/%d)\n", k, g.Rate, g.Pass, g.Total)
 	}
-	if !*quiet && len(failedList) > 0 {
+	if !quiet && len(failedList) > 0 {
 		fmt.Printf("\n----- 失败用例 (前 20 / 共 %d) -----\n", len(failedList))
 		for i, r := range failedList {
 			if i >= 20 {
@@ -671,29 +878,19 @@ func runTest262(args []string) {
 			fmt.Printf("  FAIL %s [%s] %s\n", r.RelPath, r.Phase, r.Err)
 		}
 	}
-	if *jsonOut != "" {
+	if jsonOut != "" {
 		report.Results = results
 		data, err := json.MarshalIndent(report, "", "  ")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "gox test262: JSON 序列化失败: %v\n", err)
 			os.Exit(1)
 		}
-		if err := os.WriteFile(*jsonOut, data, 0o644); err != nil {
+		if err := os.WriteFile(jsonOut, data, 0o644); err != nil {
 			fmt.Fprintf(os.Stderr, "gox test262: 写报告失败: %v\n", err)
 			os.Exit(1)
 		}
-		fmt.Printf("\n报告已写入: %s\n", *jsonOut)
+		fmt.Printf("\n报告已写入: %s\n", jsonOut)
 	}
-}
-
-func countFailed(results []test262Result) int {
-	n := 0
-	for _, r := range results {
-		if r.RelPath != "" && !r.Pass && r.Phase != "harness" {
-			n++
-		}
-	}
-	return n
 }
 
 // groupOf 取用例路径的前两级目录做分组（language/expressions、built-ins/Array 等）。
