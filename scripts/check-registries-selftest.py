@@ -110,7 +110,7 @@ CASES = [
 
     ("main.go 与 package.json 版本号脱钩",
      "版本号不一致",
-     lambda r: sub(r, "main.go", 'const version = "0.5.0"', 'const version = "0.6.0"')),
+     lambda r: sub(r, "cmd/gox/main.go", 'const version = "0.7.0"', 'const version = "0.7.1"')),
 
     ("package.json files 漏掉 binaries/",
      "没有 binaries/",

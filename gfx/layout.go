@@ -95,6 +95,8 @@ func layoutNode(n *GuiNode) {
 		layoutDialog(n)
 	case "toast":
 		layoutToast(n)
+	case "tooltip":
+		layoutTooltip(n)
 	case "scroll":
 		layoutScroll(n)
 	case "textarea":
@@ -190,6 +192,18 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 			}
 		} else {
 			cw, ch := stackContentSize(n, n.slotHorizontal())
+			if w == 0 {
+				w = cw
+			}
+			if h == 0 {
+				h = ch
+			}
+		}
+	case "tooltip":
+		// 包裹式触发容器 (S4): 布局透明, 尺寸跟随唯一流内子节点。
+		// 弹层 tooltip-popup 是 isOverlay, 不占流内也不参与尺寸。
+		if c := n.tooltipTrigger(); c != nil {
+			cw, ch := c.intrinsicSize()
 			if w == 0 {
 				w = cw
 			}

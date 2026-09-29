@@ -50,6 +50,9 @@ var (
 	colorInfo         = color.RGBA{R: 0x2F, G: 0x80, B: 0xED, A: 255} // toast info
 	colorWarn         = color.RGBA{R: 0xE8, G: 0x89, B: 0x0C, A: 255} // toast warn
 	colorDanger       = color.RGBA{R: 0xC0, G: 0x39, B: 0x2B, A: 255} // toast error
+	// S4 tooltip
+	colorTooltipFace = color.RGBA{R: 0x26, G: 0x26, B: 0x26, A: 0xF2} // 提示弹层底色 (近不透明深灰)
+	colorTooltipText = color.RGBA{R: 0xF5, G: 0xF5, B: 0xF5, A: 255}  // 提示弹层文字 (近白)
 	// P3-5 菜单
 	colorMenuBarFace   = color.RGBA{R: 0xF3, G: 0xF3, B: 0xF3, A: 255} // 菜单栏底色 (浅灰条)
 	colorMenuBarEdge   = color.RGBA{R: 0xD0, G: 0xD0, B: 0xD0, A: 255} // 菜单栏底边线
@@ -378,6 +381,8 @@ func drawNode(img *image.RGBA, n *GuiNode) {
 		paintDialog(img, n)
 	case "toast":
 		paintToast(img, n, disabled)
+	case "tooltip-popup":
+		paintTooltipPopup(img, n, disabled)
 	case "input":
 		paintInput(img, n, disabled)
 	case "scroll":

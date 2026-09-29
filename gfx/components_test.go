@@ -451,6 +451,7 @@ func TestExampleScriptsMount(t *testing.T) {
 		"events_demo.js", "focus_demo.js", "hover_demo.js", // P1 事件/焦点/悬停
 		"tabs_demo.js", "list_demo.js", // P1 条件渲染 / 列表渲染
 		"select_demo.js", "dialog_demo.js", // P2-3 下拉框 / P2-4 弹层
+		"tooltip_demo.js",                // P4 悬停提示 (非模态弹层)
 		"input_demo.js",                  // P2-1 单行输入
 		"canvas_demo.js",                 // P3-1 自绘画布
 		"slider_demo.js",                 // P2-8 滑块
@@ -1020,6 +1021,34 @@ func checkDemoTree(t *testing.T, name string, root *GuiNode, fake *fakeSurface) 
 		}
 		if dlg.PropHandler("onClose") == nil {
 			t.Fatalf("dialog_demo 的 dialog 缺少 onClose 处理器")
+		}
+	case "tooltip_demo.js":
+		// 悬停提示演示: 4 个 tooltip 包着各自触发元素; 弹层由悬停驱动,
+		// 首帧不挂载。tooltip 本身布局透明, 盒子应与触发按钮重合。
+		tips := findAll(root, "tooltip")
+		if len(tips) != 4 {
+			t.Fatalf("tooltip_demo 的 tooltip 数量 = %d, want 4", len(tips))
+		}
+		for i, tip := range tips {
+			if n := countTag(tip, "tooltip-popup"); n != 0 {
+				t.Fatalf("tooltip #%d 首帧不该挂载弹层, got %d", i, n)
+			}
+			if tip.tipPopup != nil {
+				t.Fatalf("tooltip #%d 首帧 tipPopup 应为 nil", i)
+			}
+			if tip.tipText() == "" {
+				t.Fatalf("tooltip #%d 缺少提示文本", i)
+			}
+			btn := findFirst(tip, "button")
+			if btn == nil {
+				t.Fatalf("tooltip #%d 缺少触发按钮", i)
+			}
+			if tip.Box != btn.Box {
+				t.Fatalf("tooltip #%d 未与触发元素重合: %v vs %v", i, tip.Box, btn.Box)
+			}
+		}
+		if n := countTag(root, "tooltip-popup"); n != 0 {
+			t.Fatalf("首帧不该有任何 tooltip-popup, got %d", n)
 		}
 	case "transition_demo.js":
 		// 过渡动画演示: 首帧是"静止"状态 —— 首次赋值不做过渡 (与 CSS 一致),

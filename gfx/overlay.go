@@ -202,22 +202,25 @@ func dialogMaskHit(d *GuiNode, x, y int) bool {
 	return true
 }
 
-// closeTopDialog 关掉最上层的可见 dialog (Esc 兜底路径)。
+// closeTopDialog 关掉最上层的可见 dialog (Esc 兜底路径), 返回是否关掉了一个
+// —— 没关到 (没有可见 dialog) 时调用方继续走后续兜底 (tooltip) 或把按键
+// 交给脚本。
 //
 // 与 modalAt 的区别: modalAt 用坐标筛选 (点击路径), Esc 没有坐标, 这里
 // 只需按绘制序倒着取最上面那个 dialog。
-func (a *app) closeTopDialog() {
+func (a *app) closeTopDialog() bool {
 	root := a.rootNode()
 	if root == nil {
-		return
+		return false
 	}
 	esc := escapesInDrawOrder(root)
 	for i := len(esc) - 1; i >= 0; i-- {
 		if esc[i].Tag == "dialog" && esc[i].overlayVisible() {
 			a.callHandler(esc[i], "onClose", nil)
-			return
+			return true
 		}
 	}
+	return false
 }
 
 // closeAnyExpandedSelect 收起任意一个展开中的下拉框, 返回是否关掉了。

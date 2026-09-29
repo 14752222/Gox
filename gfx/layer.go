@@ -42,9 +42,11 @@ func (n *GuiNode) escapeClipping() bool {
 
 // isOverlay 报告标签是否天生是"覆盖在内容之上"的弹层: 不占常规流、
 // 逃逸裁剪、自动拿到高层 zIndex (见 drawOrderKey 的注释)。
+// tooltip-popup 没有事件处理器, 命中测试穿过它直达下层 (非模态, 见
+// hitEscapesLayer) —— "提示不挡交互"就是靠这条成立的。
 func (n *GuiNode) isOverlay() bool {
 	switch n.Tag {
-	case "dialog", "toast", "menu-popup":
+	case "dialog", "toast", "menu-popup", "tooltip-popup":
 		return true
 	}
 	return false

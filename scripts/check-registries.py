@@ -77,6 +77,9 @@ EXEMPT_LAYOUT = {
 EXEMPT_LAYOUT.update({
     "#text": TEXT_NODE,
     "text": "文本容器在 default 分支里按内容区放置它的 #text 子节点",
+    "tooltip-popup": ("弹层盒子由 positionTooltipPopup 显式定位（gfx/tooltip.go：按 placement"
+                      "贴触发盒旁边，越界翻转 + clamp 进窗口），不走 layoutNode ——"
+                      "内容是单行文字，绘制分支自画，没有子节点可排"),
     "menuitem": ("声明位置的 menuitem 不占位也不排布：文字由下拉弹层里物化出的 "
                  "menu-item 画。这里只需要 intrinsicSize 给一个名义行高，"
                  "防止它的子 menu（子菜单）被 drawNode 的空盒剪枝剪掉"),
@@ -91,12 +94,17 @@ EXEMPT_INTRINSIC = {
                   "固有尺寸不参与"),
     "menu-popup": POPUP_BOX + "（一级下拉挂在菜单标题下方，子菜单挂在触发项右侧）",
     "select-popup": POPUP_BOX + "（贴字段正下方且等宽，见 gfx/layout.go 的 select-popup 分支）",
+    "tooltip-popup": ("弹层盒子由 positionTooltipPopup 显式定位（gfx/tooltip.go：按 placement"
+                      "贴触发盒旁边，越界翻转 + clamp 进窗口），不走 layoutNode ——"
+                      "内容是单行文字，绘制分支自画，没有子节点可排"),
     "rect": "通用装饰盒：固有尺寸只认显式 width/height（default 分支），没有内容尺寸",
     "window": NOT_IN_TREE,
 }
 
 EXEMPT_RASTER = {t: CONTAINER for t in ["column", "grid", "row", "view"]}
 EXEMPT_RASTER.update({
+    "tooltip": "布局透明触发容器：走 default 的 paintBoxDecor（无 background/border 就不画，"
+               "弹层 tooltip-popup 由自己的绘制分支画）",
     "button": "button 走 default 的 paintBoxDecor（装饰统一出口，交互反馈也挂在那里）",
     "menuitem": "声明位置不绘制：文字由下拉弹层里物化出的 menu-item 画",
     "rect": "通用装饰盒，走 default 的 paintBoxDecor",

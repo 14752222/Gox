@@ -39,6 +39,10 @@ type GuiNode struct {
 	popup     *GuiNode
 	highlight int
 
+	// tooltip 状态 (S4): tipPopup 是显示中的弹层 (tooltip-popup, Go 侧构造;
+	// 未显示为 nil)。计时状态 (host/deadline) 在 app 上, 见 tooltip.go。
+	tipPopup *GuiNode
+
 	// 菜单状态 (P3-5): 复用 expanded 表达"下拉是否打开", 另有两组专职字段。
 	//   - menuPopup 是挂在 menu 下的下拉弹层 (menu-popup);
 	//   - menuHighlight 是键盘光标的项下标 (-1 = 无);
@@ -146,6 +150,8 @@ var knownTags = map[string]struct{}{
 	"select": {}, "select-popup": {}, "select-option": {},
 	// P2-4 弹层
 	"dialog": {}, "toast": {},
+	// S4 悬停提示 (tooltip-popup 由 Go 侧构造, 脚本写不到)
+	"tooltip": {}, "tooltip-popup": {},
 	// P2-1 单行文本输入
 	"input": {},
 	// P2-5 滚动容器
@@ -844,7 +850,7 @@ func (n *GuiNode) buttonPadding() (padX, padY int) {
 func (n *GuiNode) hoverable() bool {
 	switch n.Tag {
 	case "button", "checkbox", "radio", "switch", "select", "select-option", "input", "textarea", "slider",
-		"menu", "menu-item":
+		"menu", "menu-item", "tooltip":
 		return true
 	}
 	return false

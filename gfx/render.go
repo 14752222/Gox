@@ -64,6 +64,14 @@ type app struct {
 	// Down 与 Up 是两个事件, 所以这个消息要在两次事件之间留存。
 	swallowClick bool
 
+	// tooltip 计时状态 (S4): host 是当前"计时中或显示中"的 tooltip 节点,
+	// deadline 是到点时刻 (Zero = 不在计时 / 已显示)。
+	// 状态机: host=nil → (悬停进触发区) host+deadline → (到点) 显示,
+	// deadline 清零 → (移出/按下/Esc) host=nil, 弹层摘除。全部 VM 线程读写,
+	// mu 只为与既有字段保持同一纪律。
+	tooltipHost     *GuiNode
+	tooltipDeadline time.Time
+
 	// 全局快捷键表 (P3-5): 从树上 menuitem 的 shortcut prop 收集而来。
 	// 惰性重建 (表为空时按键触发一次), 因为它只在"菜单项集合变化"时需要更新。
 	shortcuts []menuShortcutEntry
@@ -309,6 +317,13 @@ func Pump(maxWait time.Duration) bool {
 	if hasPendingPost() && (wait <= 0 || wait > postDrainCap) {
 		wait = postDrainCap
 	}
+	// tooltip 计时 (S4): 有悬停提示在等延迟到点时, 等待预算钳到最近的
+	// deadline —— 否则"鼠标停住不动等提示弹出"时泵会睡死在 WaitEvents 里,
+	// AfterFunc 的 Post 唤不醒它, 提示永远不弹 (与 caret blink 限制同源,
+	// 解法同 hasPendingPost: 有内部唤醒需求就别睡无限)。
+	if d, ok := nextTooltipWake(); ok && (wait <= 0 || wait > d) {
+		wait = d
+	}
 	for _, a := range list {
 		if !a.surfaceAlive() {
 			continue
@@ -417,6 +432,9 @@ func (a *app) processEvents() bool {
 	// 输入框光标闪烁 (P2-1): 相位翻转时才标脏, 于是每次闪烁只重绘一帧,
 	// 而不是 60fps 常驻重绘 (光标闪烁不需要每一帧都变)。
 	a.tickCaretBlink()
+	// tooltip 计时到期 (S4): 泵被等待预算钳到 deadline (见 nextTooltipWake),
+	// 醒来后在这里完成显示。
+	a.tickTooltip()
 	a.mu.Lock()
 	need := a.needDraw
 	a.mu.Unlock()
@@ -450,6 +468,7 @@ func (a *app) dispatchEvent(ev Event) {
 		// 光标离开客户区 / 窗口失活: 清掉悬停与按压态
 		a.setHover(nil)
 		a.releasePress()
+		a.tooltipHide()
 		// 拖动中 (P2-8): 支持鼠标捕获的后端会在窗口外继续送事件, 可以
 		// 安心等 MouseUp; 不支持的后端则**永远等不到**, 只能在这里放弃,
 		// 否则 dragTarget 卡死 (下次移进窗口时没按键也会拖着滑块跑)。
@@ -655,20 +674,31 @@ func (a *app) handleKey(key, name string, ev Event) {
 			return
 		}
 	}
+	// Esc 内置兜底 (P2-4/P3-5/S4): 优先级 = 菜单 > 下拉框 > 对话框 > tooltip。
+	// 从最表层的交互开始收: 菜单弹在下拉之上, 下拉弹在对话框之上。
+	//
+	// 这段必须**先于脚本回调**: router 的 backKeys (router.go) 会给每个挂
+	// 路由的窗口根节点包装一个 onKeyDown (Alt+←/→ 历史导航, 包装式挂法让
+	// handlerInChain 从此非 nil) —— 兜底若排在"handler 判空"之后, Esc 收
+	// 弹层在所有 router 窗口上整体静默失效 (dialog/select 同样中招, 只是
+	// 此前无用例覆盖; tooltip 的 Esc 用例在全量顺序下偶然暴露)。
+	// 收掉弹层才独占这次按键; 没弹层可收时按键照旧派发给脚本 (tooltip 是
+	// 非模态弱打扰, 顺手关掉即可), 不改变"脚本自己处理 Esc"的能力。
+	if name == "onKeyDown" && key == "Escape" {
+		root := a.rootNode()
+		if a.closeAnyExpandedMenu(root) {
+			return
+		}
+		if a.closeAnyExpandedSelect(root) {
+			return
+		}
+		if a.closeTopDialog() {
+			return
+		}
+		a.tooltipHide()
+	}
 	handler := handlerInChain(n, name)
 	if handler == nil {
-		// Esc 兜底 (P2-4/P3-5): 优先级 = 菜单 > 下拉框 > 对话框。
-		// 从最表层的交互开始收: 菜单弹在下拉之上, 下拉弹在对话框之上。
-		if name == "onKeyDown" && key == "Escape" {
-			root := a.rootNode()
-			if a.closeAnyExpandedMenu(root) {
-				return
-			}
-			if a.closeAnyExpandedSelect(root) {
-				return
-			}
-			a.closeTopDialog()
-		}
 		return
 	}
 	arg := object.NewObject()
@@ -695,6 +725,7 @@ func (a *app) handleMouseMove(x, y int) {
 	}
 	target := HitTestDeep(a.rootNode(), x, y)
 	a.setHover(target)
+	a.tooltipTrack(target)
 	if h := handlerInChain(target, "onMouseMove"); h != nil {
 		a.callHandlerWithPoint(h, "onMouseMove", x, y)
 	}
@@ -766,6 +797,10 @@ func (a *app) handleContextMenu(x, y int) {
 // 只有落在有交互意义的节点上才记录按压态, 点空白处不该出现按压态。
 func (a *app) handleMouseDown(x, y int) {
 	root := a.rootNode()
+	// tooltip 让路 (S4): 按下 = 用户开始交互, 提示与原生控件一致地退场。
+	// 只影响"已显示/计时中"的这一次; 鼠标不动就不会重新计时 —— 点击本身
+	// 会带来反馈, 不需要提示跟着。
+	a.tooltipHide()
 	// 右键菜单最先收: 它盖在一切之上, 点它之外任何地方都是"关掉它"。
 	// 与下拉框同理 —— 这次按下只服务于收起, 顺便吞掉该次点击。
 	if ctx := contextMenuNode(root); ctx != nil {
