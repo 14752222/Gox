@@ -22,6 +22,11 @@ func main() {
 	l := lexer.New(string(src))
 	p := parser.New(l)
 	prog := p.ParseProgram()
+	if p.Errors().HasErrors() {
+		fmt.Fprintln(os.Stderr, "parse errors:")
+		fmt.Fprint(os.Stderr, p.Errors().String())
+		os.Exit(1)
+	}
 	c := compiler.New()
 	if err := c.Compile(prog); err != nil {
 		fmt.Fprintln(os.Stderr, "compile:", err)
