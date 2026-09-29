@@ -227,12 +227,17 @@ func (a *app) sliderDrag(n *GuiNode, x int) {
 	a.sliderEdited(n, v)
 }
 
-// dragMove 把一次鼠标移动喂给拖动目标。v1 只有 slider 会拖。
+// dragMove 把一次鼠标移动喂给拖动目标。当前有两种拖拽: slider 跳值 (P2-8)、
+// scroll 滚动条滑块跟手 (rSkhXA)。
 func (a *app) dragMove(n *GuiNode, x, y int) {
 	if n == nil {
 		return
 	}
 	if n.Tag == "slider" {
 		a.sliderDrag(n, x)
+		return
+	}
+	if n.Tag == "scroll" {
+		n.scrollDragTo(x, y)
 	}
 }

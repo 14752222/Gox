@@ -78,12 +78,20 @@ type GuiNode struct {
 	caret     int
 	caretLine int
 
-	// 滚动状态 (P2-5): offsetY 是当前纵向偏移, contentH 是上一次布局测出的
-	// 内容总高 (两者都由布局/滚轮维护, 不来自 props)。
+	// 滚动状态 (P2-5): offsetY/offsetX 是当前纵横偏移, contentH/contentW 是
+	// 上一次布局测出的内容总尺寸 (都由布局/滚轮/拖拽维护, 不来自 props)。
 	// textarea (P2-6) 只用 offsetY 做内部纵向滚动 (行数直接由 value 数出来,
 	// 不需要 contentH 缓存)。
 	offsetY  int
+	offsetX  int
 	contentH int
+	contentW int
+
+	// 滚动条拖拽 grab 快照 (rSkhXA): beginScrollDrag 按下时记鼠标位置与当时
+	// 偏移, scrollDragTo 换算用 (起点偏移取快照, 不用实时值, 避免位置反馈
+	// 造成"越拖越快")。
+	scrollGrabX, scrollGrabY       int
+	scrollGrabOffX, scrollGrabOffY int
 
 	// canvas 自绘回调 (P3-1): onDraw 是脚本给的函数, 每次绘制时用一个
 	// 落笔 ctx 调用一次 (依赖收集另有一遍空跑, 见 canvas.go 的说明)。
@@ -580,7 +588,11 @@ func disposeNode(n *GuiNode) {
 	n.caretLine = 0
 	// 滚动状态同样复位 (偏移属于"这一棵子树自己的视图状态")
 	n.offsetY = 0
+	n.offsetX = 0
 	n.contentH = 0
+	n.contentW = 0
+	n.scrollGrabX, n.scrollGrabY = 0, 0
+	n.scrollGrabOffX, n.scrollGrabOffY = 0, 0
 	// canvas 的 onDraw 一并断开: 节点离树后它的 effect 已被注销 (上面那轮),
 	// 留着这个引用只会让脚本函数对象多活一轮 GC, 没有别的意义。
 	n.onDraw = nil

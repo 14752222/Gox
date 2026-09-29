@@ -340,13 +340,16 @@ func (s *surface) translate(ev xgb.Event) bool {
 			s.trySend(gfx.Event{Kind: gfx.EventClose})
 		}
 	case *xproto.ButtonPressEvent:
+		// 滚轮的 Shift 状态在事件 state 位域里 (与键盘事件同一套解析),
+		// Scroll 容器据此做 Shift+滚轮横向滚动 (rSkhXA)。
+		_, wheelShift, _ := xModifiers(e.State)
 		switch e.Detail {
 		case 1: // 左键
 			s.trySend(gfx.Event{Kind: gfx.EventMouseDown, X: int(e.EventX), Y: int(e.EventY)})
 		case 4: // 滚轮上
-			s.trySend(gfx.Event{Kind: gfx.EventMouseWheel, X: int(e.EventX), Y: int(e.EventY), DeltaY: wheelDelta})
+			s.trySend(gfx.Event{Kind: gfx.EventMouseWheel, X: int(e.EventX), Y: int(e.EventY), DeltaY: wheelDelta, Shift: wheelShift})
 		case 5: // 滚轮下
-			s.trySend(gfx.Event{Kind: gfx.EventMouseWheel, X: int(e.EventX), Y: int(e.EventY), DeltaY: -wheelDelta})
+			s.trySend(gfx.Event{Kind: gfx.EventMouseWheel, X: int(e.EventX), Y: int(e.EventY), DeltaY: -wheelDelta, Shift: wheelShift})
 		}
 	case *xproto.ButtonReleaseEvent:
 		switch e.Detail {

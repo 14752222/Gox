@@ -1,6 +1,7 @@
 package gfx
 
 import (
+	"image"
 	"testing"
 )
 
@@ -61,7 +62,7 @@ func TestScrollContentHeightAndViewport(t *testing.T) {
 	if _, ok := small.scrollThumb(); ok {
 		t.Fatalf("内容不足一屏不该有滚动条")
 	}
-	if small.scrollBy(50) {
+	if small.scrollBy(0, 50) {
 		t.Fatalf("内容不足一屏不该能滚动")
 	}
 	if smallKids[0].Box.W != 240 {
@@ -75,7 +76,7 @@ func TestScrollByClampsAndShiftsChildren(t *testing.T) {
 		t.Fatalf("maxOffset = %d, want 100", sc.scrollMaxOffset())
 	}
 
-	if !sc.scrollBy(30) {
+	if !sc.scrollBy(0, 30) {
 		t.Fatalf("内容超出时 scrollBy(30) 应返回 true")
 	}
 	if sc.offsetY != 30 {
@@ -88,7 +89,7 @@ func TestScrollByClampsAndShiftsChildren(t *testing.T) {
 
 	// 下界钳位
 	sc.offsetY = 0
-	if sc.scrollBy(-50) {
+	if sc.scrollBy(0, -50) {
 		t.Fatalf("已在顶部, scrollBy(-50) 应为 false")
 	}
 	if sc.offsetY != 0 {
@@ -96,11 +97,11 @@ func TestScrollByClampsAndShiftsChildren(t *testing.T) {
 	}
 	// 上界钳位
 	sc.offsetY = 0
-	sc.scrollBy(9999)
+	sc.scrollBy(0, 9999)
 	if sc.offsetY != 100 {
 		t.Fatalf("底部越界: offsetY = %d, want 100", sc.offsetY)
 	}
-	if sc.scrollBy(10) {
+	if sc.scrollBy(0, 10) {
 		t.Fatalf("已在底部, 继续下滚应为 false (滚轮要能继续往外传)")
 	}
 }
@@ -350,4 +351,194 @@ func TestScrollDemoWheelScrollsClipsAndOverscrolls(t *testing.T) {
 			}
 		},
 	})
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 横向滚动 + 滚动条拖拽 (rSkhXA / RELEASE_NOTES 已知问题 2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+// mkScrollWide 造一个横向溢出的 scroll: 容器 w×h, 内装 cols 个宽 colW 的列
+// (显式宽度, 不会被 stretch 收窄), 行高 rowH。
+func mkScrollWide(w, h, cols, colW, rowH int) (*GuiNode, *GuiNode, []*GuiNode) {
+	root := mkNode("column", nil)
+	sc := mkNode("scroll", map[string]float64{"width": float64(w), "height": float64(h)})
+	mountChildren(root, sc)
+	var kids []*GuiNode
+	for i := 0; i < cols; i++ {
+		c := mkNode("rect", map[string]float64{"width": float64(colW), "height": float64(rowH)})
+		mountChildren(sc, c)
+		kids = append(kids, c)
+	}
+	Layout(root, 600, 600)
+	return root, sc, kids
+}
+
+func TestScrollHorizontalLayoutAndClamp(t *testing.T) {
+	_, sc, kids := mkScrollWide(200, 100, 1, 300, 40)
+
+	// 内容固有宽 300 > 视口 → 横向可滚; 单行 40 高, 纵向无溢出
+	if sc.contentW != 300 {
+		t.Fatalf("contentW = %d, want 300", sc.contentW)
+	}
+	// 纵向不溢出 → 不出竖轨 → 视口宽 = 200, maxOffsetX = 100
+	if got := sc.scrollMaxOffsetX(); got != 100 {
+		t.Fatalf("maxOffsetX = %d, want 100", got)
+	}
+	// 纵向内容不足一屏, 但底轨出现后视口变矮也不该凭空能纵滚
+	if sc.scrollMaxOffset() != 0 {
+		t.Fatalf("单行内容不该能纵滚 (maxOffsetY = %d)", sc.scrollMaxOffset())
+	}
+
+	// 横滚 30px: 子节点随偏移左移 (Box 直接落屏幕坐标)
+	if !sc.scrollBy(30, 0) {
+		t.Fatalf("横向 scrollBy(30) 应返回 true")
+	}
+	Layout(sc, 200, 100)
+	if kids[0].Box.X != sc.Box.X-30 {
+		t.Fatalf("子内容未随偏移左移: col0.X = %d, want %d", kids[0].Box.X, sc.Box.X-30)
+	}
+
+	// 边界钳位
+	sc.offsetX = 0
+	if sc.scrollBy(-50, 0) {
+		t.Fatalf("已在最左, scrollBy(-50,0) 应为 false")
+	}
+	sc.scrollBy(9999, 0)
+	if sc.offsetX != sc.scrollMaxOffsetX() {
+		t.Fatalf("右缘未钳位: offsetX = %d, max = %d", sc.offsetX, sc.scrollMaxOffsetX())
+	}
+}
+
+func TestScrollHorizontalThumb(t *testing.T) {
+	// 纵向不溢出 → 无竖轨 → 视口宽 200 → 滑块宽 = 200*200/300 = 133
+	_, sc, _ := mkScrollWide(200, 100, 1, 300, 40)
+	area := inner(sc)
+
+	thumb, ok := sc.scrollThumbX()
+	if !ok {
+		t.Fatalf("内容超宽应出现横向滚动条")
+	}
+	if thumb.W != 133 {
+		t.Fatalf("横向滑块宽 = %d, want 133", thumb.W)
+	}
+	if thumb.Y != area.Y+area.H-scrollTrackW+1 {
+		t.Fatalf("横向滑块应钉在容器底缘轨道上: Y = %d", thumb.Y)
+	}
+	if thumb.X != area.X {
+		t.Fatalf("偏移 0 时横向滑块应在最左: X = %d", thumb.X)
+	}
+
+	// 滚到一半: 滑块走行程的一半
+	sc.offsetX = sc.scrollMaxOffsetX() / 2
+	thumb2, _ := sc.scrollThumbX()
+	span := area.W - thumb2.W
+	if thumb2.X != area.X+span/2 {
+		t.Fatalf("半程横向滑块 X = %d, want %d", thumb2.X, area.X+span/2)
+	}
+
+	// 内容不超宽: 无横向滚动条
+	_, plain, _ := mkScroll(200, 100, 5, 40)
+	if _, ok := plain.scrollThumbX(); ok {
+		t.Fatalf("内容不超宽不该有横向滚动条")
+	}
+}
+
+func TestScrollWheelShiftScrollsHorizontally(t *testing.T) {
+	// 单行 40 高: 纵向永远不可滚 (maxY=0), 专测横向路径
+	root, sc, _ := mkScrollWide(200, 100, 1, 300, 40)
+	fake, a := mountTestApp(t, root, 600, 600)
+
+	cx, cy := sc.Box.X+10, sc.Box.Y+10
+	// Shift+滚轮: 横向滚一格
+	pushAndPump(t, fake, a, Event{Kind: EventMouseWheel, X: cx, Y: cy, DeltaY: -120, Shift: true})
+	if sc.offsetX != scrollNotch {
+		t.Fatalf("Shift+滚一格 offsetX = %d, want %d", sc.offsetX, scrollNotch)
+	}
+	if sc.offsetY != 0 {
+		t.Fatalf("Shift+滚不该动纵向: offsetY = %d", sc.offsetY)
+	}
+
+	// 无 Shift: 单行内容纵向不可滚 → 这一格横向兜底 (60 后钳到 max 100)
+	pushAndPump(t, fake, a, Event{Kind: EventMouseWheel, X: cx, Y: cy, DeltaY: -120})
+	if sc.offsetX != 100 {
+		t.Fatalf("纵向不可滚时应横向兜底: offsetX = %d, want 100 (钳位)", sc.offsetX)
+	}
+
+	// 横向到底后 (Shift 修饰) 事件冒泡: 脚本 onWheel 能收到
+	sc.offsetX = sc.scrollMaxOffsetX()
+	Layout(sc, 200, 100)
+	pushAndPump(t, fake, a, Event{Kind: EventMouseWheel, X: cx, Y: cy, DeltaY: -120, Shift: true})
+	if sc.offsetX != sc.scrollMaxOffsetX() {
+		t.Fatalf("到底后 Shift+滚不该再动: offsetX = %d", sc.offsetX)
+	}
+}
+
+func TestScrollThumbDragFollowsMouse(t *testing.T) {
+	// 10 行 × 40 = 400 内容高, 视口 100 → max 300; 滑块高 25, 行程 75。
+	// 拖拽比例 = 300/75 = 4 px 内容 / px 行程。
+	root, sc, _ := mkScroll(200, 100, 10, 40)
+	fake, a := mountTestApp(t, root, 400, 400)
+
+	thumb, ok := sc.scrollThumb()
+	if !ok {
+		t.Fatalf("应有纵向滚动条")
+	}
+	grab := image.Point{X: thumb.X + thumb.W/2, Y: thumb.Y + thumb.H/2}
+	pushAndPump(t, fake, a, Event{Kind: EventMouseDown, X: grab.X, Y: grab.Y})
+	// 按下即抓取: 拖拽目标已锁定, 偏移还没动
+	if sc.offsetY != 0 {
+		t.Fatalf("按下不该滚动: offsetY = %d", sc.offsetY)
+	}
+
+	// 向下拖 50px: offsetY += 50*4 = 200
+	pushAndPump(t, fake, a, Event{Kind: EventMouseMove, X: grab.X, Y: grab.Y + 50})
+	if sc.offsetY != 200 {
+		t.Fatalf("拖 50px 后 offsetY = %d, want 200", sc.offsetY)
+	}
+	// 超程拖拽: 钳在底部
+	pushAndPump(t, fake, a, Event{Kind: EventMouseMove, X: grab.X, Y: grab.Y + 999})
+	if sc.offsetY != 300 {
+		t.Fatalf("拖过头应钳在 max: offsetY = %d, want 300", sc.offsetY)
+	}
+
+	// 松手: 拖拽结束, 之后鼠标移动不再带动偏移
+	pushAndPump(t, fake, a, Event{Kind: EventMouseUp, X: grab.X, Y: grab.Y + 999})
+	pushAndPump(t, fake, a, Event{Kind: EventMouseMove, X: grab.X, Y: grab.Y})
+	if sc.offsetY != 300 {
+		t.Fatalf("松手后移动不该再滚动: offsetY = %d", sc.offsetY)
+	}
+
+	// 再次按住滑块中点拖: 基于新的滑块位置重新取快照, 往回拖 25px = -100
+	thumb2, _ := sc.scrollThumb()
+	grab2 := image.Point{X: thumb2.X + thumb2.W/2, Y: thumb2.Y + thumb2.H/2}
+	pushAndPump(t, fake, a, Event{Kind: EventMouseDown, X: grab2.X, Y: grab2.Y})
+	pushAndPump(t, fake, a, Event{Kind: EventMouseMove, X: grab2.X, Y: grab2.Y - 25})
+	if sc.offsetY != 200 {
+		t.Fatalf("二次拖拽未按新快照换算: offsetY = %d, want 200", sc.offsetY)
+	}
+}
+
+func TestScrollPaintDrawsHorizontalTrack(t *testing.T) {
+	root := mkNode("column", nil)
+	sc := mkNode("scroll", map[string]float64{"width": 200, "height": 100})
+	mountChildren(root, sc)
+	c := mkNode("rect", map[string]float64{"width": 300, "height": 40})
+	withStr(c, "background", "#c0392b") // pxRed
+	mountChildren(sc, c)
+	img := renderTree(root, 400, 400)
+
+	area := inner(sc)
+	// 底部轨道行 (内容区最下 8px): 应有滚动条轨道色, 且不被内容染色
+	trackY := area.Y + area.H - scrollTrackW + 2
+	if got := img.RGBAAt(area.X+50, trackY); got == pxRed {
+		t.Fatalf("底轨道行被内容染色了 (50,%d)", trackY)
+	}
+	// 横向滑块在偏移 0 时应从容器左缘开始 → 轨道行左端应为滑块色 (非白)
+	if got := img.RGBAAt(area.X+5, trackY); got == pxWhite {
+		t.Fatalf("偏移 0 时底轨左端应是滑块 (%d,%d)", area.X+5, trackY)
+	}
+	// 底轨之下、容器之内: 视口外, 不该有内容色
+	if got := img.RGBAAt(area.X+50, area.Y+area.H-1); got == pxRed {
+		t.Fatalf("底轨与容器边框之间不该出现内容色")
+	}
 }

@@ -95,7 +95,7 @@ macOS 后端（cocoa）已知限制：
 |---|---|---|
 | `onClick` | 无 | 命中测试（最内层带 `onClick` 的节点），并把该节点设为键盘焦点 |
 | `onMouseMove` | `{x, y}` | 光标下最深节点起沿祖先链找第一个处理器（不冒泡到根以外） |
-| `onWheel` | `{deltaY}` | 光标所在 `scroll` 容器先消费（一格 60px），容器已到边界才继续冒泡；`deltaY` 沿用 DOM 约定（向下滚为正） |
+| `onWheel` | `{deltaY}` | 光标所在 `scroll` 容器先消费（一格 60px，`Shift` 修饰走横向；纵向不可滚而内容超宽时横向兜底），容器两个方向都已到边界才继续冒泡；`deltaY` 沿用 DOM 约定（向下滚为正） |
 | `onContextMenu` | `{x, y}` | 右键抬起时触发；常配合 `openContextMenu(e.x, e.y, items)` 弹右键菜单 |
 | `onKeyDown` / `onKeyUp` | `{key, ctrl, shift, alt}` | 从焦点节点沿祖先链找第一个处理器 |
 | `onFocus` / `onBlur` | 无 | 焦点切换时触发，沿祖先链找第一个处理器；焦点节点会画 1px 蓝色虚线框（根节点 `hideFocusRing` 可关闭） |
@@ -127,7 +127,7 @@ macOS 后端（cocoa）已知限制：
 | `toast` | `message` / `level` | 非模态提示，固定右上角；`level` 取 `success` / `warn` / `error` / `info` 决定色条，显隐由 JS 侧信号控制 |
 | `input` | `value` / `onInput` / `placeholder` / `disabled` | 单行受控输入（沿 `value` 显示，编辑派发 `onInput({value})`）；获焦边框转蓝并显示闪烁竖线光标，点击可定位光标；支持 ←/→/Home/End/Backspace/Delete，`Enter`/`Esc` 不消费；支持 IME 候选词整批提交（Windows） |
 | `textarea` | `value` / `onInput` / `rows` / `placeholder` / `disabled` | 多行受控编辑器；光标 `{行,列}` 二维移动（↑↓←→/Home/End/Backspace/Delete），**`Enter` 插入换行**（不同于 input）；内容超高时纵向滚动并跟随光标；同样支持 IME。缺省 4 行 × 240px |
-| `scroll` | `width` / `height` / `onWheel` | 纵向滚动容器：内容超高时右侧出现 8px 轨道 + 比例滑块，滚轮滚动（一格 60px），到边界后滚轮才冒泡给 `onWheel`；溢出的内容既画不出来也点不中。缺省高 200 |
+| `scroll` | `width` / `height` / `onWheel` | 滚动容器：内容超高时右侧、超宽时底部出现 8px 轨道 + 比例滑块；滚轮滚动（一格 60px，`Shift+滚轮`走横向），滑块可拖拽，到边界后滚轮才冒泡给 `onWheel`；溢出的内容既画不出来也点不中。缺省高 200 |
 | `image` | `src` / `width` / `height` / `disabled` | 显示 png / jpeg / gif 图片（Go 标准库解码，无新增依赖）；不给 `width`/`height` 时用图片自然尺寸，给了就按最近邻缩放；`src` 相对**进程工作目录**解析，加载失败画灰底交叉线占位（stderr 每个路径只警告一次），不中断其它内容 |
 | `canvas` | `width` / `height` / `onDraw(ctx)` / `background` / `border` | 自绘画布：`onDraw` 收到一个 ctx，用 `ctx.fillRect/strokeRect/fillCircle/strokeCircle/line/drawText/clear` 直接落笔，坐标是**画布局部坐标**（0,0 = 左上角），越界部分自动裁掉；`ctx.width` / `ctx.height` 是画布尺寸。`onDraw` 里读到的 signal 变化会自动重绘（缺省 200×120） |
 | `slider` | `value` / `onInput` / `min` / `max` / `step` / `disabled` | 受控滑块（`min`/`max`/`step` 缺省 0/100/1）：显示只看 `value`，拖动或**单击轨道任意位置**派发 `onInput({value})`（`value` 是 **number**）；拖出窗口仍跟手（win32 走 `SetCapture`）。缺省 160×24 |
@@ -351,7 +351,11 @@ h("scroll", { width: 240, height: 120, onWheel: () => setOverscroll(n => n + 1) 
 - 子节点的 `Box` 已经包含滚动偏移（就是屏幕坐标），不用自己再算；
 - 内容不足一屏时不出滚动条，也不会给内容让出滚动条那 8px；
 - 静态数组子节点会自动展开成兄弟节点，所以 `<scroll>{rows}</scroll>` 直接可用。
-- 横向滚动与滚动条拖拽尚未实现，滚动条本身不可拖（只能滚轮或脚本改偏移）。
+- **横向滚动**：内容固有宽度（子节点的显式 `width`、文本固有宽等）超出视口时，
+  底部出现横向轨道与滑块，`Shift+滚轮`横向滚；纵向不可滚而内容超宽时普通滚轮
+  也会横向兜底。默认铺满（stretch）的子节点是"跟随容器"，不会触发横向滚动条。
+- **滚动条可拖拽**：按住滑块直接拖（拖拽期间鼠标捕获，划过别的控件不会误触）；
+  纵向与横向滑块都支持，行程按"可滚范围 / 滑块行程"等比换算。
 
 ## 7. 绘制与动画
 

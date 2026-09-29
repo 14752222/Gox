@@ -341,6 +341,7 @@ func impMouseExited(self objc.ID, cmd objc.SEL, ev objc.ID) uintptr {
 
 // impScrollWheel 滚轮: gfx 约定 DeltaY 向上为正, 与 NSEvent.deltaY 同号;
 // 非精确滚动 (真滚轮) 按 win32 的 120/格对齐, 精确滚动 (触控板) 按点数直送。
+// Shift 随事件带上 (Scroll 容器据此做 Shift+滚轮横向滚动, rSkhXA)。
 func impScrollWheel(self objc.ID, cmd objc.SEL, ev objc.ID) uintptr {
 	if s := surfaceOf(self); s != nil {
 		x, y := pointInView(self, ev)
@@ -351,7 +352,8 @@ func impScrollWheel(self objc.ID, cmd objc.SEL, ev objc.ID) uintptr {
 			delta = objc.Send[float64](ev, selDeltaY) * wheelDelta
 		}
 		if delta != 0 {
-			s.postDevice(gfx.Event{Kind: gfx.EventMouseWheel, X: int(x), Y: int(y), DeltaY: int(delta)})
+			shift := objc.Send[uint](ev, selModifierFlags)&nsModifierShift != 0
+			s.postDevice(gfx.Event{Kind: gfx.EventMouseWheel, X: int(x), Y: int(y), DeltaY: int(delta), Shift: shift})
 		}
 	}
 	return 0

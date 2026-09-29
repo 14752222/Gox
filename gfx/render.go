@@ -461,7 +461,7 @@ func (a *app) dispatchEvent(ev Event) {
 	case EventMouseMove:
 		a.handleMouseMove(ev.X, ev.Y)
 	case EventMouseWheel:
-		a.handleWheel(ev.X, ev.Y, ev.DeltaY)
+		a.handleWheel(ev.X, ev.Y, ev.DeltaY, ev.Shift)
 	case EventMouseRightUp:
 		a.handleContextMenu(ev.X, ev.Y)
 	case EventMouseLeave:
@@ -736,15 +736,29 @@ func (a *app) handleMouseMove(x, y int) {
 // 滚轮的原生增量向上为正 (Windows WHEEL_DELTA 一格 = 120), 这里一格折算
 // scrollNotch 像素; 内容往下滚 = 子内容上移 = offsetY 增大, 所以取负号。
 //
+// Shift+滚轮走横向 (Windows 惯例, rSkhXA); 内容只在横向溢出时, 纵向消费
+// 失败也会把这一格转给横向 —— 纯横向内容 (宽表格) 不用刻意按着 Shift。
+//
 // 滚到边界时 scrollBy 返回 false ⇒ 事件继续往外传 (派发 onWheel), 与 DOM 的
 // 滚动链一致; 已经在滚动画布上消费掉的滚轮不会触发脚本回调。
 // Win32 的 DeltaY 向上为正, 派发给脚本时按 DOM 约定取反 (向下滚为正值),
 // 免得两套符号在脚本里打架。
-func (a *app) handleWheel(x, y, deltaY int) {
+func (a *app) handleWheel(x, y, deltaY int, shift bool) {
 	target := HitTestDeep(a.rootNode(), x, y)
 	if sc := scrollInChain(target); sc != nil {
-		if sc.scrollBy(-deltaY * scrollNotch / wheelDeltaUnit) {
-			return
+		if shift {
+			// Shift 修饰: 这一格横着走
+			if sc.scrollBy(-deltaY*scrollNotch/wheelDeltaUnit, 0) {
+				return
+			}
+		} else {
+			if sc.scrollBy(0, -deltaY*scrollNotch/wheelDeltaUnit) {
+				return
+			}
+			// 纵向不可滚 (内容不超高/已到边界) 而内容超宽: 横向兜底一格
+			if sc.scrollBy(-deltaY*scrollNotch/wheelDeltaUnit, 0) {
+				return
+			}
 		}
 	}
 	// 多行编辑框自己也能滚 (内容比框高时)。与 scroll 同理: 只有真的滚动了
@@ -831,6 +845,17 @@ func (a *app) handleMouseDown(x, y int) {
 		return
 	}
 	target := HitTestDeep(root, x, y)
+	// scroll 滚动条滑块 (rSkhXA): 滑块区域没有子内容 (hittest.go 把滚动条
+	// 占位区从可命中的子内容里排除了), HitTestDeep 对它返回 scroll 节点
+	// 本身或 nil —— 两种"没有更具体的目标"的形态都要查滑块。滑块画在内容
+	// 之上, 按住滑块就是要拖它; 菜单/下拉弹层的收起判定在本函数更早, 弹层
+	// 盖住滑块时轮不到这里。
+	if target == nil || target.Tag == "scroll" {
+		if sc := scrollThumbAt(root, x, y); sc != nil && !sc.disabledInChain() {
+			a.beginScrollDrag(sc, x, y)
+			return
+		}
+	}
 	if target == nil || target.disabledInChain() {
 		a.releasePress()
 		return
@@ -953,6 +978,15 @@ func (a *app) beginDrag(n *GuiNode) {
 	if c, ok := s.(capturer); ok {
 		c.CapturePointer()
 	}
+}
+
+// beginScrollDrag 开始滚动条滑块拖拽: 记下按下瞬间的鼠标位置与偏移快照,
+// 之后捕获到的 MouseMove 由 scrollDragTo 按快照换算 (rSkhXA)。
+func (a *app) beginScrollDrag(n *GuiNode, x, y int) {
+	a.setPress(pressChainOf(n))
+	a.beginDrag(n)
+	n.scrollGrabX, n.scrollGrabY = x, y
+	n.scrollGrabOffX, n.scrollGrabOffY = n.offsetX, n.offsetY
 }
 
 // endDrag 结束拖动: 清目标、还捕获、复位"上次派发的值"。

@@ -481,7 +481,10 @@ func globalWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 		var pt point32
 		pt.X, pt.Y = int32(lo16(lParam)), int32(hi16(lParam))
 		procScreenToClient.Call(hwnd, uintptr(unsafe.Pointer(&pt)))
-		s.trySend(gfx.Event{Kind: gfx.EventMouseWheel, X: int(pt.X), Y: int(pt.Y), DeltaY: delta})
+		// Shift 随事件带上 (Scroll 容器据此做 Shift+滚轮横向滚动, rSkhXA);
+		// 与 KeyDown 的 modifiers() 同源, 投递时刻读实时键盘状态。
+		_, shift, _ := modifiers()
+		s.trySend(gfx.Event{Kind: gfx.EventMouseWheel, X: int(pt.X), Y: int(pt.Y), DeltaY: delta, Shift: shift})
 		return 0
 	case WM_KEYDOWN:
 		// 可打印字符交给 WM_CHAR (避免重复投递); 其余映射为键名
