@@ -1486,12 +1486,32 @@ func isLoopStatement(s ast.Statement) bool {
 //  6. 静态方法挂到 ctor
 //  7. 声明类名 (全局变量)
 func (c *Compiler) compileClassDeclaration(node *ast.ClassDeclaration) error {
+	if err := c.compileClassBody(node.Name.Value, node.SuperClass, node.Methods, node.Statics, node.Fields); err != nil {
+		return err
+	}
+	// 类值在栈顶 → 声明类名并绑定
 	className := node.Name.Value
+	sym, err := c.declareOnce(className, true, false)
+	if err != nil {
+		return err
+	}
+	if c.isGlobalScope() && !c.moduleMode {
+		nameIdx := c.constants.AddConstant(object.NewString(className))
+		c.emitter.Emit(bytecode.OP_DECLARE, nameIdx)
+	} else {
+		c.emitter.Emit(bytecode.OP_STORE_CONST, uint16(sym.Slot))
+	}
+	return nil
+}
 
+// compileClassBody 编译 class 声明/表达式共有的主体部分
+// (constructor + prototype + 实例/静态方法 + extends)。
+// 返回时类值 (constructor) 在栈顶。
+func (c *Compiler) compileClassBody(className string, superClass ast.Expression, methods, statics []*ast.ClassMethod, fields []*ast.ClassField) error {
 	// 父类名 (super 引用目标; 仅支持 Identifier 形式的 extends)
 	superName := ""
-	if node.SuperClass != nil {
-		if ident, ok := node.SuperClass.(*ast.Identifier); ok {
+	if superClass != nil {
+		if ident, ok := superClass.(*ast.Identifier); ok {
 			superName = ident.Value
 		} else {
 			return fmt.Errorf("compiler: class extends must reference an identifier")
@@ -1500,7 +1520,7 @@ func (c *Compiler) compileClassDeclaration(node *ast.ClassDeclaration) error {
 
 	// 找到 constructor (显式或默认)
 	var ctor *ast.ClassMethod
-	for _, m := range node.Methods {
+	for _, m := range methods {
 		if m.IsConstructor {
 			ctor = m
 			break
@@ -1510,7 +1530,7 @@ func (c *Compiler) compileClassDeclaration(node *ast.ClassDeclaration) error {
 	// 编译 constructor
 	prevSuper := c.currentSuperClass
 	c.currentSuperClass = superName
-	ctorMeta, err := c.compileClassConstructor(node, ctor, className, superName)
+	ctorMeta, err := c.compileClassConstructor(fields, ctor, className, superName)
 	if err != nil {
 		return err
 	}
@@ -1522,7 +1542,7 @@ func (c *Compiler) compileClassDeclaration(node *ast.ClassDeclaration) error {
 	c.emitter.EmitNoOperand(bytecode.OP_NEW_OBJECT) // [ctor, proto]
 
 	// 实例方法挂到 prototype
-	for _, m := range node.Methods {
+	for _, m := range methods {
 		if m.IsConstructor {
 			continue
 		}
@@ -1546,7 +1566,7 @@ func (c *Compiler) compileClassDeclaration(node *ast.ClassDeclaration) error {
 	c.emitter.Emit(bytecode.OP_SET_PROP, pidx)
 
 	// 静态方法挂到 ctor
-	for _, m := range node.Statics {
+	for _, m := range statics {
 		// 静态字段 (static f = expr): 解析器把它放进 Statics 且 Body 为 nil。
 		// 字段初始化语义尚未实现 —— 此处跳过而不是 nil deref 崩掉编译进程
 		// (崩进程会让 test262 分片子进程整片孤儿)。
@@ -1556,7 +1576,7 @@ func (c *Compiler) compileClassDeclaration(node *ast.ClassDeclaration) error {
 		// 编译静态方法函数
 		prevSuper2 := c.currentSuperClass
 		c.currentSuperClass = superName
-		meta, err := c.compileFunction(m.Name, m.Parameters, m.Body, false, false, false)
+		meta, err := c.compileFunction(m.Name, m.Parameters, m.Body, false, m.IsGenerator, m.IsAsync)
 		if err != nil {
 			return err
 		}
@@ -1566,25 +1586,24 @@ func (c *Compiler) compileClassDeclaration(node *ast.ClassDeclaration) error {
 		keyIdx := c.constants.AddConstant(object.NewString(m.Name))
 		c.emitter.Emit(bytecode.OP_SET_PROP, keyIdx) // [ctor]
 	}
-
-	// 声明类名
-	sym, err := c.declareOnce(className, true, false)
-	if err != nil {
-		return err
-	}
-	if c.isGlobalScope() && !c.moduleMode {
-		nameIdx := c.constants.AddConstant(object.NewString(className))
-		c.emitter.Emit(bytecode.OP_DECLARE, nameIdx)
-	} else {
-		c.emitter.Emit(bytecode.OP_STORE_CONST, uint16(sym.Slot))
-	}
 	return nil
+}
+
+// compileClassExpression 编译 class 表达式。
+// 与声明的差别: 类名不进作用域 (匿名类 Name 为 nil), 类值直接
+// 作为表达式结果留在栈顶。
+func (c *Compiler) compileClassExpression(node *ast.ClassExpression) error {
+	className := "<anonymous>"
+	if node.Name != nil {
+		className = node.Name.Value
+	}
+	return c.compileClassBody(className, node.SuperClass, node.Methods, node.Statics, node.Fields)
 }
 
 // compileClassConstructor 编译 class 的 constructor 函数。
 // 若无显式 constructor 则生成默认构造。
 // 实例字段赋值指令插入 constructor 开头。
-func (c *Compiler) compileClassConstructor(node *ast.ClassDeclaration, ctor *ast.ClassMethod, className, superName string) (*bytecode.FunctionMetadata, error) {
+func (c *Compiler) compileClassConstructor(fields []*ast.ClassField, ctor *ast.ClassMethod, className, superName string) (*bytecode.FunctionMetadata, error) {
 	prevScope := c.scope
 	baseSlot := prevScope.NumLocals()
 	fnScope := NewFunctionScope(prevScope)
@@ -1622,7 +1641,7 @@ func (c *Compiler) compileClassConstructor(node *ast.ClassDeclaration, ctor *ast
 	c.pendingLabel = ""
 
 	// 实例字段赋值: this.field = value
-	for _, field := range node.Fields {
+	for _, field := range fields {
 		c.emitter.EmitNoOperand(bytecode.OP_THIS)
 		if field.Value != nil {
 			if err := c.compileExpression(field.Value); err != nil {
@@ -1665,7 +1684,7 @@ func (c *Compiler) compileClassConstructor(node *ast.ClassDeclaration, ctor *ast
 func (c *Compiler) compileClassMethodToObject(m *ast.ClassMethod, superName string) error {
 	prevSuper := c.currentSuperClass
 	c.currentSuperClass = superName
-	meta, err := c.compileFunction(m.Name, m.Parameters, m.Body, false, false, false)
+	meta, err := c.compileFunction(m.Name, m.Parameters, m.Body, false, m.IsGenerator, m.IsAsync)
 	if err != nil {
 		return err
 	}
@@ -2090,6 +2109,8 @@ func (c *Compiler) compileExpression(expr ast.Expression) error {
 		return c.compileDynamicImport(node)
 	case *ast.FunctionExpression:
 		return c.compileFunctionExpression(node)
+	case *ast.ClassExpression:
+		return c.compileClassExpression(node)
 	case *ast.ArrowFunctionExpression:
 		return c.compileArrowFunctionExpression(node)
 	case *ast.ThisExpression:

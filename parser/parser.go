@@ -118,6 +118,7 @@ func New(l *lexer.Lexer) *Parser {
 	p.registerPrefix(lexer.YIELD, p.parseYieldExpression)
 	p.registerPrefix(lexer.AWAIT, p.parseAwaitExpression)
 	p.registerPrefix(lexer.ASYNC, p.parseAsyncExpression)
+	p.registerPrefix(lexer.CLASS, p.parseClassExpression)
 	p.registerPrefix(lexer.JSX_LT, p.parseJSXElement)
 
 	// 注册中缀解析函数
@@ -2057,6 +2058,12 @@ func (p *Parser) parseArrayPattern() *ast.ArrayPattern {
 			return nil
 		}
 		if p.curTokenIs(lexer.ASSIGN) {
+			// Early error (规范 13.3.3): rest 元素不得有初始化器
+			// —— [...x = []] 是 SyntaxError。
+			if elem.Rest {
+				p.addError("SyntaxError: rest element may not have a default initializer")
+				return nil
+			}
 			p.nextToken()
 			elem.Default = p.parseExpression(LOWEST)
 			p.nextToken() // 前进到分隔符 (逗号或右括号)
@@ -2321,6 +2328,73 @@ func (p *Parser) parseClassDeclaration() *ast.ClassDeclaration {
 	return cls
 }
 
+// parseClassExpression 解析 class 表达式 (prefix 解析入口)。
+// class [Name] [extends Super] { ... } —— 与声明共用成员循环;
+// 差异: 类名可选 (匿名 class {}), 解析产物是有值的表达式。
+func (p *Parser) parseClassExpression() ast.Expression {
+	cls := &ast.ClassExpression{Token: p.curToken()}
+
+	// 可选类名: peek 为 IDENTIFIER 且不是 extends 才是类名
+	// (匿名带继承的 "class extends Base {}" 中 extends 也是 IDENTIFIER)。
+	if p.peekTokenIs(lexer.IDENTIFIER) && p.peekToken().Literal != "extends" {
+		p.nextToken()
+		cls.Name = &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
+	}
+
+	// 可选 extends 子句 (与声明一致: 仅支持 Identifier 形式)
+	if p.peekTokenIs(lexer.IDENTIFIER) && p.peekToken().Literal == "extends" {
+		p.nextToken() // cur = extends
+		p.nextToken() // cur = 父类首 token
+		cls.SuperClass = p.parseExpression(LOWEST)
+		if cls.SuperClass == nil {
+			return nil
+		}
+	}
+
+	// class 主体 (与 parseClassDeclaration 的成员循环一致)
+	if !p.expectPeek(lexer.LBRACE) {
+		p.addError(fmt.Sprintf("expected '{' in class, got %s", p.peekToken().Type))
+		return nil
+	}
+	p.nextToken() // 进入成员区域
+
+	for !p.curTokenIs(lexer.RBRACE) && !p.curTokenIs(lexer.EOF) {
+		if p.curTokenIs(lexer.SEMICOLON) {
+			p.nextToken()
+			continue
+		}
+		member := p.parseClassMember()
+		if member == nil {
+			p.nextToken() // 解析失败: 强制推进避免死循环
+			continue
+		}
+		if member.IsStatic {
+			cls.Statics = append(cls.Statics, member)
+		} else if member.IsConstructor {
+			cls.Methods = append(cls.Methods, member)
+		} else if member.Name == "constructor" {
+			member.IsConstructor = true
+			cls.Methods = append(cls.Methods, member)
+		} else if member.IsGetter || member.IsSetter {
+			cls.Methods = append(cls.Methods, member)
+		} else if member.Body != nil {
+			cls.Methods = append(cls.Methods, member)
+		} else {
+			field := &ast.ClassField{Token: member.Token, Name: member.Name, Value: member.FieldValue}
+			cls.Fields = append(cls.Fields, field)
+		}
+		for p.curTokenIs(lexer.SEMICOLON) {
+			p.nextToken()
+		}
+	}
+
+	if !p.curTokenIs(lexer.RBRACE) {
+		p.addError(fmt.Sprintf("expected '}' in class, got %s", p.curToken().Type))
+		return nil
+	}
+	return cls
+}
+
 // parseClassMember 解析 class 主体中的一个成员。
 // 返回的成员可能: 是方法 (Body != nil)、static 方法、或字段 (FieldValue != nil)。
 // 约定: 返回时 curToken 位于成员结束后的下一个 token (分隔符/下一成员/class 结束 })。
@@ -2332,6 +2406,28 @@ func (p *Parser) parseClassMember() *ast.ClassMethod {
 		!p.peekTokenIs(lexer.LPAREN) && !p.peekTokenIs(lexer.ASSIGN) {
 		member.IsStatic = true
 		p.nextToken()
+	}
+
+	// async 方法/生成器: async name() {} / async *name() {}
+	// async 是保留字 (ASYNC token)。async 后是方法名或 * 才按 async
+	// 处理; 后跟 ( : = ; , 等时它是字段名。
+	isAsyncTok := p.curTokenIs(lexer.ASYNC) ||
+		(p.curTokenIs(lexer.IDENTIFIER) && p.curToken().Literal == "async")
+	if isAsyncTok &&
+		(p.peekTokenIs(lexer.ASTERISK) ||
+			(p.peekTokenIs(lexer.IDENTIFIER) && p.peek2TokenIs(lexer.LPAREN))) {
+		member.IsAsync = true
+		if p.peekTokenIs(lexer.ASTERISK) {
+			member.IsGenerator = true
+			p.nextToken() // cur = *
+		}
+		p.nextToken() // cur = 方法名
+	}
+
+	// 生成器方法: *name() {} —— 剩余路径与方法一致
+	if p.curTokenIs(lexer.ASTERISK) {
+		member.IsGenerator = true
+		p.nextToken() // cur = 方法名
 	}
 
 	// get/set 访问器: get name() {} / set name(v) {}

@@ -622,6 +622,8 @@ type ClassMethod struct {
 	IsStatic      bool   // 是否 static 方法
 	IsGetter      bool   // 是否 getter
 	IsSetter      bool   // 是否 setter
+	IsGenerator   bool   // 是否生成器方法: *name() {}
+	IsAsync       bool   // 是否 async 方法: async name() {}
 	Parameters    []*Parameter
 	Body          *BlockStatement
 	FieldValue    Expression // 字段值 (方法解析时若为字段则非 nil)
@@ -648,6 +650,27 @@ type ClassDeclaration struct {
 func (cd *ClassDeclaration) TokenLiteral() string { return cd.Token.Literal }
 func (cd *ClassDeclaration) String() string       { return "class " + cd.Name.String() }
 func (cd *ClassDeclaration) statementNode()       {}
+
+// ClassExpression 表示 class 表达式。
+// 例如: var C = class {}; var D = class Name extends Base {...}
+// 与声明的区别: 类名可选 (匿名类), 表达式有值 (类本身)。
+type ClassExpression struct {
+	Token      lexer.Token    // class 关键字
+	Name       *Identifier    // 类名 (匿名类为 nil)
+	SuperClass Expression     // extends 表达式 (nil = 无继承)
+	Methods    []*ClassMethod // 实例方法
+	Statics    []*ClassMethod // 静态方法
+	Fields     []*ClassField  // 实例字段
+}
+
+func (ce *ClassExpression) expressionNode() {}
+func (ce *ClassExpression) TokenLiteral() string { return ce.Token.Literal }
+func (ce *ClassExpression) String() string {
+	if ce.Name != nil {
+		return "class " + ce.Name.String()
+	}
+	return "class"
+}
 
 // SuperExpression 表示 super 关键字。
 // 在 class 方法中: super(...) 调用父构造函数, super.method() 调用父类方法。
