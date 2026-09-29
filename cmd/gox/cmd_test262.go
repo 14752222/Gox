@@ -200,6 +200,11 @@ func collectCases(root, suite, filter string) ([]test262Case, error) {
 		base := filepath.Join(root, "test", dir)
 		err := filepath.Walk(base, func(path string, info os.FileInfo, err error) error {
 			if err != nil {
+				// 临时文件在 readdir 与 lstat 之间被并发 runner 清理是正常竞态,
+				// 不能让它炸掉整个用例收集。
+				if os.IsNotExist(err) && strings.Contains(filepath.Base(path), ".gox-test262-") {
+					return nil
+				}
 				return err
 			}
 			if info.IsDir() || !strings.HasSuffix(path, ".js") || strings.HasSuffix(path, "_FIXTURE.js") {
@@ -345,7 +350,10 @@ func judgePhase(c *test262Case, execErr error) (bool, string, string) {
 	ok := false
 	switch c.Negative {
 	case "parse":
-		ok = phase == "parse"
+		// test262 的 phase 标注不区分引擎的 parse/compile 实现分层:
+		// 重复声明等 early error 在 Gox 是编译期检查, 只要早于 runtime
+		// 执行即满足语义。compile 期要求错误消息含 SyntaxError 防误判。
+		ok = phase == "parse" || (phase == "compile" && strings.Contains(execErr.Error(), "SyntaxError"))
 	case "early":
 		ok = phase == "parse" || phase == "compile"
 	case "resolution":
