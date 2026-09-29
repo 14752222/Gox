@@ -62,6 +62,9 @@ func main() {
 		case "test262":
 			runTest262(args[1:])
 			return
+		case "update":
+			runUpdate(args[1:])
+			return
 		case "help", "--help", "-h":
 			printUsage(os.Stdout)
 			return
@@ -102,6 +105,7 @@ func printUsage(w io.Writer) {
   gox cert <android|windows|harmony|ios>  一键生成平台签名证书（快捷操作, gox cert -h 看详情）
   gox build <android|ios|windows|macos>  统一构建入口（sync → icon → 平台打包）
   gox test262 [-suite language]  Test262 合规率 runner（-h 看全部选项）
+  gox update [--check] [--pre] [--manifest URL]  gox 自更新（流式下载/断点续传/pre 通道）
   gox                          启动交互式 REPL
   gox help                     显示这份帮助
   gox version                  显示版本号

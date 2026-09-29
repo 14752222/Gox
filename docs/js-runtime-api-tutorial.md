@@ -963,6 +963,30 @@ server.listen(0, function () {
 
 2. **回调错误信号双重记账**。VM 层曾有自己的 `callbackErr` 字段，与 object 层的 `SetCallbackError`/`TakeCallbackError` 并存，且前者只在个别 OP_CALL 位点被顺手消费。任何回调（如 HTTP 处理器）抛异常后，VM 层副本永久残留，之后任意一个内建函数调用点都会被这个陈旧错误"击落"，表现为回调链静默中断。修复：错误信号统一由 object 层持有，消费即清除；`checkCallbackErr` 改为读取该信号。
 
+### 6.4 gx/update：自动更新的跨 goroutine 进度桥
+
+`stdlib/update_module.go` 在 http 模块的线程模型上多走一步：下载进度是**高频持续回调**，不是一次性结果。要点：
+
+1. **goroutine 只做下载**（`update` 包，纯 Go 无 VM 依赖），进度回调里不触碰 VM。
+2. **进度节流后经 `dispatchToLoop` 投回主线程**：`updateProgressInterval`（64ms）内至多派发一次，且最后一次（`done == total`）必然派发 —— JS 侧看到的进度单调且不会打爆事件循环。
+3. **忙碌互斥**：`downloadAndInstall` 用 `sync.Mutex.TryLock` 保证同进程只有一个更新任务，第二个调用直接 reject（不排队 —— 用户连点两次按钮不该排队静默跑两遍）。
+4. **版本号三级解析**（`resolveAppVersion`）：显式参数 > 工作目录 `gox.json` 的 `version` > `"0.0.0"`。
+
+设计文档：docs/auto-update.md（清单格式、通道规则、三段换名与中断自愈）。
+
+```js
+import { checkForUpdate, downloadAndInstall, cleanupBackup } from "gx/update";
+
+cleanupBackup();                              // 启动时清上次更新的 .bak
+const rel = await checkForUpdate(manifestURL, { preRelease: false });
+if (rel) {
+    const res = await downloadAndInstall(manifestURL, {
+        onProgress: (done, total) => renderProgress(done, total),
+    });
+    if (res) promptRestart(res.version);      // 重启后运行新版本
+}
+```
+
 ---
 
 ## 附录：修改摘要
