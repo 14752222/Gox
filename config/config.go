@@ -56,6 +56,10 @@ type Config struct {
 	AppID string `json:"appId"`
 	// Version 是语义化版本号。缺省 1.0.0。
 	Version string `json:"version"`
+	// Theme 是应用初始主题预设 ("light"/"dark")。空 = 亮色缺省。
+	// gx/theme 模块首次被 import 时应用; 脚本随后显式 setTheme 可覆盖,
+	// <window theme="..."> 的优先级也在它之上 (T07)。
+	Theme string `json:"theme,omitempty"`
 	// Icon 是 1024×1024 源图标路径（相对项目根）。缺省 assets/icon.png。
 	Icon string `json:"icon"`
 	// Permissions 是声明的权限清单。**未声明的权限一律不写入清单文件**。
@@ -353,6 +357,11 @@ func (c Config) Validate() error {
 	}
 	if !versionRe.MatchString(c.Version) {
 		return fmt.Errorf("version %q 不合法: 需要 x.y.z 形式（可带 -后缀）", c.Version)
+	}
+	// theme 只认两个预设名（gx/theme 的 SetThemeNamed 同一口径）; 空值合法
+	// （= 亮色缺省）, 写别的名字必然不生效, 启动时报出来好查错别字。
+	if c.Theme != "" && c.Theme != "light" && c.Theme != "dark" {
+		return fmt.Errorf("theme %q 不合法: 只支持 \"light\" / \"dark\"", c.Theme)
 	}
 	if c.Icon == "" {
 		return fmt.Errorf("icon 不能为空")

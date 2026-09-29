@@ -1499,8 +1499,16 @@ func applyWindowConfig(cfg *WindowConfig, o *object.Object) {
 
 // windowConfigFromProps 从 <window> 元素的 props 读窗口配置 (容错口径同
 // applyWindowConfig: 坏类型的项落回缺省)。
+// theme prop ("light"/"dark") 在 Mount 前应用主题 —— 三个主题入口里
+// 显式 setTheme() 调用的优先级高于它 (脚本在 render 之后才跑, 天然后到)。
 func windowConfigFromProps(n *GuiNode) WindowConfig {
 	cfg := defaultWindowConfig()
+	// theme prop: 挂载前切主题 (灯/暗预设), 让首帧就是目标主题而不是
+	// "先亮一帧再变暗"。未知名静默忽略 (config.Validate 已拦 gox.json
+	// 的错别字, prop 这条路留给脚本自由发挥)。
+	if s, ok := n.PropStr("theme"); ok {
+		SetThemeNamed(s)
+	}
 	if s, ok := n.PropStr("title"); ok {
 		cfg.Title = s
 	}

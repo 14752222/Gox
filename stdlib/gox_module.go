@@ -41,6 +41,7 @@ func setupGoxUmbrella(env *runtime.Environment) {
 			"gx/dialog",
 			"gx/storage",
 			"gx/update",
+			"gx/theme",
 			"gx/dev",
 			// 统一应用能力层 (2026-09-21): 设备/生命周期/定位/媒体/权限。
 			// 五者都只依赖 NativeHost 契约 (gfx/native.go), 无头宿主里

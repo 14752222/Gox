@@ -24,6 +24,11 @@ var namedColors = map[string]color.RGBA{
 
 // 内置组件默认色板。组件专用 (background 在控件上有"强调色"语义,
 // 与通用盒子的"填充色"不同), JS 侧可用 props 逐个覆盖。
+//
+// T07 起: 这批变量是 gfx/theme.go 里 Theme 的**投影缓存** (事实来源是
+// themeCurrent, SetTheme 时整体回写) —— 初值 = 亮色预设 themeLight(),
+// 与主题系统引入前的色板逐字一致。不要在这里改颜色: 改 theme.go 的
+// themeLight()/themeDark() 才会同时作用于两个预设与切换逻辑。
 var (
 	colorAccent     = color.RGBA{R: 0x27, G: 0xAE, B: 0x60, A: 255} // 选中/进度填充 (主题绿)
 	colorAccentText = color.RGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 255} // 强调色上的前景 (勾/圆点)
