@@ -293,3 +293,81 @@ jobs:
       - name: 清理包目录里的二进制
         if: always()
         run: rm -rf npm/binaries
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # macOS universal（fat 二进制）合并产物 → Release Assets（r3uF0e / RELEASE_NOTES
+  # 已知问题 4）。
+  #
+  # 为什么单独一个 macos 作业：lipo 是 Apple 工具链的一部分，ubuntu 上没有；
+  #   packager 里的 `gox build macos --arch universal` 也因此只能在 macOS 本地跑。
+  #   与其自拼 Mach-O fat 格式（拼错了在 Linux 上根本无法验证，坏产物发出去用户
+  #   双击才炸），不如花一次 macos runner 的启动钱换 Apple 官方工具 + 产物可当场
+  #   执行冒烟 —— macos-14 是 arm64 机器，直接跑合并产物就同时验证了 fat 头、
+  #   偏移对齐与 arm64 slice 里的 ad-hoc 签名。
+  #
+  # 上传什么：universal + 两个单 arch。universal 给"官网/Release 页直接下载"的
+  #   用户；单 arch 是 gx/update 清单按架构分发的引用目标（清单 URL 可直接指向
+  #   本 Release Assets），所以两者都保留、互不替代。其余平台二进制继续走 npm 包
+  #   分发，不在这里重复上传。
+  #
+  # 依赖：needs publish —— Release/tag 由 publish 的最后一步建立，universal 的
+  #   gh release upload 要求 tag 已存在；publish 跳过（判重命中）时本作业也跳过。
+  # ─────────────────────────────────────────────────────────────────────────────
+  universal:
+    name: macOS universal 合并产物
+    needs: [decide, publish]
+    if: ${{ needs.decide.outputs.publish == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && !inputs.dry_run }}
+    runs-on: macos-latest
+    timeout-minutes: 15
+    env:
+      VERSION: ${{ needs.decide.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: 交叉编译 darwin 两个架构
+        run: |
+          set -euo pipefail
+          mkdir -p dist/universal
+          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 \
+            go build -trimpath -ldflags "-s -w" -o dist/universal/gox-darwin-amd64 ./cmd/gox
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 \
+            go build -trimpath -ldflags "-s -w" -o dist/universal/gox-darwin-arm64 ./cmd/gox
+          ls -lh dist/universal/
+
+      - name: lipo 合并 universal
+        run: |
+          set -euo pipefail
+          lipo -create \
+            -arch x86_64 dist/universal/gox-darwin-amd64 \
+            -arch arm64 dist/universal/gox-darwin-arm64 \
+            -output dist/universal/gox-darwin-universal
+          lipo -info dist/universal/gox-darwin-universal
+
+      - name: 冒烟（当场执行合并产物 —— arm64 runner 原生跑 arm64 slice）
+        run: |
+          set -euo pipefail
+          OUT=$(dist/universal/gox-darwin-universal version)
+          echo "$OUT"
+          [ "$OUT" = "gox $VERSION" ] || {
+            echo "::error::universal 产物版本输出「$OUT」与发版版本 gox $VERSION 不一致"
+            exit 1
+          }
+
+      - name: 上传 Release Assets（universal + 单 arch 两个）
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          TAG="v$VERSION"
+          gh release upload "$TAG" \
+            dist/universal/gox-darwin-universal \
+            dist/universal/gox-darwin-amd64 \
+            dist/universal/gox-darwin-arm64 \
+            --clobber
+          gh release view "$TAG" --json assets \
+            -q '.assets[].name' | sed 's/^/已上传: /'
