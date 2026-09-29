@@ -404,6 +404,26 @@ func (t TokenType) String() string {
 		return "JSX_CLOSE"
 	case JSX_TEXT:
 		return "JSX_TEXT"
+	case TILDE:
+		return "TILDE"
+	case BIT_NOT:
+		return "BIT_NOT"
+	case AT:
+		return "AT"
+	case CLASS:
+		return "CLASS"
+	case SUPER:
+		return "SUPER"
+	case IMPORT:
+		return "IMPORT"
+	case EXPORT:
+		return "EXPORT"
+	case YIELD:
+		return "YIELD"
+	case ASYNC:
+		return "ASYNC"
+	case AWAIT:
+		return "AWAIT"
 	default:
 		return "UNKNOWN"
 	}
