@@ -1,0 +1,21 @@
+{
+  "generated_at": "2026-09-29T17:25:25.062512Z",
+  "runs_per_metric": 1,
+  "note": "wall time 中位数; RSS=GNU time VmHWM; node 列是 Electron 主进程同构口径",
+  "results": [
+    {
+      "stack": "gox",
+      "startup_ms": 3,
+      "fib28_ms": 330,
+      "timers10k_ms": 112,
+      "rss_kb": 10948
+    },
+    {
+      "stack": "node",
+      "startup_ms": 17,
+      "fib28_ms": 22,
+      "timers10k_ms": 123,
+      "rss_kb": 46504
+    }
+  ]
+}

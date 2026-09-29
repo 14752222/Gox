@@ -85,3 +85,10 @@ dist/
 # 克隆方式：git clone --recurse-submodules git@github.com:14752222/Gox.git
 # 已有克隆补子模块：git submodule update --init
 # ─────────────────────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 基准 harness（scripts/bench-compare.sh，T03）产物
+# JSON 存档（bench-results/bench-*.json）随仓库提交供跨版本对比；
+# 编译出的被测二进制与 stderr 中间文件不入库。
+bench-results/gox-bench
+bench-results/.last-err
