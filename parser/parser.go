@@ -1740,6 +1740,18 @@ func (p *Parser) parseSequenceExpression(left ast.Expression) ast.Expression {
 	return p.collectSequence(left)
 }
 
+// isValidAssignmentTarget 判断表达式能否作为赋值目标。
+// 规范 Static Semantics AssignmentTargetType: Identifier / MemberExpression
+// 为 simple, 其余 (数字字面量、二元表达式、函数调用等) 为 invalid ——
+// 必须在解析期报 SyntaxError (early error), 否则会一路漏到运行时。
+func isValidAssignmentTarget(e ast.Expression) bool {
+	switch e.(type) {
+	case *ast.Identifier, *ast.MemberExpression, *ast.SuperExpression:
+		return true
+	}
+	return false
+}
+
 func (p *Parser) parseAssignmentExpression(left ast.Expression) ast.Expression {
 	// 解构赋值目标: [a, b] = v / ({ x } = v)。
 	// 目标先按数组/对象字面量解析 (cover grammar)，确认是简单赋值后
@@ -1748,6 +1760,19 @@ func (p *Parser) parseAssignmentExpression(left ast.Expression) ast.Expression {
 		switch left.(type) {
 		case *ast.ArrayLiteral, *ast.ObjectLiteral:
 			left = p.literalToPattern(left)
+		}
+	}
+	// 赋值左值校验 (AssignmentTargetType): 解构模式与简单/成员目标合法,
+	// 其余 (如 `x - y = 1`、`1 = 2`) 解析期直接报错。
+	if !isValidAssignmentTarget(left) {
+		isDestructuring := false
+		switch left.(type) {
+		case *ast.ArrayPattern, *ast.ObjectPattern:
+			isDestructuring = true
+		}
+		if !isDestructuring {
+			p.addError(fmt.Sprintf("SyntaxError: Invalid left-hand side in assignment"))
+			return left
 		}
 	}
 	expr := &ast.AssignmentExpression{
