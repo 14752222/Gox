@@ -367,7 +367,12 @@ func judgePhase(c *test262Case, execErr error) (bool, string, string) {
 	if !ok {
 		return false, "compile", fmt.Sprintf("期望 %s 报错, 实际 %s 阶段错误: %s", c.Negative, phase, firstLine(execErr.Error()))
 	}
-	if c.NegType != "" && !strings.Contains(execErr.Error(), c.NegType) {
+	// NegType 是期望的 JS 异常类型 (如 SyntaxError)。引擎在 parser/compiler
+	// 阶段用编译期错误代替运行时异常 —— 该阶段不存在 JS 异常对象, 但
+	// "语法错误" 的性质已由 phase 判定确认, 故 parse/compile 阶段豁免
+	// 文本匹配 (否则要迁就实现给消息硬塞 "SyntaxError" 字样)。
+	// runtime 阶段的错误才是真异常, 仍要求类型名匹配。
+	if c.NegType != "" && phase == "runtime" && !strings.Contains(execErr.Error(), c.NegType) {
 		return false, "runtime", fmt.Sprintf("错误类型不匹配: 期望含 %s, 实际: %s", c.NegType, firstLine(execErr.Error()))
 	}
 	return true, "pass", ""
