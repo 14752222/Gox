@@ -617,13 +617,14 @@ func (di *DynamicImportExpression) expressionNode() {}
 // ClassMethod 表示 class 中的一个方法。
 type ClassMethod struct {
 	Token         lexer.Token
-	Name          string // 方法名
-	IsConstructor bool   // 是否为 constructor
-	IsStatic      bool   // 是否 static 方法
-	IsGetter      bool   // 是否 getter
-	IsSetter      bool   // 是否 setter
-	IsGenerator   bool   // 是否生成器方法: *name() {}
-	IsAsync       bool   // 是否 async 方法: async name() {}
+	Name          string      // 方法名
+	ComputedKey   Expression  // 计算属性名 [expr] (非 nil 时优先于 Name)
+	IsConstructor bool        // 是否为 constructor
+	IsStatic      bool        // 是否 static 方法
+	IsGetter      bool        // 是否 getter
+	IsSetter      bool        // 是否 setter
+	IsGenerator   bool        // 是否生成器方法: *name() {}
+	IsAsync       bool        // 是否 async 方法: async name() {}
 	Parameters    []*Parameter
 	Body          *BlockStatement
 	FieldValue    Expression // 字段值 (方法解析时若为字段则非 nil)
@@ -631,9 +632,10 @@ type ClassMethod struct {
 
 // ClassField 表示 class 的实例字段。
 type ClassField struct {
-	Token lexer.Token
-	Name  string     // 字段名
-	Value Expression // 字段值 (nil = 无初始化)
+	Token       lexer.Token
+	Name        string     // 字段名
+	ComputedKey Expression // 计算属性名 [expr] (非 nil 时优先于 Name)
+	Value       Expression // 字段值 (nil = 无初始化)
 }
 
 // ClassDeclaration 表示 class 声明。

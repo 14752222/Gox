@@ -160,6 +160,8 @@ const (
 	OP_THROW        Opcode = 0xD5 // throw exception (pop value from stack)
 	OP_END_FINALLY  Opcode = 0xD6 // end finally block (re-throw pending error if any)
 	OP_JUMP_IF_TRUE_POP Opcode = 0xD7 // 条件真则弹出条件值并跳转; 假则不弹继续 (switch case 匹配)
+	OP_SET_GETTER_DYN   Opcode = 0xD8 // 动态键 getter: 栈 [obj, fn, key], 键为运行时值 (计算属性名)
+	OP_SET_SETTER_DYN   Opcode = 0xD9 // 动态键 setter: 栈 [obj, fn, key]
 
 	// 0xE0-0xEF: 模块
 	OP_IMPORT Opcode = 0xE0 // import module (operand = module spec constant index)
@@ -193,6 +195,7 @@ var opcodeNames = map[Opcode]string{
 	OP_JUMP_IF_FALSE: "JUMP_IF_FALSE", OP_JUMP_IF_NULL: "JUMP_IF_NULL",
 	OP_JUMP_IF_NOT_NULL: "JUMP_IF_NOT_NULL",
 	OP_JUMP_IF_TRUE_POP: "JUMP_IF_TRUE_POP",
+	OP_SET_GETTER_DYN:   "SET_GETTER_DYN", OP_SET_SETTER_DYN: "SET_SETTER_DYN",
 	OP_LOOP:             "LOOP",
 	OP_CALL:             "CALL", OP_RETURN: "RETURN", OP_RETURN_VOID: "RETURN_VOID",
 	OP_FUNCTION: "FUNCTION", OP_ARROW_FUNC: "ARROW_FUNC", OP_CLOSURE: "CLOSURE",

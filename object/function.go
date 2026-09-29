@@ -114,9 +114,16 @@ func (c *Closure) Inspect() string {
 func (c *Closure) IsTruthy() bool { return true }
 
 func (c *Closure) GetProperty(name string) (Value, bool) {
-	// 先查自定义属性 (如 class 的静态方法)
+	// 先查自定义属性 (如 class 的静态方法/静态访问器)
 	if c.Props != nil {
 		if val, ok := c.Props[name]; ok {
+			// 访问器属性: 调用 getter (this = 类本身)
+			if acc, isAcc := val.(*Accessor); isAcc {
+				if acc.Getter != nil && IsCallable(acc.Getter) {
+					return CallFunction(acc.Getter, c), true
+				}
+				return UndefinedSingleton, true
+			}
 			return val, true
 		}
 	}
@@ -158,7 +165,20 @@ func (c *Closure) SetProperty(name string, val Value) {
 		c.Proto = val
 		return
 	}
-	// 其余属性存入 Props (如 class 的静态方法)
+	// 已有访问器且写入的不是新访问器: 调用 setter (this = 类本身)
+	if c.Props != nil {
+		if cur, ok := c.Props[name]; ok {
+			if acc, isAcc := cur.(*Accessor); isAcc {
+				if _, valIsAcc := val.(*Accessor); !valIsAcc {
+					if acc.Setter != nil && IsCallable(acc.Setter) {
+						CallFunction(acc.Setter, c, val)
+					}
+					return
+				}
+			}
+		}
+	}
+	// 其余属性存入 Props (如 class 的静态方法/访问器)
 	if c.Props == nil {
 		c.Props = make(map[string]Value)
 	}

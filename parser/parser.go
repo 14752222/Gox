@@ -1631,21 +1631,63 @@ func (p *Parser) parseObjectLiteral() ast.Expression {
 
 func (p *Parser) parseProperty() *ast.Property {
 	prop := &ast.Property{Token: p.curToken(), Kind: ast.PROP_INIT}
+	isGenerator := false
+	isAsync := false
 
-	// getter/setter: get name() {} / set name(v) {}
-	// 仅在 "get"/"set" 后紧跟标识符且再后是 '(' 时识别为访问器,
+	// 生成器方法简写: *m() {} / *[expr]() {}
+	if p.curTokenIs(lexer.ASTERISK) {
+		isGenerator = true
+		p.nextToken()
+	}
+
+	// async 方法简写: async m() {} / async [expr]() {}
+	// (async 后必须跟方法名或 [ 才算 async 方法; 否则 async 是普通键)
+	if (p.curTokenIs(lexer.ASYNC) ||
+		(p.curTokenIs(lexer.IDENTIFIER) && p.curToken().Literal == "async")) &&
+		!p.curTokenIs(lexer.LBRACKET) &&
+		(p.peekTokenIs(lexer.IDENTIFIER) || p.peekTokenIs(lexer.LBRACKET) ||
+			p.peekTokenIs(lexer.ASTERISK)) {
+		isAsync = true
+		p.nextToken()
+		if p.curTokenIs(lexer.ASTERISK) {
+			isGenerator = true
+			p.nextToken()
+		}
+	}
+
+	// getter/setter: get name() {} / set name(v) {} / get [expr]() / set [expr](v)
+	// 仅在 "get"/"set" 后紧跟 标识符+( 或 [ 时识别为访问器,
 	// 避免与 { get: 1 }, { get() {} }, { get } 混淆。
-	if (p.curTokenIs(lexer.IDENTIFIER) &&
-		(p.curToken().Literal == "get" || p.curToken().Literal == "set")) &&
-		p.peekTokenIs(lexer.IDENTIFIER) && p.peek2TokenIs(lexer.LPAREN) {
+	if !isGenerator && !isAsync &&
+		(p.curTokenIs(lexer.IDENTIFIER) &&
+			(p.curToken().Literal == "get" || p.curToken().Literal == "set")) &&
+		((p.peekTokenIs(lexer.IDENTIFIER) && p.peek2TokenIs(lexer.LPAREN)) ||
+			p.peekTokenIs(lexer.LBRACKET)) {
 		if p.curToken().Literal == "get" {
 			prop.Kind = ast.PROP_GETTER
 		} else {
 			prop.Kind = ast.PROP_SETTER
 		}
-		p.nextToken() // 到属性名
-		prop.Key = &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
-		p.nextToken() // 到 (
+		p.nextToken() // 到属性名 / [
+		if p.curTokenIs(lexer.LBRACKET) {
+			// 计算属性访问器: get [expr]() {}
+			prop.Computed = true
+			p.nextToken()
+			prop.Key = p.parseExpression(LOWEST)
+			if prop.Key == nil {
+				return nil
+			}
+			// parseExpression 返回后表达式末 token 在 cur, ] 在 peek
+			if !p.peekTokenIs(lexer.RBRACKET) {
+				p.addError(fmt.Sprintf("expected ']' in computed property, got %s", p.peekToken().Type))
+				return nil
+			}
+			p.nextToken() // consume ] -> cur=]
+			p.nextToken() // cur=(
+		} else {
+			prop.Key = &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
+			p.nextToken() // 到 (
+		}
 		fn := &ast.FunctionExpression{Token: prop.Token}
 		fn.Parameters = p.parseParameters(lexer.RPAREN)
 		if !p.curTokenIs(lexer.RPAREN) {
@@ -1658,10 +1700,13 @@ func (p *Parser) parseProperty() *ast.Property {
 	}
 
 	if p.curTokenIs(lexer.LBRACKET) {
-		// 计算属性: [expr]: value
+		// 计算属性: [expr]: value / [expr]() {}
 		prop.Computed = true
 		p.nextToken()
 		prop.Key = p.parseExpression(LOWEST)
+		if prop.Key == nil {
+			return nil
+		}
 		if !p.peekTokenIs(lexer.RBRACKET) {
 			p.addError(fmt.Sprintf("expected ']' in computed property, got %s", p.peekToken().Type))
 			return nil
@@ -1686,10 +1731,12 @@ func (p *Parser) parseProperty() *ast.Property {
 	// 不是简写，推进到 key 之后的 token
 	p.nextToken()
 
-	// 方法定义: method() {}
+	// 方法定义: method() {} / [expr]() {} / *gen() {} / async m() {}
 	if p.curTokenIs(lexer.LPAREN) {
 		prop.Kind = ast.PROP_METHOD
 		fn := &ast.FunctionExpression{Token: prop.Token}
+		fn.IsGenerator = isGenerator
+		fn.IsAsync = isAsync
 		fn.Parameters = p.parseParameters(lexer.RPAREN)
 		if !p.curTokenIs(lexer.RPAREN) {
 			return nil
@@ -1698,6 +1745,12 @@ func (p *Parser) parseProperty() *ast.Property {
 		fn.Body = p.parseBlockStatement()
 		prop.Value = fn
 		return prop
+	}
+	if isGenerator || isAsync {
+		// *m / async m 后面不是 ( —— 语法非法 (生成器/async 只能是方法)
+		p.addError(fmt.Sprintf("expected '(' after %s method name, got %s",
+			map[bool]string{true: "generator", false: "async"}[isGenerator], p.curToken().Type))
+		return nil
 	}
 
 	// 普通: key: value
@@ -2312,7 +2365,7 @@ func (p *Parser) parseClassDeclaration() *ast.ClassDeclaration {
 			cls.Methods = append(cls.Methods, member)
 		} else {
 			// 实例字段: name = value
-			field := &ast.ClassField{Token: member.Token, Name: member.Name, Value: member.FieldValue}
+			field := &ast.ClassField{Token: member.Token, Name: member.Name, ComputedKey: member.ComputedKey, Value: member.FieldValue}
 			cls.Fields = append(cls.Fields, field)
 		}
 		// 跳过成员间的分隔符 (分号)
@@ -2380,7 +2433,7 @@ func (p *Parser) parseClassExpression() ast.Expression {
 		} else if member.Body != nil {
 			cls.Methods = append(cls.Methods, member)
 		} else {
-			field := &ast.ClassField{Token: member.Token, Name: member.Name, Value: member.FieldValue}
+			field := &ast.ClassField{Token: member.Token, Name: member.Name, ComputedKey: member.ComputedKey, Value: member.FieldValue}
 			cls.Fields = append(cls.Fields, field)
 		}
 		for p.curTokenIs(lexer.SEMICOLON) {
@@ -2408,40 +2461,73 @@ func (p *Parser) parseClassMember() *ast.ClassMethod {
 		p.nextToken()
 	}
 
-	// async 方法/生成器: async name() {} / async *name() {}
-	// async 是保留字 (ASYNC token)。async 后是方法名或 * 才按 async
+	// async 方法/生成器: async name() {} / async *name() {} / async [expr]() {}
+	// async 是保留字 (ASYNC token)。async 后是方法名、* 或 [ 才按 async
 	// 处理; 后跟 ( : = ; , 等时它是字段名。
 	isAsyncTok := p.curTokenIs(lexer.ASYNC) ||
 		(p.curTokenIs(lexer.IDENTIFIER) && p.curToken().Literal == "async")
 	if isAsyncTok &&
-		(p.peekTokenIs(lexer.ASTERISK) ||
+		(p.peekTokenIs(lexer.ASTERISK) || p.peekTokenIs(lexer.LBRACKET) ||
 			(p.peekTokenIs(lexer.IDENTIFIER) && p.peek2TokenIs(lexer.LPAREN))) {
 		member.IsAsync = true
 		if p.peekTokenIs(lexer.ASTERISK) {
 			member.IsGenerator = true
 			p.nextToken() // cur = *
 		}
-		p.nextToken() // cur = 方法名
+		p.nextToken() // cur = 方法名 / [
 	}
 
-	// 生成器方法: *name() {} —— 剩余路径与方法一致
+	// 生成器方法: *name() {} / *[expr]() {} —— 剩余路径与方法一致
 	if p.curTokenIs(lexer.ASTERISK) {
 		member.IsGenerator = true
-		p.nextToken() // cur = 方法名
+		p.nextToken() // cur = 方法名 / [
 	}
 
-	// get/set 访问器: get name() {} / set name(v) {}
+	// 计算属性名: [expr] —— 方法名/字段名以表达式求值结果为准
+	if p.curTokenIs(lexer.LBRACKET) {
+		p.nextToken()
+		member.ComputedKey = p.parseExpression(LOWEST)
+		if member.ComputedKey == nil {
+			return nil
+		}
+		if !p.peekTokenIs(lexer.RBRACKET) {
+			p.addError(fmt.Sprintf("expected ']' after computed property name, got %s", p.peekToken().Type))
+			return nil
+		}
+		p.nextToken() // consume ]
+		p.nextToken() // cur = ( 或 =
+	}
+
+	// get/set 访问器: get name() {} / set name(v) {} / get [expr]() / set [expr](v)
+	// get/set 后跟 IDENTIFIER+( 或 [ 时按访问器处理, 其余情况它是字段名。
 	if p.curTokenIs(lexer.IDENTIFIER) &&
 		(p.curToken().Literal == "get" || p.curToken().Literal == "set") &&
-		p.peekTokenIs(lexer.IDENTIFIER) && p.peek2TokenIs(lexer.LPAREN) {
-		if p.curToken().Literal == "get" {
+		((p.peekTokenIs(lexer.IDENTIFIER) && p.peek2TokenIs(lexer.LPAREN)) ||
+			p.peekTokenIs(lexer.LBRACKET)) {
+		isGet := p.curToken().Literal == "get"
+		if isGet {
 			member.IsGetter = true
 		} else {
 			member.IsSetter = true
 		}
-		p.nextToken()
-		member.Name = p.curToken().Literal
-		p.nextToken()
+		p.nextToken() // cur = 属性名 / [
+		if p.curTokenIs(lexer.LBRACKET) {
+			// 计算属性访问器: get [expr]() {}
+			p.nextToken()
+			member.ComputedKey = p.parseExpression(LOWEST)
+			if member.ComputedKey == nil {
+				return nil
+			}
+			if !p.peekTokenIs(lexer.RBRACKET) {
+				p.addError(fmt.Sprintf("expected ']' after computed property name, got %s", p.peekToken().Type))
+				return nil
+			}
+			p.nextToken() // consume ]
+			p.nextToken() // cur = (
+		} else {
+			member.Name = p.curToken().Literal
+			p.nextToken()
+		}
 		member.Parameters = p.parseParameters(lexer.RPAREN)
 		if !p.curTokenIs(lexer.RPAREN) {
 			return nil
@@ -2466,12 +2552,14 @@ func (p *Parser) parseClassMember() *ast.ClassMethod {
 		return member
 	}
 
-	// 方法或字段
-	if p.curTokenIs(lexer.IDENTIFIER) {
-		member.Name = p.curToken().Literal
-		p.nextToken()
+	// 方法或字段 (计算属性名已在前面解析时, cur 已停在 ( 或 =)
+	if member.ComputedKey != nil || p.curTokenIs(lexer.IDENTIFIER) {
+		if member.ComputedKey == nil {
+			member.Name = p.curToken().Literal
+			p.nextToken()
+		}
 		if p.curTokenIs(lexer.LPAREN) {
-			// 方法定义: name(params) { body }
+			// 方法定义: name(params) { body } / [expr](params) { body }
 			member.Parameters = p.parseParameters(lexer.RPAREN)
 			if !p.curTokenIs(lexer.RPAREN) {
 				return nil
@@ -2482,11 +2570,16 @@ func (p *Parser) parseClassMember() *ast.ClassMethod {
 			return member
 		}
 		if p.curTokenIs(lexer.ASSIGN) {
-			// 实例字段: name = expr
+			// 实例字段: name = expr / [expr] = expr
 			p.nextToken()
 			member.FieldValue = p.parseExpression(LOWEST)
 			p.nextToken() // 前进到分隔符/下一个成员
 			return member
+		}
+		if member.ComputedKey != nil {
+			// 裸计算字段无意义且语法非法 ([expr];) —— 明确报错
+			p.addError("computed property name must be followed by '(' or '='")
+			return nil
 		}
 		// 裸字段: name; (无初始化)
 		p.nextToken() // 前进到分隔符/下一个成员

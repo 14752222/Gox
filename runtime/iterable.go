@@ -57,6 +57,11 @@ func NewObjectKeysIteratorWithKeys(target object.Value, keys []string) *Iterator
 	}
 }
 
+// NewCallbackIterator 用 next 回调创建迭代器 (包装 JS 层迭代器对象)。
+func NewCallbackIterator(nextFn func() (object.Value, bool)) *Iterator {
+	return &Iterator{kind: "callback", nextFn: nextFn}
+}
+
 // Next 返回迭代器的下一个值。
 // 返回: (value, done)
 // 当 done 为 true 时，迭代结束。
@@ -161,15 +166,22 @@ func GetIterable(val object.Value) (*Iterator, bool) {
 			return it.Next()
 		}}, true
 	case *object.Object:
-		// 实现了 [Symbol.iterator] 的普通对象: 调用该方法并适配其结果
-		if fn, found := v.GetProperty(object.NewSymbol("Symbol.iterator").Inspect()); found && object.IsCallable(fn) {
-			res := object.CallFunction(fn, v)
-			switch r := res.(type) {
-			case *object.JSIterator:
-				it := r
-				return &Iterator{kind: "callback", nextFn: func() (object.Value, bool) {
-					return it.Next()
-				}}, true
+		// 实现了 [Symbol.iterator] 的普通对象: 调用该方法并适配其结果。
+		// 注意: 用户代码的 Symbol 键存在 SymbolProperties (按 sym.ID),
+		// 必须走 LookupSymbolProperty 查找; 字符串键 "Symbol(Symbol.iterator)"
+		// 只有 JSIterator 等内置类型的 GetProperty 特判支持。
+		// 生成器方法返回的 *object.Generator 无法在此驱动 (需 VM 帧),
+		// 由 VM 的 OP_GET_ITERATOR/OP_ARRAY_SPREAD 预先拦截。
+		if sym := object.GetGlobalSymbol("Symbol.iterator"); sym != nil {
+			if fn, found := object.LookupSymbolProperty(v, sym); found && object.IsCallable(fn) {
+				res := object.CallFunction(fn, v)
+				switch r := res.(type) {
+				case *object.JSIterator:
+					it := r
+					return NewCallbackIterator(func() (object.Value, bool) {
+						return it.Next()
+					}), true
+				}
 			}
 		}
 	}

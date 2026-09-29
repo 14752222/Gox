@@ -42,6 +42,11 @@ func main() {
 			operand := bytecode.ReadOperand(ins, pc+1)
 			fmt.Printf("  %04d  %-18s %d\n", pc, op.Name(), operand)
 		}
+		// 常量表 (调试 GET_PROP/SET_PROP 等操作数引用)
+		for i := 0; i < cp.Len(); i++ {
+			v := cp.Get(uint16(i))
+			fmt.Printf("  const[%d] = %s\n", i, v.Inspect())
+		}
 		// 递归 dump 常量池里的函数体
 		for i := 0; i < cp.Len(); i++ {
 			if fn, ok := cp.Get(uint16(i)).(*object.CompiledFunction); ok {

@@ -32,19 +32,22 @@ func setupSymbol(env *runtime.Environment) {
 	}))
 
 	// Well-known symbols
-	symbolObj.SetProperty("iterator", object.NewSymbol("Symbol.iterator"))
-	symbolObj.SetProperty("asyncIterator", object.NewSymbol("Symbol.asyncIterator"))
-	symbolObj.SetProperty("toPrimitive", object.NewSymbol("Symbol.toPrimitive"))
-	symbolObj.SetProperty("toStringTag", object.NewSymbol("Symbol.toStringTag"))
-	symbolObj.SetProperty("hasInstance", object.NewSymbol("Symbol.hasInstance"))
-	symbolObj.SetProperty("species", object.NewSymbol("Symbol.species"))
-	symbolObj.SetProperty("match", object.NewSymbol("Symbol.match"))
-	symbolObj.SetProperty("replace", object.NewSymbol("Symbol.replace"))
-	symbolObj.SetProperty("search", object.NewSymbol("Symbol.search"))
-	symbolObj.SetProperty("split", object.NewSymbol("Symbol.split"))
-	symbolObj.SetProperty("isConcatSpreadable", object.NewSymbol("Symbol.isConcatSpreadable"))
-	symbolObj.SetProperty("unscopables", object.NewSymbol("Symbol.unscopables"))
-	symbolObj.SetProperty("matchAll", object.NewSymbol("Symbol.matchAll"))
+	// 必须走 GetGlobalSymbol 注册表 (而非 NewSymbol): 引擎内部
+	// (GetIterable / 迭代协议) 与 JS 侧 Symbol.iterator 必须是同一
+	// Symbol 实例, 否则 SymbolProperties 按 ID 存储后互查不到。
+	symbolObj.SetProperty("iterator", object.GetGlobalSymbol("Symbol.iterator"))
+	symbolObj.SetProperty("asyncIterator", object.GetGlobalSymbol("Symbol.asyncIterator"))
+	symbolObj.SetProperty("toPrimitive", object.GetGlobalSymbol("Symbol.toPrimitive"))
+	symbolObj.SetProperty("toStringTag", object.GetGlobalSymbol("Symbol.toStringTag"))
+	symbolObj.SetProperty("hasInstance", object.GetGlobalSymbol("Symbol.hasInstance"))
+	symbolObj.SetProperty("species", object.GetGlobalSymbol("Symbol.species"))
+	symbolObj.SetProperty("match", object.GetGlobalSymbol("Symbol.match"))
+	symbolObj.SetProperty("replace", object.GetGlobalSymbol("Symbol.replace"))
+	symbolObj.SetProperty("search", object.GetGlobalSymbol("Symbol.search"))
+	symbolObj.SetProperty("split", object.GetGlobalSymbol("Symbol.split"))
+	symbolObj.SetProperty("isConcatSpreadable", object.GetGlobalSymbol("Symbol.isConcatSpreadable"))
+	symbolObj.SetProperty("unscopables", object.GetGlobalSymbol("Symbol.unscopables"))
+	symbolObj.SetProperty("matchAll", object.GetGlobalSymbol("Symbol.matchAll"))
 
 	env.Declare("Symbol", symbolObj, false)
 }
@@ -82,19 +85,19 @@ func setupSymbolFunction(env *runtime.Environment) {
 		}
 		return object.UndefinedSingleton
 	}))
-	symbolObj.SetProperty("iterator", object.NewSymbol("Symbol.iterator"))
-	symbolObj.SetProperty("asyncIterator", object.NewSymbol("Symbol.asyncIterator"))
-	symbolObj.SetProperty("toPrimitive", object.NewSymbol("Symbol.toPrimitive"))
-	symbolObj.SetProperty("toStringTag", object.NewSymbol("Symbol.toStringTag"))
-	symbolObj.SetProperty("hasInstance", object.NewSymbol("Symbol.hasInstance"))
-	symbolObj.SetProperty("species", object.NewSymbol("Symbol.species"))
-	symbolObj.SetProperty("match", object.NewSymbol("Symbol.match"))
-	symbolObj.SetProperty("replace", object.NewSymbol("Symbol.replace"))
-	symbolObj.SetProperty("search", object.NewSymbol("Symbol.search"))
-	symbolObj.SetProperty("split", object.NewSymbol("Symbol.split"))
-	symbolObj.SetProperty("isConcatSpreadable", object.NewSymbol("Symbol.isConcatSpreadable"))
-	symbolObj.SetProperty("unscopables", object.NewSymbol("Symbol.unscopables"))
-	symbolObj.SetProperty("matchAll", object.NewSymbol("Symbol.matchAll"))
+	symbolObj.SetProperty("iterator", object.GetGlobalSymbol("Symbol.iterator"))
+	symbolObj.SetProperty("asyncIterator", object.GetGlobalSymbol("Symbol.asyncIterator"))
+	symbolObj.SetProperty("toPrimitive", object.GetGlobalSymbol("Symbol.toPrimitive"))
+	symbolObj.SetProperty("toStringTag", object.GetGlobalSymbol("Symbol.toStringTag"))
+	symbolObj.SetProperty("hasInstance", object.GetGlobalSymbol("Symbol.hasInstance"))
+	symbolObj.SetProperty("species", object.GetGlobalSymbol("Symbol.species"))
+	symbolObj.SetProperty("match", object.GetGlobalSymbol("Symbol.match"))
+	symbolObj.SetProperty("replace", object.GetGlobalSymbol("Symbol.replace"))
+	symbolObj.SetProperty("search", object.GetGlobalSymbol("Symbol.search"))
+	symbolObj.SetProperty("split", object.GetGlobalSymbol("Symbol.split"))
+	symbolObj.SetProperty("isConcatSpreadable", object.GetGlobalSymbol("Symbol.isConcatSpreadable"))
+	symbolObj.SetProperty("unscopables", object.GetGlobalSymbol("Symbol.unscopables"))
+	symbolObj.SetProperty("matchAll", object.GetGlobalSymbol("Symbol.matchAll"))
 
 	// 将 Symbol 对象的属性复制到函数上
 	for _, k := range symbolObj.Keys() {

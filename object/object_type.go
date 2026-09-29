@@ -291,6 +291,23 @@ func (o *Object) SymbolKeys() []*Symbol {
 	return o.SymbolKeyList
 }
 
+// LookupSymbolProperty 沿原型链查找以 Symbol 为键的属性。
+// 迭代协议 ([Symbol.iterator] 等) 的查询统一走这里 —— 用户代码的
+// Symbol 键存储在 SymbolProperties (按 sym.ID), 与字符串键空间隔离。
+func LookupSymbolProperty(o *Object, sym *Symbol) (Value, bool) {
+	for cur := o; cur != nil; {
+		if val, found := cur.GetSymbolProperty(sym); found {
+			return val, true
+		}
+		next, ok := cur.Proto.(*Object)
+		if !ok || next == nil {
+			break
+		}
+		cur = next
+	}
+	return nil, false
+}
+
 // HasOwnSymbolProperty 检查对象是否有以 Symbol 为键的自有属性。
 func (o *Object) HasOwnSymbolProperty(sym *Symbol) bool {
 	if o.SymbolProperties == nil {

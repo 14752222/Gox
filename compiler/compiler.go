@@ -1582,9 +1582,39 @@ func (c *Compiler) compileClassBody(className string, superClass ast.Expression,
 		}
 		c.currentSuperClass = prevSuper2
 		midx := c.constants.AddConstant(meta)
+		if m.ComputedKey != nil && !m.IsGetter && !m.IsSetter {
+			// 动态键静态方法: SET_INDEX 弹 [obj, key, val] 三元组,
+			// 先 DUP ctor 让写入消耗副本 (getter/setter 走 DYN 弹2保留 obj, 不需要)。
+			c.emitter.EmitNoOperand(bytecode.OP_DUP)
+		}
 		c.emitter.Emit(bytecode.OP_FUNCTION, midx) // [ctor, fn]
+		if m.ComputedKey != nil {
+			// 动态键静态方法: [ctor(, ctor), fn] → key → DYN 访问器/SET_INDEX
+			if err := c.compileExpression(m.ComputedKey); err != nil {
+				return err
+			}
+			switch {
+			case m.IsGetter:
+				// [ctor, fn, key] → SET_GETTER_DYN(弹2留obj) → [ctor]
+				c.emitter.EmitNoOperand(bytecode.OP_SET_GETTER_DYN)
+			case m.IsSetter:
+				c.emitter.EmitNoOperand(bytecode.OP_SET_SETTER_DYN)
+			default:
+				c.emitter.EmitNoOperand(bytecode.OP_SWAP)
+				c.emitter.EmitNoOperand(bytecode.OP_SET_INDEX)
+				c.emitter.EmitNoOperand(bytecode.OP_POP)
+			}
+			continue
+		}
 		keyIdx := c.constants.AddConstant(object.NewString(m.Name))
-		c.emitter.Emit(bytecode.OP_SET_PROP, keyIdx) // [ctor]
+		switch {
+		case m.IsGetter:
+			c.emitter.Emit(bytecode.OP_SET_GETTER, keyIdx) // [ctor]
+		case m.IsSetter:
+			c.emitter.Emit(bytecode.OP_SET_SETTER, keyIdx) // [ctor]
+		default:
+			c.emitter.Emit(bytecode.OP_SET_PROP, keyIdx) // [ctor]
+		}
 	}
 	return nil
 }
@@ -1640,9 +1670,30 @@ func (c *Compiler) compileClassConstructor(fields []*ast.ClassField, ctor *ast.C
 	prevPendingLabel := c.pendingLabel
 	c.pendingLabel = ""
 
-	// 实例字段赋值: this.field = value
+	// 实例字段赋值: this.field = value / this[expr] = value
 	for _, field := range fields {
 		c.emitter.EmitNoOperand(bytecode.OP_THIS)
+		if field.ComputedKey != nil {
+			// 动态键字段: SET_INDEX 弹 [obj, key, val] 三元组, 需先 DUP this
+			// 让写入消耗副本、原 this 留在栈底 (constructor 栈约定)。
+			// [this] → DUP → [this, this] → val → key → SWAP → [this, this, key, val]
+			// → SET_INDEX(弹3压1) → [this, val] → POP → [this]
+			c.emitter.EmitNoOperand(bytecode.OP_DUP)
+			if field.Value != nil {
+				if err := c.compileExpression(field.Value); err != nil {
+					return nil, err
+				}
+			} else {
+				c.emitter.EmitNoOperand(bytecode.OP_UNDEFINED)
+			}
+			if err := c.compileExpression(field.ComputedKey); err != nil {
+				return nil, err
+			}
+			c.emitter.EmitNoOperand(bytecode.OP_SWAP)
+			c.emitter.EmitNoOperand(bytecode.OP_SET_INDEX)
+			c.emitter.EmitNoOperand(bytecode.OP_POP)
+			continue
+		}
 		if field.Value != nil {
 			if err := c.compileExpression(field.Value); err != nil {
 				return nil, err
@@ -1690,7 +1741,29 @@ func (c *Compiler) compileClassMethodToObject(m *ast.ClassMethod, superName stri
 	}
 	c.currentSuperClass = prevSuper
 	midx := c.constants.AddConstant(meta)
+	if m.ComputedKey != nil && !m.IsGetter && !m.IsSetter {
+		// 动态键普通方法: SET_INDEX 弹 [obj, key, val] 三元组,
+		// 先 DUP obj 让写入消耗副本 (getter/setter 走 DYN 弹2保留 obj, 不需要)。
+		c.emitter.EmitNoOperand(bytecode.OP_DUP)
+	}
 	c.emitter.Emit(bytecode.OP_FUNCTION, midx)
+	if m.ComputedKey != nil {
+		// 动态键: 栈 [obj(, obj), fn] → key → [obj, (obj,) fn, key] → DYN 访问器/SET_INDEX
+		if err := c.compileExpression(m.ComputedKey); err != nil {
+			return err
+		}
+		switch {
+		case m.IsGetter:
+			c.emitter.EmitNoOperand(bytecode.OP_SET_GETTER_DYN)
+		case m.IsSetter:
+			c.emitter.EmitNoOperand(bytecode.OP_SET_SETTER_DYN)
+		default:
+			c.emitter.EmitNoOperand(bytecode.OP_SWAP) // [obj, fn, key] → [obj, key, fn] 对齐 SET_INDEX 栈序
+			c.emitter.EmitNoOperand(bytecode.OP_SET_INDEX)
+			c.emitter.EmitNoOperand(bytecode.OP_POP)
+		}
+		return nil
+	}
 	keyIdx := c.constants.AddConstant(object.NewString(m.Name))
 	if m.IsGetter {
 		c.emitter.Emit(bytecode.OP_SET_GETTER, keyIdx)
@@ -3339,7 +3412,35 @@ func (c *Compiler) compileObjectLiteral(node *ast.ObjectLiteral) error {
 	}
 	for _, prop := range node.Properties {
 		if prop.Computed {
-			// 计算属性: [expr]: value
+			// 计算属性: [expr]: value / [expr]() {} / get [expr]() / set [expr](v)
+			if prop.Kind == ast.PROP_GETTER || prop.Kind == ast.PROP_SETTER {
+				// 动态键访问器: [obj] → DUP → fn → key → SET_x_DYN → [obj]
+				c.emitter.EmitNoOperand(bytecode.OP_DUP)
+				fn, ok := prop.Value.(*ast.FunctionExpression)
+				if !ok {
+					return fmt.Errorf("compiler: getter/setter value is not a function")
+				}
+				name := "get/set <computed>"
+				if id, ok := prop.Key.(*ast.Identifier); ok {
+					name = id.Value
+				}
+				meta, err := c.compileFunction(name, fn.Parameters, fn.Body, false, fn.IsGenerator, fn.IsAsync)
+				if err != nil {
+					return err
+				}
+				idx := c.constants.AddConstant(meta)
+				c.emitter.Emit(bytecode.OP_FUNCTION, idx) // [obj, obj, fn]
+				if err := c.compileExpression(prop.Key); err != nil {
+					return err
+				} // [obj, obj, fn, key]
+				if prop.Kind == ast.PROP_GETTER {
+					c.emitter.EmitNoOperand(bytecode.OP_SET_GETTER_DYN)
+				} else {
+					c.emitter.EmitNoOperand(bytecode.OP_SET_SETTER_DYN)
+				}
+				continue
+			}
+			// 计算键值/方法: [expr]: value / [expr]() {}
 			// [obj] → DUP → [obj, obj]
 			c.emitter.EmitNoOperand(bytecode.OP_DUP)
 			// 编译值

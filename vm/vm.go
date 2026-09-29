@@ -1421,6 +1421,23 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				} else {
 					o.DefineAccessor(propName, nil, fn)
 				}
+			} else {
+				vm.defineClosureAccessor(obj, propName, fn, op == bytecode.OP_SET_GETTER)
+			}
+		case bytecode.OP_SET_GETTER_DYN, bytecode.OP_SET_SETTER_DYN:
+			// 动态键访问器 (计算属性名): 栈 [obj, fn, key]
+			key := vm.stack.Pop()
+			fn := vm.stack.Pop()
+			obj := vm.stack.Peek() // 保留对象在栈上
+			propName := toJSString(key)
+			if o, ok := obj.(*object.Object); ok {
+				if op == bytecode.OP_SET_GETTER_DYN {
+					o.DefineAccessor(propName, fn, nil)
+				} else {
+					o.DefineAccessor(propName, nil, fn)
+				}
+			} else {
+				vm.defineClosureAccessor(obj, propName, fn, op == bytecode.OP_SET_GETTER_DYN)
 			}
 		case bytecode.OP_TAGGED_TEMPLATE:
 			// 栈: [tag, expr1, expr2, ...]; 先弹出插值表达式, 再弹出 tag
@@ -1553,8 +1570,7 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			if !ok {
 				continue
 			}
-			// generator 只能在 VM 里推进 (每次 next 都要恢复它的字节码帧)，
-			// runtime.GetIterable 是纯 Go 层，覆盖不到它 —— 单独处理。
+			// 生成器展开: iterable 本身是 Generator (如 [...genFn()])
 			if gen, ok := iterable.(*object.Generator); ok {
 				// 栈布局与 OP_ITER_NEXT 保持一致: 把 generator 放回栈顶再驱动
 				vm.stack.Push(gen)
@@ -1570,6 +1586,27 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				}
 				vm.stack.Pop() // 弹出 generator，留下数组
 				continue
+			}
+			// 对象实现了 [Symbol.iterator]: VM 层预解析 (生成器结果只能由 VM 驱动)。
+			// 解析出 Generator 时走上面的驱动循环 —— GetIterable 纯 Go 层接管不了。
+			if resolved, ok, err := vm.resolveSymbolIterator(iterable); err != nil {
+				return err
+			} else if gen, isGen := resolved.(*object.Generator); ok && isGen {
+				vm.stack.Push(gen)
+				for {
+					val, done, err := vm.genResume(gen, object.UndefinedSingleton)
+					if err != nil {
+						return err
+					}
+					if done {
+						break
+					}
+					a.Elements = append(a.Elements, val)
+				}
+				vm.stack.Pop() // 弹出 generator，留下数组
+				continue
+			} else if ok {
+				iterable = resolved
 			}
 			iter, hasIter := runtime.GetIterable(iterable)
 			if !hasIter {
@@ -1691,6 +1728,15 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			// generator 对象本身可作为迭代器 (由 OP_ITER_NEXT 驱动)
 			if _, ok := val.(*object.Generator); ok {
 				vm.stack.Push(val)
+				continue
+			}
+			// 普通对象实现了 [Symbol.iterator]: 在 VM 层调用该方法 ——
+			// 生成器方法的返回值 (*object.Generator) 只能由 VM 帧驱动,
+			// runtime.GetIterable 的 Go 层适配器接管不了。
+			if resolved, ok, err := vm.resolveSymbolIterator(val); err != nil {
+				return err
+			} else if ok {
+				vm.stack.Push(resolved)
 				continue
 			}
 			iter, ok := runtime.GetIterable(val)
@@ -1969,6 +2015,11 @@ func (vm *VM) callFunction(fn object.Value, this object.Value, args []object.Val
 				CapturedLocals: callee.CapturedLocals,
 				CreatedAtFrame: callee.CreatedAtFrame,
 			}
+		}
+		// generator 函数: 不执行函数体, 返回 Generator 对象 (对齐 OP_CALL;
+		// 否则生成器体被同步执行, 首个 yield 触发 "yield outside generator")
+		if bound.Fn != nil && bound.Fn.IsGenerator {
+			return object.NewGenerator(bound, args), nil
 		}
 		// 记录当前帧索引，新帧从这里 +1
 		startIdx := vm.frameIdx + 1
@@ -2964,33 +3015,78 @@ func (vm *VM) getIndex(obj, index object.Value) object.Value {
 		}
 		// Symbol 键: 检查自身及原型链上的 Symbol 属性
 		if sym, ok := index.(*object.Symbol); ok {
-			if val, found := lookupSymbolProperty(o, sym); found {
+			if val, found := object.LookupSymbolProperty(o, sym); found {
 				return val
 			}
 			return object.UndefinedSingleton
 		}
-		return object.UndefinedSingleton
+		// 数字等其他键型按 ToPropertyKey 语义转字符串 (o[2] === o["2"])
+		val, found := o.GetProperty(toJSString(index))
+		if !found {
+			return object.UndefinedSingleton
+		}
+		return val
 	}
 	return object.UndefinedSingleton
 }
 
-// lookupSymbolProperty 沿对象原型链查找以 Symbol 为键的属性。
-func lookupSymbolProperty(o *object.Object, sym *object.Symbol) (object.Value, bool) {
-	for cur := o; cur != nil; {
-		if val, found := cur.GetSymbolProperty(sym); found {
-			return val, true
-		}
-		if cur.Proto == nil {
-			break
-		}
-		next, ok := cur.Proto.(*object.Object)
-		if !ok {
-			break
-		}
-		cur = next
+// defineClosureAccessor 在函数对象 (class 构造器) 上定义静态访问器:
+// 存入 Closure.Props 的 *object.Accessor, 由 Closure.Get/SetProperty 解释。
+// obj 非 *object.Closure 时静默忽略 (与 SET_GETTER 对未知类型的行为一致)。
+func (vm *VM) defineClosureAccessor(obj object.Value, propName string, fn object.Value, isGetter bool) {
+	c, ok := obj.(*object.Closure)
+	if !ok {
+		return
 	}
-	return nil, false
+	var acc *object.Accessor
+	if cur, exists := c.Props[propName]; exists {
+		if a, isAcc := cur.(*object.Accessor); isAcc {
+			acc = a
+		}
+	}
+	if acc == nil {
+		acc = &object.Accessor{}
+		c.SetProperty(propName, acc)
+	}
+	if isGetter {
+		acc.Getter = fn
+	} else {
+		acc.Setter = fn
+	}
 }
+
+// resolveSymbolIterator 预解析实现了 [Symbol.iterator] 的普通对象:
+// 在 VM 层调用该方法并适配返回值。返回 (迭代器, true, nil) 表示已解析;
+// (nil, false, nil) 表示没有该方法 (交回 GetIterable 的具体类型分发)。
+// 生成器方法的返回值是 *object.Generator, 只有 VM 能驱动其字节码帧,
+// 因此这一步必须在 VM 层做而不能依赖 runtime.GetIterable。
+func (vm *VM) resolveSymbolIterator(val object.Value) (object.Value, bool, error) {
+	o, ok := val.(*object.Object)
+	if !ok {
+		return nil, false, nil
+	}
+	sym := object.GetGlobalSymbol("Symbol.iterator")
+	if sym == nil {
+		return nil, false, nil
+	}
+	fn, found := object.LookupSymbolProperty(o, sym)
+	if !found || !object.IsCallable(fn) {
+		return nil, false, nil
+	}
+	res, err := vm.callFunction(fn, o, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	switch r := res.(type) {
+	case *object.Generator:
+		return r, true, nil
+	case *object.JSIterator:
+		return runtime.NewCallbackIterator(r.Next), true, nil
+	}
+	return nil, false, nil
+}
+
+// lookupSymbolProperty 已迁至 object.LookupSymbolProperty (原型链 Symbol 键查找)。
 
 // setIndex 实现索引赋值 obj[index] = val。
 func (vm *VM) setIndex(obj, index, val object.Value) {
@@ -3031,6 +3127,9 @@ func (vm *VM) setIndex(obj, index, val object.Value) {
 			o.SetProperty(s.Value, val)
 		} else if sym, ok := index.(*object.Symbol); ok {
 			o.SetSymbolProperty(sym, val)
+		} else {
+			// 数字等其他键型按 ToPropertyKey 语义转字符串 (o[2] === o["2"])
+			o.SetProperty(toJSString(index), val)
 		}
 	default:
 		// 其余类型 (Error/RegExp/Closure/Promise 等) 的字符串键赋值
