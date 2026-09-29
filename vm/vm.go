@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"runtime/debug"
 
 	"github.com/14752222/Gox/bytecode"
 	"github.com/14752222/Gox/compiler"
@@ -19,6 +20,9 @@ import (
 
 // MaxFrames 是调用栈最大深度 (防止无限递归)。
 const MaxFrames = 2048
+
+// stackTraceOn: GOX_TRACE_STACK=1 时逐指令打印 op/pc/栈深 (T04 栈失衡定位)。
+var stackTraceOn = os.Getenv("GOX_TRACE_STACK") == "1"
 
 // ThrowError 包装 JS throw 抛出的值，用于在 Go 错误返回链中传递。
 type ThrowError struct {
@@ -157,6 +161,12 @@ type VM struct {
 	lastThrowPC    int
 	hasThrowPC     bool
 	lastThrowFrame *Frame
+
+	// ── panic 诊断 (T04) ──
+	// 主循环每取指一条记录一次, panic 恢复时输出, 用于定位 VM 缺陷。
+	dbgOp     bytecode.Opcode // 最近取出的 opcode
+	dbgPC     int             // 该指令的起始 PC (取指前)
+	dbgFrames int             // 当前帧数
 }
 
 // New 创建虚拟机。
@@ -244,6 +254,45 @@ func (vm *VM) runTimersLoopProtected(until time.Time, pump func(maxWait time.Dur
 func (vm *VM) runProtected(fn func() error) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
+			// GOX_PANIC_TRACE=1 时输出 Go 调用栈: VM 内部的越界/空指针
+			// 是引擎缺陷, 栈是定位它的第一手资料 (T04 修复辅助)。
+			if os.Getenv("GOX_PANIC_TRACE") != "" {
+				fmt.Fprintln(os.Stderr, "=== GOX panic trace ===")
+				fmt.Fprintf(os.Stderr, "vm state: op=%v pc=%d frames=%d stackDepth=%d\n",
+					vm.dbgOp, vm.dbgPC, vm.dbgFrames, vm.stack.Len())
+				// 反汇编 panic 帧附近指令窗口: PC 已越过当前指令 3 字节。
+				if vm.frameIdx >= 0 && vm.frames[vm.frameIdx] != nil {
+					fi := vm.frames[vm.frameIdx]
+					start := vm.dbgPC - 10*bytecode.InstructionSize
+					if start < 0 {
+						start = 0
+					}
+					end := vm.dbgPC + 6*bytecode.InstructionSize
+					if end > len(fi.Instructions) {
+						end = len(fi.Instructions)
+					}
+					fmt.Fprintf(os.Stderr, "--- frame#%d instructions around pc=%d ---\n", vm.frameIdx, vm.dbgPC)
+					for pc := start; pc < end; pc += bytecode.InstructionSize {
+						op := bytecode.ReadOpcode(fi.Instructions, pc)
+						mark := "   "
+						if pc == vm.dbgPC {
+							mark = ">> "
+						}
+						fmt.Fprintf(os.Stderr, "%s%04d  %-18s %d\n", mark, pc, op.Name(), bytecode.ReadOperand(fi.Instructions, pc+1))
+					}
+					for i := 0; i <= vm.frameIdx; i++ {
+						if fr := vm.frames[i]; fr != nil {
+							fmt.Fprintf(os.Stderr, "frame#%d StackBase=%d locals=%d\n", i, fr.StackBase, len(fr.Locals))
+						}
+					}
+					fmt.Fprintf(os.Stderr, "tryStack=%d entries:", len(vm.tryStack))
+					for _, te := range vm.tryStack {
+						fmt.Fprintf(os.Stderr, " {catch:%d frame:%d base:%d}", te.catchPC, te.frameIdx, te.stackBase)
+					}
+					fmt.Fprintln(os.Stderr)
+				}
+				debug.PrintStack()
+			}
 			err = fmt.Errorf("InternalError: VM panic: %v", r)
 		}
 	}()
@@ -484,6 +533,7 @@ func (vm *VM) popFrame() *Frame {
 	vm.frames[vm.frameIdx] = nil
 	vm.frameIdx--
 
+
 	// 传播闭包变量修改 (closure → outer frame)
 	// 仅当闭包创建于上一帧时才传播，避免跨帧变量错位
 	if f.Closure != nil && f.ModifiedSlots != nil && len(f.ModifiedSlots) > 0 && vm.frameIdx >= 0 {
@@ -558,6 +608,10 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 		// 取指
 		op := bytecode.ReadOpcode(frame.Instructions, frame.PC)
 		operand := bytecode.ReadOperand(frame.Instructions, frame.PC+1)
+		vm.dbgOp, vm.dbgPC, vm.dbgFrames = op, frame.PC, vm.frameIdx+1
+		if stackTraceOn {
+			fmt.Fprintf(os.Stderr, "[trace] f#%d pc=%-5d %-14s depth=%d\n", vm.frameIdx, frame.PC, op.Name(), vm.stack.Len())
+		}
 		frame.PC += bytecode.InstructionSize
 
 		// 解码-执行
@@ -856,6 +910,13 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			frame.PC = int(operand)
 		case bytecode.OP_JUMP_IF_TRUE:
 			if vm.stack.Peek().IsTruthy() {
+				frame.PC = int(operand)
+			}
+		case bytecode.OP_JUMP_IF_TRUE_POP:
+			// 条件真: 弹出条件值并跳转; 假: 不弹 (由后续 POP 弹), 继续。
+			// switch case 匹配专用: 消除"体入口 POP"导致的 fall-through 多弹。
+			if vm.stack.Peek().IsTruthy() {
+				vm.stack.Pop()
 				frame.PC = int(operand)
 			}
 		case bytecode.OP_JUMP_IF_FALSE:
@@ -2369,6 +2430,17 @@ func (vm *VM) handleThrowInner(val object.Value) bool {
 		if entry.frameIdx < vm.throwBoundary {
 			return false
 		}
+
+		// 防御: 丢弃指向"尚未进入的帧"的死条目。try 块内 return 跳过
+		// OP_POP_TRY 会留下 frameIdx 大于当前帧的死条目, 若被 handleThrow
+		// 当作处理器消费, 会把当前帧 PC 劫持到已退出帧的 catchPC —— 字节码
+		// 跨编译单元串台, 随即栈失衡 panic (T04 panic 家族根因之一)。
+		// 死条目在这里被安全丢弃, 继续向外层找真正的处理器。
+		if entry.frameIdx > vm.frameIdx {
+			vm.tryStack = vm.tryStack[:len(vm.tryStack)-1]
+			continue
+		}
+
 
 		// 如果 try 条目在不同的帧中，先弹出帧
 		if vm.frameIdx > entry.frameIdx {

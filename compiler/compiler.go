@@ -767,6 +767,35 @@ func (c *Compiler) compileBlockStatement(block *ast.BlockStatement) error {
 	return nil
 }
 
+// compileCatchBodyWithParam 把栈顶异常值绑定到 catch 参数并编译 catch 体。
+//
+// 规范 13.15.7 (CatchClauseEvaluation) 要求 catch 参数绑定在一个独立的
+// declarative environment 中, catch 体嵌套其内。此前实现直接 Define 在
+// 当前 scope, 有两个可观测缺陷:
+//  1. 同名覆盖: 外层已有同名绑定时 Define 覆盖符号表条目, catch 体结束后
+//     外层名字解析继续命中 catch 参数 → catch 内赋值写穿外层绑定;
+//  2. 顶层写穿: 顶层 try/catch 走 emitGlobalStore 按名字写全局, 直接覆盖
+//     全局词法绑定 (let/const)。
+//
+// 修复: catch 参数放进独立子 scope; 其槽位并入 parent 的 nextSlot ——
+// 保证帧 numLocals 覆盖 catch 参数槽, 且后续声明不复用该槽。
+func (c *Compiler) compileCatchBodyWithParam(param *ast.Identifier, body *ast.BlockStatement) error {
+	c.emitter.EmitNoOperand(bytecode.OP_PUSH_SCOPE)
+	prevScope := c.scope
+	c.scope = NewSymbolScope(prevScope)
+	sym := c.scope.Define(param.Value, false)
+	c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
+	prevScope.nextSlot = c.scope.nextSlot
+
+	if err := c.compileBlockStatement(body); err != nil {
+		return err
+	}
+
+	c.scope = prevScope
+	c.emitter.EmitNoOperand(bytecode.OP_POP_SCOPE)
+	return nil
+}
+
 func (c *Compiler) compileIfStatement(stmt *ast.IfStatement) error {
 	// 编译条件
 	if err := c.compileExpression(stmt.Condition); err != nil {
@@ -1238,18 +1267,14 @@ func (c *Compiler) compileTryStatement(stmt *ast.TryStatement) error {
 
 			// 弹出 catch 参数 (在栈上)
 			if stmt.CatchParam != nil {
-				sym := c.scope.Define(stmt.CatchParam.Value, false)
-				if c.isGlobalScope() {
-					c.emitGlobalStore(stmt.CatchParam.Value)
-				} else {
-					c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
+				if err := c.compileCatchBodyWithParam(stmt.CatchParam, stmt.CatchBody); err != nil {
+					return err
 				}
 			} else {
 				c.emitter.EmitNoOperand(bytecode.OP_POP)
-			}
-
-			if err := c.compileBlockStatement(stmt.CatchBody); err != nil {
-				return err
+				if err := c.compileBlockStatement(stmt.CatchBody); err != nil {
+					return err
+				}
 			}
 			c.emitter.EmitNoOperand(bytecode.OP_POP_TRY)
 			skipFinally := c.emitter.EmitJump(bytecode.OP_JUMP)
@@ -1259,17 +1284,14 @@ func (c *Compiler) compileTryStatement(stmt *ast.TryStatement) error {
 		} else {
 			// 无 finally 的 catch
 			if stmt.CatchParam != nil {
-				sym := c.scope.Define(stmt.CatchParam.Value, false)
-				if c.isGlobalScope() {
-					c.emitGlobalStore(stmt.CatchParam.Value)
-				} else {
-					c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
+				if err := c.compileCatchBodyWithParam(stmt.CatchParam, stmt.CatchBody); err != nil {
+					return err
 				}
 			} else {
 				c.emitter.EmitNoOperand(bytecode.OP_POP)
-			}
-			if err := c.compileBlockStatement(stmt.CatchBody); err != nil {
-				return err
+				if err := c.compileBlockStatement(stmt.CatchBody); err != nil {
+					return err
+				}
 			}
 		}
 	} else if stmt.FinallyBody != nil {
@@ -1302,8 +1324,7 @@ func (c *Compiler) compileSwitchStatement(stmt *ast.SwitchStatement) error {
 	}
 
 	// 收集 case 跳转和 break 跳转
-	var caseJumps []int  // JUMP_IF_TRUE 的位置
-	var caseStarts []int // 每个 case 体的起始位置
+	var caseJumps []int  // JUMP_IF_TRUE_POP 的位置
 	var defaultJump int  // 跳到 default 的位置
 
 	// switch 本身是 break 目标 (case 体内的 break 作用于 switch, 而非外层循环)
@@ -1312,13 +1333,16 @@ func (c *Compiler) compileSwitchStatement(stmt *ast.SwitchStatement) error {
 	hasDefault := false
 	defaultIdx := -1
 
-	// 第一遍: 为每个 case 生成比较代码
+	// 第一遍: 为每个 case 生成比较代码。
+	// 栈约定: 比较阶段栈=[disc]; 匹配经 JUMP_IF_TRUE_POP 弹掉比较结果后跳入
+	// case 体 (栈仍=[disc]); 不匹配落地的 POP 弹掉比较结果 (栈=[disc])。
+	// case 体入口不再放 POP —— 此前的"体入口 POP"在 fall-through (连续空壳
+	// case 或穿透 case) 顺序执行时会被逐个多弹, 打穿调用方栈 (T04 panic 根因之二)。
 	for i, sc := range stmt.Cases {
 		if sc.Test == nil {
-			// default case
+			// default case: 无比较代码
 			hasDefault = true
 			defaultIdx = i
-			caseStarts = append(caseStarts, -1) // 占位
 			continue
 		}
 		// DUP 判别值, 编译测试值, ===
@@ -1327,23 +1351,14 @@ func (c *Compiler) compileSwitchStatement(stmt *ast.SwitchStatement) error {
 			return err
 		}
 		c.emitter.EmitNoOperand(bytecode.OP_STRICT_EQ)
-		// 如果匹配，跳到 case 体
-		jump := c.emitter.EmitJump(bytecode.OP_JUMP_IF_TRUE)
-		c.emitter.EmitNoOperand(bytecode.OP_POP) // 弹出比较结果
+		// 匹配: 弹出比较结果并跳到 case 体
+		jump := c.emitter.EmitJump(bytecode.OP_JUMP_IF_TRUE_POP)
+		c.emitter.EmitNoOperand(bytecode.OP_POP) // 不匹配: 弹出比较结果
 		caseJumps = append(caseJumps, jump)
-		caseStarts = append(caseStarts, -1) // 占位
 	}
 
-	// 默认跳转
-	if hasDefault {
-		defaultJump = c.emitter.EmitJump(bytecode.OP_JUMP)
-	} else {
-		// 无 default: 跳到结束
-		defaultJump = c.emitter.EmitJump(bytecode.OP_JUMP)
-	}
-
-	// 弹出判别值
-	c.emitter.EmitNoOperand(bytecode.OP_POP)
+	// 无匹配: 跳到 default 体 (栈=[disc], 与 case 体入口一致) 或末尾
+	defaultJump = c.emitter.EmitJump(bytecode.OP_JUMP)
 
 	// 第二遍: 编译每个 case 体
 	caseBodyStart := make([]int, len(stmt.Cases))
@@ -1351,13 +1366,9 @@ func (c *Compiler) compileSwitchStatement(stmt *ast.SwitchStatement) error {
 	for i, sc := range stmt.Cases {
 		caseBodyStart[i] = c.emitter.Pos()
 
-		if sc.Test == nil {
-			// default body
-		} else {
-			// 回填 JUMP_IF_TRUE 到这里
+		if sc.Test != nil {
+			// 回填匹配跳转到这里 (体首条指令)
 			c.emitter.PatchJump(caseJumps[caseJumpIdx])
-			// 弹出比较结果 (JUMP_IF_TRUE 不弹出)
-			c.emitter.EmitNoOperand(bytecode.OP_POP)
 			caseJumpIdx++
 		}
 
@@ -1369,20 +1380,21 @@ func (c *Compiler) compileSwitchStatement(stmt *ast.SwitchStatement) error {
 		}
 	}
 
-	// 回填所有 JUMP_IF_TRUE
-	// (已在上面回填)
+	// switch 末尾: 统一弹出判别值。
+	// 到达此处的路径 (break / fall-through 落空 / 无 default) 栈上都剩 [disc];
+	// 有 default 时无匹配路径直接进 default 体 (同样持有 [disc])。
+	discPopPos := c.emitter.Pos()
+	c.emitter.EmitNoOperand(bytecode.OP_POP)
 
-	// 回填 default jump
 	if hasDefault {
 		c.emitter.ReplaceJumpTarget(defaultJump, uint16(caseBodyStart[defaultIdx]))
 	} else {
-		// 跳到末尾
-		c.emitter.PatchJump(defaultJump)
+		c.emitter.ReplaceJumpTarget(defaultJump, uint16(discPopPos))
 	}
 
-	// break 跳转
+	// break 跳转: 也落到末尾 POP 处 (break 时栈=[disc], 统一弹出)
 	for _, jmp := range ctx.breakJumps {
-		c.emitter.PatchJump(jmp)
+		c.emitter.ReplaceJumpTarget(jmp, uint16(discPopPos))
 	}
 	c.popControl()
 

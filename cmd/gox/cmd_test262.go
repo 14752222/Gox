@@ -552,6 +552,32 @@ func runTest262(args []string) {
 		os.Exit(2)
 	}
 
+	// ── 单用例模式 (孤儿重派) —— 最高优先级 ──
+	// 必须在 collectCases / runSharded 之前: (1) 直读单文件, 免去每个
+	// 孤儿进程全量扫描 test262 的浪费; (2) 无 -jobs 的手动调用 jobs 默认
+	// NumCPU>1, 若先走分片派发会误入 runSharded 引发孤儿风暴。
+	// 一个用例一个进程: 超时泄漏 / runtime fatal 都随进程退出消亡,
+	// 绝不传染其他用例。主进程聚合 JSONL。
+	if *one != "" {
+		p := filepath.Join(root, "test", filepath.FromSlash(*one))
+		raw, err := os.ReadFile(p)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "gox test262: -one 读取用例失败 %q: %v\n", *one, err)
+			os.Exit(1)
+		}
+		meta, _ := parseFrontmatter(string(raw))
+		meta.RelPath = *one
+		meta.Source = string(raw)
+		r := runCase(root, &meta, time.Duration(*timeoutSec)*time.Second)
+		if *jsonlOut != "" {
+			appendJSONL(*jsonlOut, r)
+		} else {
+			data, _ := json.Marshal(r)
+			fmt.Println(string(data))
+		}
+		return
+	}
+
 	cases, err := collectCases(root, *suite, *filter)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "gox test262: 收集用例失败: %v\n", err)
@@ -588,30 +614,6 @@ func runTest262(args []string) {
 			runSharded(cases, args, *jobs, *jsonOut != "")
 			return
 		}
-	}
-	// ── 单用例模式 (孤儿重派) ──
-	// 一个用例一个进程: 超时泄漏 / runtime fatal 都随进程退出消亡,
-	// 绝不传染其他用例。主进程聚合 JSONL。
-	// 快速路径: 直接读单文件构造用例, 不做全量收集 —— 大规模孤儿重派
-	// 时 (上万个) 每个进程都扫全量 test262 纯属浪费。
-	if *one != "" {
-		p := filepath.Join(root, "test", filepath.FromSlash(*one))
-		raw, err := os.ReadFile(p)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "gox test262: -one 读取用例失败 %q: %v\n", *one, err)
-			os.Exit(1)
-		}
-		meta, _ := parseFrontmatter(string(raw))
-		meta.RelPath = *one
-		meta.Source = string(raw)
-		r := runCase(root, &meta, time.Duration(*timeoutSec)*time.Second)
-		if *jsonlOut != "" {
-			appendJSONL(*jsonlOut, r)
-		} else {
-			data, _ := json.Marshal(r)
-			fmt.Println(string(data))
-		}
-		return
 	}
 
 	if *shard != "" {
@@ -658,7 +660,7 @@ func runSharded(cases []test262Case, parentArgs []string, n int, wantJSON bool) 
 			skipNext = false
 			continue
 		}
-		if a == "-jobs" || a == "-json" || a == "-shard" {
+		if a == "-jobs" || a == "-json" || a == "-shard" || a == "-one" {
 			skipNext = true
 			continue
 		}
