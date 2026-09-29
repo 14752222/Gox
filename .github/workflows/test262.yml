@@ -1,0 +1,132 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Test262 合规率流水线（S1/T01）
+#
+# 为什么需要这个文件：`gox test262`（cmd/gox/cmd_test262.go）能把 ECMAScript
+#   合规现状量化出来，docs/test262-t04-report.md 记录了两轮提分工程（15.32% →
+#   31.56%），但那个数字是手跑的 —— 引擎后来又变了，README 上却看不到实时值。
+#   本工作流把三件事钉死在 CI 上：
+#     1. 定期/引擎变更时跑全量 language 套件（本地 15s，CI 上分钟级）；
+#     2. 把合规率写成 shields.io endpoint 徽章格式提交回 docs/test262-compliance.json
+#        —— README 的徽章直接读这份 JSON，每次跑完自动更新，无需人手；
+#     3. 完整逐用例结果上传为 artifact，供回归排查（哪个子集掉了、掉在哪条）。
+#
+# 触发策略：
+#   - 每周一 03:00 UTC 定时 —— 官方 test262 是滚动仓库，浅克隆总能拿到最新用例，
+#     上游加用例导致合规率波动也能被发现；
+#   - 推送触碰引擎核心（parser/compiler/vm/object/stdlib/runner 本身）时 ——
+#     "每修一个引擎缺陷，合规率涨了多少"要能立刻在 README 上看到；
+#   - 本 workflow 自己提交的 docs/test262-compliance.json 不在 paths 里，
+#     天然不会自触发死循环。
+#
+# 与 ci.yml 的关系：ci.yml 是推送闸门（注册表/构建/测试，windows-latest）；
+#   本工作流是趋势观测，慢一点、提交回 main 都不阻塞别人。互不依赖。
+# 失败时怎么查：先看"合规率汇总"步骤的 GITHUB_STEP_SUMMARY（有按目录分组），
+#   再下 artifact 里的逐用例 JSONL 对比上一次 run 找回归用例。
+# ─────────────────────────────────────────────────────────────────────────────
+name: test262
+
+on:
+  schedule:
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'cmd/gox/cmd_test262.go'
+      - 'parser/**'
+      - 'compiler/**'
+      - 'vm/**'
+      - 'object/**'
+      - 'stdlib/**'
+      - '.github/workflows/test262.yml'
+
+permissions:
+  contents: write # 把更新后的 docs/test262-compliance.json 提交回 main
+
+concurrency:
+  group: test262-${{ github.ref }}
+  cancel-in-progress: false # 提交回 main 的作业被取消会留半截状态，排队更稳
+
+jobs:
+  compliance:
+    name: language 套件合规率
+    runs-on: ubuntu-latest # runner 是一次性 CLI，纯语言语义无 GUI 依赖，Linux 最快
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # 官方一致性套件。浅克隆即可 —— runner 只读 test/ 与 harness/，不关心历史。
+      - name: 克隆 test262（浅）
+        run: git clone --depth 1 https://github.com/tc39/test262.git "$RUNNER_TEMP/test262"
+
+      - name: 构建 gox
+        run: go build -o "$RUNNER_TEMP/gox" ./cmd/gox
+
+      # -suite language 是 T04 报告的口径（分母 = 实际执行的用例，跳过不计入）。
+      # -jobs 拉满 runner 核数；runner 内部按目录分片并行。
+      - name: 跑 language 套件
+        run: |
+          "$RUNNER_TEMP/gox" test262 \
+            -root "$RUNNER_TEMP/test262" \
+            -suite language \
+            -jobs "$(nproc)" \
+            -json test262-results.json
+
+      - name: 合规率汇总
+        run: |
+          python3 - <<'PY'
+          import json, os
+          d = json.load(open("test262-results.json"))
+          rate = d["rate_pct"]
+          color = ("brightgreen" if rate >= 90 else "yellowgreen" if rate >= 70
+                   else "yellow" if rate >= 50 else "orange" if rate >= 30 else "red")
+          badge = {"schemaVersion": 1, "label": "test262 language",
+                   "message": f"{rate:.1f}%", "color": color}
+          os.makedirs("docs", exist_ok=True)
+          with open("docs/test262-compliance.json", "w") as f:
+              json.dump(badge, f, indent=2)
+              f.write("\n")
+
+          summary = os.environ.get("GITHUB_STEP_SUMMARY")
+          if not summary:
+              raise SystemExit
+          groups = sorted(d["by_group"].items(), key=lambda kv: kv[1]["rate_pct"])
+          lines = [
+              f"# Test262 language 合规率：{rate:.2f}%",
+              "",
+              f"通过 {d['passed']} / {d['total']}（跳过 {d['skipped']}），"
+              f"耗时 {d['seconds']:.0f}s",
+              "",
+              "## 最薄弱的 15 个子集（提分优先级参考）",
+              "",
+              "| 子集 | 合规率 | 通过/总数 |",
+              "|------|--------|-----------|",
+          ]
+          for name, g in groups[:15]:
+              lines.append(
+                  f"| {name} | {g['rate_pct']:.2f}% | {g['pass']}/{g['total']} |")
+          open(summary, "w").write("\n".join(lines) + "\n")
+          PY
+
+      - name: 上传逐用例结果
+        uses: actions/upload-artifact@v4
+        with:
+          name: test262-results
+          path: test262-results.json
+          retention-days: 90
+
+      - name: 提交徽章数据回 main
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/test262-compliance.json
+          if git diff --cached --quiet; then
+            echo "合规率无变化，跳过提交"
+          else
+            git commit -m "chore(test262): 更新合规率徽章数据（$(date -u +%F)）"
+            git push
+          fi
