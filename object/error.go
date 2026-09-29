@@ -1,6 +1,25 @@
 package object
 
-import "fmt"
+import (
+	"fmt"
+	"sync"
+)
+
+// errorCtors 记录各错误类型的构造函数 (Error/TypeError/ReferenceError/...)。
+// stdlib 初始化时注册; Error 实例的 constructor 属性从这里取 ——
+// 保证 err.constructor === ReferenceError 这类同一性比较成立,
+// test262 的 assert.throws 依赖它。
+var (
+	errorCtorMu sync.RWMutex
+	errorCtors  = map[string]Value{}
+)
+
+// RegisterErrorConstructor 注册错误类型对应的构造函数值。
+func RegisterErrorConstructor(name string, ctor Value) {
+	errorCtorMu.Lock()
+	defer errorCtorMu.Unlock()
+	errorCtors[name] = ctor
+}
 
 // Error 表示 JavaScript 的错误对象。
 type Error struct {
@@ -32,6 +51,19 @@ func (e *Error) GetProperty(name string) (Value, bool) {
 			n = "Error"
 		}
 		return NewString(n), true
+	case "constructor":
+		// 错误构造函数 (规范 19.5.3.2): 同一注册实例, === 可比。
+		n := e.Name
+		if n == "" {
+			n = "Error"
+		}
+		errorCtorMu.RLock()
+		ctor, ok := errorCtors[n]
+		errorCtorMu.RUnlock()
+		if ok {
+			return ctor, true
+		}
+		return nil, false
 	case "stack":
 		return NewString(e.Inspect()), true
 	case "toString":

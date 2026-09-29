@@ -533,6 +533,14 @@ func (vm *VM) popFrame() *Frame {
 	vm.frames[vm.frameIdx] = nil
 	vm.frameIdx--
 
+	// 同步解退本帧注册的 try 处理器: try 块内 return / 异常透传等
+	// 路径会跳过 OP_POP_TRY, 残留的死条目会在后续 throw 时被
+	// handleThrow 消费 —— 把调用帧的 PC 劫持到已退出帧的 catchPC,
+	// 字节码跨编译单元串台, 随即栈失衡 panic。
+	for len(vm.tryStack) > 0 && vm.tryStack[len(vm.tryStack)-1].frameIdx > vm.frameIdx {
+		vm.tryStack = vm.tryStack[:len(vm.tryStack)-1]
+	}
+
 
 	// 传播闭包变量修改 (closure → outer frame)
 	// 仅当闭包创建于上一帧时才传播，避免跨帧变量错位
@@ -2442,13 +2450,16 @@ func (vm *VM) handleThrowInner(val object.Value) bool {
 		}
 
 
-		// 如果 try 条目在不同的帧中，先弹出帧
+		// 如果 try 条目在不同的帧中，先弹出帧。
+		// 栈恢复以帧的 StackBase 为准截断 (与 OP_RETURN 一致) ——
+		// 旧的"每帧无条件 Pop 一次"假设帧恰好遗留一个值, 在调用方
+		// 实参求值阶段发生异常时会误弹调用方压在栈上的中间值。
 		if vm.frameIdx > entry.frameIdx {
 			for vm.frameIdx > entry.frameIdx {
+				base := vm.frames[vm.frameIdx].StackBase
 				vm.popFrame()
-				// 弹出 popFrame 推入的返回值
-				if vm.stack.Len() > 0 {
-					vm.stack.Pop()
+				if vm.stack.Len() > base {
+					vm.stack.Truncate(base)
 				}
 			}
 		}

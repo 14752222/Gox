@@ -552,6 +552,7 @@ func setupErrorTypes(env *runtime.Environment) {
 			return object.NewError(msg)
 		})
 		f.ReturnIsValue = true
+		object.RegisterErrorConstructor("Error", f)
 		return f
 	}(), false)
 
@@ -564,6 +565,7 @@ func setupErrorTypes(env *runtime.Environment) {
 			return &object.Error{Message: msg, Name: "TypeError"}
 		})
 		f.ReturnIsValue = true
+		object.RegisterErrorConstructor("TypeError", f)
 		return f
 	}(), false)
 
@@ -576,6 +578,7 @@ func setupErrorTypes(env *runtime.Environment) {
 			return &object.Error{Message: msg, Name: "RangeError"}
 		})
 		f.ReturnIsValue = true
+		object.RegisterErrorConstructor("RangeError", f)
 		return f
 	}(), false)
 
@@ -588,6 +591,7 @@ func setupErrorTypes(env *runtime.Environment) {
 			return &object.Error{Message: msg, Name: "ReferenceError"}
 		})
 		f.ReturnIsValue = true
+		object.RegisterErrorConstructor("ReferenceError", f)
 		return f
 	}(), false)
 
@@ -600,6 +604,7 @@ func setupErrorTypes(env *runtime.Environment) {
 			return &object.Error{Message: msg, Name: "SyntaxError"}
 		})
 		f.ReturnIsValue = true
+		object.RegisterErrorConstructor("SyntaxError", f)
 		return f
 	}(), false)
 }

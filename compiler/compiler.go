@@ -80,6 +80,11 @@ func (c *Compiler) popControl() *controlContext {
 // label 为空时返回最内层 context (必须有)。否则返回 label 匹配的 context。
 func (c *Compiler) lookupControl(label string, isContinue bool) *controlContext {
 	if label == "" {
+		// 空栈 (顶层裸 break/continue): 返回 nil, 由调用方报 SyntaxError,
+		// 而不是越界 panic 崩掉整个进程。
+		if len(c.controlStack) == 0 {
+			return nil
+		}
 		return c.controlStack[len(c.controlStack)-1]
 	}
 	for i := len(c.controlStack) - 1; i >= 0; i-- {
@@ -1410,7 +1415,7 @@ func (c *Compiler) compileBreakStatement(stmt *ast.BreakStatement) error {
 	}
 	ctx := c.lookupControl(label, false)
 	if ctx == nil {
-		return fmt.Errorf("Uncaught SyntaxError: Undefined label '%s'", label)
+		return fmt.Errorf("Uncaught SyntaxError: Illegal break statement")
 	}
 	ctx.breakJumps = append(ctx.breakJumps, c.emitter.EmitJump(bytecode.OP_JUMP))
 	return nil
@@ -1542,6 +1547,12 @@ func (c *Compiler) compileClassDeclaration(node *ast.ClassDeclaration) error {
 
 	// 静态方法挂到 ctor
 	for _, m := range node.Statics {
+		// 静态字段 (static f = expr): 解析器把它放进 Statics 且 Body 为 nil。
+		// 字段初始化语义尚未实现 —— 此处跳过而不是 nil deref 崩掉编译进程
+		// (崩进程会让 test262 分片子进程整片孤儿)。
+		if m.Body == nil {
+			continue
+		}
 		// 编译静态方法函数
 		prevSuper2 := c.currentSuperClass
 		c.currentSuperClass = superName
