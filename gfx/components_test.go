@@ -449,7 +449,7 @@ func TestExampleScriptsMount(t *testing.T) {
 	scripts := []string{
 		"form_demo.js", "progress_demo.js", "button_demo.js", // P0 新增
 		"events_demo.js", "focus_demo.js", "hover_demo.js", // P1 事件/焦点/悬停
-		"tabs_demo.js", "list_demo.js", // P1 条件渲染 / 列表渲染
+		"condrender_demo.js", "list_demo.js", // P1 条件渲染 / 列表渲染
 		"select_demo.js", "dialog_demo.js", // P2-3 下拉框 / P2-4 弹层
 		"tooltip_demo.js",                // P4 悬停提示 (非模态弹层)
 		"input_demo.js",                  // P2-1 单行输入
@@ -822,10 +822,10 @@ func checkDemoTree(t *testing.T, name string, root *GuiNode, fake *fakeSurface) 
 		if n := countTag(root, "switch"); n != 1 {
 			t.Fatalf("hover_demo 的 switch 数量 = %d, want 1", n)
 		}
-	case "tabs_demo.js":
+	case "condrender_demo.js":
 		// 条件渲染: 默认 tab 0 → 只挂一个面板 (标题 + 色块 + 说明)
 		if n := countTag(root, "button"); n != 3 {
-			t.Fatalf("tabs_demo 的 button 数量 = %d, want 3", n)
+			t.Fatalf("condrender_demo 的 button 数量 = %d, want 3", n)
 		}
 		slots := 0
 		var walk func(n *GuiNode)
@@ -839,15 +839,15 @@ func checkDemoTree(t *testing.T, name string, root *GuiNode, fake *fakeSurface) 
 		}
 		walk(root)
 		if slots == 0 {
-			t.Fatalf("tabs_demo 没有动态子节点插槽")
+			t.Fatalf("condrender_demo 没有动态子节点插槽")
 		}
 		if n := countTag(root, "rect"); n != 1 {
-			t.Fatalf("tabs_demo 初始应只有一个面板色块, got %d", n)
+			t.Fatalf("condrender_demo 初始应只有一个面板色块, got %d", n)
 		}
 		// 面板里的色块按 stretch 撑满内容区 (证明 slot 对布局透明)
 		panel := findFirst(root, "rect")
 		if panel == nil || panel.Box.H != 48 || panel.Box.W <= 200 {
-			t.Fatalf("tabs_demo 面板色块布局异常: %v", panel)
+			t.Fatalf("condrender_demo 面板色块布局异常: %v", panel)
 		}
 		img := shotsImage(fake)
 		if img == nil {

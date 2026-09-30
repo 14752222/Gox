@@ -868,6 +868,15 @@ func (a *app) handleMouseDown(x, y int) {
 		a.sliderDrag(sl, x)
 		return
 	}
+	// tabs 标签条 (S4 rPrfGD): 标签按钮是组件自绘区 (页子树之外),
+	// 点中即切页, 一次性动作不设按压态 (与菜单项同款)。tabStripAt 只认
+	// 标签条几何 —— 点在内容区时返回 -1, 照常走下方通用按压流程。
+	if tb := tabsInChain(target); tb != nil {
+		if idx := tb.tabStripAt(x, y); idx >= 0 {
+			a.tabsSwitch(tb, idx)
+			return
+		}
+	}
 	a.setPress(pressChainOf(target))
 }
 

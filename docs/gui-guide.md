@@ -123,6 +123,7 @@ macOS 后端（cocoa）已知限制：
 | `separator` | `vertical` / `background` | 横向 1px 高、宽度由容器拉伸；纵向宽度 1px，需显式 `height` |
 | `spacer` | `flexGrow` | 不绘制任何内容，仅吃主轴富余空间，用法 `<spacer flexGrow={1}/>` |
 | `select` | `value` / `options` / `onChange` / `placeholder` / `disabled` | 受控下拉框；`options` 可为字符串数组或 `{value,label}` 数组，选中派发 `onChange({value})`；键盘可开合/移动/选中/Esc 关闭 |
+| `tabs` / `tab` | `value` / `onChange`（tabs）、`title`（tab） | 选项卡：顶部标签条 + 内容区，`<tab title="文件">` 直接堆在 `<tabs>` 下即为页。`value` 存在 ⇒ 受控（点击只派发 `onChange({index, title})`，等脚本把新下标写回 signal）；缺省非受控（内部切换）。页是 **keep-alive** 的：全部页留树（输入框内容、滚动位置都保留），非激活页只是不布局、不绘制、不命中 |
 | `dialog` | `open` / `onClose` | 模态弹层：40% 黑遮罩 + 居中卡片（流内子节点即卡片内容）；点遮罩 / Esc / 卡片内按钮触发 `onClose`，遮罩吞掉其下点击 |
 | `toast` | `message` / `level` | 非模态提示，固定右上角；`level` 取 `success` / `warn` / `error` / `info` 决定色条，显隐由 JS 侧信号控制 |
 | `input` | `value` / `onInput` / `placeholder` / `disabled` | 单行受控输入（沿 `value` 显示，编辑派发 `onInput({value})`）；获焦边框转蓝并显示闪烁竖线光标，点击可定位光标；支持 ←/→/Home/End/Backspace/Delete，`Enter`/`Esc` 不消费；支持 IME 候选词整批提交（Windows） |
@@ -777,7 +778,8 @@ import { devSnapshot } from "gx/dev";
 | [focus_demo.js](../testdata/focus_demo.js) | 焦点框与 focus/blur |
 | [hover_demo.js](../testdata/hover_demo.js) | 悬停与按压反馈 |
 | [dialog_demo.js](../testdata/dialog_demo.js) | 模态对话框与右上角 toast |
-| [tabs_demo.js](../testdata/tabs_demo.js) | 条件渲染切面板 |
+| [tabs_demo.js](../testdata/tabs_demo.js) | 选项卡：受控切页 / keep-alive 页 / 非受控 |
+| [condrender_demo.js](../testdata/condrender_demo.js) | 条件渲染切面板（教学版，完整重建语义） |
 | [list_demo.js](../testdata/list_demo.js) | 数组信号增删列表 |
 | [model_demo.js](../testdata/model_demo.js) | `model` 双向绑定：八类控件一条指令 + 手写写法对照 |
 

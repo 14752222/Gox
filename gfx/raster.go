@@ -386,6 +386,15 @@ func drawNode(img *image.RGBA, n *GuiNode) {
 		paintDialog(img, n)
 	case "toast":
 		paintToast(img, n, disabled)
+	case "tabs":
+		paintTabs(img, n, disabled)
+	case "tab":
+		// keep-alive: 非激活页整支不画。页 Box 虽已在 layoutTabs 清零,
+		// 但子树 Box 还留着上一帧的值, 脏区粗判剪不干净 —— 在这里兜底,
+		// 与"关闭的弹层剪整支"同一处理 (见函数开头)。
+		if !n.tabIsShown() {
+			return
+		}
 	case "tooltip-popup":
 		paintTooltipPopup(img, n, disabled)
 	case "input":

@@ -93,6 +93,12 @@ type GuiNode struct {
 	scrollGrabX, scrollGrabY       int
 	scrollGrabOffX, scrollGrabOffY int
 
+	// tabs 状态 (S4): tabsActive 是非受控激活页下标 (有 value prop 时以它
+	// 为准, 受控点击不改它); tabStrip 是布局期算出的标签条按钮区 (窗口坐标,
+	// 命中与绘制共用同一份几何)。
+	tabsActive int
+	tabStrip   []Rect
+
 	// canvas 自绘回调 (P3-1): onDraw 是脚本给的函数, 每次绘制时用一个
 	// 落笔 ctx 调用一次 (依赖收集另有一遍空跑, 见 canvas.go 的说明)。
 	onDraw object.Value
@@ -160,6 +166,8 @@ var knownTags = map[string]struct{}{
 	"dialog": {}, "toast": {},
 	// S4 悬停提示 (tooltip-popup 由 Go 侧构造, 脚本写不到)
 	"tooltip": {}, "tooltip-popup": {},
+	// S4 选项卡: tab 是 tabs 的页, 只在 tabs 下有意义 (单独用没有布局者)
+	"tabs": {}, "tab": {},
 	// P2-1 单行文本输入
 	"input": {},
 	// P2-5 滚动容器

@@ -97,6 +97,12 @@ func layoutNode(n *GuiNode) {
 		layoutToast(n)
 	case "tooltip":
 		layoutTooltip(n)
+	case "tabs":
+		layoutTabs(n)
+	case "tab":
+		// 页容器: 子节点竖排 (column 语义)。布局由 layoutTabs 驱动 ——
+		// 只有激活页会走到这里, 非激活页 Box 被清零不参与。
+		layoutStack(n, false)
 	case "scroll":
 		layoutScroll(n)
 	case "textarea":
@@ -198,6 +204,41 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 			if h == 0 {
 				h = ch
 			}
+		}
+	case "tabs":
+		// 选项卡 (S4): 固有尺寸 = 标签条 + 激活页内容, 宽取二者较大者。
+		// 非激活页 keep-alive 留树但不占尺寸。页下标用切片序号比较,
+		// 不依赖 optIndex (测量可能先于 layoutTabs)。
+		sw, sh := n.tabsStripSize()
+		if w == 0 {
+			w = sw
+		}
+		if h == 0 {
+			h = sh
+		}
+		active := n.tabsActiveIndex()
+		for i, pg := range n.tabsPages() {
+			if i != active {
+				continue
+			}
+			cw, ch := stackContentSize(pg, false)
+			if cw > w {
+				w = cw
+			}
+			if sh+ch > h {
+				h = sh + ch
+			}
+			break
+		}
+	case "tab":
+		// 页容器: 子节点按 column 语义竖排 (真实布局由 layoutTabs 驱动,
+		// 这里只负责固有尺寸测量)。
+		cw, ch := stackContentSize(n, false)
+		if w == 0 {
+			w = cw
+		}
+		if h == 0 {
+			h = ch
 		}
 	case "tooltip":
 		// 包裹式触发容器 (S4): 布局透明, 尺寸跟随唯一流内子节点。
