@@ -34,9 +34,19 @@ func TestDevInteresting(t *testing.T) {
 		t.Error("swap 文件不应触发重载")
 	}
 	if devInteresting("src/style.css") != false {
-		t.Error("非 .js 不应触发重载")
+		t.Error("非脚本文件不应触发重载")
 	}
 	if devInteresting("src/data.json") != false {
 		t.Error("json 不应触发重载")
+	}
+	// TS 家族: 与 .js 同等地位
+	for _, p := range []string{"src/main.tsx", "src/app.tsx", "src/store.ts",
+		"src/lib.jsx", "src/mod.mts", "src/old.cts"} {
+		if devInteresting(p) != true {
+			t.Errorf("%s 应触发重载", p)
+		}
+	}
+	if devInteresting("src/main.d.ts") != true {
+		t.Error("d.ts 也算 TS 文件 (改它通常意味着改接口面)")
 	}
 }

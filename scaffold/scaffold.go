@@ -56,6 +56,10 @@ type Options struct {
 	Version string
 	// Force 允许目标目录已存在且非空时仍然写入（会覆盖同名文件，不清理其它文件）。
 	Force bool
+	// TS 生成 TypeScript/TSX 模板: 跳过默认模板 src/ 下的 .js 源码,
+	// 改铺 template/ts/ 下的 TS 版源码（入口 src/main.tsx、tsconfig.json、
+	// gox.d.ts 等）。其余骨架（gox.json / android / ios / assets）两种模板共享。
+	TS bool
 }
 
 // File 是生成结果里的一个文件，供 CLI 打印清单。
@@ -99,6 +103,30 @@ func Create(opts Options) ([]File, error) {
 		return nil, err
 	}
 
+	// TS 模板 = 共享骨架 (默认模板去掉 src/*.js 与 package.json) + template/ts/ 覆盖层。
+	// 覆盖集合先收集一遍: ts 树里出现过的相对路径 (package.json / README.md) 在铺
+	// 默认模板时跳过, 保证不被 JS 版内容先占位。
+	tsOverlay := map[string]bool{}
+	if opts.TS {
+		walkErr := fs.WalkDir(templateFS, templateRoot+"/ts", func(p string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				return nil
+			}
+			rel, relErr := filepath.Rel(templateRoot+"/ts", p)
+			if relErr != nil {
+				return relErr
+			}
+			tsOverlay[filepath.ToSlash(rel)] = true
+			return nil
+		})
+		if walkErr != nil {
+			return nil, fmt.Errorf("读取 TS 模板失败: %w", walkErr)
+		}
+	}
+
 	var files []File
 	err := fs.WalkDir(templateFS, templateRoot, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -112,6 +140,23 @@ func Create(opts Options) ([]File, error) {
 			return relErr
 		}
 		rel = filepath.ToSlash(rel)
+
+		// ts/ 是 TS 模式的覆盖层目录, 不是普通模板内容 —— 任何模式下都不按
+		// 原样铺出 (TS 模式由下方第二个 walk 以去掉 "ts/" 前缀的方式铺它)
+		if rel == "ts" || strings.HasPrefix(rel, "ts/") {
+			return nil
+		}
+
+		// TS 模式下默认模板只出"骨架": src/ 下的 .js 源码与被 TS 层覆盖的
+		// 文件 (package.json / README.md) 都跳过
+		if opts.TS {
+			if tsOverlay[rel] {
+				return nil
+			}
+			if strings.HasPrefix(rel, "src/") && strings.HasSuffix(rel, ".js") {
+				return nil
+			}
+		}
 
 		data, readErr := fs.ReadFile(templateFS, p)
 		if readErr != nil {
@@ -132,6 +177,43 @@ func Create(opts Options) ([]File, error) {
 	if err != nil {
 		return nil, fmt.Errorf("写入模板失败: %w", err)
 	}
+
+	// TS 覆盖层: template/ts/ 下的文件铺到项目根 (去掉 "ts/" 前缀)
+	if opts.TS {
+		walkErr := fs.WalkDir(templateFS, templateRoot+"/ts", func(p string, d fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			if d.IsDir() {
+				return nil
+			}
+			rel, relErr := filepath.Rel(templateRoot+"/ts", p)
+			if relErr != nil {
+				return relErr
+			}
+			rel = filepath.ToSlash(rel)
+
+			data, readErr := fs.ReadFile(templateFS, p)
+			if readErr != nil {
+				return readErr
+			}
+			data = expandPlaceholders(data, pkgName, title, appID, appVersion)
+
+			dest := filepath.Join(dir, filepath.FromSlash(rel))
+			if mkErr := os.MkdirAll(filepath.Dir(dest), 0o755); mkErr != nil {
+				return mkErr
+			}
+			if writeErr := os.WriteFile(dest, data, 0o644); writeErr != nil {
+				return writeErr
+			}
+			files = append(files, File{Path: rel, Bytes: len(data)})
+			return nil
+		})
+		if walkErr != nil {
+			return nil, fmt.Errorf("写入 TS 模板失败: %w", walkErr)
+		}
+	}
+
 	sort.Slice(files, func(i, j int) bool { return files[i].Path < files[j].Path })
 	return files, nil
 }

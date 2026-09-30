@@ -294,15 +294,19 @@ try {
 
 ```bash
 gox create my-app                          # 同为 goxjs create / npx @goxjs/goxjs create
+gox create my-app --ts                     # TypeScript/TSX 版: .tsx 直接跑, 无 node 端构建
 cd my-app && npm install && npm run dev
 ```
 
 生成 `package.json`、入口 `src/main.js`、根组件 `src/app.js`、共享状态 `src/store.js`、
 设计令牌 `src/theme.js` 与 `src/components/` 下三个示例组件（计数器 / 待办列表 / 多状态），
 把信号、元素级指令（`each` / `show`）、`model` 双向绑定与 `Switch` / `Match` 各演示一遍。
+`--ts` 生成 TypeScript 版：入口改 `src/main.tsx`、附 `tsconfig.json` 与 `src/gox.d.ts`
+（IDE 类型提示），源码在加载时自动完成类型剥离（内嵌 esbuild 转译，JSX 原样保留）——
+没有 node 端构建步骤，类型检查交给 IDE，运行时零开销。
 模板是 [`scaffold/template/`](scaffold/template/) 下的**真实文件**，由 `go:embed` 嵌进二进制
-（改模板要重新编译才生效；`scaffold/scaffold_test.go` 会保证生成出来的 JS 仍能过
-lexer → parser → compiler，`gfx/scaffold_project_test.go` 会真的把它挂载起来点一遍）。
+（改模板要重新编译才生效；`scaffold/scaffold_test.go` 会保证生成出来的 JS/TS 仍能过
+转译 + lexer → parser → compiler，`gfx/scaffold_project_test.go` 会真的把它挂载起来点一遍）。
 
 最省事的最小手写版：
 
@@ -399,7 +403,7 @@ Gox 运行时本身不使用配置文件，全部行为由**命令行参数**、
 | 命令 | 参数 | 说明 |
 |---|---|---|
 | `Gox` / `goxjs` | 无 | 启动交互式 REPL |
-| `Gox` / `goxjs` | `create <目录>` | 按默认模板生成一个 GUI 工程；别名 `new` / `init` |
+| `Gox` / `goxjs` | `create <目录>` | 按默认模板生成一个 GUI 工程（`--ts` 生成 TypeScript/TSX 版）；别名 `new` / `init` |
 | `Gox` / `goxjs` | `sync [目录]` | 把 gox.json 的权限声明幂等注入 Android/iOS 清单 |
 | `Gox` / `goxjs` | `icon [目录]` | 从 1024 源图一键生成全平台图标 |
 | `Gox` / `goxjs` | `build <android\|ios\|windows\|macos>` | 统一构建入口（sync → icon → 平台打包） |
@@ -483,7 +487,8 @@ REPL 内建命令：`:help`（帮助）、`:clear`（重置全局环境）、`:e
 | `stdlib/` | 标准库与宿主 API 实现（含 `gx/solid` 响应式信号） |
 | `gfx/` | 自研 GUI 渲染层（软件光栅化、布局、命中测试、win32 / X11 / cocoa 后端） |
 | `packager/` | jsbuild 打包器（GUI 应用、交叉编译） |
-| `scaffold/` | `gox create` 的项目脚手架：`template/` 是**真实文件**（`go:embed` 进二进制），`scaffold.go` 负责占位符替换与目录校验 |
+| `scaffold/` | `gox create` 的项目脚手架：`template/` 是**真实文件**（`go:embed` 进二进制；`ts/` 是 `--ts` 的 TSX 覆盖层），`scaffold.go` 负责占位符替换与目录校验 |
+| `tstransform/` | TS/TSX → JS 的入库转译（内嵌 esbuild Go API，类型剥离 + JSX 保留），`vm` 加载 `.ts`/`.tsx` 时调用 |
 | `test/` | 测试相关：`bench/` 性能剖析基准（fib、函数调用、对象操作、数值解析） |
 | `testdata/` | 可直接运行的示例脚本（语言特性、宿主 API、GUI 示例） |
 | `docs/` | **对外文档**（GUI 指南、运行时 API 教程、分发与发版手册）——过程性材料在 `agent_doc/`（不随仓库发布） |

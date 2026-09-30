@@ -9,6 +9,7 @@ import (
 	"github.com/14752222/Gox/compiler"
 	"github.com/14752222/Gox/lexer"
 	"github.com/14752222/Gox/parser"
+	"github.com/14752222/Gox/tstransform"
 )
 
 // wantFiles 是脚手架**默认输出**的完整清单。
@@ -319,4 +320,156 @@ func excerpt(s, needle string) string {
 		end = len(s)
 	}
 	return s[i:end]
+}
+
+// ===== TS 模板（gox create --ts）=====
+
+// wantTSFiles 是 --ts 模式的完整清单: 与默认模板共享骨架, 差异只在
+// src/ 源码 (.js → .ts/.tsx) 与两个 TS 专属文件 (tsconfig.json / gox.d.ts)。
+// package.json / README.md 路径不变但内容来自 ts/ 覆盖层。
+var wantTSFiles = []string{
+	".gitignore",
+	"README.md",
+	"android/AndroidManifest.xml",
+	"android/build.gradle.kts",
+	"android/res/mipmap-anydpi-v26/ic_launcher.xml",
+	"android/res/mipmap-anydpi-v26/ic_launcher_round.xml",
+	"android/res/mipmap-hdpi/ic_launcher.png",
+	"android/res/mipmap-hdpi/ic_launcher_foreground.png",
+	"android/res/mipmap-mdpi/ic_launcher.png",
+	"android/res/mipmap-mdpi/ic_launcher_foreground.png",
+	"android/res/mipmap-xhdpi/ic_launcher.png",
+	"android/res/mipmap-xhdpi/ic_launcher_foreground.png",
+	"android/res/mipmap-xxhdpi/ic_launcher.png",
+	"android/res/mipmap-xxhdpi/ic_launcher_foreground.png",
+	"android/res/mipmap-xxxhdpi/ic_launcher.png",
+	"android/res/mipmap-xxxhdpi/ic_launcher_foreground.png",
+	"android/res/values/colors.xml",
+	"android/res/values/strings.xml",
+	"android/settings.gradle.kts",
+	"assets/icon.png",
+	"certs/README.md",
+	"desktop/Info.plist",
+	"desktop/icon.icns",
+	"desktop/icon.ico",
+	"favicon.png",
+	"gox.json",
+	"ios/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png",
+	"ios/Assets.xcassets/AppIcon.appiconset/AppIcon-120.png",
+	"ios/Assets.xcassets/AppIcon.appiconset/AppIcon-152.png",
+	"ios/Assets.xcassets/AppIcon.appiconset/AppIcon-167.png",
+	"ios/Assets.xcassets/AppIcon.appiconset/AppIcon-180.png",
+	"ios/Assets.xcassets/AppIcon.appiconset/AppIcon-40.png",
+	"ios/Assets.xcassets/AppIcon.appiconset/AppIcon-58.png",
+	"ios/Assets.xcassets/AppIcon.appiconset/AppIcon-60.png",
+	"ios/Assets.xcassets/AppIcon.appiconset/AppIcon-80.png",
+	"ios/Assets.xcassets/AppIcon.appiconset/AppIcon-87.png",
+	"ios/Assets.xcassets/AppIcon.appiconset/Contents.json",
+	"ios/Assets.xcassets/Contents.json",
+	"ios/Info.plist",
+	"package.json",
+	"src/app.tsx",
+	"src/components/counter.tsx",
+	"src/components/status-bar.tsx",
+	"src/components/todo-list.tsx",
+	"src/gox.d.ts",
+	"src/main.tsx",
+	"src/store.ts",
+	"src/theme.ts",
+	"tsconfig.json",
+}
+
+func TestCreateTSLayout(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "my-ts-app")
+
+	files, err := Create(Options{Dir: dir, TS: true})
+	if err != nil {
+		t.Fatalf("Create(TS): %v", err)
+	}
+	got := make([]string, 0, len(files))
+	for _, f := range files {
+		got = append(got, f.Path)
+		if f.Bytes == 0 {
+			t.Errorf("%s 是空文件", f.Path)
+		}
+	}
+	if strings.Join(got, ",") != strings.Join(wantTSFiles, ",") {
+		t.Fatalf("TS 清单不符:\n got %v\nwant %v", got, wantTSFiles)
+	}
+
+	// JS 版文件一个都不能混进来
+	for _, js := range []string{"src/main.js", "src/app.js", "src/store.js", "src/theme.js",
+		"src/components/counter.js"} {
+		if _, err := os.Stat(filepath.Join(dir, filepath.FromSlash(js))); err == nil {
+			t.Errorf("TS 工程不应含 %s", js)
+		}
+	}
+	// 覆盖层的 package.json 脚本必须指向 main.tsx
+	pkg := readFile(t, filepath.Join(dir, "package.json"))
+	if !strings.Contains(pkg, "src/main.tsx") {
+		t.Errorf("TS 版 package.json 的脚本应指向 src/main.tsx:\n%s", pkg)
+	}
+}
+
+// TestGeneratedTSScriptsCompile 是 TS 版的 TestGeneratedScriptsCompile:
+// 每个模板源文件先过 esbuild 类型剥离, 转译产物再过 lexer → parser → compiler
+// 全链路 —— "gox create --ts 出来的工程直接能跑"的最小凭据。
+func TestGeneratedTSScriptsCompile(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "demo")
+	if _, err := Create(Options{Dir: dir, TS: true}); err != nil {
+		t.Fatalf("Create(TS): %v", err)
+	}
+
+	count := 0
+	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		ext := filepath.Ext(p)
+		if ext != ".ts" && ext != ".tsx" {
+			return nil
+		}
+		count++
+		src := readFile(t, p)
+		rel, _ := filepath.Rel(dir, p)
+
+		js, err := tstransform.ToJS([]byte(src), p)
+		if err != nil {
+			t.Errorf("%s 转译失败: %v", rel, err)
+			return nil
+		}
+		l := lexer.New(string(js))
+		pr := parser.New(l)
+		program := pr.ParseProgram()
+		if pr.Errors().HasErrors() {
+			t.Errorf("%s 转译产物解析失败:\n%s\n--- JS ---\n%s", rel, pr.Errors().String(), string(js))
+			return nil
+		}
+		c := compiler.New()
+		if err := c.Compile(program); err != nil {
+			t.Errorf("%s 编译失败: %v", rel, err)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("遍历: %v", err)
+	}
+	// main/app + store/theme + 3 组件 + gox.d.ts
+	if count != 8 {
+		t.Errorf("只检查到 %d 个 .ts/.tsx，模板里的 TS 文件数不对（期望 8）", count)
+	}
+}
+
+// TestTSTemplatesPlaceholders TS 模板同样不能残留占位符, 且入口窗口标题生效。
+func TestTSTemplatesPlaceholders(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "ts-app")
+	if _, err := Create(Options{Dir: dir, TS: true}); err != nil {
+		t.Fatalf("Create(TS): %v", err)
+	}
+	if strings.Contains(readAll(t, dir), "__PROJECT_") {
+		t.Errorf("TS 模板残留占位符:\n%s", excerpt(readAll(t, dir), "__PROJECT_"))
+	}
+	if !strings.Contains(readFile(t, filepath.Join(dir, "src", "main.tsx")), `title="ts-app"`) {
+		t.Errorf("TS 入口的窗口标题不是目录名")
+	}
 }

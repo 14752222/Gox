@@ -86,8 +86,11 @@ func main() {
 
 // looksLikeScriptPath 报告这个参数是否应该按"脚本路径"处理（而不是子命令）。
 func looksLikeScriptPath(arg string) bool {
-	if strings.HasSuffix(strings.ToLower(arg), ".js") {
-		return true
+	lower := strings.ToLower(arg)
+	for _, ext := range []string{".js", ".jsx", ".ts", ".tsx", ".mts", ".cts"} {
+		if strings.HasSuffix(lower, ext) {
+			return true
+		}
 	}
 	return strings.ContainsAny(arg, `/\`)
 }
@@ -98,8 +101,9 @@ func printUsage(w io.Writer) {
 
 用法:
   gox create <目录>            按默认模板生成一个 GUI 工程（脚手架）
-  gox <文件.js>                执行脚本文件（GUI 脚本会开窗口）
-  gox dev [入口.js]            开发模式: 监听 .js 变更并热重载（见 docs/dev-workflow.md）
+  gox create <目录> --ts       同上, 生成 TypeScript/TSX 版模板
+  gox <文件.js>                执行脚本文件（GUI 脚本会开窗口；.ts/.tsx 自动转译）
+  gox dev [入口.js]            开发模式: 监听 .js/.ts/.tsx 变更并热重载（见 docs/dev-workflow.md）
   gox sync [目录]              把 gox.json 的权限声明注入 Android/iOS 清单
   gox icon [目录]              从 1024 源图一键生成全平台图标
   gox cert <android|windows|harmony|ios>  一键生成平台签名证书（快捷操作, gox cert -h 看详情）
@@ -112,10 +116,12 @@ func printUsage(w io.Writer) {
 
 create 选项:
   --name <名字>                指定项目名（缺省取目录名）
+  --ts                         生成 TypeScript/TSX 模板（入口 src/main.tsx, 附 tsconfig.json）
   -f, --force                  目标目录已存在且非空时覆盖写入
 
 示例:
   gox create my-app
+  gox create my-app --ts
   cd my-app && npm install && npm run dev
 
 生成的项目是普通 Gox 工程: src/main.js 是入口, 直接用
@@ -130,12 +136,13 @@ func runCreate(args []string) {
 		dir   string
 		name  string
 		force bool
+		ts    bool
 	)
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		switch {
 		case a == "-h" || a == "--help":
-			fmt.Fprint(os.Stdout, `用法: gox create <目录> [--name <名字>] [-f|--force]
+			fmt.Fprint(os.Stdout, `用法: gox create <目录> [--name <名字>] [--ts] [-f|--force]
 
 按默认模板生成一个 GUI 工程（目录布局与脚手架默认输出一致）:
   package.json        元信息 + dev/start 脚本
@@ -150,8 +157,13 @@ func runCreate(args []string) {
   ios/                iOS 骨架（Info.plist 权限区块 + AppIconSet）
   desktop/            桌面资源（Info.plist 模板 + icon.ico/.icns）
 
+加 --ts 生成 TypeScript 版: 入口改 src/main.tsx, 组件为 .tsx, 附
+tsconfig.json 与 gox.d.ts（IDE 类型提示）。.tsx 直接跑 —— gox 在加载时
+自动剥离类型（esbuild 转译, JSX 原样保留）, 无需 node 端构建步骤。
+
 选项:
   --name <名字>   指定项目名（缺省取目录名；不合法的字符会被收敛成短横线）
+  --ts            生成 TypeScript/TSX 模板
   -f, --force     目标目录已存在且非空时覆盖写入
 `)
 			return
@@ -161,6 +173,8 @@ func runCreate(args []string) {
 			}
 			i++
 			name = args[i]
+		case a == "--ts":
+			ts = true
 		case a == "-f" || a == "--force":
 			force = true
 		case strings.HasPrefix(a, "-"):
@@ -174,12 +188,12 @@ func runCreate(args []string) {
 	}
 
 	if dir == "" {
-		fmt.Fprint(os.Stderr, "用法: gox create <目录> [--name <名字>] [-f|--force]\n\n")
+		fmt.Fprint(os.Stderr, "用法: gox create <目录> [--name <名字>] [--ts] [-f|--force]\n\n")
 		fmt.Fprint(os.Stderr, "示例: gox create my-app\n")
 		os.Exit(2)
 	}
 
-	files, err := scaffold.Create(scaffold.Options{Dir: dir, Name: name, Force: force})
+	files, err := scaffold.Create(scaffold.Options{Dir: dir, Name: name, Force: force, TS: ts})
 	if err != nil {
 		createFatal(err.Error())
 	}
@@ -192,8 +206,12 @@ func runCreate(args []string) {
 	for _, f := range files {
 		fmt.Printf("  %s\n", f.Path)
 	}
+	entry := "src/main.js"
+	if ts {
+		entry = "src/main.tsx"
+	}
 	fmt.Printf("\n下一步:\n  cd %s\n  npm install\n  npm run dev\n", dir)
-	fmt.Printf("\n不用 npm 也行: gox %s\n", filepath.ToSlash(filepath.Join(dir, "src", "main.js")))
+	fmt.Printf("\n不用 npm 也行: gox %s\n", filepath.ToSlash(filepath.Join(dir, entry)))
 	fmt.Printf("\n多平台配置（gox.json）: 改 permissions 后跑 `gox sync` 注入权限;\n")
 	fmt.Printf("换图标: 替换 assets/icon.png（1024×1024）后跑 `gox icon`;\n")
 	fmt.Printf("签名证书: certs/ 目录（已 gitignore），`gox cert android|ios|harmony|windows` 一键生成;\n")

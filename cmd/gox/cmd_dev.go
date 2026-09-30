@@ -1,12 +1,13 @@
 package main
 
-// gox dev —— 开发期间热更新: 监听入口所在 src/ 目录的 .js 变更,
+// gox dev —— 开发期间热更新: 监听入口所在 src/ 目录的 .js/.ts/.tsx 变更,
 // 进程内丢弃旧 VM、重建新 VM 并重新执行入口文件。
+// TS/TSX 文件在进引擎前自动过 esbuild 类型剥离（JSX 原样保留）。
 //
 // 用法:
 //
-//	gox dev               等价于 gox dev src/main.js
-//	gox dev <入口.js>     监听该文件所在目录 (递归含子目录)
+//	gox dev               等价于 gox dev <默认入口>（main.js 优先, 回落 main.tsx/ts/jsx）
+//	gox dev <入口.js|入口.ts|入口.tsx>   监听该文件所在目录 (递归含子目录)
 //
 // 适用边界: 见 docs/dev-workflow.md。GUI 常驻脚本 (render(...) 后依赖
 // 消息泵保活) 会在泵循环里阻塞, dev 循环拿不到控制权 —— 当前实现只对
@@ -36,14 +37,16 @@ const devDebounce = 250 * time.Millisecond
 
 // runDev 实现 `gox dev [入口.js]`。
 func runDev(args []string) {
-	entry := "src/main.js"
+	entry := devDefaultEntry()
 	for _, a := range args {
 		switch {
 		case a == "-h" || a == "--help":
 			fmt.Fprint(os.Stdout, `用法: gox dev [入口.js]
 
-监听入口文件所在目录 (递归含子目录) 的 .js 变更, 每次变更后丢弃旧 VM、
-重建 VM 并重新执行入口文件。默认入口: src/main.js。
+监听入口文件所在目录 (递归含子目录) 的 .js/.jsx/.ts/.tsx 变更, 每次变更后
+丢弃旧 VM、重建 VM 并重新执行入口文件。默认入口依次探测:
+src/main.js → src/main.tsx → src/main.ts → src/main.jsx。
+TS/TSX 文件在进引擎前自动完成类型剥离 (esbuild 转译), JSX 原样保留。
 
 适用于执行完即返回的脚本; GUI 常驻脚本暂不支持热更新,
 见 docs/dev-workflow.md。
@@ -152,13 +155,26 @@ func devRun(entry string, changes int) {
 	}
 }
 
-// devInteresting 报告该事件是否值得触发重载: 只认 .js, 忽略编辑器
-// 临时文件 (vim 的 4913/swap、~ 备份、隐藏锁文件等)。
-func devInteresting(path string) bool {
-	if !strings.HasSuffix(path, ".js") {
-		return false
+// devDefaultEntry 探测默认入口: JS 工程保持 src/main.js 不变;
+// TS 工程按 src/main.tsx → main.ts → main.jsx 依次回落。
+func devDefaultEntry() string {
+	for _, cand := range []string{"src/main.js", "src/main.tsx", "src/main.ts", "src/main.jsx"} {
+		if _, err := os.Stat(cand); err == nil {
+			return cand
+		}
 	}
-	return !isTempFile(filepath.Base(path))
+	return "src/main.js" // 都没有时维持原默认, 让报错落在熟悉的入口名上
+}
+
+// devInteresting 报告该事件是否值得触发重载: 认 JS/TS 家族扩展名
+// (.js/.jsx/.ts/.tsx/.mts/.cts), 忽略编辑器临时文件 (vim 的 4913/swap、
+// ~ 备份、隐藏锁文件等)。
+func devInteresting(path string) bool {
+	switch strings.ToLower(filepath.Ext(path)) {
+	case ".js", ".jsx", ".ts", ".tsx", ".mts", ".cts":
+		return !isTempFile(filepath.Base(path))
+	}
+	return false
 }
 
 // isTempFile 报告文件名是否是编辑器/系统产生的临时文件。

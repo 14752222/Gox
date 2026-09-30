@@ -16,6 +16,7 @@ import (
 	"github.com/14752222/Gox/object"
 	"github.com/14752222/Gox/runtime"
 	"github.com/14752222/Gox/stdlib"
+	"github.com/14752222/Gox/tstransform"
 )
 
 // MaxFrames 是调用栈最大深度 (防止无限递归)。
@@ -2558,9 +2559,9 @@ func (vm *VM) loadModule(spec string) (*ModuleExports, error) {
 	}
 
 	// 解析模块路径
-	absPath := spec
-	if vm.moduleBase != "" {
-		absPath = resolvePath(vm.moduleBase, spec)
+	absPath, resolveErr := vm.resolveModuleFile(spec)
+	if resolveErr != nil {
+		return nil, resolveErr
 	}
 
 	// 检查缓存
@@ -2568,10 +2569,17 @@ func (vm *VM) loadModule(spec string) (*ModuleExports, error) {
 		return mod, nil
 	}
 
-	// 读取文件
+	// 读取文件; TS 家族 (.ts/.tsx/.mts/.cts/.jsx) 先过类型剥离转译,
+	// 进编译管线的永远是 JS —— parser/compiler 不感知 TS 的存在。
 	source, err := osReadFile(absPath)
 	if err != nil {
 		return nil, fmt.Errorf("Cannot find module '%s'", spec)
+	}
+	if tstransform.IsTS(absPath) {
+		source, err = tstransform.ToJS(source, absPath)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	// 编译模块
@@ -3308,10 +3316,18 @@ func EvalFile(path string) (object.Value, error) {
 
 // EvalFileVM 读取并执行 JS 脚本文件, 返回 VM 实例。
 // 供需要继续驱动事件循环 (严格定时器回调等) 的调用方使用。
+// TS 家族文件 (.ts/.tsx/...) 先过 tstransform 类型剥离再进编译管线,
+// 源码帧注入的也是转译后的文本 (与 stmt 位置同源)。
 func EvalFileVM(path string) (*VM, error) {
 	source, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("cannot read file: %v", err)
+	}
+	if tstransform.IsTS(path) {
+		source, err = tstransform.ToJS(source, path)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	c, err := compileSource(string(source), false)
@@ -3347,6 +3363,67 @@ func resolvePath(base, spec string) string {
 		return filepath.Clean(spec)
 	}
 	return filepath.Clean(filepath.Join(base, spec))
+}
+
+// resolveModuleFile 把模块说明符解析为磁盘上真实存在的文件。
+//
+// 在 "spec 原样就是文件" 的传统行为上为 TS 模板补三条解析规则:
+//  1. "./app.js" 找不到时依次尝试 "./app.ts" "./app.tsx" —— TS 官方 ESM
+//     风格鼓励源码里写 .js 后缀（即编译产物的后缀）；
+//  2. 无后缀的 spec 依次尝试 spec + ".js" / ".ts" / ".tsx"；
+//  3. 命中目录时依次尝试其下 index.js / index.ts / index.tsx。
+//
+// 全部落空时错误信息列出全部尝试过的候选，一眼看出差的是哪个文件。
+func (vm *VM) resolveModuleFile(spec string) (string, error) {
+	abs := func(p string) string { return resolvePath(vm.moduleBase, p) }
+
+	var candidates []string
+	seen := map[string]bool{}
+	add := func(p string) {
+		a := abs(p)
+		if !seen[a] {
+			seen[a] = true
+			candidates = append(candidates, a)
+		}
+	}
+
+	switch {
+	case strings.HasSuffix(spec, ".ts") || strings.HasSuffix(spec, ".tsx") ||
+		strings.HasSuffix(spec, ".mts") || strings.HasSuffix(spec, ".cts") ||
+		strings.HasSuffix(spec, ".jsx"):
+		// 显式 TS 家族后缀: 原样一个候选
+		add(spec)
+	default:
+		add(spec)
+		trimmed := strings.TrimSuffix(spec, ".js")
+		if trimmed != spec {
+			// "./app.js" → "./app.ts" / "./app.tsx"
+			add(trimmed + ".ts")
+			add(trimmed + ".tsx")
+		} else {
+			// 无后缀 → 补 .js / .ts / .tsx
+			add(spec + ".js")
+			add(spec + ".ts")
+			add(spec + ".tsx")
+		}
+	}
+
+	// 目录 index: 复制一份候选再迭代 (循环里要追加)
+	for _, cand := range append([]string(nil), candidates...) {
+		if fi, err := os.Stat(cand); err == nil && fi.IsDir() {
+			add(filepath.Join(cand, "index.js"))
+			add(filepath.Join(cand, "index.ts"))
+			add(filepath.Join(cand, "index.tsx"))
+		}
+	}
+
+	for _, cand := range candidates {
+		if fi, err := os.Stat(cand); err == nil && !fi.IsDir() {
+			return cand, nil
+		}
+	}
+	return "", fmt.Errorf("Cannot find module '%s' (tried: %s)",
+		spec, strings.Join(candidates, ", "))
 }
 
 // dirOf 返回路径的目录部分。

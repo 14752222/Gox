@@ -298,9 +298,10 @@ func buildDesktop(dir string, cfg config.Config, goos, arch string) {
 	if repo == "" {
 		buildFatal("桌面打包需要 Gox 源码仓库（jsbuild 机制依赖它）—— 设 GOX_REPO 环境变量或在仓库内运行")
 	}
-	entry := filepath.Join(dir, "src", "main.js")
-	if _, err := os.Stat(entry); err != nil {
-		buildFatal("找不到入口 %s", entry)
+	// 入口探测: main.js 优先 (老工程不变), TS 工程回落到 main.tsx/main.ts/main.jsx
+	entry, entryErr := buildFindEntry(dir)
+	if entryErr != nil {
+		buildFatal("%v", entryErr)
 	}
 
 	dist := filepath.Join(dir, "dist")
@@ -371,6 +372,20 @@ func runStepEnv(dir string, env []string, name string, args ...string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
+}
+
+// buildFindEntry 探测项目入口: main.js 优先 (老工程行为不变), TS 工程
+// 依次回落 main.tsx / main.ts / main.jsx。都没有时报错列出找过的路径。
+func buildFindEntry(dir string) (string, error) {
+	var tried []string
+	for _, name := range []string{"main.js", "main.tsx", "main.ts", "main.jsx"} {
+		p := filepath.Join(dir, "src", name)
+		tried = append(tried, p)
+		if fileExists(p) {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf("找不到入口 (找过: %s)", strings.Join(tried, ", "))
 }
 
 // goxRepoRoot 定位 Gox 源码仓库: GOX_REPO 环境变量优先, 其次从当前目录
