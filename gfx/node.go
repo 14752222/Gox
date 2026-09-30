@@ -68,7 +68,41 @@ type GuiNode struct {
 	// 下拉项状态: 在兄弟中的下标, 以及所属 select (绘制高亮时要回查
 	// highlight, 用指针比"沿 Parent 走两层"更稳 —— 弹层一旦被拆链就找不到)。
 	optIndex int
-	owner    *GuiNode
+
+	// 表格状态 (S4): 单元格的文字是**数据**而不是元素 (脚本写 rows/columns),
+	// 所以不像 button 那样有 #text 子节点可画 —— 与 menu-item 的 menuLabel
+	// 同一套路, 把文本与对齐缓存在节点上给绘制层读。
+	//   - cellText 是本格的显示文本;
+	//   - cellAlign 是 left/right/center;
+	//   - tblHeader 标记这一行是表头 (表头不响应悬停高亮)。
+	cellText  string
+	cellAlign string
+	tblHeader bool
+
+	// 树状态 (S4): 节点的文字与层级同样是数据, 缓存在节点上。
+	//   - treeLabel 是本节点的显示文本;
+	//   - treeDepth 是缩进层级 (0 起);
+	//   - treeKey 是节点在其数据里的唯一键 (重建后据此恢复展开态);
+	//   - treeExpandable 标记本行有子节点 (绘制箭头用);
+	//   - treeOpen 是本行当前的展开态 (叶子恒 false);
+	//   - treeParent 指向所属 tree 根节点 (切换展开时要回查它的展开表)。
+	treeLabel      string
+	treeDepth      int
+	treeKey        string
+	treeExpandable bool
+	treeOpen       bool
+	treeParent     *GuiNode
+
+	// treeOpenMap 是**tree 根节点**上的展开表 (key → open)。跨重建持久:
+	// 展开某分支触发的整体重建不该收掉其它已展开的分支。
+	treeOpenMap map[string]bool
+
+	// tableBuilt / treeBuilt 标记内部行是否已物化 (惰性构建的幂等闸门, 见
+	// ensureTableBuilt / ensureTreeBuilt)。用显式标记而不是"看有没有行节点"
+	// 反推: 空数据的表格仍要建表头, 空节点的树则是真的不建。
+	tableBuilt bool
+	treeBuilt  bool
+	owner      *GuiNode
 
 	// 输入框状态 (P2-1): focused 是"是否持有键盘焦点"(由 setFocus 维护,
 	// 绘制时决定边框颜色与是否画光标), caret 是光标位置 (rune 下标)。
@@ -186,6 +220,11 @@ var knownTags = map[string]struct{}{
 	"drawer": {},
 	// S4/T09 内置图标 (name/size/color, 24 网格像素风, 零依赖)
 	"icon": {},
+	// S4 数据展示: 表格与树 (内部行/单元格同样是 Go 侧构造, 脚本只喂数据)
+	"table": {}, "table-header": {}, "table-row": {}, "table-cell": {},
+	"tree": {}, "tree-row": {},
+	// S4 列表行: 固定行高 + 悬停/选中态的"行"约定 (用户自己包内容)
+	"list-item": {},
 	// P2-1 单行文本输入
 	"input": {},
 	// P2-5 滚动容器
@@ -888,7 +927,7 @@ func (n *GuiNode) buttonPadding() (padX, padY int) {
 func (n *GuiNode) hoverable() bool {
 	switch n.Tag {
 	case "button", "checkbox", "radio", "switch", "select", "select-option", "input", "textarea", "slider",
-		"menu", "menu-item", "tooltip":
+		"menu", "menu-item", "tooltip", "table-row", "tree-row", "list-item":
 		return true
 	}
 	return false

@@ -452,6 +452,8 @@ func TestExampleScriptsMount(t *testing.T) {
 		"condrender_demo.js", "list_demo.js", // P1 条件渲染 / 列表渲染
 		"select_demo.js", "dialog_demo.js", // P2-3 下拉框 / P2-4 弹层
 		"tooltip_demo.js",                // P4 悬停提示 (非模态弹层)
+		"table_demo.js",                  // S4 数据表格 (声明式列/行)
+		"tree_demo.js",                   // S4 树形控件 (展开收起)
 		"input_demo.js",                  // P2-1 单行输入
 		"canvas_demo.js",                 // P3-1 自绘画布
 		"slider_demo.js",                 // P2-8 滑块
@@ -1050,6 +1052,84 @@ func checkDemoTree(t *testing.T, name string, root *GuiNode, fake *fakeSurface) 
 		}
 		if n := countTag(root, "tooltip-popup"); n != 0 {
 			t.Fatalf("首帧不该有任何 tooltip-popup, got %d", n)
+		}
+	case "table_demo.js":
+		// 数据表格演示: 两个 table。主表格 4 行数据 + 表头, 紧凑表格 2 行。
+		tables := findAll(root, "table")
+		if len(tables) != 2 {
+			t.Fatalf("table_demo 的 table 数量 = %d, want 2", len(tables))
+		}
+		// 主表格: 3 列 → 表头 3 格; 4 行数据 → 每行 3 格 = 12 格
+		main := tables[0]
+		if n := countTag(main, "table-header"); n != 1 {
+			t.Fatalf("主表格表头数 = %d, want 1", n)
+		}
+		if n := countTag(main, "table-row"); n != 4 {
+			t.Fatalf("主表格数据行数 = %d, want 4", n)
+		}
+		if n := countTag(main, "table-cell"); n != 15 {
+			t.Fatalf("主表格单元格数 = %d, want 15 (3 表头 + 4×3 数据)", n)
+		}
+		// 对象行按 key 取值: 首行首格是 main.go
+		cells := findAll(main, "table-cell")
+		if cells[0].cellText != "名称" {
+			t.Fatalf("表头首格 = %q, want 名称", cells[0].cellText)
+		}
+		if cells[3].cellText != "main.go" {
+			t.Fatalf("首行首格 = %q, want main.go", cells[3].cellText)
+		}
+		// 显式列宽 90 的"大小"列
+		if cells[1].Box.W != 90 {
+			t.Fatalf("大小列宽 = %d, want 90", cells[1].Box.W)
+		}
+		// 挂了 onRowClick: 行上应有桥接处理器
+		row := findFirst(main, "table-row")
+		if row.PropHandler("onClick") == nil {
+			t.Fatalf("主表格挂了 onRowClick, 行上应桥接出 onClick")
+		}
+		// 第二行有斑马纹
+		if v, ok := findAll(main, "table-row")[1].PropBool("_zebra"); !ok || !v {
+			t.Fatalf("第 2 行应有斑马纹标记")
+		}
+		// 紧凑表格: borderless, 无 onRowClick → 行不可点
+		compact := tables[1]
+		if !compact.tableBorderless() {
+			t.Fatalf("紧凑表格应 borderless")
+		}
+		if r := findFirst(compact, "table-row"); r != nil && r.PropHandler("onClick") != nil {
+			t.Fatalf("紧凑表格没挂 onRowClick, 行不该可点")
+		}
+	case "tree_demo.js":
+		// 树演示: 初始全收起 → 顶层 3 行 (src / testdata / README.md)
+		trees := findAll(root, "tree")
+		if len(trees) != 1 {
+			t.Fatalf("tree_demo 的 tree 数量 = %d, want 1", len(trees))
+		}
+		tree := trees[0]
+		rows := make([]*GuiNode, 0, 3)
+		for _, c := range tree.Children {
+			if c.Tag == "tree-row" {
+				rows = append(rows, c)
+			}
+		}
+		if len(rows) != 3 {
+			t.Fatalf("初始可见行数 = %d, want 3 (缺省全收起)", len(rows))
+		}
+		if rows[0].treeLabel != "src" || rows[2].treeLabel != "README.md" {
+			t.Fatalf("顶层行文本不对: %q … %q", rows[0].treeLabel, rows[2].treeLabel)
+		}
+		// src 与 testdata 可展开, README 是叶子
+		if !rows[0].treeExpandable || !rows[1].treeExpandable {
+			t.Fatalf("src/testdata 应可展开")
+		}
+		if rows[2].treeExpandable {
+			t.Fatalf("README.md 是叶子")
+		}
+		// 叶子行没有"展开"这个动作, 但本例挂了 onSelect 所以仍有选中处理器 ——
+		// 这里验的是它不可展开这个事实 (切换与选中共用行上的 onClick, 由
+		// attachTreeToggle/attachTreeSelect 决定挂几个)
+		if rows[2].treeExpandable {
+			t.Fatalf("README.md 不该标记可展开")
 		}
 	case "transition_demo.js":
 		// 过渡动画演示: 首帧是"静止"状态 —— 首次赋值不做过渡 (与 CSS 一致),

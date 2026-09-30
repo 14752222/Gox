@@ -129,6 +129,15 @@ func layoutNode(n *GuiNode) {
 			c.Box = n.Box
 			layoutNode(c)
 		}
+	case "table":
+		layoutTable(n)
+	case "tree":
+		layoutTree(n)
+	case "table-row", "tree-row":
+		// 行容器: 子节点 (单元格) 由各自的 layoutXxx 摆开, 行为不归行自己管
+		placeAbsoluteIn(n, n.Box)
+	case "list-item":
+		layoutListItem(n)
 	case "scroll":
 		layoutScroll(n)
 	case "textarea":
@@ -350,6 +359,29 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 				h = ch
 			}
 		}
+	case "table", "tree":
+		// 数据展示组件 (S4): 除脚本显式给尺寸和父容器 stretch 之外, 用
+		// 内容算出的固有尺寸 —— 表格按列宽之和 × 行数, 树按下限宽 × 可见
+		// 行数。父容器 stretch 时 w/h 已被外层填好, 这里只补 0 的那一轴。
+		var iw, ih int
+		if n.Tag == "table" {
+			iw, ih = tableIntrinsic(n)
+		} else {
+			iw, ih = treeIntrinsic(n)
+		}
+		if w == 0 {
+			w = iw
+		}
+		if h == 0 {
+			h = ih
+		}
+	case "table-header", "table-row", "table-cell", "tree-row":
+		// 内部行 (Go 侧构造): 高度固定, 宽度由表格布局分配给整行
+		if h == 0 {
+			h = tableRowH
+		}
+	case "list-item":
+		return listItemIntrinsic(n, w, h)
 	case "checkbox", "radio":
 		if w == 0 {
 			w = 18

@@ -418,6 +418,16 @@ func drawNode(img *image.RGBA, n *GuiNode) {
 		paintIcon(img, n, disabled)
 	case "tooltip-popup":
 		paintTooltipPopup(img, n, disabled)
+	case "table-header":
+		paintTableHeader(img, n, disabled)
+	case "table-row":
+		paintTableRow(img, n, disabled)
+	case "table-cell":
+		paintTableCell(img, n, disabled)
+	case "tree-row":
+		paintTreeRow(img, n, disabled)
+	case "list-item":
+		paintListItem(img, n, disabled)
 	case "input":
 		paintInput(img, n, disabled)
 	case "scroll":

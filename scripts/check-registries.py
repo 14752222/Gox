@@ -80,6 +80,10 @@ EXEMPT_LAYOUT.update({
     "tooltip-popup": ("弹层盒子由 positionTooltipPopup 显式定位（gfx/tooltip.go：按 placement"
                       "贴触发盒旁边，越界翻转 + clamp 进窗口），不走 layoutNode ——"
                       "内容是单行文字，绘制分支自画，没有子节点可排"),
+    "table-header": ("行盒由 layoutTable 分配（gfx/table.go：Rect{area.X, y, area.W, tableRowH}），"
+                     "单元格再按列宽摆开（layoutTableRowCells）——与自身固有尺寸无关"),
+    "table-cell": ("格盒由 layoutTableRowCells 按列宽分配（gfx/table.go），"
+                   "列宽来自 tableColumnWidths 的显式 width / 内容比例分配"),
     "menuitem": ("声明位置的 menuitem 不占位也不排布：文字由下拉弹层里物化出的 "
                  "menu-item 画。这里只需要 intrinsicSize 给一个名义行高，"
                  "防止它的子 menu（子菜单）被 drawNode 的空盒剪枝剪掉"),
@@ -107,6 +111,10 @@ EXEMPT_RASTER = {t: CONTAINER for t in ["column", "grid", "row", "view"]}
 EXEMPT_RASTER.update({
     "tooltip": "布局透明触发容器：走 default 的 paintBoxDecor（无 background/border 就不画，"
                "弹层 tooltip-popup 由自己的绘制分支画）",
+    "table": "数据展示容器：自身只走 default 的 paintBoxDecor（背景/边框），"
+             "网格与文字全由内部构造的 table-header / table-row / table-cell 各自绘制",
+    "tree": "数据展示容器：自身只走 default 的 paintBoxDecor（背景/边框），"
+            "行文字与展开箭头由内部构造的 tree-row 绘制",
     "button": "button 走 default 的 paintBoxDecor（装饰统一出口，交互反馈也挂在那里）",
     "menuitem": "声明位置不绘制：文字由下拉弹层里物化出的 menu-item 画",
     "rect": "通用装饰盒，走 default 的 paintBoxDecor",

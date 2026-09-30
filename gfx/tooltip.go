@@ -38,13 +38,13 @@ import (
 // 不引入并发路径。
 
 const (
-	tipGap       = 6    // 弹层与触发盒的间距
-	tipPadX      = 10   // 弹层水平内边距
-	tipPadY      = 5    // 弹层垂直内边距
-	tipMaxW      = 260  // 弹层最大宽度 (超宽文本被 DrawText 截断)
-	tipWinMargin = 4    // 弹层距窗口边缘的最小留白 (clamp 用)
-	tipDelay     = 500  // 缺省显示延迟 (毫秒)
-	tipFlipGap   = 8    // 翻转时用的间距 (与 tipGap 同值, 命名独立便于调)
+	tipGap       = 6   // 弹层与触发盒的间距
+	tipPadX      = 10  // 弹层水平内边距
+	tipPadY      = 5   // 弹层垂直内边距
+	tipMaxW      = 260 // 弹层最大宽度 (超宽文本被 DrawText 截断)
+	tipWinMargin = 4   // 弹层距窗口边缘的最小留白 (clamp 用)
+	tipDelay     = 500 // 缺省显示延迟 (毫秒)
+	tipFlipGap   = 8   // 翻转时用的间距 (与 tipGap 同值, 命名独立便于调)
 )
 
 // ===== props =====
