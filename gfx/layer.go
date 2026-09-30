@@ -46,16 +46,17 @@ func (n *GuiNode) escapeClipping() bool {
 // hitEscapesLayer) —— "提示不挡交互"就是靠这条成立的。
 func (n *GuiNode) isOverlay() bool {
 	switch n.Tag {
-	case "dialog", "toast", "menu-popup", "tooltip-popup":
+	case "dialog", "drawer", "toast", "menu-popup", "tooltip-popup":
 		return true
 	}
 	return false
 }
 
 // isModal 报告节点是否是"拦截其下全部交互"的模态弹层。
-// 目前只有 dialog: toast 是非模态的, 点它下面的东西应当照常生效。
+// dialog 与 drawer 都是模态 (遮罩拦住其下内容); toast 是非模态的,
+// 点它下面的东西应当照常生效。
 func (n *GuiNode) isModal() bool {
-	return n.Tag == "dialog"
+	return n.Tag == "dialog" || n.Tag == "drawer"
 }
 
 // isFlowChild 报告子节点是否参与父容器的常规流分配 (尺寸累加 / 位置排布)。

@@ -469,6 +469,7 @@ func TestExampleScriptsMount(t *testing.T) {
 		"elastic_layout_demo.js",         // 布局弹性词汇: 百分比 / min-max / flexShrink / wrap
 		"grid_demo.js",                   // 网格布局: columns={n} 等宽卡片栅格
 		"counter_demo.js", "gui_demo.js", // 既有演示 (布局改动后回归)
+		"feedback_demo.js", // S4/T09 反馈与数据类组件 (alert/tag/badge/avatar/icon/spinner/skeleton/pagination/empty/drawer)
 		// 注: image_demo.js 不在本列表 —— 它的 src 是相对文件路径, 必须从仓库根
 		// 目录运行 (而本用例的 cwd 是 gfx/)。由 TestImageDemoScript 专职覆盖。
 		// storage_demo.js 同理: 它会真实写存储文件, 需 GOX_STORAGE_DIR 隔离,

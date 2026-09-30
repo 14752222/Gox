@@ -384,6 +384,8 @@ func drawNode(img *image.RGBA, n *GuiNode) {
 		paintSelectOption(img, n, disabled)
 	case "dialog":
 		paintDialog(img, n)
+	case "drawer":
+		paintDrawer(img, n, disabled)
 	case "toast":
 		paintToast(img, n, disabled)
 	case "tabs":
@@ -395,6 +397,25 @@ func drawNode(img *image.RGBA, n *GuiNode) {
 		if !n.tabIsShown() {
 			return
 		}
+	case "alert":
+		paintAlert(img, n, disabled)
+	case "tag":
+		paintTag(img, n, disabled)
+	case "avatar":
+		paintAvatar(img, n, disabled)
+	case "empty":
+		paintEmpty(img, n, disabled)
+	case "badge":
+		// 布局透明, 自身无外观: 徽标本体在**子节点绘制之后**才画 (见本函数
+		// 末尾的 badgeOverlay 收尾), 否则会被宿主内容盖住。
+	case "spinner":
+		paintSpinner(img, n, disabled)
+	case "skeleton":
+		paintSkeleton(img, n, disabled)
+	case "pagination":
+		paintPagination(img, n, disabled)
+	case "icon":
+		paintIcon(img, n, disabled)
 	case "tooltip-popup":
 		paintTooltipPopup(img, n, disabled)
 	case "input":
@@ -446,6 +467,11 @@ func drawNode(img *image.RGBA, n *GuiNode) {
 			sub = clipTo(img, n.Box)
 		}
 		drawNode(sub, c)
+	}
+	// badge 的徽标本体画在宿主内容之后: 它溢出到右上角外, 后画才不会被
+	// 宿主里靠右的内容盖住 (也不受父盒裁剪 —— 徽标本来就允许出框)。
+	if n.Tag == "badge" {
+		paintBadge(img, n, disabled)
 	}
 }
 

@@ -93,6 +93,8 @@ func layoutNode(n *GuiNode) {
 		layoutStack(n, false)
 	case "dialog":
 		layoutDialog(n)
+	case "drawer":
+		layoutDrawer(n)
 	case "toast":
 		layoutToast(n)
 	case "tooltip":
@@ -103,6 +105,30 @@ func layoutNode(n *GuiNode) {
 		// 页容器: 子节点竖排 (column 语义)。布局由 layoutTabs 驱动 ——
 		// 只有激活页会走到这里, 非激活页 Box 被清零不参与。
 		layoutStack(n, false)
+	case "alert":
+		layoutAlert(n)
+	case "tag":
+		layoutTag(n)
+	case "avatar":
+		layoutAvatar(n)
+	case "empty":
+		layoutEmpty(n)
+	case "spinner":
+		layoutSpinner(n)
+	case "skeleton":
+		layoutSkeleton(n)
+	case "pagination":
+		layoutPagination(n)
+	case "icon":
+		// 图标: 无子节点, 盒子由父容器分配 (固有尺寸见 intrinsicSize)。
+		// 无需专门布局逻辑 —— 与 rect/spacer 同款 (default 分支已够)。
+	case "badge":
+		// 包裹式徽标: 布局透明 (自身盒子 = 子节点盒子), 徽标本体画在宿主
+		// 右上角外, 不占流内也不参与尺寸 —— 与 tooltip 的透明语义同款。
+		if c := n.badgeChild(); c != nil {
+			c.Box = n.Box
+			layoutNode(c)
+		}
 	case "scroll":
 		layoutScroll(n)
 	case "textarea":
@@ -234,6 +260,78 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 		// 页容器: 子节点按 column 语义竖排 (真实布局由 layoutTabs 驱动,
 		// 这里只负责固有尺寸测量)。
 		cw, ch := stackContentSize(n, false)
+		if w == 0 {
+			w = cw
+		}
+		if h == 0 {
+			h = ch
+		}
+	case "alert":
+		cw, ch := intrinsicAlert(n)
+		if w == 0 {
+			w = cw
+		}
+		if h == 0 {
+			h = ch
+		}
+	case "tag":
+		cw, ch := intrinsicTag(n)
+		if w == 0 {
+			w = cw
+		}
+		if h == 0 {
+			h = ch
+		}
+	case "avatar":
+		cw, ch := intrinsicAvatar(n)
+		if w == 0 {
+			w = cw
+		}
+		if h == 0 {
+			h = ch
+		}
+	case "empty":
+		cw, ch := intrinsicEmpty(n)
+		if w == 0 {
+			w = cw
+		}
+		if h == 0 {
+			h = ch
+		}
+	case "badge":
+		cw, ch := intrinsicBadge(n)
+		if w == 0 {
+			w = cw
+		}
+		if h == 0 {
+			h = ch
+		}
+	case "spinner":
+		cw, ch := intrinsicSpinner(n)
+		if w == 0 {
+			w = cw
+		}
+		if h == 0 {
+			h = ch
+		}
+	case "skeleton":
+		cw, ch := intrinsicSkeleton(n)
+		if w == 0 {
+			w = cw
+		}
+		if h == 0 {
+			h = ch
+		}
+	case "pagination":
+		cw, ch := intrinsicPagination(n)
+		if w == 0 {
+			w = cw
+		}
+		if h == 0 {
+			h = ch
+		}
+	case "icon":
+		cw, ch := intrinsicIcon(n)
 		if w == 0 {
 			w = cw
 		}

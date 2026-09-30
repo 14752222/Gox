@@ -576,8 +576,14 @@ func (a *app) handleClick(x, y int) {
 		}
 		// 没命中任何处理器。若点落在模态遮罩上 (而不是内容卡片上), 那是
 		// "点外部关闭" 语义 (P2-4); 点在卡片身上什么都不做。
+		// drawer 与 dialog 同款, 只是内容卡片贴边 —— 用 drawerPanelHit 判定。
 		if d := modalAt(root, x, y); d != nil && dialogMaskHit(d, x, y) {
 			a.callHandler(d, "onClose", nil)
+			return
+		}
+		if dr := drawerAt(root, x, y); dr != nil && !drawerPanelHit(dr, x, y) {
+			a.callHandler(dr, "onClose", nil)
+			return
 		}
 		return
 	}
@@ -693,6 +699,9 @@ func (a *app) handleKey(key, name string, ev Event) {
 			return
 		}
 		if a.closeTopDialog() {
+			return
+		}
+		if a.closeTopDrawer() {
 			return
 		}
 		a.tooltipHide()
@@ -874,6 +883,21 @@ func (a *app) handleMouseDown(x, y int) {
 	if tb := tabsInChain(target); tb != nil {
 		if idx := tb.tabStripAt(x, y); idx >= 0 {
 			a.tabsSwitch(tb, idx)
+			return
+		}
+	}
+	// alert / tag 的关闭叉 (S4/T09): 与 tabs 同理 —— 自绘区命中即派发
+	// onClose, 不替脚本摘树 (显隐归信号管)。关掉后子树消失属于"消失的框",
+	// 由脚本重渲染处理, 这里只发通知。
+	if cb := closeButtonAt(target, x, y); cb != nil {
+		a.callHandler(cb, "onClose", nil)
+		return
+	}
+	// pagination 页码 (S4/T09): 与 tabs 同款 —— 自绘按钮区几何命中即派发
+	// onChange, 完全受控 (显示值归 current prop, 这里不改自身状态)。
+	if pg := paginationInChain(target); pg != nil {
+		if page := pg.pageBtnAt(x, y); page > 0 {
+			a.paginationGo(pg, page)
 			return
 		}
 	}

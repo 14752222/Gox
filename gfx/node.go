@@ -99,6 +99,14 @@ type GuiNode struct {
 	tabsActive int
 	tabStrip   []Rect
 
+	// pagination 状态 (S4/T09): pageBtns 是布局期算出的按钮区 (窗口坐标,
+	// 命中与绘制共用同一份 —— 与 tabStrip 同一思路, 不可能错层)。
+	pageBtns []pageGoto
+
+	// drawer 滑入进度 (S4/T09): 0 = 完全在窗口外, 1 = 到位。由 open 的真假
+	// 经动画心跳推进 (drawer.go), 绘制侧按它做水平位移; 关闭时归零, 整支不绘制。
+	drawerAnim float64
+
 	// canvas 自绘回调 (P3-1): onDraw 是脚本给的函数, 每次绘制时用一个
 	// 落笔 ctx 调用一次 (依赖收集另有一遍空跑, 见 canvas.go 的说明)。
 	onDraw object.Value
@@ -168,6 +176,16 @@ var knownTags = map[string]struct{}{
 	"tooltip": {}, "tooltip-popup": {},
 	// S4 选项卡: tab 是 tabs 的页, 只在 tabs 下有意义 (单独用没有布局者)
 	"tabs": {}, "tab": {},
+	// S4/T09 展示类五件套: 横幅 / 徽标 / 标签 / 头像 / 空状态
+	"alert": {}, "badge": {}, "tag": {}, "avatar": {}, "empty": {},
+	// S4/T09 加载态: 转圈 / 骨架屏 (两者都靠动画心跳持续重绘)
+	"spinner": {}, "skeleton": {},
+	// S4/T09 分页器 (完全受控: 显示看 current, 点击派发 onChange)
+	"pagination": {},
+	// S4/T09 抽屉 (复用 dialog 弹层机制, 内容卡片贴边滑入)
+	"drawer": {},
+	// S4/T09 内置图标 (name/size/color, 24 网格像素风, 零依赖)
+	"icon": {},
 	// P2-1 单行文本输入
 	"input": {},
 	// P2-5 滚动容器

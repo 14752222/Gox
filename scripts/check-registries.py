@@ -90,6 +90,8 @@ EXEMPT_LAYOUT.update({
 EXEMPT_INTRINSIC = {
     "dialog": ("盒子由 layoutDialog 取窗口盒（gfx/overlay.go：n.Box = n.windowBox()），"
                "子节点在窗口里居中 —— 与自身固有尺寸无关"),
+    "drawer": ("弹层盒子由 layoutDrawer 取窗口盒（gfx/drawer.go：n.Box = n.windowBox()），"
+               "内容卡片贴 side 边、宽按 width prop —— 与自身固有尺寸无关"),
     "menu-item": ("行盒由 layoutMenu 分配（gfx/menu.go：row.Box = Rect{…}），"
                   "固有尺寸不参与"),
     "menu-popup": POPUP_BOX + "（一级下拉挂在菜单标题下方，子菜单挂在触发项右侧）",

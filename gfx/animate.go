@@ -336,6 +336,9 @@ func scheduleAnimTick() {
 // **只标脏, 不直接重绘**: 重绘交给 Pump 的脏矩形流程 (与 canvas 的
 // "onDraw 里再标脏不会递归重绘"同一条纪律)。在这里直接 redraw 的话,
 // 一帧里会被每个动画节点各触发一次全帧重绘。
+//
+// 顺带推进"加载态"集合 (spinner/skeleton): 它们没有终点, 与过渡共用一份
+// 心跳与停表逻辑, 于是静止时（两个集合都空）一起停表, 零开销。
 func animTick() {
 	now := animNow()
 	for n := range animNodes {
@@ -354,7 +357,9 @@ func animTick() {
 		// 还没走完: 保证下一帧继续 (它可能只是"这一帧刚好还没结束")。
 		markNodeDirty(n)
 	}
-	if len(animNodes) > 0 {
+	loadingActive := tickerTick()
+	drawerActive := drawerTick()
+	if len(animNodes) > 0 || loadingActive || drawerActive {
 		scheduleAnimTick()
 		return
 	}
@@ -370,6 +375,8 @@ func cancelAnim(n *GuiNode) {
 		n.anim = nil
 	}
 	delete(animNodes, n)
+	// 加载态集合一并摘除: spinner/skeleton 离树后不该再被帧心跳标脏。
+	unregisterTicker(n)
 }
 
 // ===== 命令式 API =====

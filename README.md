@@ -64,8 +64,11 @@ flex 布局 + JSX + 信号驱动更新，win32 / X11 / cocoa 窗口后端）、�
   `flexShrink`、折行）、圆角/线性渐变/阴影装饰、命中测试、脏矩形局部重绘；win32（纯 syscall）、X11 与 macOS（cocoa, purego）
   窗口后端。详见 **[GUI 开发指南](docs/gui-guide.md)**
 - **原生感的交互组件** —— 表单控件（`input`/`textarea`/`select`/`slider`/`checkbox`/`radio`/`switch`）、
-  弹层（`dialog`/`toast`）、选项卡（`tabs`，keep-alive 页语义 + 受控/非受控双模式）、滚动容器、自绘画布，
+  弹层（`dialog`/`drawer`/`toast`）、选项卡（`tabs`，keep-alive 页语义 + 受控/非受控双模式）、滚动容器、自绘画布，
   以及**自绘菜单栏与右键菜单**（下拉/子菜单/快捷键/禁用项，不依赖系统菜单 API）
+- **反馈与数据类组件** —— `alert` / `tag` / `badge` / `avatar` / `empty` / `icon`（内置 15 个
+  像素风图标）/ `spinner` / `skeleton` / `pagination`（完全受控）；加载态复用同一根动画心跳，
+  静止时零开销。示例见 [`testdata/feedback_demo.js`](testdata/feedback_demo.js)
 - **原生能力层** —— 六个模块共用一个宿主契约（`NativeHost`）：`gx/device`（设备信息 / 电量 / 网络 /
   震动 / 屏幕亮度）、`gx/app`（前后台 / 返回键 / 分享）、`gx/geo`（定位，含持续监听）、
   `gx/media`（拍照 / 选图 / 选视频 / 保存）、`gx/permission`（权限查询与申请）、`gx/viewport`

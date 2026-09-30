@@ -126,6 +126,16 @@ macOS 后端（cocoa）已知限制：
 | `tabs` / `tab` | `value` / `onChange`（tabs）、`title`（tab） | 选项卡：顶部标签条 + 内容区，`<tab title="文件">` 直接堆在 `<tabs>` 下即为页。`value` 存在 ⇒ 受控（点击只派发 `onChange({index, title})`，等脚本把新下标写回 signal）；缺省非受控（内部切换）。页是 **keep-alive** 的：全部页留树（输入框内容、滚动位置都保留），非激活页只是不布局、不绘制、不命中 |
 | `dialog` | `open` / `onClose` | 模态弹层：40% 黑遮罩 + 居中卡片（流内子节点即卡片内容）；点遮罩 / Esc / 卡片内按钮触发 `onClose`，遮罩吞掉其下点击 |
 | `toast` | `message` / `level` | 非模态提示，固定右上角；`level` 取 `success` / `warn` / `error` / `info` 决定色条，显隐由 JS 侧信号控制 |
+| `alert` | `level` / `closable` / `onClose` | 横幅提示：四档 `level`（`info` / `success` / `warn` / `error`，缺省 `info`）决定左侧色条与图标色；`closable` 时右上角出现关闭叉，点它派发 `onClose`（**不替脚本摘树**，显隐归信号管） |
+| `tag` | `color` / `closable` / `onClose` | 小标签：胶囊底色按 `color`（缺省浅灰），`closable` 时尾部有叉，点叉派发 `onClose` |
+| `badge` | `value` / `max` / `dot` | 角标：**包裹式**（唯一流内子节点即宿主，尺寸跟随它），角标画在宿主右上角。`value` 超过 `max` 显示 `max+`（缺省 99）；`value` 为 0/负数自动隐藏；`dot` 为小红点（不显示数字） |
+| `avatar` | `name` / `size` / `color` / `round` | 头像：`size` 为边长（缺省 40），`color` 为底色（缺省主题蓝），显示 `name` 首字；`round` 画成正圆，否则圆角方块 |
+| `empty` | `desc` / 子节点 | 空状态：居中提示（`desc` 文案 + 可选子节点作插图），绘制一个占位图形 |
+| `spinner` | `size` / `color` | 转圈加载：12 根刻度绕圈、亮度按角度衰减形成残影；`size` 为边长（缺省 24）。靠**动画心跳**持续重绘（与过渡动画共用一根 16ms 表，静止时一起停表，零开销） |
+| `skeleton` | `rows` / `avatar` / `active` | 骨架屏：`rows` 条占位行（缺省 3）+ 可选左侧圆形 `avatar`；`active`（缺省真）时亮度呼吸闪烁（同一根动画心跳）；`active={false}` 时不登记心跳、静态显示 |
+| `pagination` | `total` / `pageSize` / `current` / `onChange` | 分页器：**完全受控**（显示只看 `current`，点击页码只派发 `onChange({page, pageSize})`）。页数 = `ceil(total/pageSize)`（`pageSize` 缺省 10）；页数 > 7 时折叠出省略号（首尾恒可见、省略号不可点）；第 1 页点 `‹`、末页点 `›` 不派发 |
+| `icon` | `name` / `size` / `color` | 内置图标：`name` 取内置图标集（见下方清单），`size` 为边长（缺省 16），`color` 缺省继承文字色；未知名字静默不画。纯光栅原语绘制、三平台零依赖 |
+| `drawer` | `open` / `side` / `width` / `onClose` | 抽屉弹层：**复用 dialog 的弹层机制**（遮罩铺满窗口、模态、Esc/点遮罩关闭），内容卡片贴 `side`（`left`/`right`，缺省 `right`）边、宽按 `width`（缺省 280），打开时从侧边滑入（靠动画心跳推进进度，无新增定时器） |
 | `input` | `value` / `onInput` / `placeholder` / `disabled` | 单行受控输入（沿 `value` 显示，编辑派发 `onInput({value})`）；获焦边框转蓝并显示闪烁竖线光标，点击可定位光标；支持 ←/→/Home/End/Backspace/Delete，`Enter`/`Esc` 不消费；支持 IME 候选词整批提交（Windows） |
 | `textarea` | `value` / `onInput` / `rows` / `placeholder` / `disabled` | 多行受控编辑器；光标 `{行,列}` 二维移动（↑↓←→/Home/End/Backspace/Delete），**`Enter` 插入换行**（不同于 input）；内容超高时纵向滚动并跟随光标；同样支持 IME。缺省 4 行 × 240px |
 | `scroll` | `width` / `height` / `onWheel` | 滚动容器：内容超高时右侧、超宽时底部出现 8px 轨道 + 比例滑块；滚轮滚动（一格 60px，`Shift+滚轮`走横向），滑块可拖拽，到边界后滚轮才冒泡给 `onWheel`；溢出的内容既画不出来也点不中。缺省高 200 |
@@ -138,6 +148,11 @@ macOS 后端（cocoa）已知限制：
 
 > 颜色属性（`background` / `border` / `color`）在组件标签上有语义差异：`background` 表示"选中/填充的强调色"，
 > 在 `button` / `rect` 上才是普通填充色；`color` 沿祖先链继承，因此 `<button color="#fff">文字</button>` 生效。
+
+> **内置图标清单**（`<icon name=... />`）：`home` / `search` / `user` / `gear` / `bell` / `chat` /
+> `folder` / `calendar` / `heart` / `plus` / `minus` / `close` / `check` / `arrow-left` / `arrow-right`。
+> 全部在 24×24 逻辑网格里用直线 / 矩形 / 圆拼装（像素风，三平台观感一致、零依赖）；冷门图标交给
+> 项目自己的 `<canvas>` 组件（`docs/gui-guide.md` 的 canvas 一节），内核不做无限扩张的图标库。
 
 > 受控组件（`input` / `textarea` / `slider` / `select` / `checkbox` / `switch` / `radio`）另有一条
 > **`model` 指令**：`<input model={draft} />` 一次接好读（`value`）与写（`onInput`），不用再手写
@@ -779,6 +794,7 @@ import { devSnapshot } from "gx/dev";
 | [hover_demo.js](../testdata/hover_demo.js) | 悬停与按压反馈 |
 | [dialog_demo.js](../testdata/dialog_demo.js) | 模态对话框与右上角 toast |
 | [tabs_demo.js](../testdata/tabs_demo.js) | 选项卡：受控切页 / keep-alive 页 / 非受控 |
+| [feedback_demo.js](../testdata/feedback_demo.js) | 反馈与数据类组件一屏：alert / tag / badge / avatar / icon / spinner / skeleton / pagination / empty / drawer |
 | [condrender_demo.js](../testdata/condrender_demo.js) | 条件渲染切面板（教学版，完整重建语义） |
 | [list_demo.js](../testdata/list_demo.js) | 数组信号增删列表 |
 | [model_demo.js](../testdata/model_demo.js) | `model` 双向绑定：八类控件一条指令 + 手写写法对照 |
