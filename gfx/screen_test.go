@@ -325,3 +325,84 @@ func TestRegionsToJSCarriesKindAndActive(t *testing.T) {
 		t.Fatalf("displayToJS().regions 缺 active")
 	}
 }
+
+// TestReportPostureFromFoldUpsert 钉住平台折叠通道 (批 C 的强类型入口) 的
+// upsert 语义。它与脚本侧的 reportPosture 共用 upsertDisplayLocked /
+// commitDisplaysLocked —— 但两条路一旦分叉, 同一个折叠态经不同入口进来会得到
+// 不同的屏表, 而这类偏差在真机上表现为"偶尔不分栏", 极难定位。
+func TestReportPostureFromFoldUpsert(t *testing.T) {
+	resetScreenStateForTest()
+	t.Cleanup(resetScreenStateForTest)
+	SetDefaultFactory(nil)
+
+	// 第一次上报: 半折 + 折痕 + 保留区 + 尺寸。
+	ReportPostureFromFold(Display{
+		ID: "fold-0", Posture: "half-open", Foldable: true,
+		Hinge: &DisplayHinge{X: 1600, Y: 0, W: 24, H: 2560, Orientation: "vertical"},
+		Regions: []DisplayRegion{
+			{ID: "fold-0", Kind: RegionDivision, X: 1600, Y: 0, W: 24, H: 2560, Active: true},
+		},
+		W: 3240, H: 2560,
+	})
+	d, ok := PrimaryDisplayForTest()
+	if !ok {
+		t.Fatal("上报后应能取到主屏")
+	}
+	if d.ID != "fold-0" || d.Posture != postureHalfOpen || !d.Foldable {
+		t.Fatalf("首次上报应定义整张表: %#v", d)
+	}
+	if d.Hinge == nil || d.Hinge.W != 24 || d.Hinge.Orientation != "vertical" {
+		t.Fatalf("折痕未写入: %#v", d.Hinge)
+	}
+	if len(d.Regions) != 1 || d.Regions[0].ID != "fold-0" {
+		t.Fatalf("保留区未写入: %#v", d.Regions)
+	}
+	if d.W != 3240 || d.H != 2560 || d.WorkW != 3240 {
+		t.Fatalf("尺寸未写入或 WorkW 未补齐: %#v", d)
+	}
+
+	// 第二次上报: 只改姿态。折痕必须留下 (设备几何不随姿态变), 其余字段沿用。
+	ReportPostureFromFold(Display{ID: "fold-0", Posture: "flat"})
+	d, _ = PrimaryDisplayForTest()
+	if d.Posture != postureFlat {
+		t.Fatalf("姿态应更新为 flat: %q", d.Posture)
+	}
+	if d.Hinge == nil {
+		t.Fatal("折痕不应随姿态清除 (否则折回去会变成等分 0.5)")
+	}
+	if len(d.Regions) != 1 || d.W != 3240 {
+		t.Fatalf("未上报的字段应沿用旧值: %#v", d)
+	}
+	if d.Name != "fold-0" {
+		t.Fatalf("非折叠字段不应被改动: name=%q", d.Name)
+	}
+}
+
+// TestReportPostureFromFoldFoldableFalse 钉住 Foldable 的**显式 false** 语义。
+//
+// 这是它与 reportPostureGo 的实质差异: 脚本侧"报了姿态就推定是折叠屏"
+// (因为没别的信息), 而平台侧读得到设备能力 —— 一台非折叠屏上报 posture=flat
+// 必须能把 Foldable 明确置为 false, 否则避让逻辑会为"不存在的折痕"预留空间。
+func TestReportPostureFromFoldFoldableFalse(t *testing.T) {
+	resetScreenStateForTest()
+	t.Cleanup(resetScreenStateForTest)
+	SetDefaultFactory(nil)
+
+	// 先立一块"折叠屏"。
+	ReportPostureFromFold(Display{
+		ID: "d0", Posture: "half-open", Foldable: true,
+		Hinge: &DisplayHinge{X: 700, W: 24, H: 1000, Orientation: "vertical"},
+	})
+	// 再明确宣告"它不是折叠屏" (换了一台设备 / 宿主纠正)。
+	ReportPostureFromFold(Display{ID: "d0", Posture: "flat", Foldable: false})
+
+	d, _ := PrimaryDisplayForTest()
+	if d.Foldable {
+		t.Fatalf("显式 false 应生效: %#v", d)
+	}
+	// 折痕字段本身按"不给就沿用"处理 —— 但 Foldable 已是 false,
+	// displaySplitRatio 会因此不再分栏 (见 TestDisplaySplitRatio 的同名断言)。
+	if got := displaySplitRatio(d); got != 0.5 {
+		t.Fatalf("非折叠屏应等分: %v", got)
+	}
+}

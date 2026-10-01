@@ -217,6 +217,35 @@ func screenEnvRevision() int {
 // EnvRevisionForTest 报告当前环境版本 (测试用: 断言"变更确实抬高了版本")。
 func EnvRevisionForTest() int { return screenEnvRevision() }
 
+// PrimaryDisplayForTest 返回当前主屏快照 (测试用)。
+//
+// 为什么需要它: gfx/mobile 里的折叠用例要断言"一段 JSON 经上报通道之后, 内核
+// 屏表长什么样", 而屏表是包内私有状态 —— 没有这个出口, 那些用例就只能测到
+// "函数没报错", 恰恰漏掉最会出错的一环 (字段有没有真的落进屏表)。
+func PrimaryDisplayForTest() (Display, bool) {
+	list := allDisplays()
+	for _, d := range list {
+		if d.Primary {
+			return d, true
+		}
+	}
+	if len(list) > 0 {
+		return list[0], true
+	}
+	return Display{}, false
+}
+
+// ResetDisplaysForTest 清空宿主上报, 让屏表回到后端枚举/虚拟屏 (测试用)。
+//
+// 对应 JS 侧的 resetDisplays(): 用例之间不许串味 —— 上一个用例上报的
+// "half-open + 折痕" 若留在表里, 下一个用例断言 flat 时会假失败。
+func ResetDisplaysForTest() {
+	screenMu.Lock()
+	screenOverride = nil
+	screenMu.Unlock()
+	notifyEnvChanged()
+}
+
 // bumpEnvLocked 抬高版本号并通知 (调用时必须持有 screenMu; 通知在解锁后跑,
 // 因为回调是脚本函数, 里面有重入本模块的自由 —— 持锁调脚本是死锁配方)。
 //
@@ -408,18 +437,13 @@ func displayHingeOrientation(d Display) string {
 //
 // 它做两件事: (1) 把上报的显示器写进 screenOverride (upsert);
 // (2) 抬高环境版本并通知 —— 于是所有订阅者 (含 gx/router 的视图) 当场重算。
-func reportPostureGo(args ...object.Value) object.Value {
-	opts, ok := args[0].(*object.Object)
-	if !ok {
-		return object.NewTypeError("reportPosture: 需要 opts 对象, 如 {posture, hinge}")
-	}
-	id := objPropStr(opts, "display")
-	if id == "" {
-		// 不指定显示器: 作用于当前窗口所在的那块 (再退化为第一块)。
-		id = displayOfSurface(nil)
-	}
-
-	screenMu.Lock()
+// upsertDisplayLocked 取"当前生效表"的副本, 并保证里面有一块 id 的屏 ——
+// 返回该表与目标屏的下标。**调用时必须持有 screenMu**。
+//
+// 它的存在是因为有两个上报入口 (脚本的 reportPostureGo 与平台折叠通道的
+// ReportPostureFromFold), 二者对"表从哪来、什么时候整表换掉"的规则必须
+// 逐字一致 —— 否则同一个折叠态经两条路进来会得到不同的屏表。
+func upsertDisplayLocked(id string) ([]Display, int) {
 	// 先从"当前生效表"里取一份底稿 (可能是后端枚举结果), 再叠加本次上报。
 	// 注意区分两件事: "以前上报过"(prevOverride) 与 "当前表非空" —— 后者
 	// 永远为真 (没有信息时内核会造一块虚拟屏), 混用会让"第一次上报定义整张表"
@@ -456,6 +480,105 @@ func reportPostureGo(args ...object.Value) object.Value {
 		out = append(out, Display{ID: id, Name: id, Scale: 1})
 		idx = len(out) - 1
 	}
+	return out, idx
+}
+
+// commitDisplaysLocked 把叠好的表写回 screenOverride 并保证有一块主屏。
+// **调用时必须持有 screenMu**; 通知由调用方在解锁后自己发
+// (notifyEnvChanged 会跑脚本回调, 持锁跑会死锁 —— 见其注释)。
+func commitDisplaysLocked(out []Display) {
+	// 一定保证有一块主屏: 否则 primaryDisplayID 落空, "窗口在哪块屏上"就
+	// 无法回答 (虚拟屏被换掉之后尤其容易出现)。
+	hasPrimary := false
+	for _, x := range out {
+		if x.Primary {
+			hasPrimary = true
+			break
+		}
+	}
+	if !hasPrimary && len(out) > 0 {
+		out[0].Primary = true
+	}
+	screenOverride = out
+}
+
+// ReportPostureFromFold 是**平台折叠通道**的强类型上报入口 (批 C)。
+//
+// 与脚本侧的 reportPostureGo 相比, 它少了一层 JS 对象解析, 但**合并语义完全
+// 相同** (都走 upsertDisplayLocked / commitDisplaysLocked): 只覆盖本次给到的
+// 字段, 没给的沿用旧值 —— 这正是"宿主只报姿态变化" (手机折一下) 时必须的行为。
+//
+// 为什么需要它而不是让平台侧去调 reportPosture: gfx/mobile 是纯 Go 包, 没有
+// VM 就没有 object.Value 可以造; 而平台回调的原始数据本来就是强类型的
+// (Android 的 FoldingFeature / iOS 的 UIWindowScene), 先编成 object 再解回来
+// 纯属浪费。
+//
+// **线程**: 内部会同步跑脚本订阅回调 ⇒ 只能在 GUI 线程调用; 平台回调必须
+// 先经 gfx.Post 转投 (gfx/mobile.ReportDisplayFold 已经这么做了)。
+//
+// d 里只需要填折叠相关的字段 (Posture / Foldable / Hinge / Regions, 以及
+// 可选的 W/H); 其余字段 (Name/Scale/Primary/WorkX…) 沿用已有的那块屏。
+func ReportPostureFromFold(d Display) {
+	id := d.ID
+	if id == "" {
+		// 同 reportPostureGo: 不指定显示器就作用于当前窗口所在的那块。
+		id = displayOfSurface(nil)
+	}
+	screenMu.Lock()
+	out, idx := upsertDisplayLocked(id)
+	cur := out[idx]
+	if d.Posture != "" {
+		cur.Posture = normalizedPosture(d.Posture)
+	} else if cur.Posture == "" {
+		cur.Posture = postureFlat
+	}
+	// Foldable 是显式字段 (false 有意义: "我确认这不是折叠屏"), 所以直接取值。
+	cur.Foldable = d.Foldable
+	// 折痕**不随姿态清除** —— 与 reportPostureGo 同一条理由 (折痕是设备的
+	// 几何属性, 不是姿态的属性; 平展时丢掉它会让"折回去"变成等分 0.5)。
+	if d.Hinge != nil {
+		cur.Hinge = d.Hinge
+		cur.Foldable = true
+	}
+	if d.Regions != nil {
+		cur.Regions = d.Regions
+	}
+	if d.W > 0 {
+		cur.W = d.W
+		if cur.WorkW == 0 {
+			cur.WorkW = d.W
+		}
+	}
+	if d.H > 0 {
+		cur.H = d.H
+		if cur.WorkH == 0 {
+			cur.WorkH = d.H
+		}
+	}
+	out[idx] = cur
+	commitDisplaysLocked(out)
+	screenMu.Unlock()
+
+	notifyEnvChanged()
+}
+
+// reportPostureGo 处理 reportPosture(opts) 的 Go 侧实现。
+//
+// 它做两件事: (1) 把上报的显示器写进 screenOverride (upsert);
+// (2) 抬高环境版本并通知 —— 于是所有订阅者 (含 gx/router 的视图) 当场重算。
+func reportPostureGo(args ...object.Value) object.Value {
+	opts, ok := args[0].(*object.Object)
+	if !ok {
+		return object.NewTypeError("reportPosture: 需要 opts 对象, 如 {posture, hinge}")
+	}
+	id := objPropStr(opts, "display")
+	if id == "" {
+		// 不指定显示器: 作用于当前窗口所在的那块 (再退化为第一块)。
+		id = displayOfSurface(nil)
+	}
+
+	screenMu.Lock()
+	out, idx := upsertDisplayLocked(id)
 	d := out[idx]
 	if v := objPropStr(opts, "posture"); v != "" {
 		d.Posture = normalizedPosture(v)
@@ -546,19 +669,7 @@ func reportPostureGo(args ...object.Value) object.Value {
 		}
 	}
 	out[idx] = d
-	// 一定保证有一块主屏: 否则 primaryDisplayID 落空, "窗口在哪块屏上"就
-	// 无法回答 (虚拟屏被换掉之后尤其容易出现)。
-	hasPrimary := false
-	for _, x := range out {
-		if x.Primary {
-			hasPrimary = true
-			break
-		}
-	}
-	if !hasPrimary && len(out) > 0 {
-		out[0].Primary = true
-	}
-	screenOverride = out
+	commitDisplaysLocked(out)
 	screenMu.Unlock()
 
 	notifyEnvChanged()
