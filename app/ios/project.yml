@@ -8,6 +8,12 @@
 name: Gox
 options:
   bundleIdPrefix: com.gox
+  # 最低支持版本**故意留在 15.0**, 不随折叠屏提到 27.1:
+  # `reservedRegions` 等 iPhone Duo 能力全部包在 `#available(iOS 27.1, *)`
+  # 里 (见 App/Sources/GoxDisplayFold.swift), 老设备走降级分支 (非折叠 = 
+  # Foldable false, 分栏退回按宽度类判), 功能不受影响。
+  # 提门槛只会白白丢掉 15~26 的用户, 却换不到任何东西 —— 除非将来有
+  # **必须**用新 API 才能实现、且无法降级的需求。
   deploymentTarget:
     iOS: "15.0"
   createIntermediateGroups: true

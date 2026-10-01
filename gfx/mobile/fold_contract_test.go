@@ -83,34 +83,106 @@ func TestAndroidFoldSymbolNameMatchesKotlinTail(t *testing.T) {
 	}
 }
 
-// TestIOSFoldExportNameMatchesSwift 钉住 iOS 侧折叠上报的导出名。
+// TestIOSFoldExportNameMatchesSwift 钉住 iOS 侧折叠上报的导出名与上报时机。
 //
-// Swift 经 bridging header 声明的 C 函数名必须与 Go 的 //export 一致。
+// Swift 经 bridging header 声明的 C 函数名必须与 Go 的 //export 一致;
+// 同时校验"四个上报时机"都在 —— 少一处就是某些姿态下报不上去 (而画面
+// 看起来只是"没适配", 很难反推到"漏了一个回调")。
 func TestIOSFoldExportNameMatchesSwift(t *testing.T) {
 	goSrc := readRepoFile(t, "gfx/ios/libgox/main.go")
 	const name = "gox_set_display_fold"
 	if !strings.Contains(goSrc, "//export "+name) {
 		t.Fatalf("Go 侧缺少 `//export %s`", name)
 	}
-	// Swift 侧的调用点: 折叠上报必然出现在视图控制器里 (reservedRegions 读取处)。
-	root := repoRoot(t)
-	var found bool
-	_ = filepath.Walk(filepath.Join(root, "app", "ios"), func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() || !strings.HasSuffix(path, ".swift") {
-			return nil
+
+	vc := readRepoFile(t, "app/ios/App/Sources/GoxViewController.swift")
+	fold := readRepoFile(t, "app/ios/App/Sources/GoxDisplayFold.swift")
+
+	// 实现体里必须真的调导出 (只声明不调用 = 永远不报)。
+	if !strings.Contains(fold, name) {
+		t.Fatalf("GoxDisplayFold.swift 里没有调用 %s", name)
+	}
+	// 版本门槛必须是 27.1 (写 27.0 在 27.0 真机上是 unrecognized selector → 崩)。
+	if !strings.Contains(fold, "#available(iOS 27.1, *)") {
+		t.Errorf("折叠 API 的门槛不是 iOS 27.1 —— 写宽了会在 27.0 真机上崩")
+	}
+	// includeInactive 必须显式传 (Apple 两份文档对默认行为说法不一致)。
+	if !strings.Contains(fold, ".includeInactive") {
+		t.Errorf("缺少 .includeInactive —— 平展态就看不到那条零宽 division, hasFold 会退化成 false")
+	}
+	// 四个上报时机。
+	for _, sig := range []string{
+		"override func traitCollectionDidChange",
+		"override func viewWillTransition",
+		"override func viewSafeAreaInsetsDidChange",
+	} {
+		if !strings.Contains(vc, sig) {
+			t.Errorf("GoxViewController 缺少 %s", sig)
 		}
-		b, err := os.ReadFile(path)
-		if err != nil {
-			return nil
-		}
-		if strings.Contains(string(b), name) {
-			found = true
-		}
-		return nil
-	})
-	if !found {
-		// 宿主侧胶水属于批 H1; 本用例在批 C 阶段只保证 Go 侧导出存在,
-		// 一旦 Swift 侧接了调用就要能对上 —— 所以这里只提示不失败。
-		t.Logf("提示: app/ios 下还没出现 %s 的调用点 (批 H1 待做)", name)
+	}
+	// startEngine 里的补报 (首次布局早于 gox_init 时被吞掉的那一份)。
+	if n := strings.Count(vc, "reportDisplayFold()"); n < 3 {
+		t.Errorf("reportDisplayFold() 只被调了 %d 处, 少于三处时机", n)
+	}
+	// UIScreen.main.scale 这条兜底在折叠屏上有歧义 (内外屏各有 UIScreen),
+	// 必须已经换掉 —— 否则画面会按错屏的 scale 缩放。
+	// 注意剥掉注释再查: 上面那句"兜底**不能**用 UIScreen.main.scale"的说明
+	// 本身就是一段好注释, 不该被这条断言误伤。
+	if strings.Contains(stripSwiftComments(vc), "UIScreen.main.scale") {
+		t.Errorf("仍然在用 UIScreen.main.scale 兜底 (折叠屏上取到的可能是另一块屏)")
 	}
 }
+
+// stripSwiftComments 去掉 // 行注释与 /* */ 块注释, 只留代码。
+func stripSwiftComments(src string) string {
+	var b strings.Builder
+	lines := strings.Split(src, "\n")
+	inBlock := false
+	for _, line := range lines {
+		t := strings.TrimSpace(line)
+		if inBlock {
+			if i := strings.Index(line, "*/"); i >= 0 {
+				inBlock = false
+				line = line[i+2:]
+			} else {
+				continue
+			}
+		}
+		if strings.HasPrefix(t, "//") {
+			continue
+		}
+		if strings.HasPrefix(t, "/*") {
+			if !strings.Contains(t, "*/") {
+				inBlock = true
+			}
+			continue
+		}
+		b.WriteString(line)
+		b.WriteByte('\n')
+	}
+	return b.String()
+}
+
+// TestIOSInvalidatesOnSizeClassChange 单看"尺寸类变化也要上报"这一条。
+//
+// Split View 改分栏比例时 viewSize 可以一模一样, 只靠 viewWillTransition
+// 会漏 —— 这是资料里明说的一条 (#1), 也是本文件最值得看住的一处。
+func TestIOSInvalidatesOnSizeClassChange(t *testing.T) {
+	vc := readRepoFile(t, "app/ios/App/Sources/GoxViewController.swift")
+	idx := strings.Index(vc, "override func traitCollectionDidChange")
+	if idx < 0 {
+		t.Fatal("没有 traitCollectionDidChange")
+	}
+	// 该方法体内必须出现尺寸类比较 + 折叠上报。
+	body := vc[idx:]
+	if end := strings.Index(body[1:], "\n    override func "); end >= 0 {
+		body = body[:end+1]
+	}
+	if !strings.Contains(body, "horizontalSizeClass") {
+		t.Errorf("traitCollectionDidChange 里没有比较尺寸类")
+	}
+	if !strings.Contains(body, "reportDisplayFold()") {
+		t.Errorf("traitCollectionDidChange 里没有触发折叠上报")
+	}
+}
+

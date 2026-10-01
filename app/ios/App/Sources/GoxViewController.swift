@@ -31,9 +31,23 @@ final class GoxViewController: UIViewController {
     /// 后者在 view 首次布局 (还没进窗口层级) 时可能返回 1, 等 view 真正挂上
     /// 窗口又变回 3, 造成"缓冲按 1x 建、layer 按 3x 显示"的 1/3 缩放画面
     /// (实测: 整个界面缩在左上角一小块)。
+    ///
+    /// 兜底**不能**用 `UIScreen.main.scale`: iPhone Duo (折叠屏) 上
+    /// "主屏"是**有歧义的** —— 内屏与外屏各是一块 UIScreen, 而 main 在任何
+    /// 时刻只指向其中之一 (随场景迁移变化)。取错屏的 scale 就是缓冲与 layer
+    /// 差 2 倍的老问题原封不动复发。改为顺着**本视图所在的场景**取:
+    ///   view → window → windowScene → screen
+    /// 这条链上的 scale 一定属于当前承载这个 view 的那块屏。取不到 (view 还
+    /// 没进层级 / windowScene 为 nil) 时**钳到 1** 而不是猜主屏 —— 1 是
+    /// "未缩放", 至少不会把画面放大 3 倍; 真到布局时 viewDidLayoutSubviews
+    /// 会再走一次, 那时链已通, 值会被纠正回来。
     private var renderScale: CGFloat {
         let s = view.traitCollection.displayScale
-        return s > 0 ? s : UIScreen.main.scale
+        if s > 0 { return s }
+        if let sceneScale = view.window?.windowScene?.screen.scale, sceneScale > 0 {
+            return sceneScale
+        }
+        return 1
     }
 
     // MARK: - 生命周期
@@ -76,6 +90,10 @@ final class GoxViewController: UIViewController {
         }
         inited = true
         reportSafeAreaInsets()
+        // 补报一次折叠状态: 与 insets 同一条理由 —— 首次布局可能早于 gox_init
+        // (那时只能吞掉), 启动后这里必须把"此刻真实的姿态/折痕/尺寸类"补上,
+        // 否则脚本从第一帧起就按错误的分栏数布局, 直到用户折一次才会纠正。
+        reportDisplayFold()
 
         // NativeHost 六模块注册 (gx/native.go 契约): gox_init 成功后把 Swift 侧
         // 的 capabilities/nativeCall 回调挂进内核 (gfx/ios/libgox/main.go)。
@@ -118,6 +136,31 @@ final class GoxViewController: UIViewController {
         super.viewSafeAreaInsetsDidChange()
         guard inited else { return }
         reportSafeAreaInsets()
+        // 安全区变化常常是姿态变化的**伴随现象** (折叠态下内屏两侧的
+        // 非对称 insets 会动)。这里补一次折叠上报, 与 insets 走同一个时机。
+        reportDisplayFold()
+    }
+
+    // MARK: - 折叠屏 (iPhone Duo / iOS 27)
+
+    /// 尺寸类变化**不保证**伴随尺寸变化 —— Split View 改变分栏比例时,
+    /// viewSize 可能一模一样但 horizontalSizeClass 从 compact 变成了 regular。
+    /// 只靠 `viewWillTransition(to:)` 会漏掉这一类, 所以这里必须也报一次。
+    ///
+    /// (iOS 17 起变了签名: 旧的无参 `traitCollectionDidChange(_:)` 已弃用,
+    /// 新的是 `registerForTraitChanges` / 这个带 `previousTraitCollection` 的
+    /// 版本。deploymentTarget 15.0 ⇒ 用旧签名 + available 判断最省事, 见下。)
+    override func traitCollectionDidChange(_ previous: UITraitCollection?) {
+        super.traitCollectionDidChange(previous)
+        guard inited else { return }
+        // 只关心会影响布局的那些维度 —— displayScale 变化自己走 viewDidLayoutSubviews
+        // 的重绑缓冲路径, 这里重复报会白跑一遍脚本回调。
+        let sizeClassChanged =
+            previous == nil ||
+            previous!.horizontalSizeClass != traitCollection.horizontalSizeClass ||
+            previous!.verticalSizeClass != traitCollection.verticalSizeClass
+        guard sizeClassChanged else { return }
+        reportDisplayFold()
     }
 
     override func viewWillTransition(to size: CGSize, with coordinator: UIViewControllerTransitionCoordinator) {
@@ -130,6 +173,9 @@ final class GoxViewController: UIViewController {
             self.resizeBuffer(pixelWidth: w, pixelHeight: h)
             gox_bind_frame_buffer(Int32(w), Int32(h), self.buffer)
             gox_resize(Int32(w), Int32(h), Float(scale))
+            // 旋转/进分屏一定伴随几何变化, 折叠区要重算 (折痕在横屏时是水平带)。
+            // 注意放在 resize 之后: 上报里带的 width/height 就是刚绑上去的这份。
+            self.reportDisplayFold()
         })
     }
 
