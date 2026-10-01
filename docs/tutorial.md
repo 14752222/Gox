@@ -429,6 +429,7 @@ my-app/
 | `import { each } from "gx/view"` 拿到 `undefined` | `each` / `show` 是**元素级指令**（写 JSX 属性，不用 import），任何模块都不导出它们；现在会编译期报错 |
 | `const [a, {b}] = …` 报 "unexpected token" | 嵌套解构在 2026-09-22 前解析不了；现已支持，可直接写 |
 | 点了按钮界面没反应 | 响应式属性写成了快照 —— `value={x()}` / `show={x()}` / `each={xs()}` 要传**函数**: `value={() => x()}` / `show={x}` / `each={xs}` |
+| 界面出来了，但文字一直停着不动（信号变了它不跟） | **文本子节点**也是快照 —— `count: {count()}` 里的 `count()` 在 `h()` 调用前就求值完了。改成函数子节点 ``{() => `count: ${count()}`}``。**这条不报错、不警告**（属性误用有警告，子节点没有 —— 见 [gui-guide.md](gui-guide.md) §8.1） |
 
 ---
 

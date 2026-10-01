@@ -580,7 +580,8 @@ ci(release): 打包闸改回 tar 校验，不再解析 npm 的输出
 
 - 事件回调统一经 `callHandler` 分发；涉及窗口的操作从节点出发经 `appOfNode(n)` 取所属窗口（支持多窗口）
 - `gx/*` 的 JSX 属性与子节点在调用当场求值一次 —— 需要响应式就必须传**函数**（`value: () => sig()`），
-  传值只是一张快照
+  子节点写 ``{() => sig()}`` 而不是 `{sig()}`），传值只是一张快照 —— 而且**子节点写成快照
+  是全静默的**（属性误用有警告，子节点没有），见 [docs/gui-guide.md](docs/gui-guide.md) §8.1
 - 新增标准库 API 请同步更新 [docs/js-runtime-api-tutorial.md](docs/js-runtime-api-tutorial.md)；
   未决与未实现项记入 `agent_doc/undecided-and-unimplemented.md`（过程性台账，不随仓库发布）
 - 涉及 GUI 组件的改动，请在 `agent_doc/gui-component-status.md` 追加一条落地记录（同上）

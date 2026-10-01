@@ -65,6 +65,8 @@ goxjs src/main.js
 2. **响应式的东西一律传函数**：`value` / `disabled` / `background` / `each` / `show` / `when` 收到的是
    **取值函数**。写成快照（`disabled={count() === 0}`、`each={todos()}`）只有第一帧是对的 —— 之后
    信号再变也不会重渲染。内核会就非法形态打一条警告（去重），行为降级但不静默。
+   **子节点也一样**：`共 {todos().length} 条` 是快照（在 `h()` 之前就求值完了），要写成
+   ``{() => "共 " + todos().length + " 条"}`` —— 而且**这条没有警告**，只能靠纪律。
 3. **路由记录的 `component` 要写组件函数本身**：`{ path: "/todos", component: TodoList }` ✓。
    写成 `component: TodoList()` 是**当场调用** —— 等于在定义路由表那一刻就把所有页面的组件体
    全部跑了一遍（局部 signal 提前建好、懒构建失效）。路由器要的是"给我一个函数"，
