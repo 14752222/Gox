@@ -100,6 +100,6 @@ goxjs src/main.tsx
   守卫、历史栈、懒加载、多窗口与折叠双栏这些进阶能力，手册见 `docs/gui-router.md`。
 - 用户态模式：`docs/gui-patterns.md`（状态、主题、屏幕适配等惯用法）
 - 持久化：`gx/storage` 的 `setAppName` / `setStorage` / `getStorage`
-- 系统能力：`gx/dialog` 的 `alert` / `confirm` / `openFile`（async，用 `async function`
+- 系统能力：`gx/dialog` 的 `alert` / `confirm` / `openFile` / `saveFile`（async，用 `async function`
   或 async 箭头 `async () => {}` 都行）
 - 打包成单文件可执行程序：`gox build windows|macos|android|ios`

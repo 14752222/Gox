@@ -26,10 +26,11 @@
 //
 // ## NSSavePanel 的说明
 //
-// nativeDialogHost 目前只有 openFile 一条文件 API (gfx/dialog.go 没有
-// saveFile 的脚本侧入口), 这里把 NSSavePanel 一并实现为 surface 上的
-// 预置能力 (ShowSaveFile): 构造/执行/结果映射与 NSOpenPanel 共用同一条
-// runFilePanel 路径, 等 gfx 契约补 saveFile 时直接接上即可。
+// saveFile 的脚本侧入口已随 nativeDialogHost 契约补齐 (ShowSaveFile,
+// 2026-10-01): 构造/执行/结果映射与 NSOpenPanel 共用同一条 runFilePanel
+// 路径。注意 NSSavePanel 与 NSOpenPanel 的一个默认差异 —— 保存面板**自带
+// "文件已存在则询问覆盖"**, 契约层因此不再单设选项 (见 gfx/dialog.go 的
+// ShowSaveFile 注释)。
 package cocoa
 
 import (
@@ -107,8 +108,8 @@ func (s *surface) ShowOpenFile(opts gfx.NativeFileOptions) (string, bool, error)
 	return path, ok, nil
 }
 
-// ShowSaveFile 弹"保存文件"。gfx 契约暂无 saveFile 入口 (见文件头),
-// 这是预置的 surface 能力, 语义与 ShowOpenFile 完全一致。
+// ShowSaveFile 弹"保存文件", 实现 gfx 的 nativeDialogHost。语义与
+// ShowOpenFile 完全一致; 覆盖确认由 NSSavePanel 自带。
 func (s *surface) ShowSaveFile(opts gfx.NativeFileOptions) (string, bool, error) {
 	path, ok := runFilePanel(newSavePanel(opts))
 	return path, ok, nil

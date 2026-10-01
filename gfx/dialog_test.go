@@ -439,10 +439,88 @@ func TestFallbackWritesToStderr(t *testing.T) {
 	fallbackMessageBox("T", "msg")
 }
 
+// ===== saveFile: 契约与 openFile 同构 (取消 → null, 选项直传) =====
+
+// TestSaveFileFallsBackWithoutBackend 两种"没有后端"都验 saveFileBox 的降级
+// (与 TestDialogFallsBackWithoutBackend 同一套构造, 单独成用例便于独立失败)。
+func TestSaveFileFallsBackWithoutBackend(t *testing.T) {
+	appMu.Lock()
+	saved := activeApp
+	activeApp = nil
+	appMu.Unlock()
+	defer func() {
+		appMu.Lock()
+		activeApp = saved
+		appMu.Unlock()
+	}()
+
+	if p, ok := saveFileBox(NativeFileOptions{}); ok || p != "" {
+		t.Fatalf("未挂载窗口时 saveFile 应返回 (空, false), got (%q,%v)", p, ok)
+	}
+
+	// 挂了窗口但 Surface 没实现可选接口 (真后端里 X11 就是这种情况)。
+	bare := &bareSurface{}
+	a := &app{surface: bare, root: mkNode("column", nil), dirtyNodes: map[*GuiNode]struct{}{}}
+	appMu.Lock()
+	activeApp = a
+	appMu.Unlock()
+	if p, ok := saveFileBox(NativeFileOptions{}); ok || p != "" {
+		t.Fatalf("后端不支持时 saveFile 应降级, got (%q,%v)", p, ok)
+	}
+}
+
+// TestSaveFileResolvesPathOrNull 验取消 → null、确认 → 路径字符串;
+// 顺带验缺省标题是 "保存文件" (不是 openFile 的 "打开文件")。
+func TestSaveFileResolvesPathOrNull(t *testing.T) {
+	cases := []struct {
+		name string
+		path string
+		ok   bool
+		want string
+	}{
+		{"确认保存", `C:\tmp\out.txt`, true, `C:\tmp\out.txt`},
+		{"用户取消", "", false, "null"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fake := newFakeSurface()
+			fake.dialog = &fakeDialogHost{savePath: c.path, saveOk: c.ok}
+			SetDefaultFactory(&fakeFactory{fake})
+			defer SetDefaultFactory(nil)
+			object.GlobalScheduler().ClearAll()
+			t.Cleanup(func() { object.GlobalScheduler().ClearAll() })
+
+			v, err := vm.EvalVM(`
+				import { saveFile } from "gx/dialog";
+				import { h, render } from "gx/gfx";
+				globalThis.got = "pending";
+				render(h("rect", {width: 10, height: 10}),
+					{title: "T", width: 200, height: 150});
+				saveFile({default: "out.txt"}).then(p => { got = String(p); });
+			`)
+			if err != nil {
+				t.Fatalf("EvalVM: %v", err)
+			}
+			drainWithClose(t, v, fake, globalStringSettled(t, v, "got"))
+			got, _ := v.Globals().Get("got")
+			s, _ := got.(*object.String)
+			if s == nil || s.Value != c.want {
+				t.Fatalf("saveFile 结果 = %v, want %q", got, c.want)
+			}
+			// 选项直传原生层; 省略 title/filter 时缺省标题应为 "保存文件"
+			opts := fake.dialog.saveCalls()
+			if len(opts) != 1 || opts[0].Title != "保存文件" || opts[0].Default != "out.txt" {
+				t.Fatalf("saveFile 选项未按缺省传到原生层: %+v", opts)
+			}
+		})
+	}
+}
+
 // ===== 断言辅助 =====
 
 // 编译期契约: 测试替身必须满足可选接口, 同步/异步入口的签名也不许被改坏。
 var (
 	_ nativeDialogHost                       = (*fakeDialogHost)(nil)
 	_ func(NativeFileOptions) (string, bool) = openFileBox
+	_ func(NativeFileOptions) (string, bool) = saveFileBox
 )

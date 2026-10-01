@@ -1,4 +1,4 @@
-// P3-4 演示: 原生系统对话框 (alert / confirm / openFile)。
+// P3-4 演示: 原生系统对话框 (alert / confirm / openFile / saveFile)。
 // 运行: ./gox testdata/dialog_native_demo.js
 //
 // 现象:
@@ -6,9 +6,10 @@
 //   - 点 "Confirm" → 弹"确定/取消", 日志按你的选择写 yes/no;
 //   - 点 "Open file" → 弹系统"打开文件"对话框 (带类型下拉框),
 //     取消得到 null, 选中得到完整路径;
-//   - 三个都是 **await** 的: 对话框关掉之前, 下面那行代码不会执行。//
+//   - 点 "Save file" → 弹系统"保存文件"对话框, 目标已存在时由系统询问覆盖;
+//   - 四个都是 **await** 的: 对话框关掉之前, 下面那行代码不会执行。//
 // 四个容易踩的点:
-//   - **这三个 API 是 async 的** (返回 Promise), 要用 await 或 .then。
+//   - **这四个 API 是 async 的** (返回 Promise), 要用 await 或 .then。
 //     与剪贴板那两个同步函数不同 —— 模态对话框会挂住等到用户作答,
 //     而剪贴板是即时调用。
 //   - **模态期间界面仍然响应**: 消息框以主窗口为 owner, Windows 会自动
@@ -25,7 +26,7 @@
 // (2026-09-24 起箭头形式也支持)。下面保持匿名 async 函数表达式的写法。
 import { createSignal } from "gx/solid";
 import { h, render } from "gx/gfx";
-import { alert, confirm, openFile } from "gx/dialog";
+import { alert, confirm, openFile, saveFile } from "gx/dialog";
 
 const [log, setLog] = createSignal("(nothing yet)");
 const push = (line) => setLog((prev) => (prev === "(nothing yet)" ? line : prev + "\n" + line));
@@ -64,7 +65,18 @@ render(
             push("openFile -> " + path);
           }
         }
-      }, "Open file")
+      }, "Open file"),
+
+      h("button", {
+        onClick: async function () {
+          const out = await saveFile({ default: "report.txt" });
+          if (out === null) {
+            push("saveFile cancelled");
+          } else {
+            push("saveFile -> " + out);
+          }
+        }
+      }, "Save file")
     ),
 
     h("separator", { height: 1 }),

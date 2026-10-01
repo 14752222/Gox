@@ -755,12 +755,12 @@ func checkDemoTree(t *testing.T, name string, root *GuiNode, fake *fakeSurface) 
 			t.Fatalf("禁用滑块的轨道色未被降饱和 (%d 个像素)", n)
 		}
 	case "dialog_native_demo.js":
-		// 原生对话框演示: 三个按钮 (Alert / Confirm / Open file) 必须可见可点,
-		// 且首帧不该真的弹过任何系统对话框 —— 自动化环境里没人点按钮,
-		// 真弹一个模态框会让用例一直等到超时。
+		// 原生对话框演示: 四个按钮 (Alert / Confirm / Open file / Save file)
+		// 必须可见可点, 且首帧不该真的弹过任何系统对话框 —— 自动化环境里
+		// 没人点按钮, 真弹一个模态框会让用例一直等到超时。
 		btns := findAll(root, "button")
-		if len(btns) != 3 {
-			t.Fatalf("dialog_native_demo 的 button 数量 = %d, want 3", len(btns))
+		if len(btns) != 4 {
+			t.Fatalf("dialog_native_demo 的 button 数量 = %d, want 4", len(btns))
 		}
 		for i, b := range btns {
 			if b.Box.H <= 0 {
@@ -775,6 +775,9 @@ func checkDemoTree(t *testing.T, name string, root *GuiNode, fake *fakeSurface) 
 		}
 		if n := fake.dialog.openCalls(); len(n) != 0 {
 			t.Fatalf("首帧不该弹文件选择框, got %d 次", len(n))
+		}
+		if n := fake.dialog.saveCalls(); len(n) != 0 {
+			t.Fatalf("首帧不该弹文件保存框, got %d 次", len(n))
 		}
 	case "counter_demo.js":
 		// 既有演示: button 必须有内容高度, 否则点击永远命不中 (见 P0-3)

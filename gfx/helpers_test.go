@@ -86,6 +86,16 @@ func (f *fakeSurface) ShowOpenFile(opts NativeFileOptions) (string, bool, error)
 	return f.dialog.ShowOpenFile(opts)
 }
 
+// ShowSaveFile 同上。接口每加一个方法, 替身必须同步跟上转发 —— 否则
+// fakeSurface 不再满足 nativeDialogHost, type assertion 静默失败,
+// 所有对话框用例退化成降级路径 (本次 saveFile 落地时真踩过)。
+func (f *fakeSurface) ShowSaveFile(opts NativeFileOptions) (string, bool, error) {
+	if f.dialog == nil {
+		return "", false, errors.New("test: 未注入假对话框")
+	}
+	return f.dialog.ShowSaveFile(opts)
+}
+
 // ReadClipboardText / WriteClipboardText 是假 Surface 的 clipboardHost 实现
 // (测试专用; 真后端在 gfx/win32)。刻意**不碰系统剪贴板**: CI 上没有剪贴板
 // 所有者, 在开发机上跑测试改掉用户正在用的剪贴板更是不可接受。
@@ -188,12 +198,16 @@ type fakeDialogHost struct {
 	// 收到的调用
 	messages []fakeMessageCall
 	opens    []NativeFileOptions
+	saves    []NativeFileOptions
 	// 预设的应答
 	confirmAnswer  bool
 	messageErr     error
 	openPath       string
 	openOk         bool
 	openErr        error
+	savePath       string
+	saveOk         bool
+	saveErr        error
 	showMessageNil bool // true 时让 ShowMessage 走"后端不支持"分支之外的另一条
 }
 
@@ -223,6 +237,17 @@ func (f *fakeDialogHost) ShowOpenFile(opts NativeFileOptions) (string, bool, err
 	return f.openPath, f.openOk, nil
 }
 
+// ShowSaveFile 同上: 记录参数 + 返回预设结果。
+func (f *fakeDialogHost) ShowSaveFile(opts NativeFileOptions) (string, bool, error) {
+	f.mu.Lock()
+	f.saves = append(f.saves, opts)
+	f.mu.Unlock()
+	if f.saveErr != nil {
+		return "", false, f.saveErr
+	}
+	return f.savePath, f.saveOk, nil
+}
+
 func (f *fakeDialogHost) messageCalls() []fakeMessageCall {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -233,6 +258,12 @@ func (f *fakeDialogHost) openCalls() []NativeFileOptions {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]NativeFileOptions(nil), f.opens...)
+}
+
+func (f *fakeDialogHost) saveCalls() []NativeFileOptions {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]NativeFileOptions(nil), f.saves...)
 }
 
 // bareSurface 是一个**只实现 Surface 接口**的最小后端 (刻意不实现任何可选

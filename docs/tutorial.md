@@ -250,7 +250,7 @@ import describe, { VERSION, shout } from "./tutorial_util.js"; // ④ 相对路�
 | `gx/view` | `Switch` `Match`（`each` / `show` 是元素级指令, **不用 import**） |
 | `gx/router` | `createRouter` `RouterView` `RouterLink` `useRoute` `useRouter` `useRouteState` `lazy` |
 | `gx/screen` | `screens` `primaryScreen` `screen` `screenOf` `useScreen` `useScreens` `windowInfo` `useWindowInfo` `posture` `usePosture` `hinge` `regions` `platform` `reportPosture` `resetDisplays` `onDisplayChange` `offDisplayChange` |
-| `gx/dialog` | `alert` `confirm` `openFile`（async, 用 `await`） |
+| `gx/dialog` | `alert` `confirm` `openFile` `saveFile`（async, 用 `await`） |
 | `gx/storage` | `setAppName` `appDataDir` `setStorage` `getStorage` `removeStorage` `clearStorage` `getStorageInfo` |
 | `gx/dev` | `devSnapshot` |
 | `gox` | 以上全部导出的并集(重名不存在; 未链接 GUI 的宿主自动退化为实际提供的部分) |
@@ -426,7 +426,7 @@ my-app/
 | `gox create: 只能指定一个目标目录` | 多写了一个路径参数 |
 | `package.json` 里 `name` 变成 `gox-app` | 目录名/`--name` 全是中文等非字母数字字符, 收敛后为空 ⇒ 用 `--name` 指定一个 ASCII 名字 |
 | `ReferenceError: h is not defined`（旧版本才会见到） | 用了 JSX 却没 import `h`。**2026-09-22 起编译器会自动补** `import { h } from "gx/gfx"`；老引擎上加一行 `import { h } from "gox"` 即可 |
-| `alert is not a function` / 某个导入名恒为 `undefined` | 名字取错了模块（`alert` / `confirm` / `openFile` 在 `gx/dialog`，不在 `gx/gfx`）—— 见 §2.3 的导出清单。**现在从内置模块 import 不存在的名字会直接编译报错**，并告诉你它在哪个模块 |
+| `alert is not a function` / 某个导入名恒为 `undefined` | 名字取错了模块（`alert` / `confirm` / `openFile` / `saveFile` 在 `gx/dialog`，不在 `gx/gfx`）—— 见 §2.3 的导出清单。**现在从内置模块 import 不存在的名字会直接编译报错**，并告诉你它在哪个模块 |
 | `import { each } from "gx/view"` 拿到 `undefined` | `each` / `show` 是**元素级指令**（写 JSX 属性，不用 import），任何模块都不导出它们；现在会编译期报错 |
 | `const [a, {b}] = …` 报 "unexpected token" | 嵌套解构在 2026-09-22 前解析不了；现已支持，可直接写 |
 | 点了按钮界面没反应 | 响应式属性写成了快照 —— `value={x()}` / `show={x()}` / `each={xs()}` 要传**函数**: `value={() => x()}` / `show={x}` / `each={xs}` |

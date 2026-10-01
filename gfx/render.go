@@ -1446,6 +1446,7 @@ func init() {
 			"alert":    object.NewBuiltin("alert", jsAlert),
 			"confirm":  object.NewBuiltin("confirm", jsConfirm),
 			"openFile": object.NewBuiltin("openFile", jsOpenFile),
+			"saveFile": object.NewBuiltin("saveFile", jsSaveFile),
 		}
 	})
 }

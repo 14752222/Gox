@@ -10,13 +10,14 @@ import (
 
 // 原生系统对话框 (P3-4): alert / confirm / 文件选择。
 //
-// 注册为独立模块 `gx/dialog` (与 `gx/gfx` 分开: 这三个 API 不依赖元素树,
+// 注册为独立模块 `gx/dialog` (与 `gx/gfx` 分开: 这几个 API 不依赖元素树,
 // 只依赖"当前有没有窗口"):
 //
-//	import { alert, confirm, openFile } from "gx/dialog";
+//	import { alert, confirm, openFile, saveFile } from "gx/dialog";
 //	await alert("保存成功");
 //	if (await confirm("确定删除吗?")) { ... }
 //	const path = await openFile({ filter: "文本文件|*.txt", title: "打开" }); // 取消 → null
+//	const out = await saveFile({ default: "out.txt" });                       // 取消 → null
 //
 // **为什么是 async (Promise) 而不是像剪贴板那样的同步 API**:
 // 剪贴板是真的同步 —— 在脚本线程内联调 `OpenClipboard` 就完事, 没有等待。
@@ -33,10 +34,12 @@ import (
 // 而在另一个 goroutine 里调用它, 反而会让窗口的归属与禁用关系变得难以推理
 // (跨线程 UI 调用本身就是 Win32 的雷区)。所以最终形态是**同步落地 + 异步外观**:
 //
-//   - Go 侧 `alertBox`/`confirmBox`/`openFileBox` 是同步函数 (阻塞到用户作答);
-//   - JS 侧 `jsAlert`/`jsConfirm`/`jsOpenFile` 返回 Promise, 且**先返回再作答**:
-//     把作答动作经 `object.GlobalScheduler().SetTimeout(..., 0)` 投回事件循环,
-//     于是 `await` 之后的代码在"本次脚本执行结束、事件循环跑起来"之后才继续。
+//   - Go 侧 `alertBox`/`confirmBox`/`openFileBox`/`saveFileBox` 是同步函数
+//     (阻塞到用户作答);
+//   - JS 侧 `jsAlert`/`jsConfirm`/`jsOpenFile`/`jsSaveFile` 返回 Promise,
+//     且**先返回再作答**: 把作答动作经 `object.GlobalScheduler().SetTimeout(..., 0)`
+//     投回事件循环, 于是 `await` 之后的代码在"本次脚本执行结束、事件循环跑起来"
+//     之后才继续。
 //
 // 这样既保住了 `await` 的书写体验 (任务书要求), 又让单测能注入假对话框
 // 直接验 Promise 的 resolve 链路。
@@ -74,7 +77,7 @@ type NativeFileFilter struct {
 	Pattern string
 }
 
-// NativeFileOptions 是 openFile 的参数 (零值即合理缺省)。
+// NativeFileOptions 是 openFile / saveFile 共用的参数 (零值即合理缺省)。
 type NativeFileOptions struct {
 	Title   string // 对话框标题
 	Filter  []NativeFileFilter
@@ -84,7 +87,7 @@ type NativeFileOptions struct {
 
 // nativeDialogHost 是 Surface 的可选能力: 弹出系统原生对话框。
 //
-// 三个方法都**阻塞到用户作出选择**。实现只负责"把参数翻译成本平台 API、
+// 四个方法都**阻塞到用户作出选择**。实现只负责"把参数翻译成本平台 API、
 // 把结果翻译回来", 不碰元素树、不碰 VM (与 WndProc 的禁律一致)。
 type nativeDialogHost interface {
 	// ShowMessage 弹出消息框, 返回用户是否选了"确定"
@@ -93,6 +96,10 @@ type nativeDialogHost interface {
 	// ShowOpenFile 弹出"打开文件"对话框; 用户取消时 ok 为 false
 	// (这不是错误 —— 取消是正常操作, 返回 err 会让脚本被迫写 try/catch)。
 	ShowOpenFile(opts NativeFileOptions) (path string, ok bool, err error)
+	// ShowSaveFile 弹出"保存文件"对话框; 取消语义与 ShowOpenFile 相同。
+	// 实现应自带"已存在则询问覆盖"的确认 (Win32 OFN_OVERWRITEPROMPT /
+	// NSSavePanel 的默认行为), 契约层不再单设选项。
+	ShowSaveFile(opts NativeFileOptions) (path string, ok bool, err error)
 }
 
 // dialogBackend 取当前窗口后端里的原生对话框能力。
@@ -150,6 +157,21 @@ func openFileBox(opts NativeFileOptions) (string, bool) {
 		return "", false
 	}
 	path, ok, err := d.ShowOpenFile(opts)
+	if err != nil {
+		fallbackMessageBox(opts.Title, err.Error())
+		return "", false
+	}
+	return path, ok
+}
+
+// saveFileBox 弹"保存文件"; 取消返回 ("", false)。降级语义与 openFileBox 一致。
+func saveFileBox(opts NativeFileOptions) (string, bool) {
+	d, ok := dialogBackend()
+	if !ok {
+		fallbackMessageBox(opts.Title, "当前后端不支持文件保存对话框")
+		return "", false
+	}
+	path, ok, err := d.ShowSaveFile(opts)
 	if err != nil {
 		fallbackMessageBox(opts.Title, err.Error())
 		return "", false
@@ -219,13 +241,32 @@ func jsConfirm(args ...object.Value) object.Value {
 //	["文本文件|*.txt", "所有文件|*.*"]     // 多条, 字符串数组
 //	[{name: "文本文件", pattern: "*.txt"}] // 结构化 (与其它 API 一致)
 func jsOpenFile(args ...object.Value) object.Value {
-	opts := parseFileOptions(args)
+	opts := parseFileOptionsIn(args, "打开文件")
 	p := object.NewPromise()
 	resolveDeferred(func() {
 		path, ok := openFileBox(opts)
 		if !ok {
 			// 取消 → null (与浏览器 File System Access API 一致:
 			// 用户取消不是错误, 用 null 表达"什么都没选")
+			p.Resolve(object.NullSingleton)
+			return
+		}
+		p.Resolve(object.NewString(path))
+	})
+	return p
+}
+
+// jsSaveFile 是 `saveFile(options?)` → Promise<string|null>。
+//
+// 与 openFile 同一套 options (filter 约定返回值是"用户确认保存的路径",
+// 写文件仍由脚本经 `fs.writeFileSync` 完成 —— 对话框只负责选路径);
+// `default` 在这里就是缺省文件名。取消 → null。
+func jsSaveFile(args ...object.Value) object.Value {
+	opts := parseFileOptionsIn(args, "保存文件")
+	p := object.NewPromise()
+	resolveDeferred(func() {
+		path, ok := saveFileBox(opts)
+		if !ok {
 			p.Resolve(object.NullSingleton)
 			return
 		}
@@ -246,11 +287,18 @@ func dialogTitleMessage(args []object.Value) (title, message string) {
 	return title, message
 }
 
-// parseFileOptions 从 openFile 的参数里解析选项。
+// parseFileOptions 从 openFile 的参数里解析选项 (缺省标题 "打开文件")。
+func parseFileOptions(args []object.Value) NativeFileOptions {
+	return parseFileOptionsIn(args, "打开文件")
+}
+
+// parseFileOptionsIn 从文件对话框的参数里解析选项。
 //
 // 宽容处理: 参数不是对象就整体忽略 (而不是报错)。对话框的参数写错时
 // 最坏的后果应当是"过滤没生效", 不该是"整个调用抛异常"。
-func parseFileOptions(args []object.Value) NativeFileOptions {
+// defaultTitle 只在"标题与过滤都省了"时顶上 (openFile 与 saveFile 的
+// 缺省标题不同, 但共享同一套解析)。
+func parseFileOptionsIn(args []object.Value, defaultTitle string) NativeFileOptions {
 	var opts NativeFileOptions
 	if len(args) == 0 {
 		return opts
@@ -272,7 +320,7 @@ func parseFileOptions(args []object.Value) NativeFileOptions {
 		opts.Filter = parseFileFilter(v)
 	}
 	if len(opts.Filter) == 0 && opts.Title == "" {
-		opts.Title = "打开文件"
+		opts.Title = defaultTitle
 	}
 	return opts
 }

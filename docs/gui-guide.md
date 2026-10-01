@@ -83,7 +83,7 @@ render(
 macOS 后端（cocoa）已知限制：
 
 - **IME 组合过程不在框内内联绘制**（与 Windows 同口径：候选词上屏前由系统候选窗回显拼音，选定后整批提交）；正在组合时全部按键交给输入法（Enter 提交原串 / Esc 取消）。英文/符号键入与全部功能键经 `event.characters`/`keyCode` 直通，行为与旧版一致。
-- **保存文件对话框（NSSavePanel）已接但脚本侧暂无入口**：`gx/dialog` 目前只有 `openFile` 一条文件 API，`ShowSaveFile` 作为后端能力预置，等契约补 `saveFile` 后接上。
+- **保存文件对话框已全通**：`gx/dialog` 的 `saveFile`（2026-10-01 补脚本侧入口）—— Windows 走 `GetSaveFileNameW` + 覆盖确认，macOS 走 `NSSavePanel`，取消返回 `null`。
 - **多屏枚举已支持**（`gx/screen` 可见全部 NSScreen：frame/visibleFrame/缩放/主屏标记，ID 取 `NSScreenNumber` 稳定标识）；显示器插拔暂不派发 `onDisplayChange`（win32 有，cocoa 待补）。
 - 拖动（slider 等）在光标离开窗口后**仍然跟手**：AppKit 按住按键期间会持续投递 `mouseDragged:`，等价于天然鼠标捕获。
 
@@ -560,7 +560,7 @@ onCleanup(() => console.log("子树换代 / 销毁"))   // 顶层调用是 no-op
 `gx/dialog` 把系统消息框与"打开文件"对话框直接接到脚本上：
 
 ```js
-import { alert, confirm, openFile } from "gx/dialog"
+import { alert, confirm, openFile, saveFile } from "gx/dialog"
 
 await alert("All changes have been saved.", "Gox")          // 只有一个"确定"
 const yes = await confirm("Delete this file?", "Please confirm")  // → true / false
@@ -571,6 +571,7 @@ const path = await openFile({                               // → 完整路径 
     { name: "All files",  pattern: "*.*" },
   ],
 })
+const out = await saveFile({ default: "report.txt" })   // → 确认保存的路径 / null（取消）
 ```
 
 三件事值得留意：
@@ -579,8 +580,8 @@ const path = await openFile({                               // → 完整路径 
   Promise 的 resolve 投回脚本事件循环 —— 所以 `await` 之后的代码在对话框关掉前不会执行。
 - **模态期间界面不冻结**：Windows 以主窗口为 owner 自动泵模态消息；macOS 走 NSAlert/NSPanel 的
   `runModal`（AppKit 官方嵌套 run loop），重绘 / 拖动都正常，也**不需要**自己写 goroutine 或消息循环。
-- **取消不是错误**：`openFile` 取消返回 `null`（与浏览器 File System Access API 一致），不必 try/catch。
-  **没有原生能力的后端会降级**：内容写到 stderr 并立刻返回（`confirm` 取 true、`openFile` 取 null）。
+- **取消不是错误**：`openFile` / `saveFile` 取消返回 `null`（与浏览器 File System Access API 一致），不必 try/catch。
+  **没有原生能力的后端会降级**：内容写到 stderr 并立刻返回（`confirm` 取 true、`openFile` / `saveFile` 取 null）。
 
 > 语法提示：事件处理器的两种写法都可以：`onClick: async function () { ... }` 或
 > `onClick: async () => { ... }`（箭头形式的 `this` 是词法的，要拿外层 `this` 就用它）。
@@ -830,7 +831,7 @@ import { devSnapshot } from "gx/dev";
 | [resize_demo.js](../testdata/resize_demo.js) | 窗口自适应：onResize 断点切栏 + 句柄 resize/setTitle |
 | [menu_demo.js](../testdata/menu_demo.js) | 菜单栏：下拉 / 子菜单 / 禁用项 / 快捷键 / 右键菜单 |
 | [clipboard_demo.js](../testdata/clipboard_demo.js) | 剪贴板：同步读写与失败降级 |
-| [dialog_native_demo.js](../testdata/dialog_native_demo.js) | 原生对话框：alert / confirm / 打开文件，全 async await |
+| [dialog_native_demo.js](../testdata/dialog_native_demo.js) | 原生对话框：alert / confirm / 打开/保存文件，全 async await |
 | [storage_demo.js](../testdata/storage_demo.js) | gx/storage 持久化读写 |
 | [dev_panel_demo.js](../testdata/dev_panel_demo.js) | gx/dev 调试面板：帧 / 缓存 / 树 / 警告 |
 | [native_demo.js](../testdata/native_demo.js) | 原生能力层（§9.6）：设备信息 / 电量 / 网络 / 定位 / 能力检测，拉取型·动作型·上报响应型三种形态 |

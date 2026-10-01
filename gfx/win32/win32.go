@@ -87,6 +87,7 @@ var (
 	// comdlg32 在极老的 Windows 上也可能缺席, 懒加载即可 (调用返回 0 会走降级)
 	comdlg32             = syscall.NewLazyDLL("comdlg32.dll")
 	procGetOpenFileNameW = comdlg32.NewProc("GetOpenFileNameW")
+	procGetSaveFileNameW = comdlg32.NewProc("GetSaveFileNameW")
 
 	procCreateDIBSection   = gdi32.NewProc("CreateDIBSection")
 	procCreateCompatibleDC = gdi32.NewProc("CreateCompatibleDC")
@@ -161,15 +162,16 @@ const (
 	clipboardOpenDelay = 20 * time.Millisecond
 
 	// P3-4 原生对话框
-	MB_OK             = 0x00000000
-	MB_OKCANCEL       = 0x00000001
-	MB_ICONINFO       = 0x00000040
-	IDOK              = 1
-	IDCANCEL          = 2
-	OFN_FILEMUSTEXIST = 0x00001000
-	OFN_PATHMUSTEXIST = 0x00000800
-	OFN_NOCHANGEDIR   = 0x00000008
-	OFN_EXPLORER      = 0x00080000
+	MB_OK               = 0x00000000
+	MB_OKCANCEL         = 0x00000001
+	MB_ICONINFO         = 0x00000040
+	IDOK                = 1
+	IDCANCEL            = 2
+	OFN_FILEMUSTEXIST   = 0x00001000
+	OFN_PATHMUSTEXIST   = 0x00000800
+	OFN_NOCHANGEDIR     = 0x00000008
+	OFN_EXPLORER        = 0x00080000
+	OFN_OVERWRITEPROMPT = 0x00000002
 	// dialogPathMax 是 OPENFILENAMEW.lpstrFile 缓冲区的容量。
 	// Windows 的 MAX_PATH 是 260, 但长路径可达 32767; 给 1024 是折中 ——
 	// 足够覆盖日常路径, 又不至于在栈上开太大。
@@ -767,6 +769,63 @@ func (s *surface) ShowOpenFile(opts gfx.NativeFileOptions) (string, bool, error)
 		return "", false, nil
 	}
 	// lpstrFile 是 NUL 结尾的完整路径
+	n := 0
+	for n < len(buf) && buf[n] != 0 {
+		n++
+	}
+	return string(utf16.Decode(buf[:n])), true, nil
+}
+
+// ShowSaveFile 弹"保存文件"对话框, 实现 gfx 的 nativeDialogHost。
+//
+// 与 GetOpenFileNameW 共用同一条 OPENFILENAMEW 结构与缓冲区套路, 差别只有
+// 三处: API 换成 GetSaveFileNameW; **不带** OFN_FILEMUSTEXIST (要保存的文件
+// 本来就不该存在); 加 **OFN_OVERWRITEPROMPT** —— 目标文件已存在时由对话框
+// 自己弹"是否覆盖", 契约层不再单设选项 (与 NSSavePanel 的默认行为对齐,
+// 见 gfx/cocoa/dialog.go 的 ShowSaveFile)。取消语义与 ShowOpenFile 相同:
+// 返回 0 同时表示"取消"和"出错", 刻意不引 CommDlgExtendedError 去区分。
+func (s *surface) ShowSaveFile(opts gfx.NativeFileOptions) (string, bool, error) {
+	buf := make([]uint16, dialogPathMax)
+	if opts.Default != "" {
+		d := utf16.Encode([]rune(opts.Default))
+		if len(d) < dialogPathMax-1 {
+			copy(buf, d)
+		}
+	}
+	fp, f := utf16Ptr(buildFilter(opts.Filter))
+	runtime.KeepAlive(f)
+
+	var titlePtr *uint16
+	var titleKeep []uint16
+	if opts.Title != "" {
+		titlePtr, titleKeep = utf16Ptr(opts.Title)
+		runtime.KeepAlive(titleKeep)
+	}
+	var dirPtr *uint16
+	var dirKeep []uint16
+	if opts.Dir != "" {
+		dirPtr, dirKeep = utf16Ptr(opts.Dir)
+		runtime.KeepAlive(dirKeep)
+	}
+
+	ofn := openFileNameW{
+		StructSize:      uint32(unsafe.Sizeof(openFileNameW{})),
+		HwndOwner:       uintptr(s.hwnd),
+		HInstance:       uintptr(moduleHandle()),
+		LpstrFilter:     fp,
+		NFilterIndex:    1,
+		LpstrFile:       &buf[0],
+		NMaxFile:        uint32(len(buf)),
+		LpstrInitialDir: dirPtr,
+		LpstrTitle:      titlePtr,
+		// NOCHANGEDIR 的理由与 ShowOpenFile 相同: 别动进程当前目录。
+		Flags: OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_EXPLORER,
+	}
+
+	r, _, _ := procGetSaveFileNameW.Call(uintptr(unsafe.Pointer(&ofn)))
+	if r == 0 {
+		return "", false, nil
+	}
 	n := 0
 	for n < len(buf) && buf[n] != 0 {
 		n++
