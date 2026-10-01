@@ -158,7 +158,7 @@ func programStatements(program *ast.Program) []ast.Statement {
 	}
 	imp := &ast.ImportDeclaration{
 		Token:        lexer.Token{Type: lexer.IMPORT, Literal: "import", Line: 1, Column: 1},
-		NamedImports: []string{jsxFactoryName},
+		NamedImports: []ast.NamedImport{{Imported: jsxFactoryName, Local: jsxFactoryName}},
 		Source:       jsxFactoryModule,
 	}
 	return append([]ast.Statement{imp}, program.Statements...)
@@ -175,8 +175,10 @@ func bindsNameAtTopLevel(stmts []ast.Statement, name string) bool {
 			if s.DefaultName == name || s.Namespace == name {
 				return true
 			}
+			// 认**本地名**: `import { h as _h }` 并没有绑 h, 不能算已绑定;
+			// `import { _h as h }` 才是把 h 绑进来了。
 			for _, n := range s.NamedImports {
-				if n == name {
+				if n.Local == name || (n.Local == "" && n.Imported == name) {
 					return true
 				}
 			}
@@ -1816,16 +1818,17 @@ func (c *Compiler) compileImportDeclaration(stmt *ast.ImportDeclaration) error {
 			// 还需要命名导入
 			// 重新加载模块 (或 DUP)
 			c.emitter.Emit(bytecode.OP_IMPORT, sourceIdx)
-			for _, name := range stmt.NamedImports {
+			for _, item := range stmt.NamedImports {
 				c.emitter.EmitNoOperand(bytecode.OP_DUP)
-				nameIdx := c.constants.AddConstant(object.NewString(name))
+				// 取的是**模块导出名**, 绑定的是**本地名**
+				nameIdx := c.constants.AddConstant(object.NewString(item.Imported))
 				c.emitter.Emit(bytecode.OP_GET_PROP, nameIdx)
-				sym, err := c.declareOnce(name, false, false)
+				sym, err := c.declareOnce(item.Local, false, false)
 				if err != nil {
 					return err
 				}
 				if c.isGlobalScope() {
-					c.emitGlobalDeclare(name)
+					c.emitGlobalDeclare(item.Local)
 				} else {
 					c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
 				}
@@ -1833,17 +1836,18 @@ func (c *Compiler) compileImportDeclaration(stmt *ast.ImportDeclaration) error {
 			c.emitter.EmitNoOperand(bytecode.OP_POP)
 		}
 	} else if len(stmt.NamedImports) > 0 {
-		// import { a, b } from "..."
-		for _, name := range stmt.NamedImports {
+		// import { a, b as c } from "..."
+		for _, item := range stmt.NamedImports {
 			c.emitter.EmitNoOperand(bytecode.OP_DUP)
-			nameIdx := c.constants.AddConstant(object.NewString(name))
+			// 取的是**模块导出名**, 绑定的是**本地名**
+			nameIdx := c.constants.AddConstant(object.NewString(item.Imported))
 			c.emitter.Emit(bytecode.OP_GET_PROP, nameIdx)
-			sym, err := c.declareOnce(name, false, false)
+			sym, err := c.declareOnce(item.Local, false, false)
 			if err != nil {
 				return err
 			}
 			if c.isGlobalScope() {
-				c.emitGlobalDeclare(name)
+				c.emitGlobalDeclare(item.Local)
 			} else {
 				c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
 			}
@@ -1885,12 +1889,22 @@ func checkBuiltinImportNames(stmt *ast.ImportDeclaration) error {
 		// 那里会列出全部可用的模块名, 信息更全
 		return nil
 	}
-	for _, name := range stmt.NamedImports {
+	for _, item := range stmt.NamedImports {
+		// 拿**模块导出名**去核对 —— 别名 (item.Local) 是本文件自己的名字,
+		// 与模块导出表无关。若用别名核对, `{ createSignal as cs }` 会误报
+		// "没有导出 cs"; 若把别名拆成多个 string, 则会误报 `没有导出 "as"`。
+		name := item.Imported
 		if _, ok := exports[name]; ok {
 			continue
 		}
-		return fmt.Errorf("import {%s} from \"%s\": %s 没有导出 %q%s",
-			name, stmt.Source, stmt.Source, name, importMissHint(stmt.Source, name, exports))
+		// 带别名时把本地名也报出来, 否则用户对着源码里的 `as cs` 会困惑
+		// 报错为什么谈的是另一个名字。
+		localHint := ""
+		if item.Local != "" && item.Local != name {
+			localHint = fmt.Sprintf(" (本地名 %s)", item.Local)
+		}
+		return fmt.Errorf("import {%s%s} from \"%s\": %s 没有导出 %q%s",
+			name, localHint, stmt.Source, stmt.Source, name, importMissHint(stmt.Source, name, exports))
 	}
 	if stmt.DefaultName != "" {
 		if _, ok := exports["default"]; !ok {

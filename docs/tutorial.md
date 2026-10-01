@@ -163,7 +163,7 @@ await new Promise((resolve) => server.close(resolve))                  // 收好
 |---|---|
 | `var` | 一律 `let` / `const` |
 | 顶层 `await` | 放进 `async function` 后调用 |
-| `import { x as y } from "..."` | **别名会被静默忽略**(`y` 拿到 `undefined`, 还多声明一个 `as` 绑定) ⇒ 用原名, 或用命名空间 `import * as m` |
+| `import { x as y } from "..."` | **支持**。`x` 是模块导出的名字, `y` 是本文件绑定的名字 |
 | `getStorage(key, 默认值)` | 第二参数被忽略、缺失时返回 `undefined` ⇒ `getStorage(k) ?? 默认值` |
 
 ### 1.7 完整示例: [`testdata/tutorial_api.js`](../testdata/tutorial_api.js)

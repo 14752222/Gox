@@ -2639,13 +2639,29 @@ func (p *Parser) parseImportDeclaration() *ast.ImportDeclaration {
 		stmt.Namespace = p.curToken().Literal
 		p.nextToken()
 	} else if p.curTokenIs(lexer.LBRACE) {
-		// import { a, b } from "..."
+		// import { a, b as c } from "..."
 		p.nextToken()
 		for !p.curTokenIs(lexer.RBRACE) && !p.curTokenIs(lexer.EOF) {
-			if p.curTokenIs(lexer.IDENTIFIER) {
-				stmt.NamedImports = append(stmt.NamedImports, p.curToken().Literal)
+			if !p.curTokenIs(lexer.IDENTIFIER) {
+				p.addError("expected identifier in import")
+				return nil
 			}
+			// 首段是"模块导出的名字", 别名 (as 之后) 才是"本文件绑定的名字"。
+			// 两者不能混成一个 string —— 否则 `{ x as y }` 会被拆成三个独立
+			// 名字 [x, as, y], y 永远绑不上 (见 ast.NamedImport 的注释)。
+			item := ast.NamedImport{Imported: p.curToken().Literal, Local: p.curToken().Literal}
 			p.nextToken()
+			if p.curTokenIs(lexer.IDENTIFIER) && p.curToken().Literal == "as" {
+				p.nextToken()
+				if !p.curTokenIs(lexer.IDENTIFIER) {
+					p.addError("expected name after 'as' in import")
+					return nil
+				}
+				item.Local = p.curToken().Literal
+				p.nextToken()
+			}
+			stmt.NamedImports = append(stmt.NamedImports, item)
+			// `{ a, }` / `{ a, b }` 都允许
 			if p.curTokenIs(lexer.COMMA) {
 				p.nextToken()
 			}

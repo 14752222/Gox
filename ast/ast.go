@@ -1237,17 +1237,34 @@ func (ss *SwitchStatement) statementNode() {}
 
 // ==================== import / export 语句 ====================
 
+// NamedImport 表示命名导入里的**一项**, 含可选别名。
+//
+// 为什么不是单个 string: `import { x as y }` 有**两个**名字, 语义完全不同 ——
+// Imported 是"模块里导出叫什么"(决定 GET_PROP 取哪个属性), Local 是"本文件里
+// 绑成什么"(决定声明哪个变量)。早先只存一个 string, 于是 `{ x as y }` 被拆成
+// 三个独立名字 [x, as, y], 别名直接丢失:
+//
+//	import { x as y } from "./m.js";   // y 静默为 undefined
+//	import { f as g } from "gx/solid"; // 误报 `没有导出 "as"`
+//
+// Imported == Local 时即为无别名的普通形式 (`import { x }`), String() 会省略 `as`。
+type NamedImport struct {
+	Imported string // 模块导出的名字
+	Local    string // 本文件绑定的名字 (省略 as 时与 Imported 相同)
+}
+
 // ImportDeclaration 表示 import 语句。
 // 例如: import { foo, bar } from "./mod.js"
 //
 //	import * as ns from "./mod.js"
 //	import defaultName from "./mod.js"
+//	import { foo as bar } from "./mod.js"
 type ImportDeclaration struct {
-	Token        lexer.Token // IMPORT
-	DefaultName  string      // 默认导入名 (可为 "")
-	NamedImports []string    // 命名导入列表
-	Namespace    string      // 命名空间导入名 (可为 "")
-	Source       string      // 模块路径
+	Token        lexer.Token   // IMPORT
+	DefaultName  string        // 默认导入名 (可为 "")
+	NamedImports []NamedImport // 命名导入列表 (含别名)
+	Namespace    string        // 命名空间导入名 (可为 "")
+	Source       string        // 模块路径
 }
 
 func (id *ImportDeclaration) TokenLiteral() string { return id.Token.Literal }
@@ -1260,7 +1277,19 @@ func (id *ImportDeclaration) String() string {
 		parts = append(parts, "* as "+id.Namespace)
 	}
 	if len(id.NamedImports) > 0 {
-		parts = append(parts, "{ "+joinStrings(id.NamedImports, ", ")+" }")
+		names := make([]string, 0, len(id.NamedImports))
+		for _, n := range id.NamedImports {
+			if n.Local == "" || n.Local == n.Imported {
+				names = append(names, n.Imported)
+			} else {
+				names = append(names, n.Imported+" as "+n.Local)
+			}
+		}
+		parts = append(parts, "{ "+joinStrings(names, ", ")+" }")
+	}
+	// 副作用导入 (`import "./m.js"`) 没有任何绑定, 不能拼出 "import  from" 的双空格
+	if len(parts) == 0 {
+		return "import \"" + id.Source + "\";"
 	}
 	return "import " + joinStrings(parts, ", ") + " from \"" + id.Source + "\";"
 }
