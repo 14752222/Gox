@@ -1,6 +1,7 @@
 package gfx
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 	"testing"
@@ -195,6 +196,18 @@ func TestTagDefaultAndCustomColor(t *testing.T) {
 	mountChildren(root, def, custom)
 
 	img := renderTree(root, 300, 100)
+
+	// 诊断 (临时): 打印实际 Box 与左上角像素网格, 用于定位跨平台差异。
+	t.Logf("DIAG theme=%s colorTrack=%v def.Box=%+v custom.Box=%+v",
+		ThemeName(), colorTrack, def.Box, custom.Box)
+	for dy := -1; dy <= 3; dy++ {
+		row := ""
+		for dx := -1; dx <= 6; dx++ {
+			c := img.RGBAAt(def.Box.X+dx, def.Box.Y+dy)
+			row += fmt.Sprintf("(%d,%d)=%d,%d,%d ", dx, dy, c.R, c.G, c.B)
+		}
+		t.Logf("DIAG row %+d: %s", dy, row)
+	}
 
 	// 缺省: 浅灰底 (取左上角内侧一点, 避开居中的文字)
 	assertPx(t, img, def.Box.X+2, def.Box.Y+2, pxTrack, "tag 缺省浅灰底")
