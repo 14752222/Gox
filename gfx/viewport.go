@@ -675,6 +675,114 @@ func jsOffViewportChange(fn object.Value) object.Value {
 	return object.UndefinedSingleton
 }
 
+// ===== 折叠保留区的 JS 可见面 (批 E, 2026-10-01) =====
+//
+// 数据源是**窗口所在显示器**的 Display.Regions (gx/screen 的屏表)。这里不复用
+// gfx/mobile 的同名函数 —— 那会形成 import 环 (gfx/mobile 已经 import 了 gfx),
+// 所以判定在两边各有一份最小的实现。**两边的判据必须逐字一致**, 由
+// gfx/mobile/fold.go 的注释与两处测试共同看住。
+
+// displayRegionsOf 取窗口所在显示器的保留区 (拿不到显示器 → nil)。
+func displayRegionsOf(win *Window) []DisplayRegion {
+	d, ok := displayOfWorkWindow(win)
+	if !ok {
+		return nil
+	}
+	return d.Regions
+}
+
+// structuralRegions 是"设备结构上存在"的保留区 —— **忽略 Active**。
+//
+// 判据是 kind 语义而不是几何: division 是结构性的 (有折痕的机器永远有一条,
+// 平展时尺寸为 0 而已), occlusion 才是几何性的 (屏下摄像头那块只在真有面积
+// 时才占地方)。这样 `hasFold()` 就不会随折叠/平展 flip-flop —— 而那正是它
+// 存在的意义 (列数不跟着姿态跳)。
+//
+// 与 gfx/mobile.StructuralRegions 同一判据 (那边不能在这里复用, 见上方注释)。
+func structuralRegions(rs []DisplayRegion) []DisplayRegion {
+	var out []DisplayRegion
+	for _, r := range rs {
+		if r.Kind == RegionDivision || (r.W > 0 && r.H > 0) {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// regionsByKindToJS 把保留区按 kind 分组输出成
+// `{division:[...], occlusion:[...], all:[...]}`。
+//
+// 为什么要分组而不是只给一个数组: 脚本侧的避让策略几乎总是"只避折痕"或
+// "两种都避", 每次自己 filter 一遍既啰嗦又容易写成 `r.kind === 'fold'`
+// (内核的词是 "division")。三个键都是稳定存在的数组 (无内容时是空数组),
+// 于是 `reservedRegions().division.length` 这类写法永远可用。
+func regionsByKindToJS(list []DisplayRegion) object.Value {
+	var div, occ []object.Value
+	for _, r := range list {
+		ro := regionToJS(r)
+		switch r.Kind {
+		case RegionDivision:
+			div = append(div, ro)
+		case RegionOcclusion:
+			occ = append(occ, ro)
+		}
+	}
+	o := object.NewObject()
+	o.SetProperty("division", object.NewArray(div))
+	o.SetProperty("occlusion", object.NewArray(occ))
+	o.SetProperty("all", regionsToJS(list))
+	return o
+}
+
+// hasFoldGo 报告设备结构上是否存在折痕 (忽略 active)。
+func hasFoldGo(win *Window) bool {
+	return len(structuralRegions(displayRegionsOf(win))) > 0
+}
+
+// layoutModeToJS 给出一个"该用哪种布局"的判定入口。
+//
+// **立场: 只给判定, 不改布局。** 框架不去替应用决定要不要分栏 —— 那取决于
+// 页面自己的信息架构 (聊天界面该双栏, 沉浸式视频不该), 而框架猜错的代价是
+// "某个页面莫名变成两栏"。这里只把三件事 (姿态 / 宽度档 / 有没有折痕) 合成
+// 一个建议词, 让应用一行拿到。
+//
+//	suggested:
+//	  "single" —— 单栏 (compact 或未折叠)
+//	  "dual"   —— 双栏 (半折且有可用折痕: 折痕两侧是两块物理屏, 天然的双栏)
+//	  "tablet" —— 平板布局 (宽档 >= medium 但不是半折: 空间大, 但一块连续屏)
+func layoutModeToJS(win *Window) object.Value {
+	v := viewportResolved(win)
+	d, _ := displayOfWorkWindow(win)
+
+	suggested := "single"
+	switch {
+	case d.Posture == postureHalfOpen && hasFoldGo(win):
+		suggested = "dual"
+	case sizeClassRank(v.WidthClass) >= sizeClassRank(SizeMedium):
+		suggested = "tablet"
+	}
+	o := object.NewObject()
+	nativeSet(o, "posture", d.Posture)
+	nativeSet(o, "widthClass", v.WidthClass)
+	o.SetProperty("foldAware", object.NewBoolean(hasFoldGo(win)))
+	nativeSet(o, "suggested", suggested)
+	return o
+}
+
+// regionToJS 是单条保留区的字段出口 (regionsToJS 与分组输出共用同一份字段表,
+// 免得两处漂移)。
+func regionToJS(r DisplayRegion) object.Value {
+	ro := object.NewObject()
+	ro.SetProperty("id", object.NewString(r.ID))
+	ro.SetProperty("kind", object.NewString(r.Kind))
+	ro.SetProperty("x", object.NewNumber(float64(r.X)))
+	ro.SetProperty("y", object.NewNumber(float64(r.Y)))
+	ro.SetProperty("width", object.NewNumber(float64(r.W)))
+	ro.SetProperty("height", object.NewNumber(float64(r.H)))
+	ro.SetProperty("active", object.NewBoolean(r.Active))
+	return ro
+}
+
 // resetViewportStateForTest 清空上报与回调。
 func resetViewportStateForTest() {
 	nativeMu.Lock()
@@ -763,6 +871,46 @@ func init() {
 			// 静默变成 false —— 那正是这次改动最危险的回归点。
 			"isTabletLayout": scr("isTabletLayout", func(args ...object.Value) object.Value {
 				return object.NewBoolean(sizeClassRank(viewportResolved(windowArg(args)).WidthClass) >= sizeClassRank(SizeMedium))
+			}),
+
+			// ---- 折叠保留区 (批 E) ----
+			"reservedRegions": scr("reservedRegions", func(args ...object.Value) object.Value {
+				return regionsByKindToJS(displayRegionsOf(windowArg(args)))
+			}),
+			// useReservedRegions 的可订阅版: **同时**读两个版本号 —— 数据本身
+			// 在 gx/screen 的屏表下 (姿态/保留区变化走 envSignal), 但窗口环境
+			// (换屏/尺寸类) 变化走 viewportEnvSignal。只读一个是常见疏漏, 症状是
+			// "折一下界面不更新, 非得再转个屏"。
+			"useReservedRegions": scr("useReservedRegions", func(args ...object.Value) object.Value {
+				win := windowArg(args)
+				return object.NewBuiltin("useReservedRegions", func(args ...object.Value) object.Value {
+					if g := viewportEnvSignal(); g != nil {
+						object.CallFunction(g, nil)
+					}
+					if g := envSignal(); g != nil {
+						object.CallFunction(g, nil)
+					}
+					return regionsByKindToJS(displayRegionsOf(win))
+				})
+			}),
+			// hasFold: **结构性**信号, 不随折叠/平展 flip-flop (见 structuralRegions)。
+			"hasFold": scr("hasFold", func(args ...object.Value) object.Value {
+				return object.NewBoolean(hasFoldGo(windowArg(args)))
+			}),
+			"layoutMode": scr("layoutMode", func(args ...object.Value) object.Value {
+				return layoutModeToJS(windowArg(args))
+			}),
+			"useLayoutMode": scr("useLayoutMode", func(args ...object.Value) object.Value {
+				win := windowArg(args)
+				return object.NewBuiltin("useLayoutMode", func(args ...object.Value) object.Value {
+					if g := viewportEnvSignal(); g != nil {
+						object.CallFunction(g, nil)
+					}
+					if g := envSignal(); g != nil {
+						object.CallFunction(g, nil)
+					}
+					return layoutModeToJS(win)
+				})
 			}),
 
 			"onViewportChange": scr("onViewportChange", jsOnViewportChange),

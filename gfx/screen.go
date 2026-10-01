@@ -704,19 +704,7 @@ func displayToJS(d Display) object.Value {
 	o.SetProperty("foldable", object.NewBoolean(d.Foldable))
 	o.SetProperty("posture", object.NewString(d.Posture))
 	o.SetProperty("hinge", hingeToJS(d.Hinge))
-	regs := make([]object.Value, 0, len(d.Regions))
-	for _, r := range d.Regions {
-		ro := object.NewObject()
-		ro.SetProperty("id", object.NewString(r.ID))
-		ro.SetProperty("kind", object.NewString(r.Kind))
-		ro.SetProperty("x", object.NewNumber(float64(r.X)))
-		ro.SetProperty("y", object.NewNumber(float64(r.Y)))
-		ro.SetProperty("width", object.NewNumber(float64(r.W)))
-		ro.SetProperty("height", object.NewNumber(float64(r.H)))
-		ro.SetProperty("active", object.NewBoolean(r.Active))
-		regs = append(regs, ro)
-	}
-	o.SetProperty("regions", object.NewArray(regs))
+	o.SetProperty("regions", regionsToJS(d.Regions))
 	return o
 }
 
@@ -805,6 +793,17 @@ func init() {
 			}),
 			"hinge":   scr("hinge", jsHinge),
 			"regions": scr("regions", jsRegions),
+			// splitRatio / hingeOrientation 是纯读数 (不订阅), 与 hinge/regions 一致:
+			// 它们描述的是"设备此刻的几何", 而订阅这件事交给 usePosture/useScreen
+			// —— 那两条已经在读版本号信号, 不需要每个读数各订阅一次。
+			"splitRatio": scr("splitRatio", func(args ...object.Value) object.Value {
+				d, _ := displayOfWorkWindow(windowArg(args))
+				return object.NewNumber(displaySplitRatio(d))
+			}),
+			"hingeOrientation": scr("hingeOrientation", func(args ...object.Value) object.Value {
+				d, _ := displayOfWorkWindow(windowArg(args))
+				return object.NewString(displayHingeOrientation(d))
+			}),
 			"platform": scr("platform", func(args ...object.Value) object.Value {
 				return object.NewString(platformName())
 			}),
@@ -872,15 +871,7 @@ func jsRegions(args ...object.Value) object.Value {
 func regionsToJS(list []DisplayRegion) object.Value {
 	regs := make([]object.Value, 0, len(list))
 	for _, r := range list {
-		ro := object.NewObject()
-		ro.SetProperty("id", object.NewString(r.ID))
-		ro.SetProperty("kind", object.NewString(r.Kind))
-		ro.SetProperty("x", object.NewNumber(float64(r.X)))
-		ro.SetProperty("y", object.NewNumber(float64(r.Y)))
-		ro.SetProperty("width", object.NewNumber(float64(r.W)))
-		ro.SetProperty("height", object.NewNumber(float64(r.H)))
-		ro.SetProperty("active", object.NewBoolean(r.Active))
-		regs = append(regs, ro)
+		regs = append(regs, regionToJS(r))
 	}
 	return object.NewArray(regs)
 }
