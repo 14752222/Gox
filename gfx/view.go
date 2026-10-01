@@ -352,6 +352,39 @@ type viewForState struct {
 	fallback        *viewBranch // 空列表 fallback (keep-alive: 只构建一次, 只在空列表时挂上)
 	showingFallback bool
 	warnedDupKey    bool
+
+	// 虚拟化 (vlist): 上下垫片与上一轮窗口。撑高垫片是**宿主的头尾子节点**,
+	// 让内容总高保持 N*itemH (滚动条长度/行程因此与全量版逐像素一致)。
+	// 没开 vlist 时 vlistOn 恒 false, 不影响任何既有路径。
+	vlistOn  bool
+	winReady bool
+	win      vlistWindow
+	cfg      vlistConfig
+	spacers  []*GuiNode
+	// pendingVlist 标记"这个列表的首轮物化被推迟了": 它可能嵌在 vlist scroll 里,
+	// 但装容器的那一刻父链还没接上 (见 render.go 的 vlistAssembly)。组装结束
+	// 仍没被认领就按全量补齐 (普通列表的时序因此不变)。
+	pendingVlist bool
+	// total 是本轮列表的**全量**条数 (虚拟化的窗口按它算内容总高)。
+	// 宿主 slot 的 Props 里没有 each, 外层 scroll 布局时拿不到原始列表,
+	// 所以在这里留一份。
+	total int
+
+	// refresh 重跑一轮列表构建 (由 vlistRevBump 在滚动改变窗口时同步调用)。
+	// 做成字段而不是"靠 effect 被唤醒": 见 vlist.go 里 vlistRev 的说明 ——
+	// 走 effect 需要 gx/solid 在宿主里已注册, 而内核行为不该随宿主变化。
+	// 由 jsViewFor 在 effect 里赋值 (闭包里正好有 each/keyFn/render)。
+	refresh func()
+	// vlistBox 是本列表认下的 vlist 容器 (scroll 节点), 建树期首次找到后**记住**。
+	//
+	// 为什么要记住: 窗口化判据在每一轮都要用容器 (算 itemH / 视口 / 偏移), 而
+	// "沿父链找"只在树挂好之后才成立 —— 建树期那几轮只能靠树搜索或"正在构建"
+	// 登记表, 两者都比一次缓存贵, 而且首轮的时序最容易漏。记住之后, 除了**首次**
+	// 判定, 其它轮次都是 O(1)。
+	vlistBox *GuiNode
+	// host 回指承载本状态的宿主 slot。订阅表 (vlistRev) 是包级全局, 需要在
+	// "宿主已脱链"时判断该退订 —— 见 vlistRunRefresh 的说明。
+	host *GuiNode
 }
 
 // jsViewFor 是 <For each={...} key={...} fallback={...}>{(item, i) => ...}</For>。
@@ -400,7 +433,10 @@ func jsViewFor(args ...object.Value) object.Value {
 		host.Props["gap"] = g
 	}
 
-	st := &viewForState{fallback: viewBranchNew(viewBranchKids(fallback))}
+	st := &viewForState{fallback: viewBranchNew(viewBranchKids(fallback)), host: host}
+	// 把跨轮状态挂到宿主节点上: 虚拟化长列表 (vlist) 需要从**外层 scroll 的
+	// 布局阶段**把可见窗口写进来 (那时拿不到这个闭包), 见 vlist.go 的说明。
+	host.forState = st
 	// fallback 分支保活 (与 Show 同理): "空 → 有数据 → 再空"不该让 fallback
 	// 被销毁再复活 —— 静态子树复活后是死树。销毁挂在宿主身上, 一起收尾。
 	viewDetachCleanup(host, func() *viewBranch {
@@ -412,6 +448,14 @@ func jsViewFor(args ...object.Value) object.Value {
 
 	dispose := runEffect(func() object.Value {
 		viewForUpdate(host, st, each, keyFn, render, stableRows)
+		// 记下"怎么重跑第二轮": 虚拟化在布局阶段改窗口后要立刻重算 (见 refresh
+		// 字段的说明)。重复赋值是幂等的 —— effect 重跑时用最新的闭包覆盖。
+		st.refresh = func() {
+			viewForUpdate(host, st, each, keyFn, render, stableRows)
+		}
+		// 订阅"滚动窗口变了"。放在 effect 内是历史约定 (原本由读 signal 完成);
+		// 现在订阅表由 gfx 自己维护, 但时机不变: 构建期订阅、销毁期退订。
+		vlistRevSubscribe(st)
 		return object.UndefinedSingleton
 	})
 	if dispose != nil {
@@ -618,7 +662,19 @@ func viewKeyField(name string) object.Value {
 // 此时所有行照常销毁 (行是数据: 列表空了它们就该收尾), 但 fallback 不动。
 func viewForUpdate(host *GuiNode, st *viewForState, each, keyFn, render object.Value, stableRows bool) {
 	items := viewList(each)
-	rows := make([]*viewRow, 0, len(items))
+	// 虚拟化 (vlist): 只物化可见区间, 上下补撑高垫片。窗口是从**全量** items
+	// 算出来的, 因此 contentH = N*itemH, 滚动条与全量版逐像素一致。
+	// 关掉 vlist 时 win 恒为 [0, len(items)) 且不加垫片, 走的是原路径。
+	//
+	// 这一轮建多少行也必须受限 (vlistInitialRows), 否则第一轮 effect 会把 N 行
+	// 全建出来 (那时容器还没布局、窗口还没写进来), 虚拟化就等于白做:
+	// 性能瓶颈从"每帧布局 N 行"变成"首帧建 N 行", 只快一点 (2026-10-01 实测:
+	// 十万行首帧仍有 190ms, 全部花在建树上)。
+	win := vlistInitialRows(host, st, len(items))
+	rows := make([]*viewRow, 0, win.last-win.first)
+	// 留一份全量条数: 虚拟化的窗口由外层 scroll 的布局阶段计算, 那时拿不到
+	// 这里的 items (宿主 slot 的 Props 里没有 each)。
+	st.total = len(items)
 
 	// 空列表: 只显示 fallback (懒构建: 从没空过就永远不会构建它)
 	if len(items) == 0 && st.fallback.kids != nil {
@@ -626,6 +682,10 @@ func viewForUpdate(host *GuiNode, st *viewForState, each, keyFn, render object.V
 			disposeNode(o.host)
 		}
 		st.rows = nil
+		// 虚拟化垫片随列表清空一起断链 (节点保留在 st.spacers 里复用, 不销毁)
+		for _, sp := range st.spacers {
+			sp.Parent = nil
+		}
 		st.fallback.holder.Parent = host
 		host.Children = []*GuiNode{st.fallback.holder}
 		if !st.showingFallback {
@@ -649,8 +709,11 @@ func viewForUpdate(host *GuiNode, st *viewForState, each, keyFn, render object.V
 		}
 	}
 
-	used := make(map[string]bool, len(items))
-	for i, item := range items {
+	used := make(map[string]bool, win.last-win.first)
+	for i := win.first; i < win.last && i < len(items); i++ {
+		item := items[i]
+		// 注意 i 是**全量列表里的全局下标** (不是窗口内偏移): 渲染函数收到的
+		// 第二个参数、以及退化位置键都用它 —— 否则滚一下行内容里的序号就错了。
 		key := viewRowKey(keyFn, item, i, used, &st.warnedDupKey)
 		prev := oldByKey[key]
 		if prev == nil {
@@ -660,7 +723,8 @@ func viewForUpdate(host *GuiNode, st *viewForState, each, keyFn, render object.V
 			continue
 		}
 		if viewSame(prev.item, item) && (stableRows || prev.index == i) {
-			// 稳定快路径: 配对相等 ⇒ 一行不重建 (节点指针不变, 行内状态全留)
+			// 稳定快路径: 配对相等 ⇒ 一行不重建 (节点指针不变, 行内状态全留)。
+			// 滚动时"上下都可见的行"走的就是这条, 于是滚动不重建任何行。
 			prev.index = i
 			rows = append(rows, prev)
 			continue
@@ -681,14 +745,134 @@ func viewForUpdate(host *GuiNode, st *viewForState, each, keyFn, render object.V
 	}
 	st.rows = rows
 
-	// 按新顺序重排宿主子节点 (复用行的位置跟着改, 节点本身不重建)
-	kids := make([]*GuiNode, 0, len(rows))
+	// 按新顺序重排宿主子节点 (复用行的位置跟着改, 节点本身不重建)。
+	// 虚拟化时头尾各插一个撑高垫片: 它们不是"行", 只占高度, 让内容总高 = N*itemH。
+	kids := vlistAssemble(st, win, rows)
 	for _, r := range rows {
 		r.host.Parent = host
-		kids = append(kids, r.host)
+	}
+	for _, sp := range st.spacers {
+		sp.Parent = host
 	}
 	host.Children = kids
 	markNodeDirty(host)
+}
+
+// ===== 虚拟化辅助 (细节见 vlist.go) =====
+
+// vlistInitialRows 决定"这一轮 effect 该物化哪些行"。
+//
+// 四种情形, 优先级从高到低:
+//
+//  1. **窗口已定** (st.winReady): 用已算好的精确窗口 —— 建树期收口
+//     (vlistCollapsePending) 与布局阶段 (vlistPrepare) 以及之后所有轮次走的路。
+//  2. **容器能找到但窗口还没定**: 按"待物化上限"建前若干行。覆盖"列表 effect 比
+//     容器收口更早跑、又恰好能沿父链/窗口树找到容器"的情形。
+//  3. **正在 h() 组装、容器还没接上**: **暂时一行都不建**, 登记为待定
+//     (vlistDeferRow), 等外层 scroll 建好后来认领。这是"首帧不付 O(N)"的关键 ——
+//     实参求值顺序决定了列表先于 scroll 跑, 不推迟就必然先把 N 行建出来再销毁。
+//  4. **组装已结束仍没被认领**: 全量, 原路径 (普通列表不受任何影响)。
+func vlistInitialRows(host *GuiNode, st *viewForState, total int) vlistWindow {
+	if vlist, ok := vlistWindowFor(host, st, total); ok {
+		return vlist
+	}
+	_, cfg, ok := vlistFind(host)
+	vlistDiagInit(host, cfg, ok)
+	vlistDiagTotal(host, st, total)
+	if ok {
+		last := vlistPendingRows
+		if last > total {
+			last = total
+		}
+		w := vlistWindow{first: 0, last: last, total: total, contentH: total * cfg.itemH}
+		st.vlistOn = true
+		// 认下这个容器: 后面几轮 (滚动 / 布局唤醒) 直接用, 不再重找。
+		st.vlistBox = vlistContainerFor(host)
+		return w
+	}
+	// 组装期还接不上容器: 推迟, 由外层 scroll 收口 (见 render.go 的 vlistAssembly)。
+	if vlistAssembly.depth > 0 && total > 0 {
+		vlistDeferRow(st)
+		return vlistWindow{first: 0, last: 0, total: total}
+	}
+	return vlistWindow{first: 0, last: total, total: total}
+}
+
+// vlistDiagInit 是"首帧建树"那一步的诊断钩子 (仅测试赋值; 生产是空函数)。
+//
+// 为什么需要: 首帧是否走了待物化上限, 从最终树上看不出来 —— 虚拟化首帧建了
+// N 行、下一轮再把多余的销毁, 树上只剩窗口内的十几行, 看起来像"只建了十几行",
+// 而耗时暴露了真相 (2026-10-01 实测踩到, 差点把没生效当成生效)。
+var vlistDiagInit = func(*GuiNode, vlistConfig, bool) {}
+
+// vlistDiagTotal 报告这一轮 effect 的真实条数 (仅测试赋值)。
+var vlistDiagTotal = func(*GuiNode, *viewForState, int) {}
+
+// vlistWindowFor 取本列表本轮要物化的窗口。
+//
+// **窗口不在这里计算** —— 它由外层 <scroll vlist> 在**布局时**算好并缓存到
+// st.win (见 scroll.go 的 vlistPrepare)。原因是时序:
+//
+//	h("scroll", {…vlist…}, h("view", {each: rows}, render))
+//
+// 里, each 宿主的 effect 是在 h() 组装**内层元素**时就跑起来的, 那一刻外层
+// scroll 还没把这棵子树 wireChild 进来 ⇒ 宿主沿 Parent 链找不到 scroll,
+// 在这里判断"我有没有被 vlist 接管"永远得到"没有" (于是 10 万行全量渲染,
+// 静默不生效)。布局发生在整棵树挂好之后, 父链那时才是完整的。
+//
+// 所以判据是**宿主上的缓存**: 建树期由 vlistCollapsePending 认领时写好,
+// 布局期由 vlistPrepare 精确化, 重算时只读它。
+func vlistWindowFor(host *GuiNode, st *viewForState, total int) (vlistWindow, bool) {
+	if !st.vlistOn || !st.winReady {
+		return vlistWindow{}, false
+	}
+	return st.win, true
+}
+
+// vlistAssemble 在行的前后摆好撑高垫片, 返回最终的子节点清单。
+//
+// 垫片节点跨轮复用 (只有高度变): 每帧新建会白白产生垃圾, 而且节点身份一变,
+// 脏区比对就会以为整行都变了。
+func vlistAssemble(st *viewForState, win vlistWindow, rows []*viewRow) []*GuiNode {
+	kids := make([]*GuiNode, 0, len(rows)+2)
+	if !st.vlistOn {
+		for _, r := range rows {
+			kids = append(kids, r.host)
+		}
+		return kids
+	}
+	top, bottom := vlistSpacers(win, st.cfg.itemH)
+	for len(st.spacers) < 2 {
+		st.spacers = append(st.spacers, vlistNewSpacer())
+	}
+	vlistSetSpacerH(st.spacers[0], top)
+	vlistSetSpacerH(st.spacers[1], bottom)
+	if top > 0 {
+		kids = append(kids, st.spacers[0])
+	}
+	for _, r := range rows {
+		kids = append(kids, r.host)
+	}
+	if bottom > 0 {
+		kids = append(kids, st.spacers[1])
+	}
+	return kids
+}
+
+// vlistNewSpacer 造一个只占高度的透明盒。
+// 用 `view` (公开的布局透明白盒): 不给 width ⇒ 交叉轴 stretch 铺满视口宽;
+// 高度走显式 `height` prop, 与列表行同一条布局路径 —— 不需要为垫片新开
+// 标签或绘制分支。
+func vlistNewSpacer() *GuiNode {
+	return &GuiNode{Tag: "view", Props: map[string]object.Value{}}
+}
+
+// vlistSetSpacerH 写垫片高度 (显式 height prop)。
+func vlistSetSpacerH(n *GuiNode, h int) {
+	if h < 0 {
+		h = 0
+	}
+	n.Props["height"] = object.NewNumber(float64(h))
 }
 
 // viewMountRow (重)挂一行的内容。

@@ -232,6 +232,106 @@ func appOfNode(n *GuiNode) *app {
 	return activeApp
 }
 
+// appOfNodeOrBuilding 与 appOfNode 同款, 但**在父链还没接上时也能给出正确的
+// 窗口**: 那种情况下退化为"整棵正在构建的树, 逐窗口在树里搜这个节点"。
+//
+// 存在的理由: 列表的 each effect 跑在 h() 组装期, 那一刻内层元素还没有 Parent
+// (wireChild 是之后才接的), 于是 appOfNode 只能退化为 activeApp —— 单窗口时
+// 恰好对, 多窗口时会把 A 窗口的构建算到 B 窗口头上。虚拟化的建树上限
+// (vlistInitialRows) 必须在这里拿到正确的窗口, 否则十万行会在首帧全建出来。
+//
+// 搜索是 O(节点数) —— 但只发生在"父链没接上"这一种情形, 且建树期每个窗口
+// 通常只有少数几个列表; 相比之下把 N 行全建出来是几个数量级更贵的错。
+func appOfNodeOrBuilding(n *GuiNode) *app {
+	if a := appOfNode(n); a != nil && a.root != nil && nodeInTree(a.root, n) {
+		return a
+	}
+	appMu.Lock()
+	defer appMu.Unlock()
+	for _, a := range apps {
+		if a.root != nil && nodeInTree(a.root, n) {
+			return a
+		}
+	}
+	return activeApp
+}
+
+// nodeInTree 报告 n 是否在 root 的子树里 (深搜; 建树期的兜底路径用)。
+func nodeInTree(root, n *GuiNode) bool {
+	if root == nil {
+		return false
+	}
+	for p := n; p != nil; p = p.Parent {
+		if p == root {
+			return true
+		}
+	}
+	for _, c := range root.Children {
+		if nodeInTree(c, n) {
+			return true
+		}
+	}
+	return false
+}
+
+// ===== 建树期的 vlist 延迟物化 =====
+//
+// 问题: JSX 把 `<scroll vlist><view each={rows}>…</view></scroll>` 降级成
+// `h("scroll", …, h("view", {each}, fn))` —— **实参先于外层求值**, 于是列表的
+// 第一轮 effect 跑在 scroll 节点还不存在时。那一刻它查不到容器, 只能按全量把
+// N 行建出来 (十万行 ~2s), 之后 h(scroll) 才回头把窗口写进去、把多余的销毁。
+// 树最终是对的 (物化=13), 但**建树成本已经付过了** (2026-10-01 实测)。
+//
+// 解法: 列表在第一轮里**先什么都不建**, 只把自己登记为"待定"。外层 scroll 建好
+// 之后由 vlistCollapsePending 认领并就地物化 —— 于是**第一次物化就只建可见区间**。
+//
+// ## 为什么不在组装结束时统一"补建"
+//
+// 直觉写法是"h() 全部退出后, 还没被认领的按全量补建"。实测发现**这条路走不通**:
+// 实参求值让每个嵌套 h() 都当过"最外层" —— `h("view")` 返回时深度就归零了, 那
+// 一刻 scroll 都还没开始建 (它的实参才刚刚求值完)。于是"补建"会把待定列表当
+// 普通列表全量渲染, 延迟白做 (2026-08-01 实测: 十万行仍是十万次渲染调用)。
+//
+// 所以改成:**组装期一律不补建**, 留到第一次布局。布局入口 (Layout) 会调
+// vlistFlushUnclaimed: 那时父链已经完整, 认领得着的已经在 vlistCollapsePending
+// 里建好了; 剩下的就是"确实不在 vlist 容器里"的普通列表, 按全量补齐 —— 它们在
+// 布局前必须成形, 否则会漏画一帧。语义与过去逐字一致 (普通列表第一帧照旧是
+// 全量), 只是把那一帧的成本从 h() 挪到了 Layout 入口。
+var vlistAssembly struct {
+	depth   int
+	pending []*viewForState
+}
+
+// vlistAssemblyEnter/Leave 由 JSBuiltinH 在组装期成对调用。**只记深度**, 不做
+// 补建 (见上面说明)。
+func vlistAssemblyEnter() { vlistAssembly.depth++ }
+
+func vlistAssemblyLeave() { vlistAssembly.depth-- }
+
+// vlistDeferRow 登记一个"首轮暂不物化"的列表 (由 vlistInitialRows 调用)。
+func vlistDeferRow(st *viewForState) {
+	st.pendingVlist = true
+	vlistAssembly.pending = append(vlistAssembly.pending, st)
+}
+
+// vlistFlushUnclaimed 把还没被 vlist 容器认领的待定列表按全量补齐。
+//
+// 调用点: Layout 入口。必须在"树已挂好、父链完整"之后跑 —— 那时还没被认领的
+// 就确实不是 vlist 列表了 (认领在 h(scroll) 返回时已经发生)。
+func vlistFlushUnclaimed() {
+	if len(vlistAssembly.pending) == 0 {
+		return
+	}
+	pending := vlistAssembly.pending
+	vlistAssembly.pending = nil
+	for _, st := range pending {
+		st.pendingVlist = false
+		if !st.vlistOn && st.refresh != nil {
+			vlistRunRefresh(st)
+		}
+	}
+}
+
 // markNodeDirty 节点级标脏 (effect 写回属性时调用)。
 func markNodeDirty(n *GuiNode) {
 	a := appOfNode(n)

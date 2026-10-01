@@ -22,6 +22,10 @@ func Layout(root *GuiNode, w, h int) {
 	if root == nil {
 		return
 	}
+	// 虚拟化长列表的延迟物化收尾: 组装期没能认领容器的待定列表在这里按全量补齐
+	// (它们确实不在 vlist 容器里)。必须在 layoutNode 之前 —— 不然后面的布局会
+	// 漏掉这些行 (见 render.go 的 vlistAssembly)。
+	vlistFlushUnclaimed()
 	root.Box = Rect{X: 0, Y: 0, W: w, H: h}
 	layoutNode(root)
 }

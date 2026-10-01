@@ -1,0 +1,23 @@
+{
+  "generated_at": "2026-10-01T14:35:00Z",
+  "benchmark": "BenchmarkVlistFirstFrame / BenchmarkVlistScroll",
+  "command": "go test ./gfx -run '^$' -bench 'BenchmarkVlist' -benchtime 1x -v  (滚动用 -benchtime 20x)",
+  "platform": "windows/amd64, Intel Core i7-10700K",
+  "note": "口径: 真实 JS 路径 (EvalVM 建树, 含 VM 与内置模块注册) + Layout + Draw, 不建平台窗口; 列表形状 scroll vlist → view each → row → text。『渲染调用』是首帧建树阶段渲染函数被调用的次数 —— 它无法被后续销毁掩盖, 是『首帧有没有退化成全量』的唯一判据。",
+  "first_frame_ms": [
+    {"rows": 1000,   "full": {"render_calls": 1000,   "ms": 16},  "vlist": {"render_calls": 64, "ms": 2}},
+    {"rows": 10000,  "full": {"render_calls": 10000,  "ms": 206}, "vlist": {"render_calls": 64, "ms": 10}},
+    {"rows": 100000, "full": {"render_calls": 100000, "ms": 2187},"vlist": {"render_calls": 64, "ms": 89}}
+  ],
+  "scroll_frame_us": [
+    {"rows": 1000,   "full": 6545,   "vlist": 168},
+    {"rows": 10000,  "full": 92628,  "vlist": 113},
+    {"rows": 100000, "full": 998801, "vlist": 115}
+  ],
+  "conclusions": [
+    "首帧建树与行数脱钩: vlist 恒为 64 次渲染调用 (待物化上限 vlistPendingRows), 全量线性增长。十万行 89ms vs 2187ms (约 24 倍)。",
+    "滚动帧与行数完全脱钩: vlist 恒在 0.11~0.17ms (与 N 无关, 只跟窗口是否换行有关), 全量 6.5ms → 999ms。十万行差约 8600 倍。",
+    "vlist 首帧剩下的增长来自脚本里造 N 行『数据』(JS 数组与对象), 不是建行节点 —— 真实应用里这份数据本来就在内存里。",
+    "真相记录: 虚拟化最容易写歪的样子是『先全建再销毁』—— 树上最终只剩十几行、断言全过, 但首帧已付了 N 行的代价。所以基准必须数『渲染调用次数』, 不能数树上剩多少节点。"
+  ]
+}

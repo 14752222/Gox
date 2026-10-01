@@ -28,6 +28,12 @@ type GuiNode struct {
 	// 整树销毁时由 disposeNode 执行。见 object/wiring.go 的机制说明。
 	cleanups []object.Value
 
+	// forState 是 each/For 列表宿主的跨轮状态 (view.go 的 viewForState)。
+	// 挂在节点上而不是只活在 effect 闭包里: 虚拟化长列表 (vlist) 需要在**列表
+	// 之外** (外层 scroll 的布局阶段) 把可见窗口写进来, 而那时拿不到闭包。
+	// 与 effects/cleanups 同类 —— 引擎状态, 不来自 props。
+	forState *viewForState
+
 	// 运行时交互状态: 渲染层专有, 不来自 props, 也不暴露给脚本。
 	// hovered/pressed 由 Pump 按鼠标事件维护 (P1-4), 绘制时读。
 	hovered bool
@@ -292,6 +298,9 @@ func JSBuiltinH(args ...object.Value) object.Value {
 	if len(args) == 0 {
 		return object.NewTypeError("h: (tag, props, ...children) required")
 	}
+	// 组装深度: 给 vlist 的"首轮延迟物化"用 (见 render.go 的说明)。
+	vlistAssemblyEnter()
+	defer vlistAssemblyLeave()
 	tagVal := args[0]
 	tagStr, ok := tagVal.(*object.String)
 	if !ok {
@@ -354,6 +363,23 @@ func JSBuiltinH(args ...object.Value) object.Value {
 		if node.Parent != nil && node.Parent.Tag == "menubar" {
 			attachMenuHandler(node)
 		}
+	}
+	// 虚拟化长列表: 到这里子节点已接好, 但**每个 each 列表的 effect 早就跑了** ——
+	// JSX 把 `<scroll vlist><view each={rows}>…</view></scroll>` 降级成
+	// `h("scroll", …, h("view", {each}, fn))`, 实参先于外层求值, 于是列表在
+	// **scroll 节点还不存在**时就跑了第一轮 effect。那一刻它查不到"我该被谁窗口化"
+	// (没有 Parent、窗口根里也没有这棵新树), 只能按全量建 N 行 —— 十万行 ~800ms,
+	// 而虚拟化本来要省掉的正是这一块 (2026-10-01 实测)。
+	//
+	// 所以收口放在**这里**: scroll 建好并且子节点都接上之后, 回头把窗口写进列表
+	// 状态并立刻重算一次, 让 N 行在建树期就塌回可见区间。之后布局阶段 (vlistPrepare)
+	// 会按真实视口再精确一次。
+	//
+	// 为什么不能在 h(scroll) 入口用一个"正在构建"登记表解决: 那样要求列表的 effect
+	// 在登记**之后**才跑, 而实参求值顺序恰好相反 ("正在构建的 vlist 容器"在
+	// 列表 effect 执行时必然还不存在) —— 那条路是死的 (2026-10-01 实测: building=false)。
+	if node.Tag == "scroll" {
+		vlistCollapsePending(node)
 	}
 	return node
 }
@@ -635,6 +661,12 @@ func disposeNode(n *GuiNode) {
 			object.CallFunction(d, nil)
 		}
 		n.effects = nil
+	}
+	// 列表宿主销毁时摘掉 vlist 的滚动订阅: 订阅表是包级状态, 留着会让后续的
+	// vlistRevBump 去 refresh 一棵已经死掉的树 (写已销毁节点的属性)。
+	if n.forState != nil {
+		vlistRevUnsubscribe(n.forState)
+		n.forState = nil
 	}
 	// onCleanup (gx/solid) 与 effect dispose 同一时刻执行: 子树离开树了,
 	// 组件登记的生命周期清理就该跑 (slot 上的登记见 wireReactiveChild)。

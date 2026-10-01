@@ -496,7 +496,7 @@ REPL 内建命令：`:help`（帮助）、`:clear`（重置全局环境）、`:e
 | `testdata/` | 可直接运行的示例脚本（语言特性、宿主 API、GUI 示例） |
 | `docs/` | **对外文档**（GUI 指南、运行时 API 教程、分发与发版手册）——过程性台账由维护者在仓库外维护（不随仓库发布） |
 | `npm/` | **子模块** → [gox-npm](https://github.com/14752222/gox-npm)：npm 包 `@goxjs/goxjs` 的**定义**（`package.json` / `bin/gox.js` / 包说明），二进制由发版流水线现场编译，不进仓库 |
-| `scripts/` | 构建与检查脚本：`build-npm.sh` 交叉编译五个平台的二进制；`check-site.py` 官网静态检查；`check-registries.py` 注册表一致性（内置组件四处 / gx 模块三处 / 版本号 / npm 清单），配 `check-registries-selftest.py` 做负向自测 |
+| `scripts/` | 构建与检查脚本：`build-npm.sh` 交叉编译五个平台的二进制；`check-registries.py` 注册表一致性（内置组件四处 / gx 模块三处 / 版本号 / npm 清单），配 `check-registries-selftest.py` 做负向自测（`check-site.py` 只认顶层 `*.html`，官网 2026-09-25 迁 VitePress 后已不适用，死链改由 `vitepress build` 把关） |
 | `.github/workflows/` | CI：`ci.yml` 常规闸门（注册表一致性 + `go build`/`vet`/`test`）；`release.yml` 发版流水线（push main / tag / Release → npm）；`pages.yml` 官网发布 |
 | `website/` | **子模块** → [gox-website](https://github.com/14752222/gox-website)：官网源码，推 main 后由 `pages.yml` 发布到 GitHub Pages |
 | `gox-logo-concepts/` | **子模块** → [gox-logo-concepts](https://github.com/14752222/gox-logo-concepts)：logo 概念稿与官网资产生成脚本（`make_assets.py`） |

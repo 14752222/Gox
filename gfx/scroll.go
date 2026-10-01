@@ -119,6 +119,13 @@ func (n *GuiNode) scrollBy(dx, dy int) bool {
 	}
 	if moved {
 		markNodeDirty(n)
+		// 虚拟化长列表 (vlist) 的窗口**不在这里**抬版本号。
+		//
+		// 曾经在这里 bump 过一次, 结果每次滚动都重算两遍窗口 (这里一遍、布局里的
+		// vlistPrepare 再一遍), 每遍都要重建/复用全部行节点 —— 实测 20 帧滚动触发
+		// 40 次重算, 虚拟化反而比全量更慢 (2026-10-01)。布局是唯一知道"视口高、
+		// 轨道、钳位后偏移"的地方, 由它调 vlistPrepare 决定窗口即可; 这里只标脏
+		// (要重绘), 窗口的重算交给紧随其后的 Layout。
 	}
 	return moved
 }
@@ -257,6 +264,8 @@ func (n *GuiNode) scrollDragTo(x, y int) {
 	}
 	if changed {
 		markNodeDirty(n)
+		// 与 scrollBy 同一条纪律: 窗口重算交给紧随其后的布局 (vlistPrepare),
+		// 这里只标脏。两处都 bump 的话每次拖动会重算两遍窗口 (2026-10-01 实测)。
 	}
 }
 
@@ -275,6 +284,14 @@ func (n *GuiNode) scrollThumbW() int {
 	return 0
 }
 
+// layoutScroll 布局滚动容器。
+//
+// 两遍布局: 第一遍按完整视口堆叠量出内容总高, 收窄后 (出现竖向滚动条) 再排
+// 一次, 最后按最终偏移摆放 (子节点 Box 即屏幕坐标)。
+//
+// **虚拟化 (vlist)**: 开窗口化的容器在**第一遍之前**先让列表把可见窗口备好
+// (vlistPrepare) —— 内容总高必须是 N*itemH, 否则量到的只是"少数几行的高度",
+// 滚动条长度与 offsetY 钳位会全错 (见 vlist.go 的文件头)。
 func layoutScroll(n *GuiNode) {
 	area := inner(n)
 	if area.W <= 0 || area.H <= 0 {
@@ -286,46 +303,89 @@ func layoutScroll(n *GuiNode) {
 		return
 	}
 
-	// 第一遍: 按完整视口堆叠, 得到内容总高与总宽 (总宽 = 流内子最大固有宽)。
-	contentH := layoutContentColumn(n, area.X, area.Y, area.W)
-	contentW := flowContentWidth(n)
+	// 虚拟化 (vlist) 的三遍布局。窗口化的容器比普通滚动容器**多一遍**,
+	// 而且顺序是死的要求 (错一步就是"窗口不生效"或"总高变成一屏"):
+	//
+	//	①全量算窗口 → ②写窗口 + 唤醒列表 effect → ③量内容 / 定偏移 / 摆放
+	//
+	// 判据 (有没有开 vlist / itemHeight 合不合法) 放在这里而不是先调
+	// vlistPrepare: 后者是**布局决策**的前置, 它必须知道内容宽的收缩结果才能
+	// 算出正确的可见行数 (见下)。所以先规划 → 再按需走三遍, 不按需就两遍。
+	plan, vlistOK := n.scrollVlistPlan(area)
+	if vlistOK {
+		// ②4 写窗口 + 必要时唤醒列表 effect 重算。
+		if app := appOfNode(n); app != nil {
+			if !app.vlistPrepare(n, plan) {
+				vlistOK = false // 列表侧没接管 (没找到 each / 状态缺失)
+			}
+		} else {
+			vlistOK = false
+		}
+	}
 
-	// 轨道判定与 scrollAxes 同一套: 内容超高让出右轨, 扣窄后内容再溢出
-	// 才让出底轨。收窄后重排一次 (v1 无自动换行, 内容尺寸不随宽度变化,
-	// 不会出现"有滚动条→变窄→没滚动条"的来回抖动; 将来加 wrap 需要收敛判断)。
-	v, h := n.scrollAxesWith(contentH, contentW)
-	w, hgt := area.W, area.H
-	if v {
-		w -= scrollTrackW
-		if w < 0 {
-			w = 0
+	// 内容高。
+	//
+	// **窗口化时绝不能量内容**: 量出来的是"当前只物化了十几行"的高度, 总高会
+	// 塌成一屏 —— 滚动条长度、offsetY 钳位、垫片高度全部跟着错, 而且不报错。
+	// 总高在这条路上是**已知量** (total*itemH), 直接写。
+	//
+	// 普通容器照旧量 (第一遍), 此时若出现竖向滚动条就收窄再量一次。
+	contentH := 0
+	contentW := 0
+	if vlistOK {
+		contentH = plan.contentH
+		contentW = plan.contentW
+	} else {
+		contentH = layoutContentColumn(n, area.X, area.Y, area.W)
+		contentW = flowContentWidth(n)
+		v, h := n.scrollAxesWith(contentH, contentW)
+		if v || h {
+			w, hgt := area.W, area.H
+			if v {
+				w -= scrollTrackW
+				if w < 0 {
+					w = 0
+				}
+			}
+			if h {
+				hgt -= scrollTrackW
+				if hgt < 0 {
+					hgt = 0
+				}
+			}
+			if w != area.W && contentH > hgt {
+				contentH = layoutContentColumn(n, area.X, area.Y, w)
+			}
 		}
-	}
-	if h {
-		hgt -= scrollTrackW
-		if hgt < 0 {
-			hgt = 0
-		}
-	}
-	if w != area.W {
-		contentH = layoutContentColumn(n, area.X, area.Y, w)
 	}
 
 	n.contentH = contentH
 	n.contentW = contentW
 
 	// 钳位偏移 (内容变短/变窄后旧的偏移可能越界)
-	n.offsetY = clampScrollOffset(n.offsetY, contentH-hgt)
+	n.offsetY = clampScrollOffset(n.offsetY, n.scrollMaxOffset())
 	if n.offsetY < 0 {
 		n.offsetY = 0
 	}
-	n.offsetX = clampScrollOffset(n.offsetX, contentW-w)
+	n.offsetX = clampScrollOffset(n.offsetX, n.scrollMaxOffsetX())
 	if n.offsetX < 0 {
 		n.offsetX = 0
 	}
 
-	// 第二遍: 按最终偏移摆放 (子节点 Box 即屏幕坐标)
-	if n.offsetX != 0 || n.offsetY != 0 {
+	// ③ 摆放。窗口化要在**最终偏移**下再准备一次窗口 —— 钳位可能已经改变了
+	// 偏移 (滚过底/顶), 那时窗口得跟着改, 否则可见区摆成上一轮的区间。
+	if vlistOK && plan.offsetY != n.offsetY {
+		if app := appOfNode(n); app != nil {
+			if p2, ok2 := n.scrollVlistPlanAt(area, n.offsetY); ok2 {
+				plan = p2
+				app.vlistPrepare(n, plan)
+			}
+		}
+	}
+	if vlistOK {
+		layoutScrollWindowed(n, area, n.scrollViewportFinal(area.W, area.H))
+	} else if n.offsetX != 0 || n.offsetY != 0 {
+		w := n.scrollViewportFinal(area.W, area.H).W
 		layoutContentColumn(n, area.X-n.offsetX, area.Y-n.offsetY, w)
 	}
 	abs := area

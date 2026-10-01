@@ -463,7 +463,7 @@ screenOf(win).foldable; // ② 这块屏是不是折叠屏? 上报姿态时不�
 | 完整 `beforeResolve` / `isReady()` | 用 `beforeEach` + `push` 返回的 Promise |
 | `scrollBehavior` | `keepAlive` 保住滚动状态；或自己写 `useRouteState` |
 | 切页转场动画 | 给页面根元素挂 `transition`（P3-2），或按 `route` 变化自己驱动 |
-| 长列表虚拟化 | 列表页自己分页 |
+| 长列表虚拟化 | [`<scroll vlist>`](gui-guide.md#_6-6-虚拟化长列表-vlist)（内核侧已落地），或列表页自己分页 |
 | 命名视图（一个路由多个具名 RouterView） | 一个窗口里放多个 `<RouterView scope="x">` |
 | 完整 media query / 逻辑像素层 | 见 `agent_doc/gui-responsive-screen-options.md`（B/D 方案仍未做） |
 

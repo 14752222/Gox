@@ -140,7 +140,7 @@ macOS 后端（cocoa）已知限制：
 | `search` | 同 `input` + `onSearch` | `input` 的字段变体：左侧放大镜，获焦按 `Enter` 整段提交 `onSearch({value})`（逐键 `onInput` 照旧），其余与 `input` 一致 |
 | `rating` | `value` / `max` / `onChange` / `color` / `disabled` | 星级评分：**完全受控**（显示只看 `value`，点击第几格就派发 `onChange({value})`，值不变不派发）。`max` 缺省 5、上限 10；每颗星占 20px 方格（缺省 100×20），星形半径按 min(格宽, 高) 自适应；实心星走 `color` prop（缺省主题强调色），其余空心描边。`model` 口径与 `select` 相同 |
 | `textarea` | `value` / `onInput` / `rows` / `placeholder` / `disabled` | 多行受控编辑器；光标 `{行,列}` 二维移动（↑↓←→/Home/End/Backspace/Delete），**`Enter` 插入换行**（不同于 input）；内容超高时纵向滚动并跟随光标；同样支持 IME。缺省 4 行 × 240px |
-| `scroll` | `width` / `height` / `onWheel` | 滚动容器：内容超高时右侧、超宽时底部出现 8px 轨道 + 比例滑块；滚轮滚动（一格 60px，`Shift+滚轮`走横向），滑块可拖拽，到边界后滚轮才冒泡给 `onWheel`；溢出的内容既画不出来也点不中。缺省高 200 |
+| `scroll` | `width` / `height` / `onWheel` / `vlist` / `itemHeight` / `buffer` | 滚动容器：内容超高时右侧、超宽时底部出现 8px 轨道 + 比例滑块；滚轮滚动（一格 60px，`Shift+滚轮`走横向），滑块可拖拽，到边界后滚轮才冒泡给 `onWheel`；溢出的内容既画不出来也点不中。缺省高 200。加 `vlist itemHeight={N}` 即变成[虚拟化长列表](#_6-6-虚拟化长列表-vlist)：只物化可见的行，十万行与十行的成本一样 |
 | `image` | `src` / `width` / `height` / `disabled` | 显示 png / jpeg / gif 图片（Go 标准库解码，无新增依赖）；不给 `width`/`height` 时用图片自然尺寸，给了就按最近邻缩放；`src` 相对**进程工作目录**解析，加载失败画灰底交叉线占位（stderr 每个路径只警告一次），不中断其它内容 |
 | `video` | `src` / `poster` / `playing` / `autoplay` / `muted` / `loop` / `volume` / `controls` / `fit` | 视频框：**标签与宿主契约**（S8）。内核**不解码** —— 播放交给窗口后端可选实现的 `nativeVideoHost`（平台视频层：MF / AVPlayerLayer / SurfaceView），决策见 [video-decision.md](video-decision.md)。后端没这块能力时画 `poster` 封面（没封面就深色底 + 播放三角），并**诚实报错**：stderr 告警一次 + 对该节点派发一次 `onError({code:"unsupported"})`，`canIUse("video")` 照实回答 `false`。`playing`（等价 `autoplay`）、`muted` / `loop` / `volume` 都是**受控**属性，宿主上报的状态经 `onReady` / `onPlay` / `onPause` / `onEnded` / `onTimeUpdate({currentTime, duration})` 回到脚本。`fit` 取 `contain`（缺省）/ `cover` / `fill`；不给尺寸时用封面自然尺寸，兜底 320×180 |
 | `canvas` | `width` / `height` / `onDraw(ctx)` / `background` / `border` | 自绘画布：`onDraw` 收到一个 ctx，用 `ctx.fillRect/strokeRect/fillCircle/strokeCircle/line/drawText/clear` 直接落笔，坐标是**画布局部坐标**（0,0 = 左上角），越界部分自动裁掉；`ctx.width` / `ctx.height` 是画布尺寸。`onDraw` 里读到的 signal 变化会自动重绘（缺省 200×120） |
@@ -380,6 +380,47 @@ h("scroll", { width: 240, height: 120, onWheel: () => setOverscroll(n => n + 1) 
   也会横向兜底。默认铺满（stretch）的子节点是"跟随容器"，不会触发横向滚动条。
 - **滚动条可拖拽**：按住滑块直接拖（拖拽期间鼠标捕获，划过别的控件不会误触）；
   纵向与横向滑块都支持，行程按"可滚范围 / 滑块行程"等比换算。
+
+### 6.6 虚拟化长列表（vlist）
+
+行数上万时，`<scroll>` 默认会把**每一行都建成节点**：十万行 = 十万棵子树，首帧建树
+就要两秒多，每帧布局还要遍历十万个盒子。加两个属性就能让成本与行数**脱钩**：
+
+```js
+h("scroll", { vlist: true, itemHeight: 28, width: 420, height: 300 },
+  h("view", { each: rows, key: "id" },
+    (r, i) => h("row", { height: 28 }, h("text", {}, i + " · " + r.title))
+  )
+)
+```
+
+- `vlist`（无值或 `true`）开启窗口化，`itemHeight` 是**每行的固定高**（必给正数）；
+- 内核只物化**可见区间 + 上下各 `buffer` 行**（`buffer` 缺省 2，`buffer={0}` 合法），
+  上下用两个撑高垫片补出总高，所以**滚动条长度、行程与全量渲染逐像素一致**；
+- 行内拿到的下标是**全局下标**（滚到第 50000 行，`i` 就是 50000，不是 0），
+  所以行内容不会因为窗口平移而错位；
+- 行高必须固定。变高行需要"测量 → 回填 → 二次布局"，且滚动中可见内容会跳，
+  所以本期不做半吊子版本。
+
+实测（本机 i7-10700K，`go test ./gfx -bench BenchmarkVlist`）：
+
+| 行数 | 首帧（全量） | 首帧（vlist） | 滚动一帧（全量） | 滚动一帧（vlist） |
+| --- | --- | --- | --- | --- |
+| 1 000 | 16 ms | **2 ms** | 6.5 ms | **0.17 ms** |
+| 10 000 | 206 ms | **10 ms** | 93 ms | **0.11 ms** |
+| 100 000 | 2 187 ms | **89 ms** | 999 ms | **0.12 ms** |
+
+vlist 那一列**与行数脱钩**：首帧渲染调用恒为 64 次（待物化上限，落屏后收敛到视口内的
+十几行），滚动帧恒定在 0.1 ms 量级。首帧剩下的那点增长来自脚本里造十万行**数据**
+（JS 数组与对象），不是建行节点。完整数据见 [bench-results/vlist-20261001.json](../bench-results/vlist-20261001.json)。
+
+三个容易踩的点：
+
+1. **`itemHeight` 漏写就是静默退化**：不写会退化成全量渲染并告警一次
+   （`<scroll vlist>: 缺少 itemHeight …`），性能问题会被误以为是别的原因；
+2. **列表形状要对**：vlist 窗口化的是 `<scroll vlist><view each={rows}>…</view></scroll>`
+   这种形状 —— 列表要能被容器找到（中间隔一层布局盒子也行）。找不到时告警一次并退化为普通滚动容器；
+3. **嵌套滚动区**：内层 `<scroll>` 里的列表归内层管，外层 vlist 不会去窗口化它（会错位）。
 
 ## 7. 绘制与动画
 
@@ -860,6 +901,7 @@ import { devSnapshot } from "gx/dev";
 | [textarea_demo.js](../testdata/textarea_demo.js) | 多行编辑器 |
 | [ime_demo.js](../testdata/ime_demo.js) | 输入法：候选词整批提交与光标跨批 |
 | [scroll_demo.js](../testdata/scroll_demo.js) | 滚动容器与边界冒泡 |
+| [vlist_demo.js](../testdata/vlist_demo.js) | 虚拟化长列表：十万行只物化十几行，滚动条与全量版一致 |
 | [image_demo.js](../testdata/image_demo.js) | 图片五态：自然尺寸 / 放大 / 缩小 / 坏路径占位 / 禁用 |
 | [video_demo.js](../testdata/video_demo.js) | 视频框三态：封面 contain / 无封面占位 / `fit=cover` + 用户 background（桌面后端降级为封面 + 一次 `onError`） |
 | [events_demo.js](../testdata/events_demo.js) | 鼠标 / 滚轮 / 右键 / 修饰键 |
