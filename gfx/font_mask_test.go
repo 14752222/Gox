@@ -30,7 +30,7 @@ func renderOnce(text string, size int) *image.RGBA {
 // 旧实现: 第二遍全是缓存命中 ⇒ 每个字形都画成"最后一次光栅化"的那块 Pix,
 // 于是同一串文本两遍结果不同 (第二遍整串变成同一个字)。
 func TestGlyphCacheNoAliasing(t *testing.T) {
-	requireFont(t)
+	requireCJKFont(t)
 	texts := []string{"设", "置", "设置", "设置设置", "小程序 设置值", "about"}
 	for _, text := range texts {
 		for _, size := range []int{12, 16, 24} {
@@ -49,7 +49,7 @@ func TestGlyphCacheNoAliasing(t *testing.T) {
 // TestGlyphCacheRepeatedRuneIdentical 同一行里重复出现的字符必须画出相同位图,
 // 不同字符必须画出不同位图 (后者防"全都一样的字形"这类退化)。
 func TestGlyphCacheRepeatedRuneIdentical(t *testing.T) {
-	requireFont(t)
+	requireCJKFont(t)
 	const size = 16
 	img := renderOnce("设置设置", size)
 	boxes := glyphBoxes(img)

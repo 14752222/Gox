@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"golang.org/x/image/font/opentype"
 )
 
 // ===== 字体与文本测量 =====
@@ -23,8 +25,45 @@ func requireFont(t *testing.T) {
 	}
 }
 
-func TestMeasureText(t *testing.T) {
+// requireCJKFont 在**已加载的字体不含 CJK 字形**时跳过测试。
+//
+// 为什么需要它: requireFont 只验证"有字体可加载", 但 CI 的 ubuntu runner 上
+// 只有 fonts-dejavu-core —— 它是纯拉丁字体, 一个汉字字形都没有。于是
+// TestMeasureText 的 "加一" 量出 16px (缺字形时 glyph() 退化成 advance=size/2),
+// 而期望 ≈32px (两个全宽字形), 用例红。
+//
+// 这类用例的语义是"验证 CJK 度量/光栅", 前提是**字体真的覆盖 CJK** —— 前提不成立
+// 时应当 Skip (与 requireFont 同一处理), 而不是断言失败。真正要保证的是: 一旦
+// 环境提供了 CJK 字体, 这些断言必须成立 (本机 Windows / macOS / 装了 CJK 字体的
+// Linux 都会真正跑它们)。fonts-noto-cjk 也在 ci.yml 的 apt 清单里, 让 ubuntu
+// 默认就能跑到这些用例而不是一路 Skip。
+func requireCJKFont(t *testing.T) {
+	t.Helper()
 	requireFont(t)
+	f, err := loadBaseFont()
+	if err != nil {
+		t.Skipf("no system font available: %v", err)
+	}
+	// 用字体自带的 cmap 判断是否真有 CJK 字形, 不靠"量出来的宽度"反推 ——
+	// 后者正是被测代码, 用它做前置条件会掩盖真实缺陷。
+	if !fontHasCJK(f) {
+		t.Skipf("loaded font has no CJK glyphs (need fonts-noto-cjk); skipping CJK metric test")
+	}
+}
+
+// fontHasCJK 报告字体是否含常用汉字字形 (取几个不同区段的探针字)。
+func fontHasCJK(f *opentype.Font) bool {
+	for _, r := range []rune{'加', '一', '汉', '字'} {
+		idx, err := f.GlyphIndex(nil, r)
+		if err != nil || idx == 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func TestMeasureText(t *testing.T) {
+	requireCJKFont(t)
 	w, h := MeasureText("Hello", 16)
 	if w <= 0 || h <= 0 {
 		t.Fatalf("latin measure: w=%d h=%d", w, h)

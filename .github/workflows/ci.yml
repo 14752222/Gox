@@ -96,11 +96,19 @@ jobs:
       # 不需要 libx11-dev），但有一批用例需要真的连上一个 X server —— xvfb
       # 就是那个"有 X 协议、没有显示器"的最小宿主。fonts-dejavu 是字体测量类
       # 用例的兜底（runner 裸机可能一个字体都没有）。
+      #
+      # fonts-noto-cjk 是**必须**的（2026-10-01 补）：DejaVu 是纯拉丁字体，没有
+      # 任何汉字字形，于是 CJK 度量/字形缓存类用例 (TestMeasureText /
+      # TestGlyphCacheRepeatedRuneIdentical 等) 在 ubuntu 上量出的宽度全按
+      # "缺字形" 的占位宽度走，断言必然红 —— 这正是当天三平台 ci 里 ubuntu
+      # 那条的根因。装上 Noto CJK 之后这些用例在 Linux 上真正被执行，
+      # 与 Windows / macOS 口径一致，同时 requireCJKFont 的跳过兜底仍然保留
+      # （万一将来 runner 镜像变动导致字体缺失，是 Skip 而不是红）。
       - name: go test ./... (linux + xvfb 无头 X)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -q
-          sudo apt-get install -yq xvfb fonts-dejavu-core
+          sudo apt-get install -yq xvfb fonts-dejavu-core fonts-noto-cjk
           xvfb-run -a -s "-screen 0 1280x800x24" go test ./...
 
       - name: go test ./...

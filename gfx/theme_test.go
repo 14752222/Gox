@@ -98,7 +98,7 @@ func TestThemeSwitchRecolorsDefaultsButNotProps(t *testing.T) {
 	}
 
 	SetThemeNamed("dark")
-	img2 := renderTree(root, 300, 120)
+	img2 := renderTreeThemed(root, 300, 120)
 	if got := img2.RGBAAt(def.Box.X+4, def.Box.Y+4); got != themeDark().BtnFace {
 		t.Fatalf("切暗后默认 button 未随主题变色: %v want %v", got, themeDark().BtnFace)
 	}

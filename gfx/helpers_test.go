@@ -520,7 +520,26 @@ func withClick(n *GuiNode) *GuiNode {
 }
 
 // renderTree 白底布局并整帧绘制, 返回可直接断言的像素面。
+//
+// 主题隔离: 绝大多数像素断言都按**亮色预设**写死了期望值 (0xD0D0D0 分隔线 /
+// 浅灰面等), 但主题是**包级全局状态** (themeCurrent → syncThemeVars 投影到
+// colorTrack 等变量), 任何用例切到 dark 都会污染后续用例。此前只有
+// theme_test.go 自己用 resetTheme 兜住, 其余 26 个文件的 ~130 处 renderTree
+// 全都默认"此刻恰好是亮色"——2026-10-01 macOS runner 上用例执行顺序不同,
+// TestTagDefaultAndCustomColor 就撞上了上游遗留的 dark (期望 208,208,208,
+// 实际 60,60,60), 三平台只有它红。
+//
+// 这里在**绘制入口**把主题钉回亮色, 一处修复覆盖全部像素用例, 并与机器、
+// 用例顺序解耦。需要**在暗色下**渲染的用例 (如 theme_test 的切换验证) 用
+// renderTreeThemed 显式声明, 不走本函数。
 func renderTree(root *GuiNode, w, h int) *image.RGBA {
+	SetThemeNamed("light")
+	return renderTreeThemed(root, w, h)
+}
+
+// renderTreeThemed 按**当前**主题渲染, 不做任何主题重置。
+// 只有显式验证主题切换效果的用例才该用它。
+func renderTreeThemed(root *GuiNode, w, h int) *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
 	FillRect(img, Rect{0, 0, w, h}, pxWhite)
 	Layout(root, w, h)
