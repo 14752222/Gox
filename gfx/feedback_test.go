@@ -1,7 +1,6 @@
 package gfx
 
 import (
-	"fmt"
 	"image"
 	"image/color"
 	"testing"
@@ -197,22 +196,19 @@ func TestTagDefaultAndCustomColor(t *testing.T) {
 
 	img := renderTree(root, 300, 100)
 
-	// 诊断 (临时): 打印实际 Box 与左上角像素网格, 用于定位跨平台差异。
-	t.Logf("DIAG theme=%s colorTrack=%v def.Box=%+v custom.Box=%+v",
-		ThemeName(), colorTrack, def.Box, custom.Box)
-	for dy := -1; dy <= 3; dy++ {
-		row := ""
-		for dx := -1; dx <= 6; dx++ {
-			c := img.RGBAAt(def.Box.X+dx, def.Box.Y+dy)
-			row += fmt.Sprintf("(%d,%d)=%d,%d,%d ", dx, dy, c.R, c.G, c.B)
-		}
-		t.Logf("DIAG row %+d: %s", dy, row)
-	}
-
-	// 缺省: 浅灰底 (取左上角内侧一点, 避开居中的文字)
-	assertPx(t, img, def.Box.X+2, def.Box.Y+2, pxTrack, "tag 缺省浅灰底")
+	// 缺省: 浅灰底 (取左上角内侧**紧邻边框的一圈**, 避开居中的文字)
+	//
+	// 为什么是 (+1,+1) 而不是 (+2,+2): 2026-10-01 macos ci 上这里实测
+	// {60,60,60} 而是期望 {208,208,208}。诊断输出证明两平台的 def.Box
+	// 与 colorTrack 完全一致 ({X:10 Y:10 W:48 H:26} / {208,208,208}),
+	// 差异在**字形度量**: macOS 的字体把"默认"二字在 tag 内的上边界顶得
+	// 更高, 于是 (+2,+2) 撞进了文字的抗锯齿边缘 (row+2 实测 60/62/62…,
+	// row+3 是 90/148/183… 的笔画像素), 而 Windows 的 (+2,+2) 还是纯底色。
+	// (+1,+1) 才是真正"贴着边框内侧、又完全避开文字"的取样点 ——
+	// 两个平台的网格里它都严格等于底色 (边框在 (0,*) 那一列)。
+	assertPx(t, img, def.Box.X+1, def.Box.Y+1, pxTrack, "tag 缺省浅灰底")
 	// 自定义色: 圆角块的**中段实心**处 (避开圆角 AA 与居中文字, 取靠左 6px)
-	assertPx(t, img, custom.Box.X+6, custom.Box.Y+2,
+	assertPx(t, img, custom.Box.X+6, custom.Box.Y+1,
 		color.RGBA{R: 0x33, G: 0x55, B: 0xAA, A: 255}, "tag 自定义色")
 }
 
