@@ -25,7 +25,7 @@
 
 ## 2. 发版前要同步的文档（本次 0.2.0 → 0.3.0 的清单）
 
-> 先跑一遍静态闸门，它会替你抓出"改了 `main.go` 的版本号没改 `package.json`"这类
+> 先跑一遍静态闸门，它会替你抓出"改了 `cmd/gox/main.go` 的版本号没改 `package.json`"这类
 > 手工同步遗漏（CI 里是 `release.yml` 的第一道步骤，本地等价命令）：
 >
 > ```bash
@@ -40,17 +40,17 @@
 |---|---|---|
 | `npm/README.md` | **必改**：新 API 示例、破坏性变更说明 | 它是 npm 包页面，用户看到的第一份文档；CI 的内容校验也要求包里必须有 `README.md` |
 | `npm/package.json` | `version`；必要时 `description` / `keywords` | `version` 是唯一发版开关 |
-| `main.go` 的 `const version` | 与上一条的 `version` 一起改 | `gox version` 报的就是它；两处不一致时排障会先被版本号误导 |
+| `cmd/gox/main.go` 的 `const version` | 与上一条的 `version` 一起改 | `gox version` 报的就是它；两处不一致时排障会先被版本号误导 |
 | `README.md`（仓库） | 特性清单、GUI 指引段落 | 仓库首页 |
 | `docs/gui-guide.md` | §4 元素表（新标签）、§6 绑定、§8 视图、§11 示例索引 | 用户手册 |
 | `docs/gui-patterns.md` | §9 视图 | 模式手册 |
 | `docs/gui-model-binding.md` | 接口设计与迁移对照 | 设计说明书 |
 | `agent_doc/gui-component-status.md` | 追加「落地记录」小节（本文档的 §32 / §33） | 权威现状记录 |
-| `website/components.html` | `#view` 段（指令表）、受控组件约定 ③、限制清单 | 官网组件参考 |
-| `website/api.html` | 聚合入口 `gox` 示例、`gx/view` 导出表 | 官网 API 页 |
-| `website/guide.html` | 响应式章节里的受控/绑定说明 | 官网入门页 |
+| `website/components/*.md` | `patterns.md` 的 `#view` 段（指令表）、`index.md` 的受控组件约定 ③、`limits.md` 的限制清单 | 官网组件参考 |
+| `website/api/gx.md` | 聚合入口 `gox` 示例、`gx/view` 导出表、模块地图 | 官网 API 页 |
+| `website/guide/gui.md` | 响应式章节里的受控/绑定说明 | 官网入门页 |
 
-`website/index.html` 与 `guide.html` 的其余部分不涉及这些 API，实测无需改动。
+`website/index.md` 与 `website/guide/*.md` 的其余部分不涉及这些 API，实测无需改动。
 
 ## 3. 一次发版的完整流程（可直接复制）
 

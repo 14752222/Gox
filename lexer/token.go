@@ -85,12 +85,12 @@ const (
 	OPTIONAL_CHAIN  // ?. (可选链)
 
 	// ==================== 关键字 ====================
-	// 注意: VAR 是合法 token，但本运行时在解析器语句层拒绝 var 声明 (仅支持 let/const)。
-	// 词法层保留 VAR 是为了允许 var 作为属性名 (obj.var, {var: 1})，
-	// 与 class/default 等关键字的属性名用法保持一致。
+	// VAR 既是声明关键字, 也是合法属性名 (obj.var, {var: 1}), 与 class/default 等
+	// 关键字保持一致。var 声明自 2026-09-29 起已支持: 函数作用域 + 提升 + 允许重复
+	// 声明 (见 parser.parseVarStatement / compiler.compileVarStatement)。
 	LET        // let
 	CONST      // const
-	VAR        // var (声明在 parser 层被拒绝, 仅允许作为属性名)
+	VAR        // var (声明与属性名均合法)
 	IF         // if
 	ELSE       // else
 	FOR        // for
@@ -146,7 +146,7 @@ type Token struct {
 }
 
 // keywords 将关键字字符串映射到 TokenType。
-// "var" 映射到 VAR: 词法层正常识别, 由解析器在语句层拒绝声明用法,
+// "var" 映射到 VAR: 词法层正常识别, 语句层解析为 var 声明 (parseVarStatement),
 // 同时允许 var 作为属性名 (obj.var, {var: 1})。
 var keywords = map[string]TokenType{
 	"var":        VAR,
@@ -187,7 +187,6 @@ var keywords = map[string]TokenType{
 	"yield":      YIELD,
 	"async":      ASYNC,
 	"await":      AWAIT,
-	// "var" 被故意排除！
 }
 
 // LookupIdentifier 查找标识符是否为关键字。

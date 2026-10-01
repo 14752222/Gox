@@ -145,6 +145,10 @@ macOS 后端（cocoa）已知限制：
 | `menubar` | `background` / `border` | 菜单栏容器（缺省 26px 高、自动铺满容器宽）；**它只是个普通容器**，脚本自己写 `column { menubar; 内容 }`，gfx 不会往 root 里偷偷插一条 |
 | `menu` | `label`（或 `title`、或文本子节点） | 菜单标题；作为 `<menubar>` 的直接子节点时是**顶级菜单**（下拉挂在标题正下方），嵌在 `<menuitem>` 里时是**子菜单**（挂在触发项右侧）。空菜单点了不展开 |
 | `menuitem` | `label` / `shortcut` / `disabled` / `onClick` | 菜单项；点中派发 `onClick({x, y})` 并收起整棵菜单。`disabled` 灰字且点了没反应（**也不收起**）；内嵌一个 `<menu>` 即成为子菜单触发器（点击展开/收起右侧下拉，自身不派发 `onClick`）。分隔线用已有的 `<separator>`，它照样可命中（点了没反应） |
+| `table` | `columns` / `rows` / `zebra` / `borderless` / `onRowClick` / `width` | 声明式数据表格：喂 `columns` + `rows` 两组数据即可（`columns` 可写字符串数组简写或 `{key, label, width?, align?}`；`rows` 可按列下标或按 `key` 取），表头 / 网格线 / 列宽分配都由组件负责。行高固定 28px，行**默认不可点**，挂 `onRowClick` 才派发 `{index, row}`。`columns` / `rows` 在**首次布局时物化**成内部行 —— 数据变了要换 prop 值触发重建，就地改数组元素不反映 |
+| `tree` | `nodes` / `onSelect` | 声明式树：`nodes` 是递归的 `{label, key?, children?}`（纯字符串数组当叶子简写）。展开 / 收起是**渲染层状态**（点有子节点的行即切换），初始全收起；展开态按 `key` 跨重建保留（不给 `key` 时用 `label`，同层必须唯一） |
+| `list-item` | `selected` / `divider` / `height` | 列表行：普通容器 + “行”这套约定（固定 28px 行高、左右 10px 留白、悬停高亮、选中底色、行底线缺省开）。`selected` 是**受控**选中态（只影响底色，状态由脚本持有）；没挂 `onClick` 的行悬停不变色 |
+| `tooltip` | `text` / `placement` / `delay` | 悬停提示：包住触发元素，鼠标停留 `delay` 毫秒（缺省 500）后在 `placement`（`top` / `bottom` / `left` / `right`，缺省 `bottom`，贴边自动翻边）弹一段深色小字。布局透明（盒子就是触发元素的盒子），弹层**不挡交互** |
 
 > 颜色属性（`background` / `border` / `color`）在组件标签上有语义差异：`background` 表示"选中/填充的强调色"，
 > 在 `button` / `rect` 上才是普通填充色；`color` 沿祖先链继承，因此 `<button color="#fff">文字</button>` 生效。
@@ -868,7 +872,7 @@ import { devSnapshot } from "gx/dev";
 | 症状 | 根因 | 正解 |
 |---|---|---|
 | 窗口起不来，控制台 `h is not defined` | JSX 在 parser 层被降级成 `h(...)` 调用，而脚本没绑定 `h` —— 只 `import { render }` 能编译通过，挂载那一刻才炸 | **已自动补齐**（2026-09-22 起）：文件里没有 `h` 时编译器补一条 `import { h } from "gx/gfx"`。显式 `import { h, render }` 仍推荐、也仍优先；自己定义/导入的 `h` 一个字节都不动 |
-| `alert is not a function`，或某个导入名拿到的恒是 `undefined` | 名字取错了模块（`alert` 在 `gx/dialog`，不在 `gx/gfx`）；命名导入取不到时**只会静默拿到 `undefined`** | 改从 `gx/dialog` 取，或用 `gox` 聚合入口。**从内置模块 import 不存在的名字现在是编译期报错**，并会直接指出它在哪个模块 / 是不是拼错 |
+| `alert is not a function`，或某个导入名拿到的恒是 `undefined` | 名字取错了模块（`alert` 在 `gx/dialog`，不在 `gx/gfx`）；从**文件模块**import 不存在的名字仍会**静默拿到 `undefined`** | 改从 `gx/dialog` 取，或用 `gox` 聚合入口。**从内置模块 import 不存在的名字现在是编译期报错**，并会直接指出它在哪个模块 / 是不是拼错 |
 | `usePosture()` 拿到的不是字符串 | 所有 `useXxx()` 返回的都是**取值函数**（信号语义：放进函数 prop / 函数子节点才能跟着变），不是当前值 | `const r = usePosture(); r()`。只要"此刻的值"就直接用 `posture(win)`（返回字符串） |
 | `each` / `show` 从 `gx/view` 里 `import` 不到 | 它们是**元素级指令**：写在 JSX 属性上、在 `h()` 里展开，**不在任何模块的导出表里** | 不 import：`<view each={rows} key="id">{…}</view>`。`gx/view` 只导出 `Switch` / `Match`。误 import 现在编译期报错（见 §8.2） |
 | `const [data, {refetch}] = createResource(f)` 不起作用 | 嵌套解构（数组里套对象）当年解析失败，直接是 parser 报错 | **已修**（2026-09-22）：嵌套解构照常能用。等价写法 `const [data, res] = createResource(f)` + `res.refetch()`（见 §8.3） |

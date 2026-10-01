@@ -49,7 +49,7 @@ gox help               # 用法; gox version 看版本号
 | 类别 | 例子 | 怎么拿 |
 |---|---|---|
 | **全局对象** | `fs` `path` `http` `fetch` `process` `stats` `console` `obs` `computed` `ever` `once` `setTimeout` `delay` … | 不用 import, 直接就是全局 |
-| **ES 模块** | `gx/solid` `gx/gfx` `gx/view` `gx/router` `gx/screen` `gx/dialog` `gx/storage` `gx/dev`, 以及聚合入口 `gox` | 必须 `import {...} from "gx/xxx"` (§2) |
+| **ES 模块** | `gx/solid` `gx/gfx` `gx/view` `gx/router` `gx/screen` `gx/dialog` `gx/storage` `gx/theme` `gx/update` `gx/dev`, 以及原生能力层 `gx/device` `gx/app` `gx/geo` `gx/media` `gx/permission` `gx/viewport`(共 16 个), 外加聚合入口 `gox` | 必须 `import {...} from "gx/xxx"` (§2) |
 | **宿主配置** | 命令行 (`create` / `<file.js>` / REPL)、环境变量 `GOX_STORAGE_DIR`、脚本内 `setAppName()` | 见 [README 配置说明](../README.md#配置说明) |
 
 **判断口诀**: 名字看起来像 Node 内置模块(`fs`/`path`/`process`)= 全局; 名字带 `gx/` 前缀或
@@ -214,8 +214,9 @@ fetch -> body   path=/hello query={"a":"1"}
 全局对象 (无 import)      fs · path · http · fetch · process · stats · console
                           obs · computed · ever · once · 定时器族
 ES 模块 (要 import)       gx/solid · gx/gfx · gx/view · gx/router · gx/screen
-                          gx/dialog · gx/storage · gx/dev
-                          聚合入口: gox  (= 上面 8 个模块导出的并集)
+                          gx/dialog · gx/storage · gx/theme · gx/update · gx/dev
+                          gx/device · gx/app · gx/geo · gx/media · gx/permission · gx/viewport
+                          聚合入口: gox  (= 上面 16 个模块导出的并集)
 ```
 
 ### 2.2 四种 import 形态

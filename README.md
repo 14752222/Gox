@@ -51,7 +51,7 @@ flex 布局 + JSX + 信号驱动更新，win32 / X11 / cocoa 窗口后端）、�
 
 - **完整编译管线** —— 自研 lexer / parser / compiler / bytecode VM，109 个操作码，定长 3 字节指令编码
   （`[操作码 1B][操作数 2B 大端]`），解码即取即用
-- **ES6+ 语言子集** —— `let`/`const`（不支持 `var`）、函数与箭头函数、闭包、`class`、`async`/`await`、
+- **ES6+ 语言子集** —— `let`/`const`/`var`、函数与箭头函数、闭包、`class`、`async`/`await`、
   解构赋值、剩余/默认参数、展开、模板字符串、`for...of`、`try`/`catch`/`throw`、可选链 `?.`、
   空值合并 `??`、ES 模块 `import`/`export`，以及 **JSX 语法**（编译期降级为 `h(tag, props, ...children)` 调用）
 - **丰富的内置对象** —— `Array` / `String` / `Number` / `Object` / `Boolean` / `Math` / `JSON` /
