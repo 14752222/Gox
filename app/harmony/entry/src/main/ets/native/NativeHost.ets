@@ -73,7 +73,13 @@ export const CAPABILITIES: string[] = [
   // 把"永久 flat"当成"设备就是直板"。
   //
   // ⚠️ 真实现落地前**不要**提前声明 —— 声明了却没人上报, 等于对脚本说谎。
-  // 'displayFold',
+  //
+  // HF2 (2026-10-01) 已落地, 所以这里可以声明了。真实现见同目录
+  // GoxDisplayFold.ets: 它接了 display.on('foldStatusChange') /
+  // display.getCurrentFoldCreaseRegion() / window.on('windowSizeChange') 三路,
+  // 拼成 JSON 后经 libgox 的 nativeSetDisplayFold 进 gfx/mobile.ReportDisplayFold
+  // —— 与 Android(iOS) 的 nativeSetDisplayFold(gox_set_display_fold) 同一条内核路径。
+  'displayFold',
 ]
 
 /**

@@ -1,0 +1,9 @@
+{
+  "name": "libgox.so",
+  "version": "1.0.0",
+  "description": "Gox 运行时在 HarmonyOS 上的 NAPI 导出面 (libgox.so / buildmode=c-shared)",
+  "main": "",
+  "author": "Gox",
+  "license": "MIT",
+  "types": "./index.d.ts"
+}

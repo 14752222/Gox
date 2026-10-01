@@ -1,0 +1,22 @@
+# 构建产物
+/build
+/.hvigor
+/.cxx
+/entry/build
+/entry/.preview
+/entry/.cxx
+/oh_modules
+/entry/oh_modules
+*.har
+
+# libgox.so 是 `bash scripts/build-harmony.sh` 的产物 (arm64 约 28MB),
+# **与 Android 侧同样不入库** —— 拉下仓库后先跑一次构建脚本, 再把 .so 拷进
+# entry/libs/<abi>/ (hvigor 的约定: 模块根下的 libs 会随 HAP 一起打包,
+# 目录名用 Android 那套 ABI 名 arm64-v8a / x86_64, 不是 OHOS 三元组)。
+# 只忽略 .so 本体, 目录结构留着 —— 拷进去就能构建。
+/entry/libs/**/*.so
+
+# DevEco 本机配置 (含签名与 SDK 路径, 因机器而异)
+local.properties
+.idea/
+*.iml

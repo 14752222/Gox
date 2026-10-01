@@ -11,7 +11,8 @@ Go 为准并修文档。
 - 错误码 (Go): `gfx/native.go:84` — unsupported / permission-denied / cancelled /
   timeout / busy / unavailable / platform-error / invalid-arg
 - 桌面样板: `gfx/win32/host.go` (win32Host)
-- 平台桥: `gfx/android/libgox/main.go` (JNI)、`gfx/ios/libgox/main.go` (C 函数指针)
+- 平台桥: `gfx/android/libgox/main.go` (JNI)、`gfx/ios/libgox/main.go` (C 函数指针)、
+  `gfx/harmony/libgox/main.go` (NAPI: 模块注册 + 序号分发)
 
 ## 通道协议 (三平台一致)
 
@@ -45,16 +46,18 @@ Go 为准并修文档。
 
 ```json
 {
-  "foldable": true,
   "posture": "half-open",
-  "id": "built-in",
-  "width": 2400, "height": 1080, "scale": 3,
+  "width": 2400, "height": 1080,
   "hinge": { "x": 1190, "y": 0, "width": 20, "height": 1080, "orientation": "vertical" },
-  "regions": [ { "id": "hinge", "kind": "division", "x": 1190, "y": 0,
+  "regions": [ { "id": "fold-0", "kind": "division", "x": 1190, "y": 0,
                  "width": 20, "height": 1080, "active": true } ],
   "sizeClass": { "width": "expanded", "height": "compact" }
 }
 ```
+
+尺寸类两种拼法都认: 上面的 `sizeClass:{width,height}` 对象, 或扁平的
+`widthClass`/`heightClass` (后者优先)。折痕的宽高同样认 `w/h` 与 `width/height`
+(短名优先) —— 与 `gfx/screen.go` 的 `objPropSize` 同一取舍: 最自然的写法必须能用。
 
 - `posture` 只认 `flat` / `half-open` / `folded` (不认识的值内核归一到 `unknown`,
   绝不猜姿态 —— `gfx/mobile.PostureFrom`)。**绝不从宽度反推姿态**: 上下折展开后
@@ -64,7 +67,29 @@ Go 为准并修文档。
 - 坐标是**显示器坐标 (设备像素)**, 与 `DisplayHinge` 的约定一致 (见 `gfx/screen.go`)。
 - `hinge` 与 `regions` **不随 flat 清除** (C2): 折痕是设备几何属性。宿主只报
   `{"posture":"flat"}` 时内核保留上一次的折痕 —— 否则折回去再折回来分栏比例会变。
-- **首次上报会替换整张显示器表** (C3), 所以第一包必须带 `id`/`width`/`height`/`scale`。
+- **首次上报会替换整张显示器表** (C3), 所以第一包必须带 `width`/`height`。
+  ⚠️ 载荷里**没有** `id`/`scale`/`foldable`: `decodeFoldInfo` 只认上面那张 JSON 里的
+  名字。显示器由内核的 `displayOfSurface` 决定, `Foldable` 由 `hinge != nil || 有
+  division` 推出 (`gfx/mobile/fold.go`) —— 想加这三个语义得先改 Go, 只在宿主侧把它
+  拼进 JSON 是**静默无效**的。
+
+### 鸿蒙的通道差异 (NAPI)
+
+Android 的 JNI 靠**符号名**由 JVM 自动绑定; 鸿蒙的 NAPI 没有这一层 —— 库必须
+**自己注册模块**, 否则宿主 `import nativeGox from 'libgox.so'` 拿到 null, 而
+hvigor 构建照样绿。另有两处差别值得记:
+
+- **方法靠序号分发**: `goxMethods` 表 (`gfx/harmony/libgox/main.go`) 与 C 侧的
+  `enum { GOX_M_* }` 逐位对应。C 侧 `napi_create_function(..., data = idx, ...)` 把
+  序号塞进回调, 回调里再转回 Go 的 `GoxDispatch(env, method, argv, argc)`。中间插
+  一行就整体错位 (症状是"调 tick 却跑了 resize")。
+- **含 `//export` 的文件, cgo preamble 只能放声明且必须纯 ASCII**: preamble 会被
+  复制进两个生成的 C 文件, 放定义就是链接期 `duplicate symbol`; 而 clang 会直接编译
+  这段文本, 中文标点报 `unexpected character`。所以模块注册 (`napi_module` +
+  `__attribute__((constructor))`) 与全部函数定义都在同目录的 `bridge.c`。
+
+这三条都由 `gfx/mobile/fold_contract_test.go` 的鸿蒙用例静态钉住 (外加一条
+rawfile 脚本端到端: `gfx/mobile/harmony_asset_test.go`)。
 
 ## 实现状态表 (模块 × 平台)
 
@@ -93,8 +118,8 @@ Go 为准并修文档。
 | | media.preview | 🟡 (ACTION_VIEW 单文件; 无系统多图预览) | ✅ (QLPreviewController) | ⬜ |
 | gx/permission | permission.get | 🟡 (Android 无法区分 not-determined/denied → 统一 denied; gallery limited ✅) | ✅ (notification 的同步状态拿不到 → 缺键按 unknown) | ⬜ |
 | | permission.request | ✅ (批量一次申请一次回填) | ✅ (camera/mic/gallery/notification/contacts/calendar/location) | ⬜ |
-| gx/viewport | insets 上报 | ✅ (nativeSetInsets, 既有通道) | ✅ (gox_set_insets, 既有通道) | ⬜ (契约已声明) |
-| gx/screen (折叠屏) | displayFold 上报 | ✅ (GoxDisplayFold.kt → nativeSetDisplayFold; androidx.window FoldingFeature) | ✅ (GoxDisplayFold.swift → gox_set_display_fold; UIView.reservedRegions, iOS 27.1+) | ⬜ (契约已声明) |
+| gx/viewport | insets 上报 | ✅ (nativeSetInsets, 既有通道) | ✅ (gox_set_insets, 既有通道) | ✅ (GoxBridge.setInsets, 既有通道) |
+| gx/screen (折叠屏) | displayFold 上报 | ✅ (GoxDisplayFold.kt → nativeSetDisplayFold; androidx.window FoldingFeature) | ✅ (GoxDisplayFold.swift → gox_set_display_fold; UIView.reservedRegions, iOS 27.1+) | ✅ (GoxDisplayFold.ets → setDisplayFold; display.getFoldStatus / getCurrentFoldCreaseRegion, API 26+) |
 
 ## method ↔ 平台 ↔ 内核调用点对照表
 
@@ -145,7 +170,7 @@ Go 为准并修文档。
 |---|---|---|---|
 | Android | `GoxNativeHost.kt` (interface) | `GoxNativeHostImpl.kt` (+ `GoxFileProvider.kt`, `MainActivity` 接线) | `gfx/android/libgox/main.go` (jniNativeHost, JNI 导出 nativeResolveNative / nativeReport*) |
 | iOS | `NativeHost.swift` (GoxNativeHost 类 + C 闭包) | 同文件 (六模块) + AppDelegate 方向 mask | `gfx/ios/libgox/main.go` (cfnNativeHost, gox_set_native_host / gox_resolve_native / gox_report_*) |
-| 鸿蒙 | `harmony/native/NativeHost.ets` (interface + 协议) | `harmony/native/GoxNativeHost.ets` (stub, 全部显式 unsupported) | 待鸿蒙壳工程落地后接入 |
+| 鸿蒙 | `app/harmony/entry/src/main/ets/native/NativeHost.ets` (interface + 协议) | `app/harmony/entry/src/main/ets/native/GoxNativeHost.ets` (stub, 六模块仍显式 unsupported) | `gfx/harmony/libgox/main.go` (napiNativeHost; NAPI 导出 `GoxModuleRegister` / `GoxDispatch`) |
 
 ## 验证情况 (2026-09-25)
 
@@ -156,6 +181,17 @@ Go 为准并修文档。
 | Swift typecheck + **xcodebuild 完整构建** (iphonesimulator, 含 libgox.a 链接) | ✅ BUILD SUCCEEDED |
 | Android libgox (cgo+jni.h) | ⬜ 未编译 (本机无 NDK); gofmt 语法检查通过 |
 | Kotlin 编译 | ⬜ 未编译 (本机无 gradle/Android SDK); 已按 framework-only API 逐项静态自查 |
+
+## 鸿蒙验证情况 (2026-10-01)
+
+| 项 | 结果 |
+|---|---|
+| `bash scripts/build-harmony.sh --abi arm64` | ✅ AArch64 共享库 (ELF 目标校验通过) |
+| `llvm-readelf -d` | ✅ NEEDED = `libace_napi.z.so` / `libhilog_ndk.z.so` / `libc.so` |
+| `llvm-nm -D` | ✅ `GoxDispatch` / `GoxModuleRegister` 均已导出 |
+| `CGO_ENABLED=0 go build ./...` (桌面, 不带 tag) | ✅ 内核零改动 (harmony 代码被 build tag 隔离) |
+| 契约测试 | ✅ `gfx/mobile` 鸿蒙用例 6 项全通 (含 rawfile 脚本端到端跑折叠上报) |
+| DevEco 模拟器 / 真机 | ⬜ **未跑**: 触摸、上屏、折叠上报目前只有静态 + 纯 Go 验证 |
 
 ## 需要真机/模拟器验收的遗留项
 

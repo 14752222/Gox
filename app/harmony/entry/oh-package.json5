@@ -1,0 +1,15 @@
+{
+  "name": "entry",
+  "version": "1.0.0",
+  "description": "Gox 入口模块 (NAPI 装载 libgox.so + 折叠上报 + 输入转发)",
+  "main": "",
+  "author": "Gox",
+  "license": "MIT",
+  "dependencies": {
+    // libgox.so 的类型声明 (见 src/main/cpp/types/libgox/index.d.ts)。
+    // 动态库本体由 `bash scripts/build-harmony.sh` 产出, 手工拷进 libs/<abi>/
+    // (hvigor 约定: 模块根下的 libs 会随 HAP 打包), 不在这里声明 ——
+    // 它是构建产物, 不是包依赖。
+    "libgox.so": "file:./src/main/cpp/types/libgox"
+  }
+}

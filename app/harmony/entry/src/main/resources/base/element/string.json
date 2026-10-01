@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "Gox 运行时入口模块"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "Gox 运行时宿主"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "Gox"
+    }
+  ]
+}

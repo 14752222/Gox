@@ -1,0 +1,26 @@
+{
+  "apiType": "stageMode",
+  "buildOption": {
+    // 没有 cpp/ 目录: 上屏走 ArrayBuffer + PixelMap, 不需要自己编译 native 代码
+    // (libgox.so 是 scripts/build-harmony.sh 的产物, 直接进 libs/<abi>/)。
+    // 这也意味着壳工程**不需要 NDK 就能构建** —— 与 Android 侧"不引 gomobile、
+    // 手写 JNI"的取舍一致。
+  },
+  "buildOptionSet": [
+    {
+      "name": "release",
+      "arkOptions": {
+        "obfuscation": {
+          "ruleOptions": {
+            "enable": false
+          }
+        }
+      }
+    }
+  ],
+  "targets": [
+    {
+      "name": "default"
+    }
+  ]
+}

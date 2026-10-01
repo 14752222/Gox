@@ -67,13 +67,14 @@ export class GoxNativeHostStub implements NativeHost {
    * 只报纯上报型能力。Call 型方法在真实现落地后加入
    * (少报 canIUse 说"没有", 多报说谎 —— 两头都是错的)。
    *
-   * ⚠️ 折叠屏能力 ('displayFold') **暂不声明**: 它与 'insets' 同属纯上报型,
-   * 但 HF2 (姿态与折痕上报) 尚未落地 —— 声明了却没人上报, 等于对脚本说谎
-   * (canIUse('displayFold') 会说 true, 而 posture() 永远是 "flat")。
-   * HF2 落地时在这里加 'displayFold', 并同步 NativeHost.ets 的 CAPABILITIES。
+   * ⚠️ 'displayFold' 于 HF2 (2026-10-01) 落地后已加入声明 —— 它与 'insets'
+   * 同属纯上报型: 内核没有 reportDisplayFold 这个 Call 方法, 由 GoxDisplayFold
+   * 监听系统事件后直接喂内核入口。
    */
   capabilities(): string {
-    return 'insets'
+    // HF2 (2026-10-01): 'displayFold' 已落地 (见同目录 GoxDisplayFold.ets) ——
+    // 折叠姿态与折痕现在有真实来源, canIUse('displayFold') 可以诚实回答 true。
+    return 'insets,displayFold'
   }
 
   call(method: string, argsJson: string): string {

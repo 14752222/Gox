@@ -150,7 +150,7 @@ iconSize         = 16 | 20 | 24
 | 安全区 | 宿主上报链路已通，`useInsets()` 可用 | 无 |
 | 键盘高度 | `keyboardHeight` / `useKeyboardHeight()` 已注册 | 各宿主实测待 T24 回归矩阵覆盖 |
 | 断点 | `widthClass` / `isCompactWidth` / `isMediumWidth` / `isTabletLayout` 已注册（三档，600/840） | 无 |
-| 折叠屏 | 内核数据模型 + `reportPosture` 通道已通；`gx/viewport` 有 `reservedRegions()` / `hasFold()` / `layoutMode()`；Android / iOS 宿主已接上报 | 鸿蒙宿主待接（HF2）；折叠态**接续**（页面栈/滚动位置）v1 不做 |
+| 折叠屏 | 内核数据模型 + `reportPosture` 通道已通；`gx/viewport` 有 `reservedRegions()` / `hasFold()` / `layoutMode()`；Android / iOS / 鸿蒙**三端宿主均已接上报**（鸿蒙已交叉编译 + 契约测试通过，真机未跑） | 折叠态**接续**（页面栈/滚动位置）v1 不做；鸿蒙真机验收待做 |
 | 长按手势 | 内核无 `onLongPress` | S3 前如组件评审要求长按，先在 gfx 内核立项 |
 | 逻辑像素 | 换算靠脚本侧 `pixelRatio`（gx/device） | 内核收编 dp 单位是 P1 候选项 |
 | IME | 结果提交制 | 组合输入逐键上报属 P1 |

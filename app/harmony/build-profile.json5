@@ -1,0 +1,36 @@
+{
+  "app": {
+    "products": [
+      {
+        "name": "default",
+        // 本机 SDK 是 API 26 (HarmonyOS 26.0.0)。
+        // 换机器时按 `sdk/default/openharmony/native/oh-uni-package.json` 里的
+        // apiVersion 改；DevEco 打开工程时也会提示修正。
+        "compatibleSdkVersion": 26,
+        "runtimeOS": "HarmonyOS"
+      }
+    ],
+    "buildModeSet": [
+      {
+        "name": "debug"
+      },
+      {
+        "name": "release"
+      }
+    ]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": [
+            "default"
+          ]
+        }
+      ]
+    }
+  ]
+}

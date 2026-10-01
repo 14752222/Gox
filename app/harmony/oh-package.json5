@@ -1,0 +1,6 @@
+{
+  "modelVersion": "5.0.0",
+  "description": "Gox runtime host for HarmonyOS (ArkTS shell + libgox.so via NAPI)",
+  "dependencies": {},
+  "devDependencies": {}
+}
