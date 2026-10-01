@@ -217,3 +217,111 @@ func TestReportPostureAcceptsJSGeometryKeyNames(t *testing.T) {
 		t.Fatalf("两种拼法同给时短名 w 应优先, 实际 W=%d", got)
 	}
 }
+
+// TestReportPostureRegionKindAndActive 钉住保留区的 kind / active / ID 生成。
+//
+// 这三样都是"写错了不报错、只会静默失效"的类型: kind 错 → 避让挑不到该避的带;
+// active 错 → 平放时仍按折痕避让 (整篇界面白让一格); ID 生成错 → 上报方不传 id
+// 时多条 region 互相覆盖。
+func TestReportPostureRegionKindAndActive(t *testing.T) {
+	resetScreenStateForTest()
+	t.Cleanup(resetScreenStateForTest)
+	SetDefaultFactory(nil)
+
+	reportPostureGo(routeObj("display", "fold-1", "posture", "half-open",
+		"regions", object.NewArray([]object.Value{
+			// ① kind 归一化: "fold" 是 division 的别名。
+			routeObj("kind", "fold", "x", object.NewNumber(700), "y", object.NewNumber(0),
+				"width", object.NewNumber(24), "height", object.NewNumber(1000)),
+			// ② 显式 active=false 覆盖几何推导 (零宽是一条"曾经折过"的结构性记录)。
+			routeObj("kind", "division", "x", object.NewNumber(700), "y", object.NewNumber(0),
+				"width", object.NewNumber(0), "height", object.NewNumber(0), "active", object.NewBoolean(false)),
+			// ③ occlusion 走独立计数, 且几何非零 → 推导出 active=true。
+			routeObj("kind", "occlusion", "x", object.NewNumber(60), "y", object.NewNumber(0),
+				"width", object.NewNumber(180), "height", object.NewNumber(180)),
+			// ④ 旧上报形状 (无 kind 无 active): kind 归空, active 按几何推导。
+			routeObj("x", object.NewNumber(10), "y", object.NewNumber(10),
+				"width", object.NewNumber(50), "height", object.NewNumber(50)),
+			// ⑤ 上报方自带 id: 原样采用, 不参与生成。
+			routeObj("id", "custom", "kind", "division", "width", object.NewNumber(5), "height", object.NewNumber(5)),
+		})))
+
+	d := allDisplays()[0]
+	if len(d.Regions) != 5 {
+		t.Fatalf("应读到 5 条保留区: %+v", d.Regions)
+	}
+	// ① fold 别名 → division, 且按 division 计数拿到 fold-0
+	if d.Regions[0].Kind != RegionDivision || d.Regions[0].ID != "fold-0" {
+		t.Fatalf("kind 别名归一 / ID 生成错: %+v", d.Regions[0])
+	}
+	if !d.Regions[0].Active {
+		t.Fatalf("几何非零的 division 应推导为 active: %+v", d.Regions[0])
+	}
+	// ② 显式 active=false 必须压制几何推导 (零宽零高本就推出 false, 这里再确认显式键被认)
+	if d.Regions[1].Active {
+		t.Fatalf("显式 active=false 未生效: %+v", d.Regions[1])
+	}
+	if d.Regions[1].ID != "fold-1" {
+		t.Fatalf("division 序号应独立递增: %+v", d.Regions[1])
+	}
+	// ③ occlusion 独立计数
+	if d.Regions[2].Kind != RegionOcclusion || d.Regions[2].ID != "occlusion-0" || !d.Regions[2].Active {
+		t.Fatalf("occlusion 解析错: %+v", d.Regions[2])
+	}
+	// ④ 旧形状: kind 空 + 生成 region-0 + 几何推导 active
+	if d.Regions[3].Kind != "" || d.Regions[3].ID != "region-0" || !d.Regions[3].Active {
+		t.Fatalf("旧上报形状应向后兼容: %+v", d.Regions[3])
+	}
+	// ⑤ 自带 id 原样保留 (即便它与生成规则撞名也不改)
+	if d.Regions[4].ID != "custom" {
+		t.Fatalf("自带 id 应原样采用: %+v", d.Regions[4])
+	}
+}
+
+// TestRegionsToJSCarriesKindAndActive 钉住输出侧字段 (displayToJS 与 regions() 共用
+// regionsToJS)。漏一个字段的表现是"脚本侧 r.kind 恒为 undefined", 避让策略全部落空。
+func TestRegionsToJSCarriesKindAndActive(t *testing.T) {
+	resetScreenStateForTest()
+	t.Cleanup(resetScreenStateForTest)
+	SetDefaultFactory(nil)
+
+	reportPostureGo(routeObj("display", "fold-1", "posture", "half-open",
+		"regions", object.NewArray([]object.Value{
+			routeObj("kind", "division", "x", object.NewNumber(700), "y", object.NewNumber(0),
+				"width", object.NewNumber(24), "height", object.NewNumber(1000)),
+		})))
+
+	// regions() 的输出
+	arr, ok := jsRegions().(*object.Array)
+	if !ok || len(arr.Elements) != 1 {
+		t.Fatalf("regions() 应返回 1 条: %v", arr)
+	}
+	ro, ok := arr.Elements[0].(*object.Object)
+	if !ok {
+		t.Fatalf("region 应为对象")
+	}
+	if k, _ := ro.GetProperty("kind"); object.ToString(k) != RegionDivision {
+		t.Fatalf("regions() 输出缺 kind: %v", k)
+	}
+	if a, ok := ro.GetProperty("active"); !ok || object.ToString(a) != "true" {
+		t.Fatalf("regions() 输出缺 active: %v %v", a, ok)
+	}
+
+	// displayToJS 里嵌的 regions 也要带同样字段 (两条出口不能漂)
+	disp, ok := displayToJS(allDisplays()[0]).(*object.Object)
+	if !ok {
+		t.Fatalf("displayToJS 应返回对象")
+	}
+	inner, _ := disp.GetProperty("regions")
+	innerArr, ok := inner.(*object.Array)
+	if !ok || len(innerArr.Elements) != 1 {
+		t.Fatalf("displayToJS().regions 应 1 条: %v", inner)
+	}
+	innerObj, _ := innerArr.Elements[0].(*object.Object)
+	if k, _ := innerObj.GetProperty("kind"); object.ToString(k) != RegionDivision {
+		t.Fatalf("displayToJS().regions 缺 kind")
+	}
+	if _, ok := innerObj.GetProperty("active"); !ok {
+		t.Fatalf("displayToJS().regions 缺 active")
+	}
+}

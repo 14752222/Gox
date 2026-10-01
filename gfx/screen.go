@@ -3,6 +3,7 @@ package gfx
 import (
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -42,15 +43,44 @@ import (
 // ===== 数据模型 =====
 
 // DisplayHinge 是折叠屏的折痕 (铰链) 区域。
+//
+// **坐标系**: X/Y/W/H 一律是**显示器坐标 (设备像素)** —— 与 displaySplitRatio
+// 用 d.W / d.H 当分母的既有实现一致。全屏时显示器坐标 = 窗口坐标; 分屏 /
+// 自由窗口下两者不等价, 应用要用它做避让时必须自行减去窗口在屏上的原点
+// (见 gx/screen 的 windowInfo().x / .y)。
+//
+// **没有 Angle 字段, 这是有意的**: iOS 的 hinge API 与 Android 的 FoldingFeature
+// 都明确把铰链角度划给"交互与特效", 布局不许用它 (Android 甚至不暴露精确角度)。
+// 将来若确实要加: 字段注释里必须写死"仅交互、不布局", 否则一定会有人在
+// gfx/layout.go 里读它。
 type DisplayHinge struct {
 	X, Y, W, H  int
 	Orientation string // "vertical" = 左右折 (铰链是竖条); "horizontal" = 上下折
 }
 
-// DisplayRegion 是折叠屏的一段可用面板 (第一屏 / 第二屏 / 展开后的整块屏)。
+// 保留区类型 (与 iOS reservedRegions 的 kind 对齐)。
+const (
+	// RegionDivision 是折痕把大屏切成两半的那条带。**只有设备实际折着时
+	// 才 active (有宽度)**; 平放时宽度为 0 且 inactive。
+	RegionDivision = "division"
+	// RegionOcclusion 是盖在内容上方的遮挡区 (典型: 屏下摄像头)。
+	RegionOcclusion = "occlusion"
+)
+
+// DisplayRegion 是折叠屏的一段"保留区" (iOS 叫 reserved region)。
+//
+// 与 DisplayHinge 的分工: hinge 只有一条、描述折痕本身 (供分栏比例用);
+// regions 是**列表**, 可以同时有多段 division / occlusion, 供"避开它"用。
+//
+// **坐标系**: 同 DisplayHinge —— 显示器坐标 (设备像素)。
 type DisplayRegion struct {
-	ID         string
-	X, Y, W, H int
+	ID   string
+	Kind string // "division" / "occlusion" / "" (未知或旧上报)
+	X, Y int
+	W, H int
+	// Active 报告该区此刻是否真的占据画面。零宽/零高的 division 一律视为
+	// inactive —— 对应 iOS 那句"平放时宽度为 0, 且是 inactive"。
+	Active bool
 }
 
 // Display 是一台显示器, 或折叠屏在某一姿态下的一"块"逻辑显示。
@@ -92,6 +122,22 @@ func normalizedPosture(s string) string {
 		return postureFolded
 	default:
 		return postureUnknown
+	}
+}
+
+// normalizedRegionKind 归一化保留区类型 (不认识 → "", 即"未知/旧上报")。
+//
+// 为什么归一到空串而不是 "unknown": 空串的语义是"上报方没说这是什么",
+// 而 "unknown" 会让人以为"设备报了一个我们认不出的类型"。前者是可用的
+// 缺省 (不参与避让, 只作为通用保留区列出), 后者只会误导避让判定。
+func normalizedRegionKind(s string) string {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case RegionDivision, "fold", "hinge":
+		return RegionDivision
+	case RegionOcclusion, "occluded", "camera":
+		return RegionOcclusion
+	default:
+		return ""
 	}
 }
 
@@ -458,16 +504,45 @@ func reportPostureGo(args ...object.Value) object.Value {
 	// 只负责"怎么分"。
 	if regs, ok := objProp(opts, "regions").(*object.Array); ok {
 		d.Regions = nil
+		// 三个独立计数器: 上报方没给 id 时按 kind 生成稳定 ID (fold-0 /
+		// occlusion-0 / region-0)。**给了非空 id 就原样采用** —— 现有脚本与
+		// 模拟器可能已经按自己的 id 查找, 不能覆盖。
+		foldIdx, occIdx, otherIdx := 0, 0, 0
 		for _, r := range regs.Elements {
 			ro, ok := r.(*object.Object)
 			if !ok {
 				continue
 			}
-			d.Regions = append(d.Regions, DisplayRegion{
-				ID: objPropStr(ro, "id"),
-				X:  int(objPropNum(ro, "x")), Y: int(objPropNum(ro, "y")),
+			kind := normalizedRegionKind(objPropStr(ro, "kind"))
+			id := objPropStr(ro, "id")
+			if id == "" {
+				switch kind {
+				case RegionDivision:
+					id = "fold-" + strconv.Itoa(foldIdx)
+					foldIdx++
+				case RegionOcclusion:
+					id = "occlusion-" + strconv.Itoa(occIdx)
+					occIdx++
+				default:
+					id = "region-" + strconv.Itoa(otherIdx)
+					otherIdx++
+				}
+			}
+			reg := DisplayRegion{
+				ID:   id,
+				Kind: kind,
+				X:    int(objPropNum(ro, "x")), Y: int(objPropNum(ro, "y")),
 				W: objPropSize(ro, "w", "width"), H: objPropSize(ro, "h", "height"),
-			})
+			}
+			// active: 显式给了就用; 没给则按"零宽/零高即 inactive"推导 ——
+			// 对齐 iOS "平放时 division 宽度为 0 且 inactive"。旧上报 (只给
+			// {x,y,w,h,id}) 走的正是这条推导, 行为与今天一致。
+			if av := objProp(ro, "active"); av != nil {
+				reg.Active = nativeBool(av)
+			} else {
+				reg.Active = reg.W > 0 && reg.H > 0
+			}
+			d.Regions = append(d.Regions, reg)
 		}
 	}
 	out[idx] = d
@@ -522,10 +597,12 @@ func displayToJS(d Display) object.Value {
 	for _, r := range d.Regions {
 		ro := object.NewObject()
 		ro.SetProperty("id", object.NewString(r.ID))
+		ro.SetProperty("kind", object.NewString(r.Kind))
 		ro.SetProperty("x", object.NewNumber(float64(r.X)))
 		ro.SetProperty("y", object.NewNumber(float64(r.Y)))
 		ro.SetProperty("width", object.NewNumber(float64(r.W)))
 		ro.SetProperty("height", object.NewNumber(float64(r.H)))
+		ro.SetProperty("active", object.NewBoolean(r.Active))
 		regs = append(regs, ro)
 	}
 	o.SetProperty("regions", object.NewArray(regs))
@@ -676,14 +753,22 @@ func jsHinge(args ...object.Value) object.Value {
 
 func jsRegions(args ...object.Value) object.Value {
 	d, _ := displayOfWorkWindow(windowArg(args))
-	regs := make([]object.Value, 0, len(d.Regions))
-	for _, r := range d.Regions {
+	return regionsToJS(d.Regions)
+}
+
+// regionsToJS 是保留区列表的唯一出口 (gx/screen 的 regions() 与
+// gx/viewport 的 reservedRegions() 共用, 免得两处字段名漂移)。
+func regionsToJS(list []DisplayRegion) object.Value {
+	regs := make([]object.Value, 0, len(list))
+	for _, r := range list {
 		ro := object.NewObject()
 		ro.SetProperty("id", object.NewString(r.ID))
+		ro.SetProperty("kind", object.NewString(r.Kind))
 		ro.SetProperty("x", object.NewNumber(float64(r.X)))
 		ro.SetProperty("y", object.NewNumber(float64(r.Y)))
 		ro.SetProperty("width", object.NewNumber(float64(r.W)))
 		ro.SetProperty("height", object.NewNumber(float64(r.H)))
+		ro.SetProperty("active", object.NewBoolean(r.Active))
 		regs = append(regs, ro)
 	}
 	return object.NewArray(regs)
