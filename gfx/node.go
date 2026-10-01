@@ -227,6 +227,9 @@ var knownTags = map[string]struct{}{
 	"list-item": {},
 	// P2-1 单行文本输入
 	"input": {},
+	// T08 搜索框: input 的字段变体 (左侧放大镜; 获焦按 Enter 整段提交 onSearch)。
+	// 与 input 共用同一套字段机制 —— 见 gfx/search.go 的文件头。
+	"search": {},
 	// P2-5 滚动容器
 	"scroll": {},
 	// P2-6 多行文本: textarea (编辑器) + text 的 wrap/ellipsis 已在 text 上
@@ -934,7 +937,7 @@ func (n *GuiNode) buttonPadding() (padX, padY int) {
 // 造成无谓重绘 (鼠标移动是频率最高的事件)。
 func (n *GuiNode) hoverable() bool {
 	switch n.Tag {
-	case "button", "checkbox", "radio", "switch", "select", "select-option", "input", "textarea", "slider",
+	case "button", "checkbox", "radio", "switch", "select", "select-option", "input", "search", "textarea", "slider",
 		"menu", "menu-item", "tooltip", "table-row", "tree-row", "list-item":
 		return true
 	}

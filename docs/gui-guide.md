@@ -137,6 +137,7 @@ macOS 后端（cocoa）已知限制：
 | `icon` | `name` / `size` / `color` | 内置图标：`name` 取内置图标集（见下方清单），`size` 为边长（缺省 16），`color` 缺省继承文字色；未知名字静默不画。纯光栅原语绘制、三平台零依赖 |
 | `drawer` | `open` / `side` / `width` / `onClose` | 抽屉弹层：**复用 dialog 的弹层机制**（遮罩铺满窗口、模态、Esc/点遮罩关闭），内容卡片贴 `side`（`left`/`right`，缺省 `right`）边、宽按 `width`（缺省 280），打开时从侧边滑入（靠动画心跳推进进度，无新增定时器） |
 | `input` | `value` / `onInput` / `placeholder` / `disabled` | 单行受控输入（沿 `value` 显示，编辑派发 `onInput({value})`）；获焦边框转蓝并显示闪烁竖线光标，点击可定位光标；支持 ←/→/Home/End/Backspace/Delete，`Enter`/`Esc` 不消费；支持 IME 候选词整批提交（Windows） |
+| `search` | 同 `input` + `onSearch` | `input` 的字段变体：左侧放大镜，获焦按 `Enter` 整段提交 `onSearch({value})`（逐键 `onInput` 照旧），其余与 `input` 一致 |
 | `textarea` | `value` / `onInput` / `rows` / `placeholder` / `disabled` | 多行受控编辑器；光标 `{行,列}` 二维移动（↑↓←→/Home/End/Backspace/Delete），**`Enter` 插入换行**（不同于 input）；内容超高时纵向滚动并跟随光标；同样支持 IME。缺省 4 行 × 240px |
 | `scroll` | `width` / `height` / `onWheel` | 滚动容器：内容超高时右侧、超宽时底部出现 8px 轨道 + 比例滑块；滚轮滚动（一格 60px，`Shift+滚轮`走横向），滑块可拖拽，到边界后滚轮才冒泡给 `onWheel`；溢出的内容既画不出来也点不中。缺省高 200 |
 | `image` | `src` / `width` / `height` / `disabled` | 显示 png / jpeg / gif 图片（Go 标准库解码，无新增依赖）；不给 `width`/`height` 时用图片自然尺寸，给了就按最近邻缩放；`src` 相对**进程工作目录**解析，加载失败画灰底交叉线占位（stderr 每个路径只警告一次），不中断其它内容 |
@@ -159,7 +160,7 @@ macOS 后端（cocoa）已知限制：
 > 全部在 24×24 逻辑网格里用直线 / 矩形 / 圆拼装（像素风，三平台观感一致、零依赖）；冷门图标交给
 > 项目自己的 `<canvas>` 组件（`docs/gui-guide.md` 的 canvas 一节），内核不做无限扩张的图标库。
 
-> 受控组件（`input` / `textarea` / `slider` / `select` / `checkbox` / `switch` / `radio`）另有一条
+> 受控组件（`input` / `search` / `textarea` / `select` / `checkbox` / `switch` / `radio`）另有一条
 > **`model` 指令**：`<input model={draft} />` 一次接好读（`value`）与写（`onInput`），不用再手写
 > `value={() => draft()} onInput={(e) => setDraft(e.value)}`。语义表见 [6.0](#60-一条指令搞定读写model)，
 > 完整设计见 [gui-model-binding.md](gui-model-binding.md)。
@@ -247,7 +248,7 @@ h("input", { model: draft })
 
 | 标签 | 读方向 | 写方向事件 | 写进去的值 |
 |---|---|---|---|
-| `input` / `textarea` | `value` | `onInput({value})` | 字符串 |
+| `input` / `search` / `textarea` | `value` | `onInput({value})` | 字符串 |
 | `slider` | `value` | `onInput({value})` | 数字（不转换） |
 | `select` | `value` | `onChange({value})` | 字符串 |
 | `checkbox` / `switch` | `checked` | `onClick()` | 布尔（写入取反） |
@@ -289,7 +290,7 @@ h("input", {
 
 ### 6.2 输入法 IME
 
-`<input>` / `<textarea>` 都支持候选词输入（Windows 后端）。切到中文输入法后敲拼音，
+`<input>` / `<search>` / `<textarea>` 都支持候选词输入（Windows 后端）。切到中文输入法后敲拼音，
 正在拼的字由系统组合窗显示，选定候选词后**整批**插到光标处：一次提交只派发一次 `onInput`，
 光标一次跨过整批（不会把下一个词插到前一个词中间）。焦点不在编辑框上时输入法自动关闭，
 在按钮/画布上敲字不会弹候选窗。`textarea` 里同样可用，且"提交内容自带换行"会正确把光标落到新行。
@@ -832,6 +833,7 @@ import { devSnapshot } from "gx/dev";
 | [menu_demo.js](../testdata/menu_demo.js) | 菜单栏：下拉 / 子菜单 / 禁用项 / 快捷键 / 右键菜单 |
 | [clipboard_demo.js](../testdata/clipboard_demo.js) | 剪贴板：同步读写与失败降级 |
 | [dialog_native_demo.js](../testdata/dialog_native_demo.js) | 原生对话框：alert / confirm / 打开/保存文件，全 async await |
+| [search_demo.js](../testdata/search_demo.js) | 搜索框：input 字段变体（放大镜 + Enter 提交 onSearch） |
 | [storage_demo.js](../testdata/storage_demo.js) | gx/storage 持久化读写 |
 | [dev_panel_demo.js](../testdata/dev_panel_demo.js) | gx/dev 调试面板：帧 / 缓存 / 树 / 警告 |
 | [native_demo.js](../testdata/native_demo.js) | 原生能力层（§9.6）：设备信息 / 电量 / 网络 / 定位 / 能力检测，拉取型·动作型·上报响应型三种形态 |

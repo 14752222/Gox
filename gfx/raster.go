@@ -430,6 +430,9 @@ func drawNode(img *image.RGBA, n *GuiNode) {
 		paintListItem(img, n, disabled)
 	case "input":
 		paintInput(img, n, disabled)
+	case "search":
+		// 搜索框: input 的字段核心 + 左侧放大镜 (差异见 gfx/search.go)。
+		paintSearch(img, n, disabled)
 	case "scroll":
 		paintScroll(img, n, disabled)
 	case "textarea":

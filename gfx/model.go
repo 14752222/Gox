@@ -232,7 +232,7 @@ func expandModelProp(n *GuiNode, props *object.Object) {
 	}
 
 	switch n.Tag {
-	case "input", "textarea", "slider":
+	case "input", "textarea", "slider", "search":
 		modelOverrideWarn(n.Tag, props, "value")
 		modelSetProp(props, "value", readVal)
 		modelSetProp(props, "onInput", modelEvent(props, "onInput", mb, writable, modelPickPayload))

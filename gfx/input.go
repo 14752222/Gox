@@ -50,11 +50,12 @@ func caretVisibleAt(now time.Time) bool {
 // resetCaretPhase 把闪烁相位归零 (测试用: 让"此刻"光标一定处于可见相)。
 func resetCaretPhase(now time.Time) { caretEpoch = now }
 
-// inputInChain 从 n 起沿祖先链找第一个 input (键盘分流用: 焦点可能落在
-// input 本身, 将来也可能落在它内部的子节点上)。
+// inputInChain 从 n 起沿祖先链找第一个字段类节点 (键盘分流用: 焦点可能落在
+// 字段本身, 将来也可能落在它内部的子节点上)。search 是 input 的字段变体,
+// 走同一条链。
 func inputInChain(n *GuiNode) *GuiNode {
 	for p := n; p != nil; p = p.Parent {
-		if p.Tag == "input" {
+		if p.Tag == "input" || p.Tag == "search" {
 			return p
 		}
 	}
@@ -205,6 +206,14 @@ func (a *app) handleInputKey(in *GuiNode, key string, ev Event) bool {
 		caret = 0
 	case "End":
 		caret = len(val)
+	case "Enter":
+		// 单行 input 不消费 Enter (留给上层); search 用它"整段提交" ——
+		// 逐键 onInput 之外再给一个明确的搜索提交点 (与 DOM 搜索框一致)。
+		if in.Tag == "search" {
+			a.dispatchSearch(in)
+			return true
+		}
+		return false
 	default:
 		r, ok := printableRune(key)
 		if !ok {
@@ -253,11 +262,12 @@ func (n *GuiNode) isFocused() bool { return n.focused }
 func (a *app) setCaretFromX(in *GuiNode, x int) {
 	runes := []rune(in.inputValue())
 	size := in.FontSize()
+	textX := in.Box.X + fieldPadX + searchLeading(in)
 	caret := len(runes)
 	cur := 0
 	for i, r := range runes {
 		w, _ := MeasureText(string(r), size)
-		if x < in.Box.X+fieldPadX+cur+w/2 {
+		if x < textX+cur+w/2 {
 			caret = i
 			break
 		}
@@ -273,6 +283,15 @@ func (a *app) setCaretFromX(in *GuiNode, x int) {
 // paintInput 绘制单行输入框: 字段底 + 边框 (获焦转强调色) + 文本/placeholder +
 // 1px 竖线光标 (仅在获焦且相位可见时画)。
 func paintInput(img *image.RGBA, n *GuiNode, disabled bool) {
+	paintField(img, n, disabled, 0)
+}
+
+// paintField 是 input / search 共用的字段绘制核心: 字段底 + 边框 (获焦转
+// 强调色) + 文本/placeholder + 1px 竖线光标 (仅在获焦且相位可见时画)。
+// leading 是"文字区左移量": input 恒为 0, search 让位给左侧放大镜
+// (见 gfx/search.go 的 searchLeading) —— 光标定位 (setCaretFromX) 与
+// 这里必须用同一个口径, 不然点击落点和光标画的位置对不上。
+func paintField(img *image.RGBA, n *GuiNode, disabled bool, leading int) {
 	b := n.Box
 	if b.W <= 0 || b.H <= 0 {
 		return
@@ -287,14 +306,15 @@ func paintInput(img *image.RGBA, n *GuiNode, disabled bool) {
 
 	size := n.FontSize()
 	text, textColor := n.inputText()
-	maxW := b.W - 2*fieldPadX
+	maxW := b.W - 2*fieldPadX - leading
 	if maxW < 0 {
 		maxW = 0
 	}
+	textX := b.X + fieldPadX + leading
 
-	// 光标 x = 字段左留白 + "光标之前那截文本"的宽度。placeholder 不参与
-	// 计算: 值是空的时候光标就在最左边, 不能因为占了位的灰字而右移。
-	caretX := b.X + fieldPadX
+	// 光标 x = 字段左留白 + 让位 + "光标之前那截文本"的宽度。placeholder
+	// 不参与计算: 值是空的时候光标就在最左边, 不能因为占了位的灰字而右移。
+	caretX := textX
 	if n.hasInputValue() {
 		runes := []rune(text)
 		caret := n.caretIndex(runes)
@@ -304,7 +324,7 @@ func paintInput(img *image.RGBA, n *GuiNode, disabled bool) {
 
 	if text != "" {
 		_, th := MeasureText(text, size)
-		DrawText(img, img.Bounds(), text, b.X+fieldPadX, b.Y+(b.H-th)/2, size,
+		DrawText(img, img.Bounds(), text, textX, b.Y+(b.H-th)/2, size,
 			tint(textColor, disabled), maxW)
 	}
 

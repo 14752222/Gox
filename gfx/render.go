@@ -594,7 +594,7 @@ func (a *app) handleClick(x, y int) {
 	// 点击即设为键盘焦点 (键事件沿祖先链寻找 onKeyDown)
 	a.setFocus(target)
 	// 输入框另加一步: 光标落到点击位置 (脚本自己挂 onClick 时同样适用)
-	if in := inputInChain(target); in != nil && in.Tag == "input" {
+	if in := inputInChain(target); in != nil && (in.Tag == "input" || in.Tag == "search") {
 		a.setCaretFromX(in, x)
 	}
 	if ta := textareaInChain(target); ta != nil && ta.Tag == "textarea" {
