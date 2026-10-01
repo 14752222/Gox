@@ -124,7 +124,7 @@ npx goxjs app.js         # 或不安装，直接运行
 ```
 
 ```
-Gox REPL (ES6 subset, no var)
+Gox REPL (ES6 subset)
 Type :exit to quit, :help for help
 
 > let x = 10

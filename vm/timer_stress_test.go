@@ -111,30 +111,36 @@ func TestHTTPConcurrencyBurst(t *testing.T) {
 	defer srv.Close()
 
 	v, err := EvalVM(`
-		let ok = 0, fail = 0, done = false;
+		let ok = 0, fail = 0;
 		for (let i = 0; i < 200; i++) {
 			fetch(` + "`" + srv.URL + `/n` + "`" + ` + i).then(function (r) {
 				if (r.status === 200) { ok = ok + 1; } else { fail = fail + 1; }
 			}).catch(function () { fail = fail + 1; });
 		}
-		setTimeout(function () { done = (ok + fail === 200); }, 20);
 	`)
 	if err != nil {
 		t.Fatalf("EvalVM: %v", err)
 	}
-	deadline := time.Now().Add(30 * time.Second)
+	// 判定靠**每一轮重新读 ok+fail**，而不是让脚本里的一次性定时器去采样：
+	// CI runner 的 I/O 与调度比开发机慢得多，20ms 采样点常常落在"fetch 还没回来"
+	// 的时刻，一旦采到 false 就再没有任何东西把它翻回来 —— 只能干等到超时
+	// （这正是 2026-09-30 三平台 ci 同时红的根因）。轮询式判定与机器快慢解耦。
+	deadline := time.Now().Add(60 * time.Second)
 	for {
 		if err := v.RunTimers(); err != nil {
 			t.Fatalf("RunTimers: %v", err)
 		}
-		if val, ok := v.Globals().Get("done"); ok && val.Inspect() == "true" {
-			if fv, _ := v.Globals().Get("fail"); fv.Inspect() != "0" {
+		okv, _ := v.Globals().Get("ok")
+		fv, _ := v.Globals().Get("fail")
+		if okv.Inspect() == "200" {
+			if fv.Inspect() != "0" {
 				t.Fatalf("出现失败请求 fail=%s", fv.Inspect())
 			}
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("30s 内 200 个 fetch 未全部完成")
+			t.Fatalf("60s 内 200 个 fetch 未全部完成 (ok=%s fail=%s)",
+				okv.Inspect(), fv.Inspect())
 		}
 	}
 }
