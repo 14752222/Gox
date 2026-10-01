@@ -3,7 +3,7 @@
 //                  再用两种客户端风格把服务自己打一遍（全程走本机回环）。
 //
 // 运行:
-//   go run . testdata/http_demo.js      (仓库内)
+//   ./gox testdata/http_demo.js      (仓库内)
 //   gox testdata/http_demo.js           (npm 安装的命令行，等价)
 //
 // 覆盖范围:

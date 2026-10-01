@@ -16,7 +16,7 @@ import (
 // 验证"五种形态都能编译、能挂载、几何与像素都对"。
 //
 // 与其他演示脚本不同, image 的 `src` 是**文件路径**, 而演示脚本按"从仓库根目录
-// 运行"编写 (README 的惯例是 `go run . testdata/xxx.js`)。测试进程的 cwd 是
+// 运行"编写 (README 的惯例是 `./gox testdata/xxx.js`)。测试进程的 cwd 是
 // `gfx/`, 所以这里临时切到仓库根再跑。gfx 包内没有并行用例 (无 `t.Parallel`),
 // 切换 cwd 是安全的; 断言全部在恢复 cwd 之前完成。
 func TestImageDemoScript(t *testing.T) {

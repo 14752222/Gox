@@ -1,5 +1,5 @@
 // ===== TabBar 组件库纯逻辑验证 (无窗口, 不开 GUI) =====
-// 运行: go run . testdata/tabbar_logic_test.js
+// 运行: ./gox testdata/tabbar_logic_test.js
 // 覆盖: badge 格式化 / DPI 换算 / 断点分派 / createTabs 工厂 / 图标注册表。
 // GUI 形态 (布局、transition、keep-alive) 需要窗口环境, 由 tabbar_demo.js 人工验收。
 import { formatBadge } from "./ui/tabbar.js";

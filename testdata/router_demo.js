@@ -1,5 +1,5 @@
 // gx/router 演示: 路由注册与匹配 / 参数路由 / 懒加载 / 三级守卫 / 历史栈。
-// 运行: go run . testdata/router_demo.js
+// 运行: ./gox testdata/router_demo.js
 //
 // 现象:
 //   1. 顶部实时显示当前路由; 中间一排 RouterLink 可点击切页。

@@ -1,5 +1,5 @@
 // P3-6 演示: 多窗口。
-// 运行: go run . testdata/multiwindow_demo.js
+// 运行: ./gox testdata/multiwindow_demo.js
 // 现象:
 //   1. 同时打开两个独立窗口 (Counter A / Counter B), 各自有自己的计数按钮与文本。
 //      点 A 的按钮只改 A 的数字, B 完全不受影响 (元素树、焦点、交互态都是**每窗口一份**)。

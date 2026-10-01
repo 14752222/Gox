@@ -1,5 +1,5 @@
 // 路由 A 模式演示: 用户态 signal 切页 (2026-09-19 拍板落地)。
-// 运行: go run . testdata/routing_demo.js
+// 运行: ./gox testdata/routing_demo.js
 // 现象:
 //   1. 底部两个导航按钮切 "home" / "editor" 两页; 顶部文本显示当前路由。
 //   2. editor 页输入文字后按 "home": 被**拦截**, 出现应用内确认条

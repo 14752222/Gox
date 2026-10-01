@@ -1,5 +1,5 @@
 // P2-8 演示: <slider> 滑块。
-// 运行: go run . testdata/slider_demo.js
+// 运行: ./gox testdata/slider_demo.js
 // 现象:
 //   1. volume 滑块 (0..100, step 5) —— 拖动或**单击轨道任意位置**都会改值,
 //      上方的数字与下面的红条跟随变化;

@@ -1,5 +1,5 @@
 // P3-3 演示: 剪贴板读写 —— 同步 API, 不走 Promise。
-// 运行: go run . testdata/clipboard_demo.js
+// 运行: ./gox testdata/clipboard_demo.js
 // 现象: 在多行框里打字, 点 "Copy" 把内容放进系统剪贴板 (按钮下方显示成功与否),
 //   点 "Paste" 把剪贴板内容读回来替换编辑框内容; 也可以先从别的应用复制一段
 //   文字, 直接点 Paste 粘进来。

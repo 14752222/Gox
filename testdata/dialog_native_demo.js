@@ -1,5 +1,5 @@
 // P3-4 演示: 原生系统对话框 (alert / confirm / openFile)。
-// 运行: go run . testdata/dialog_native_demo.js
+// 运行: ./gox testdata/dialog_native_demo.js
 //
 // 现象:
 //   - 点 "Alert" → 弹系统消息框 (只有一个"确定"), 关掉后日志追加一行;

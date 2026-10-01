@@ -1,5 +1,5 @@
 // P0-1 演示: checkbox / radio / switch 三个受控组件。
-// 运行: go run . testdata/form_demo.js
+// 运行: ./gox testdata/form_demo.js
 // 现象: 勾选框切换、单选互斥、开关切换, 右侧文字即时跟随。
 //   - 三个组件都是"纯受控": 控件自身不存状态, checked 完全由 signal 驱动;
 //   - radio 的互斥不在内核里, 而是靠共享一个 signal + 比较值实现 (见 setSize)。

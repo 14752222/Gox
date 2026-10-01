@@ -1,5 +1,5 @@
 // P3-5 演示: 菜单栏 / 右键菜单 / 快捷键。
-// 运行: go run . testdata/menu_demo.js
+// 运行: ./gox testdata/menu_demo.js
 // 现象:
 //   1. 窗口顶部一条菜单栏 (File / Edit / View, 右侧一个 status 文本)。
 //      点标题展开下拉 (弹层溢出 26px 的菜单栏显示, 不被裁剪也不被内容盖住);

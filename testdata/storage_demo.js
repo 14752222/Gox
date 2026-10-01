@@ -1,5 +1,5 @@
 // 设备能力 API 方案 A 演示: gx/storage 应用级 kv 持久化 (2026-09-19 拍板落地)。
-// 运行: go run . testdata/storage_demo.js
+// 运行: ./gox testdata/storage_demo.js
 // 现象:
 //   1. 点击加一/切换主题, 关掉窗口再跑一次 —— 计数和主题都还在:
 //      数据落在 %APPDATA%/Gox/storage-demo/storage.json (拍板的应用目录约定),

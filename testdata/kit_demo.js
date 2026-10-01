@@ -1,5 +1,5 @@
 // 样式体系方案 F 演示: 用户态设计套件 (2026-09-19 拍板落地)。
-// 运行: go run . testdata/kit_demo.js
+// 运行: ./gox testdata/kit_demo.js
 // 现象:
 //   1. 同一组组件工厂 (Btn/Card/Field) 按 variant / size 展开成不同 props:
 //      primary/ghost/normal × sm/md —— 变体就是工厂函数参数。

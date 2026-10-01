@@ -1,6 +1,6 @@
 // gx/device · gx/geo · gx/media 演示: 统一应用能力 API。
 //
-// 运行: go run . testdata/native_demo.js
+// 运行: ./gox testdata/native_demo.js
 //
 // 现象: 一个设备信息面板 —— 顶部显示平台/系统/机型/设备 ID (device.info),
 //   电池卡片显示电量与充电状态 (battery, 响应式: 宿主 ReportBattery 时自动刷新),

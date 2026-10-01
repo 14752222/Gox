@@ -1,5 +1,5 @@
 // P3-2 演示: 过渡动画 (transition prop + animate 命令式 API)。
-// 运行: go run . testdata/transition_demo.js
+// 运行: ./gox testdata/transition_demo.js
 // 现象:
 //   1. **宽度过渡** —— 按钮切换时, 蓝条宽度在 400ms 内平滑伸展/收缩,
 //      而不是"一帧跳到位";

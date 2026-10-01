@@ -1,5 +1,5 @@
 // P0-2 演示: progress / separator / spacer。
-// 运行: go run . testdata/progress_demo.js
+// 运行: ./gox testdata/progress_demo.js
 // 现象: 进度条每 400ms 前进 10%, 满格后归零; 分隔线分隔上下区域;
 //       spacer 吃掉整行富余空间, 把两个色块推到左右两端。
 import { createSignal } from "gx/solid";

@@ -1,5 +1,5 @@
 // devtools 方案 A 演示: gx/dev 快照 + 脚本自绘面板 (2026-09-19 拍板落地)。
-// 运行: go run . testdata/dev_panel_demo.js
+// 运行: ./gox testdata/dev_panel_demo.js
 // 现象:
 //   1. 面板每秒刷新一次: 帧计数 (整帧/局部/整帧率)、图片与字形缓存命中、
 //      树规模 (窗口/节点/深度)、存活 effect 数。

@@ -1,5 +1,5 @@
 // 示例应用 1: TODO 任务清单 (T15 交付之一)。
-// 运行: go run . testdata/apps/todo.js
+// 运行: ./gox testdata/apps/todo.js
 //
 // 展示的能力 (刻意每个能力只代表性地用一次, 其余保持朴素):
 //   1. gx/solid 细粒度响应式: createSignal + 函数子节点;

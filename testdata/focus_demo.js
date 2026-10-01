@@ -1,5 +1,5 @@
 // P1-3 演示: 焦点系统 (onFocus / onBlur + 虚线焦点框)。
-// 运行: go run . testdata/focus_demo.js
+// 运行: ./gox testdata/focus_demo.js
 // 现象: 点击任一块 → 它获得蓝色虚线焦点框, 上一块失去焦点; 底部记录事件顺序。
 //   - 焦点框画在焦点节点自身盒内 (1px 内缩), 所以局部重绘能干净擦掉旧框;
 //   - 根节点接焦时没有焦点框; 根节点 props.hideFocusRing 可整体关闭。

@@ -1,5 +1,5 @@
 // P1 集成演示: JSX 语法降级 + gx/solid 响应式。
-// 运行: go run . testdata/jsx_demo.js
+// 运行: ./gox testdata/jsx_demo.js
 import { createSignal, createEffect } from "gx/solid";
 
 // debug 版 h: 构建纯数据节点树 (P2 起可换成真正的渲染元素树)

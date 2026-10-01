@@ -1,5 +1,5 @@
 // 布局弹性词汇演示: 百分比 / min-max / flexShrink (2026-09-19 落地)。
-// 运行: go run . testdata/elastic_layout_demo.js
+// 运行: ./gox testdata/elastic_layout_demo.js
 // 现象 (拖动窗口边缘, 全程零 JS 参与):
 //   1. 顶部三张卡片 width="30%": 连续跟随窗口宽度 (与 resize_demo 的断点
 //      切换互补 —— 断点是离散适配, 百分比是连续适配)。

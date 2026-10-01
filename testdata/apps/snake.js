@@ -1,5 +1,5 @@
 // 示例应用 3: 贪吃蛇 (T15 交付之三)。
-// 运行: go run . testdata/apps/snake.js
+// 运行: ./gox testdata/apps/snake.js
 //
 // 展示的能力:
 //   1. canvas 逐帧自绘: 网格 / 蛇身 / 食物全部 fillRect + fillCircle;

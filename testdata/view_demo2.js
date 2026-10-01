@@ -1,5 +1,5 @@
 // gx/view 演示 (改写版): For / Show / Switch / Match
-// 运行: go run . testdata/view_demo2.js
+// 运行: ./gox testdata/view_demo2.js
 //
 // 与原版 (testdata/view_demo.js) 的差别 —— 每一条都是为了少一次"我猜为什么它不更新":
 //

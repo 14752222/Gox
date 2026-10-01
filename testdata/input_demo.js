@@ -1,5 +1,5 @@
 // P2-1 演示: 单行文本输入 —— 输入 / 退格 / 删除 / 光标移动。
-// 运行: go run . testdata/input_demo.js
+// 运行: ./gox testdata/input_demo.js
 // 现象: 点输入框获焦 (边框转蓝、出现闪烁的 1px 竖线光标), 直接敲键盘即可输入,
 //   下面的镜像文本实时跟着变 —— value 是受控的, 显示内容永远来自 signal。
 //   - Backspace / Delete 删字符, ←/→ 移动光标, Home / End 跳到首尾;

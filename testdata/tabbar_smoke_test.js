@@ -1,5 +1,5 @@
 // ===== TabBar 组件库 headless 挂载冒烟测试 =====
-// 运行: go run . testdata/tabbar_smoke_test.js
+// 运行: ./gox testdata/tabbar_smoke_test.js
 // 验证: AppShell 真实挂载 (桌面 SideNav 形态) → resize 跨断点切到 TabBar 形态
 // → 再切回来 → 全部阶段无脚本错误 → 关窗退出。纯逻辑断言在 tabbar_logic_test.js。
 import { createSignal } from "gx/solid";

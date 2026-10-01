@@ -22,7 +22,7 @@ import (
 // 与共享的 runDemoSteps 只差**一处**: 它额外把模块基准路径设成 testdata。
 // 演示里的懒加载写的是 `import("./router_page_detail.js")` —— 相对脚本自身
 // 所在目录, 而 EvalVM 不带基准路径 (那是 EvalFile 的行为)。等价于用
-// EvalFile 跑一遍, 于是"用户在仓库根目录 go run . testdata/router_demo.js
+// EvalFile 跑一遍, 于是"用户在仓库根目录 ./gox testdata/router_demo.js
 // 看到的效果"与用例里跑的是同一条解析路径。
 //
 // 之所以不放进 TestExampleScriptsMount 的清单: 那个用例的 cwd 是 gfx/,

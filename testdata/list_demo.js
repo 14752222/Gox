@@ -1,5 +1,5 @@
 // P1-2 演示: 列表渲染 —— 按钮向数组 signal 增删元素, 列表即时增减。
-// 运行: go run . testdata/list_demo.js
+// 运行: ./gox testdata/list_demo.js
 // 现象: Add 追加一行, Remove 删掉最后一行, 计数同步刷新。
 //   - 函数子节点返回数组 → 逐元素挂载; 数组挂在 column 里就竖排, 挂在 row
 //     里就横排 (slot 的排布方向跟随父容器), 间距沿用父容器的 gap;

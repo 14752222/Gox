@@ -1,5 +1,5 @@
 // ===== TabBar / SideNav / AppShell 综合演示 (PC / 移动自适应导航壳) =====
-// 运行: go run . testdata/tabbar_demo.js
+// 运行: ./gox testdata/tabbar_demo.js
 //
 // 现象:
 //   1. 桌面 (窗口宽 ≥ 720): 左侧 SideNav —— 竖排项、选中项左指示条、

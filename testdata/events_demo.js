@@ -1,5 +1,5 @@
 // P1-1 演示: 鼠标移动 / 滚轮 / 右键 / 键盘抬起 / 修饰键。
-// 运行: go run . testdata/events_demo.js
+// 运行: ./gox testdata/events_demo.js
 // 现象: 在浅蓝框内移动鼠标 → 坐标实时刷新; 滚轮 / 右键 / 按键各自记录一行。
 //   - 键事件路由给"当前焦点节点": 先点一下浅蓝框, 焦点才会落到它身上;
 //   - onWheel 的 deltaY 沿用 DOM 约定 (向下滚为正), 与 Go 事件层的

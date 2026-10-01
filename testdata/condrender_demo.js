@@ -1,7 +1,7 @@
 // P1-2 演示: 条件渲染 —— 三个 tab 用"函数子节点返回元素"切换内容。
 // (S4 起真正的选项卡组件见 tabs_demo.js —— 这里保留的是"没有 tabs 组件时
 // 用条件渲染自己拼"的教学版, 也是 P1-2 完整重建语义的验收演示。)
-// 运行: go run . testdata/condrender_demo.js
+// 运行: ./gox testdata/condrender_demo.js
 // 现象: 点击 Tab A/B/C, 下方内容整块替换 (标题 + 色块 + 说明文字都跟着换)。
 //   - 函数子节点的求值结果可以是元素 / 数组 / 标量 / null;
 //   - v1 不做 diff/key: 每次切换都整组重建子树 (旧子树的 effect 会被注销);

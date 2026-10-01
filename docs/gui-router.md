@@ -86,7 +86,7 @@ render(
 
 跑起来就能用的东西：`Alt+←` / `Alt+→` 后退/前进、`router.push` 的 Promise 结果、
 `*` 兜底、`:id` 参数、`keepAlive` 的列表页回来时状态原样。
-（`go run . testdata/router_demo.js` 是这个例子的完整版。）
+（`./gox testdata/router_demo.js` 是这个例子的完整版。）
 
 ---
 
@@ -500,7 +500,7 @@ screenOf(win).foldable; // ② 这块屏是不是折叠屏? 上报姿态时不�
 > 三个演示脚本**不在** `TestExampleScriptsMount` 的清单里：那个用例的 cwd 是 `gfx/`，
 > 而 `router_demo.js` 的懒加载写的是 `import("./router_page_detail.js")`（相对脚本自身
 > 目录）。与 `image_demo.js` / `storage_demo.js` 同一情形，由上面的专职用例覆盖
-> （它们额外把模块基准路径设成 `testdata/`，等价于用户从仓库根目录 `go run . testdata/router_demo.js`）。
+> （它们额外把模块基准路径设成 `testdata/`，等价于用户从仓库根目录 `./gox testdata/router_demo.js`）。
 
 ---
 

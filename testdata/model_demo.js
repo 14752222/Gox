@@ -1,5 +1,5 @@
 // gx/model 演示: 受控组件的双向绑定 (model 指令)
-// 运行: go run . testdata/model_demo.js
+// 运行: ./gox testdata/model_demo.js
 //
 // 一条指令替掉手写的两个 prop:
 //

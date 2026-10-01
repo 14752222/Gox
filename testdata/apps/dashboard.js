@@ -1,5 +1,5 @@
 // 示例应用 2: 服务仪表盘 (T15 交付之二)。
-// 运行: go run . testdata/apps/dashboard.js
+// 运行: ./gox testdata/apps/dashboard.js
 //
 // 展示的能力:
 //   1. grid 布局: 等宽卡片栅格 (columns={3});

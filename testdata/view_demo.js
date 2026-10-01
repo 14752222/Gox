@@ -1,5 +1,5 @@
 // gx/view 演示: 元素级指令 each / show + Switch / Match。
-// 运行: go run . testdata/view_demo.js
+// 运行: ./gox testdata/view_demo.js
 //
 // 2026-09-20: 列表与条件从 `<For>` / `<Show>` 组件改成了**元素级指令**
 // (each / show, 写在元素上), 语义一字未改 —— 本演示就是同一份逻辑的指令写法:

@@ -1,5 +1,5 @@
 // P3-1 演示: <canvas> 自绘 + 响应式重绘。
-// 运行: go run . testdata/canvas_demo.js
+// 运行: ./gox testdata/canvas_demo.js
 // 现象:
 //   1. 柱状图画布 —— 每 500ms 高亮的柱子右移一格 (signal 驱动, 靠 effect
 //      收集 onDraw 里读到的依赖, 变化后自动重绘);

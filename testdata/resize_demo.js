@@ -1,5 +1,5 @@
 // 屏幕适配 A 演示: onResize + useWindowSize 模式 (2026-09-19 拍板落地)。
-// 运行: go run . testdata/resize_demo.js
+// 运行: ./gox testdata/resize_demo.js
 // 现象:
 //   1. 拖动窗口边缘: 顶部文本实时显示当前窗口尺寸 (width×height, 物理像素)。
 //   2. 宽度 < 480 时切到"窄栏"布局: 侧栏消失、说明文字换行、字号变小;

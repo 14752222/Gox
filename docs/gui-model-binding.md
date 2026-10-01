@@ -203,7 +203,7 @@ DX 差的根因 —— 不是不会写，是写错了没人告诉你。
 </Switch>
 ```
 
-完整可跑版本：`testdata/model_demo.js`（`go run . testdata/model_demo.js`），
+完整可跑版本：`testdata/model_demo.js`（`./gox testdata/model_demo.js`），
 其中第 ③ 行 `state` 是全部绑定的投影 —— 每个控件点一下、敲一下都能在那一行看到。
 
 ## 8. 边界与已知限制

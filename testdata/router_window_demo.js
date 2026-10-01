@@ -1,5 +1,5 @@
 // gx/router 多窗口 / 多屏 / 折叠屏演示。
-// 运行: go run . testdata/router_window_demo.js
+// 运行: ./gox testdata/router_window_demo.js
 //
 // 现象:
 //   1. 两个窗口共用一张路由表, 但**各有各的导航栈** (在 A 里切页, B 不动)。

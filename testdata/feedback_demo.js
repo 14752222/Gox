@@ -1,5 +1,5 @@
 // S4/T09 演示: 反馈与数据类组件 (一屏看完 15 个)。
-// 运行: go run . testdata/feedback_demo.js
+// 运行: ./gox testdata/feedback_demo.js
 // 现象:
 //   - alert (info/success/warn/error, 可关闭) / tag / avatar / empty
 //   - badge (带子节点): 角标贴在宿主右上角; value=0 自动隐藏; dot 模式

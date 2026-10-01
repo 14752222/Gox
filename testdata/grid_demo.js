@@ -1,5 +1,5 @@
 // 网格布局演示: <grid columns={n}> (§四 布局缺口, 2026-09-19)。
-// 运行: go run . testdata/grid_demo.js
+// 运行: ./gox testdata/grid_demo.js
 // 现象:
 //   1. 六张卡片排成 3 列等宽网格, 行高随该行最高卡片; 卡片是容器, 自动
 //      拉伸到列宽与行高 —— 等高卡片栅格零 JS。

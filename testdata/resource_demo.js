@@ -1,5 +1,5 @@
 // 状态管理方案 B 演示: createResource (2026-09-19 拍板落地)。
-// 运行: go run . testdata/resource_demo.js
+// 运行: ./gox testdata/resource_demo.js
 // 现象:
 //   1. 打开时显示 "loading..." (state = pending), 800ms 后变成列表
 //      (state = ready) —— 三件套 (loading/error/data) 全在 res.state()/res.error()/data()。

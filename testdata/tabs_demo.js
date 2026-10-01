@@ -1,5 +1,5 @@
 // S4 rPrfGD 演示: 选项卡 —— 标签条点击切页 / keep-alive / 受控绑定。
-// 运行: go run . testdata/tabs_demo.js
+// 运行: ./gox testdata/tabs_demo.js
 // 现象: 上方受控 tabs 的激活页由 signal 驱动, 点标签条 → onChange 写回
 //   signal → 镜像文本跟着变; 页内容是 keep-alive 的 —— 在"文件"页输入框
 //   里打几个字, 切到别的页再切回来, 字还在。下方 tabs 不带 value, 是

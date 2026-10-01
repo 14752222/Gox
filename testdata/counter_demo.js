@@ -1,5 +1,5 @@
 // P3 集成演示: 文字渲染 + flex 布局 + 响应式计数器。
-// 运行: go run . testdata/counter_demo.js
+// 运行: ./gox testdata/counter_demo.js
 // 打包: cd packager && go run . ..\testdata\counter_demo.js --gui --name counter -o counter.exe
 import { createSignal } from "gx/solid";
 import { h, render } from "gx/gfx";

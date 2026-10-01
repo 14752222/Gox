@@ -1,5 +1,5 @@
 // P2 集成演示: 自研软件渲染器 + signals 响应式。
-// 运行: go run . testdata/gui_demo.js
+// 运行: ./gox testdata/gui_demo.js
 // 现象: 弹出 400x300 窗口, 点击绿色块, 红色条变宽 (count*20 像素)。
 import { createSignal } from "gx/solid";
 import { h, render } from "gx/gfx";

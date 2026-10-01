@@ -1,5 +1,5 @@
 // P2-4 演示: 模态对话框 (dialog) 与非模态提示 (toast)。
-// 运行: go run . testdata/dialog_demo.js
+// 运行: ./gox testdata/dialog_demo.js
 // 现象: 点 "Open dialog" 弹出居中卡片, 背后整屏压暗; 点遮罩或按 Esc 关闭,
 //   点卡片自身不会误关; 遮罩存在时下面的按钮点不动 (遮罩吃掉点击)。
 //   点 "Show toast" 在右上角弹出一条绿色提示, 3 秒后自动消失 (JS 侧定时器

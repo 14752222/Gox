@@ -1,5 +1,5 @@
 // P0-3 演示: button 的缺省外观 / 自定义配色 / disabled。
-// 运行: go run . testdata/button_demo.js
+// 运行: ./gox testdata/button_demo.js
 // 现象: 前两个按钮点击计数 +1; 禁用按钮整体变灰且点击无任何效果
 //       (既不改计数, 也不抢键盘焦点)。
 import { h, render, createSignal } from "gox";

@@ -1,5 +1,5 @@
 // P2-6 演示: text 的自动换行与省略号。
-// 运行: go run . testdata/multiline_demo.js
+// 运行: ./gox testdata/multiline_demo.js
 // 现象: 同一段中英混排文本三态对照 ——
 //   1. `wrap`           按 260px 宽度自动折行, 高度跟着行数长;
 //   2. `wrap + ellipsis` 只留 2 行, 末行截断并补 "...";

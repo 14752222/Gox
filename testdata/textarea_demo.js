@@ -1,5 +1,5 @@
 // P2-6 演示: 多行文本编辑 <textarea>。
-// 运行: go run . testdata/textarea_demo.js
+// 运行: ./gox testdata/textarea_demo.js
 // 现象: 点击编辑框获焦 (边框转蓝 + 闪烁竖线光标) ——
 //   - 直接敲字母/汉字即插入 (BMP 直输, 中文 IME 见 P2-7);
 //   - Enter **插入换行**(多行框里 Enter 是内容, 不像单行 input 那样放行给上层),
