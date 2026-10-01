@@ -139,6 +139,18 @@ func layoutNode(n *GuiNode) {
 	case "list-item":
 		layoutListItem(n)
 	case "scroll":
+		// 滚动容器**硬编码忽略** avoidReserved, 并留一条警告。
+		//
+		// 这是需求文档里"陷阱 3"在内核侧的防线: scroll 的内容是连续滚动的,
+		// 若它跟着折痕让位, 滚到折痕附近时内容会整篇跳一下 —— 而"跳"这件事
+		// 肉眼极易放过 (用户只会觉得"滚动条有点怪")。正确的做法是内容照常
+		// 连续排布, 需要避让的是**外层**的非滚动容器 (工具栏等)。
+		// 静默忽略会让写属性的人以为生效了, 所以必须出声。
+		if avoidReservedKinds(n) != nil {
+			viewWarnOnce("avoidReserved:scroll",
+				"<scroll> 上的 avoidReserved 已被忽略: 滚动内容跟随折痕会让整篇跳动, "+
+					"请把避让写在**外层的非滚动容器**上 (工具栏/按钮组的 row/column)")
+		}
 		layoutScroll(n)
 	case "textarea":
 		layoutTextarea(n)
@@ -798,9 +810,243 @@ func layoutInlineRow(n *GuiNode, padX, padY int) {
 	placeAbsoluteIn(n, area)
 }
 
+// ===== 折叠保留区避让 (avoidReserved, 2026-10-01) =====
+//
+// 折叠屏半折时, 折痕那一条带**不可用**: 内容画上去会被铰链物理遮住/对折到背面。
+// 但它是"设备几何", 不是布局参数 —— 所以框架不能自己把折痕加到 padding 上:
+// 全屏视频/背景图**恰恰应该**延伸到折痕下面。于是设计成显式 opt-in 的节点属性:
+//
+//	<row avoidReserved="fold" gap={8}>   ← 工具栏/按钮组: 躲开折痕
+//	<scroll>                              ← 连续滚动内容: 不躲 (见下方防线)
+//
+// ## 为什么是"挖掉"而不是"平移整个容器"
+//
+// 需求文档里最刺眼的一条是"长 feed 姿态切换前后不能跳"。原因是折行文本的高度
+// 要**两遍**算 (先定宽 → 再折行算高, 见 layoutStack 里 wrapsText 那段): 如果
+// 在尺寸都算完之后再整体平移, 那些已经按"满宽"折好行的文本块会与新的可用宽
+// 打架 —— 表现为切姿态时文字重排 + 内容跳动。
+//
+// 所以避让必须**先于** intrinsicSize/sizeInArea 发生: 先把 area 缩小 (挖掉不
+// 可用带), 后续的 flexGrow/flexShrink/百分比/换行全部在正确的可用区上跑。
+// 这正是本组函数只在 layoutStack/layoutWrapStack **开头**被调用的原因。
+
+// reservedBand 是"容器内、沿某个轴的一段不可用区间"。
+//
+// 用一维区间而不是矩形: v1 的避让只做 column/row 的主轴位移, 折痕在主轴方向的
+// 投影就是一段区间 —— 交叉轴方向的覆盖是整条 (折痕贯穿整屏), 不需要额外表达。
+type reservedBand struct {
+	vertical bool // true: 沿 X 轴的一段 (竖直折痕/左右折); false: 沿 Y 轴
+	lo, hi   int  // 容器内坐标的 [lo, hi) 区间
+}
+
+// avoidReservedKinds 把属性值翻成"要避哪些 kind"。
+//
+// 取值: "fold" / "occlusion" / "all"; 其它 (含未设) → nil = 不避。
+// 刻意**不做别名与模糊匹配**: 这个属性的误用代价是"莫名多出一段空白", 而
+// 用户唯一的线索就是自己写下的那个词 —— 收窄词表能让拼错时直接不生效,
+// 比"猜对了但猜错方向"更好排查。
+func avoidReservedKinds(n *GuiNode) []string {
+	v, ok := n.PropStr("avoidReserved")
+	if !ok {
+		return nil
+	}
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "fold", RegionDivision:
+		return []string{RegionDivision}
+	case "occlusion":
+		return []string{RegionOcclusion}
+	case "all":
+		return []string{RegionDivision, RegionOcclusion}
+	}
+	return nil
+}
+
+// reservedBands 取节点所在窗口的显示器保留区, 换算成容器内主轴区间。
+//
+// ## 坐标换算
+//
+// Display.Regions 是**显示器坐标 (设备像素)**; 布局用的是**窗口客户区坐标**。
+// 全屏时二者只差一个"窗口在屏上的原点" (display.X/Y)。v1 的移动端恒全屏
+// (d.X == d.Y == 0), 所以这段换算在真机上是恒等变换; 桌面多窗口/自由窗口下
+// 才真正起作用 —— 那里窗口可能只占屏幕一角, 折痕甚至完全在窗口之外 (此时
+// 换算出来的区间落在 area 之外, 被 avoidShift 自然忽略)。
+//
+// 已知边界 (v1): 不做容器自身的祖先链偏移。也就是说 band 记录的是"相对整块
+// 窗口客户区"的区间, 而调用方传进来的是**容器**的 area —— 二者只有在容器就是
+// 窗口根 (或根的直接子节点) 时才等价。工具栏/按钮组这类目标场景正是如此。
+// 嵌套更深的容器上要避让, 需要把 area 的绝对原点一起传进来, 留待有真实需求时做。
+func reservedBands(n *GuiNode, area Rect) []reservedBand {
+	kinds := avoidReservedKinds(n)
+	if len(kinds) == 0 {
+		return nil
+	}
+	a := appOfNode(n)
+	// 窗口所在显示器。appOfNode 给的是 app, 它只持有 Surface —— 用
+	// displayOfSurface 反查显示器 ID 再取表 (与 gx/screen 的解析口径一致)。
+	//
+	// appOfNode 为 nil 时 (节点尚未挂到 app 的根上) 退回"活跃窗口所在屏":
+	// 这条路径主要出现在纯布局单测里 (直接 Layout(root,w,h) 而不建窗口),
+	// 生产上节点的布局总发生在挂载之后。
+	var d Display
+	var ok bool
+	if a != nil {
+		d, ok = findDisplay(displayOfSurface(a.surface))
+	} else {
+		d, ok = displayOfWorkWindow(nil)
+	}
+	if !ok {
+		return nil
+	}
+	var out []reservedBand
+	for _, r := range d.Regions {
+		if !r.Active {
+			continue // 平展时的零宽 division 就是走这条被跳过
+		}
+		if !kindIn(r.Kind, kinds) {
+			continue
+		}
+		// 显示器坐标 → 窗口客户区坐标 (v1 全屏时为恒等)。
+		x := r.X - d.X
+		y := r.Y - d.Y
+		switch {
+		case r.W > 0 && r.H > 0 && r.W <= r.H:
+			// 竖条 (左右折的折痕 / 竖排的遮挡): 沿 X 轴避开。
+			// 判据用 W<=H 而不是 hinge.Orientation —— regions 可能没有 hinge
+			// (宿主只报区域时), 而"窄高"本身就是竖条的几何定义。
+			out = append(out, reservedBand{vertical: true, lo: x, hi: x + r.W})
+		case r.W > 0 && r.H > 0:
+			out = append(out, reservedBand{vertical: false, lo: y, hi: y + r.H})
+		}
+	}
+	return out
+}
+
+// kindIn 判断 kind 是否在允许集合里 (空 kind 不匹配任何集合 —— 与
+// normalizedRegionKind 把未知归一成 "" 的口径一致)。
+func kindIn(kind string, allowed []string) bool {
+	if kind == "" {
+		return false
+	}
+	for _, k := range allowed {
+		if kind == k {
+			return true
+		}
+	}
+	return false
+}
+
+// avoidShift 求"沿主轴把节点摆在哪才不压到不可用带"的最小位移 (O(bands))。
+//
+// 算法: 逐个 band, 若 [lo, hi) 与当前区间 [pos, pos+size) 相交, 就把 pos 推到
+// band.hi (往后让)。反复直到全部不相交 —— 因为推到 hi 之后可能与更后面的
+// band 又相交。带数量是个位数, 线性扫描足够; **不做多方案寻优** (比如"往前
+// 让可能位移更小"): 每帧都要重跑, 且"往后让"是可预测的, 而寻优会让
+// 姿态微调时出现"这次往前、那次往后"的抖动。
+//
+// 位移量在调用方追加到 pos 上, **不重新分配** flexGrow/flexShrink/justify 的
+// 结果 —— 那些已经按"挖掉之后的可用区"算过了 (见文件头注释)。
+func avoidShift(pos, size int, bands []reservedBand, vertical bool) int {
+	if len(bands) == 0 || size <= 0 {
+		return pos
+	}
+	// 只取同轴的带 (竖折只影响 X 方向的位移)。
+	cur := pos
+	for _, b := range bands {
+		if b.vertical != vertical {
+			continue
+		}
+		if cur < b.hi && cur+size > b.lo {
+			cur = b.hi
+		}
+	}
+	// 让过一轮之后可能又与前面的带相交 (带未排序时), 再扫一轮收敛。
+	if cur != pos {
+		for _, b := range bands {
+			if b.vertical != vertical {
+				continue
+			}
+			if cur < b.hi && cur+size > b.lo {
+				cur = b.hi
+			}
+		}
+	}
+	return cur
+}
+
+// avoidedArea 把 area 收缩到"不含不可用带"的那一侧 (供 flexGrow/justify 用)。
+//
+// 为什么是"收缩"而不是"逐项位移": 主轴富余分配 (flexGrow / justifyContent)
+// 必须知道真正可用的长度 —— 若仍按原始 area 分配, 元素会被 grow 撑到折痕底下,
+// 之后的位移又只挪第一个, 结果是"后面的元素全压在折痕上"。收缩之后分配天然正确。
+//
+// 取"带之前的那一段"还是"带之后的那一段": 取**较长的一侧** (折叠屏半折时
+// 两侧通常接近等宽, 这个选择不会剧烈翻转; 而真实场景里工具栏总在顶部/底部,
+// 选长侧能让它尽量留在主屏区内)。
+func avoidedArea(area Rect, bands []reservedBand, vertical bool) Rect {
+	for _, b := range bands {
+		if b.vertical != vertical {
+			continue
+		}
+		cross := area.H
+		start := area.Y
+		if vertical {
+			cross = area.W
+			start = area.X
+		}
+		lo := b.lo - start
+		hi := b.hi - start
+		if hi <= 0 || lo >= cross {
+			continue // 带在 area 之外
+		}
+		before, after := lo, cross-hi
+		// 取较长的一侧; **相等时取"带之后"** —— 折叠屏半折时两侧通常接近
+		// 等宽, 这个 tie-break 必须有且必须稳定, 否则同一姿态在浮点/整数
+		// 边界上会时而取左时而取右, 界面看起来在抖。
+		if before <= 0 || before <= after {
+			// 带贴着起点, 或后面那截不比前面短: 用带之后的部分。
+			if after <= 0 {
+				return Rect{} // 整块都被盖住
+			}
+			if vertical {
+				area.X += hi
+				area.W = after
+			} else {
+				area.Y += hi
+				area.H = after
+			}
+		} else {
+			if vertical {
+				area.W = before
+			} else {
+				area.H = before
+			}
+		}
+	}
+	if area.W < 0 {
+		area.W = 0
+	}
+	if area.H < 0 {
+		area.H = 0
+	}
+	return area
+}
+
 // layoutStack 布局 column/row 容器 (以及多子 slot)。
 func layoutStack(n *GuiNode, horizontal bool) {
 	area := inner(n)
+	// 避让必须在**任何尺寸计算之前**发生 (见文件头的"两遍算高"注释):
+	// 先把不可用带从可用区里挖掉, 后面的 intrinsic/percent/grow/换行全部
+	// 在正确的可用区上跑。
+	//
+	// 主轴与交叉轴分别处理:
+	//   - 主轴: 收缩 area (grow/justify 才拿到正确的可用长度, 否则元素会被
+	//     撑到折痕底下);
+	//   - 交叉轴: area 不动 (交叉轴的 stretch 本来就该占满容器宽),
+	//     但元素的 crossOffset 要避开带 —— 见摆放循环里的 avoidShift。
+	bands := reservedBands(n, area)
+	if len(bands) > 0 {
+		area = avoidedArea(area, bands, horizontal)
+	}
 	g := n.gapOf()
 	align := n.alignItems()
 
@@ -926,6 +1172,17 @@ func layoutStack(n *GuiNode, horizontal bool) {
 			case "end":
 				crossOffset = areaCross - cross - 2*s.margin
 			}
+		}
+		// 交叉轴避让: 元素在交叉轴上的实际区间若压在带上, 就顺到带之后。
+		// 这里用 avoidShift 而不是收缩 areaCross —— 交叉轴的 stretch 语义是
+		// "占满容器宽" (工具栏横条就该通栏), 把可用区缩窄会让所有元素一起变窄,
+		// 那是另一个维度的改动。只挪需要挪的那个元素。
+		if len(bands) > 0 {
+			start := area.Y
+			if !horizontal {
+				start = area.X
+			}
+			crossOffset = avoidShift(start+crossOffset+s.margin, cross, bands, !horizontal) - start - s.margin
 		}
 		if cross < 0 {
 			cross = 0
@@ -1249,6 +1506,13 @@ func wrapStackCrossTotal(n *GuiNode, mainAvailable int) int {
 // layoutWrapStack 布局折行容器 (仅 row 派发到这里)。
 func layoutWrapStack(n *GuiNode, horizontal bool) {
 	area := inner(n)
+	// 与 layoutStack 同一纪律: 折行前先把不可用带挖掉。折行容器对这条**格外**
+	// 敏感 —— 可用宽少一点点就可能少折一行, 而"先按满宽折好再平移"会让行数
+	// 与位置对不上 (行贴着折痕或被挤到下一行)。
+	bands := reservedBands(n, area)
+	if len(bands) > 0 {
+		area = avoidedArea(area, bands, horizontal)
+	}
 	g := n.gapOf()
 	align := n.alignItems()
 
@@ -1275,6 +1539,12 @@ func layoutWrapStack(n *GuiNode, horizontal bool) {
 			if s.cross+2*s.margin > lineCross {
 				lineCross = s.cross + 2*s.margin
 			}
+		}
+		// 行级交叉轴避让 (交叉轴 = 多行总高方向): 整行压在带上就顺到带之后,
+		// 行内元素跟着一起走。以**行**为单位而不是单个元素 —— 同行的元素必须
+		// 对齐在同一行上, 各避各的会把一行拆成阶梯状。
+		if len(bands) > 0 {
+			crossPos = avoidShift(area.Y+crossPos, lineCross, bands, false) - area.Y
 		}
 		free := area.W - totalMain - g*(len(line)-1)
 		lead, betweenGap := 0, 0
