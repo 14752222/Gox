@@ -75,14 +75,21 @@ hover 样式与 active 样式引用同一档 token，禁止两套独立配色。
 ## 5. 移动端默认值与断点
 
 断点直接消费 `gx/viewport` 现成 API：`widthClass()`、`isCompactWidth()`、
-`isTabletLayout()`、`isSplit()`、`multiWindow`。组件库**不自定义断点常量**，
-避免与 viewport 层两套标准。
+`isMediumWidth()`、`isTabletLayout()`、`isSplit()`、`multiWindow`。组件库
+**不自定义断点常量**，避免与 viewport 层两套标准。
 
 | class | 宽度 | 组件行为基准 |
 |---|---|---|
 | compact（手机竖屏） | < 600dp | 单列布局；弹层改全屏/底部贴边；Table→List 降级 |
 | medium（平板竖屏/折叠） | 600 – 840dp | 双列可选；弹层维持居中 |
 | expanded（平板横屏/桌面） | > 840dp | 桌面惯例 |
+
+- `widthClass()` 返回三档字符串 `"compact"` / `"medium"` / `"expanded"`，
+  阈值 600 / 840dp（2026-10-01 由两档扩为三档 —— 折叠屏展开态正落 medium，
+  两档口径下无法被规范表达）。
+- `isMediumWidth()` 是 medium **单档**判定；`isTabletLayout()` 保持历史语义
+  **medium 或 expanded**（>= 600dp 即真），老代码不用改。
+- 高度仍是两档（阈值 480dp），不参与本表。
 
 默认值：
 
@@ -142,7 +149,8 @@ iconSize         = 16 | 20 | 24
 |---|---|---|
 | 安全区 | 宿主上报链路已通，`useInsets()` 可用 | 无 |
 | 键盘高度 | `keyboardHeight` / `useKeyboardHeight()` 已注册 | 各宿主实测待 T24 回归矩阵覆盖 |
-| 断点 | `widthClass` / `isCompactWidth` / `isTabletLayout` 已注册 | 无 |
+| 断点 | `widthClass` / `isCompactWidth` / `isMediumWidth` / `isTabletLayout` 已注册（三档，600/840） | 无 |
+| 折叠屏 | 内核数据模型 + `reportPosture` 通道已通；`gx/viewport` 有 `reservedRegions()` / `hasFold()` / `layoutMode()`；Android / iOS 宿主已接上报 | 鸿蒙宿主待接（HF2）；折叠态**接续**（页面栈/滚动位置）v1 不做 |
 | 长按手势 | 内核无 `onLongPress` | S3 前如组件评审要求长按，先在 gfx 内核立项 |
 | 逻辑像素 | 换算靠脚本侧 `pixelRatio`（gx/device） | 内核收编 dp 单位是 P1 候选项 |
 | IME | 结果提交制 | 组合输入逐键上报属 P1 |

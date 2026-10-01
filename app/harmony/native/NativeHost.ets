@@ -64,6 +64,16 @@ export const CAPABILITIES: string[] = [
   // Methods.DEVICE_INFO, … (当前 stub 不声明, canIUse 诚实地回答 false)
   // 纯上报型 (只有 Report, 没有 Call) —— 由宿主生命周期直接喂:
   'insets',
+  // 折叠屏上报 (HF2): 与 'insets' 同属"纯上报型" —— 内核没有 reportDisplayFold
+  // 这个 Call 方法, 宿主拿到系统回调后**直接**调内核入口 (Android: JNI
+  // nativeSetDisplayFold; iOS: gox_set_display_fold; 鸿蒙: NAPI 侧的同名入口)。
+  //
+  // 声明它的意义: canIUse('displayFold') 会诚实回答 true, 脚本据此知道
+  // "这台设备上 posture()/hinge()/reservedRegions() 有真实来源", 而不是
+  // 把"永久 flat"当成"设备就是直板"。
+  //
+  // ⚠️ 真实现落地前**不要**提前声明 —— 声明了却没人上报, 等于对脚本说谎。
+  // 'displayFold',
 ]
 
 /**

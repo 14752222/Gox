@@ -25,9 +25,16 @@
 |---|---|---|---|---|
 | M1 | iOS | _（待定，占位）_ | _待定_ | 需刘海/灵动岛屏（验证顶部安全区） |
 | M2 | Android | _（待定，占位）_ | _待定_ | 需支持手势导航（验证底部 insets 与返回） |
+| M-F1 | Android | _（待定，占位）_ | _待定_ | **左右折**（Mate X / Z Fold 类）：跨 600dp 断点 |
+| M-F2 | Android | _（待定，占位）_ | _待定_ | **上下折**（Pocket / nova Flip 类）：展开不跨档，验证"不误判" |
+| M-F3 | iOS | _（待定，占位）_ | _iOS 27.1+_ | **折叠机型**（iPhone Duo 类）：`reservedRegions` 需 iOS 27.1+，老系统走降级分支 |
 
 维护约定：换机时更新本表并在 git 提交信息注明；系统大版本升级后需重跑一轮
 全量回归再继续作为矩阵机型。
+
+> 折叠机型**可以缺位**：`gfx/mobile` 的折叠逻辑是纯 Go（Windows 可单测），
+> 上报通道也能在桌面注入 —— 矩阵里没有折叠机时，§3.9 的桌面可验证部分照跑，
+> 机型相关的项标豁免。
 
 ## 3. 回归 Checklist
 
@@ -76,8 +83,32 @@
 
 ### 3.8 分屏与形态
 - [ ] Android 分屏 / iPad Split View 下宽度断点（widthClass）切换后布局正确
-- [ ] 折叠屏展开（如有设备）：posture/hinge 不崩溃，布局按 compact↔expanded 切换
 - [ ] 旋转横竖屏：安全区、布局、键盘链路均正常
+
+### 3.9 折叠屏
+断点现在是**三档**：`compact`（<600dp）/ `medium`（600–840dp）/ `expanded`（>840dp）。
+
+| 机型形态 | 代码 | 断言 |
+|---|---|---|
+| 左右折（Mate X / Galaxy Z Fold 类） | M-F1 | 折叠态 `widthClass()="compact"`；展开态 `"medium"` 或 `"expanded"`（大折叠），布局随之重排，**第一帧就对**（不落后一帧） |
+| 上下折（Pocket / nova Flip 类） | M-F2 | 展开后 `widthClass()` **仍可能 `"compact"`** —— 布局**不应**变化；`layoutMode().suggested` 也不应变成 `"tablet"` |
+| 半折 / 悬停态 | M-F3 | `posture()="half-open"`；`hinge()` 非 `null`；`splitRatio()` 在 `[0.2, 0.8]`；`hingeOrientation()` 与折向一致（左右折 `"vertical"` / 上下折 `"horizontal"`） |
+| 折展往返（≥3 次） | M-F4 | 折回去再折回来，**分栏比例不变**（折痕不随 `flat` 清除的回归点）；`hasFold()` 全程稳定为 `true` |
+| 内屏 / 外屏切换 | M-F5 | 不崩、布局重排正确；`useWindowInfo()` / `useInsets()` 都跟着变 |
+
+逐条清单：
+
+- [ ] `posture()` 在四种姿态间切换（`flat` / `half-open` / `folded` / `unknown`）不崩溃
+- [ ] `hasFold()` 是**结构性**信号：折/展往返期间恒为 `true`（不 flip-flop）
+- [ ] `reservedRegions()` 三个键（`division` / `occlusion` / `all`）恒存在（空时是空数组）
+- [ ] `avoidReserved="division"` 的元素在折痕侧留出避让带；**不声明则行为与旧版完全一致**（不避让）
+- [ ] `<scroll avoidReserved=…>` 被忽略并打一条一次性告警（设计如此，不是 bug）
+- [ ] 内外屏密度不同（如 2x / 3x）时，字体与触控目标物理尺寸正确（`Display.Scale` 链路）
+- [ ] 折叠**接续**不在 v1 范围内：折展后页面栈/滚动位置丢失**不算缺陷**（见 §9 差距表）
+
+> 桌面即可验证的部分（无需真机）：`posture` / `hinge` / `reservedRegions` / `layoutMode` /
+> `splitRatio` 全部可用宿主上报通道注入（`reportPosture`，或 Go 侧
+> `gfx/mobile.ReportDisplayFold`），断言脚本见 `gfx/foldjs_test.go`。
 
 ## 4. 真机安装与构建
 

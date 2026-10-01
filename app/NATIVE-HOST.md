@@ -37,6 +37,35 @@ Go 为准并修文档。
 纯上报型能力没有 Call: 宿主在状态变化时调 Report 通道 (GUI 线程纪律由桥的
 `gfx.Post` 保证), 脚本侧用 `battery()` / `useAppState()` / `useInsets()` 等响应式读。
 
+### displayFold 的上报载荷 (与其它纯上报型不同, 它有结构)
+
+其它纯上报型都是一两个标量 (battery 的两个数、appstate 的一个词), 宿主经各自的
+入口传参即可。**折叠屏有结构** (姿态 + 折痕几何 + 保留区列表), 所以三平台统一
+走**一个 JSON 单入口**, 由 `gfx/mobile.ReportDisplayFold(jsonStr)` 解析后投递:
+
+```json
+{
+  "foldable": true,
+  "posture": "half-open",
+  "id": "built-in",
+  "width": 2400, "height": 1080, "scale": 3,
+  "hinge": { "x": 1190, "y": 0, "width": 20, "height": 1080, "orientation": "vertical" },
+  "regions": [ { "id": "hinge", "kind": "division", "x": 1190, "y": 0,
+                 "width": 20, "height": 1080, "active": true } ],
+  "sizeClass": { "width": "expanded", "height": "compact" }
+}
+```
+
+- `posture` 只认 `flat` / `half-open` / `folded` (不认识的值内核归一到 `unknown`,
+  绝不猜姿态 —— `gfx/mobile.PostureFrom`)。**绝不从宽度反推姿态**: 上下折展开后
+  宽度可能仍在 compact 档。
+- `kind` 只认 `division` (折痕那条带) / `occlusion` (屏下摄像头一类的遮挡),
+  与 iOS `reservedRegions` 的 kind 对齐。
+- 坐标是**显示器坐标 (设备像素)**, 与 `DisplayHinge` 的约定一致 (见 `gfx/screen.go`)。
+- `hinge` 与 `regions` **不随 flat 清除** (C2): 折痕是设备几何属性。宿主只报
+  `{"posture":"flat"}` 时内核保留上一次的折痕 —— 否则折回去再折回来分栏比例会变。
+- **首次上报会替换整张显示器表** (C3), 所以第一包必须带 `id`/`width`/`height`/`scale`。
+
 ## 实现状态表 (模块 × 平台)
 
 图例: ✅ 完整实现 · 🟡 部分/有平台限制 · ❌ 显式 unsupported · ⬜ 仅契约
@@ -65,6 +94,7 @@ Go 为准并修文档。
 | gx/permission | permission.get | 🟡 (Android 无法区分 not-determined/denied → 统一 denied; gallery limited ✅) | ✅ (notification 的同步状态拿不到 → 缺键按 unknown) | ⬜ |
 | | permission.request | ✅ (批量一次申请一次回填) | ✅ (camera/mic/gallery/notification/contacts/calendar/location) | ⬜ |
 | gx/viewport | insets 上报 | ✅ (nativeSetInsets, 既有通道) | ✅ (gox_set_insets, 既有通道) | ⬜ (契约已声明) |
+| gx/screen (折叠屏) | displayFold 上报 | ✅ (GoxDisplayFold.kt → nativeSetDisplayFold; androidx.window FoldingFeature) | ✅ (GoxDisplayFold.swift → gox_set_display_fold; UIView.reservedRegions, iOS 27.1+) | ⬜ (契约已声明) |
 
 ## method ↔ 平台 ↔ 内核调用点对照表
 
@@ -94,6 +124,7 @@ Go 为准并修文档。
 | battery / network (纯上报) | 上报 | — | — | native_device.go:348/:369 ReportBattery/ReportNetwork |
 | appstate / memory (纯上报) | 上报 | — | — | native_app.go:72/:97 ReportAppState/ReportMemoryWarning |
 | back (纯上报, 仅 Android) | 上报(同步答) | — | 脚本是否已处理 (bool) | native_app.go:114 ReportBackPress |
+| displayFold (纯上报) | 上报 | — | — | gfx/mobile/fold.go ReportDisplayFold |
 
 ## 错误码 → 平台语义映射
 

@@ -724,7 +724,7 @@ const wB = render(counter("Window B"), { title: "B", width: 320, height: 200 });
     gx/geo         定位（取一次 / 持续监听）、两点距离
     gx/media       拍照、选图 / 选视频、保存图片、预览
     gx/permission  权限查询 / 申请 / 打开应用设置页
-    gx/viewport    安全区 insets、软键盘高度、分屏与多窗口形态、宽度档
+    gx/viewport    安全区 insets、软键盘高度、分屏与多窗口形态、宽度档、折叠保留区
 
 **三种调用形态**是这一层的设计核心，示例脚本里各演示一遍：
 
@@ -773,7 +773,53 @@ try {
 > 写宿主或做测试时才需要碰上报通道：`gfx.ReportBattery` / `ReportNetwork` / `ReportAppState` /
 > `ReportPermission` / `ReportLocation` / `ReportViewport`，在系统回调里调（GUI 线程），
 > 内核存快照并把环境版本 +1，脚本侧 `useXxx()` 跟着变 —— 与 `gx/screen` 的 `reportPosture`
-> 同一套机制。
+> 同一套机制。折叠屏另有 `gfx/mobile.ReportDisplayFold`（表见 [app/NATIVE-HOST.md](../app/NATIVE-HOST.md)）。
+
+#### 折叠屏：三件套读数 + 一个判定入口
+
+折叠屏的独有能力不是"屏幕更大"，而是**屏幕被折痕切成两段、用户物理上只能看一段**。
+框架只出信号（姿态 / 折痕 / 保留区）与一个联合判定入口，**布局形态由应用决定** ——
+这是官方立场（华为"不推荐用折叠状态监听接口实现响应式布局"）与内核既有立场
+（"是否分栏由姿态决定，折痕只负责怎么分"）的共同结论。
+
+```js
+import { posture, hinge, regions, reservedRegions, hasFold, layoutMode } from "gx/viewport";
+import { splitRatio, hingeOrientation } from "gx/screen";
+
+const r = reservedRegions();        // { division:[…], occlusion:[…], all:[…] }
+const m = layoutMode();             // { posture, widthClass, foldAware, suggested }
+```
+
+| 读数 | 返回 | 要点 |
+|---|---|---|
+| `reservedRegions(win?)` | `{division, occlusion, all}` | 三个键恒存在（空时是空数组），`reservedRegions().division.length` 永远可写 |
+| `hasFold(win?)` | bool | **结构性**信号：有折痕的机器恒 true，不随折叠/平展 flip-flop（否则列数会跟着姿态跳） |
+| `layoutMode(win?)` | `{posture, widthClass, foldAware, suggested}` | `suggested` ∈ `"single"` / `"dual"` / `"tablet"`。**只给建议，框架不改布局** |
+| `splitRatio(win?)` | number | 折痕分割比例，钳 [0.2, 0.8]；无折痕退化 0.5 |
+| `hingeOrientation(win?)` | string | `"vertical"`（左右折，折痕是竖条）/ `"horizontal"`（上下折） |
+
+**避让（opt-in）**：内核元素默认**不**避让保留区（历史行为不变，避免老界面莫名位移）。
+要避让就显式声明：
+
+```jsx
+<row avoidReserved="division">      {/* 只避折痕；"occlusion" 只避遮挡；"all"/true 全避 */}
+  …
+</row>
+```
+
+`avoidReserved` **不适用于 `<scroll>`**：滚动容器里收缩可用区会让内容与滚动条语义打架
+（会打一条一次性告警并忽略）。需要在滚动区里避让时，自己在内容外层加一层带
+`avoidReserved` 的容器。
+
+**三条最容易踩的**（都是静默失效，不报错）：
+
+1. **别用姿态推布局**。上下折（Pocket 系列）展开后宽度**可能仍 < 600dp**，
+   用 `posture === "flat"` 推"该变宽了"必然翻车；而且官方时序里 `windowSizeChange`
+   早于 `foldStatusChange(展开态)` ⇒ 用姿态驱动会落后一帧。**布局只信宽度。**
+2. **没人上报 ⇒ 姿态恒 `flat`**。Windows / X11 没有姿态查询 API —— 不是 bug，
+   是"提供通道不猜姿态"。排查第一步用 `posture()` 确认读到的是不是 `"half-open"`。
+3. **折痕坐标是显示器坐标**（设备像素）。全屏时等于窗口坐标，分屏 / 自由窗口下不等价 ——
+   要换算就减去窗口在屏上的原点（`windowInfo().x / .y`）。
 
 示例：[testdata/native_demo.js](../testdata/native_demo.js)（设备信息面板，三种形态各一遍）。
 

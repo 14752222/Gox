@@ -23,6 +23,36 @@
  *   media    @ohos.multimedia.camera / photoAccessHelper / picker
  *   permission @ohos.abilityAccessCtrl (requestPermissionsFromUser)
  *   viewport @ohos.window 的 safeArea ( avoidance areas → nativeSetInsets)
+ *   fold     @ohos.display 的 isFoldable/getFoldStatus/getCurrentFoldCreaseRegion
+ *            (HF2, 见下)
+ *
+ * ## HF2 · 折叠屏上报 (与 Android/iOS 同构, 尚未实现)
+ *
+ * 三平台的折叠上报**不是** NativeHost 的 Call 方法 —— 内核没有 reportDisplayFold
+ * 这个 Call, 它是宿主生命周期直接喂的**纯上报型**入口, 与 'insets' 同类:
+ *
+ *   Android: GoxDisplayFold.kt → GoxRuntime.nativeSetDisplayFold(json)   [JNI]
+ *   iOS:     GoxDisplayFold.swift → gox_set_display_fold(json)           [ObjC/C]
+ *   鸿蒙:    需要一条等价的 NAPI 通道 → mobile.ReportDisplayFold(json)    [待做]
+ *
+ * 鸿蒙侧要接的系统接口与对应关系 (官方《多设备适配屏幕差异》):
+ *
+ *   display.isFoldable()                  → {foldable: true}
+ *   display.on('foldStatusChange')        → {posture: "flat"|"half-open"|"folded"}
+ *   display.getCurrentFoldCreaseRegion()  → {hinge: {x,y,width,height,orientation}}
+ *   window.on('windowSizeChange')         → {width, height, widthClass, heightClass}
+ *
+ * 三条硬约束 (违反的表现都是"静默失效", 不是崩溃):
+ *   ① 折痕**不随 flat 清除** (gfx/screen.go C2): reportPosture({posture:"flat"})
+ *      时若把 hinge 丢掉, 折回去再折回来分栏比例会变 —— 折痕是设备几何属性,
+ *      不是姿态属性, 宿主只改姿态时要原样带着 hinge 一起报。
+ *   ② **首次上报会替换整张显示器表** (gfx/screen.go C3): 第一次 reportPosture
+ *      必须带上 id / width / height / scale, 否则"窗口所在显示器"解析不到,
+ *      姿态读了也是空的 (症状: 折叠双栏静默失效)。
+ *   ③ **姿态只做特性信号, 绝不驱动布局** —— 华为官方原文"不推荐使用折叠状态
+ *      监听接口实现页面布局的响应式布局和接续"。上下折 (Pocket) 展开后宽度
+ *      仍 <600vp, 用 foldStatus 推布局必然翻车; 官方时序里 windowSizeChange
+ *      还早于 foldStatusChange(展开态) ⇒ 用姿态驱动会慢一帧。布局只信宽度。
  */
 import {
   NativeHost,
@@ -36,6 +66,11 @@ export class GoxNativeHostStub implements NativeHost {
   /**
    * 只报纯上报型能力。Call 型方法在真实现落地后加入
    * (少报 canIUse 说"没有", 多报说谎 —— 两头都是错的)。
+   *
+   * ⚠️ 折叠屏能力 ('displayFold') **暂不声明**: 它与 'insets' 同属纯上报型,
+   * 但 HF2 (姿态与折痕上报) 尚未落地 —— 声明了却没人上报, 等于对脚本说谎
+   * (canIUse('displayFold') 会说 true, 而 posture() 永远是 "flat")。
+   * HF2 落地时在这里加 'displayFold', 并同步 NativeHost.ets 的 CAPABILITIES。
    */
   capabilities(): string {
     return 'insets'
