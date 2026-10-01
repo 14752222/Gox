@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Rect
@@ -39,6 +40,9 @@ class MainActivity : Activity(), SurfaceHolder.Callback, GoxHost, GoxNativeHost 
     // NativeHost 六模块实现 (device/app/geo/media/permission), 本类只做转发与
     // 系统回调接线 (onActivityResult / onRequestPermissionsResult / 生命周期上报)。
     private val nativeHost = GoxNativeHostImpl(this)
+
+    /** 折叠屏上报 (androidx.window 的 FoldingFeature → gx/screen + gx/viewport)。 */
+    private val displayFold by lazy { GoxDisplayFold(this) }
 
     /** 电池广播接收器 (gx/device 的 battery 上报, 系统粘性广播, 主线程回调)。 */
     private val batteryReceiver = object : android.content.BroadcastReceiver() {
@@ -181,6 +185,10 @@ class MainActivity : Activity(), SurfaceHolder.Callback, GoxHost, GoxNativeHost 
             }
             inited = true
             window.decorView.rootWindowInsets?.let { reportInsets(it) }
+            // 折叠屏: 启动监听 (注册即拿当前值)。放在 nativeInit 之后 ——
+            // 内核已在跑, 上报才有订阅者。非阻塞 (走 window-java 的回调适配器,
+            // 见 GoxDisplayFold.start 的注释)。
+            displayFold.start()
             runScript()
             return
         }
@@ -346,9 +354,35 @@ class MainActivity : Activity(), SurfaceHolder.Callback, GoxHost, GoxNativeHost 
         }
     }
 
+    /**
+     * 配置变更回调 (清单里**故意**声明了一长串 configChanges, 见 AndroidManifest):
+     * 旋转 / 折叠 / 分屏 / 内外屏密度切换都不重建 Activity —— 重建会把 Go 侧
+     * 那段会话整个作废, 表现为"一折屏脚本从头开始跑"。
+     *
+     * 这里做两件事:
+     *   1. 尺寸/密度真变了就让 onSurfaceSize 走一遍 (重绑帧缓冲 + nativeResize);
+     *   2. 报一次折叠状态 —— 尺寸类与折痕可能一起变了 (内外屏切换时不仅
+     *      分辨率变, 折痕的有无也会变)。用最近一次 WindowLayoutInfo 复报,
+     *      WindowInfoTracker 的 Flow 自己也会因为窗口变化推一条新的。
+     */
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        if (!inited) return
+        val w = resources.displayMetrics.widthPixels
+        val h = resources.displayMetrics.heightPixels
+        if (w != width || h != height) {
+            onSurfaceSize(w, h)
+        } else {
+            // 表面尺寸没变但**密度**可能变了 (内外屏密度不同是折叠屏的常见情况)。
+            GoxRuntime.nativeResize(w, h, resources.displayMetrics.density)
+        }
+        displayFold.reportLast(newConfig)
+    }
+
     override fun onDestroy() {
         stopTicker()
         nativeHost.stopAllWatches()
+        displayFold.stop()
         unregisterReceiver(batteryReceiver)
         if (inited) {
             GoxRuntime.nativeDestroy()

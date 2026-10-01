@@ -61,12 +61,55 @@ func TestAndroidFoldSymbolNameMatchesKotlin(t *testing.T) {
 	}
 }
 
+// TestAndroidFoldWiringInHost 钉住 Android 宿主侧把折叠上报真的接起来了。
+//
+// 光有 external fun 声明不算接通 —— 必须有人**调**它, 且必须在正确的时机。
+// 这几条断言拦的正是"声明了但忘了接"这一类 (症状只是"折叠屏上没适配",
+// 从画面很难反推回"漏了一行接线")。
+func TestAndroidFoldWiringInHost(t *testing.T) {
+	fold := readRepoFile(t, "app/android/app/src/main/kotlin/com/gox/GoxDisplayFold.kt")
+	main := readRepoFile(t, "app/android/app/src/main/kotlin/com/gox/MainActivity.kt")
+
+	// 实现体里必须真的调导出。
+	if !strings.Contains(fold, "GoxRuntime.nativeSetDisplayFold(") {
+		t.Errorf("GoxDisplayFold.kt 里没有调用 nativeSetDisplayFold")
+	}
+	// isSeparating → kind 的判据必须在 (这是 division/occlusion 的唯一来源)。
+	if !strings.Contains(fold, "isSeparating") {
+		t.Errorf("没有用 isSeparating 判 division/occlusion")
+	}
+	// 姿态必须按 State 判, 不能按宽度自己反推。
+	if !strings.Contains(fold, "FoldingFeature.State.HALF_OPENED") {
+		t.Errorf("没有按 FoldingFeature.State 判姿态")
+	}
+	// 宿主侧: 必须 start() 且在 onDestroy 里 stop() (不摘监听会打回调到已销毁的 Activity)。
+	if !strings.Contains(main, "displayFold.start()") {
+		t.Errorf("MainActivity 没有启动折叠监听")
+	}
+	if !strings.Contains(main, "displayFold.stop()") {
+		t.Errorf("MainActivity 没有在 onDestroy 里摘掉折叠监听")
+	}
+	if !strings.Contains(main, "override fun onConfigurationChanged") {
+		t.Errorf("MainActivity 没有 onConfigurationChanged —— 旋转/折叠/内外屏切换时不会重报")
+	}
+	// 清单必须声明 density (否则内外屏密度切换会重建 Activity, 会话整个作废)。
+	manifest := readRepoFile(t, "app/android/app/src/main/AndroidManifest.xml")
+	if !strings.Contains(manifest, "android:configChanges") ||
+		!strings.Contains(manifest, "density") {
+		t.Errorf("AndroidManifest 的 configChanges 没有声明 density")
+	}
+	// useAndroidX 必须开 (androidx.window 是硬依赖)。
+	if gp := readRepoFile(t, "app/android/gradle.properties"); !strings.Contains(gp, "android.useAndroidX=true") {
+		t.Errorf("gradle.properties 里 android.useAndroidX 不是 true")
+	}
+}
+
 // TestAndroidFoldSymbolNameMatchesKotlinTail 是上面那条的"全量体检": 把 Kotlin
 // 里**每一个** external fun 都回查到 Go 的 //export 行。
 //
 // 为什么值得全查: 批 C 只是这条链路的最近一次改动, 而这套名字是逐字契约;
 // 一次漏改会在这里立刻现形, 而不是等到某台安卓设备上。
-func TestAndroidFoldSymbolNameMatchesKotlinTail(t *testing.T) {
+func TestAndroidFoldSymbolNameMatchesKotlinTail(t *testing.T) { //nolint:gocyclo
 	kt := readRepoFile(t, "app/android/app/src/main/kotlin/com/gox/GoxRuntime.kt")
 	goSrc := readRepoFile(t, "gfx/android/libgox/main.go")
 

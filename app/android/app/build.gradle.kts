@@ -76,3 +76,32 @@ android {
         }
     }
 }
+
+dependencies {
+    // 折叠屏支持: `FoldingFeature` 是公开 API 里**唯一**能拿到铰链位置与姿态
+    // 的东西 —— 平台层没有等价物 (Display.getRotation / Configuration 只说
+    // "屏幕变了", 不说"折痕在哪")。
+    //
+    // 版本选 **1.4.0** (2025-05-20 stable) 而不是最新的 1.5.1:
+    // 本工程的组合是 Gradle 8.9 + AGP 8.6.1 + compileSdk 35 (见
+    // gradle.properties 与根 build.gradle.kts 的版本说明)。1.5.x 是为更新的
+    // AGP/compileSdk 构建的, 在 8.6.1 上有踩到 "compiled against a newer
+    // Android SDK" 一类报错的风险 —— 而我们要的 API (FoldingFeature 的
+    // state / orientation / isSeparating / bounds / occlusionType) 在 1.4.0
+    // 里全部齐备, 升级换不到任何东西。
+    //
+    // 要升 1.5.x 时, 请连 AGP + compileSdk 一起升, 然后跑一次
+    // scripts/build-android.sh 之外的完整 gradle assemble 验证。
+    implementation("androidx.window:window:1.4.0")
+    // window-java 提供 `WindowInfoTrackerCallbackAdapter` —— 没有协程运行时
+    // 时的回调桥 (core 的 `windowLayoutInfo(Activity)` 返回的 Flow 只能在
+    // 协程里 collect, 而为一个回调拉进 kotlinx-coroutines 不划算)。
+    // 版本必须与 window 一致, 否则运行期会 NoSuchMethodError。
+    implementation("androidx.window:window-java:1.4.0")
+    // window-java 的回调签名用的是 `androidx.core.util.Consumer` (不是 JDK 的
+    // java.util.function.Consumer) —— 不显式声明的话 Kotlin 编译器报
+    // "Cannot access class 'androidx.core.util.Consumer'. Check your module
+    // classpath", 而**不会**告诉你缺哪个依赖。这是实测踩到的坑 (2026-10-01):
+    // 报错只说"访问不到", 不看 window-java 的字节码很难想到是 androidx.core。
+    implementation("androidx.core:core-ktx:1.13.1")
+}

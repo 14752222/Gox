@@ -61,7 +61,7 @@ adb logcat -s Gox:I
 
 | 位置 | 内容 |
 | --- | --- |
-| `app/src/main/kotlin/com/gox/GoxRuntime.kt` | `object GoxRuntime` 的 8 个 `external fun` |
+| `app/src/main/kotlin/com/gox/GoxRuntime.kt` | `object GoxRuntime` 的全部 `external fun` |
 | `gfx/android/libgox/main.go` | 对应的 `//export Java_com_gox_GoxRuntime_*` |
 | `gfx/android/android.go` 头部的契约注释 | 同一份签名（给不打开 Kotlin 的人看） |
 | `app/src/main/kotlin/com/gox/GoxHost.kt` | 反向回调：`flush([I)V` / `finished(ILjava/lang/String;)V` 是**逐字符**写死在 C 里的 |
@@ -73,6 +73,77 @@ adb logcat -s Gox:I
   方法绑定失败（`UnsatisfiedLinkError`）。真要开，必须给 `com.gox.GoxRuntime` 写 keep 规则。
 - `GoxRuntime` 写成 `object` 而不是一堆 `static`：JNI 里实例方法与静态方法的**符号名相同**，
   只差第二个参数是 `jobject` 还是 `jclass`，而 Go 侧不用那个参数 —— 两种写法 ABI 等价。
+
+## 折叠屏（androidx.window 的 FoldingFeature）
+
+**链路**：Kotlin `WindowInfoTracker` → `FoldingFeature` → JSON → `nativeSetDisplayFold`
+→ `gfx/mobile.ReportDisplayFold`（解析/校验/归一化，**可单测**）→
+`gfx.ReportPostureFromFold` + `ReportViewport` → 脚本侧 `gx/viewport` 的
+`reservedRegions()` / `hasFold()` / `layoutMode()`。
+
+**为什么逻辑在 Go 侧**：`android` tag 下的代码在桌面开发机上**编译不到**，
+测试面为零。所以宿主只做"把看到的如实报上去"（`isSeparating` 如实翻成
+division/occlusion、坐标原样——`FoldingFeature.bounds` 已经是像素，不是 dp），
+姿态判定、裁剪、结构性判据全在 `gfx/mobile/fold.go`。
+
+**判据映射**（`GoxDisplayFold.kt`，与 Android 官方文档对齐）：
+
+| FoldingFeature | 我们的映射 |
+|---|---|
+| `state == HALF_OPENED` | `posture = "half-open"` |
+| `state == FLAT` | `posture = "flat"` |
+| `isSeparating == true` | `kind = "division"`（铰链切出两个逻辑区域） |
+| `isSeparating == false` | `kind = "occlusion"`（只遮一条，不分割） |
+| `orientation == VERTICAL` | 折痕是**竖带**（切左右）→ `"vertical"` |
+| `orientation == HORIZONTAL` | 折痕是**横带**（上下/桌面模式）→ `"horizontal"` |
+
+⚠️ 最后两条最容易写反：`Orientation.VERTICAL` 说的是**折痕线是竖的**，不是
+"屏幕竖着"。写反的症状是避让带跑到另一个轴上（布局看着像随机错位）。
+
+**依赖**：`androidx.window:window:1.4.0` + `window-java:1.4.0` + `androidx.core:core-ktx`。
+`useAndroidX` 因此从 `false` 改成了 `true`（见 `gradle.properties` 的说明）。
+
+**依赖踩坑（2026-10-01 实测，三轮编译才过）**：
+
+1. `windowLayoutInfo(activity, executor)` —— **该重载不存在**（1.4.0），编译器报
+   "Too many arguments"。
+2. 改用 `window-java` 的 `WindowInfoTrackerCallbackAdapter`（core 的 Flow 只能在
+   协程里 `collect`，为一个回调拉进 kotlinx-coroutines 不划算）→ 报
+   "Cannot access class `androidx.core.util.Consumer`"。**这个报错不会告诉你缺哪个
+   依赖**，得去看 window-java 的字节码才知道要 `androidx.core`。
+3. `removeWindowLayoutInfoListener` 要的是**注册时那个 Consumer 实例**（不是
+   Activity、不是 Executor）—— 所以要自己存着引用。
+
+**版本选择**：用 1.4.0（2025-05-20 stable）而不是最新的 1.5.1 —— 本工程是
+Gradle 8.14 + AGP 8.6.1 + compileSdk 35，1.5.x 是为更新的 AGP/compileSdk 构建的。
+我们要的 API（`state` / `orientation` / `isSeparating` / `bounds` / `occlusionType`）
+1.4.0 全部齐备。升 1.5.x 请连 AGP + compileSdk 一起升。
+
+**验证命令**（本机无 wrapper，用缓存的 Gradle）：
+
+```bash
+G=/c/Users/<you>/.gradle/wrapper/dists/gradle-8.14-all/*/gradle-8.14/bin/gradle
+cd app/android && "$G" :app:compileDebugKotlin --console=plain --no-daemon
+```
+
+### 验收清单（折叠屏）
+
+工具：`python app/android/tools/screencap.py`。**断言一律用区域哈希 / ASCII 色块图**，
+不靠肉眼——尤其"长 feed 不跳动"这条。
+
+| # | 姿态 | 断言 |
+|---|---|---|
+| 1 | 外屏 / 直板机 | 单栏；`hasFold()` false |
+| 2 | 内屏 展开（FLAT） | 双栏；`hasFold()` **仍 true** |
+| 3 | 内屏 半开（HALF_OPENED） | 折痕带上没有任何内容落下 |
+| 4 | 内外屏切换（density 变） | 会话不重建（`onConfigurationChanged` 走通），密度刷新正确 |
+| 5 | 折叠↔展开来回切 | 列数不跳；长 feed 不跳动 |
+
+```bash
+export ADB=H:/AndroidSDK/platform-tools/adb.exe
+python tools/screencap.py hash 1000 0 1080 2000   # 折痕带区域哈希
+python tools/screencap.py map  900 400 1180 600 40 # 看两侧是否被内容覆盖
+```
 
 ## 首帧自检清单
 
@@ -132,7 +203,11 @@ go test ./gfx/mobile/      # 7+1 个用例, 纯 Go, 开发机直接跑
   实测出撕裂概率再定。（**换缓冲本身**的竞态已经处理：`gfx/android` 的 `uploadFrame` 是持锁
   做整段拷贝的，`BindFrameBuffer` 拿同一把锁换地址 ⇒ 旋转/分屏时不会出现"旧缓冲已被 JVM
   回收而引擎还在往里写"。）
-- **软键盘（IME）未接**：真机上输入框只能看不能输（M2，工作量最大的一块）。
+- **软键盘（IME）已接**：`GoxSurfaceView.onCreateInputConnection` 给了一个
+  `BaseInputConnection`，`commitText` → `nativeIMECommit`、`deleteSurroundingText`
+  → `nativeKey("Backspace")`、`setComposingText` 忽略（v1 只做"结果提交"，
+  组合过程留在输入法里）。**本机未在真机验证过** —— 模拟器上无法完整验证中文
+  输入法行为，这也是看板 `rkOdiA` 仍在的原因。
 - **单指触摸**：多指手势不识别，第二根手指按下即作废整个手势。
 - **density 只上报不换算**：`Display.Scale` / `pixelRatio` 有了，但 layout 的逻辑像素换算
   还没做（M1 剩余部分）。所以现在 `font={20}` 就是 20 个物理像素，在高密度屏上偏小。
