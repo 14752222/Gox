@@ -179,12 +179,41 @@ func notifyViewportChanged() {
 	}
 }
 
+// viewportPatchMask 标记"本次上报**显式给到**了哪些无法用零值区分的字段"。
+//
+// 为什么需要它: Insets / Keyboard / MultiWindow 的零值都是**合法取值** (安全区
+// 可以真的是 0, 键盘可以真的没弹, 多窗口可以真的是 false) —— 所以不能像 Mode /
+// WidthClass 那样用 `if v.X == ""` 判断"没报"。少了这层标记, 一次只报键盘的
+// 上报就会把先前报的安全区清成 0 (Android 正是在系统回调里分三次报的:
+// insets 变了 / 键盘弹了 / 进分屏了)。
+type viewportPatchMask uint8
+
+const (
+	patchInsets viewportPatchMask = 1 << iota
+	patchKeyboard
+	patchMultiWindow
+	// patchAll 表示"我这份就是全量" —— ReportViewport 的公开语义。
+	patchAll = patchInsets | patchKeyboard | patchMultiWindow
+)
+
 // ReportViewport 由宿主上报某个窗口的可视区域环境 (GUI 线程)。
 //
 // 合并语义是 **upsert**: 只覆盖本次给到的字段。这一条很关键 —— Android 会在
 // 系统回调里分别报三件事 (insets 变了 / 键盘弹了 / 进分屏了), 若每次上报都是
 // "整份替换", 那么"键盘弹起"那一次会把先前报的 insets 清成 0。
+//
+// 对 Go 调用方 (后端 / 平台层) 而言, 传进来的 Viewport 就是"全量", 所以这里走
+// patchAll。脚本侧的 reportViewport 则按"实际出现了哪些键"逐字段上报 ——
+// 见 reportViewportPatch 与 jsReportViewport。
 func ReportViewport(win *Window, v Viewport) {
+	reportViewportPatch(win, v, patchAll)
+}
+
+// reportViewportPatch 是带"显式字段掩码"的上报实现。
+//
+// mask 之外的字段一律沿用 prev 的旧值; mask 之内的字段即使是零值也照样写入
+// (显式报 0 生效)。
+func reportViewportPatch(win *Window, v Viewport, mask viewportPatchMask) {
 	key := viewportKey(win)
 	nativeMu.Lock()
 	if viewports == nil {
@@ -215,6 +244,16 @@ func ReportViewport(win *Window, v Viewport) {
 	}
 	if v.StageID == 0 {
 		v.StageID = prev.StageID
+	}
+	// 零值即合法取值的三个字段: 没显式报就沿用旧值 (不是"清成 0")。
+	if mask&patchInsets == 0 {
+		v.Insets = prev.Insets
+	}
+	if mask&patchKeyboard == 0 {
+		v.Keyboard = prev.Keyboard
+	}
+	if mask&patchMultiWindow == 0 {
+		v.MultiWindow = prev.MultiWindow
 	}
 	viewports[key] = clampViewport(v)
 	nativeMu.Unlock()
@@ -472,6 +511,17 @@ func jsReportViewport(args ...object.Value) object.Value {
 		},
 		Keyboard: int(objPropNum(opts, "keyboard")),
 	}
+	// 逐字段记录"这次显式报了哪些" —— 三个零值即合法的字段必须靠它区分
+	// "报了个 0" 与 "没报" (见 viewportPatchMask)。四种平铺边与嵌套 insets
+	// 任一出现即算报了 insets。
+	var mask viewportPatchMask
+	if objProp(opts, "top") != nil || objProp(opts, "right") != nil ||
+		objProp(opts, "bottom") != nil || objProp(opts, "left") != nil {
+		mask |= patchInsets
+	}
+	if objProp(opts, "keyboard") != nil {
+		mask |= patchKeyboard
+	}
 	// insets 也允许写成嵌套对象 ({insets: {top: 24}}) —— 两种写法都常见, 都收,
 	// 优先级给嵌套 (更明确)。
 	if ins := nativePropObj(opts, "insets"); ins != nil {
@@ -481,9 +531,11 @@ func jsReportViewport(args ...object.Value) object.Value {
 			Bottom: int(objPropNum(ins, "bottom")),
 			Left:   int(objPropNum(ins, "left")),
 		}
+		mask |= patchInsets
 	}
 	if val := objProp(opts, "multiWindow"); val != nil {
 		v.MultiWindow = nativeBool(val)
+		mask |= patchMultiWindow
 	}
 	v.Mode = normalizeViewportMode(objPropStr(opts, "mode"))
 	v.Stage = strings.ToLower(strings.TrimSpace(objPropStr(opts, "stage")))
@@ -493,11 +545,13 @@ func jsReportViewport(args ...object.Value) object.Value {
 	v.WidthClass = normalizeSizeClass(objPropStr(opts, "widthClass"))
 	v.HeightClass = normalizeSizeClass(objPropStr(opts, "heightClass"))
 	// 报了 mode 或 stage 就等于声明"我在分屏里" —— 与 gx/screen 的"报了姿态就等于
-	// 声明这是折叠屏"同一条省事规则。
+	// 声明这是折叠屏"同一条省事规则。这条推导也要算作显式报了 multiWindow,
+	// 否则"报 mode=split"会被后面的 mask 兜底当成"没报"而丢掉。
 	if v.Mode == ViewportSplit || v.Mode == ViewportPIP || v.Mode == ViewportFreeform || v.Stage != "" {
 		v.MultiWindow = true
+		mask |= patchMultiWindow
 	}
-	ReportViewport(win, v)
+	reportViewportPatch(win, v, mask)
 	return object.UndefinedSingleton
 }
 

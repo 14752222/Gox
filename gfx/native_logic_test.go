@@ -317,6 +317,66 @@ func TestDeriveSizeClasses(t *testing.T) {
 	}
 }
 
+// TestReportViewportUpsert 是"分三次报窗口环境, 谁也别把谁清掉"的回归。
+//
+// 为什么必须有用例钉住: Android 在系统回调里是**分三次**报的 (insets 变了 /
+// 键盘弹了 / 进分屏了), 而 Insets / Keyboard / MultiWindow 的零值都是合法
+// 取值 —— 一旦哪次上报被当成"整份替换", 症状就是"键盘一弹, 安全区没了",
+// 只在某些机型上出现, 极难查。
+func TestReportViewportUpsert(t *testing.T) {
+	resetViewportStateForTest()
+	// ① 先报安全区, 再报键盘 → 两者都要在 (核心回归)。
+	jsReportViewport(nativeOptsFrom(map[string]any{"top": 24}))
+	jsReportViewport(nativeOptsFrom(map[string]any{"keyboard": 300}))
+	v := ViewportForKey(nil)
+	if v.Insets.Top != 24 || v.Keyboard != 300 {
+		t.Fatalf("分两次报: top=%d keyboard=%d, want 24 / 300", v.Insets.Top, v.Keyboard)
+	}
+	// ② 显式报 0 必须生效 (不能被当成"没报"而沿用旧值)。
+	jsReportViewport(nativeOptsFrom(map[string]any{"insets": map[string]any{"top": 0}}))
+	if got := ViewportForKey(nil).Insets.Top; got != 0 {
+		t.Fatalf("显式报 insets.top=0 应生效: got %d", got)
+	}
+	// ③ 只报 sizeClass 不得动安全区 / 键盘。
+	jsReportViewport(nativeOptsFrom(map[string]any{"widthClass": "compact"}))
+	v = ViewportForKey(nil)
+	if v.Insets.Top != 0 || v.Keyboard != 300 {
+		t.Fatalf("只报宽度类不得清掉其它字段: top=%d keyboard=%d", v.Insets.Top, v.Keyboard)
+	}
+	if v.WidthClass != SizeCompact {
+		t.Fatalf("宽度类应写入: %q", v.WidthClass)
+	}
+	// ④ multiWindow 也是零值即合法的字段: 报 true 后再报键盘, 不得被清回 false。
+	jsReportViewport(nativeOptsFrom(map[string]any{"multiWindow": true}))
+	jsReportViewport(nativeOptsFrom(map[string]any{"keyboard": 120}))
+	v = ViewportForKey(nil)
+	if !v.MultiWindow {
+		t.Fatalf("只报键盘不得清掉 multiWindow")
+	}
+	if v.Keyboard != 120 {
+		t.Fatalf("键盘应更新为 120: got %d", v.Keyboard)
+	}
+}
+
+// nativeOptsFrom 把 Go map 转成 jsReportViewport 吃的 options 对象
+// (只给测试用: 手搓 object.Object 太啰嗦, 而这几条用例的形状是关键)。
+func nativeOptsFrom(m map[string]any) object.Value {
+	o := object.NewObject()
+	for k, raw := range m {
+		switch val := raw.(type) {
+		case int:
+			o.SetProperty(k, object.NewNumber(float64(val)))
+		case bool:
+			o.SetProperty(k, object.NewBoolean(val))
+		case string:
+			o.SetProperty(k, object.NewString(val))
+		case map[string]any:
+			o.SetProperty(k, nativeOptsFrom(val))
+		}
+	}
+	return o
+}
+
 // ===== 参数形状 (宽容度) =====
 
 func TestNativeOptsTolerant(t *testing.T) {
