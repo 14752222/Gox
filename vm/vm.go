@@ -3034,8 +3034,37 @@ func (vm *VM) getIndex(obj, index object.Value) object.Value {
 			return object.UndefinedSingleton
 		}
 		return val
+
+	default:
+		// 其余类型 (GlobalObject / Map / Set / Closure / Error / RegExp / Promise ...)
+		// 的字符串键读取统一走 Value 接口 —— 与 setIndex 的 default 兜底分支对称。
+		//
+		// 必须守住的不变量: obj["k"] 恒等于 obj.k (二者只是同一属性访问的两种写法)。
+		// 修复前这些类型会直接落到本函数末尾返回 undefined, 于是:
+		//   globalThis.z      -> 42          globalThis["z"]     -> undefined  (错)
+		//   map.size          -> 1           map["size"]         -> undefined  (错)
+		// 更要命的是 ++ / -- / += 作用在成员表达式上时, compileIncDec 走的是
+		// GET_INDEX 路径 (见 compiler.compileMemberRef + OP_DUP2/OP_GET_INDEX),
+		// 所以 `globalThis.n++` 读到 undefined, ToNumber 后算出 NaN —— 而完全同形的
+		// `obj.n++` (普通对象) 一切正常, 极难排查。
+		if s, ok := index.(*object.String); ok {
+			val, found := obj.GetProperty(s.Value)
+			if !found {
+				return object.UndefinedSingleton
+			}
+			return val
+		}
+		// Symbol 键维持原有行为: 这些类型不在本函数内做符号查找。
+		if _, ok := index.(*object.Symbol); ok {
+			return object.UndefinedSingleton
+		}
+		// 数字等键型按 ToPropertyKey 语义转字符串 (o[2] === o["2"])
+		val, found := obj.GetProperty(toJSString(index))
+		if !found {
+			return object.UndefinedSingleton
+		}
+		return val
 	}
-	return object.UndefinedSingleton
 }
 
 // defineClosureAccessor 在函数对象 (class 构造器) 上定义静态访问器:
