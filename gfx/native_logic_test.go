@@ -300,20 +300,86 @@ func TestSplitActive(t *testing.T) {
 }
 
 func TestDeriveSizeClasses(t *testing.T) {
-	// 手机竖屏 (390dp 宽) → compact
+	// 手机竖屏 (390dp 宽) → compact; 高度 845dp → regular (高**仍是两档**)。
 	wc, hc := deriveSizeClasses(780, 1690, 2)
 	if wc != SizeCompact || hc != SizeRegular {
 		t.Fatalf("手机竖屏: wc=%q hc=%q", wc, hc)
 	}
-	// 折叠屏展开 / 平板 (720dp 宽) → regular
+	// 折叠屏展开 (720dp 宽) → **medium** (这正是三档化的目的: 既不按手机布局,
+	// 也不按平板布局)。
 	wc, _ = deriveSizeClasses(1440, 800, 2)
-	if wc != SizeRegular {
-		t.Fatalf("大屏应 regular: %q", wc)
+	if wc != SizeMedium {
+		t.Fatalf("折叠展开 (720dp) 应 medium: %q", wc)
 	}
-	// 缺省 scale = 1 (无宿主)
+	// 边界: 600dp 是 medium 的下界 (含), 840dp 是 medium 的上界 (含)。
+	if wc, _ := deriveSizeClasses(1200, 800, 2); wc != SizeMedium {
+		t.Fatalf("600dp 应落 medium: %q", wc)
+	}
+	if wc, _ := deriveSizeClasses(1680, 800, 2); wc != SizeMedium {
+		t.Fatalf("840dp 应落 medium: %q", wc)
+	}
+	// 平板横屏 (1000dp 宽) → expanded。
+	if wc, _ := deriveSizeClasses(2000, 1600, 2); wc != SizeExpanded {
+		t.Fatalf("1000dp 应 expanded: %q", wc)
+	}
+	// 缺省 scale = 1 (无宿主): 700px → medium。
 	wc, _ = deriveSizeClasses(700, 500, 0)
-	if wc != SizeRegular {
-		t.Fatalf("scale 缺省 1 时 700px → regular: %q", wc)
+	if wc != SizeMedium {
+		t.Fatalf("scale 缺省 1 时 700px → medium: %q", wc)
+	}
+	// 高度**不**跟着分三档: 820dp 高仍是 regular (不是 medium/expanded) ——
+	// 否则"折叠屏横过来"会触发横向布局, 那是最不想要的结果。
+	if _, hc := deriveSizeClasses(780, 1640, 2); hc != SizeRegular {
+		t.Fatalf("高度应保持两档 (820dp → regular): %q", hc)
+	}
+}
+
+// TestSizeClassRankAndDerived 钉住三档化最容易出错的一处: `== SizeRegular`
+// 这类等号判定在新增 medium 档后会静默落空。
+func TestSizeClassRankAndDerived(t *testing.T) {
+	// regular 与 expanded 同档 (都是"够大"), medium 低于它们但高于 compact。
+	if sizeClassRank(SizeCompact) >= sizeClassRank(SizeMedium) {
+		t.Fatal("compact 应低于 medium")
+	}
+	if sizeClassRank(SizeMedium) >= sizeClassRank(SizeExpanded) {
+		t.Fatal("medium 应低于 expanded")
+	}
+	if sizeClassRank(SizeRegular) != sizeClassRank(SizeExpanded) {
+		t.Fatal("regular (旧两档的'大') 应与 expanded 同档")
+	}
+
+	// viewportToJS 的派生字段: medium 时 regularWidth 必须**仍为 true**
+	// (旧脚本按它写"平板才显示侧栏"这类分支, 若变 false 就是静默回归)。
+	resetViewportStateForTest()
+	t.Cleanup(resetViewportStateForTest)
+	jsReportViewport(nativeOptsFrom(map[string]any{"widthClass": "medium"}))
+	o, ok := viewportToJS(viewportFor(nil)).(*object.Object)
+	if !ok {
+		t.Fatal("viewportToJS 应返回对象")
+	}
+	get := func(k string) bool {
+		v, _ := o.GetProperty(k)
+		return object.ToString(v) == "true"
+	}
+	if !get("mediumWidth") {
+		t.Fatal("medium 时 mediumWidth 应为 true")
+	}
+	if get("compactWidth") || get("expandedWidth") {
+		t.Fatal("medium 时 compactWidth/expandedWidth 应为 false")
+	}
+	if !get("regularWidth") {
+		t.Fatal("medium 时 regularWidth 应为 true (>= medium 的语义)")
+	}
+
+	// 宿主只报两档的旧词 regular 时, expandedWidth 为 true 且 regularWidth 也为 true。
+	jsReportViewport(nativeOptsFrom(map[string]any{"widthClass": "regular"}))
+	o, _ = viewportToJS(viewportFor(nil)).(*object.Object)
+	get = func(k string) bool {
+		v, _ := o.GetProperty(k)
+		return object.ToString(v) == "true"
+	}
+	if !get("expandedWidth") || !get("regularWidth") || get("mediumWidth") {
+		t.Fatal("旧词 regular 应等同 expanded")
 	}
 }
 

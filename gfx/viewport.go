@@ -67,9 +67,24 @@ const (
 	ViewportUnknown    = "unknown"
 )
 
-// 尺寸类 (iOS 的 size class; Android 用同样的两个词表达同一个意思)。
+// 尺寸类 (iOS 的 size class; Android 用同样的词表达同一个意思)。
+//
+// **为什么是三档而不是两档**: 折叠屏"展开"这一态 (典型 600–840dp) 既不是手机
+// (compact) 也不是平板 (expanded) —— 用手机布局会浪费掉一半屏幕, 用平板布局
+// 又会让信息密度过低。Android 官方的大屏分界就在这里 (WindowManager /
+// Material 的 600 / 840), 单折设备展开后几乎全部落在 medium 档。
+//
+// 代价 (docs/mobile-adaptation.md 有 breaking note): 折叠展开态从 "regular"
+// 变成 "medium" —— 这是 **breaking**, 依赖字符串相等的脚本会坏。缓解办法是
+// `isTabletLayout()` 的语义保持不变 (>= medium 即真, 见其定义), 按它写的分支
+// 不受影响; `regularWidth` 也保留 (medium 时它为 true, 见 viewportToJS)。
 const (
-	SizeCompact = "compact"
+	SizeCompact  = "compact"  // < 600dp (手机竖屏)
+	SizeMedium   = "medium"   // 600..840dp (折叠屏展开 / 小平板)
+	SizeExpanded = "expanded" // > 840dp (平板横屏 / 展开的大折叠屏)
+	// SizeRegular 保留给"宿主只报两档"的旧上报: 它表示"大", 归一化时映射成
+	// expanded 的语义位 (见 normalizeSizeClass)。**新代码不要再用它做比较** ——
+	// 拿它去比 `widthClass()` 的返回值在折叠展开态会全部落空。
 	SizeRegular = "regular"
 )
 
@@ -84,8 +99,8 @@ type Viewport struct {
 	StageID        int     // 平台给的舞台编号 (Android 有, iOS/桌面可为 0)
 	SplitDirection string  // "horizontal" | "vertical"
 	SplitRatio     float64 // 本窗口在分屏里占的比例; 0 = 未知
-	WidthClass     string  // "compact" | "regular"
-	HeightClass    string
+	WidthClass     string  // "compact" | "medium" | "expanded" ("regular" = 旧两档上报)
+	HeightClass    string  // 高度**仍是两档**: "compact" | "regular"
 	// Updated 报告这份数据是"宿主报过"还是"内核缺省"。应用通常不需要它, 但
 	// 排查"安全区为什么是 0"时它是第一手线索。
 	Updated bool
@@ -327,21 +342,33 @@ func splitActive(v Viewport) bool {
 
 // deriveSizeClasses 在没有宿主上报尺寸类时, 用窗口宽度 / 缩放换算 dp 再判定。
 //
-// 600dp / 480dp 这两个断点是 Android 官方的大屏分界 (Jetpack WindowManager 用
-// 同一套), iOS 的 regular 起点也在这附近。对一个自研运行时来说, 与其发明自己的
+// 600dp / 840dp 这两个断点是 Android 官方的大屏分界 (WindowManager / Material
+// 用同一套), iOS 的 regular 起点也在这附近。对一个自研运行时来说, 与其发明自己的
 // 断点, 不如沿用"平台会怎么判"。这里只做**缺省推导**: 宿主报了 WidthClass 就以
 // 宿主为准 (折叠屏某些状态下系统仍报 compact, 那种情况只有宿主知道)。
+//
+// 高度**仍是两档** (480dp): 三档的意义在宽度 (横向空间决定要不要加栏/加大留白),
+// 而竖向分三档会让"折叠屏横过来"落进 medium 从而触发横向布局 —— 那正是最不想要
+// 的结果。宽三档 / 高两档是故意的, 不是漏改。
 func deriveSizeClasses(w, h int, scale float64) (string, string) {
 	if scale <= 0 {
 		scale = 1
 	}
-	cls := func(dp, threshold float64) string {
-		if dp < threshold {
-			return SizeCompact
-		}
-		return SizeRegular
+	dp := float64(w) / scale
+	var wc string
+	switch {
+	case dp < 600:
+		wc = SizeCompact
+	case dp <= 840:
+		wc = SizeMedium
+	default:
+		wc = SizeExpanded
 	}
-	return cls(float64(w)/scale, 600), cls(float64(h)/scale, 480)
+	hc := SizeRegular
+	if float64(h)/scale < 480 {
+		hc = SizeCompact
+	}
+	return wc, hc
 }
 
 // windowSurfaceOf 取窗口对应的 Surface (win 为 nil → 活跃窗口)。
@@ -420,9 +447,16 @@ func viewportToJS(v Viewport) object.Value {
 	o.SetProperty("splitRatio", object.NewNumber(v.SplitRatio))
 	nativeSet(o, "widthClass", v.WidthClass)
 	nativeSet(o, "heightClass", v.HeightClass)
-	// 三个最常用的派生判断: 折叠/分屏适配的分支几乎都落在这三条上。
+	// 派生判断: 折叠/分屏适配的分支几乎都落在这几条上。
+	//
+	// **regularWidth 的语义是"宽档 >= medium"**(不是"== regular"): 三档化之后
+	// 若还按等号判, 折叠屏展开时它会从 true 静默变成 false —— 旧脚本里
+	// "平板才显示侧栏" 这类分支会突然消失, 且没有任何报错。保成"至少 medium"
+	// 让旧代码在新增 medium 档时行为不变。
 	o.SetProperty("compactWidth", object.NewBoolean(v.WidthClass == SizeCompact))
-	o.SetProperty("regularWidth", object.NewBoolean(v.WidthClass == SizeRegular))
+	o.SetProperty("mediumWidth", object.NewBoolean(v.WidthClass == SizeMedium))
+	o.SetProperty("expandedWidth", object.NewBoolean(v.WidthClass == SizeExpanded || v.WidthClass == SizeRegular))
+	o.SetProperty("regularWidth", object.NewBoolean(sizeClassRank(v.WidthClass) >= sizeClassRank(SizeMedium)))
 	o.SetProperty("reported", object.NewBoolean(v.Updated))
 	return o
 }
@@ -572,14 +606,41 @@ func normalizeViewportMode(s string) string {
 }
 
 // normalizeSizeClass 归一化尺寸类 (不认识 → 空 = "没报", 让缺省推导接手)。
+//
+// `SizeRegular` 原样保留: 它是**旧上报的词**, 宿主 (尤其 iOS 的 UITraitCollection
+// 只有 compact/regular 两档) 今天仍然会报它。把它折成 expanded 会丢掉"宿主其实是
+// 两档语义"这一事实, 而保留原值再让 `isTabletLayout()` 用 `!= compact` 判断,
+// 两档与三档的宿主都能得到正确结果。
 func normalizeSizeClass(s string) string {
 	switch strings.ToLower(strings.TrimSpace(s)) {
 	case SizeCompact:
 		return SizeCompact
+	case SizeMedium:
+		return SizeMedium
+	case SizeExpanded:
+		return SizeExpanded
 	case SizeRegular:
 		return SizeRegular
 	}
 	return ""
+}
+
+// sizeClassRank 把尺寸类映射成有序档位, 供"至少是 X 档"这类比较用。
+//
+// 为什么要有它: 三档之后 `== SizeRegular` 这种写法必然漏掉 medium —— 而漏掉的
+// 症状是"折叠屏展开时还算手机布局", 看起来像没适配。有了序数, 判定就能写成
+// `rank(v.WidthClass) >= rank(SizeMedium)`, 与具体词表无关。
+// regular (旧两档的"大") 等同于 expanded: 它表达的就是"够大, 不是手机"。
+func sizeClassRank(s string) int {
+	switch s {
+	case SizeCompact:
+		return 0
+	case SizeMedium:
+		return 1
+	case SizeExpanded, SizeRegular:
+		return 2
+	}
+	return -1 // "没报" —— 与任何档位都比不了
 }
 
 // jsResetViewport 清空上报 (`resetViewport(win?)`)。
@@ -690,8 +751,18 @@ func init() {
 			"isCompactWidth": scr("isCompactWidth", func(args ...object.Value) object.Value {
 				return object.NewBoolean(viewportResolved(windowArg(args)).WidthClass == SizeCompact)
 			}),
+			"isMediumWidth": scr("isMediumWidth", func(args ...object.Value) object.Value {
+				return object.NewBoolean(viewportResolved(windowArg(args)).WidthClass == SizeMedium)
+			}),
+			"isExpandedWidth": scr("isExpandedWidth", func(args ...object.Value) object.Value {
+				c := viewportResolved(windowArg(args)).WidthClass
+				return object.NewBoolean(c == SizeExpanded || c == SizeRegular)
+			}),
+			// isTabletLayout 的语义**刻意保持不变**: "不是手机竖屏" (>= medium)。
+			// 三档之前它等价于 == regular, 三档之后若仍写等号, 折叠屏展开态会
+			// 静默变成 false —— 那正是这次改动最危险的回归点。
 			"isTabletLayout": scr("isTabletLayout", func(args ...object.Value) object.Value {
-				return object.NewBoolean(viewportResolved(windowArg(args)).WidthClass == SizeRegular)
+				return object.NewBoolean(sizeClassRank(viewportResolved(windowArg(args)).WidthClass) >= sizeClassRank(SizeMedium))
 			}),
 
 			"onViewportChange": scr("onViewportChange", jsOnViewportChange),
