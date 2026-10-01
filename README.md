@@ -494,7 +494,7 @@ REPL 内建命令：`:help`（帮助）、`:clear`（重置全局环境）、`:e
 | `tstransform/` | TS/TSX → JS 的入库转译（内嵌 esbuild Go API，类型剥离 + JSX 保留），`vm` 加载 `.ts`/`.tsx` 时调用 |
 | `test/` | 测试相关：`bench/` 性能剖析基准（fib、函数调用、对象操作、数值解析） |
 | `testdata/` | 可直接运行的示例脚本（语言特性、宿主 API、GUI 示例） |
-| `docs/` | **对外文档**（GUI 指南、运行时 API 教程、分发与发版手册）——过程性材料在 `agent_doc/`（不随仓库发布） |
+| `docs/` | **对外文档**（GUI 指南、运行时 API 教程、分发与发版手册）——过程性台账由维护者在仓库外维护（不随仓库发布） |
 | `npm/` | **子模块** → [gox-npm](https://github.com/14752222/gox-npm)：npm 包 `@goxjs/goxjs` 的**定义**（`package.json` / `bin/gox.js` / 包说明），二进制由发版流水线现场编译，不进仓库 |
 | `scripts/` | 构建与检查脚本：`build-npm.sh` 交叉编译五个平台的二进制；`check-site.py` 官网静态检查；`check-registries.py` 注册表一致性（内置组件四处 / gx 模块三处 / 版本号 / npm 清单），配 `check-registries-selftest.py` 做负向自测 |
 | `.github/workflows/` | CI：`ci.yml` 常规闸门（注册表一致性 + `go build`/`vet`/`test`）；`release.yml` 发版流水线（push main / tag / Release → npm）；`pages.yml` 官网发布 |
@@ -583,14 +583,14 @@ ci(release): 打包闸改回 tar 校验，不再解析 npm 的输出
   子节点写 ``{() => sig()}`` 而不是 `{sig()}`），传值只是一张快照 —— 而且**子节点写成快照
   是全静默的**（属性误用有警告，子节点没有），见 [docs/gui-guide.md](docs/gui-guide.md) §8.1
 - 新增标准库 API 请同步更新 [docs/js-runtime-api-tutorial.md](docs/js-runtime-api-tutorial.md)；
-  未决与未实现项记入 `agent_doc/undecided-and-unimplemented.md`（过程性台账，不随仓库发布）
-- 涉及 GUI 组件的改动，请在 `agent_doc/gui-component-status.md` 追加一条落地记录（同上）
+  未决与未实现项由维护者记入仓库外的过程性台账（不随仓库发布，贡献者无需更新）
+- 涉及 GUI 组件的改动，请同步 [docs/gui-guide.md](docs/gui-guide.md) 与官网组件参考（过程性落地台账由维护者在仓库外维护）
 - 示例脚本放在 `testdata/` 并确保可直接运行
 
 ## 相关文档
 
 > 下表只列 `docs/` 里**已定稿、对外发布**的文档。技术选型、开发计划、现状台账等
-> **未定稿的过程性材料**统一放在 `agent_doc/`，已被 `.gitignore` 排除，不会进远端。
+> **未定稿的过程性材料**由维护者在仓库外维护，不进远端。
 
 | 文档 | 内容 |
 |---|---|
