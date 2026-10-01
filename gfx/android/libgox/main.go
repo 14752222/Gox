@@ -687,6 +687,31 @@ func Java_com_gox_GoxRuntime_nativeReportBackPress(e *C.JNIEnv, clazz C.jclass) 
 	return 0
 }
 
+// Java_com_gox_GoxRuntime_nativeSetDisplayFold 宿主上报折叠屏状态 (JSON, 字段
+// 见 gfx/mobile.FoldInfo)。任意线程可调 (内部 gfx.Post 回 GUI 线程)。
+//
+// Kotlin 侧在 onConfigurationChanged / WindowInfoTracker 的回调里, 由
+// androidx.window 的 FoldingFeature (bounds / orientation / state) 与
+// WindowMetricsCalculator 的 widthDp 拼出:
+//
+//	{"display":"0","posture":"half-open","width":1000,"height":800,
+//	 "widthClass":"expanded","heightClass":"regular",
+//	 "hinge":{"x":480,"y":0,"width":40,"height":800,"orientation":"vertical"},
+//	 "regions":[{"kind":"division","x":480,"y":0,"width":40,"height":800,"active":true}]}
+//
+// 判据: FoldingFeature.State.HALF_OPENED → posture=half-open + kind=division;
+// State.FLAT → posture=flat + 同一条折痕但 width=0/active=false (这样
+// hasFold 仍为 true, 界面列数不会在折叠/平展间跳)。isSeparating=false 的
+// 折痕是 occlusion (铰链只遮住一小块, 不分割窗口) → kind=occlusion。
+// 解析/校验/上报全部委托 gfx/mobile.ReportDisplayFold, 与 iOS 同一份实现。
+//
+//export Java_com_gox_GoxRuntime_nativeSetDisplayFold
+func Java_com_gox_GoxRuntime_nativeSetDisplayFold(e *C.JNIEnv, clazz C.jclass, data C.jstring) {
+	if err := mobile.ReportDisplayFold(goString(e, data)); err != nil {
+		gfxandroid.Logf("nativeSetDisplayFold: %v", err)
+	}
+}
+
 // ── JSON ↔ object.Value (args 下行 / 结果回填上行共用的窄转换) ──
 
 // objToJSON 把内核给的参数对象序列化成 JSON 文本 (给 Kotlin org.json 解析)。

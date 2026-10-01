@@ -542,6 +542,28 @@ func gox_report_permission(kind, state *C.char) {
 	gfx.Post(func() { gfx.ReportPermission(k, st) })
 }
 
+// gox_set_display_fold 宿主上报折叠屏状态 (JSON, 字段见 gfx/mobile.FoldInfo)。
+// 任意线程可调。
+//
+// Swift 侧在 traitCollectionDidChange / viewDidLayoutSubviews 里, 由
+// view.reservedRegions (iOS 27+ / iPhone Duo) 与 trait 的 size class 拼出:
+//
+//	{"display":"0","posture":"half-open","width":1000,"height":800,
+//	 "widthClass":"expanded","heightClass":"regular",
+//	 "hinge":{"x":480,"y":0,"width":40,"height":800,"orientation":"vertical"},
+//	 "regions":[{"kind":"division","x":480,"y":0,"width":40,"height":800,"active":true}]}
+//
+// 只报姿态不报 regions 是合法的 (内核会按姿态判 hasFold=false 并退回宽度判定);
+// 但**不要**在这里猜折痕 —— 解析与上报全部委托 gfx/mobile.ReportDisplayFold,
+// 两端 (iOS/Android) 走同一份校验。
+//
+//export gox_set_display_fold
+func gox_set_display_fold(data *C.char) {
+	if err := mobile.ReportDisplayFold(cStr(data)); err != nil {
+		gfxios.Logf("gox_set_display_fold: %v", err)
+	}
+}
+
 // ── JSON ↔ object.Value (args 下行 / 结果回填上行共用的窄转换) ──
 // 与 gfx/android/libgox 的同名助手协议一致 (两份拷贝的原因见文件头)。
 

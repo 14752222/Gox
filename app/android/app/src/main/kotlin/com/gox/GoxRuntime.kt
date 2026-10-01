@@ -104,6 +104,27 @@ object GoxRuntime {
     external fun nativeReportPermission(kind: String, state: String)
 
     /**
+     * 折叠屏状态上报 (Android 侧折叠屏支持: androidx.window 的 FoldingFeature)。
+     *
+     * json 字段 (缺省字段 Go 侧走零值回退, 见 `gfx/mobile.FoldInfo`):
+     * ```
+     * {"display":"0","posture":"half-open","width":1000,"height":800,
+     *  "widthClass":"expanded","heightClass":"regular",
+     *  "hinge":{"x":480,"y":0,"width":40,"height":800,"orientation":"vertical"},
+     *  "regions":[{"kind":"division","x":480,"y":0,"width":40,"height":800,"active":true}]}
+     * ```
+     *
+     * 判据 (宿主侧不要自己发明): `FoldingFeature.State.HALF_OPENED` → posture
+     * "half-open" + kind "division"; `State.FLAT` → posture "flat", 折痕仍报出但
+     * `width=0` / `active=false` (这样脚本侧的 `hasFold()` 恒为 true, 界面列数
+     * 不会在折叠/平展之间 1↔2 跳); `isSeparating=false` 的折痕是 **occlusion**
+     * (铰链只遮住一小块, 不分割窗口), 用 kind "occlusion"。
+     *
+     * 任意线程可调: Go 侧经 gfx.Post 投回 GUI 线程再解析上报。
+     */
+    external fun nativeSetDisplayFold(json: String)
+
+    /**
      * 返回键询问脚本: 返回 true = 脚本已处理 (宿主不要退出)。
      * **同步阻塞最多 500ms** 等脚本线程答复 (内部 gfx.Post + 泵唤醒 + 限时等待),
      * 超时按未处理返回 —— 见 libgox 里该导出的注释。
