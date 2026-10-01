@@ -233,6 +233,10 @@ var knownTags = map[string]struct{}{
 	"textarea": {},
 	// P2-9 图片
 	"image": {},
+	// S8 视频: **契约 + 降级** (见 video.go 的文件头与 docs/video-decision.md)。
+	// 内核不含解码器, 内联播放走平台视频层 (nativeVideoHost 可选能力):
+	// 后端接了才有画面, 没接就画封面/占位并诚实报一次 unsupported。
+	"video": {},
 	// P3-1 自绘画布
 	"canvas": {},
 	// P2-8 滑块
@@ -667,6 +671,10 @@ func disposeNode(n *GuiNode) {
 	// 过渡动画 (P3-2) 一并摘掉: 心跳定时器只认 animNodes 里的节点,
 	// 离树节点留在表里会被每帧标脏 (而且标的是脏矩形流程看不见的节点)。
 	cancelAnim(n)
+	// 视频表面 (S8) 立刻释放: 它不在 *image.RGBA 里, 不跟着节点一起消失。
+	// 只靠下次 flush 兜底是不行的 —— 子树销毁后可能再也没有重绘
+	// (没有脏区就不进 redraw), 那块平台表面会一直浮在窗口上关不掉。
+	videoRelease(n)
 }
 
 // removeChild 从 Children 里摘掉一个子节点 (存在才摘)。

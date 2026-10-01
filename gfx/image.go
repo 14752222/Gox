@@ -185,6 +185,15 @@ func warnImageLoadOnce(path string, err error) {
 // 输入, 没有"所在目录"这个概念 (可以从 stdin、从字符串、从打包产物来)。
 func imageSrcPath(n *GuiNode) string {
 	src, _ := n.PropStr("src")
+	return resolveAssetPath(src)
+}
+
+// resolveAssetPath 是"资源类 prop → 实际文件路径"的唯一实现。
+//
+// 抽出来是因为 `<video>` 除了 `src` 还有一个 `poster` (封面图), 两者必须
+// 按**同一套规则**解析 —— 各写一份的话, 早晚会出现"视频能找到、封面找不到"
+// 这种只有用户才会发现的差异。
+func resolveAssetPath(src string) string {
 	if src == "" {
 		return ""
 	}

@@ -43,6 +43,13 @@ type fakeSurface struct {
 	// 字段放在这里而不是各测试文件里加包装类型, 是为了让"注入假原生框"
 	// 与其它可选接口 (剪贴板等) 用同一种写法。
 	dialog *fakeDialogHost
+
+	// video 非空时, fakeSurface 就同时满足 nativeVideoHost 可选接口 (S8)。
+	// 与 dialog 同一套写法: 字段在共享设施里, 假宿主自身 (fakeVideoHost)
+	// 与转发方法定义在 video_test.go。
+	// **nil 表示"这个后端没有平台视频层"** —— 真后端里 win32 / X11 / cocoa
+	// 现在就是这状态, 所以它同时是 `<video>` 降级路径的默认场景。
+	video *fakeVideoHost
 }
 
 // SetTitle / ResizeClient 实现 windowController 可选接口: 记录标题;
@@ -690,6 +697,20 @@ func mountTestApp(t *testing.T, root *GuiNode, w, h int) (*fakeSurface, *app) {
 	t.Helper()
 	fake := newFakeSurface()
 	fake.w, fake.h = w, h
+	return fake, mountTestAppWith(t, root, fake, w, h)
+}
+
+// mountTestAppWith 与 mountTestApp 同款, 但用**调用方给的**假 Surface
+// (尺寸仍以 w/h 为准)。
+//
+// 存在的理由: 有些组件只在"首帧之前后端就已经具备某项可选能力"时才走那条路
+// (例如 `<video>` 首帧就挂平台表面), 而 mountTestApp 内部 new 出来的 Surface
+// 没法在首帧前配置。
+func mountTestAppWith(t *testing.T, root *GuiNode, fake *fakeSurface, w, h int) *app {
+	t.Helper()
+	if w > 0 && h > 0 {
+		fake.w, fake.h = w, h
+	}
 	a := &app{
 		surface:    fake,
 		root:       root,
@@ -710,7 +731,7 @@ func mountTestApp(t *testing.T, root *GuiNode, w, h int) (*fakeSurface, *app) {
 		appMu.Unlock()
 	})
 	a.redraw()
-	return fake, a
+	return a
 }
 
 // pushAndPump 注入一个事件并跑一轮 pump (处理事件 + 按需重绘)。

@@ -511,6 +511,23 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 				h = nh
 			}
 		}
+	case "video":
+		// 视频: 未显式给尺寸时优先取**封面图**的自然尺寸 (封面就是这块区域的
+		// 视觉), 没写封面或封面加载失败则给 16:9 缺省。
+		// 兜底同样必须非 0 (理由同 image): 0 尺寸子树被 drawNode 整支跳过,
+		// 用户看到的是"什么都没有", 而不是"这里本该有段视频"。
+		if w == 0 || h == 0 {
+			nw, nh := videoPosterNaturalSize(n)
+			if nw <= 0 || nh <= 0 {
+				nw, nh = videoDefaultW, videoDefaultH
+			}
+			if w == 0 {
+				w = nw
+			}
+			if h == 0 {
+				h = nh
+			}
+		}
 	case "canvas":
 		// 画布: canvas 不是容器 (stretchesCross 为 false), 拿不到父容器的
 		// 交叉轴拉伸, 所以**两个方向都要给缺省值** —— 否则不写 width/height

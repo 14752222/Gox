@@ -436,6 +436,11 @@ func drawNode(img *image.RGBA, n *GuiNode) {
 		paintTextarea(img, n, disabled)
 	case "image":
 		paintImage(img, n, disabled)
+	case "video":
+		// 视频: 内核只画"封面/占位", 真正的画面由平台视频表面**叠在窗口之上**
+		// (不在 *image.RGBA 里, 所以不经过这里)。装饰在自己这条分支里补画,
+		// 否则 <video background=…> 会静默失效。
+		paintVideo(img, n, disabled)
 	case "canvas":
 		paintCanvas(img, n, disabled)
 	case "slider":

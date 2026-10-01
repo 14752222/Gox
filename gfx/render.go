@@ -1324,6 +1324,9 @@ func (a *app) redraw() {
 
 	if full {
 		Layout(root, w, h)
+		// 平台视频表面 (S8) 在**本帧布局算完之后**对齐 (见 video.go):
+		// 它是叠在窗口之上的另一层, 不参与脏矩形 diff, 位置就是刚刚算出的 Box。
+		flushVideoSurfaces(a)
 		markAllPrev(root)
 		FillRect(a.img, Rect{0, 0, w, h}, white)
 		Draw(a.img, root)
@@ -1336,6 +1339,7 @@ func (a *app) redraw() {
 	// 局部: 重新布局, 对比新旧框收集脏区
 	a.dirtyNodes = dirtyNodes // diffRects 读取
 	Layout(root, w, h)
+	flushVideoSurfaces(a) // 同 full 分支: 表面位置跟着本帧布局走
 	rects := mergeRects(a.diffRects(), 16)
 	a.dirtyNodes = nil
 

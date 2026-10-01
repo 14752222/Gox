@@ -140,6 +140,7 @@ macOS 后端（cocoa）已知限制：
 | `textarea` | `value` / `onInput` / `rows` / `placeholder` / `disabled` | 多行受控编辑器；光标 `{行,列}` 二维移动（↑↓←→/Home/End/Backspace/Delete），**`Enter` 插入换行**（不同于 input）；内容超高时纵向滚动并跟随光标；同样支持 IME。缺省 4 行 × 240px |
 | `scroll` | `width` / `height` / `onWheel` | 滚动容器：内容超高时右侧、超宽时底部出现 8px 轨道 + 比例滑块；滚轮滚动（一格 60px，`Shift+滚轮`走横向），滑块可拖拽，到边界后滚轮才冒泡给 `onWheel`；溢出的内容既画不出来也点不中。缺省高 200 |
 | `image` | `src` / `width` / `height` / `disabled` | 显示 png / jpeg / gif 图片（Go 标准库解码，无新增依赖）；不给 `width`/`height` 时用图片自然尺寸，给了就按最近邻缩放；`src` 相对**进程工作目录**解析，加载失败画灰底交叉线占位（stderr 每个路径只警告一次），不中断其它内容 |
+| `video` | `src` / `poster` / `playing` / `autoplay` / `muted` / `loop` / `volume` / `controls` / `fit` | 视频框：**标签与宿主契约**（S8）。内核**不解码** —— 播放交给窗口后端可选实现的 `nativeVideoHost`（平台视频层：MF / AVPlayerLayer / SurfaceView），决策见 [video-decision.md](video-decision.md)。后端没这块能力时画 `poster` 封面（没封面就深色底 + 播放三角），并**诚实报错**：stderr 告警一次 + 对该节点派发一次 `onError({code:"unsupported"})`，`canIUse("video")` 照实回答 `false`。`playing`（等价 `autoplay`）、`muted` / `loop` / `volume` 都是**受控**属性，宿主上报的状态经 `onReady` / `onPlay` / `onPause` / `onEnded` / `onTimeUpdate({currentTime, duration})` 回到脚本。`fit` 取 `contain`（缺省）/ `cover` / `fill`；不给尺寸时用封面自然尺寸，兜底 320×180 |
 | `canvas` | `width` / `height` / `onDraw(ctx)` / `background` / `border` | 自绘画布：`onDraw` 收到一个 ctx，用 `ctx.fillRect/strokeRect/fillCircle/strokeCircle/line/drawText/clear` 直接落笔，坐标是**画布局部坐标**（0,0 = 左上角），越界部分自动裁掉；`ctx.width` / `ctx.height` 是画布尺寸。`onDraw` 里读到的 signal 变化会自动重绘（缺省 200×120） |
 | `slider` | `value` / `onInput` / `min` / `max` / `step` / `disabled` | 受控滑块（`min`/`max`/`step` 缺省 0/100/1）：显示只看 `value`，拖动或**单击轨道任意位置**派发 `onInput({value})`（`value` 是 **number**）；拖出窗口仍跟手（win32 走 `SetCapture`）。缺省 160×24 |
 | `menubar` | `background` / `border` | 菜单栏容器（缺省 26px 高、自动铺满容器宽）；**它只是个普通容器**，脚本自己写 `column { menubar; 内容 }`，gfx 不会往 root 里偷偷插一条 |
@@ -810,6 +811,7 @@ import { devSnapshot } from "gx/dev";
 | [ime_demo.js](../testdata/ime_demo.js) | 输入法：候选词整批提交与光标跨批 |
 | [scroll_demo.js](../testdata/scroll_demo.js) | 滚动容器与边界冒泡 |
 | [image_demo.js](../testdata/image_demo.js) | 图片五态：自然尺寸 / 放大 / 缩小 / 坏路径占位 / 禁用 |
+| [video_demo.js](../testdata/video_demo.js) | 视频框三态：封面 contain / 无封面占位 / `fit=cover` + 用户 background（桌面后端降级为封面 + 一次 `onError`） |
 | [events_demo.js](../testdata/events_demo.js) | 鼠标 / 滚轮 / 右键 / 修饰键 |
 | [focus_demo.js](../testdata/focus_demo.js) | 焦点框与 focus/blur |
 | [hover_demo.js](../testdata/hover_demo.js) | 悬停与按压反馈 |
@@ -880,6 +882,7 @@ import { devSnapshot } from "gx/dev";
 | `hinge()` 的宽度读出来是 0，回填后折痕像丢了 | `hinge()` / `regions()` 的**输出**用 `width`/`height`，而 `reportPosture` 的**入参**只读 `w`/`h` ⇒ 回填时静默读成 0（折痕宽度只影响双栏比例，所以什么错都不报） | 两种拼法现在都认（2026-09-22 起，短名优先）：`reportPosture({ hinge: hinge() })` 可以直接回填 |
 | 响应式 prop / 条件 / 列表只有第一帧是对的 | prop 收到的是**取值函数**，写成快照（`disabled={count() === 0}`、`each={rows()}`）之后就再也不同步 | 一律传函数：`disabled={() => count() === 0}` / `each={rows}` / `show={cond}`。内核会对非法形态打去重警告（见 §8.1） |
 | **文本停在第一帧，信号变了它不动** | **子节点**同样在调用当场求值：``<text>count: {count()}</text>`` 里的 `count()` 在 `h()` 之前就求值完，`h()` 建出来的是一个静态文本节点 | 写成函数子节点：``<text>{() => `count: ${count()}`}</text>``。**这条没有警告、也不可能有** —— 文本子节点天生收标量，运行期分不出"静态文本"和"快照"（§8.1），只能靠纪律 |
+| **`<video>` 只有封面/播放三角，没有画面** | 本后端**没有平台视频层**（`nativeVideoHost`）—— 桌面三后端目前都没接。这不是 bug：内核不解码、也不假装在播 | 先问再选路：`canIUse("video")` 为 `false` 就跳系统播放器（`gx/media` 的 `preview()`）。现象上 stderr 会有一条告警，且该节点收到一次 `onError({code:"unsupported"})`（决策与后端接入见 [video-decision.md](video-decision.md)） |
 
 > 本表里"JSX 缺省工厂"、"缺名导入"、"嵌套解构"、"折痕键名"四件事都在 2026-09-22
 > 修在框架里了；文档里其它地方若还写着"必须自己 import h""嵌套解构不支持"，以本节为准。
@@ -897,5 +900,6 @@ import { devSnapshot } from "gx/dev";
 | [gui-model-binding.md](gui-model-binding.md) | `model` 双向绑定：接口设计、语义表、与 Vue 的对照、反例 |
 | [desktop-distribution.md](desktop-distribution.md) | 各平台分发注意事项（图标、签名、打包格式） |
 
-> 组件现状台账、需求提示词、样式/选型调研、未决清单等**过程性文档**在仓库根目录的
-> `agent_doc/` 下，已被 `.gitignore` 排除、不随仓库发布。
+> 组件现状台账、需求提示词、样式/选型调研、未决清单等**过程性文档不随仓库发布**：
+> 它们统一放在项目共享资产盘的 `agent_doc/` 目录（仅协作者可见），仓库里不留副本
+> （2026-09-27 起本地 `agent_doc/` 已删除，`.gitignore` 也已排除该路径）。
