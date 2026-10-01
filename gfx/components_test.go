@@ -462,6 +462,7 @@ func TestExampleScriptsMount(t *testing.T) {
 		"transition_demo.js",             // P3-2 过渡动画 (首帧应静止: 见断言)
 		"dialog_native_demo.js",          // P3-4 原生对话框 (测试注入假后端应答)
 		"search_demo.js",                 // T08 搜索框 (input 字段变体: Enter 提交 onSearch)
+		"rating_demo.js",                 // T08 星级评分 (完全受控: mousedown 派发 onChange)
 		"menu_demo.js",                   // P3-5 菜单栏 / 右键菜单 / 快捷键
 		"resize_demo.js",                 // 屏幕 A: onResize + useWindowSize 模式
 		"routing_demo.js",                // 路由 A: signal 切页 (交互全流程见 routing_test.go)

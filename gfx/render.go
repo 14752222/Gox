@@ -901,6 +901,12 @@ func (a *app) handleMouseDown(x, y int) {
 			return
 		}
 	}
+	// rating 星级 (T08): 与 tabs/pagination 同款 —— mousedown 几何命中即
+	// 派发 onChange({value}), 完全受控 (显示值归 value prop, 不改自身状态)。
+	if rt := ratingInChain(target); rt != nil {
+		a.ratingPick(rt, x)
+		return
+	}
 	a.setPress(pressChainOf(target))
 }
 

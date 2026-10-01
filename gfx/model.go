@@ -31,6 +31,7 @@ import (
 //	input · textarea  model ⇄ value      onInput({value})   字符串
 //	slider            model ⇄ value      onInput({value})   数字 (控件给什么就是什么, 不做转换)
 //	select            model ⇄ value      onChange({value})  字符串
+//	rating            model ⇄ value      onChange({value})  数字 (第几颗星)
 //	checkbox · switch model ⇄ checked    onClick()          布尔 (写入 = 当前值取反)
 //	radio             model ⇄ checked    onClick()          选中时把 value 属性写进 model
 //	                  ^ checked 是**派生**的: model() === value, 互斥由"共用一个 model"天然成立
@@ -180,7 +181,7 @@ func modelWrite(set object.Value, val object.Value) {
 	}
 }
 
-// modelPickPayload 从事件载荷里取新值: input / textarea / slider / select 都派发
+// modelPickPayload 从事件载荷里取新值: input / textarea / slider / select / rating 都派发
 // 一个 `{value}` 对象, 这里原样转手 —— 类型由控件决定, model 不做任何转换
 // (不做转换才不会偷偷把 "3" 变成 3, 也不会把布尔变成 "true")。
 func modelPickPayload(arg object.Value) object.Value {
@@ -237,7 +238,7 @@ func expandModelProp(n *GuiNode, props *object.Object) {
 		modelSetProp(props, "value", readVal)
 		modelSetProp(props, "onInput", modelEvent(props, "onInput", mb, writable, modelPickPayload))
 
-	case "select":
+	case "select", "rating":
 		modelOverrideWarn(n.Tag, props, "value")
 		modelSetProp(props, "value", readVal)
 		modelSetProp(props, "onChange", modelEvent(props, "onChange", mb, writable, modelPickPayload))
@@ -264,7 +265,7 @@ func expandModelProp(n *GuiNode, props *object.Object) {
 
 	default:
 		modelWarnOnce("tag:"+n.Tag,
-			"model: 只支持受控组件 (input/textarea/slider/select/checkbox/switch/radio), 标签 %q 已忽略", n.Tag)
+			"model: 只支持受控组件 (input/textarea/slider/select/rating/checkbox/switch/radio), 标签 %q 已忽略", n.Tag)
 	}
 }
 

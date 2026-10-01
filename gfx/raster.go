@@ -433,6 +433,9 @@ func drawNode(img *image.RGBA, n *GuiNode) {
 	case "search":
 		// 搜索框: input 的字段核心 + 左侧放大镜 (差异见 gfx/search.go)。
 		paintSearch(img, n, disabled)
+	case "rating":
+		// 星级评分: 装饰先补画, 再逐格画星 (见 gfx/rating.go)。
+		paintRating(img, n, disabled)
 	case "scroll":
 		paintScroll(img, n, disabled)
 	case "textarea":

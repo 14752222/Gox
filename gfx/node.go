@@ -230,6 +230,9 @@ var knownTags = map[string]struct{}{
 	// T08 搜索框: input 的字段变体 (左侧放大镜; 获焦按 Enter 整段提交 onSearch)。
 	// 与 input 共用同一套字段机制 —— 见 gfx/search.go 的文件头。
 	"search": {},
+	// T08 星级评分: 完全受控 (显示看 value, mousedown 几何命中即派发
+	// onChange({value})) —— 见 gfx/rating.go 的文件头。
+	"rating": {},
 	// P2-5 滚动容器
 	"scroll": {},
 	// P2-6 多行文本: textarea (编辑器) + text 的 wrap/ellipsis 已在 text 上

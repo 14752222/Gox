@@ -475,6 +475,15 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 		if h == 0 {
 			h = selectRowH
 		}
+	case "rating":
+		// 星级: 每颗星占一个 20px 方格 (max 缺省 5 ⇒ 100x20)。星形半径按
+		// min(格宽, 高) 自适应, 拉大组件星形跟着变大, 不会溢出。
+		if w == 0 {
+			w = n.ratingMax() * ratingCellSize
+		}
+		if h == 0 {
+			h = ratingCellSize
+		}
 	case "scroll":
 		// 滚动视口: 宽度不给固有值 (0 → 父容器 stretch 时铺满, 或脚本显式
 		// width); 高度必须给缺省值 —— column 的主轴是高度, 0 高会变成

@@ -72,7 +72,7 @@ TEXT_NODE = "文本节点没有自己的盒子：位置由父节点在内容区�
 # 理由必须是真实的机制，不能写"以后补" —— 它会被原样塞进 CI 的 ::error:: 注解。
 EXEMPT_LAYOUT = {
     t: LEAF for t in ["canvas", "checkbox", "image", "input", "progress",
-                      "radio", "search", "separator", "slider", "spacer", "switch",
+                      "radio", "rating", "search", "separator", "slider", "spacer", "switch",
                       # video: 叶子控件（无流式子节点），但它**有** drawNode 分支
                       # （paintVideo 自己画封面/占位 + 装饰），所以只在这张表里。
                       "video"]
