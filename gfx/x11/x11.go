@@ -55,6 +55,9 @@ type surface struct {
 	mu     sync.Mutex
 	closed bool
 	w, h   int
+	// x, y 是最近一次 ConfigureNotify 报的**父窗口坐标系**位置 (移动检测用;
+	// 对外报的屏幕坐标由 Bounds 现算, 见 window.go)。
+	x, y int
 }
 
 func newSurface(cfg gfx.WindowConfig) (gfx.Surface, error) {
@@ -84,8 +87,14 @@ func newSurface(cfg gfx.WindowConfig) (gfx.Surface, error) {
 		xproto.EventMaskKeyPress | xproto.EventMaskKeyRelease |
 		xproto.EventMaskButtonPress | xproto.EventMaskButtonRelease |
 		xproto.EventMaskPointerMotion | xproto.EventMaskLeaveWindow
+	// 初始位置 (§四 窗口/系统缺口): 没指定就交给 WM 摆放 (0, 0 是"随你"),
+	// 指定了就精确落点 —— X11 没有 CW_USEDEFAULT, 0 就是最朴素的默认。
+	cx, cy := int16(0), int16(0)
+	if cfg.HasPos {
+		cx, cy = int16(cfg.X), int16(cfg.Y)
+	}
 	xproto.CreateWindow(conn, screen.RootDepth, win, screen.Root,
-		0, 0, uint16(w), uint16(h), 1,
+		cx, cy, uint16(w), uint16(h), 1,
 		xproto.WindowClassInputOutput, screen.RootVisual,
 		xproto.CwEventMask, []uint32{eventMask})
 
@@ -375,10 +384,25 @@ func (s *surface) translate(ev xgb.Event) bool {
 	case *xproto.ConfigureNotifyEvent:
 		s.mu.Lock()
 		resized := int(e.Width) != s.w || int(e.Height) != s.h
+		moved := int(e.X) != s.x || int(e.Y) != s.y
 		s.w, s.h = int(e.Width), int(e.Height)
+		s.x, s.y = int(e.X), int(e.Y)
 		s.mu.Unlock()
 		if resized {
 			s.trySend(gfx.Event{Kind: gfx.EventResize, W: int(e.Width), H: int(e.Height)})
+		}
+		// 移动 (§四 窗口/系统缺口): ConfigureNotify 的 X/Y 是**相对父窗口**
+		// 的坐标, 而 gfx 的 EventMove 口径是屏幕 (根窗口) 坐标。有 WM 重定
+		// 父 (reparenting) 时两者差着标题栏/边框, 直接转发是错的 —— 所以
+		// 这里做一次 TranslateCoordinates 换算。
+		//
+		// 往返是安全的: xgb 的回复由它自己的读协程按序号分发, 本函数虽在
+		// VM 线程上跑 (事件由读协程经通道递过来), 也不会与事件读抢 socket。
+		if moved {
+			root := xproto.Setup(s.conn).DefaultScreen(s.conn).Root
+			if rep, err := xproto.TranslateCoordinates(s.conn, s.win, root, 0, 0).Reply(); err == nil && rep != nil {
+				s.trySend(gfx.Event{Kind: gfx.EventMove, X: int(rep.DstX), Y: int(rep.DstY)})
+			}
 		}
 	}
 	return true

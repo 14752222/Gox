@@ -68,13 +68,19 @@ func (n *GuiNode) blockWrapWidth(constraint int) int {
 }
 
 // blockLines 返回文本块换行后的行 (已按 ellipsis 截断), 绘制与测量共用。
+//
+// 样式在这里解析一次并传下去 (§四 文本域缺口): 行高/字距/字体族都改变换行
+// 结果, 而**测量与绘制必须用同一份样式** —— 各自解析一遍就可能拿到不同的
+// 祖先链快照 (测量发生在布局中途, 树可能正在变), 症状是"折行位置与盒子
+// 高度对不上"。所以 blockLines / blockSize 都收一个已解析好的样式。
 func (n *GuiNode) blockLines(constraint int) []string {
-	return wrapText(n.TextContent(), n.FontSize(), n.blockWrapWidth(constraint), n.maxLines())
+	return wrapTextStyled(n.TextContent(), resolveTextStyle(n),
+		n.blockWrapWidth(constraint), n.maxLines())
 }
 
 // blockSize 按约束宽测量文本块 (宽 = 最长行, 高 = 行数 × 行高)。
 func (n *GuiNode) blockSize(constraint int) (w, h int) {
-	return MeasureTextMulti(n.TextContent(), n.FontSize(),
+	return MeasureTextMultiStyled(n.TextContent(), resolveTextStyle(n),
 		n.blockWrapWidth(constraint), n.maxLines())
 }
 

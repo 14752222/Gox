@@ -71,13 +71,13 @@
 | 读屏（VoiceOver / TalkBack） | `mobile-adaptation.md` §9、`mobile-regression-checklist.md` §6：**P1 再立项** |
 | 内核收编 dp 单位 | `mobile-adaptation.md` §9：现靠脚本侧 `pixelRatio`，内核收编是 **P1 候选** |
 | IME 结果提交制（组合中间态不逐键上报） | 同上，设计选择 |
-| `textarea` 软换行 / 文本选区复制 / 横向滚动 | `undecided-and-unimplemented.md` §三：v1 明确不做（**注**：横向滚动已随 `59f4bdb` 落地，此条需复核是否只剩软换行与选区） |
+| ~~`textarea` 软换行 / 文本选区复制 / 横向滚动~~ | ✅ **已兑付（2026-10-02，见 §十）**：横向滚动随 `59f4bdb` 落地，软换行 + 选区/复制/剪切/粘贴本轮补齐 |
 | GUI 常驻脚本热更新 | `docs/dev-workflow.md` 顶部 TODO：泵循环阻塞监听，需先在 gfx 上游讨论 |
-| 复杂 shaping / 富文本 / 粗斜体字族 | `undecided-and-unimplemented.md` §四：文本域缺口，v1 不做 |
+| 复杂 shaping / 富文本 / ~~粗斜体字族~~ | `undecided-and-unimplemented.md` §四：文本域缺口。**粗斜体/字体族/行高/字距已于 2026-10-02 落地（见 §十）**；复杂 shaping（连字、双向、断行断词）与富文本仍不做 |
 | `transform` / 路径对象 / 变换矩阵 / 贝塞尔 / 裁剪栈 | 同上 §四：绘制域缺口 |
 | 双击/三击、通用 drag & drop、文件拖放、系统右键菜单抑制 | 同上 §四：事件域缺口 |
 | `alignSelf` | 同上 §四：布局域缺口 |
-| 窗口位置与层级、模态子窗口、光标形状、窗口尺寸约束/全屏 | 同上 §四：窗口/系统域缺口 |
+| ~~窗口位置与层级、模态子窗口、光标形状、窗口尺寸约束/全屏~~ | ✅ **已兑付（2026-10-02，见 §十）**：位置/层级/约束/全屏/激活下到三后端，模态与光标形状解析留在 gfx 层 |
 | devtools 方案 D（独立窗口）、routing 方案 D（多窗口即路由） | 同上 §五：前置已解除暂缓，需要时再评估 |
 
 ## 七、明确"不做"（v1 发布说明里复述即可，不是欠账）
@@ -122,6 +122,46 @@
 | P1-6 显示器插拔派发 `onDisplayChange`（cocoa） | ✅ 已修：`GoxGfxScreenObserver` 监听 `NSApplicationDidChangeScreenParametersNotification`（插拔/分辨率/排列）+ `NSWindowDidChangeScreenNotification`（窗口跨屏）→ `gfx.Post(NotifyDisplaysChanged)`，与 win32 的 WndProc 纪律同构；契约测试 `TestCocoaDisplayChangeNotify`（真窗口 + 真实通知投递） |
 | M6 iOS 攻坚（模拟器链路部分） | ✅ 修复壳工程红链：`GoxDisplayFold.swift`（2026-10-01 折叠上报）加进来后从未编译过 —— XcodeGen 工程未重新 generate + 引用的 iOS 27.1 API 不在本机 SDK。现改为运行时动态派发（selector 不存在则整条 27.1 分支跳过，不崩不猜姿态），模拟器 Debug/Release 构建全绿，模拟器冒烟通过（Counter demo 渲染 + 触摸链路） |
 | M6 TestFlight 分发链路 | ✅ `scripts/build-ios.sh` 新增 `--release`（Release 配置）与 `--archive`（真机 Release + `xcodebuild archive` + `exportArchive` 出 .ipa，`GOX_EXPORT_METHOD` 可换分发方式），上传命令在产物后给出提示。真机签名验收仍需 Apple 开发者账号环境（见 P0-6 类真机项） |
+
+## 十、已完成（2026-10-02 gfx 窗口管理 + 文本绘制）
+
+对应 `agent_doc/undecided-and-unimplemented.md` §四 的「窗口/系统域缺口」与「文本域缺口」两项，也是富文本组件长期被阻率的根因。
+
+### 10.1 窗口管理（`rlUxHu`）
+
+| 项 | 结果 |
+|---|---|
+| 窗口位置 | `WindowConfig` 新增 `X/Y/HasPos`（零值 = 不干预，`HasPos` 独立标志而非 `*int`）；`Window.MoveTo/Center/Bounds/outerSize`；新增 `EventMove`（X/Y 为窗口外框屏幕坐标） |
+| 窗口层级 | `WindowConfig.Level`（只认 `top`/`bottom`/`normal`，`windowLevel()` 归一）+ `Window.SetLevel/Level` |
+| 尺寸约束 | `MinWidth/MinHeight/MaxWidth/MaxHeight` + `NoResize` → `Window.SetSizeConstraints/SetResizable/IsResizable`；win32 走 `WM_GETMINMAXINFO`，x11 写 `WM_NORMAL_HINTS`（18×CARD32），cocoa 走 `setMinSize:`/`setMaxSize:` |
+| 全屏 | `WindowConfig.Fullscreen` + `SetFullscreen/IsFullscreen`；三后端分别走 `SetWindowPos`+样式位 / EWMH `_NET_WM_STATE_FULLSCREEN` / `setFrame:`+`NSWindowCollectionBehaviorFullScreenPrimary` |
+| 模态子窗口 | 新建 `gfx/modal.go`：`Modal` + `ModalParent *Window`，父窗口句柄挂子窗口；事件入口按 `modalBlocksEvent` 屏蔽（保留 `Close`/`Resize`/`Move`/`MouseLeave`），父窗口关闭连带关子窗口（经 `Post`）。模态状态在 `app` 上（`modalParent`/`modalChild`），故**假 Surface 也能完整测** |
+| 光标形状 | 新建 `gfx/cursor.go`：CSS 值域 + `none`，别名表（`hand`/`ibeam`/`busy`/`move-x`…），`SetCursor` 覆盖 + 节点 `cursor` prop 沿父链继承 + 组件默认表（`input`/`textarea`/`search`→`text`，`button`/`menu`/`tab`/`list-item`/`tree-row`…→`pointer`）；同形状跳过平台调用；`setCursor(null)` 清覆盖 |
+| 激活 | `Window.Activate()`（win32 `SetForegroundWindow`、cocoa `makeKeyAndOrderFront:`、x11 降级 no-op） |
+| 脚本 API | `Window` 句柄补 `bounds()/position()/moveTo()/center()/level()/setLevel()/setConstraints()/setResizable()/isResizable()/setFullscreen()/isFullscreen()/activate()/setCursor()/isModal()/isBlocked()/modalParent()/modalChild()` —— **全部做成方法**，避免属性快照漂移 |
+
+分层原则：几何/层级/约束/全屏/激活下到后端（可选能力接口 `windowManager`/`cursorHost`/`boundsProvider`，type assertion 落空即静默降级；**x11 无 `SetCursor`**），跨窗口语义的模态与依赖节点树的光标形状解析留在 `gfx` 层。
+
+### 10.2 文本绘制能力（`ru628k`）
+
+| 项 | 结果 |
+|---|---|
+| 软换行 | `textarea` 缺省开启（`wrap` prop 可关）。抽出 **`wrapRuneSpans`** 作为分段算法唯一实现（`gfx/textstyle.go`），`wrapTextStyled` 与编辑框视觉行都由它派生 —— 杜绝「光标画的位置和字不在同一格」。软换行只影响四类动作（↑↓ / Home/End / 点击定位 / 光标绘制与滚动跟随），插入/退格/左右移动仍在逻辑行做 |
+| 字体族 | 新建 `gfx/fontset.go`：字体族索引（`NameIDFamily=1` 与 `NameIDTypographicFamily=16` 双登记），惰性构建；**无族名 + 无样式走 `baseFaceFor` 快路径，绝不建索引**（避免 ~300ms 一次性开销） |
+| 粗体/斜体 | 新建 `gfx/textstyle.go`：`TextStyle{Size,Family,Bold,Italic,LineH,LetterSp}` + `resolveTextStyle`（沿父链继承，**每根轴独立记「定没定」**，保证 `fontWeight="normal"` 能关掉继承的粗体）。真实变体优先，无变体时合成：粗 = 右移 1px 再压，斜 = 绕基线剪切 `(baseY-iy)*21/100` |
+| 行高 / 字距 | `lineHeight` / `letterSpacing` prop → `lineHeightStyled`/`runeAdvanceStyled`/`runeWidthStyled`/`MeasureTextStyled`/`ellipsizeStyled`/`DrawTextStyled`，`text`/`input`/`textarea` 三类节点统一走这套度量 |
+| 文本选区 | 新建 `gfx/selection.go` + `gfx/textedit.go`：`selAnchorLine/selAnchorCol/selActive` 落在节点上；`beginTextDrag`/`textDragTarget`（`app.textDrag` 与 `dragTarget` 分开，语义不同）；`handleMouseMove` 最前面「编辑框拖选优先」；`handleMouseDown` 走 `textareaInChain`/`inputInChain` 起选 |
+| 复制 / 剪切 / 粘贴 | `handleFieldClipboard` 统一处理 `Ctrl/Cmd+A/C/X/V`（macOS 侧 `gfx/cocoa` 把 Cmd 与 Ctrl 归一，新增 `nsModifierCommand`）；复用既有 `clipboardHost`，无宿主时静默降级 |
+| 编辑内核 | `taApplyKeyEx` 抽成**纯函数**（插入/退格/删除/方向/Home/End/Enter/Ctrl+A），`input` 与 `textarea` 共用；`input` 的 `search` 回车提交单独接 |
+| 选区渲染 | `selection` 主题 token（亮 `#9cc4ecb0` / 暗 `#2e547ad0`，走 `setToken`/`themeTokens`/`syncThemeVars` 全链）；`paintTextarea`/`paintField` 把**选区高亮画在文字之下**，跨行选区中间行铺到行尾 |
+
+### 10.3 验收
+
+- 新增测试：`gfx/window_mgmt_test.go`（33 例）、`gfx/textstyle_test.go`（16 例）、`gfx/softwrap_test.go`（12 例）、`gfx/selection_test.go`；`fakeSurface` 扩到支持 `Bounds`/`windowManager`/光标记录/内存剪贴板。
+- 构建矩阵全绿：darwin amd64/arm64、windows amd64/386、linux amd64；`go vet ./...` 干净；`go test ./gfx/` 全通过。
+- 文档：`docs/gui-guide.md`（组件表、§2 平台矩阵新增「窗口管理」行、§6.1、§6.3 扩写 + 新增「文本样式」「选区、复制与剪贴板」两小节、§9.5 窗口管理含 prop 表/句柄方法/平台降级表）、`docs/theme.md`（`selection` token）。
+
+> 仍未做：复杂 shaping（连字 / 双向 / 断行断词）、富文本、`transform` 族绘制能力 —— 见 §六。
 
 ## 待确认（信息缺口）
 

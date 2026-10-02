@@ -3,6 +3,7 @@ package gfx
 import (
 	"image"
 	"image/color"
+	"strings"
 	"time"
 
 	"github.com/14752222/Gox/object"
@@ -170,72 +171,50 @@ func (a *app) handleFieldKey(n *GuiNode, key string, ev Event) bool {
 
 // handleInputKey 处理输入框内的按键, 返回是否已消费。
 //
+// 编辑语义本身走**与 textarea 共用的内核** (textedit.go), 这里只做两件单行
+// 特有的接驳: search 的 Enter 提交、以及把内核结果落到一维光标上。
+//
 // 只有"文本内容发生变化"的按键才派发 onInput: 移动光标不是编辑行为
 // (与 DOM 的 input 事件一致 —— 在浏览器里按方向键不会触发 input)。
 // 光标移动仍然标脏, 因为屏幕上的竖线要跟着跑。
 func (a *app) handleInputKey(in *GuiNode, key string, ev Event) bool {
-	// 带 Ctrl/Alt 的组合键留给脚本 (Ctrl+C 之类), input 不抢。
-	if ev.Ctrl || ev.Alt {
+	// 剪贴板与全选 (Ctrl/Cmd + A/C/X/V) 先于内核: 它们要碰系统剪贴板。
+	if a.handleFieldClipboard(in, key, ev) {
+		return true
+	}
+	// search 的 Enter 是"整段提交": 单行框的内核本来就不消费 Enter, 这里只是
+	// 把 search 的额外语义接上 (逐键 onInput 之外的明确提交点)。
+	if key == "Enter" && in.Tag == "search" && !ev.Ctrl && !ev.Alt {
+		a.dispatchSearch(in)
+		return true
+	}
+	res := taApplyKeyEx(taEditIn{
+		lines: []string{in.inputValue()}, line: 0, col: in.caret,
+		multi: false, aimX: -1,
+		sel:  taSel{line: in.selAnchorLine, col: in.selAnchorCol, active: in.selActive},
+		ctrl: ev.Ctrl, alt: ev.Alt, shift: ev.Shift,
+	}, key)
+	if !res.consumed {
 		return false
 	}
-	val := []rune(in.inputValue())
-	caret := in.caretIndex(val)
-	changed := false
-
-	switch key {
-	case "Backspace":
-		if caret > 0 {
-			val = append(val[:caret-1], val[caret:]...)
-			caret--
-			changed = true
-		}
-	case "Delete":
-		if caret < len(val) {
-			val = append(val[:caret], val[caret+1:]...)
-			changed = true
-		}
-	case "ArrowLeft":
-		if caret > 0 {
-			caret--
-		}
-	case "ArrowRight":
-		if caret < len(val) {
-			caret++
-		}
-	case "Home":
-		caret = 0
-	case "End":
-		caret = len(val)
-	case "Enter":
-		// 单行 input 不消费 Enter (留给上层); search 用它"整段提交" ——
-		// 逐键 onInput 之外再给一个明确的搜索提交点 (与 DOM 搜索框一致)。
-		if in.Tag == "search" {
-			a.dispatchSearch(in)
-			return true
-		}
-		return false
-	default:
-		r, ok := printableRune(key)
-		if !ok {
-			// Enter / Escape / Tab / F1.. / Shift 等: 不消费, 让上层看得到。
-			return false
-		}
-		// 显式重建切片, 不依赖 append 的原地扩容行为 (val 可能被外部持有)。
-		nv := make([]rune, 0, len(val)+1)
-		nv = append(nv, val[:caret]...)
-		nv = append(nv, r)
-		nv = append(nv, val[caret:]...)
-		val = nv
-		caret++
-		changed = true
-	}
-
-	in.caret = caret
-	markNodeDirty(in)
-	if changed {
-		a.inputEdited(in, string(val))
+	a.applyInputEdit(in, res)
+	if res.changed {
+		a.inputEdited(in, strings.Join(res.lines, "\n"))
 	}
 	return true
+}
+
+// applyInputEdit 把内核结果落到单行框上。单行只有一列坐标可用, 所以接口
+// 依旧是 caret 一个字段 (caretLine 恒为 0)。
+func (a *app) applyInputEdit(in *GuiNode, res taEdit) {
+	moved := res.col != in.caret || res.sel != in.selActive ||
+		(res.sel && (res.anchor.line != in.selAnchorLine || res.anchor.col != in.selAnchorCol))
+	in.caretLine = 0
+	in.caret = res.col
+	in.selAnchorLine, in.selAnchorCol, in.selActive = res.anchor.line, res.anchor.col, res.sel
+	if moved {
+		markNodeDirty(in)
+	}
 }
 
 // inputEdited 派发 onInput({value}) (受控回写入口; 文本已由本地编辑算出)。
@@ -259,20 +238,16 @@ func (n *GuiNode) isFocused() bool { return n.focused }
 // 逐字符累加宽度而不是对每个前缀调一次 MeasureText: 后者是 O(n²) 次
 // 字形测量, 长文本下白烧 CPU; 累加只是按字符测量后求和, 线性且够准。
 // 判定规则取"点到字符中点之前算前一个边界", 与常见编辑器的观感一致。
+//
+// 实际换算交给 taColAtX —— 与 textarea 点击定位、↑↓ 的 x→列 换算是**同一个
+// 函数**。三处各写一份的话, 症状是"点一下光标跳到隔壁那格", 只在比例字体下
+// 出现, 极难查。
 func (a *app) setCaretFromX(in *GuiNode, x int) {
 	runes := []rune(in.inputValue())
-	size := in.FontSize()
 	textX := in.Box.X + fieldPadX + searchLeading(in)
-	caret := len(runes)
-	cur := 0
-	for i, r := range runes {
-		w, _ := MeasureText(string(r), size)
-		if x < textX+cur+w/2 {
-			caret = i
-			break
-		}
-		cur += w
-	}
+	// 单行框没有软换行: 整行就是一个视觉段, 于是可以复用同一套换算。
+	whole := taVisual{line: 0, start: 0, end: len(runes)}
+	caret := taColAtX(runes, whole, x-textX, resolveTextStyle(in))
 	if in.caret == caret {
 		return
 	}
@@ -304,7 +279,7 @@ func paintField(img *image.RGBA, n *GuiNode, disabled bool, leading int) {
 	}
 	StrokeRect(img, b, tint(edge, disabled))
 
-	size := n.FontSize()
+	st := resolveTextStyle(n)
 	text, textColor := n.inputText()
 	maxW := b.W - 2*fieldPadX - leading
 	if maxW < 0 {
@@ -314,27 +289,43 @@ func paintField(img *image.RGBA, n *GuiNode, disabled bool, leading int) {
 
 	// 光标 x = 字段左留白 + 让位 + "光标之前那截文本"的宽度。placeholder
 	// 不参与计算: 值是空的时候光标就在最左边, 不能因为占了位的灰字而右移。
-	caretX := textX
+	runes := []rune(text)
+	whole := taVisual{line: 0, start: 0, end: len(runes)}
+	caret := 0
 	if n.hasInputValue() {
-		runes := []rune(text)
-		caret := n.caretIndex(runes)
-		cw, _ := MeasureText(string(runes[:caret]), size)
-		caretX += cw
+		caret = n.caretIndex(runes)
+	}
+
+	// 选区高亮画在文字**之下**: 颜色带 alpha, 盖在字上会让选中的字看不见。
+	// 高亮后只画一次文字, 顺序反过来就得画两遍。
+	if !disabled {
+		if sa, sb, ok := taSelRangeOf(n, []string{text}); ok {
+			x1 := taXOfCol(runes, whole, sa.col, st)
+			x2 := taXOfCol(runes, whole, sb.col, st)
+			if x2 > maxW {
+				x2 = maxW
+			}
+			if x2 > x1 {
+				FillRect(img, Rect{X: textX + x1, Y: b.Y + 2, W: x2 - x1, H: b.H - 4},
+					colorSelection)
+			}
+		}
 	}
 
 	if text != "" {
-		_, th := MeasureText(text, size)
-		DrawText(img, img.Bounds(), text, textX, b.Y+(b.H-th)/2, size,
+		_, th := MeasureTextStyled(text, st)
+		DrawTextStyled(img, img.Bounds(), text, textX, b.Y+(b.H-th)/2, st,
 			tint(textColor, disabled), maxW)
 	}
 
 	if n.isFocused() && !disabled && caretVisibleAt(time.Now()) {
-		// 竖线高度取字号: 与文字同高看起来才像插入符 (不是整行边框)。
-		_, th := MeasureText("M", size)
+		// 竖线高度取行高: 与文字同高看起来才像插入符 (不是整行边框)。
+		_, th := MeasureTextStyled("M", st)
 		if th < 1 {
 			th = 1
 		}
-		FillRect(img, Rect{X: caretX, Y: b.Y + (b.H-th)/2, W: 1, H: th},
+		FillRect(img, Rect{X: textX + taXOfCol(runes, whole, caret, st),
+			Y: b.Y + (b.H-th)/2, W: 1, H: th},
 			tint(n.textColor(), disabled))
 	}
 }

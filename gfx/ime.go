@@ -1,9 +1,5 @@
 package gfx
 
-import (
-	"strings"
-)
-
 // IME 输入法输入 (P2-7)。
 //
 // 职责边界: 平台后端只负责"拿到输入法提交的结果串"并投递一条
@@ -120,27 +116,20 @@ func taLineColOf(text string, off int) (int, int) {
 // 只派发一次 onInput, 而不是每个字符一次 —— 否则 "你好" 会让 JS 侧看到两次
 // 中间态 ("你" 和 "你好"), 在带校验的输入框上表现为"中文输入过程中一直报
 // 格式错误"。
+//
+// 实现上直接复用**粘贴的那个入口** (fieldInsertText): 有选区时先删选区
+// ("选中几个字再打中文"是最常见的用法, 不替换就会把新字插在选区**前面**,
+// 选中的旧字反而留在后面)、多行文本一次插入、onInput 只派发一次 —— 三条
+// 要求一模一样, 没有理由写第二遍。
 func (a *app) insertIMEChars(n *GuiNode, s string) {
 	if s == "" {
 		return
 	}
+	a.fieldInsertText(n, s)
 	if n.Tag == "textarea" {
-		lines := n.taLines()
-		if len(lines) == 0 {
-			lines = []string{""}
-		}
-		off := taOffsetOf(lines, n.taLineIndex(len(lines)), n.taCaretCol(lines))
-		nv, noff := imeSplice(strings.Join(lines, "\n"), off, s)
-		n.caretLine, n.caret = taLineColOf(nv, noff)
-		a.taEdited(n, nv)
 		// 与 handleTextareaKey 一致: 内容高度按受控值算, 必须写在回写之后。
 		n.taEnsureCaretVisible()
-		return
 	}
-	val := []rune(n.inputValue())
-	nv, noff := imeSplice(string(val), n.caretIndex(val), s)
-	n.caret = noff
-	a.inputEdited(n, nv)
 }
 
 // insertIMECommit 处理一条 IME 提交事件: 交给当前焦点的编辑框。

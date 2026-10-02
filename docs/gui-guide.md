@@ -73,6 +73,7 @@ render(
 | 能力 | Windows（win32） | Linux（X11） | macOS（cocoa） | 说明 |
 |---|---|---|---|---|
 | 窗口 | 支持 | 支持（Wayland 走 XWayland） | 支持 | 多窗口见 [9.5](#95-多窗口)；macOS 上 `w.close()` 只解除注册不销毁平台窗口（与 win32 同语义） |
+| 窗口管理<br>（位置 / 层级 / 约束 / 全屏 / 光标 / 模态） | 全部支持 | 除光标形状外全部支持 | 全部支持 | 见 [9.5 的"窗口管理"](#95-多窗口)；未实现的能力**静默降级**为默认行为，不报错 |
 | 字体 | 静态候选路径 | 惰性扫描系统字体目录 | 静态候选优先 + 目录扫描 | Linux 扫 `/usr/share/fonts`、`~/.local/share/fonts` 等，**CJK 字体优先**，条目上限 2000；macOS 静态候选（PingFang / Hiragino Sans GB 等）排在扫描结果之前 |
 | 输入法（IME） | 支持 | 暂不支持 | 支持（组合过程不在框内内联绘制） | 见 [6.2](#62-输入法-ime)；macOS 经 NSTextInputClient 协议（消息转发实现），焦点在编辑框上时开启 |
 | 剪贴板 | 支持 | 暂不支持 | 支持（纯文本） | 见 [9.2](#92-剪贴板) |
@@ -114,7 +115,7 @@ macOS 后端（cocoa）已知限制：
 | `column` / `row` | `gap` / `padding` / `margin`(子级) / `alignItems` / `justifyContent` / `flexGrow` / `flexShrink`(子级) / `wrap` / `width` / `height` | flex 风格容器，尺寸按内容确定（交叉轴默认 stretch）；`row` 加 `wrap` 放不下折行，`gap` 兼作行内间距与行间距 |
 | `view` | `each` / `show` / `fallback` / `key` / `stable` / `gap` | **布局透明的容器**（Fragment）：单子时尺寸完全跟随子节点、多子（列表）按父容器方向堆叠，自己不占盒子；**元素级指令就写在这类元素上** —— `each={rows}` 按列表重复本元素（keyed 复用 / `stable` / `fallback`），`show={open}` keep-alive 显隐。指令对任何内置元素标签都有效，写在 `<column>` / `<row>` 上就是"每一项一个盒子" |
 | `grid` | `columns`（1~32） | 等宽列网格：声明序逐行填格，列宽均分内容宽，格子无显式高时拉到行高；不做轨道语法 / colSpan（不等宽列用 `row` + 百分比组合） |
-| `text` | `font` / `color` / `width` / `wrap` / `ellipsis` | 默认单行文本、超宽硬截断；加 `wrap` 变成文本块（按宽度贪心折行、`\n` 强制换行），`ellipsis={n}` 只留 n 行并在末行补 `...`。**`font` 沿父链继承**（自身 > 最近祖先 > 默认 16），所以写在 `column` / `row` / `button` 上的 `font` 对其内全部文本生效 |
+| `text` | `font` / `color` / `width` / `wrap` / `ellipsis` / `fontFamily` / `fontWeight` / `fontStyle` / `lineHeight` / `letterSpacing` | 默认单行文本、超宽硬截断；加 `wrap` 变成文本块（按宽度贪心折行、`\n` 强制换行），`ellipsis={n}` 只留 n 行并在末行补 `...`。**五根文本样式轴沿父链继承**（自身 > 最近祖先 > 缺省），与 `font` 同一口径，见 [6.3](#63-多行文本与自动换行)。`fontFamily` 支持泛型名与族名；`fontWeight` / `fontStyle` 无真实字重变体时**合成**粗体/斜体 |
 | `rect` | `width` / `height` / `background` / `border` / `radius` / `shadow` / `borderWidth` / `borderStyle` | 通用盒子；未特判的标签也走这条绘制路径；装饰属性（圆角 / 阴影 / 渐变 / 边框宽度）见 [5.3](#53-装饰绘制) |
 | `button` | `onClick` / `disabled` / `background` / `border` / `color` / `font` / `padding` | 缺省浅灰底 + 深灰边框，文字子节点垂直居中；`disabled` 时整体变灰且不响应点击。标签字号同样走 `font` 继承（`font={13}` 写在这里就管标签） |
 | `checkbox` / `radio` | `checked` / `onClick` / `border` / `background` / `color` | 18×18 受控控件；`background` 是选中填充色，radio 互斥在 JS 侧用 signal 实现 |
@@ -136,10 +137,10 @@ macOS 后端（cocoa）已知限制：
 | `pagination` | `total` / `pageSize` / `current` / `onChange` | 分页器：**完全受控**（显示只看 `current`，点击页码只派发 `onChange({page, pageSize})`）。页数 = `ceil(total/pageSize)`（`pageSize` 缺省 10）；页数 > 7 时折叠出省略号（首尾恒可见、省略号不可点）；第 1 页点 `‹`、末页点 `›` 不派发 |
 | `icon` | `name` / `size` / `color` | 内置图标：`name` 取内置图标集（见下方清单），`size` 为边长（缺省 16），`color` 缺省继承文字色；未知名字静默不画。纯光栅原语绘制、三平台零依赖 |
 | `drawer` | `open` / `side` / `width` / `onClose` | 抽屉弹层：**复用 dialog 的弹层机制**（遮罩铺满窗口、模态、Esc/点遮罩关闭），内容卡片贴 `side`（`left`/`right`，缺省 `right`）边、宽按 `width`（缺省 280），打开时从侧边滑入（靠动画心跳推进进度，无新增定时器） |
-| `input` | `value` / `onInput` / `placeholder` / `disabled` | 单行受控输入（沿 `value` 显示，编辑派发 `onInput({value})`）；获焦边框转蓝并显示闪烁竖线光标，点击可定位光标；支持 ←/→/Home/End/Backspace/Delete，`Enter`/`Esc` 不消费；支持 IME 候选词整批提交（Windows） |
+| `input` | `value` / `onInput` / `placeholder` / `disabled` | 单行受控输入（沿 `value` 显示，编辑派发 `onInput({value})`）；获焦边框转蓝并显示闪烁竖线光标，点击可定位光标；支持 ←/→/Home/End/Backspace/Delete，`Enter`/`Esc` 不消费；**文本选区**（拖选 / Shift+方向键）与 `Ctrl/Cmd`+`A`/`C`/`X`/`V`（全选/复制/剪切/粘贴）；支持 IME 候选词整批提交（Windows） |
 | `search` | 同 `input` + `onSearch` | `input` 的字段变体：左侧放大镜，获焦按 `Enter` 整段提交 `onSearch({value})`（逐键 `onInput` 照旧），其余与 `input` 一致 |
 | `rating` | `value` / `max` / `onChange` / `color` / `disabled` | 星级评分：**完全受控**（显示只看 `value`，点击第几格就派发 `onChange({value})`，值不变不派发）。`max` 缺省 5、上限 10；每颗星占 20px 方格（缺省 100×20），星形半径按 min(格宽, 高) 自适应；实心星走 `color` prop（缺省主题强调色），其余空心描边。`model` 口径与 `select` 相同 |
-| `textarea` | `value` / `onInput` / `rows` / `placeholder` / `disabled` | 多行受控编辑器；光标 `{行,列}` 二维移动（↑↓←→/Home/End/Backspace/Delete），**`Enter` 插入换行**（不同于 input）；内容超高时纵向滚动并跟随光标；同样支持 IME。缺省 4 行 × 240px |
+| `textarea` | `value` / `onInput` / `rows` / `placeholder` / `disabled` / `wrap` | 多行受控编辑器；光标 `{行,列}` 二维移动（↑↓←→/Home/End/Backspace/Delete），**`Enter` 插入换行**（不同于 input）；**软换行缺省开**（按内容区宽度折行，`wrap={false}` 关掉），↑↓/Home/End/点击定位都按**屏幕上的行**走；选区与 `Ctrl/Cmd`+`A`/`C`/`X`/`V` 与 `input` 同一套；内容超高时纵向滚动并跟随光标；同样支持 IME。缺省 4 行 × 240px |
 | `scroll` | `width` / `height` / `onWheel` / `vlist` / `itemHeight` / `buffer` | 滚动容器：内容超高时右侧、超宽时底部出现 8px 轨道 + 比例滑块；滚轮滚动（一格 60px，`Shift+滚轮`走横向），滑块可拖拽，到边界后滚轮才冒泡给 `onWheel`；溢出的内容既画不出来也点不中。缺省高 200。加 `vlist itemHeight={N}` 即变成[虚拟化长列表](#_6-6-虚拟化长列表-vlist)：只物化可见的行，十万行与十行的成本一样 |
 | `image` | `src` / `width` / `height` / `disabled` | 显示 png / jpeg / gif 图片（Go 标准库解码，无新增依赖）；不给 `width`/`height` 时用图片自然尺寸，给了就按最近邻缩放；`src` 相对**进程工作目录**解析，加载失败画灰底交叉线占位（stderr 每个路径只警告一次），不中断其它内容 |
 | `video` | `src` / `poster` / `playing` / `autoplay` / `muted` / `loop` / `volume` / `controls` / `fit` | 视频框：**标签与宿主契约**（S8）。内核**不解码** —— 播放交给窗口后端可选实现的 `nativeVideoHost`（平台视频层：MF / AVPlayerLayer / SurfaceView），决策见 [video-decision.md](video-decision.md)。后端没这块能力时画 `poster` 封面（没封面就深色底 + 播放三角），并**诚实报错**：stderr 告警一次 + 对该节点派发一次 `onError({code:"unsupported"})`，`canIUse("video")` 照实回答 `false`。`playing`（等价 `autoplay`）、`muted` / `loop` / `volume` 都是**受控**属性，宿主上报的状态经 `onReady` / `onPlay` / `onPause` / `onEnded` / `onTimeUpdate({currentTime, duration})` 回到脚本。`fit` 取 `contain`（缺省）/ `cover` / `fill`；不给尺寸时用封面自然尺寸，兜底 320×180 |
@@ -290,6 +291,10 @@ h("input", {
 光标闪烁需要事件泵持续醒来，挂一个 `requestAnimationFrame` 循环即可
 （见 [testdata/input_demo.js](../testdata/input_demo.js)）。
 
+单行框也有**文本选区**：按住鼠标拖选、`Shift` + 方向键扩展、`Ctrl/Cmd`+`A` 全选，
+`Ctrl/Cmd`+`C`/`X`/`V` 复制/剪切/粘贴 —— 与 `<textarea>` 完全同一套实现，细节见
+[6.3 末尾的"选区与剪贴板"](#63-多行文本与自动换行)。
+
 ### 6.2 输入法 IME
 
 `<input>` / `<search>` / `<textarea>` 都支持候选词输入（Windows 后端）。切到中文输入法后敲拼音，
@@ -331,11 +336,64 @@ h("textarea", {
 })
 ```
 
-- 行只由 `\n` 切分（**不做软换行**），所以光标 `{行, 列}` 与文本严格对应；超长行会被右侧裁掉；
+- **软换行缺省开**（与 CSS `textarea` 一致）：长行按内容区宽度贪心折行，屏幕上看到几行就是几行；
+  `wrap={false}` 关掉，回到"超长行被右侧裁掉"的老行为。折行算法与 `<text wrap>` 共用同一份实现；
+- 换行是**纯显示**的：`value` 里仍然只有 `\n` 一种换行，逻辑行 / 列号与文本严格对应，
+  所以插入、退格、左右移动都不受折行影响；受影响的是**按屏幕行**的四类动作 ——
+  `↑`/`↓` 跨视觉行（并保持**像素横向位置**，"第 5 列"在不同行上对应的 x 不同）、
+  `Home`/`End` 跳到**屏幕上那一行**的首尾、点击定位按 y 找行按 x 找列、滚动跟随光标；
 - `Enter` **被编辑框消费**（插入换行）—— 与单行 `input` 相反，多行框里 Enter 就是内容；
-  `Esc` / `Tab` / 功能键 / 带 `Ctrl`+`Alt` 的组合键仍然放行给脚本；
+  `Esc` / `Tab` / 功能键仍然放行给脚本（`Ctrl/Cmd` 组合见下文）；
 - 内容超过可视高度后自动纵向滚动，且**滚动跟随光标**（在底部回车时光标不会跑到框外）；
-  也可以把光标放进框里滚滚轮。
+  也可以把光标放进框里滚滚轮。行数按**视觉行**算，折出来的行照样能滚到底。
+
+#### 文本样式：字体族 / 粗斜体 / 行高 / 字距
+
+除 `font` 之外还有四根样式轴，全部**沿父链继承**（最近祖先优先），写在 `column` / `row` /
+`button` / `textarea` 上对其内全部文本生效 —— 与 `font` 同一口径：
+
+| prop | 取值 | 说明 |
+|---|---|---|
+| `fontFamily` | 族名 / 泛型名 / 字体文件路径 | `monospace` / `serif` / `sans-serif` 三个泛型名按平台挑一个真等宽/衬线族；认不出的族名**静默退回默认字体**（不报错、不改度量，一个笔误不该让整屏文字不变） |
+| `fontWeight` | `"bold"` / `600` / `"700"` / `"normal"` | ≥600 算粗。**`"normal"` 能主动关掉祖先的粗体**（"在粗体标题里让一个词正常"要靠这条） |
+| `fontStyle` | `"italic"` / `"oblique"` / `"normal"` | 斜体 |
+| `lineHeight` | 像素，`0` = 自动 | 自动值 = 字号 + 字号/4（保持与加样式轴之前逐像素一致） |
+| `letterSpacing` | 像素，可为负 | 加在**每个字符之后**（首字符不缩进，与 CSS 一致）；参与换行判定，负值做紧凑排版 |
+
+```js
+h("column", { fontFamily: "monospace", lineHeight: 22 },
+  h("text", { font: 14 }, "代码块：整列都是等宽 + 22px 行高"),
+  h("text", { font: 14, fontStyle: "italic" }, "斜体"),
+  h("text", { font: 14, fontWeight: "normal" }, "这里把祖先的粗体关掉"),
+)
+```
+
+- 没找到**真实**字重/斜体变体时**合成**：粗体是同一份掩码往右 1px 再压一遍，斜体绕**基线**
+  剪切（字底钉住、字顶向右倾）。真实变体优先，所以在装了真粗体的族上不会看到合成痕迹；
+- 量测与绘制共用同一套样式 —— 行高/字距会改变**内容尺寸**，两处若各算一套，就会出现
+  "盒子按 16px 排、文字按 18px 画"的错位；
+- 字体族索引**惰性构建**：不写 `fontFamily` 就绝不扫字体目录（本机实测建索引约 300ms），
+  用泛型名或族名时才建一次；
+- `<input>` / `<textarea>` 同样吃这五根轴（在编辑框上写 `fontFamily="monospace"` 就是代码输入框），
+  行高也会改变编辑框的滚动与视觉行划分。
+
+#### 选区、复制与剪贴板（`input` / `textarea` 通用）
+
+| 操作 | 效果 |
+|---|---|
+| 鼠标拖选 | 按下即定位插入点并钉住锚点，拖动扩展/收缩；松手**保留**选区。拖出窗口在 Windows/macOS 上仍然跟手（内部用 `CapturePointer`） |
+| `Shift` + `←`/`→`/`↑`/`↓`/`Home`/`End` | 扩展选区（锚点固定）；已选区时按不带 `Shift` 的方向键 = 收起并落到选区头/尾 |
+| `Ctrl`/`Cmd` + `A` | 全选 |
+| `Ctrl`/`Cmd` + `C` / `X` / `V` | 复制 / 剪切 / 粘贴（走系统剪贴板，见 [9.2](#92-剪贴板)） |
+| 打字 / `Enter` / `Backspace` / `Delete` | 有选区时**替换或删除选区**（选区的意义就在这里），没有选区时才是原来的单字符行为 |
+
+- 剪贴板剪贴/复制在**没有选区时不消费按键**（继续冒泡给脚本），也**不覆盖**用户已有的剪贴板 ——
+  "没选中就复制整行"那种解释会静默毁掉用户的数据；
+- 单行框粘贴多行文本时，换行折成**空格**（单行框渲染不了第二行，直接塞进去会像丢字）；
+- 拿不到剪贴板（后端不支持 / 被别的进程占着）**不影响剪切本身**：内容照样删掉，只是剪贴板没更新；
+- 选区高亮用主题的 `selection` token（半透明，画在文字**之下** —— 不透明会把选中的字盖掉），
+  见 [theme.md](theme.md)；
+- `Ctrl` 与 macOS 的 `Cmd` 都归一到同一个修饰位：`Cmd+C` 在 macOS 上就是复制，不需要两套判断。
 
 ### 6.4 滑块
 
@@ -778,6 +836,87 @@ const wB = render(counter("Window B"), { title: "B", width: 320, height: 200 });
 
 示例：[testdata/multiwindow_demo.js](../testdata/multiwindow_demo.js)（开两个窗口各自计数，
 `File - Close window` / `Ctrl+Q` 关掉当前窗口，关一个另一个继续跑）。
+
+#### 窗口管理：位置 / 层级 / 约束 / 全屏 / 光标 / 模态
+
+窗口自身的几何与系统态既能在根元素上声明，也能在句柄上运行时改：
+
+| `<window>` prop | 取值 | 说明 |
+|---|---|---|
+| `x` / `y` | 整数 | 初**位置**（屏幕坐标、**外框**左上角、设备像素）。**不写就不干预**（由系统决定，通常居中） |
+| `minWidth` / `minHeight` / `maxWidth` / `maxHeight` | 整数 | 尺寸约束；`0` = 该方向不限制 |
+| `resizable` | 布尔 | 允许用户拉伸窗口（缺省真）；`resizable={false}` 同时关掉最大化按钮 |
+| `fullscreen` | 布尔 | 开窗即全屏 |
+| `level` | `"normal"` / `"top"` / `"bottom"` | 窗口层级（置顶/置底）；认不出的值退回 `normal` |
+| `modal` | 布尔 / 窗口句柄 | 把本窗口设成**模态子窗口**：`modal` 或 `modal={true}` 用**当前活动窗口**当父窗口，`modal={wParent}` 指定父窗口 |
+
+> `h()` 手拼树时 `render(tree, {…})` 的配置对象支持同一批键（外加一个 `parent`，
+> 与 `modal: true` 配对使用，等价于 `modal: <句柄>`）。约束里的 `0` / 负数一律按
+> **不约束**处理 —— 负数在各平台表现不一（win32 上会得到一个拖不动的怪窗口），在入口归一最省事。
+
+对应的方法（都挂在 `render()` 返回的窗口句柄上，`w` 即句柄）：
+
+```js
+const w = render(tree, { title: "Inspector", width: 320, height: 200, x: 480, y: 120 })
+w.bounds()                                  // → {x, y, width, height}（外框屏幕坐标）
+w.position()                                // → {x, y}
+w.moveTo(200, 160); w.center()               // 移到指定位置 / 屏幕居中
+w.setConstraints({ minWidth: 280, maxWidth: 640, minHeight: 160 })
+w.setResizable(false); w.isResizable()       // → false
+w.setFullscreen(true); w.isFullscreen()      // → true
+w.setLevel("top"); w.level()                 // → "top"
+w.activate()                                 // 提到前台（抢焦点）
+w.setCursor("grab")                          // 改窗口级光标形状
+```
+
+- **移动事件**：窗口被拖动时向布局根派发 `onMove({x, y})`（屏幕坐标，与 `onResize` 同一口径，
+  三平台都上报：win32 `WM_MOVE` / cocoa `windowDidMove` / X11 `ConfigureNotify`）。
+  **建窗期的位置落地不上报** —— 脚本本来就知道窗口被放在哪（给过 `x`/`y`，或者接受了居中），
+  把它当真实移动上报会让"按顺序收头几个事件"的调用方平白多收一串 `EventMove`；
+- **坐标口径**（`x` / `y` / `moveTo` / `bounds()` / `position()` / `onMove` 共用一套）：
+
+  | 轴 | 口径 |
+  |---|---|
+  | 原点 | **左上**（与 CSS 一致；macOS 内部是左下，换算在 cocoa 后端做掉） |
+  | 单位 | **设备像素**（不是点/逻辑像素）—— macOS 上进出都乘除 `backingScaleFactor` |
+  | 参照物 | **外框**（含标题栏/边框），不是内容区。`width` / `height` 则是**内容区**尺寸 |
+
+  所以 `bounds()` 的 `height` 会比 `height` prop 大一条标题栏 —— 这是刻意的：
+  位置只有按外框算才和"窗口看起来在哪"一致（也与 win32 的 `GetWindowRect` /
+  `SetWindowPos` 原生语义对齐），而渲染尺寸必须按内容区算；
+- **光标形状**：任意节点可挂 `cursor` prop（沿父链继承），悬停到它上面时自动切形状，
+  值域取 CSS 的那一套（`default` / `pointer` / `text` / `crosshair` / `move` / `grab` /
+  `grabbing` / `wait` / `progress` / `help` / `not-allowed` / `ew-resize` / `ns-resize` /
+  `nwse-resize` / `nesw-resize` / `col-resize` / `row-resize` / `none`，以及 `hand`、`ibeam`
+  这类别名）。`input` / `search` / `textarea` 缺省就是 `text`，`button` / `menu` / `tab` 这类可点
+  控件缺省 `pointer` —— 不必逐个写。**认不出的形状退回 `default`**，不报错。
+  `w.setCursor(null)` 清掉窗口级覆盖，回到"按悬停节点自动解析"；同一个形状重复设置
+  不会重复调平台 API（悬停时每帧都会算一次形状）；
+- **模态子窗口**：`modal` 为真时，父窗口在子窗口关掉之前**收不到任何输入**
+  （键盘与鼠标都被拦住，窗口仍可拖动/缩放/关闭）。`isBlocked()` 查父窗口当前是否被挡，
+  `isModal()` / `modalParent()` / `modalChild()` 查这层关系。模态是**覆盖式**的
+  （同一父窗口只有一个模态子窗口，新的顶掉旧的），**关父窗口会连带关掉子窗口**，
+  父窗口不存在时静默降级为普通窗口。
+
+平台支持与降级（**没实现的就当没有，不报错**）：
+
+| 能力 | Windows | Linux | macOS |
+|---|---|---|---|
+| 位置 / 居中 / 读几何 | `SetWindowPos` / `GetWindowRect` | EWMH + ConfigureNotify | `setFrameOrigin:` |
+| 尺寸约束 | `WM_GETMINMAXINFO` | `WM_NORMAL_HINTS` | `setMinSize:` / `setMaxSize:` |
+| 缩放开关 / 全屏 | 样式位 + 全屏切换 | `_NET_WM_STATE_FULLSCREEN` | `setStyleMask:`（同步改样式位，不用异步的 `toggleFullScreen:`） |
+| 层级 `top`/`bottom` | `HWND_TOPMOST` / `HWND_BOTTOM` | `_NET_WM_STATE_ABOVE` / `_BELOW` | 窗口 `level` |
+| 光标形状 | `WM_SETCURSOR` + `LoadCursor` | 暂无（静默降级为默认箭头） | NSCursor |
+| 模态与 `onMove` | 支持 | 支持 | 支持 |
+
+> 读几何与"外框"口径：Windows / macOS 由平台直接给外框矩形，**Linux 下 `bounds()`
+> 读的是客户区**（`TranslateCoordinates` 到根窗口）—— reparenting WM 会给窗口套一层
+> 自己的装饰，于是 `moveTo` 与 `bounds()` 之间差一圈标题栏。X11 后端整体标注为
+> "未经实机验证"，这处落差要靠 `_NET_FRAME_EXTENTS` 实机核对，暂时按协议原义实现。
+
+> 移动 / 缩放 / 全屏的**结果**以平台回报为准（`bounds()` 读的是平台现值，不是脚本设的期望值）——
+> 用户手动拖过窗口之后，读到的就是拖动后的位置。约束、层级、全屏在**首帧之前**就应用，
+> 所以不会出现"先闪一下普通窗口再变全屏"。
 
 ### 9.6 原生能力层
 

@@ -378,6 +378,21 @@ type surface struct {
 	dibBmp  syscall.Handle
 	memDC   syscall.Handle
 	oldBmp  syscall.Handle
+
+	// 窗口管理状态 (§四 窗口/系统缺口, 见 window.go):
+	//   constraints  —— 用户拖边框时的尺寸钳位 (WM_GETMINMAXINFO 读)
+	//   restoreStyle / restoreRect —— 进全屏前的原样式与原外框 (退出时还原)
+	//   fullscreen   —— 当前全屏态 (幂等闸门: 重复进出不该把"已全屏的样式"
+	//                   记成"要还原的样子")
+	//   cursor       —— 当前光标句柄 (0 = 没设过; cursorHidden = 隐藏)
+	// 都由 s.mu 保护 —— 与其它字段同一把锁, 不另开原子量: 这些值不在
+	// 逐像素的热路径上 (WM_SETCURSOR 每次鼠标移动一次, 未争用的 Go mutex
+	// 纳秒级), 不值得为省它牺牲"一个结构一套纪律"。
+	constraints  *windowConstraints
+	restoreStyle uintptr
+	restoreRect  rect32
+	fullscreen   bool
+	cursor       uintptr
 }
 
 func newSurface(cfg gfx.WindowConfig) (gfx.Surface, error) {
@@ -401,12 +416,19 @@ func newSurface(cfg gfx.WindowConfig) (gfx.Surface, error) {
 
 	title, _ := syscall.UTF16PtrFromString(cfg.Title)
 	hInst, _, _ := procGetModuleHandleW.Call(0)
+	// 位置: 没指定就给 CW_USEDEFAULT (让 Windows 自己挑一个不重叠的地方);
+	// 指定了就精确落点 —— 建窗时直接落到目标位置, 而不是建完再 MoveTo,
+	// 否则用户会看见窗口先闪现在别处再跳过去。
+	px, py := uintptr(0x80000000), uintptr(0x80000000)
+	if cfg.HasPos {
+		px, py = uintptr(int32(cfg.X)), uintptr(int32(cfg.Y))
+	}
 	hwnd, _, err := procCreateWindowExW.Call(
 		0,
 		uintptr(unsafe.Pointer(className)),
 		uintptr(unsafe.Pointer(title)),
 		WS_OVERLAPPEDWINDOW|WS_VISIBLE,
-		0x80000000, 0x80000000, // CW_USEDEFAULT
+		px, py,
 		uintptr(cfg.Width), uintptr(cfg.Height),
 		0, 0, hInst, 0,
 	)
@@ -548,6 +570,54 @@ func globalWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 		s.reallocDIB(w, h)
 		s.trySend(gfx.Event{Kind: gfx.EventResize, W: w, H: h})
 		return 0
+	case wmMove:
+		// 窗口被移动 (§四 窗口/系统缺口): lParam 的高低字是**客户区**左上角
+		// 的屏幕坐标 (Win32 的口径, 不是外框) —— gfx 的 EventMove 就按这个
+		// 口径报 (与 GetWindowRect 的外框差一个边框+标题栏, 平台事实,
+		// 不做换算: 换不准, 而且用户真正关心的是"我把它拖到哪了")。
+		//
+		// 必须过滤掉最小化时的那条 WM_MOVE: 最小化时 Windows 会报一个
+		// (-32000, -32000) 的哨兵坐标, 转发出去会把窗口位置缓存写坏
+		// (bounds() 从此返回 -32000), 而 onMove 也会收到一个假位置。
+		if !isIconic(hwnd) {
+			s.trySend(gfx.Event{Kind: gfx.EventMove, X: lo16(lParam), Y: hi16(lParam)})
+		}
+		return 0
+	case wmGetMinMaxInfo:
+		// 尺寸约束 (SetSizeConstraints) 的**唯一**生效点: Windows 在用户
+		// 开始拖边框时问一次允许范围, 之后按答案钳位。不在这里填的话
+		// 约束永远不生效 (SetWindowPos 只管这一次的大小, 管不住拖拽)。
+		s.mu.Lock()
+		c := s.constraints
+		s.mu.Unlock()
+		if c == nil {
+			break // 没设约束: 让系统缺省值说话
+		}
+		mmi := (*minMaxInfo)(unsafe.Pointer(lParam))
+		if c.minW > 0 && int32(c.minW) > mmi.PtMinTrackSize.X {
+			mmi.PtMinTrackSize.X = int32(c.minW)
+		}
+		if c.minH > 0 && int32(c.minH) > mmi.PtMinTrackSize.Y {
+			mmi.PtMinTrackSize.Y = int32(c.minH)
+		}
+		// maxX/maxY 为 0 表示"不约束": 保持系统缺省 (通常是屏幕大小),
+		// 用 0 覆盖会把窗口钳成 0×0。
+		if c.maxW > 0 && mmi.PtMaxTrackSize.X > int32(c.maxW) {
+			mmi.PtMaxTrackSize.X = int32(c.maxW)
+		}
+		if c.maxH > 0 && mmi.PtMaxTrackSize.Y > int32(c.maxH) {
+			mmi.PtMaxTrackSize.Y = int32(c.maxH)
+		}
+		return 0
+	case wmSetCursor:
+		// 光标形状 (SetCursor): 每次鼠标移动 Windows 都会问一次, 在这里
+		// 重新申明才"粘得住" —— 只调一次 SetCursor 会被下一次鼠标移动复位
+		// 成类光标 (表现为"悬停到按钮上变手型, 一动又变回箭头")。
+		if s.applyCursor() {
+			return 1 // TRUE = 已处理, 不再走 DefWindowProc
+		}
+		r, _, _ := procDefWindowProcW.Call(hwnd, uintptr(msg), wParam, lParam)
+		return r
 	case WM_PAINT:
 		var ps paintStruct
 		hdc, _, _ := procBeginPaint.Call(hwnd, uintptr(unsafe.Pointer(&ps)))

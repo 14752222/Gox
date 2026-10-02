@@ -50,6 +50,154 @@ type fakeSurface struct {
 	// **nil 表示"这个后端没有平台视频层"** —— 真后端里 win32 / X11 / cocoa
 	// 现在就是这状态, 所以它同时是 `<video>` 降级路径的默认场景。
 	video *fakeVideoHost
+
+	// ===== 窗口管理 (§四 窗口/系统缺口) =====
+	//
+	// fakeSurface **无条件**实现 windowManager / cursorHost / boundsProvider
+	// (不像 dialog/video 那样用"注入了才满足"的形态): 这三个能力的新方法
+	// 都是**纯记录**, 没有"未注入就退化成另一种行为"的分支, 开着不影响任何
+	// 既有用例。其中 bounds 用 `noBounds` 单独关掉 —— bounds() 的
+	// "后端读不到位置"降级路径 (退回位置缓存) 需要一个不实现它的替身,
+	// 而 Go 的接口满足性是类型级、不能按实例开关。
+	//
+	// 为什么需要它们: 真后端 (win32/x11/cocoa) 的这些方法在本机多半跑不到
+	// (win32 要 Windows、x11 要 Linux), 而**语义** (位置传给谁、层级怎么
+	// 归一、模态怎么屏蔽) 全在 gfx 层 —— 用一个记录的替身就能把语义测穿。
+	noBounds bool // true 时 Bounds 恒返回零值 (= "后端读不到位置")
+	bx, by   int  // Bounds 报的回框位置
+	bw, bh   int  // Bounds 报的回框尺寸 (0 = 未设, 由 Size 兜底)
+	wm       *fakeWindowManager
+	cursors  []string // 收到过的 SetCursor 形状 (按调用序)
+}
+
+// fakeWindowManager 记录 windowManager 的调用。
+type fakeWindowManager struct {
+	mu          sync.Mutex
+	moves       [][2]int
+	levels      []string
+	constraints [][4]int
+	resizable   []bool
+	fullscreen  []bool
+	activates   int
+}
+
+func (m *fakeWindowManager) snapshot() (moves [][2]int, levels []string, cons [][4]int, res []bool, full []bool, act int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([][2]int(nil), m.moves...), append([]string(nil), m.levels...),
+		append([][4]int(nil), m.constraints...), append([]bool(nil), m.resizable...),
+		append([]bool(nil), m.fullscreen...), m.activates
+}
+
+// MoveTo 记录位置并同步 Bounds 的回报值 (真后端里两者必然一致)。
+func (f *fakeSurface) MoveTo(x, y int) {
+	f.mu.Lock()
+	f.bx, f.by = x, y
+	if f.bw == 0 {
+		f.bw, f.bh = f.w, f.h
+	}
+	m := f.wm
+	f.mu.Unlock()
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.moves = append(m.moves, [2]int{x, y})
+	m.mu.Unlock()
+}
+
+// SetLevel 记录层级。
+func (f *fakeSurface) SetLevel(level string) {
+	f.mu.Lock()
+	m := f.wm
+	f.mu.Unlock()
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.levels = append(m.levels, level)
+	m.mu.Unlock()
+}
+
+// SetSizeConstraints 记录约束。
+func (f *fakeSurface) SetSizeConstraints(minW, minH, maxW, maxH int) {
+	f.mu.Lock()
+	m := f.wm
+	f.mu.Unlock()
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.constraints = append(m.constraints, [4]int{minW, minH, maxW, maxH})
+	m.mu.Unlock()
+}
+
+// SetResizable 记录缩放开关。
+func (f *fakeSurface) SetResizable(on bool) {
+	f.mu.Lock()
+	m := f.wm
+	f.mu.Unlock()
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.resizable = append(m.resizable, on)
+	m.mu.Unlock()
+}
+
+// SetFullscreen 记录全屏开关。
+func (f *fakeSurface) SetFullscreen(on bool) {
+	f.mu.Lock()
+	m := f.wm
+	f.mu.Unlock()
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.fullscreen = append(m.fullscreen, on)
+	m.mu.Unlock()
+}
+
+// Activate 记录一次前台请求 (模态 bump 会用它)。
+func (f *fakeSurface) Activate() {
+	f.mu.Lock()
+	m := f.wm
+	f.mu.Unlock()
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.activates++
+	m.mu.Unlock()
+}
+
+// SetCursor 记录光标形状 (cursorHost)。
+func (f *fakeSurface) SetCursor(shape string) {
+	f.mu.Lock()
+	f.cursors = append(f.cursors, shape)
+	f.mu.Unlock()
+}
+
+// Bounds 回报窗口外框 (boundsProvider); noBounds 置真时返回零值,
+// 用于验证 gfx 层的"后端不支持读位置"降级路径。
+func (f *fakeSurface) Bounds() (int, int, int, int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.noBounds {
+		return 0, 0, 0, 0
+	}
+	bw, bh := f.bw, f.bh
+	if bw <= 0 || bh <= 0 {
+		return f.bx, f.by, 0, 0
+	}
+	return f.bx, f.by, bw, bh
+}
+
+// cursorLog 取收到过的光标形状序列。
+func (f *fakeSurface) cursorLog() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.cursors...)
 }
 
 // SetTitle / ResizeClient 实现 windowController 可选接口: 记录标题;
@@ -119,7 +267,12 @@ func (f *fakeSurface) WriteClipboardText(s string) error {
 }
 
 func newFakeSurface() *fakeSurface {
-	return &fakeSurface{events: make(chan Event, 16), arrived: make(chan struct{}, 16), w: 400, h: 300}
+	return &fakeSurface{
+		events:  make(chan Event, 16),
+		arrived: make(chan struct{}, 16),
+		w:       400, h: 300,
+		wm: &fakeWindowManager{},
+	}
 }
 
 func (f *fakeSurface) Show(img *image.RGBA) {

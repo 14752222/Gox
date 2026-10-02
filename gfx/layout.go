@@ -606,7 +606,10 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 	}
 	if n.Tag == "#text" {
 		if w == 0 || h == 0 {
-			tw, th := MeasureText(n.TextContent(), n.FontSize())
+			// 文本节点按**完整样式**量 (§四 文本域缺口): 字体族/粗斜/行高/
+			// 字距都会改变尺寸, 而绘制端走的是同一份 resolveTextStyle ——
+			// 两边只要有一处退回"只看字号", 就会得到盒子与文字错位。
+			tw, th := MeasureTextStyled(n.TextContent(), resolveTextStyle(n))
 			if w == 0 {
 				w = tw
 			}
@@ -628,7 +631,7 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 				}
 			}
 		} else if w == 0 || h == 0 {
-			tw, th := MeasureText(n.TextContent(), n.FontSize())
+			tw, th := MeasureTextStyled(n.TextContent(), resolveTextStyle(n))
 			if w == 0 {
 				w = tw
 			}

@@ -20,10 +20,59 @@ import (
 )
 
 // WindowConfig 窗口创建配置。
+//
+// 字段分三批: 尺寸/标题 (P3-6)、位置与层级 (§四 窗口/系统缺口)、
+// 尺寸约束 / 全屏 / 模态 (同批)。**新增字段的零值一律等于"不干预"**,
+// 这样 `WindowConfig{Title: "T", Width: 320, Height: 200}` 这种老写法
+// 语义完全不变 (既有测试里的结构体字面量比较也不用改)。
 type WindowConfig struct {
 	Title  string
 	Width  int
 	Height int
+
+	// X, Y 是**初始位置** (屏幕坐标, 外框左上角)。零值本身是合法坐标,
+	// 所以另有一个 HasPos 说明"脚本到底有没有指定": 没指定时交给系统
+	// (Windows 用 CW_USEDEFAULT, 其它平台按各自默认), 指定了才精确落点。
+	//
+	// 为什么不做成 *int: WindowConfig 会被测试用结构体字面量整体比较,
+	// 指针字段会让"默认配置"带上一个非 nil 的指针, 比较立刻不等。
+	X, Y   int
+	HasPos bool
+
+	// 尺寸约束 (像素, 0 = 不约束)。与 Web 的 minWidth/maxWidth 同义,
+	// 由后端落成平台级约束 (WM_GETMINMAXINFO / XSizeHints / NSWindow
+	// minSize+maxSize) —— 是"用户拖边框"的钳位, 不是布局钳位:
+	// 布局侧的 minWidth/maxWidth 仍然是节点自己的 props。
+	MinWidth, MinHeight int
+	MaxWidth, MaxHeight int
+
+	// NoResize 关掉用户缩放 (缺省 false = 可缩放)。用否定式命名是为了
+	// 让零值等于历史行为。
+	NoResize bool
+
+	// Fullscreen 启动即全屏 (缺省 false)。
+	Fullscreen bool
+
+	// Level 是窗口层级: "" / "normal" / "top" (置顶) / "bottom" (置底)。
+	// 未知值按 normal 处理 (静默, 不让笔误把窗口卡在某个怪层级上)。
+	Level string
+
+	// Modal 标记这是一个**模态子窗口**: 创建期间 ModalParent 那个窗口的
+	// 输入被屏蔽 (鼠标/键盘/滚轮/输入法), 直到本窗口关闭。
+	// ModalParent 为 nil 时 Modal 无效 (没有父就没有"挡住谁"可言),
+	// 只是开一个普通窗口 —— 静默降级比抛错好: 脚本拿不到父句柄是常见
+	// 疏忽, 不值得让整个窗口开不出来。
+	Modal       bool
+	ModalParent *Window
+}
+
+// windowLevel 归一化窗口层级名 (未知值 → "normal")。
+func windowLevel(s string) string {
+	switch s {
+	case "top", "bottom", "normal":
+		return s
+	}
+	return "normal"
 }
 
 // EventKind 窗口事件种类。
@@ -42,6 +91,17 @@ const (
 	// 之类的哨兵坐标既隐晦又和真实坐标混淆。
 	EventMouseLeave
 	EventResize
+	// EventMove 是窗口被移动 (§四 窗口/系统缺口)。载荷口径与 EventResize
+	// 的 W/H 一致: X/Y 是**窗口外框在屏幕坐标系里的左上角**, 由后端在收到
+	// 平台移动消息时填 (win32 WM_MOVE / cocoa windowDidMove / X11
+	// ConfigureNotify)。
+	//
+	// 注意它与鼠标事件的 X/Y 不是一回事 —— 那两个是客户区相对坐标, 这里
+	// 的两个是屏幕绝对坐标 (窗口自己"在哪")。Event 结构里 X/Y 已经被鼠标
+	// 占用, 这里按"字段名贴近语义、坐标系在文档里写清"而不是"避免重名"
+	// 来选: 把窗口坐标改名成 ScreenX/ScreenY 会让"读位置"这件事在多处
+	// 分裂成两套词汇。
+	EventMove
 	// EventIMECommit 是输入法提交的一批字符 (P2-7)。组合过程由平台自己的
 	// 组合窗显示, 只有"用户选定了候选词"这一刻才会拿到结果串, 因此它天然是
 	// 整批插入 —— 与 WM_CHAR 那种一次一个字符的路径完全不同。
