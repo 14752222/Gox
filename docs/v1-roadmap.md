@@ -155,10 +155,27 @@
 | 编辑内核 | `taApplyKeyEx` 抽成**纯函数**（插入/退格/删除/方向/Home/End/Enter/Ctrl+A），`input` 与 `textarea` 共用；`input` 的 `search` 回车提交单独接 |
 | 选区渲染 | `selection` 主题 token（亮 `#9cc4ecb0` / 暗 `#2e547ad0`，走 `setToken`/`themeTokens`/`syncThemeVars` 全链）；`paintTextarea`/`paintField` 把**选区高亮画在文字之下**，跨行选区中间行铺到行尾 |
 
-### 10.3 验收
+### 10.3 cocoa 缩放比 (backingScaleFactor) 的保鲜
+
+由本轮新增的窗口几何真机测试抓出（`gfx/cocoa/window_e2e_test.go`）。cocoa 是三后端里**唯一缓存了「点 ↔ 设备像素」比值**的后端 —— win32 开了 Per-Monitor V2 DPI 感知、坐标本就是物理像素，x11 恒为像素，都没有可过期的缓存。M4 合流后**位置**的单位换算已收归 gfx 层（`Display.PosInPoints` / `posScale`），但**客户区尺寸与输入坐标**仍由后端自己乘除 `scale`：
+
+| 受影响的量 | 过期后的表现 |
+|---|---|
+| `postDevice`（鼠标/滚轮坐标 → 设备像素） | 点不准：命中测试整体偏移，且不报错 |
+| `Size()` / `w,h`、`onWindowDidResize` | 客户区尺寸读回错单位 |
+| `ResizeClient`、`SetSizeConstraints` | 设备像素 → 点，旧点值整体偏一倍 |
+| `allocBackbuffer`、`layer.contentsScale` | Retina 上发虚 |
+| `Bounds()`（`EventMove` 的载荷） | 上报的位置是错的单位 |
+
+修法（两处，同一个不变量）：**建窗落点之后对齐一次**（`pinClientSize`：`initWithContentRect:` 只能按主屏猜比值，而窗口最终落在哪块屏要 placement 之后才知道 —— 笔记本 Retina 主屏 + 外接 1080p 是最常见组合，猜错就是整块屏的鼠标坐标差一倍；对齐时把客户区尺寸钉回脚本给的设备像素值），**运行期靠 AppKit 的 `windowDidChangeBackingProperties:` 刷新**（`applyBackingScale`：重算全部派生量 + **重推尺寸约束** + 补报 `EventResize`/`EventMove`）。
+
+> `moveTo` / `center` / `position` / `bounds` 这几条**不在**本项范围内 —— 它们的单位换算在 gfx 层，后端只承接点，本来就没有本地缓存。
+
+### 10.4 验收
 
 - 新增测试：`gfx/window_mgmt_test.go`（33 例）、`gfx/textstyle_test.go`（16 例）、`gfx/softwrap_test.go`（12 例）、`gfx/selection_test.go`；`fakeSurface` 扩到支持 `Bounds`/`windowManager`/光标记录/内存剪贴板。
-- 构建矩阵全绿：darwin amd64/arm64、windows amd64/386、linux amd64；`go vet ./...` 干净；`go test ./gfx/` 全通过。
+- cocoa 真机测试：`gfx/cocoa/window_e2e_test.go` —— 建窗落点/`bounds()` 往返/`EventMove` 投递时机、建窗期不投假移动、缩放比翻倍后全部设备像素口径的量随之重算（尺寸/约束/输入坐标换算/补报的两个事件/`ResizeClient` 出方向）。钩子是否真挂上用运行时的 `respondsToSelector:` 问（不是 grep 源码）；约束重推、钩子注册、比值缓存不更新三处均做过**变异验证**（摘掉即红）。
+- 构建矩阵全绿：darwin amd64/arm64、windows amd64/386、linux amd64/arm64；`go vet ./...` 干净；`go test ./...` 全通过（含 `gfx/cocoa` 真机场景）。
 - 文档：`docs/gui-guide.md`（组件表、§2 平台矩阵新增「窗口管理」行、§6.1、§6.3 扩写 + 新增「文本样式」「选区、复制与剪贴板」两小节、§9.5 窗口管理含 prop 表/句柄方法/平台降级表）、`docs/theme.md`（`selection` token）。
 
 > 仍未做：复杂 shaping（连字 / 双向 / 断行断词）、富文本、`transform` 族绘制能力 —— 见 §六。

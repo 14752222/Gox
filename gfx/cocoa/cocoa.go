@@ -278,6 +278,10 @@ func init() {
 			{Cmd: objc.RegisterName("windowDidResize:"), Fn: impWindowDidResize},
 			{Cmd: objc.RegisterName("windowDidMove:"), Fn: impWindowDidMove},
 			{Cmd: objc.RegisterName("windowDidResignKey:"), Fn: impWindowResignKey},
+			// 窗口的 backing 属性变化 = 被拖到缩放不同的屏 / 那块屏的缩放设置
+			// 被改。这是 macOS 上"跨屏后缩放变了"的等价物, 用来刷新后端缓存的
+			// scale (见 window.go 的 applyBackingScale)。
+			{Cmd: objc.RegisterName("windowDidChangeBackingProperties:"), Fn: impWindowDidChangeBacking},
 		})
 	if err != nil {
 		panic("cocoa: register delegate class: " + err.Error())
@@ -425,6 +429,17 @@ func impWindowDidMove(self objc.ID, cmd objc.SEL, note objc.ID) uintptr {
 	return 0
 }
 
+// impWindowDidChangeBacking: 窗口被拖到缩放不同的屏 (或那块屏的缩放设置被改)。
+//
+// 与 windowDidMove/windowDidResize 同一条纪律: 只做后端状态维护 + trySend
+// 入队, 不在这里执行 JS (由 Pump 在正确的执行上下文里交给脚本)。
+func impWindowDidChangeBacking(self objc.ID, cmd objc.SEL, note objc.ID) uintptr {
+	if s := surfaceOf(self); s != nil {
+		s.onBackingChanged()
+	}
+	return 0
+}
+
 func impWindowResignKey(self objc.ID, cmd objc.SEL, note objc.ID) uintptr {
 	if s := surfaceOf(self); s != nil {
 		// 窗口失活: 清悬停态 (与 win32 失焦 → MouseLeave 同思路)
@@ -481,6 +496,13 @@ type surface struct {
 	lastPosX, lastPosY int
 	posKnown           bool
 	placing            bool
+
+	// 尺寸约束**按设备像素原值**记住 (见 window.go 的 pushConstraints):
+	// 推给 AppKit 的点值每次现算, 因为跨屏后"点 → 设备像素"的比值会变
+	// (applyBackingScale), 只推一次的话旧点值整体偏一倍。
+	conSet           bool
+	conMinW, conMinH int
+	conMaxW, conMaxH int
 }
 
 func newSurface(cfg gfx.WindowConfig) (gfx.Surface, error) {
@@ -497,6 +519,11 @@ func newSurface(cfg gfx.WindowConfig) (gfx.Surface, error) {
 	// Retina: gfx 的 Width/Height 是设备像素, 窗口内容尺寸用点
 	// (px/scale), layer.contentsScale 补回像素比 —— 图像与屏幕 1:1。
 	scale := 1.0
+	// **只是建窗前的猜测**: 点尺寸必须现在就给 (initWithContentRect: 收点),
+	// 而窗口最终落在哪块屏要 placement 之后才知道, 这里只能先按主屏的比值算。
+	// 落点之后 pinClientSize 会用窗口自己的 backingScaleFactor 重新对齐 ——
+	// 笔记本 Retina 主屏 (2x) + 外接 1080p (1x) 是最常见的组合, 猜错就是整块屏
+	// 的窗口鼠标坐标差一倍。
 	if scr := objc.ID(objc.GetClass("NSScreen")).Send(selMainScreen); scr != 0 {
 		if s := objc.Send[float64](scr, selBackingScale); s > 0 {
 			scale = s
@@ -580,6 +607,12 @@ func newSurface(cfg gfx.WindowConfig) (gfx.Surface, error) {
 		win.Send(selCenter)
 	}
 	app.Send(selActivateIgnoring, true)
+	// 窗口现在落在目标屏上了: 把"点 ↔ 设备像素"的比值对齐到窗口**自己**那块屏
+	// 的真值 (上面 ptW/ptH 是按主屏猜的), 并把客户区尺寸钉回 cfg.Width/Height ——
+	// 脚本给的是设备像素尺寸, 不该因为落在缩放比不同的屏上而缩水 (见
+	// window.go 的 pinClientSize)。比值与主屏相同的常见情形下它是一个平台调用
+	// 都不发的空操作。
+	s.pinClientSize(s.currentScale(), w, h)
 	// 位置到此落地: 记基线并退出建窗期, 之后的 windowDidMove 才是脚本要听的。
 	s.finishPlacement()
 	return s, nil
