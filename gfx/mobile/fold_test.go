@@ -269,6 +269,43 @@ func TestReportDisplayFoldPostureOnlyKeepsHinge(t *testing.T) {
 	}
 }
 
+// --- JSON 入口: 显示器归属 (id / display 别名) ---
+
+func TestReportDisplayFoldDisplayRouting(t *testing.T) {
+	gfx.ResetDisplaysForTest()
+	t.Cleanup(gfx.ResetDisplaysForTest)
+
+	// 鸿蒙上报器的真实形状: display: '0' (别名)。无后端枚举时首次上报
+	// 定义整张表 ⇒ 表里应只有 ID "0" 这一块屏, 姿态落在它身上。
+	if err := ReportDisplayFold(`{"display":"0","posture":"half-open","hinge":{"x":1600,"y":0,"w":24,"h":2560}}`); err != nil {
+		t.Fatal(err)
+	}
+	gfx.DrainTasks()
+	if d, ok := gfx.PrimaryDisplayForTest(); !ok || d.ID != "0" || d.Posture != "half-open" {
+		t.Fatalf("display 别名应路由到 ID 0: ok=%v id=%q posture=%q", ok, d.ID, d.Posture)
+	}
+
+	// `id` 显式优先于 `display`。
+	gfx.ResetDisplaysForTest()
+	if err := ReportDisplayFold(`{"id":"ext-1","display":"0","posture":"flat"}`); err != nil {
+		t.Fatal(err)
+	}
+	gfx.DrainTasks()
+	if d, _ := gfx.PrimaryDisplayForTest(); d.ID != "ext-1" {
+		t.Fatalf("id 应优先于 display: %q", d.ID)
+	}
+
+	// 空归属保持原行为: 落到内核默认屏 (无后端时是虚拟屏)。
+	gfx.ResetDisplaysForTest()
+	if err := ReportDisplayFold(`{"posture":"flat"}`); err != nil {
+		t.Fatal(err)
+	}
+	gfx.DrainTasks()
+	if d, _ := gfx.PrimaryDisplayForTest(); d.ID == "" {
+		t.Fatalf("缺省归属应落到默认屏 (virtual-0), 不该是空 ID: %q", d.ID)
+	}
+}
+
 // --- 与内核的类型转换: 保留区字段完整搬运 ---
 
 func TestToDisplayRegionsCarriesFields(t *testing.T) {

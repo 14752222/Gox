@@ -46,6 +46,7 @@ Go 为准并修文档。
 
 ```json
 {
+  "id": "0",
   "posture": "half-open",
   "width": 2400, "height": 1080,
   "hinge": { "x": 1190, "y": 0, "width": 20, "height": 1080, "orientation": "vertical" },
@@ -68,10 +69,17 @@ Go 为准并修文档。
 - `hinge` 与 `regions` **不随 flat 清除** (C2): 折痕是设备几何属性。宿主只报
   `{"posture":"flat"}` 时内核保留上一次的折痕 —— 否则折回去再折回来分栏比例会变。
 - **首次上报会替换整张显示器表** (C3), 所以第一包必须带 `width`/`height`。
-  ⚠️ 载荷里**没有** `id`/`scale`/`foldable`: `decodeFoldInfo` 只认上面那张 JSON 里的
-  名字。显示器由内核的 `displayOfSurface` 决定, `Foldable` 由 `hinge != nil || 有
-  division` 推出 (`gfx/mobile/fold.go`) —— 想加这三个语义得先改 Go, 只在宿主侧把它
-  拼进 JSON 是**静默无效**的。
+- 显示器归属认 **`id`（别名 `display`，`id` 优先）**: 按 ID upsert 到对应屏。
+  三端宿主 (`gfx/{android,ios,harmony}/libgox`) 都把内置屏注册成 ID `"0"`,
+  鸿蒙上报器发的 `display: '0'` 命中的就是它。缺省 (不带) 时由内核落到
+  "当前窗口所在的那块屏" (`displayOfSurface(nil) → 主屏`)。
+- ⚠️ 载荷里**没有** `scale`/`foldable`, 宿主侧拼了是**静默无效**的:
+  `scale` 在这条通道没有输入 (尺寸类由宿主预计算, 设备像素比走 `mobile.New`
+  的 `Density` 与 `Displays()` 上报); `foldable` 由折痕结构推出
+  (`hinge != nil || 有 division`), 且内核在 hinge 存在时无条件置 true,
+  显式声明没有可表达的增量 (`gfx/mobile/fold.go` decodeFoldInfo 注释)。
+  另: Android 上报器带的 `widthDp`/`heightDp` 同样不被解析 (有 `sizeClass`
+  兜底, 无功能影响), 只是知道即可。
 
 ### 鸿蒙的通道差异 (NAPI)
 

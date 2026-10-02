@@ -72,6 +72,14 @@ type Region struct {
 // 字段名与 gfx.Display 对齐, 但**只包含折叠相关的部分**: 尺寸/密度仍然走
 // 既有的 Resize, 免得同一次上报要在两个地方各写一份。
 type FoldInfo struct {
+	// ID 是显示器归属 (载荷里的 `id` 或 `display`, `id` 优先)。
+	//
+	// 为什么接它: 三端宿主 (gfx/{android,ios,harmony}/libgox) 都把唯一的
+	// 内置屏注册成 ID "0", 鸿蒙上报器也一直带着 `display: '0'` —— 之前
+	// decodeFoldInfo 不解析, 属于"上报了却没人读"。接上之后 upsert 按
+	// 这个 ID 命中同一块屏; 缺省 (空) 保持原行为, 由内核落到"当前窗口
+	// 所在的那块屏" (ReportPostureFromFold → displayOfSurface(nil))。
+	ID          string
 	Posture     string      `json:"posture"`
 	WidthClass  string      `json:"widthClass"`
 	HeightClass string      `json:"heightClass"`
@@ -338,6 +346,8 @@ func ReportDisplayFold(jsonStr string) error {
 			pos = PostureFrom(hinge, regions)
 		}
 		gfx.ReportPostureFromFold(gfx.Display{
+			// 空串让内核自己落到"当前窗口所在屏"; 非空则按 ID upsert。
+			ID:       info.ID,
 			Posture:  pos,
 			Foldable: hinge != nil || len(SplitByKind(regions, KindDivision)) > 0,
 			Hinge:    toDisplayHinge(hinge),
@@ -360,8 +370,20 @@ func ReportDisplayFold(jsonStr string) error {
 // 兼容宽松: 尺寸类同时认 `sizeClass:{width,height}` 与扁平的
 // `widthClass`/`heightClass`; 折痕同时认 `w/h` 与 `width/height` —— 与
 // gfx/screen.go 的 objPropSize 同一取舍 ("最自然的写法必须能用")。
+// 显示器归属同时认 `id` 与 `display` (`id` 优先) —— 鸿蒙上报器历史上发的
+// 就是 `display`。
+//
+// **有意不认的两个名字** (宿主侧拼了也是静默无效, 见 NATIVE-HOST.md):
+//   - `scale`: ReportPostureFromFold 这条通道没有 scale 的输入 —— 尺寸类
+//     由宿主预计算 (widthClass/heightClass), 设备像素比走 mobile.New 的
+//     Density 与 Displays() 上报, 接了也没人读;
+//   - `foldable`: 内核由折痕结构推导 (`hinge != nil || 有 division`), 且
+//     ReportPostureFromFold 在 hinge 存在时**无条件**置 Foldable=true ——
+//     宿主显式声明 false 会被覆盖, 语义上没有可表达的增量。
 func decodeFoldInfo(jsonStr string) (FoldInfo, error) {
 	var raw struct {
+		ID          string `json:"id"`
+		Display     string `json:"display"`
 		Posture     string `json:"posture"`
 		WidthClass  string `json:"widthClass"`
 		HeightClass string `json:"heightClass"`
@@ -396,11 +418,15 @@ func decodeFoldInfo(jsonStr string) (FoldInfo, error) {
 		return FoldInfo{}, err
 	}
 	info := FoldInfo{
+		ID:          strings.TrimSpace(raw.ID),
 		Posture:     raw.Posture,
 		WidthClass:  raw.WidthClass,
 		HeightClass: raw.HeightClass,
 		Width:       raw.Width,
 		Height:      raw.Height,
+	}
+	if info.ID == "" {
+		info.ID = strings.TrimSpace(raw.Display)
 	}
 	if info.WidthClass == "" && raw.SizeClass != nil {
 		info.WidthClass = raw.SizeClass.Width
