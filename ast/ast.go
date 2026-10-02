@@ -617,14 +617,14 @@ func (di *DynamicImportExpression) expressionNode() {}
 // ClassMethod 表示 class 中的一个方法。
 type ClassMethod struct {
 	Token         lexer.Token
-	Name          string      // 方法名
-	ComputedKey   Expression  // 计算属性名 [expr] (非 nil 时优先于 Name)
-	IsConstructor bool        // 是否为 constructor
-	IsStatic      bool        // 是否 static 方法
-	IsGetter      bool        // 是否 getter
-	IsSetter      bool        // 是否 setter
-	IsGenerator   bool        // 是否生成器方法: *name() {}
-	IsAsync       bool        // 是否 async 方法: async name() {}
+	Name          string     // 方法名
+	ComputedKey   Expression // 计算属性名 [expr] (非 nil 时优先于 Name)
+	IsConstructor bool       // 是否为 constructor
+	IsStatic      bool       // 是否 static 方法
+	IsGetter      bool       // 是否 getter
+	IsSetter      bool       // 是否 setter
+	IsGenerator   bool       // 是否生成器方法: *name() {}
+	IsAsync       bool       // 是否 async 方法: async name() {}
 	Parameters    []*Parameter
 	Body          *BlockStatement
 	FieldValue    Expression // 字段值 (方法解析时若为字段则非 nil)
@@ -665,7 +665,7 @@ type ClassExpression struct {
 	Fields     []*ClassField  // 实例字段
 }
 
-func (ce *ClassExpression) expressionNode() {}
+func (ce *ClassExpression) expressionNode()      {}
 func (ce *ClassExpression) TokenLiteral() string { return ce.Token.Literal }
 func (ce *ClassExpression) String() string {
 	if ce.Name != nil {
@@ -1295,27 +1295,71 @@ func (id *ImportDeclaration) String() string {
 }
 func (id *ImportDeclaration) statementNode() {}
 
-// ExportDeclaration 表示 export 语句。
-// 例如: export { foo, bar }
+// ExportSpecifier 表示 `export { Local as Exported }` / `export { Local as Exported } from "m"`
+// 里的一项。
 //
+// 为什么需要 Local/Exported 两个名字, 而不是像早期那样只存一个字符串:
+//   - `export { a as b }` 里 a 是"本模块(或来源模块)里的名字", b 才是对外导出的名字。
+//     只存一个字符串会把 `a as b` 当成"导出 a 和 b 两个名字", 别名语义整个丢失
+//     (import 侧的 NamedImport 已经踩过同一个坑, 见其注释)。
+type ExportSpecifier struct {
+	Local    string // 本模块(或来源模块)里的名字; export * as ns 时为 "*"
+	Exported string // 对外导出的名字
+}
+
+// ExportDeclaration 表示 export 语句。
+//
+// 覆盖以下形态:
+//
+//	export { a, b as c }                 // 本地命名导出 (可别名)
+//	export { a, b as c } from "./m.js"   // 具名再导出 (活绑定转发)
+//	export * from "./m.js"               // 星号再导出 (不含 default, 不覆盖本地)
+//	export * as ns from "./m.js"         // 命名空间再导出
+//	export {}                            // 空导出 (合法, 无副作用)
 //	export default expression
-//	export const x = 42
+//	export default function f() {}       // 具名函数: f 是模块内局部绑定, 不作命名导出
+//	export default class C {}            // 具名类: 同上
+//	export var/let/const ...             // 声明并导出
+//	export function/async function/class ...
 type ExportDeclaration struct {
-	Token        lexer.Token // EXPORT
-	IsDefault    bool        // 是否为 export default
-	Declaration  Statement   // 被导出的声明 (let/const/function)
-	NamedExports []string    // 命名导出列表 (用于 export { a, b })
+	Token       lexer.Token       // EXPORT
+	IsDefault   bool              // 是否为 export default
+	IsStar      bool              // export * from "..."
+	Declaration Statement         // 被导出的声明 (let/const/var/function/class)
+	Specifiers  []ExportSpecifier // export { ... } 列表 (含别名与再导出)
+	Source      string            // 有 "from" 时非空 ("export ... from <Source>")
 }
 
 func (ed *ExportDeclaration) TokenLiteral() string { return ed.Token.Literal }
 func (ed *ExportDeclaration) String() string {
 	if ed.IsDefault {
-		return "export default " + ed.Declaration.String()
+		if ed.Declaration != nil {
+			return "export default " + ed.Declaration.String()
+		}
+		return "export default;"
 	}
-	if len(ed.NamedExports) > 0 {
-		return "export { " + joinStrings(ed.NamedExports, ", ") + " };"
+	if ed.IsStar {
+		return "export * from \"" + ed.Source + "\";"
 	}
-	return "export " + ed.Declaration.String()
+	if len(ed.Specifiers) > 0 {
+		parts := make([]string, 0, len(ed.Specifiers))
+		for _, sp := range ed.Specifiers {
+			if sp.Local == sp.Exported {
+				parts = append(parts, sp.Local)
+			} else {
+				parts = append(parts, sp.Local+" as "+sp.Exported)
+			}
+		}
+		s := "export { " + joinStrings(parts, ", ") + " }"
+		if ed.Source != "" {
+			s += " from \"" + ed.Source + "\""
+		}
+		return s + ";"
+	}
+	if ed.Declaration != nil {
+		return "export " + ed.Declaration.String()
+	}
+	return "export {};"
 }
 func (ed *ExportDeclaration) statementNode() {}
 

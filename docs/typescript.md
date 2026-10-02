@@ -38,22 +38,31 @@
 | 转译缓存 | ✅ | 见 §4 |
 | `gox build` TS 入口 | ✅ | 见 §5 |
 | `gox types` 生成 `.d.ts` | ✅ | 见 §6 |
-| **`export enum` / `export class`** | ⛔ | 见下方边界 |
+| **`export enum` / `export class`** | ✅ | 见下方边界（再导出是"取值时读取源槽"的等效语义） |
 | 组件级 HMR | ⛔（后续里程碑） | `gox dev` 目前是**进程级热重启**，见 §8 |
 
 ### 已知边界（诚实清单）
 
-1. **`export enum` / `export class` 不可用**。esbuild 把 `export enum` 转成
-   `export var Color; (function(Color){…})`，而引擎 parser 目前只认
-   `export let/const/function`（`parser/parser.go` 的 `parseExportDeclaration`），
-   于是会报 `unexpected token after export: VAR`。规避：把值通过 `export function`
-   暴露（`export function green() { return Color.Green }`）或
-   `export const green = () => Color.Green`。**这是引擎 parser 的能力缺口，不是
-   转译层的问题**，修复路径是给 parser 补 `export var/class`（后续里程碑）。
-   夹具 `testdata/ts/enum.ts` 演示了这一写法。
-2. **类型检查不做**。`gox` 只保证语法；错误的类型用法不会被运行时拦住。
-3. **用户模块的 `.d.ts` 只是"清单"**（§6），不是可被 tsc 直接吸入的 ambient 声明。
-4. **单文件入口的 iOS 壳**是否支持 TS 取决于壳是否链接 `vm` 的 TS 通道；桌面
+1. ~~**`export enum` / `export class` 不可用**~~ —— **已修复（2026-10）**。
+   parser 现已覆盖 `export var/let/const`（含多 declarator / 解构 / 无初值）、
+   `export class [extends]`、`export async function` / `export async function*`、
+   `export default function/class`（具名名字只在模块内可见）、`export * from`、
+   `export * as ns from`、`export { a as b } from` 与空导出 `export {}`
+   （见 `parser/parser.go` 的 `parseExportDeclaration`）。esbuild 把 `export enum`
+   降级成的 `export var Color; (function(Color){…})` 现在可正常执行，夹具
+   `testdata/ts/enum.ts` 已复测通过。再导出会真的转发源模块的导出（不再是过去的
+   `ReferenceError: x is not defined`）。
+2. **再导出不是**完全**规范的 live binding（诚实标注）**。引擎的模块绑定是**值
+   快照**，没有绑定 cell，所以实现的是"取值时读取源模块导出槽"的等效语义：
+   `export { a } from "m"` / `export * from "m"` 在**导入方物化命名空间时**才去读
+   `m` 的导出槽，`m` 在导出后对同名绑定再赋值能反映到之后物化的命名空间；但**已经
+   拷进导入方局部变量的绑定不会再更新**（与直接 `import { a }` 的既有边界一致）。
+   `export *` 的同名冲突按规范判为 ambiguous（不导出），不做 first-wins。测试见
+   `vm/vm_export_test.go` 的 `TestExportNamedReexportLiveBinding` 与
+   `TestExportLocalLiveBinding`。
+3. **类型检查不做**。`gox` 只保证语法；错误的类型用法不会被运行时拦住。
+4. **用户模块的 `.d.ts` 只是"清单"**（§6），不是可被 tsc 直接吸入的 ambient 声明。
+5. **单文件入口的 iOS 壳**是否支持 TS 取决于壳是否链接 `vm` 的 TS 通道；桌面
    (`gox build windows|macos`) 已支持。
 
 ## 3. 报错定位到 `.ts` 源码行（P0-1）

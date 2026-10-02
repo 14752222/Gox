@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -55,9 +56,239 @@ type tryEntry struct {
 }
 
 // ModuleExports 存储模块的导出。
+//
+// 导出有三种来源, 解析优先级 (规范: 显式命名导出 > export *):
+//  1. Named/Default/bindings: 本模块的直接导出 (default 走 Default, 词法声明走
+//     bindings 活绑定);
+//  2. forwards: 具名再导出 `export {a as b} from "m"` 与命名空间再导出
+//     `export * as ns from "m"` —— 读时才去源模块导出槽取值, 是"取值时解析"的
+//     活绑定等效语义 (见 resolve);
+//  3. stars: `export * from "m"` —— 转发源模块的自有可枚举导出, **不含 default**,
+//     且**不覆盖**本模块已存在的同名导出 (规范 16.2.3.5 GetExportedNames /
+//     ResolveExport)。
+//
+// 枚举顺序口径 (Object.keys(namespace)): 先按本模块导出登记顺序 (order),
+// 再按星号源出现顺序拼接各自登记顺序并去重; 没有登记顺序的导出 (内置模块直接
+// 塞进 Named 的 map) 按名字字典序补在末尾。Go map 迭代是随机的, 不排序会让
+// namespace 每次物化的键序都不同 —— 这里给一个稳定口径。
 type ModuleExports struct {
 	Default object.Value
 	Named   map[string]object.Value
+
+	// bindings: 活绑定导出。导出名 → 读取模块顶层帧槽位的函数。
+	bindings map[string]func() object.Value
+	// forwards: 具名/命名空间再导出。导出名 → 源模块 + 源导出名 ("*" = 命名空间)。
+	forwards map[string]forwardRef
+	// stars: export * from 的源模块 (按出现顺序, 保证枚举确定性)。
+	stars []*ModuleExports
+	// order: 导出名登记顺序 (Named/bindings/forwards 共享)。
+	order []string
+}
+
+// forwardRef 是一次再导出转发。
+type forwardRef struct {
+	src  *ModuleExports
+	name string // 源模块里的导出名; "*" 表示导出整个命名空间对象
+}
+
+func newModuleExports() *ModuleExports {
+	return &ModuleExports{Named: map[string]object.Value{}}
+}
+
+func (m *ModuleExports) noteOrder(name string) {
+	for _, n := range m.order {
+		if n == name {
+			return
+		}
+	}
+	m.order = append(m.order, name)
+}
+
+// setValue 记录一个值导出 (default 单独存 Default)。
+func (m *ModuleExports) setValue(name string, v object.Value) {
+	if name == "default" {
+		m.Default = v
+	} else {
+		if m.Named == nil {
+			m.Named = map[string]object.Value{}
+		}
+		m.Named[name] = v
+	}
+	m.noteOrder(name)
+}
+
+// setBinding 记录一个活绑定导出: get 返回模块顶层帧槽位的当前值。
+func (m *ModuleExports) setBinding(name string, get func() object.Value) {
+	if m.bindings == nil {
+		m.bindings = map[string]func() object.Value{}
+	}
+	m.bindings[name] = get
+	m.noteOrder(name)
+}
+
+// setForward 记录一次再导出转发。
+func (m *ModuleExports) setForward(name string, src *ModuleExports, srcName string) {
+	if m.forwards == nil {
+		m.forwards = map[string]forwardRef{}
+	}
+	m.forwards[name] = forwardRef{src: src, name: srcName}
+	m.noteOrder(name)
+}
+
+func (m *ModuleExports) addStar(src *ModuleExports) {
+	m.stars = append(m.stars, src)
+}
+
+// resolveWith 返回导出名 name 的当前值 (第二个返回值表示是否可解析),
+// 并携带 building (命名空间构造集)。
+//
+// path 用于打断循环再导出 (A export * from B, B export * from A): 一个模块在
+// 本次解析链上只参与一次, 否则环会无限递归。规范里循环再导出最终由
+// ResolveExport 的 null/ambiguous 结果终止, 这里以"链上重复即放弃"等效实现。
+//
+// 为什么需要两个集合: path 是"当前解析链"的环检测 (进入即标记、返回即清除),
+// 而 building 是"本次命名空间物化过程中正在构造的那些模块"的集合, 必须跨整棵
+// 递归共享。`export * as a from B` + `export * as b from A` 这种命名空间环里,
+// 若每层都用新集合, A→B→A→B… 会一路递归到栈溢出; 共享 building 后第二次遇到
+// 已构造中的模块直接给空对象占位, 环即终止。
+func (m *ModuleExports) resolveWith(name string, path, building map[*ModuleExports]bool) (object.Value, bool) {
+	if m == nil {
+		return nil, false
+	}
+	if path[m] {
+		return nil, false
+	}
+	path[m] = true
+	defer delete(path, m)
+
+	// 1) 本模块直接导出。
+	if m.Named != nil {
+		if v, ok := m.Named[name]; ok {
+			return v, true
+		}
+	}
+	if name == "default" && m.Default != nil {
+		return m.Default, true
+	}
+	if m.bindings != nil {
+		if get, ok := m.bindings[name]; ok {
+			if v := get(); v != nil {
+				return v, true
+			}
+			// 槽位尚未初始化 (循环导入的部分导出): 当作 undefined,
+			// 与旧实现"属性缺失 → GET_PROP 得 undefined"一致, 不抛错。
+			return object.UndefinedSingleton, true
+		}
+	}
+
+	// 2) 具名再导出 (优先级高于 export *)。
+	if m.forwards != nil {
+		if f, ok := m.forwards[name]; ok {
+			if f.name == "*" {
+				return f.src.buildNamespace(building), true
+			}
+			return f.src.resolveWith(f.name, path, building)
+		}
+	}
+
+	// 3) export * (default 永不转发)。
+	if name != "default" {
+		var found object.Value
+		hit := 0
+		for _, s := range m.stars {
+			if v, ok := s.resolveWith(name, path, building); ok {
+				found = v
+				hit++
+			}
+		}
+		if hit == 1 {
+			return found, true
+		}
+		// hit > 1: 多个星号源同名 → 规范判为 ambiguous, 不导出。
+	}
+	return nil, false
+}
+
+// exportNames 返回本模块对外可见的导出名, 顺序确定 (见 ModuleExports 注释)。
+func (m *ModuleExports) exportNames(seen map[*ModuleExports]bool) []string {
+	if m == nil || seen[m] {
+		return nil
+	}
+	seen[m] = true
+	defer delete(seen, m)
+
+	var names []string
+	have := map[string]bool{}
+	add := func(n string) {
+		if !have[n] {
+			have[n] = true
+			names = append(names, n)
+		}
+	}
+	for _, n := range m.order {
+		add(n)
+	}
+	// order 缺失的名字 (内置模块直接塞 Named) 字典序补末尾, 保证确定性。
+	var extra []string
+	for n := range m.Named {
+		if !have[n] {
+			extra = append(extra, n)
+		}
+	}
+	if len(extra) > 0 {
+		sort.Strings(extra)
+		for _, n := range extra {
+			add(n)
+		}
+	}
+	for _, s := range m.stars {
+		for _, n := range s.exportNames(seen) {
+			if n == "default" {
+				continue // default 不参与星号转发
+			}
+			add(n)
+		}
+	}
+	return names
+}
+
+// buildNamespace 把模块导出物化成一个命名空间对象。
+//
+// 这是导入方唯一拿到的"模块视图": OP_IMPORT / 动态 import / `export * as ns`
+// 都走它。因为是物化时逐名调用 resolve, 再导出转发读到的就是源模块导出槽的
+// **当前**值 —— 即"取值时读取源模块导出槽"的语义 (比在 export 语句处立刻拷贝
+// 更接近规范的活绑定)。
+//
+// building 是"正在构造的模块"集合, 跨整棵递归共享, 打断 `export * as ns`
+// 形成的命名空间环 (见 resolveWith 的注释)。
+func (m *ModuleExports) buildNamespace(building map[*ModuleExports]bool) *object.Object {
+	obj := object.NewObject()
+	if m == nil {
+		return obj
+	}
+	if building == nil {
+		building = map[*ModuleExports]bool{}
+	}
+	if building[m] {
+		return obj
+	}
+	building[m] = true
+	defer delete(building, m)
+
+	for _, name := range m.exportNames(map[*ModuleExports]bool{}) {
+		if name == "default" {
+			continue // default 单独放在最后, 保持直觉顺序
+		}
+		v, ok := m.resolveWith(name, map[*ModuleExports]bool{}, building)
+		if !ok {
+			continue // 二义/未解析: 不放进命名空间
+		}
+		obj.SetProperty(name, v)
+	}
+	if v, ok := m.resolveWith("default", map[*ModuleExports]bool{}, building); ok {
+		obj.SetProperty("default", v)
+	}
+	return obj
 }
 
 // currentVM 是当前正在执行的 VM 实例。
@@ -1505,14 +1736,7 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				// 加载失败: reject Promise
 				p.Reject(object.NewErrorWithName("Error", err.Error()))
 			} else {
-				modObj := object.NewObject()
-				if modExports.Default != nil {
-					modObj.SetProperty("default", modExports.Default)
-				}
-				for name, val := range modExports.Named {
-					modObj.SetProperty(name, val)
-				}
-				p.Resolve(modObj)
+				p.Resolve(modExports.buildNamespace(nil))
 			}
 			vm.stack.Push(p)
 		case bytecode.OP_GET_INDEX:
@@ -1957,15 +2181,8 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				}
 				continue
 			}
-			// 推入模块导出对象
-			modObj := object.NewObject()
-			if modExports.Default != nil {
-				modObj.SetProperty("default", modExports.Default)
-			}
-			for name, val := range modExports.Named {
-				modObj.SetProperty(name, val)
-			}
-			vm.stack.Push(modObj)
+			// 推入模块命名空间对象 (物化时解析再导出/星号导出, 见 buildNamespace)
+			vm.stack.Push(modExports.buildNamespace(nil))
 
 		case bytecode.OP_EXPORT:
 			// operand = 导出名常量索引，栈顶是导出值
@@ -1975,14 +2192,56 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				exportName = s.Value
 			}
 			val := vm.stack.Pop()
-			if vm.currentExports == nil {
-				vm.currentExports = &ModuleExports{Named: map[string]object.Value{}}
+			vm.ensureCurrentExports().setValue(exportName, val)
+
+		case bytecode.OP_EXPORT_BINDING:
+			// operand = 常量池索引 → [导出名(str), 槽位(int)]
+			// 记录"导出名 → 当前(模块顶层)帧槽位"的读取器, 不存值快照。
+			name, slot, ok := vm.bindingOperand(frame, operand)
+			if !ok {
+				return fmt.Errorf("VM: malformed EXPORT_BINDING operand at pc %d", frame.PC)
 			}
-			if exportName == "default" {
-				vm.currentExports.Default = val
-			} else {
-				vm.currentExports.Named[exportName] = val
+			locals := frame.Locals
+			vm.ensureCurrentExports().setBinding(name, func() object.Value {
+				if slot < len(locals) {
+					return locals[slot]
+				}
+				return nil
+			})
+
+		case bytecode.OP_EXPORT_FROM:
+			// operand = 常量池索引 → [模块路径(str), 源导出名(str), 目标导出名(str)]
+			// 记录转发 (读时读取源模块导出槽), 而不是当场拷贝值。
+			spec, srcName, target, ok := vm.reexportOperand(frame, operand)
+			if !ok {
+				return fmt.Errorf("VM: malformed EXPORT_FROM operand at pc %d", frame.PC)
 			}
+			src, err := vm.loadModule(spec)
+			if err != nil {
+				errVal := object.NewErrorWithName("Error", err.Error())
+				if !vm.handleThrow(errVal) {
+					return &ThrowError{Value: errVal}
+				}
+				continue
+			}
+			vm.ensureCurrentExports().setForward(target, src, srcName)
+
+		case bytecode.OP_EXPORT_STAR:
+			// operand = 模块路径常量索引; 记录星号再导出源。
+			specVal := frame.Constants.Get(operand)
+			spec := ""
+			if s, ok := specVal.(*object.String); ok {
+				spec = s.Value
+			}
+			src, err := vm.loadModule(spec)
+			if err != nil {
+				errVal := object.NewErrorWithName("Error", err.Error())
+				if !vm.handleThrow(errVal) {
+					return &ThrowError{Value: errVal}
+				}
+				continue
+			}
+			vm.ensureCurrentExports().addStar(src)
 
 		default:
 			return fmt.Errorf("VM: unknown opcode 0x%02x (%s)", op, op.Name())
@@ -2549,12 +2808,51 @@ func (vm *VM) handleThrowInner(val object.Value) bool {
 	return false
 }
 
+// ensureCurrentExports 返回当前模块的导出表, 必要时惰性创建。
+// 导出指令 (OP_EXPORT 系列) 统一走它, 避免各处重复判空。
+func (vm *VM) ensureCurrentExports() *ModuleExports {
+	if vm.currentExports == nil {
+		vm.currentExports = newModuleExports()
+	}
+	return vm.currentExports
+}
+
+// bindingOperand 解析 OP_EXPORT_BINDING 的操作数: [导出名, 槽位]。
+func (vm *VM) bindingOperand(frame *Frame, operand uint16) (string, int, bool) {
+	arr, ok := frame.Constants.Get(operand).(*object.Array)
+	if !ok || len(arr.Elements) != 2 {
+		return "", 0, false
+	}
+	name, ok1 := arr.Elements[0].(*object.String)
+	slot, ok2 := arr.Elements[1].(*object.Number)
+	if !ok1 || !ok2 {
+		return "", 0, false
+	}
+	return name.Value, int(slot.Value), true
+}
+
+// reexportOperand 解析 OP_EXPORT_FROM 的操作数: [模块路径, 源导出名, 目标导出名]。
+func (vm *VM) reexportOperand(frame *Frame, operand uint16) (string, string, string, bool) {
+	arr, ok := frame.Constants.Get(operand).(*object.Array)
+	if !ok || len(arr.Elements) != 3 {
+		return "", "", "", false
+	}
+	spec, ok1 := arr.Elements[0].(*object.String)
+	srcName, ok2 := arr.Elements[1].(*object.String)
+	target, ok3 := arr.Elements[2].(*object.String)
+	if !ok1 || !ok2 || !ok3 {
+		return "", "", "", false
+	}
+	return spec.Value, srcName.Value, target.Value, true
+}
+
 // loadModule 加载并执行模块，返回导出对象。
 // 使用模块缓存避免重复加载。
 func (vm *VM) loadModule(spec string) (*ModuleExports, error) {
 	// 内置模块 (如 "gx/solid"、"gox") 优先于文件系统解析
 	if exports, ok := object.LookupBuiltinModule(spec); ok {
-		mod := &ModuleExports{Named: exports}
+		mod := newModuleExports()
+		mod.Named = exports
 		vm.modules[spec] = mod
 		return mod, nil
 	}
@@ -2618,7 +2916,7 @@ func (vm *VM) loadModuleFile(spec, absPath string) (*ModuleExports, error) {
 
 	// 执行模块
 	savedExports := vm.currentExports
-	vm.currentExports = &ModuleExports{Named: map[string]object.Value{}}
+	vm.currentExports = newModuleExports()
 
 	// 保存当前模块路径并设置新基准
 	savedBase := vm.moduleBase

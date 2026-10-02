@@ -152,13 +152,13 @@ const (
 	OP_TYPEOF_GLOBAL Opcode = 0xC5 // typeof 未绑定的标识符 (操作数 = 名字常量索引, 不抛 ReferenceError)
 
 	// 0xD0-0xDF: 控制
-	OP_BREAK        Opcode = 0xD0 // break (跳转到循环外)
-	OP_CONTINUE     Opcode = 0xD1 // continue (跳转到循环头)
-	OP_PUSH_TRY     Opcode = 0xD2 // push try handler (operand = catchPC, 0=no catch)
-	OP_PUSH_FINALLY Opcode = 0xD3 // set finallyPC on top try entry (operand = finallyPC)
-	OP_POP_TRY      Opcode = 0xD4 // pop try handler (try completed normally)
-	OP_THROW        Opcode = 0xD5 // throw exception (pop value from stack)
-	OP_END_FINALLY  Opcode = 0xD6 // end finally block (re-throw pending error if any)
+	OP_BREAK            Opcode = 0xD0 // break (跳转到循环外)
+	OP_CONTINUE         Opcode = 0xD1 // continue (跳转到循环头)
+	OP_PUSH_TRY         Opcode = 0xD2 // push try handler (operand = catchPC, 0=no catch)
+	OP_PUSH_FINALLY     Opcode = 0xD3 // set finallyPC on top try entry (operand = finallyPC)
+	OP_POP_TRY          Opcode = 0xD4 // pop try handler (try completed normally)
+	OP_THROW            Opcode = 0xD5 // throw exception (pop value from stack)
+	OP_END_FINALLY      Opcode = 0xD6 // end finally block (re-throw pending error if any)
 	OP_JUMP_IF_TRUE_POP Opcode = 0xD7 // 条件真则弹出条件值并跳转; 假则不弹继续 (switch case 匹配)
 	OP_SET_GETTER_DYN   Opcode = 0xD8 // 动态键 getter: 栈 [obj, fn, key], 键为运行时值 (计算属性名)
 	OP_SET_SETTER_DYN   Opcode = 0xD9 // 动态键 setter: 栈 [obj, fn, key]
@@ -166,6 +166,18 @@ const (
 	// 0xE0-0xEF: 模块
 	OP_IMPORT Opcode = 0xE0 // import module (operand = module spec constant index)
 	OP_EXPORT Opcode = 0xE1 // export value (operand = export name constant index)
+	// OP_EXPORT_BINDING: 导出一个模块顶层的词法绑定 (活绑定)。
+	// 不弹栈; operand = 常量池索引, 指向 [导出名(str), 槽位(int)] 数组。
+	// VM 记录"导出名 → 顶层帧 Locals[slot]"的读取器, 导入方取用时才读值,
+	// 于是导出后的再赋值能被观察到 (ES live binding 语义)。
+	OP_EXPORT_BINDING Opcode = 0xE2
+	// OP_EXPORT_FROM: 具名再导出 / export * as ns。
+	// operand = 常量池索引, 指向 [模块路径(str), 源导出名(str), 目标导出名(str)] 数组;
+	// 源导出名为 "*" 时导出整个命名空间对象。记录转发, 读时读取源模块导出槽。
+	OP_EXPORT_FROM Opcode = 0xE3
+	// OP_EXPORT_STAR: export * from "..."。
+	// operand = 模块路径常量索引; 记录星号再导出 (不含 default, 不覆盖本地同名)。
+	OP_EXPORT_STAR Opcode = 0xE4
 
 	// 0xF0-0xFF: 显式类型转换
 	OP_TO_NUMBER Opcode = 0xF0 // 一元 + (ToNumber): BigInt 抛 TypeError
@@ -196,8 +208,8 @@ var opcodeNames = map[Opcode]string{
 	OP_JUMP_IF_NOT_NULL: "JUMP_IF_NOT_NULL",
 	OP_JUMP_IF_TRUE_POP: "JUMP_IF_TRUE_POP",
 	OP_SET_GETTER_DYN:   "SET_GETTER_DYN", OP_SET_SETTER_DYN: "SET_SETTER_DYN",
-	OP_LOOP:             "LOOP",
-	OP_CALL:             "CALL", OP_RETURN: "RETURN", OP_RETURN_VOID: "RETURN_VOID",
+	OP_LOOP: "LOOP",
+	OP_CALL: "CALL", OP_RETURN: "RETURN", OP_RETURN_VOID: "RETURN_VOID",
 	OP_FUNCTION: "FUNCTION", OP_ARROW_FUNC: "ARROW_FUNC", OP_CLOSURE: "CLOSURE",
 	OP_NEW: "NEW", OP_CALL_SPREAD: "CALL_SPREAD", OP_CALL_METHOD: "CALL_METHOD",
 	OP_NEW_ARRAY: "NEW_ARRAY", OP_NEW_OBJECT: "NEW_OBJECT",
@@ -223,6 +235,7 @@ var opcodeNames = map[Opcode]string{
 	OP_PUSH_TRY: "PUSH_TRY", OP_PUSH_FINALLY: "PUSH_FINALLY",
 	OP_POP_TRY: "POP_TRY", OP_THROW: "THROW", OP_END_FINALLY: "END_FINALLY",
 	OP_IMPORT: "IMPORT", OP_EXPORT: "EXPORT",
+	OP_EXPORT_BINDING: "EXPORT_BINDING", OP_EXPORT_FROM: "EXPORT_FROM", OP_EXPORT_STAR: "EXPORT_STAR",
 	OP_TO_NUMBER: "TO_NUMBER",
 }
 

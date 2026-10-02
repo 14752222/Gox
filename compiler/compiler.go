@@ -412,6 +412,14 @@ func (c *Compiler) collectVarBindingsStmt(stmt ast.Statement, out *[]varBinding,
 				}
 			}
 		}
+	case *ast.ExportDeclaration:
+		// `export var Color;` 必须参与 var 提升: esbuild 把 `export enum` 降级成
+		// 这个形态 (后接 IIFE 给 Color 赋值)。不提升的话 Color 根本没被声明,
+		// 导出会去读全局 → "Color is not defined" (M2 缺口)。导出不引入新作用域,
+		// 所以 depth 不递增。
+		if node.Declaration != nil {
+			return c.collectVarBindingsStmt(node.Declaration, out, depth)
+		}
 	case *ast.BlockStatement:
 		return c.collectVarBindings(node.Statements, out, depth+1)
 	case *ast.IfStatement:
@@ -1331,8 +1339,8 @@ func (c *Compiler) compileSwitchStatement(stmt *ast.SwitchStatement) error {
 	}
 
 	// 收集 case 跳转和 break 跳转
-	var caseJumps []int  // JUMP_IF_TRUE_POP 的位置
-	var defaultJump int  // 跳到 default 的位置
+	var caseJumps []int // JUMP_IF_TRUE_POP 的位置
+	var defaultJump int // 跳到 default 的位置
 
 	// switch 本身是 break 目标 (case 体内的 break 作用于 switch, 而非外层循环)
 	ctx := c.pushControl(c.takePendingLabel(), false)
@@ -1556,7 +1564,7 @@ func (c *Compiler) compileClassBody(className string, superClass ast.Expression,
 	// extends: proto.Proto = SuperClass.prototype
 	if superName != "" {
 		// 栈: [ctor, proto] → LOAD_GLOBAL Super → GET_PROP prototype → [ctor, proto, parent]
-		c.emitGlobalLoad(superName)
+		c.emitSuperLoad(superName)
 		pidx := c.constants.AddConstant(object.NewString("prototype"))
 		c.emitter.Emit(bytecode.OP_GET_PROP, pidx)
 		// OP_SET_PROTO: 弹出 parent, 设置下方对象 (proto) 的原型 → [ctor, proto]
@@ -1647,7 +1655,7 @@ func (c *Compiler) compileClassConstructor(fields []*ast.ClassField, ctor *ast.C
 		for _, param := range ctor.Parameters {
 			paramSpecs = append(paramSpecs, bytecode.ParameterSpec{Name: param.Name, HasDefault: param.Default != nil, IsRest: param.Rest})
 			sym := fnScope.Define(param.Name, false)
-			sym.Declared = true // 参数是真实声明: 函数体内 let 同名 → SyntaxError
+			sym.Declared = true  // 参数是真实声明: 函数体内 let 同名 → SyntaxError
 			sym.IsVarLike = true // 参数即 var 绑定: 函数体内 var 同名复用此绑定
 			paramSlots = append(paramSlots, sym.Slot)
 		}
@@ -2015,72 +2023,215 @@ func exportNameList(exports map[string]object.Value) string {
 	return strings.Join(names, ", ")
 }
 
+// compileExportDeclaration 编译 export 声明。
+//
+// 四类形态分别落到不同的运行期机制:
+//
+//	export * from "m"          → OP_EXPORT_STAR (星号再导出, 读时解析)
+//	export {a as b} from "m"   → OP_EXPORT_FROM (具名再导出/命名空间再导出)
+//	export {a as b}            → 本地命名导出 (模块模式走 OP_EXPORT_BINDING)
+//	export <declaration>       → 编译声明 + 按名导出 / default 导出
+//
+// 关于"活绑定": 模块模式下本地 let/const/var/function/class 导出用
+// OP_EXPORT_BINDING 记录"导出名 → 模块顶层帧槽位", 导入方取用时才读取槽位,
+// 因此 `export let a = 1; a = 2;` 会被读到 2 (规范要求的 live binding)。
+// 入口脚本(全局模式)的顶层绑定落在共享全局环境, 没有帧槽位, 退回值导出。
 func (c *Compiler) compileExportDeclaration(stmt *ast.ExportDeclaration) error {
-	// 先编译声明
-	if stmt.Declaration != nil {
-		if err := c.compileStatement(stmt.Declaration); err != nil {
+	// 1) export * from "m": 记录源模块, 读时转发其自有可枚举导出 (不含 default)
+	if stmt.IsStar {
+		specIdx := c.constants.AddConstant(object.NewString(stmt.Source))
+		c.emitter.Emit(bytecode.OP_EXPORT_STAR, specIdx)
+		return nil
+	}
+
+	// 2) export ... from "m": 具名再导出 / export * as ns
+	//    常量 = [模块路径, 源导出名, 目标导出名]; 源导出名 "*" 表示命名空间对象。
+	if stmt.Source != "" {
+		for _, sp := range stmt.Specifiers {
+			composite := object.NewArray([]object.Value{
+				object.NewString(stmt.Source),
+				object.NewString(sp.Local),
+				object.NewString(sp.Exported),
+			})
+			idx := c.constants.AddConstant(composite)
+			c.emitter.Emit(bytecode.OP_EXPORT_FROM, idx)
+		}
+		return nil
+	}
+
+	// 3) export { a, b as c }: 本地命名导出 (可别名)
+	if len(stmt.Specifiers) > 0 {
+		for _, sp := range stmt.Specifiers {
+			c.emitLocalExport(sp.Local, sp.Exported)
+		}
+		return nil
+	}
+
+	// 4) export <declaration>
+	if stmt.Declaration == nil {
+		return nil
+	}
+	if stmt.IsDefault {
+		return c.compileDefaultExport(stmt.Declaration)
+	}
+	if err := c.compileStatement(stmt.Declaration); err != nil {
+		return err
+	}
+	// 声明里绑定的每个名字都导出一次 (覆盖多 declarator 与解构)
+	for _, name := range exportedNames(stmt.Declaration) {
+		c.emitLocalExport(name, name)
+	}
+	return nil
+}
+
+// emitLocalExport 把一个本模块绑定以 exported 名字导出。
+//
+// 模块模式的顶层绑定有帧槽位 (OP_STORE/OP_STORE_CONST), 用 OP_EXPORT_BINDING
+// 记录槽位读取器 → 活绑定。全局模式的顶层绑定按名字落在共享全局环境, 退回
+// "取值导出": 载入当前值再 OP_EXPORT。
+func (c *Compiler) emitLocalExport(local, exported string) {
+	sym := c.scope.Resolve(local)
+	if sym != nil && !(sym.Depth == 0 && !c.moduleMode) {
+		composite := object.NewArray([]object.Value{
+			object.NewString(exported),
+			object.NewInt(int64(sym.Slot)),
+		})
+		idx := c.constants.AddConstant(composite)
+		c.emitter.Emit(bytecode.OP_EXPORT_BINDING, idx)
+		return
+	}
+	// 全局/未解析: 按名字取全局值后导出 (与旧行为一致, 从不静默丢失导出)
+	c.emitGlobalLoad(local)
+	nameIdx := c.constants.AddConstant(object.NewString(exported))
+	c.emitter.Emit(bytecode.OP_EXPORT, nameIdx)
+}
+
+// compileDefaultExport 编译 export default。
+//
+// default 导出始终是"值"而非活绑定: 规范里 default 是独立导出项, 具名默认
+// 函数/类只把名字作为模块内局部绑定 (见 parser.parseExportDefault)。因此这里
+// 先编译声明登记局部绑定, 再把绑定当前值作为 default 导出; 表达式/匿名函数/
+// 匿名类则直接求值导出。
+func (c *Compiler) compileDefaultExport(decl ast.Statement) error {
+	nameIdx := c.constants.AddConstant(object.NewString("default"))
+	switch d := decl.(type) {
+	case *ast.ExpressionStatement:
+		// 表达式只求值一次: 值入栈 → OP_EXPORT 弹出。
+		if err := c.compileExpression(d.Expression); err != nil {
 			return err
 		}
-	}
-
-	// export { a, b }: 注册导出名
-	for _, name := range stmt.NamedExports {
-		// 使用 OP_EXPORT 操作数 = 导出名常量索引
-		nameIdx := c.constants.AddConstant(object.NewString(name))
-		// 加载变量值
-		sym := c.scope.Resolve(name)
-		if sym != nil {
-			c.emitLoad(sym)
-		} else {
-			c.emitGlobalLoad(name)
+	case *ast.FunctionDeclaration:
+		if err := c.compileFunctionDeclaration(d); err != nil {
+			return err
 		}
-		c.emitter.Emit(bytecode.OP_EXPORT, nameIdx)
-	}
-
-	// export const x = ... : 自动导出
-	if stmt.Declaration != nil && !stmt.IsDefault && len(stmt.NamedExports) == 0 {
-		switch decl := stmt.Declaration.(type) {
-		case *ast.LetStatement:
-			nameIdx := c.constants.AddConstant(object.NewString(decl.Name.Value))
-			sym := c.scope.Resolve(decl.Name.Value)
-			if sym != nil {
-				c.emitLoad(sym)
-			}
-			c.emitter.Emit(bytecode.OP_EXPORT, nameIdx)
-		case *ast.ConstStatement:
-			nameIdx := c.constants.AddConstant(object.NewString(decl.Name.Value))
-			sym := c.scope.Resolve(decl.Name.Value)
-			if sym != nil {
-				c.emitLoad(sym)
-			}
-			c.emitter.Emit(bytecode.OP_EXPORT, nameIdx)
-		case *ast.FunctionDeclaration:
-			nameIdx := c.constants.AddConstant(object.NewString(decl.Name.Value))
-			sym := c.scope.Resolve(decl.Name.Value)
-			if sym != nil {
-				c.emitLoad(sym)
-			}
-			c.emitter.Emit(bytecode.OP_EXPORT, nameIdx)
+		if err := c.loadDeclaredBinding(d.Name); err != nil {
+			return err
 		}
-	}
-
-	// export default ...
-	if stmt.IsDefault {
-		nameIdx := c.constants.AddConstant(object.NewString("default"))
-		// 值已经在栈上 (来自 Declaration 的编译)
-		// 但 Declaration 可能是 ExpressionStatement (已 POP) 或 FunctionDeclaration (已 STORE)
-		if exprStmt, ok := stmt.Declaration.(*ast.ExpressionStatement); ok {
-			c.compileExpression(exprStmt.Expression)
-		} else if fnDecl, ok := stmt.Declaration.(*ast.FunctionDeclaration); ok {
-			sym := c.scope.Resolve(fnDecl.Name.Value)
-			if sym != nil {
-				c.emitter.Emit(bytecode.OP_LOAD, uint16(sym.Slot))
-			}
+	case *ast.ClassDeclaration:
+		if err := c.compileClassDeclaration(d); err != nil {
+			return err
 		}
-		c.emitter.Emit(bytecode.OP_EXPORT, nameIdx)
+		if err := c.loadDeclaredBinding(d.Name); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("compiler: unsupported export default declaration %T", decl)
 	}
-
+	c.emitter.Emit(bytecode.OP_EXPORT, nameIdx)
 	return nil
+}
+
+// loadDeclaredBinding 加载刚声明的绑定值到栈顶。
+// 关键: 用 emitLoad 而不是裸 OP_LOAD —— 全局模式下绑定在共享全局环境里
+// (OP_DECLARE_FUNC/OP_DECLARE), 裸 OP_LOAD 会去读从未初始化的帧槽位,
+// 触发 "Cannot access lexical declaration before initialization" (TDZ 误报)。
+func (c *Compiler) loadDeclaredBinding(name *ast.Identifier) error {
+	if name == nil {
+		return fmt.Errorf("compiler: export default declaration has no name")
+	}
+	sym := c.scope.Resolve(name.Value)
+	if sym == nil {
+		return fmt.Errorf("compiler: export default binding %q not found", name.Value)
+	}
+	c.emitLoad(sym)
+	return nil
+}
+
+// exportedNames 返回一个"声明导出"里所有被绑定的名字。
+// 覆盖: 多 declarator (export let a, b) 与解构 (export const {x, y} = o)。
+func exportedNames(decl ast.Statement) []string {
+	switch d := decl.(type) {
+	case *ast.LetStatement:
+		return declaratorExportNames(d.Name, d.Value, d.More)
+	case *ast.ConstStatement:
+		return declaratorExportNames(d.Name, d.Value, d.More)
+	case *ast.VarStatement:
+		return declaratorExportNames(d.Name, d.Value, d.More)
+	case *ast.FunctionDeclaration:
+		if d.Name != nil {
+			return []string{d.Name.Value}
+		}
+	case *ast.ClassDeclaration:
+		if d.Name != nil {
+			return []string{d.Name.Value}
+		}
+	}
+	return nil
+}
+
+// declaratorExportNames 收集声明项绑定的名字 (含解构合成的 "__destructure__")。
+func declaratorExportNames(name *ast.Identifier, value ast.Expression, more []ast.Declarator) []string {
+	var out []string
+	collect := func(n *ast.Identifier, v ast.Expression) {
+		if n == nil {
+			return
+		}
+		if n.Value == destructureSyntheticName {
+			collectPatternExportNames(v, &out)
+			return
+		}
+		out = append(out, n.Value)
+	}
+	collect(name, value)
+	for _, d := range more {
+		collect(d.Name, d.Value)
+	}
+	return out
+}
+
+// collectPatternExportNames 从解构声明 (Name="__destructure__", Value 是
+// AssignmentExpression{Left: 模式}) 里收集绑定名。
+func collectPatternExportNames(value ast.Expression, out *[]string) {
+	assign, ok := value.(*ast.AssignmentExpression)
+	if !ok {
+		return
+	}
+	collectPatternNames(assign.Left, out)
+}
+
+// collectPatternNames 递归走解构模式收集绑定名。
+func collectPatternNames(pattern ast.Expression, out *[]string) {
+	switch p := pattern.(type) {
+	case *ast.Identifier:
+		if p.Value != destructureSyntheticName {
+			*out = append(*out, p.Value)
+		}
+	case *ast.ArrayPattern:
+		for _, el := range p.Elements {
+			if el != nil {
+				collectPatternNames(el.Target, out)
+			}
+		}
+	case *ast.ObjectPattern:
+		for _, prop := range p.Properties {
+			if prop != nil {
+				collectPatternNames(prop.Value, out)
+			}
+		}
+	case *ast.AssignmentExpression:
+		// 带默认值的元素: {a = 1} / [a = 1]
+		collectPatternNames(p.Left, out)
+	}
 }
 
 func (c *Compiler) compileFunctionDeclaration(stmt *ast.FunctionDeclaration) error {
@@ -2284,6 +2435,20 @@ func (c *Compiler) isGlobalScope() bool {
 func (c *Compiler) emitGlobalLoad(name string) {
 	idx := c.constants.AddConstant(object.NewString(name))
 	c.emitter.Emit(bytecode.OP_LOAD_GLOBAL, idx)
+}
+
+// emitSuperLoad 加载 extends 的父类构造器。
+//
+// 为什么不能直接 emitGlobalLoad: 模块模式 (被 import 的模块) 里父类名是模块
+// 顶层的局部槽位, 不是全局变量 —— 早期实现对 super 一律走 LOAD_GLOBAL, 于是
+// `class C extends B {}` 在模块里报 "B is not defined"。这里先按作用域解析
+// (局部槽位), 解析不到再退回全局 (入口脚本场景)。
+func (c *Compiler) emitSuperLoad(name string) {
+	if sym := c.scope.Resolve(name); sym != nil && !(sym.Depth == 0 && !c.moduleMode) {
+		c.emitLoad(sym)
+		return
+	}
+	c.emitGlobalLoad(name)
 }
 
 // emitTypeOfGlobal 发射针对未绑定标识符的 typeof 指令。
@@ -3177,7 +3342,7 @@ func (c *Compiler) compileCallExpression(node *ast.CallExpression) error {
 		// LOAD_GLOBAL SuperClass → OP_THIS → 参数 → OP_CALL_METHOD
 		// 注意: 这里不 emit POP, 返回值 (父构造结果) 留在栈上由外层语句/表达式消费,
 		// 否则表达式语句还会再补一个 POP, 造成双重弹出破坏栈。
-		c.emitGlobalLoad(c.currentSuperClass)     // [fn]
+		c.emitSuperLoad(c.currentSuperClass)      // [fn]
 		c.emitter.EmitNoOperand(bytecode.OP_THIS) // [fn, this]
 		for _, arg := range node.Arguments {
 			if err := c.compileExpression(arg); err != nil {
@@ -3196,7 +3361,7 @@ func (c *Compiler) compileCallExpression(node *ast.CallExpression) error {
 				return fmt.Errorf("compiler: super method call outside class")
 			}
 			// LOAD_GLOBAL Super → GET_PROP prototype → GET_PROP method → OP_THIS → args → CALL_METHOD
-			c.emitGlobalLoad(c.currentSuperClass)
+			c.emitSuperLoad(c.currentSuperClass)
 			pidx := c.constants.AddConstant(object.NewString("prototype"))
 			c.emitter.Emit(bytecode.OP_GET_PROP, pidx)
 			propName := member.Property.(*ast.Identifier).Value
@@ -3289,7 +3454,7 @@ func (c *Compiler) compileMemberExpression(node *ast.MemberExpression) error {
 		if c.currentSuperClass == "" {
 			return fmt.Errorf("compiler: super property access outside class")
 		}
-		c.emitGlobalLoad(c.currentSuperClass)
+		c.emitSuperLoad(c.currentSuperClass)
 		pidx := c.constants.AddConstant(object.NewString("prototype"))
 		c.emitter.Emit(bytecode.OP_GET_PROP, pidx)
 		if node.Computed {
@@ -3623,7 +3788,7 @@ func (c *Compiler) compileFunctionSelf(name, selfName string, params []*ast.Para
 			IsRest:     param.Rest,
 		}
 		sym := fnScope.Define(param.Name, false)
-		sym.Declared = true // 参数是真实声明: 函数体内 let 同名 → SyntaxError
+		sym.Declared = true  // 参数是真实声明: 函数体内 let 同名 → SyntaxError
 		sym.IsVarLike = true // 参数即 var 绑定: 函数体内 var 同名复用此绑定
 		paramSlots[i] = sym.Slot
 	}
