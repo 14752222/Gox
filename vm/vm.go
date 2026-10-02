@@ -1,6 +1,7 @@
 package vm
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -2558,12 +2559,19 @@ func (vm *VM) loadModule(spec string) (*ModuleExports, error) {
 			spec, strings.Join(object.RegisteredBuiltinModules(), ", "))
 	}
 
-	// 解析模块路径
-	absPath, resolveErr := vm.resolveModuleFile(spec)
+	// 解析模块路径: 裸说明符 (node_modules) 与相对/绝对路径分开走
+	absPath, resolveErr := vm.resolveModule(spec)
 	if resolveErr != nil {
 		return nil, resolveErr
 	}
 
+	return vm.loadModuleFile(spec, absPath)
+}
+
+// loadModuleFile 从已解析的磁盘路径加载、编译并执行模块。
+// 与 loadModule 拆开是为了让"解析"与"加载执行"各自可测（node_modules
+// 解析的测试只关心前者，不需要跑完整条编译执行链）。
+func (vm *VM) loadModuleFile(spec, absPath string) (*ModuleExports, error) {
 	// 检查缓存
 	if mod, ok := vm.modules[absPath]; ok {
 		return mod, nil
@@ -3392,6 +3400,328 @@ func resolvePath(base, spec string) string {
 		return filepath.Clean(spec)
 	}
 	return filepath.Clean(filepath.Join(base, spec))
+}
+
+// resolveModule 把模块说明符解析为磁盘上的真实文件。
+//
+// 两类说明符分开处理：
+//   - 裸说明符（"lodash" / "@scope/pkg" / "lodash/fp"）→ node_modules 解析；
+//   - 相对/绝对路径（"./x.js" / "/abs/x.js"）→ 原有文件解析。
+//
+// 裸说明符在 node_modules 里找不到时，回退到原有"相对 moduleBase 当路径解析"
+// 的行为 —— 历史脚本里有 `import "src/util.js"` 这种靠 moduleBase 的写法，
+// 不能因为引入 npm 解析就把它判死。两条路都落空时报错同时列出两份候选。
+func (vm *VM) resolveModule(spec string) (string, error) {
+	if !isBareSpecifier(spec) {
+		return vm.resolveModuleFile(spec)
+	}
+	nmPath, nmErr := vm.resolveNodeModule(spec)
+	if nmErr == nil {
+		return nmPath, nil
+	}
+	legacyPath, legacyErr := vm.resolveModuleFile(spec)
+	if legacyErr == nil {
+		return legacyPath, nil
+	}
+	// 都失败: 合并报错, 让用户一次看到 node_modules 与相对路径两边的候选。
+	return "", fmt.Errorf("Cannot find module '%s'\n  [node_modules] %v\n  [相对 moduleBase] %v",
+		spec, nmErr, legacyErr)
+}
+
+// isBareSpecifier 判断说明符是否为"裸包名"（需要 node_modules 解析）。
+//
+// 排除：相对路径（./ ../ . ..）、绝对路径（/ 或 \ 开头）、Windows 盘符
+// （C:\...）。"gox" / "gx/*" 已由 loadModule 在此函数之前拦下。
+func isBareSpecifier(spec string) bool {
+	if spec == "" || spec == "." || spec == ".." {
+		return false
+	}
+	if strings.HasPrefix(spec, "./") || strings.HasPrefix(spec, "../") {
+		return false
+	}
+	if strings.HasPrefix(spec, "/") || strings.HasPrefix(spec, `\`) {
+		return false
+	}
+	if len(spec) >= 2 && spec[1] == ':' { // Windows 盘符 C:\...
+		return false
+	}
+	return true
+}
+
+// splitPackageSpec 把裸说明符拆成"包名 + 子路径"。
+//
+//	"lodash"            → ("lodash", "")
+//	"lodash/fp"         → ("lodash", "fp")
+//	"@scope/pkg"        → ("@scope/pkg", "")
+//	"@scope/pkg/sub"    → ("@scope/pkg", "sub")
+func splitPackageSpec(spec string) (name, sub string) {
+	if strings.HasPrefix(spec, "@") {
+		parts := strings.SplitN(spec, "/", 3)
+		if len(parts) < 2 {
+			return spec, "" // 非法作用域名（"@scope" 单独），交给后续报错
+		}
+		name = parts[0] + "/" + parts[1]
+		if len(parts) == 3 {
+			sub = parts[2]
+		}
+		return name, sub
+	}
+	if i := strings.IndexByte(spec, '/'); i >= 0 {
+		return spec[:i], spec[i+1:]
+	}
+	return spec, ""
+}
+
+// moduleEntryExtensions 是 node_modules 入口解析尝试的源码后缀，顺序即优先级。
+// 在相对导入的 .js/.ts/.tsx 之外补上 npm 世界常见的 .mjs（ESM 真后缀）与
+// .cjs（CommonJS，v0 能解析但运行会因 require 未定义而报错 —— 见 docs/npm-compat.md）。
+var moduleEntryExtensions = []string{".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".mts", ".cts"}
+
+// resolveNodeModule 从 moduleBase 起逐级向上查找 node_modules/<pkg>，
+// 命中后按 package.json 的 exports > module > main > browser > index.*
+// 顺序解析入口。
+//
+// 顺序理由（v1 口径，写死在此避免后来者当 bug）：
+//  1. exports —— Node 12+ 的官方、权威入口声明，也是唯一能表达"子路径 +
+//     条件"的字段，最精确，所以最高优先；
+//  2. module —— 打包器时代的事实标准，指向 ESM 入口。Gox 是 ESM-first，
+//     ESM 入口优先于 CJS 的 main；
+//  3. main —— Node 的经典入口（多为 CJS）。Gox v0 不做 CJS：main 指向 CJS
+//     时这里**仍会解析成功**，失败发生在运行期（require is not defined）。
+//     这是刻意的 loud failure，不在此处静默跳过；
+//  4. browser —— 浏览器条件入口（v1 只认字符串形式；对象映射形式不解析）；
+//  5. index.js / index.ts / index.tsx —— 老包不带任何入口字段时的兜底。
+//
+// 失败时报出所有尝试过的候选路径（含逐级 node_modules 目录），沿用
+// resolveModuleFile 的可排错风格。
+func (vm *VM) resolveNodeModule(spec string) (string, error) {
+	name, sub := splitPackageSpec(spec)
+	if name == "" || strings.HasSuffix(name, "/") {
+		return "", fmt.Errorf("Cannot find module '%s' (非法包名)", spec)
+	}
+
+	start := vm.moduleBase
+	if start == "" {
+		if wd, err := os.Getwd(); err == nil {
+			start = wd
+		}
+	}
+	if !filepath.IsAbs(start) {
+		if abs, err := filepath.Abs(start); err == nil {
+			start = abs
+		}
+	}
+	start = filepath.Clean(start)
+
+	var candidates []string
+	add := func(p string) {
+		candidates = append(candidates, filepath.Clean(p))
+	}
+
+	dir := start
+	for {
+		pkgDir := filepath.Join(dir, "node_modules", filepath.FromSlash(name))
+		if fi, err := os.Stat(pkgDir); err == nil && fi.IsDir() {
+			if path, ok := resolvePackageEntry(pkgDir, name, sub, add); ok {
+				return path, nil
+			}
+		} else {
+			add(pkgDir)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break // 已到根
+		}
+		dir = parent
+	}
+	return "", fmt.Errorf("Cannot find module '%s' (tried: %s)", spec, strings.Join(candidates, ", "))
+}
+
+// resolvePackageEntry 在已命中的包目录里解析入口文件或子路径。
+// 成功返回真实文件路径；失败返回 false（尝试过的候选已通过 add 记录）。
+func resolvePackageEntry(pkgDir, pkgName, sub string, add func(string)) (string, bool) {
+	pj, ok := readPackageJSON(filepath.Join(pkgDir, "package.json"))
+	if !ok {
+		add(filepath.Join(pkgDir, "package.json"))
+	}
+
+	if sub != "" {
+		// 子路径：先按 exports 的 "./sub" 键匹配（条件裁剪见 matchExports）
+		if pj != nil {
+			if raw, has := pj["exports"]; has {
+				if target, matched := matchExports(raw, "./"+sub); matched {
+					if path, ok := resolvePackageTarget(pkgDir, target, add); ok {
+						return path, true
+					}
+				}
+			}
+		}
+		// exports 缺该子路径时 v1 宽容处理：直接把 <pkgDir>/<sub> 当文件解析。
+		// （Node 会抛 ERR_PACKAGE_PATH_NOT_EXPORTED；v1 选择更宽松，见
+		// docs/npm-compat.md 的"exports 条件裁剪"边界说明。）
+		if path, ok := resolvePackageFile(filepath.Join(pkgDir, filepath.FromSlash(sub)), add); ok {
+			return path, true
+		}
+		return "", false
+	}
+
+	// 根入口：exports 的 "." 键
+	if pj != nil {
+		if raw, has := pj["exports"]; has {
+			if target, matched := matchExports(raw, "."); matched {
+				if path, ok := resolvePackageTarget(pkgDir, target, add); ok {
+					return path, true
+				}
+			}
+		}
+		// exports 未命中 → module > main > browser 逐字段退化
+		for _, field := range []string{"module", "main", "browser"} {
+			raw, has := pj[field]
+			if !has {
+				continue
+			}
+			s, isStr := raw.(string)
+			if !isStr || s == "" {
+				// browser 常见对象映射形式；v1 不解析，记一条候选便于排错
+				add(filepath.Join(pkgDir, field+"(对象映射形式, v1 不支持)"))
+				continue
+			}
+			if path, ok := resolvePackageFile(filepath.Join(pkgDir, filepath.FromSlash(s)), add); ok {
+				return path, true
+			}
+		}
+	}
+
+	// 兜底 index.*（老式无 package.json / 无入口字段的包）
+	if path, ok := resolvePackageFile(filepath.Join(pkgDir, "index"), add); ok {
+		return path, true
+	}
+	return "", false
+}
+
+// matchExports 在 package.json 的 exports 字段里找 key（"." 或 "./sub"）对应的目标。
+//
+// v1 支持的形态（够用即可；复杂形态显式不支持并在注释里写死）：
+//   - "exports": "./index.js"                     → 字符串，仅对 "." 生效
+//   - "exports": { ".": "./index.js", "./x": … }  → 以 "." 开头的子路径表
+//   - "exports": { "import": …, "default": … }    → 直接写在 exports 上的条件表
+//   - 目标值: 字符串 | 条件对象 | 数组（取第一个可用的）
+//   - 条件对象按 import > default 取；require 跳过（v0 不做 CJS）
+//
+// 不支持：通配子路径（"./*"）、多层嵌套条件的复杂组合。落空时返回
+// matched=false，调用方退化为直接文件解析并列出候选。
+func matchExports(raw any, key string) (any, bool) {
+	switch v := raw.(type) {
+	case string:
+		if key == "." {
+			return v, true
+		}
+		return nil, false
+	case map[string]any:
+		if hasSubpathKeys(v) {
+			target, ok := v[key]
+			if !ok {
+				return nil, false
+			}
+			return selectCondition(target), true
+		}
+		// 无 "." 键 → 直接挂在 exports 上的条件表，只服务根入口
+		if key == "." {
+			return selectCondition(v), true
+		}
+		return nil, false
+	}
+	return nil, false
+}
+
+// hasSubpathKeys 判断 exports 对象是否是"子路径表"（至少有一个键以 "." 开头）。
+func hasSubpathKeys(m map[string]any) bool {
+	for k := range m {
+		if strings.HasPrefix(k, ".") {
+			return true
+		}
+	}
+	return false
+}
+
+// selectCondition 从 exports 目标值里按条件优先级选出一个路径字符串。
+// v1 条件优先级: import > default。require 刻意跳过（Gox v0 不做 CommonJS，
+// 见 docs/npm-compat.md）。数组取第一个能选出的元素。
+func selectCondition(target any) any {
+	switch v := target.(type) {
+	case string:
+		return v
+	case []any:
+		for _, e := range v {
+			if r := selectCondition(e); r != nil {
+				return r
+			}
+		}
+		return nil
+	case map[string]any:
+		for _, cond := range []string{"import", "default"} {
+			if t, ok := v[cond]; ok {
+				if r := selectCondition(t); r != nil {
+					return r
+				}
+			}
+		}
+		return nil // 其它条件（browser/node/types…）v1 不认
+	}
+	return nil
+}
+
+// resolvePackageTarget 把 exports 目标（相对包目录的 "./..." 路径）解析为文件。
+// 非 "./" 开头的目标（指向其它包的裸说明符）v1 不支持。
+func resolvePackageTarget(pkgDir string, target any, add func(string)) (string, bool) {
+	s, ok := target.(string)
+	if !ok || s == "" || !strings.HasPrefix(s, "./") {
+		return "", false
+	}
+	return resolvePackageFile(filepath.Join(pkgDir, filepath.FromSlash(s)), add)
+}
+
+// resolvePackageFile 把一个"可能是文件 / 可能是目录 / 可能缺后缀"的目标
+// 解析为真实文件。尝试过的路径都通过 add 记录（便于报错排错）。
+func resolvePackageFile(target string, add func(string)) (string, bool) {
+	if fi, err := os.Stat(target); err == nil {
+		if !fi.IsDir() {
+			return target, true
+		}
+		// 命中目录 → 其下 index.*
+		for _, ext := range moduleEntryExtensions {
+			p := filepath.Join(target, "index"+ext)
+			add(p)
+			if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+				return p, true
+			}
+		}
+		return "", false
+	}
+	// 缺后缀 → 依次补后缀
+	for _, ext := range moduleEntryExtensions {
+		p := target + ext
+		add(p)
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+			return p, true
+		}
+	}
+	return "", false
+}
+
+// readPackageJSON 读取并解析 package.json。失败返回 (nil, false)，
+// 调用方按"无 package.json 的老式包"处理。
+func readPackageJSON(path string) (map[string]any, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	// 用 any 而非强类型，是因为 exports 的形态多变（字符串/对象/数组嵌套）。
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, false
+	}
+	return m, true
 }
 
 // resolveModuleFile 把模块说明符解析为磁盘上真实存在的文件。

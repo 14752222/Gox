@@ -44,6 +44,12 @@ func main() {
 		case "create", "new", "init":
 			runCreate(args[1:])
 			return
+		case "install", "i":
+			runNpmInstall(args[1:])
+			return
+		case "add":
+			runNpmAdd(args[1:])
+			return
 		case "dev":
 			runDev(args[1:])
 			return
@@ -102,6 +108,8 @@ func printUsage(w io.Writer) {
 用法:
   gox create <目录>            按默认模板生成一个 GUI 工程（脚手架）
   gox create <目录> --ts       同上, 生成 TypeScript/TSX 版模板
+  gox install                  按 package.json 的 dependencies 安装到 node_modules
+  gox add <pkg>[@<range>]      加一个纯 JS 依赖并写入 package.json / gox-lock.json
   gox <文件.js>                执行脚本文件（GUI 脚本会开窗口；.ts/.tsx 自动转译）
   gox dev [入口.js]            开发模式: 监听 .js/.ts/.tsx 变更并热重载（见 docs/dev-workflow.md）
   gox sync [目录]              把 gox.json 的权限声明注入 Android/iOS 清单

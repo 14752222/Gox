@@ -24,32 +24,56 @@ var httpClient = &http.Client{Timeout: 30 * time.Second}
 // 完成后通过 0ms 定时器把结果投递回主线程。服务器监听与进行中的
 // 请求用调度器的挂起任务计数保活事件循环，否则脚本执行完 listen()
 // 后主线程发现"没有任务"就直接退出进程了。
+//
+// 实现真源见下面 init() 注册的内置模块 "http"：全局 http 与
+// `import http from "http"` 共用同一批函数对象。
 func setupHTTP(env *runtime.Environment) {
+	exports, ok := object.LookupBuiltinModule("http")
+	if !ok {
+		panic(`stdlib: builtin module "http" is not registered`)
+	}
 	h := object.NewObject()
-
-	h.SetProperty("createServer", object.NewBuiltin("createServer", func(args ...object.Value) object.Value {
-		if len(args) < 1 || !object.IsCallable(args[0]) {
-			return object.NewTypeError("http.createServer: handler must be a function")
+	for _, name := range sortedBuiltinExportNames(exports) {
+		if name == "default" {
+			continue
 		}
-		return newJSServer(args[0])
-	}))
-
-	// http.get(url, options?, callback?) — GET 请求，无回调时返回 Promise
-	h.SetProperty("get", object.NewBuiltin("get", func(args ...object.Value) object.Value {
-		return httpRequest("get", args)
-	}))
-
-	// http.request(url, options?, callback?) — options: {method, headers, body}
-	h.SetProperty("request", object.NewBuiltin("request", func(args ...object.Value) object.Value {
-		return httpRequest("request", args)
-	}))
-
+		h.SetProperty(name, exports[name])
+	}
 	env.Declare("http", h, false)
 
 	// ===== 全局 fetch(url, options?) =====
+	// fetch 刻意**不**放进 http 模块（对齐 Node 18+ 的 global fetch 口径）：
+	// `import { fetch } from "http"` 会落空，只有全局 fetch 可用。
 	env.Declare("fetch", object.NewBuiltin("fetch", func(args ...object.Value) object.Value {
 		return httpRequest("fetch", args)
 	}), false)
+}
+
+func init() {
+	object.RegisterBuiltinModule("http", func() map[string]object.Value {
+		exports := map[string]object.Value{
+			"createServer": object.NewBuiltin("createServer", func(args ...object.Value) object.Value {
+				if len(args) < 1 || !object.IsCallable(args[0]) {
+					return object.NewTypeError("http.createServer: handler must be a function")
+				}
+				return newJSServer(args[0])
+			}),
+
+			// http.get(url, options?, callback?) — GET 请求，无回调时返回 Promise
+			"get": object.NewBuiltin("get", func(args ...object.Value) object.Value {
+				return httpRequest("get", args)
+			}),
+
+			// http.request(url, options?, callback?) — options: {method, headers, body}
+			"request": object.NewBuiltin("request", func(args ...object.Value) object.Value {
+				return httpRequest("request", args)
+			}),
+		}
+
+		// Node 互操作（v1 边界）: 默认导出 = 模块命名空间对象。
+		exports["default"] = builtinNamespaceObject(exports)
+		return exports
+	})
 }
 
 // dispatchToLoop 把 fn 投递到事件循环主线程执行。

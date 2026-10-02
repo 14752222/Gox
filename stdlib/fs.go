@@ -5,12 +5,41 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"sort"
 
 	"github.com/14752222/Gox/object"
 	"github.com/14752222/Gox/runtime"
 )
 
-// setupFS 注册 fs 文件模块。
+// ===== 核心模块（fs/path/http/process）共用的辅助 =====
+//
+// 这四个模块既是全局对象（env.Declare），又是可 import 的内置模块。
+// 为避免"全局一套实现、import 又一套实现"慢慢漂移，实现的唯一真源是各文件
+// 里 init() 注册的内置模块导出表；全局对象只是复用同一批函数、另建一层外壳。
+
+// builtinNamespaceObject 把内置模块的命名导出表包成一个普通对象，用作
+// Node 互操作意义上的"默认导出"（`import fs from "fs"`）。
+// 必须在把 "default" 写进 exports 之前调用，否则会自引用。
+func builtinNamespaceObject(exports map[string]object.Value) *object.Object {
+	obj := object.NewObject()
+	for name, val := range exports {
+		obj.SetProperty(name, val)
+	}
+	return obj
+}
+
+// sortedBuiltinExportNames 返回导出名（字典序）。导出表是 map，迭代顺序随机；
+// 构造全局对象时排序一次，保证 Object.keys(fs) 稳定可预期。
+func sortedBuiltinExportNames(exports map[string]object.Value) []string {
+	names := make([]string, 0, len(exports))
+	for name := range exports {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// setupFS 注册全局 fs 对象。
 //
 // 提供同步与异步两套 API:
 //   - 同步: fs.readFileSync / writeFileSync / statSync / readdirSync ...
@@ -22,308 +51,337 @@ import (
 // 注册定时器发生在 fs.readFile 返回之前，因此事件循环在任务完成前不会
 // 退出。相比 goroutine 方案牺牲了真实并行 I/O，换来确定性的回调顺序
 // (FIFO) 与单线程安全 —— 回调里访问 VM 状态无需加锁。
+//
+// 实现真源见下面 init() 注册的内置模块 "fs"；这里只负责把同一批函数挂到
+// 全局对象上（脚本不开模块也能直接用 fs），因此 `fs.readFileSync(...)` 与
+// `import fs from "fs"; fs.readFileSync(...)` 是同一份实现。
 func setupFS(env *runtime.Environment) {
+	exports, ok := object.LookupBuiltinModule("fs")
+	if !ok {
+		// 不可达: init() 必先于任何 SetupGlobals 调用执行。显式 panic 好过
+		// 静默造出一个空 fs 全局对象（脚本会在很远的地方报
+		// "readFileSync is not a function"，根因难查）。
+		panic(`stdlib: builtin module "fs" is not registered`)
+	}
 	fs := object.NewObject()
-
-	// ===== 读 =====
-
-	// fs.readFileSync(path, encoding?)
-	// encoding: "utf8"/"utf-8" (默认) → 字符串; "base64"/"hex" → 编码字符串
-	fs.SetProperty("readFileSync", object.NewBuiltin("readFileSync", func(args ...object.Value) object.Value {
-		path, errVal := fsPathArg(args, 0, "readFileSync")
-		if errVal != nil {
-			return errVal
+	for _, name := range sortedBuiltinExportNames(exports) {
+		if name == "default" {
+			continue // default 只服务 `import fs from "fs"`，不进全局对象
 		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return fsError("readFileSync", path, err)
-		}
-		return fsDecodeBytes(string(data), fsEncoding(args, 1))
-	}))
-
-	// fs.readFile(path, encoding?, callback?)
-	fs.SetProperty("readFile", object.NewBuiltin("readFile", func(args ...object.Value) object.Value {
-		path, errVal := fsPathArg(args, 0, "readFile")
-		if errVal != nil {
-			return errVal
-		}
-		enc := fsEncoding(args, 1)
-		cb := lastCallback(args)
-		return fsSchedule("readFile", cb, func() object.Value {
-			data, err := os.ReadFile(path)
-			if err != nil {
-				return fsError("readFile", path, err)
-			}
-			return fsDecodeBytes(string(data), enc)
-		})
-	}))
-
-	// fs.readBytesSync(path) — 二进制读取，返回字节数组 (0-255 的数字)
-	fs.SetProperty("readBytesSync", object.NewBuiltin("readBytesSync", func(args ...object.Value) object.Value {
-		path, errVal := fsPathArg(args, 0, "readBytesSync")
-		if errVal != nil {
-			return errVal
-		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return fsError("readBytesSync", path, err)
-		}
-		return fsBytesToArray(data)
-	}))
-
-	// ===== 写 =====
-
-	// fs.writeFileSync(path, data, encoding?)
-	// data: 字符串 (按 encoding 解码，默认 utf8) 或字节数组
-	fs.SetProperty("writeFileSync", object.NewBuiltin("writeFileSync", func(args ...object.Value) object.Value {
-		path, data, errVal := fsWriteArgs(args, "writeFileSync")
-		if errVal != nil {
-			return errVal
-		}
-		if err := os.WriteFile(path, data, 0644); err != nil {
-			return fsError("writeFileSync", path, err)
-		}
-		return object.UndefinedSingleton
-	}))
-
-	// fs.writeFile(path, data, encoding?, callback?)
-	fs.SetProperty("writeFile", object.NewBuiltin("writeFile", func(args ...object.Value) object.Value {
-		path, data, errVal := fsWriteArgs(args, "writeFile")
-		if errVal != nil {
-			return errVal
-		}
-		cb := lastCallback(args)
-		return fsSchedule("writeFile", cb, func() object.Value {
-			if err := os.WriteFile(path, data, 0644); err != nil {
-				return fsError("writeFile", path, err)
-			}
-			return object.UndefinedSingleton
-		})
-	}))
-
-	// fs.appendFileSync(path, data)
-	fs.SetProperty("appendFileSync", object.NewBuiltin("appendFileSync", func(args ...object.Value) object.Value {
-		path, data, errVal := fsWriteArgs(args, "appendFileSync")
-		if errVal != nil {
-			return errVal
-		}
-		f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-		if err != nil {
-			return fsError("appendFileSync", path, err)
-		}
-		defer f.Close()
-		if _, err := f.Write(data); err != nil {
-			return fsError("appendFileSync", path, err)
-		}
-		return object.UndefinedSingleton
-	}))
-
-	// fs.appendFile(path, data, callback?)
-	fs.SetProperty("appendFile", object.NewBuiltin("appendFile", func(args ...object.Value) object.Value {
-		path, data, errVal := fsWriteArgs(args, "appendFile")
-		if errVal != nil {
-			return errVal
-		}
-		cb := lastCallback(args)
-		return fsSchedule("appendFile", cb, func() object.Value {
-			f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-			if err != nil {
-				return fsError("appendFile", path, err)
-			}
-			defer f.Close()
-			if _, err := f.Write(data); err != nil {
-				return fsError("appendFile", path, err)
-			}
-			return object.UndefinedSingleton
-		})
-	}))
-
-	// ===== 目录与元信息 =====
-
-	// fs.existsSync(path)
-	fs.SetProperty("existsSync", object.NewBuiltin("existsSync", func(args ...object.Value) object.Value {
-		path, errVal := fsPathArg(args, 0, "existsSync")
-		if errVal != nil {
-			return errVal
-		}
-		_, err := os.Stat(path)
-		return object.NewBoolean(err == nil)
-	}))
-
-	// fs.statSync(path) → { size, mtimeMs, isFile, isDirectory }
-	fs.SetProperty("statSync", object.NewBuiltin("statSync", func(args ...object.Value) object.Value {
-		path, errVal := fsPathArg(args, 0, "statSync")
-		if errVal != nil {
-			return errVal
-		}
-		info, err := os.Stat(path)
-		if err != nil {
-			return fsError("statSync", path, err)
-		}
-		return fsStatObject(info)
-	}))
-
-	// fs.stat(path, callback?)
-	fs.SetProperty("stat", object.NewBuiltin("stat", func(args ...object.Value) object.Value {
-		path, errVal := fsPathArg(args, 0, "stat")
-		if errVal != nil {
-			return errVal
-		}
-		cb := lastCallback(args)
-		return fsSchedule("stat", cb, func() object.Value {
-			info, err := os.Stat(path)
-			if err != nil {
-				return fsError("stat", path, err)
-			}
-			return fsStatObject(info)
-		})
-	}))
-
-	// fs.readdirSync(path) → 文件名数组 (按名称排序)
-	fs.SetProperty("readdirSync", object.NewBuiltin("readdirSync", func(args ...object.Value) object.Value {
-		path, errVal := fsPathArg(args, 0, "readdirSync")
-		if errVal != nil {
-			return errVal
-		}
-		entries, err := os.ReadDir(path)
-		if err != nil {
-			return fsError("readdirSync", path, err)
-		}
-		return fsEntriesToArray(entries)
-	}))
-
-	// fs.readdir(path, callback?)
-	fs.SetProperty("readdir", object.NewBuiltin("readdir", func(args ...object.Value) object.Value {
-		path, errVal := fsPathArg(args, 0, "readdir")
-		if errVal != nil {
-			return errVal
-		}
-		cb := lastCallback(args)
-		return fsSchedule("readdir", cb, func() object.Value {
-			entries, err := os.ReadDir(path)
-			if err != nil {
-				return fsError("readdir", path, err)
-			}
-			return fsEntriesToArray(entries)
-		})
-	}))
-
-	// fs.mkdirSync(path, options?) — options 为 {recursive:true} 或 true
-	fs.SetProperty("mkdirSync", object.NewBuiltin("mkdirSync", func(args ...object.Value) object.Value {
-		path, errVal := fsPathArg(args, 0, "mkdirSync")
-		if errVal != nil {
-			return errVal
-		}
-		if err := fsMkdir(path, fsRecursiveArg(args)); err != nil {
-			return fsError("mkdirSync", path, err)
-		}
-		return object.UndefinedSingleton
-	}))
-
-	// fs.mkdir(path, options?, callback?)
-	fs.SetProperty("mkdir", object.NewBuiltin("mkdir", func(args ...object.Value) object.Value {
-		path, errVal := fsPathArg(args, 0, "mkdir")
-		if errVal != nil {
-			return errVal
-		}
-		recursive := fsRecursiveArg(args)
-		cb := lastCallback(args)
-		return fsSchedule("mkdir", cb, func() object.Value {
-			if err := fsMkdir(path, recursive); err != nil {
-				return fsError("mkdir", path, err)
-			}
-			return object.UndefinedSingleton
-		})
-	}))
-
-	// ===== 删除 / 移动 / 复制 =====
-
-	// fs.unlinkSync(path) — 删除文件
-	fs.SetProperty("unlinkSync", object.NewBuiltin("unlinkSync", func(args ...object.Value) object.Value {
-		path, errVal := fsPathArg(args, 0, "unlinkSync")
-		if errVal != nil {
-			return errVal
-		}
-		if err := os.Remove(path); err != nil {
-			return fsError("unlinkSync", path, err)
-		}
-		return object.UndefinedSingleton
-	}))
-
-	// fs.unlink(path, callback?)
-	fs.SetProperty("unlink", object.NewBuiltin("unlink", func(args ...object.Value) object.Value {
-		path, errVal := fsPathArg(args, 0, "unlink")
-		if errVal != nil {
-			return errVal
-		}
-		cb := lastCallback(args)
-		return fsSchedule("unlink", cb, func() object.Value {
-			if err := os.Remove(path); err != nil {
-				return fsError("unlink", path, err)
-			}
-			return object.UndefinedSingleton
-		})
-	}))
-
-	// fs.rmdirSync(path) — 删除空目录
-	fs.SetProperty("rmdirSync", object.NewBuiltin("rmdirSync", func(args ...object.Value) object.Value {
-		path, errVal := fsPathArg(args, 0, "rmdirSync")
-		if errVal != nil {
-			return errVal
-		}
-		if err := os.Remove(path); err != nil {
-			return fsError("rmdirSync", path, err)
-		}
-		return object.UndefinedSingleton
-	}))
-
-	// fs.rmSync(path, options?) — options: {recursive, force}
-	// recursive 时删除目录及其全部内容 (os.RemoveAll)；force 时忽略不存在的路径
-	fs.SetProperty("rmSync", object.NewBuiltin("rmSync", func(args ...object.Value) object.Value {
-		path, errVal := fsPathArg(args, 0, "rmSync")
-		if errVal != nil {
-			return errVal
-		}
-		recursive, force := fsRmArgs(args)
-		if err := fsRm(path, recursive, force); err != nil {
-			return fsError("rmSync", path, err)
-		}
-		return object.UndefinedSingleton
-	}))
-
-	// fs.renameSync(oldPath, newPath)
-	fs.SetProperty("renameSync", object.NewBuiltin("renameSync", func(args ...object.Value) object.Value {
-		oldPath, errVal := fsPathArg(args, 0, "renameSync")
-		if errVal != nil {
-			return errVal
-		}
-		newPath, errVal := fsPathArg(args, 1, "renameSync")
-		if errVal != nil {
-			return errVal
-		}
-		if err := os.Rename(oldPath, newPath); err != nil {
-			return fsError("renameSync", oldPath, err)
-		}
-		return object.UndefinedSingleton
-	}))
-
-	// fs.copyFileSync(src, dest)
-	fs.SetProperty("copyFileSync", object.NewBuiltin("copyFileSync", func(args ...object.Value) object.Value {
-		src, errVal := fsPathArg(args, 0, "copyFileSync")
-		if errVal != nil {
-			return errVal
-		}
-		dest, errVal := fsPathArg(args, 1, "copyFileSync")
-		if errVal != nil {
-			return errVal
-		}
-		if err := copyFile(src, dest); err != nil {
-			return fsError("copyFileSync", src, err)
-		}
-		return object.UndefinedSingleton
-	}))
-
+		fs.SetProperty(name, exports[name])
+	}
 	env.Declare("fs", fs, false)
+}
+
+func init() {
+	object.RegisterBuiltinModule("fs", func() map[string]object.Value {
+		exports := map[string]object.Value{
+			// ===== 读 =====
+
+			// fs.readFileSync(path, encoding?)
+			// encoding: "utf8"/"utf-8" (默认) → 字符串; "base64"/"hex" → 编码字符串
+			"readFileSync": object.NewBuiltin("readFileSync", func(args ...object.Value) object.Value {
+				path, errVal := fsPathArg(args, 0, "readFileSync")
+				if errVal != nil {
+					return errVal
+				}
+				data, err := os.ReadFile(path)
+				if err != nil {
+					return fsError("readFileSync", path, err)
+				}
+				return fsDecodeBytes(string(data), fsEncoding(args, 1))
+			}),
+
+			// fs.readFile(path, encoding?, callback?)
+			"readFile": object.NewBuiltin("readFile", func(args ...object.Value) object.Value {
+				path, errVal := fsPathArg(args, 0, "readFile")
+				if errVal != nil {
+					return errVal
+				}
+				enc := fsEncoding(args, 1)
+				cb := lastCallback(args)
+				return fsSchedule("readFile", cb, func() object.Value {
+					data, err := os.ReadFile(path)
+					if err != nil {
+						return fsError("readFile", path, err)
+					}
+					return fsDecodeBytes(string(data), enc)
+				})
+			}),
+
+			// fs.readBytesSync(path) — 二进制读取，返回字节数组 (0-255 的数字)
+			"readBytesSync": object.NewBuiltin("readBytesSync", func(args ...object.Value) object.Value {
+				path, errVal := fsPathArg(args, 0, "readBytesSync")
+				if errVal != nil {
+					return errVal
+				}
+				data, err := os.ReadFile(path)
+				if err != nil {
+					return fsError("readBytesSync", path, err)
+				}
+				return fsBytesToArray(data)
+			}),
+
+			// ===== 写 =====
+
+			// fs.writeFileSync(path, data, encoding?)
+			// data: 字符串 (按 encoding 解码，默认 utf8) 或字节数组
+			"writeFileSync": object.NewBuiltin("writeFileSync", func(args ...object.Value) object.Value {
+				path, data, errVal := fsWriteArgs(args, "writeFileSync")
+				if errVal != nil {
+					return errVal
+				}
+				if err := os.WriteFile(path, data, 0644); err != nil {
+					return fsError("writeFileSync", path, err)
+				}
+				return object.UndefinedSingleton
+			}),
+
+			// fs.writeFile(path, data, encoding?, callback?)
+			"writeFile": object.NewBuiltin("writeFile", func(args ...object.Value) object.Value {
+				path, data, errVal := fsWriteArgs(args, "writeFile")
+				if errVal != nil {
+					return errVal
+				}
+				cb := lastCallback(args)
+				return fsSchedule("writeFile", cb, func() object.Value {
+					if err := os.WriteFile(path, data, 0644); err != nil {
+						return fsError("writeFile", path, err)
+					}
+					return object.UndefinedSingleton
+				})
+			}),
+
+			// fs.appendFileSync(path, data)
+			"appendFileSync": object.NewBuiltin("appendFileSync", func(args ...object.Value) object.Value {
+				path, data, errVal := fsWriteArgs(args, "appendFileSync")
+				if errVal != nil {
+					return errVal
+				}
+				f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+				if err != nil {
+					return fsError("appendFileSync", path, err)
+				}
+				defer f.Close()
+				if _, err := f.Write(data); err != nil {
+					return fsError("appendFileSync", path, err)
+				}
+				return object.UndefinedSingleton
+			}),
+
+			// fs.appendFile(path, data, callback?)
+			"appendFile": object.NewBuiltin("appendFile", func(args ...object.Value) object.Value {
+				path, data, errVal := fsWriteArgs(args, "appendFile")
+				if errVal != nil {
+					return errVal
+				}
+				cb := lastCallback(args)
+				return fsSchedule("appendFile", cb, func() object.Value {
+					f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+					if err != nil {
+						return fsError("appendFile", path, err)
+					}
+					defer f.Close()
+					if _, err := f.Write(data); err != nil {
+						return fsError("appendFile", path, err)
+					}
+					return object.UndefinedSingleton
+				})
+			}),
+
+			// ===== 目录与元信息 =====
+
+			// fs.existsSync(path)
+			"existsSync": object.NewBuiltin("existsSync", func(args ...object.Value) object.Value {
+				path, errVal := fsPathArg(args, 0, "existsSync")
+				if errVal != nil {
+					return errVal
+				}
+				_, err := os.Stat(path)
+				return object.NewBoolean(err == nil)
+			}),
+
+			// fs.statSync(path) → { size, mtimeMs, isFile, isDirectory }
+			"statSync": object.NewBuiltin("statSync", func(args ...object.Value) object.Value {
+				path, errVal := fsPathArg(args, 0, "statSync")
+				if errVal != nil {
+					return errVal
+				}
+				info, err := os.Stat(path)
+				if err != nil {
+					return fsError("statSync", path, err)
+				}
+				return fsStatObject(info)
+			}),
+
+			// fs.stat(path, callback?)
+			"stat": object.NewBuiltin("stat", func(args ...object.Value) object.Value {
+				path, errVal := fsPathArg(args, 0, "stat")
+				if errVal != nil {
+					return errVal
+				}
+				cb := lastCallback(args)
+				return fsSchedule("stat", cb, func() object.Value {
+					info, err := os.Stat(path)
+					if err != nil {
+						return fsError("stat", path, err)
+					}
+					return fsStatObject(info)
+				})
+			}),
+
+			// fs.readdirSync(path) → 文件名数组 (按名称排序)
+			"readdirSync": object.NewBuiltin("readdirSync", func(args ...object.Value) object.Value {
+				path, errVal := fsPathArg(args, 0, "readdirSync")
+				if errVal != nil {
+					return errVal
+				}
+				entries, err := os.ReadDir(path)
+				if err != nil {
+					return fsError("readdirSync", path, err)
+				}
+				return fsEntriesToArray(entries)
+			}),
+
+			// fs.readdir(path, callback?)
+			"readdir": object.NewBuiltin("readdir", func(args ...object.Value) object.Value {
+				path, errVal := fsPathArg(args, 0, "readdir")
+				if errVal != nil {
+					return errVal
+				}
+				cb := lastCallback(args)
+				return fsSchedule("readdir", cb, func() object.Value {
+					entries, err := os.ReadDir(path)
+					if err != nil {
+						return fsError("readdir", path, err)
+					}
+					return fsEntriesToArray(entries)
+				})
+			}),
+
+			// fs.mkdirSync(path, options?) — options 为 {recursive:true} 或 true
+			"mkdirSync": object.NewBuiltin("mkdirSync", func(args ...object.Value) object.Value {
+				path, errVal := fsPathArg(args, 0, "mkdirSync")
+				if errVal != nil {
+					return errVal
+				}
+				if err := fsMkdir(path, fsRecursiveArg(args)); err != nil {
+					return fsError("mkdirSync", path, err)
+				}
+				return object.UndefinedSingleton
+			}),
+
+			// fs.mkdir(path, options?, callback?)
+			"mkdir": object.NewBuiltin("mkdir", func(args ...object.Value) object.Value {
+				path, errVal := fsPathArg(args, 0, "mkdir")
+				if errVal != nil {
+					return errVal
+				}
+				recursive := fsRecursiveArg(args)
+				cb := lastCallback(args)
+				return fsSchedule("mkdir", cb, func() object.Value {
+					if err := fsMkdir(path, recursive); err != nil {
+						return fsError("mkdir", path, err)
+					}
+					return object.UndefinedSingleton
+				})
+			}),
+
+			// ===== 删除 / 移动 / 复制 =====
+
+			// fs.unlinkSync(path) — 删除文件
+			"unlinkSync": object.NewBuiltin("unlinkSync", func(args ...object.Value) object.Value {
+				path, errVal := fsPathArg(args, 0, "unlinkSync")
+				if errVal != nil {
+					return errVal
+				}
+				if err := os.Remove(path); err != nil {
+					return fsError("unlinkSync", path, err)
+				}
+				return object.UndefinedSingleton
+			}),
+
+			// fs.unlink(path, callback?)
+			"unlink": object.NewBuiltin("unlink", func(args ...object.Value) object.Value {
+				path, errVal := fsPathArg(args, 0, "unlink")
+				if errVal != nil {
+					return errVal
+				}
+				cb := lastCallback(args)
+				return fsSchedule("unlink", cb, func() object.Value {
+					if err := os.Remove(path); err != nil {
+						return fsError("unlink", path, err)
+					}
+					return object.UndefinedSingleton
+				})
+			}),
+
+			// fs.rmdirSync(path) — 删除空目录
+			"rmdirSync": object.NewBuiltin("rmdirSync", func(args ...object.Value) object.Value {
+				path, errVal := fsPathArg(args, 0, "rmdirSync")
+				if errVal != nil {
+					return errVal
+				}
+				if err := os.Remove(path); err != nil {
+					return fsError("rmdirSync", path, err)
+				}
+				return object.UndefinedSingleton
+			}),
+
+			// fs.rmSync(path, options?) — options: {recursive, force}
+			// recursive 时删除目录及其全部内容 (os.RemoveAll)；force 时忽略不存在的路径
+			"rmSync": object.NewBuiltin("rmSync", func(args ...object.Value) object.Value {
+				path, errVal := fsPathArg(args, 0, "rmSync")
+				if errVal != nil {
+					return errVal
+				}
+				recursive, force := fsRmArgs(args)
+				if err := fsRm(path, recursive, force); err != nil {
+					return fsError("rmSync", path, err)
+				}
+				return object.UndefinedSingleton
+			}),
+
+			// fs.renameSync(oldPath, newPath)
+			"renameSync": object.NewBuiltin("renameSync", func(args ...object.Value) object.Value {
+				oldPath, errVal := fsPathArg(args, 0, "renameSync")
+				if errVal != nil {
+					return errVal
+				}
+				newPath, errVal := fsPathArg(args, 1, "renameSync")
+				if errVal != nil {
+					return errVal
+				}
+				if err := os.Rename(oldPath, newPath); err != nil {
+					return fsError("renameSync", oldPath, err)
+				}
+				return object.UndefinedSingleton
+			}),
+
+			// fs.copyFileSync(src, dest)
+			"copyFileSync": object.NewBuiltin("copyFileSync", func(args ...object.Value) object.Value {
+				src, errVal := fsPathArg(args, 0, "copyFileSync")
+				if errVal != nil {
+					return errVal
+				}
+				dest, errVal := fsPathArg(args, 1, "copyFileSync")
+				if errVal != nil {
+					return errVal
+				}
+				if err := copyFile(src, dest); err != nil {
+					return fsError("copyFileSync", src, err)
+				}
+				return object.UndefinedSingleton
+			}),
+		}
+
+		// Node 互操作（v1 边界）: 默认导出 = 模块命名空间对象，使
+		// `import fs from "fs"` 与 `import * as fs from "fs"` 等价。
+		// 注意这不是 CommonJS 的 module.exports 互操作 —— Gox v0 不做 CJS，
+		// 这里只是给默认导入一个落点，`require("fs")` 依旧不可用。
+		exports["default"] = builtinNamespaceObject(exports)
+		return exports
+	})
 }
 
 // ===== 参数解析辅助 =====
