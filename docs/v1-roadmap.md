@@ -28,7 +28,7 @@
 
 | # | 项 | 现状证据 |
 |---|---|---|
-| P0-4 | ~~**鸿蒙（ArkTS）全线 unsupported**~~ **已于 2026-10-02 大幅收口** | 原口径基于 `app/NATIVE-HOST.md` 全 ⬜ 与 stub 宿主。现状：HF1/HF2 已落地 —— NAPI 通道层（`GoxDispatch` 序号分发 + `napi_module_register`）+ 装配层 + 交叉编译脚本（`scripts/build-harmony.sh`，OHOS clang + sysroot）+ ArkTS 壳工程（折叠上报链路含 `display.on('foldStatusChange')`），壳工程已通过命令行 `assembleHap` 构建并核对产物（`4af646c`）；契约测试 `fold_contract_test.go` 5 条鸿蒙静态契约全绿。**剩余缺口收敛为「真机/模拟器未验收（HAP 未签名）」**，性质与 P0-6 相同，不再是平台空白 |
+| P0-4 | ~~**鸿蒙（ArkTS）全线 unsupported**~~ **已于 2026-10-02 大幅收口** | 原口径基于 `app/NATIVE-HOST.md` 全 ⬜ 与 stub 宿主。现状：HF1/HF2 已落地 —— NAPI 通道层（`GoxDispatch` 序号分发 + `napi_module_register`）+ 装配层 + 交叉编译脚本（`scripts/build-harmony.sh`，OHOS clang + sysroot）+ ArkTS 壳工程（折叠上报链路含 `display.on('foldStatusChange')`），壳工程已通过命令行 `assembleHap` 构建并核对产物（`4af646c`）；契约测试 `fold_contract_test.go` 5 条鸿蒙静态契约全绿。**剩余缺口收敛为「模拟器未验收（HAP 未签名）」—— 验收口径：模拟器即可（2026-10-02 拍板，不依赖真机折叠屏；折叠上报 HF2 逻辑已由桌面资产测试覆盖，模拟器验 HF1）**，不再是平台空白 |
 | P0-5 | **Android 侧代码本机从未编译验证** | `app/NATIVE-HOST.md`：Android libgox **未编译（无 NDK）**、Kotlin **未编译（无 gradle/SDK）**。虽然 M1 已在模拟器 x86_64/API 34 六项验收全通，但"能跑"与"能在这里重建"是两件事 —— v1 前应在有 NDK 的环境重跑 `bash scripts/build-android.sh` |
 | P0-6 | **真机（arm64）验证缺失** | `agent_doc/mobile-port-plan.md` §九：M1 验证跑在模拟器上，`input tap` 是注入事件；真机触摸、多指、性能均未验 |
 
@@ -101,7 +101,7 @@
 2. **再攻 P0-1**：`await` + try/catch 是语义级 bug，修它比堆合规率更值。
 3. **P0-2 → P0-3**：按 T04 报告既定顺序（私有字段 ~3449 例收益最大）。
 4. **并行推进平台验收**：P0-5/P0-6（Android 交叉编译重跑 + 真机）、P1-9~P1-14 的清单画勾。
-5. ~~**鸿蒙 P0-4 单独立项**~~ **已兑付大半（2026-10-02）**：壳工程、NAPI 通道与折叠上报链路已落地并通过命令行构建；剩余「DevEco 自动签名 + 真机/模拟器 HF1/HF2 验收」并入 P0-6 一类的真机验收清单，无需再单独立项。
+5. ~~**鸿蒙 P0-4 单独立项**~~ **已兑付大半（2026-10-02）**：壳工程、NAPI 通道与折叠上报链路已落地并通过命令行构建；剩余「DevEco 自动签名 + 模拟器 HF1 验收」（口径：模拟器即可，HF2 折叠上报逻辑已由桌面资产测试覆盖）无需再单独立项，按清单画勾即可。
 
 ## 八、已完成（2026-10-01 收尾）
 
@@ -111,7 +111,7 @@
 | P1-15 官网文案过期 | ✅ 已修：zh + en 全站扫了一遍，元素数 25→41（当时）/**41→42**（新增 `<video>` 后）、模块 14→16、`var` 支持口径、limits / demo 清单同步；`vitepress build` 通过 |
 | 视频线口径 | ✅ 已修订：`<video>` 标签 + `nativeVideoHost` 契约落地（S8），解码仍不做（见 §七） |
 | 文档自身缺陷 | ✅ 顺手修：`docs/gui-guide.md` §13 说"过程文档在仓库 `agent_doc/` 下"已过期（该目录 2026-09-27 已移出仓库）；**52 个** `testdata/**/*.js` 头部写的 `go run . testdata/x.js` 已失效（CLI 早已搬进 `cmd/gox`）⇒ 改为 `./gox testdata/x.js`，另同步 `docs/gui-router.md` / `docs/gui-model-binding.md` 与三处测试注释 |
-| P0-4 鸿蒙平台空白 | ✅ 大幅收口（2026-10-02）：HF1/HF2 落地（`a6c185b` + `4af646c`）—— NAPI 通道 + 装配层 + 交叉编译脚本 + ArkTS 壳工程 + 折叠上报链路，`assembleHap` 命令行构建通过且产物核对含 `libs/arm64-v8a/libgox.so`；剩真机验收（需签名，见 P0-6 类） |
+| P0-4 鸿蒙平台空白 | ✅ 大幅收口（2026-10-02）：HF1/HF2 落地（`a6c185b` + `4af646c`）—— NAPI 通道 + 装配层 + 交叉编译脚本 + ArkTS 壳工程 + 折叠上报链路，`assembleHap` 命令行构建通过且产物核对含 `libs/arm64-v8a/libgox.so`；剩模拟器验收（需签名；口径：模拟器即可，2026-10-02 拍板，HF2 逻辑已由桌面测试覆盖） |
 
 > P1-16（补 tag）与 P1-17（工作区改动）仍在推进中。
 
