@@ -263,11 +263,13 @@ go test ./gfx/mobile/      # 7+1 个用例, 纯 Go, 开发机直接跑
   实测出撕裂概率再定。（**换缓冲本身**的竞态已经处理：`gfx/android` 的 `uploadFrame` 是持锁
   做整段拷贝的，`BindFrameBuffer` 拿同一把锁换地址 ⇒ 旋转/分屏时不会出现"旧缓冲已被 JVM
   回收而引擎还在往里写"。）
-- **冷启动 insets 首报为 0**（2026-10-02 模拟器实测，像素级复现）：导航栏占位
-  （b=63）要等**下一次** insets 分发（比如弹一次键盘）才报上来 —— `nativeInit`
-  之后补的 `requestApplyInsets()` + 显式 `reportInsets(rootWindowInsets)` 拿到的
-  仍是 0。症状是启动后 `useInsets().bottom` 为 0，底部内容可能被手势条压住。
-  现场与待查项见 wb-issues 任务看板。
+- **冷启动 insets 首报为 0（已修）**：一度以为宿主补报路径拿到的就是 0 —— 插桩后发现
+  `rootWindowInsets` 与两次 dispatch **都是 b=63**，报上去的值是对的。真正的元凶是
+  **折叠上报通道**：`displayFold.start()` 的 WindowLayoutInfo 回调经
+  `gfx/mobile.ReportDisplayFold` 走 `gfx.ReportViewport`（patchAll），把刚报好的
+  Insets 清成了 0。修法：内核新增 `gfx.ReportSizeClasses`（patchSizeClasses 掩码），
+  三端共用的折叠入口改走它；回归 `gfx/mobile/fold_test.go` 的
+  `TestReportDisplayFoldKeepsInsetsAndKeyboard`。
 - **软键盘（IME）已接，模拟器已验收**（M2，2026-10-02，见下方实测记录）：
   `GoxSurfaceView.onCreateInputConnection` 给了一个 `BaseInputConnection`，
   `commitText` → `nativeIMECommit`、`deleteSurroundingText`

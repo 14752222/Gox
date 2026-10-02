@@ -205,7 +205,8 @@ func TestReportDisplayFoldJSON(t *testing.T) {
 	gfx.DrainTasks()
 
 	d, ok := gfx.PrimaryDisplayForTest()
-	if !ok {		t.Fatal("上报后应能取到主屏")
+	if !ok {
+		t.Fatal("上报后应能取到主屏")
 	}
 	if d.Posture != "half-open" {
 		t.Fatalf("posture = %q, 期望 half-open", d.Posture)
@@ -227,6 +228,42 @@ func TestReportDisplayFoldJSON(t *testing.T) {
 	}
 	if d.W != 3240 || d.H != 2560 {
 		t.Fatalf("尺寸应写入: %d x %d", d.W, d.H)
+	}
+}
+
+// --- JSON 入口: 补报尺寸类时不许清掉安全区与键盘高度 (2026-10-02 Android 冷启动实测) ---
+
+func TestReportDisplayFoldKeepsInsetsAndKeyboard(t *testing.T) {
+	// 清空宿主上报与屏表, 用例之间互不污染。
+	gfx.ResetViewport(nil)
+	gfx.ResetDisplaysForTest()
+	t.Cleanup(gfx.ResetDisplaysForTest)
+
+	// 宿主 nativeInit 之后的两条补报: 安全区 + 键盘。
+	gfx.ReportInsets(nil, gfx.Insets{Bottom: 63})
+	gfx.ReportKeyboardHeight(nil, 883)
+	gfx.DrainTasks()
+
+	// 折叠回调: 只带尺寸类 (Android 的 WindowLayoutInfo 回调就是这么发的)。
+	// 早先这里走 gfx.ReportViewport (patchAll), 于是上面两条被按零值写下去:
+	// Insets.Bottom 变 0、Keyboard 变 0 —— 页面上 useInsets().bottom 恒 0,
+	// 直到下一次 insets 分发 (弹一次键盘) 才恢复。
+	payload := `{"sizeClass":{"width":"medium","height":"regular"},"width":2200,"height":1080}`
+	if err := ReportDisplayFold(payload); err != nil {
+		t.Fatalf("解析上报载荷失败: %v", err)
+	}
+	gfx.DrainTasks()
+
+	got := gfx.ViewportForKey(nil)
+	if got.Insets.Bottom != 63 {
+		t.Errorf("补报尺寸类后 Insets.Bottom = %d, want 63 (尺寸类通道清掉了安全区)", got.Insets.Bottom)
+	}
+	if got.Keyboard != 883 {
+		t.Errorf("补报尺寸类后 Keyboard = %d, want 883 (尺寸类通道清掉了键盘高度)", got.Keyboard)
+	}
+	if got.WidthClass != "medium" || got.HeightClass != "regular" {
+		t.Errorf("补报尺寸类后 WidthClass=%q HeightClass=%q, want medium/regular",
+			got.WidthClass, got.HeightClass)
 	}
 }
 

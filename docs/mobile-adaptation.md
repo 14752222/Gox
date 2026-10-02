@@ -58,6 +58,13 @@ insets**，若那一次走 `ReportViewport`（patchAll 含 patchKeyboard）就�
 （2026-10-02 模拟器实测的根因；回归 `gfx/viewport_kb_test.go` 补上了"先键盘、
 后 insets"这条真机顺序）。
 
+**对称的第三条通道**：折叠宿主补报尺寸类时走 `gfx.ReportSizeClasses`
+（patchSizeClasses 掩码）。`gfx/mobile.ReportDisplayFold` 历史上用
+`ReportViewport`（patchAll）报尺寸类，于是 Android 冷启动时
+"reportInsets(b=63) → displayFold 回调补报尺寸类" 这个顺序会把 Insets 清成 0
+—— 症状是 `useInsets().bottom` 启动后恒 0，直到下一次 insets 分发才恢复
+（2026-10-02 模拟器实测，回归 `gfx/mobile/fold_test.go`）。
+
 Android 端（M2，2026-10-02 模拟器验收）另有光标回传：`onCursorUpdate` →
 `CursorAnchorInfo`（insertion marker 位置 + 文本快照）。**宿主实现注意**：
 带位置参数必须先 `setMatrix(...)`，否则 `Builder.build()` 抛

@@ -118,3 +118,98 @@ func TestReportKeyboardHeightReachesUseKeyboardHeight(t *testing.T) {
 	})
 	runPumpSteps(t, v, fake, steps)
 }
+
+// TestReportSizeClassesKeepsInsetsAndKeyboard 回归 (2026-10-02, Android 模拟器实测):
+// 折叠宿主报完姿态与保留区之后还要补一份尺寸类, 那份补报**不得**动安全区与键盘。
+//
+// 真机顺序 (MainActivity.onSurfaceSize): nativeInit → reportInsets(b=63) →
+// displayFold.start() → WindowLayoutTracker 回调 → gfx/mobile.ReportDisplayFold
+// → 补报尺寸类。早先那里走 gfx.ReportViewport (patchAll), 于是 Insets 被清成 0,
+// 页面上 `useInsets().bottom` 恒为 0, 直到下一次 insets 分发 (弹一次键盘) 才恢复。
+// 与 TestReportKeyboardHeightReachesUseKeyboardHeight 是同一枚硬币的两面。
+func TestReportSizeClassesKeepsInsetsAndKeyboard(t *testing.T) {
+	resetViewportStateForTest()
+	t.Cleanup(resetViewportStateForTest)
+
+	fake := newFakeSurface()
+	SetDefaultFactory(&fakeFactory{fake})
+	t.Cleanup(func() { SetDefaultFactory(nil) })
+
+	v, err := vm.EvalVM(`
+		import { useKeyboardHeight, useInsets, useViewport } from "gx/viewport";
+		import { h, render } from "gx/gfx";
+		render(
+			h("window", { title: "t" },
+				h("column", null,
+					h("text", null, () => "kb=" + useKeyboardHeight()),
+					h("text", null, () => "bottom=" + useInsets().bottom),
+					h("text", null, () => "wc=" + useViewport().widthClass),
+				)
+			)
+		);
+	`)
+	if err != nil {
+		t.Fatalf("EvalVM: %v", err)
+	}
+	_ = v
+	appMu.Lock()
+	a := activeApp
+	root := a.root
+	appMu.Unlock()
+
+	var kbText, insText, wcText *GuiNode
+	var walk func(n *GuiNode)
+	walk = func(n *GuiNode) {
+		if n.Tag == "#text" {
+			switch {
+			case strings.HasPrefix(n.Text, "kb=") && kbText == nil:
+				kbText = n
+			case strings.HasPrefix(n.Text, "bottom=") && insText == nil:
+				insText = n
+			case strings.HasPrefix(n.Text, "wc=") && wcText == nil:
+				wcText = n
+			}
+		}
+		for _, c := range n.Children {
+			walk(c)
+		}
+	}
+	walk(root)
+	if kbText == nil || insText == nil || wcText == nil {
+		t.Fatalf("没找到 kb=/bottom=/wc= 文本节点")
+	}
+
+	var steps []func()
+	// 第 ① 段: 宿主 nativeInit 之后的两条补报 (安全区 + 键盘)。
+	steps = append(steps, func() {
+		ReportInsets(nil, Insets{Bottom: 63})
+		ReportKeyboardHeight(nil, 883)
+	})
+	// 第 ② 段: 折叠回调补报尺寸类 —— 前两样都不许被它清掉。
+	steps = append(steps, func() {
+		ReportSizeClasses(nil, SizeMedium, SizeRegular)
+		got := viewportResolved(nil)
+		if got.Insets.Bottom != 63 {
+			t.Errorf("补报尺寸类后 Insets.Bottom = %d, want 63 (尺寸类通道清掉了安全区)", got.Insets.Bottom)
+		}
+		if got.Keyboard != 883 {
+			t.Errorf("补报尺寸类后 Keyboard = %d, want 883 (尺寸类通道清掉了键盘高度)", got.Keyboard)
+		}
+		if got.WidthClass != SizeMedium || got.HeightClass != SizeRegular {
+			t.Errorf("补报尺寸类后 WidthClass=%q HeightClass=%q, want %q/%q",
+				got.WidthClass, got.HeightClass, SizeMedium, SizeRegular)
+		}
+	})
+	steps = append(steps, func() {
+		if !strings.Contains(insText.Text, "bottom=63") {
+			t.Errorf("补报尺寸类后 bottom 文本 = %q, want bottom=63", insText.Text)
+		}
+		if !strings.Contains(kbText.Text, "kb=883") {
+			t.Errorf("补报尺寸类后 kb 文本 = %q, want kb=883", kbText.Text)
+		}
+		if !strings.Contains(wcText.Text, "wc="+SizeMedium) {
+			t.Errorf("补报尺寸类后 wc 文本 = %q, want wc=%s", wcText.Text, SizeMedium)
+		}
+	})
+	runPumpSteps(t, v, fake, steps)
+}

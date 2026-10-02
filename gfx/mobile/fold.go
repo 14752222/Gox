@@ -356,10 +356,13 @@ func ReportDisplayFold(jsonStr string) error {
 			H:        h,
 		})
 		if widthClass != "" || heightClass != "" {
-			gfx.ReportViewport(nil, gfx.Viewport{
-				WidthClass:  widthClass,
-				HeightClass: heightClass,
-			})
+			// **必须是 ReportSizeClasses, 不能用 ReportViewport**: 后者是
+			// patchAll 语义, 会把同一窗口先前报好的安全区与键盘高度一起按零值
+			// 写下去。2026-10-02 Android 冷启动实测: host reportInsets 报完
+			// b=63, 紧接着本回调走一次全量通道, Insets 被清成 0 —— 页面上
+			// useInsets().bottom 恒 0, 直到下一次 insets 分发才恢复
+			// (见 gfx.ReportSizeClasses 的注释)。
+			gfx.ReportSizeClasses(nil, widthClass, heightClass)
 		}
 	})
 	return nil
@@ -443,8 +446,8 @@ func decodeFoldInfo(jsonStr string) (FoldInfo, error) {
 		}
 		info.Hinge = &RawHinge{
 			X: raw.Hinge.X, Y: raw.Hinge.Y,
-			W: pickSize(raw.Hinge.W, raw.Hinge.Width),
-			H: pickSize(raw.Hinge.H, raw.Hinge.Height),
+			W:           pickSize(raw.Hinge.W, raw.Hinge.Width),
+			H:           pickSize(raw.Hinge.H, raw.Hinge.Height),
 			Orientation: orientation,
 		}
 	}

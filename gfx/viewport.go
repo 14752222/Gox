@@ -207,6 +207,16 @@ const (
 	patchInsets viewportPatchMask = 1 << iota
 	patchKeyboard
 	patchMultiWindow
+	// patchSizeClasses 只动尺寸类。它**刻意不在 patchAll 里** —— WidthClass /
+	// HeightClass 的"没报"是空串, 沿用旧值的规则已经够用 (见 reportViewportPatch
+	// 里那两个 `== ""` 分支), 不需要掩码保护; 而把它加进 patchAll 会让全量
+	// 上报连尺寸类一起清掉。
+	//
+	// **它必须排在 patchAll 之前**: Go 的 const 块里空 ConstSpec 重复的是
+	// **上一条**的表达式列表 —— 插到 `patchAll = a|b|c` 后面会得到 a|b|c
+	// (= patchAll 本身), 于是"只报尺寸类"又把安全区与键盘清成 0, 正是这个常量
+	// 要防的事。
+	patchSizeClasses
 	// patchAll 表示"我这份就是全量" —— ReportViewport 的公开语义。
 	patchAll = patchInsets | patchKeyboard | patchMultiWindow
 )
@@ -266,6 +276,25 @@ func ReportKeyboardHeight(win *Window, h int) {
 // 谁该调它: 移动端宿主 (Android WindowInsets / iOS safeAreaInsets / 鸿蒙)。
 func ReportInsets(win *Window, in Insets) {
 	reportViewportPatch(win, Viewport{Insets: in}, patchInsets)
+}
+
+// ReportSizeClasses 单独上报尺寸类 (widthClass / heightClass)。
+//
+// 与 ReportInsets / ReportKeyboardHeight 是同一条纪律的**第三种形态**:
+// 折叠屏宿主报完姿态与保留区之后往往还要补一份尺寸类 (它在同一段 JSON 里),
+// 而那份补报若走 ReportViewport (patchAll) 会把同一窗口**先前报好的安全区
+// 与键盘高度一起按零值写下去**。
+//
+// 2026-10-02 Android 冷启动实测的根因正是这个: 宿主 reportInsets 报完
+// `insets b=63`, 紧接着 displayFold.start() 的 WindowLayoutInfo 回调经
+// gfx/mobile.ReportDisplayFold 又走了一次全量通道 —— Insets 被清成 0,
+// 页面上 `useInsets().bottom` 恒为 0, 直到下一次 insets 分发 (弹一次键盘)
+// 才恢复。与"键盘高恒 0"是同一枚硬币的两面。
+//
+// 尺寸类的"没报"由空串表达, 所以这里只需要一个**不含**那三个零值即
+// 合法字段的掩码; 空串一侧的沿用规则见 reportViewportPatch。
+func ReportSizeClasses(win *Window, widthClass, heightClass string) {
+	reportViewportPatch(win, Viewport{WidthClass: widthClass, HeightClass: heightClass}, patchSizeClasses)
 }
 
 // reportViewportPatch 是带"显式字段掩码"的上报实现。
