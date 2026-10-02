@@ -468,6 +468,7 @@ func TestExampleScriptsMount(t *testing.T) {
 		"routing_demo.js",                // 路由 A: signal 切页 (交互全流程见 routing_test.go)
 		"resource_demo.js",               // 状态 B: createResource (交互断言见 resource_test.go)
 		"dev_panel_demo.js",              // devtools A: gx/dev 快照面板 (结构见 dev_test.go)
+		"devtools_demo.js",               // [M3] Inspector v1: 元素树 + console + REPL (见 dev_tree_test.go)
 		"kit_demo.js",                    // 样式 F: 用户态设计套件 (令牌/变体/主题)
 		"view_demo.js",                   // gx/view: 声明式循环与条件 (交互断言见 view_test.go)
 		"elastic_layout_demo.js",         // 布局弹性词汇: 百分比 / min-max / flexShrink / wrap

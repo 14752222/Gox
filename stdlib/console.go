@@ -21,7 +21,9 @@ func setupConsole() *object.Object {
 				parts = append(parts, arg.Inspect())
 			}
 		}
-		fmt.Fprintln(os.Stdout, strings.Join(parts, " "))
+		msg := strings.Join(parts, " ")
+		fmt.Fprintln(os.Stdout, msg)
+		object.RecordDevLog("log", msg) // devtools 留存 (行为不变; 见 object/devlog.go)
 		return object.UndefinedSingleton
 	}))
 
@@ -34,7 +36,9 @@ func setupConsole() *object.Object {
 				parts = append(parts, arg.Inspect())
 			}
 		}
-		fmt.Fprintln(os.Stderr, strings.Join(parts, " "))
+		msg := strings.Join(parts, " ")
+		fmt.Fprintln(os.Stderr, msg)
+		object.RecordDevLog("error", msg) // devtools 留存 (行为不变; 见 object/devlog.go)
 		return object.UndefinedSingleton
 	}))
 
@@ -47,7 +51,9 @@ func setupConsole() *object.Object {
 				parts = append(parts, arg.Inspect())
 			}
 		}
-		fmt.Fprintln(os.Stderr, strings.Join(parts, " "))
+		msg := strings.Join(parts, " ")
+		fmt.Fprintln(os.Stderr, msg)
+		object.RecordDevLog("warn", msg) // devtools 留存 (行为不变; 见 object/devlog.go)
 		return object.UndefinedSingleton
 	}))
 
@@ -60,7 +66,9 @@ func setupConsole() *object.Object {
 				parts = append(parts, arg.Inspect())
 			}
 		}
-		fmt.Fprintln(os.Stdout, strings.Join(parts, " "))
+		msg := strings.Join(parts, " ")
+		fmt.Fprintln(os.Stdout, msg)
+		object.RecordDevLog("info", msg) // devtools 留存 (行为不变; 见 object/devlog.go)
 		return object.UndefinedSingleton
 	}))
 
