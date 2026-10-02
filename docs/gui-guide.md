@@ -84,7 +84,7 @@ macOS 后端（cocoa）已知限制：
 
 - **IME 组合过程不在框内内联绘制**（与 Windows 同口径：候选词上屏前由系统候选窗回显拼音，选定后整批提交）；正在组合时全部按键交给输入法（Enter 提交原串 / Esc 取消）。英文/符号键入与全部功能键经 `event.characters`/`keyCode` 直通，行为与旧版一致。
 - **保存文件对话框已全通**：`gx/dialog` 的 `saveFile`（2026-10-01 补脚本侧入口）—— Windows 走 `GetSaveFileNameW` + 覆盖确认，macOS 走 `NSSavePanel`，取消返回 `null`。
-- **多屏枚举已支持**（`gx/screen` 可见全部 NSScreen：frame/visibleFrame/缩放/主屏标记，ID 取 `NSScreenNumber` 稳定标识）；显示器插拔暂不派发 `onDisplayChange`（win32 有，cocoa 待补）。
+- **多屏枚举已支持**（`gx/screen` 可见全部 NSScreen：frame/visibleFrame/缩放/主屏标记，ID 取 `NSScreenNumber` 稳定标识）；显示器插拔 / 分辨率变化 / 窗口跨屏会派发 `onDisplayChange`（2026-10-02 补齐：NSApplicationDidChangeScreenParametersNotification + NSWindowDidChangeScreenNotification → `gfx.Post`，与 win32 的 WM_DISPLAYCHANGE 同构）。
 - 拖动（slider 等）在光标离开窗口后**仍然跟手**：AppKit 按住按键期间会持续投递 `mouseDragged:`，等价于天然鼠标捕获。
 
 找不到可用字体时文字整体不渲染，错误里会给出候选条数与最后一个失败原因。

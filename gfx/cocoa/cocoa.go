@@ -546,6 +546,9 @@ func ensureNSApp() objc.ID {
 		}
 		app.Send(selFinishLaunching)
 		app.Send(selSetActivationPol, uintptr(nsActivationRegular))
+		// 显示器变化观察 (onDisplayChange 的派发源): 注册进 defaultCenter,
+		// 插拔屏 / 分辨率变化 / 窗口跨屏时经 gfx.Post 通知内核。见 display.go。
+		installScreenObserver()
 		// 菜单: [Gox] → 退出 (Cmd+Q)。terminate: 在无 delegate 时直接结束进程,
 		// Pump 循环随进程一起结束 —— v1 可接受。
 		mainMenu := objc.ID(objc.GetClass("NSMenu")).Send(selAlloc)

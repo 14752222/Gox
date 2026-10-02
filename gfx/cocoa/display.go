@@ -156,3 +156,63 @@ func hasPrimaryDisplay(list []gfx.Display) bool {
 	}
 	return false
 }
+
+// ===== 显示器变化派发 (gx/screen onDisplayChange 的 cocoa 侧) =====
+//
+// win32 的对应实现: WndProc 收 WM_DISPLAYCHANGE / WM_DPICHANGED →
+// gfx.Post(NotifyDisplaysChanged)。cocoa 这边没有窗口消息, 等价物是
+// NSNotificationCenter 的两条通知:
+//   - NSApplicationDidChangeScreenParametersNotification
+//     插拔屏 / 改分辨率 / 屏幕排列变化 (与 WM_DISPLAYCHANGE 对位)
+//   - NSWindowDidChangeScreenNotification
+//     窗口被拖到另一块屏 (win32 的 WM_DPICHANGED 场景: 跨屏后缩放变了)
+//
+// 线程纪律与 win32 完全同构: AppKit 的通知回调**不**就地触发脚本 —— 回调里
+// 只 gfx.Post 一个任务, 由 Pump 的 DrainTasks 在正确的执行上下文里调
+// NotifyDisplaysChanged → 脚本回调。onDisplayChange 此前在 macOS 上静默失效
+// 的原因就是没人派发这条通知, 显示器表本身 (Displays()) 一直是好的。
+
+var (
+	screenObserverClass objc.Class
+
+	selDefaultCenter      = objc.RegisterName("defaultCenter")
+	selAddObserverSelName = objc.RegisterName("addObserver:selector:name:object:")
+	selScreenChanged      = objc.RegisterName("goxScreenParamsChanged:")
+)
+
+func init() {
+	var err error
+	screenObserverClass, err = objc.RegisterClass("GoxGfxScreenObserver",
+		objc.GetClass("NSObject"), nil, nil,
+		[]objc.MethodDef{
+			{Cmd: selScreenChanged, Fn: impScreenParamsChanged},
+		})
+	if err != nil {
+		panic("cocoa: register screen observer class: " + err.Error())
+	}
+}
+
+func impScreenParamsChanged(self objc.ID, cmd objc.SEL, note objc.ID) uintptr {
+	// 通知回调跑在主线程 (NSNotificationCenter 同步派发), 此刻不在 VM 的
+	// 执行上下文中 —— 与 win32 的 WndProc 同一立场, 只投递不执行。
+	gfx.Post(func() { gfx.NotifyDisplaysChanged() })
+	return 0
+}
+
+// installScreenObserver 注册显示器变化通知 (GUI 线程, 进程一次 —— 由
+// ensureNSApp 的 sync.Once 保证)。观察者实例存活到进程结束: AppKit 对
+// defaultCenter 里的观察者是 unretained (weak) 引用, 实例必须有人持着 ——
+// 存包级变量, 不随窗口生死, 天然满足。
+func installScreenObserver() {
+	observer := objc.ID(screenObserverClass).Send(selNew)
+	if observer == 0 {
+		return
+	}
+	center := objc.ID(objc.GetClass("NSNotificationCenter")).Send(selDefaultCenter)
+	for _, name := range []string{
+		"NSApplicationDidChangeScreenParametersNotification",
+		"NSWindowDidChangeScreenNotification",
+	} {
+		center.Send(selAddObserverSelName, observer, selScreenChanged, nsString(name), objc.ID(0))
+	}
+}

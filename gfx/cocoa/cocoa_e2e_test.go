@@ -174,3 +174,22 @@ func TestCocoaMouseAndKeyE2E(t *testing.T) {
 		t.Errorf("后台缓冲自检失败: len=%d first=%d", e2eBufLen, e2eBufFirst)
 	}
 }
+
+// TestCocoaDisplayChangeNotify 验证 onDisplayChange 的派发链路:
+// 真实 NSNotificationCenter 通知 → GoxGfxScreenObserver (ensureNSApp 里装的,
+// TestMain 开窗时已安装) → impScreenParamsChanged → gfx.Post → DrainTasks 时
+// 执行 NotifyDisplaysChanged。若 selector/注册接错, AppKit 会 unrecognized
+// selector 直接炸掉测试 —— 这正是要兜住的回归点 (win32 的 WM_DISPLAYCHANGE
+// 分支在 cocoa 侧的对应物)。
+func TestCocoaDisplayChangeNotify(t *testing.T) {
+	if e2eFail != "" {
+		t.Fatalf("e2e 场景失败 (观察者安装依赖 ensureNSApp): %s", e2eFail)
+	}
+	center := objc.ID(objc.GetClass("NSNotificationCenter")).Send(objc.RegisterName("defaultCenter"))
+	selPost := objc.RegisterName("postNotificationName:object:userInfo:")
+	center.Send(selPost, nsString("NSApplicationDidChangeScreenParametersNotification"), objc.ID(0), objc.ID(0))
+	center.Send(selPost, nsString("NSWindowDidChangeScreenNotification"), objc.ID(0), objc.ID(0))
+	// 通知回调里只 gfx.Post, 不就地执行 —— 任务在这里清掉 (无脚本钩子注册,
+	// NotifyDisplaysChanged 只抬版本号, 线程安全; 见 gfx/screen.go 的锁纪律)。
+	gfx.DrainTasks()
+}

@@ -41,7 +41,7 @@
 | P1-3 | **Linux/X11：剪贴板不支持** | `docs/gui-guide.md` §2 平台矩阵 | |
 | P1-4 | **Linux/X11 未经实机验证** | `undecided-and-unimplemented.md` §三："代码已实现但未经 Linux 实机验证" | **注意**：`f7898a6` 已加 CI Linux xvfb 无头闸门 —— 需要确认这是否等价于"实机验证"，若只是无头冒烟则仍未达标 |
 | P1-5 | **`gx/dialog` 缺 `saveFile`** | `docs/gui-guide.md` §2：macOS `NSSavePanel` **已接后端但脚本侧无入口** | 后端能力已在，纯补契约 + 导出；性价比最高的一条 |
-| P1-6 | **显示器插拔不派发 `onDisplayChange`（cocoa）** | `docs/gui-guide.md` §2：win32 有、cocoa 待补 | 多屏是项目核心卖点（"目标多屏幕"），macOS 缺这条与定位矛盾 |
+| P1-6 | ~~**显示器插拔不派发 `onDisplayChange`（cocoa）**~~ **已于 2026-10-02 修掉** | 原 `docs/gui-guide.md` §2：win32 有、cocoa 待补 | 已接 NSApplicationDidChangeScreenParametersNotification + NSWindowDidChangeScreenNotification（见 §九） |
 | P1-7 | **组件级长按/滑动手势（`onLongPress`）** | `docs/mobile-adaptation.md` §9 + `mobile-regression-checklist.md` §6 v1 边界 | 移动端标注"v1 不做"，但与上面两条不同：这是**触摸应用的日常操作**，建议在 v1 一并收 |
 | P1-8 | **内核把一批样式值写死** | `docs/gui-patterns.md` §8 ❌ 清单：焦点虚线框色 / 滚动条与滑块色 / select 箭头 / progress 轨道色 / checkbox 未选中底色 / modal 遮罩 / switch 滑块 / disabled 降饱和 / 光标闪烁周期 | 0.9.0 已落 32 项颜色 token（`9611d73`），但这份 ❌ 清单是**另一批**；v1 前应收编成 token，否则主题切换有视觉残留 |
 
@@ -114,6 +114,14 @@
 | P0-4 鸿蒙平台空白 | ✅ 大幅收口（2026-10-02）：HF1/HF2 落地（`a6c185b` + `4af646c`）—— NAPI 通道 + 装配层 + 交叉编译脚本 + ArkTS 壳工程 + 折叠上报链路，`assembleHap` 命令行构建通过且产物核对含 `libs/arm64-v8a/libgox.so`；剩模拟器验收（需签名；口径：模拟器即可，2026-10-02 拍板，HF2 逻辑已由桌面测试覆盖） |
 
 > P1-16（补 tag）与 P1-17（工作区改动）仍在推进中。
+
+## 九、已完成（2026-10-02 iOS/Mac 收尾）
+
+| 项 | 结果 |
+|---|---|
+| P1-6 显示器插拔派发 `onDisplayChange`（cocoa） | ✅ 已修：`GoxGfxScreenObserver` 监听 `NSApplicationDidChangeScreenParametersNotification`（插拔/分辨率/排列）+ `NSWindowDidChangeScreenNotification`（窗口跨屏）→ `gfx.Post(NotifyDisplaysChanged)`，与 win32 的 WndProc 纪律同构；契约测试 `TestCocoaDisplayChangeNotify`（真窗口 + 真实通知投递） |
+| M6 iOS 攻坚（模拟器链路部分） | ✅ 修复壳工程红链：`GoxDisplayFold.swift`（2026-10-01 折叠上报）加进来后从未编译过 —— XcodeGen 工程未重新 generate + 引用的 iOS 27.1 API 不在本机 SDK。现改为运行时动态派发（selector 不存在则整条 27.1 分支跳过，不崩不猜姿态），模拟器 Debug/Release 构建全绿，模拟器冒烟通过（Counter demo 渲染 + 触摸链路） |
+| M6 TestFlight 分发链路 | ✅ `scripts/build-ios.sh` 新增 `--release`（Release 配置）与 `--archive`（真机 Release + `xcodebuild archive` + `exportArchive` 出 .ipa，`GOX_EXPORT_METHOD` 可换分发方式），上传命令在产物后给出提示。真机签名验收仍需 Apple 开发者账号环境（见 P0-6 类真机项） |
 
 ## 待确认（信息缺口）
 
