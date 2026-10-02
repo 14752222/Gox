@@ -19,8 +19,8 @@ VM → stdlib → gfx）一行都不在这里 —— 这里只做两件事：
 脚本里（gfx 的 JSX / 组件），宿主页面只是一块画布。要看的界面脚本是
 `entry/src/main/resources/rawfile/app.js`。
 
-> ⚠️ **本工程尚未在 DevEco 模拟器/真机跑过**。交叉编译、导出符号、NAPI 契约与脚本端到端
-> 都已有验证（见文末「已验证到什么程度」），但**触摸、上屏、折叠上报还只有静态 + 纯 Go 验证**。
+> ⚠️ **还没装到模拟器/真机跑过**。已验证到「命令行 hvigor 构建出 HAP + 产物内容核对」这一层
+> （见文末「已验证到什么程度」），但**触摸、上屏、折叠上报还没在设备上实跑过**。
 
 ## 前置条件
 
@@ -49,9 +49,17 @@ bash scripts/build-harmony.sh --abi x86_64       # 模拟器 (x86_64 主机上�
 # 2) 拷进壳工程 (entry/libs/ 下的 .so 不入库, 每次重建都要重新拷)
 cp dist/harmony/arm64/libgox.so app/harmony/entry/libs/arm64-v8a/
 
-# 3) 构建 HAP —— 用 DevEco Studio 打开本目录后点 Run/Build
-#    (本目录**没有** hvigor wrapper; 命令行构建要自己准备 hvigorw, 本机未验证)
-#    首次运行需要在 File → Project Structure → Signing Configs 里勾选自动签名
+# 3) 构建 HAP —— 已验证的命令行姿势 (不依赖 wrapper, hvigor 版本随 DevEco 走):
+export DEVECO_SDK_HOME="H:/DevEco Studio/sdk"
+export NODE_HOME="H:/DevEco Studio/tools/node"
+#    先装一次依赖 (oh-package.json5 里那个 file: 指向的类型包要它来链接):
+node "H:/DevEco Studio/tools/ohpm/bin/pm-cli.js" install --all
+#    再构建:
+node "H:/DevEco Studio/tools/hvigor/bin/hvigorw.js" --mode module \
+     -p module=entry@default -p product=default -p buildMode=debug \
+     assembleHap --no-daemon
+#    产物: entry/build/default/outputs/default/entry-default-unsigned.hap
+#    未签名 —— 装机要在 DevEco 里 File → Project Structure → Signing Configs 勾自动签名
 
 # 4) 装到设备并看日志
 "$SDK/toolchains/hdc.exe" install -r entry/build/default/outputs/default/entry-default-signed.hap
@@ -93,6 +101,23 @@ Android 的 JNI 靠**符号名**（`Java_com_gox_GoxRuntime_nativeTick`）由 JV
 
 另外：**`-tags harmony` 不能省**。`//go:build harmony` 的文件在 `GOOS=linux` 下不会被选中，
 漏了这个 tag 的报错是误导性的 `build constraints exclude all Go files`。
+
+### 工程配置的三处"缺一个就起不来"（第一次构建全撞上）
+
+| 缺的东西 | 报错 |
+| --- | --- |
+| `hvigor/hvigor-config.json5` | `00304004 Not Found: Hvigor config file … does not exist` |
+| `AppScope/app.json5`（含它引用的 `$media:app_icon` / `$string:app_name`） | `app.json5 file not found. At file: …\AppScope\app.json5` |
+| `compatibleSdkVersion` 写成**数字** | `Schema validate failed … must be string` —— 必须写成 `"26.0.0"` 这种字符串 |
+
+另有一条 ArkTS 语言层面的坑：**实例方法必须 `this.` 调用**。把全局 `vp2px(...)` 包成本地
+`toPx(...)` 之后，调用点写 `toPx(...)` 会报
+`Cannot find name 'toPx'. Did you mean the instance member 'this.toPx'?` —— 全局函数是自由函数，
+类方法不是，调用点一个都不能省 `this.`。
+
+顺带：全局 `vp2px` / `getContext(this)` 都已在 API 18 弃用（`@useinstead` 指向
+`ohos.arkui.UIContext.UIContext`），本工程已换成 `this.getUIContext().vp2px(...)` 与
+`this.getUIContext().getHostContext()`。注意后者的签名是 **`Context | undefined`**，必须显式判。
 
 ## 折叠屏（HF2）
 
@@ -205,7 +230,9 @@ go test ./gfx/mobile/     # 纯 Go, 开发机直接跑
 | `llvm-nm -D` | ✅ `GoxDispatch` / `GoxModuleRegister` 已导出（`gox_module_init` 已编入） |
 | `CGO_ENABLED=0 go build ./...` | ✅ 内核零改动（harmony 代码被 build tag 隔离） |
 | 静态契约 + 脚本端到端 | ✅ `gfx/mobile` 鸿蒙用例 6 项全通 |
-| **DevEco 模拟器 / 真机** | ⬜ **未跑** |
+| **命令行 hvigor 构建（assembleHap）** | ✅ BUILD SUCCESSFUL，ArkTS 编译零告警（仅剩"未配签名"一条 WARN） |
+| **HAP 产物内容** | ✅ `libs/arm64-v8a/libgox.so` + `resources/rawfile/app.js` 都在包里 |
+| **DevEco 模拟器 / 真机** | ⬜ **未装**（HAP 未签名；装机要先在 DevEco 里配签名） |
 
 ## v1 已知边界（都不是 bug，是没做）
 

@@ -186,7 +186,13 @@ export class GoxDisplayFold {
         hilog.error(DOMAIN, TAG, 'GoxDisplayFold: 注册 foldStatusChange 失败');
       }
       // 开机时可能已经处于半折叠态 —— 先主动采一次折痕。
-      this.onFoldStatus(display.getFoldStatus());
+      // getFoldStatus 在非折叠 ROM 上会抛 (编译器在这里提示"可能抛异常"):
+      // 包住, 失败按不可折叠处理, 别让启动流程被它带走。
+      try {
+        this.onFoldStatus(display.getFoldStatus());
+      } catch (e) {
+        hilog.warn(DOMAIN, TAG, 'GoxDisplayFold: getFoldStatus 失败 (按不可折叠处理)');
+      }
     }
 
     // 约束②: 首次上报必须带全尺寸。等 window 拿到之后立刻补一次。

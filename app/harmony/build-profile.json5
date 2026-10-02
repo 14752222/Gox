@@ -3,10 +3,13 @@
     "products": [
       {
         "name": "default",
-        // 本机 SDK 是 API 26 (HarmonyOS 26.0.0)。
-        // 换机器时按 `sdk/default/openharmony/native/oh-uni-package.json` 里的
-        // apiVersion 改；DevEco 打开工程时也会提示修正。
-        "compatibleSdkVersion": 26,
+        // 本机 SDK 是 API 26 (HarmonyOS 26.0.0)。**必须是字符串**：数字 26 过不了
+        // hvigor 的 schema 校验（报 "must be string"）。写法对照
+        // <sdk>/native/oh-uni-package.json 的 platformVersion/apiVersion；
+        // DevEco 打开工程时也会提示修正。
+        "compatibleSdkVersion": "26.0.0",
+        // hvigor 明确建议显式给 targetSdkVersion（不给会有一条 WARN）。
+        "targetSdkVersion": "26.0.0",
         "runtimeOS": "HarmonyOS"
       }
     ],

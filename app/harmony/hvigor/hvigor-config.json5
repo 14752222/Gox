@@ -1,0 +1,14 @@
+{
+  "modelVersion": "5.0.0",
+  // 构建工具版本由 DevEco 自带的 hvigor 提供（本机 6.26.8），命令行构建走
+  //   node "<DevEco>/tools/hvigor/bin/hvigorw.js" --mode module -p module=entry@default
+  //        -p product=default -p buildMode=debug assembleHap --no-daemon
+  // （本目录没有 hvigor wrapper，也不往仓库里塞一个 —— 版本随 DevEco 走。）
+  "dependencies": {},
+  "execution": {
+    // analyze/parallel/incremental 等开关留给命令行传参，不在配置里钉死。
+  },
+  "logging": {},
+  "debugging": {},
+  "nodeOptions": {}
+}

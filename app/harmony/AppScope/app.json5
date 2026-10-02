@@ -1,0 +1,12 @@
+{
+  "app": {
+    // bundleName 全网唯一且上架后不可改 —— 对齐 Android 侧的 com.gox 命名空间。
+    "bundleName": "com.gox.harmony",
+    "vendor": "Gox",
+    "versionCode": 1000000,
+    "versionName": "1.0.0",
+    // 这两项取 AppScope/resources 里的资源（**应用级**，不是 entry 模块级）。
+    "icon": "$media:app_icon",
+    "label": "$string:app_name"
+  }
+}

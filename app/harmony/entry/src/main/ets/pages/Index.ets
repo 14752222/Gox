@@ -63,8 +63,8 @@ struct Index {
     .backgroundColor('#000000')
     .onAreaChange((oldArea: Area, newArea: Area) => {
       // vp → px (见文件头的单位坑)
-      const wpx: number = Math.round(vp2px(Number(newArea.width)));
-      const hpx: number = Math.round(vp2px(Number(newArea.height)));
+      const wpx: number = Math.round(this.toPx(Number(newArea.width)));
+      const hpx: number = Math.round(this.toPx(Number(newArea.height)));
       const density: number = this.density();
       if (this.session !== undefined) {
         this.session.resize(wpx, hpx, density);
@@ -79,7 +79,7 @@ struct Index {
       if (t === undefined) {
         return;
       }
-      s.touch(this.actionOf(event.type), Math.round(vp2px(t.x)), Math.round(vp2px(t.y)));
+      s.touch(this.actionOf(event.type), Math.round(this.toPx(t.x)), Math.round(this.toPx(t.y)));
     })
   }
 
@@ -107,16 +107,28 @@ struct Index {
     }
   }
 
+  /** vp → px。全局 vp2px 在 API 18 弃用, 官方替代是 UIContext#vp2px。 */
+  private toPx(v: number): number {
+    return this.getUIContext().vp2px(v);
+  }
+
   /** 读资产里的脚本, 建会话, 开跑。 */
   private boot(): void {
-    const ctx = getContext(this);
+    // getHostContext 的签名就是 `Context | undefined`: 必须显式判, 否则
+    // 症状是"读 assets/app.js 失败: Cannot read property resourceManager"。
+    const ctx = this.getUIContext().getHostContext();
+    if (ctx === undefined) {
+      this.status = '拿不到宿主 Context, 无法读取脚本';
+      hilog.error(DOMAIN, TAG, 'getHostContext() 返回 undefined');
+      return;
+    }
     ctx.resourceManager.getRawFileContent('app.js').then((data: Uint8Array) => {
       const script: string = util.TextDecoder.create('utf-8').decodeToString(data);
       const density: number = this.density();
       // 首帧尺寸先按整屏算, 真正的窗口尺寸在 onAreaChange 里立刻修正
       // (那一次会走 resize → 重新分配缓冲并重新绑定)。
-      let wpx: number = Math.round(vp2px(360));
-      let hpx: number = Math.round(vp2px(780));
+      let wpx: number = Math.round(this.toPx(360));
+      let hpx: number = Math.round(this.toPx(780));
       try {
         const d: display.Display = display.getDefaultDisplaySync();
         if (d.width > 0 && d.height > 0) {
