@@ -10,6 +10,18 @@
       相册读选择经系统选择器 (ACTION_PICK / ACTION_GET_CONTENT), 不需要读存储
       权限; media.save 在 API 29+ 走 MediaStore, 也不需要写权限。
     -->
+    <!--
+      基线权限 —— Gox 宿主自身无条件要用, 与脚本/页面无关, 删掉会出问题:
+        INTERNET              VM 的 fetch / WebSocket
+        ACCESS_NETWORK_STATE  启动时读网络初值 + 注册 ConnectivityManager 回调
+      少了 ACCESS_NETWORK_STATE, MainActivity.onCreate 里的 activeNetwork 会抛
+      SecurityException ⇒ **启动即崩**(2026-10-02 模拟器验收实测)。两条都是 normal
+      级权限, 安装即授, 不弹运行时对话框 —— 恒定声明没有任何隐私代价。
+      (scaffold 模板里这两条由 `gox sync` 写进 GOX:PERMISSIONS 区块, 见 config/permissions.go)
+    -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />

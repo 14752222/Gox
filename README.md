@@ -381,7 +381,8 @@ Options:
 与完整的 Android / iOS / 桌面资源骨架 + 默认图标：
 
 - `gox sync` —— 把 gox.json 里的 `permissions` 幂等注入 AndroidManifest 与
-  iOS Info.plist（默认最小权限, 仅 INTERNET; 未声明的不写入）;
+  iOS Info.plist（恒定两条基线权限 `INTERNET` + `ACCESS_NETWORK_STATE`;
+  未声明的逻辑权限不写入）;
 - `gox icon` —— 以 `assets/icon.png`（1024×1024）为单源生成 Android mipmap、
   iOS AppIconSet、Windows `.ico`、macOS `.icns`、favicon;
 - `gox cert` —— 一键生成平台签名证书（快捷操作, 纯 Go 实现无需 JDK/openssl）:

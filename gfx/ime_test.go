@@ -341,3 +341,190 @@ func TestIMECommitTextareaFullChain(t *testing.T) {
 		t.Fatalf("光标 = (%d, %d), want (0, 4)", ta.caretLine, ta.caret)
 	}
 }
+
+// ===== M2: 编辑框状态 → 宿主的回传 (InputConnection 上下文 / 候选词窗 / 光标) =====
+
+// ReportIMEEditor 让假 Surface 满足 imeEditorReporter 可选接口, 并把每次回传
+// 记下来 (切片字段在 helpers_test.go 的 fakeSurface 里 —— 与 dialog / video
+// 的"字段在共享设施、转发方法在特性测试文件"同一套写法)。
+func (f *fakeSurface) ReportIMEEditor(e IMEEditor) {
+	f.mu.Lock()
+	f.imeEditors = append(f.imeEditors, e)
+	f.mu.Unlock()
+}
+
+// imeEditorsOf 拷一份已收到的回传 (不在锁外读共享切片)。
+func imeEditorsOf(f *fakeSurface) []IMEEditor {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]IMEEditor(nil), f.imeEditors...)
+}
+
+// TestIMEEditorSnapshotInput 单行框的快照: 文本 / 选区 / 光标矩形, 且光标 x
+// 必须与**绘制侧同一口径** (光标之前那截文本的宽度)。
+//
+// 为什么这条值得单独钉: 口径一旦漂移, 症状是"候选词窗比光标高半行/偏一个字"
+// 这种既不像 bug、又极难归因的观感问题 —— 而它是靠同一个函数保证的。
+func TestIMEEditorSnapshotInput(t *testing.T) {
+	in := withStr(mkNode("input", map[string]float64{"width": 200, "height": 40}), "value", "ab")
+	root := mkNode("column", nil)
+	root.Children = []*GuiNode{in}
+	_, a := mountTestApp(t, root, 300, 140)
+	a.setFocus(in)
+	a.redraw()
+
+	in.caret = 1
+	e := imeEditorSnapshot(in)
+	if !e.Focused || e.Multiline {
+		t.Fatalf("快照标志错: focused=%v multiline=%v", e.Focused, e.Multiline)
+	}
+	if e.Text != "ab" || e.SelStart != 1 || e.SelEnd != 1 {
+		t.Fatalf("文本/选区 = %q %d-%d, want \"ab\" 1-1", e.Text, e.SelStart, e.SelEnd)
+	}
+	if e.CaretW != 1 || e.CaretH < 1 {
+		t.Fatalf("光标尺寸 = %dx%d, want 1xn", e.CaretW, e.CaretH)
+	}
+	if e.CaretY < in.Box.Y || e.CaretY+e.CaretH > in.Box.Y+in.Box.H {
+		t.Fatalf("光标 y=%d h=%d 越出输入框 y=%d h=%d", e.CaretY, e.CaretH, in.Box.Y, in.Box.H)
+	}
+	// 同一口径: 光标 x = 字段左留白 + "光标之前那截文本"的宽度 (与 paintField 逐字对应)。
+	// 注意**不能**按"每字符宽度相加"来推 —— 字形有 hinting/字距, MeasureText("ab")
+	// 未必等于 MeasureText("a") + MeasureText("b"); 所以拿整串的量来对。
+	in.caret = 0
+	e0 := imeEditorSnapshot(in)
+	in.caret = 2
+	e2 := imeEditorSnapshot(in)
+	full, _ := MeasureText("ab", in.FontSize())
+	if e2.CaretX != e0.CaretX+full {
+		t.Fatalf("光标 x 与绘制口径不一致: caret=0 → %d, caret=2 → %d, 整串宽=%d",
+			e0.CaretX, e2.CaretX, full)
+	}
+	if e.CaretX < e0.CaretX || e.CaretX > e2.CaretX {
+		t.Fatalf("光标 x 不随下标单调: 0→%d, 1→%d, 2→%d", e0.CaretX, e.CaretX, e2.CaretX)
+	}
+	if e2.SelStart != 2 {
+		t.Fatalf("caret=2 时 SelStart = %d, want 2", e2.SelStart)
+	}
+	// 越界光标要钳住 (受控值被 JS 改短之后旧光标会越界)
+	in.caret = 99
+	if e3 := imeEditorSnapshot(in); e3.SelStart != 2 {
+		t.Fatalf("越界光标 SelStart = %d, want 2 (钳到串尾)", e3.SelStart)
+	}
+	// placeholder 不参与光标定位: 空值时两个不同 placeholder 的光标 x 必须相同
+	a1 := imeEditorSnapshot(withStr(mkNode("input", map[string]float64{"width": 200}), "placeholder", "点我输入"))
+	a2 := imeEditorSnapshot(withStr(mkNode("input", map[string]float64{"width": 200}), "placeholder", "x"))
+	if a1.CaretX != a2.CaretX {
+		t.Fatalf("placeholder 影响了光标定位: %d vs %d", a1.CaretX, a2.CaretX)
+	}
+}
+
+// TestIMEEditorSnapshotTextarea 多行框: 全文含 '\n'、rune 下标按整篇算、
+// 光标 y 随行下移一个行高, 且标了 Multiline (宿主据此设多行 inputType)。
+func TestIMEEditorSnapshotTextarea(t *testing.T) {
+	ta := withStr(mkNode("textarea", map[string]float64{"width": 200, "height": 90}), "value", "ab\ncd")
+	root := mkNode("column", nil)
+	root.Children = []*GuiNode{ta}
+	_, a := mountTestApp(t, root, 300, 140)
+	a.setFocus(ta)
+	a.redraw()
+
+	ta.caretLine, ta.caret = 0, 1
+	e0 := imeEditorSnapshot(ta)
+	if !e0.Multiline {
+		t.Fatalf("textarea 的快照必须标 Multiline")
+	}
+	if e0.Text != "ab\ncd" {
+		t.Fatalf("全文 = %q, want %q", e0.Text, "ab\ncd")
+	}
+	if e0.SelStart != 1 {
+		t.Fatalf("(0,1) 的 rune 下标 = %d, want 1", e0.SelStart)
+	}
+	ta.caretLine, ta.caret = 1, 1
+	e1 := imeEditorSnapshot(ta)
+	if e1.SelStart != 4 {
+		t.Fatalf("(1,1) 的 rune 下标 = %d, want 4 (换行符占一个下标)", e1.SelStart)
+	}
+	if e1.CaretY != e0.CaretY+ta.taLineHeight() {
+		t.Fatalf("光标 y 没随行下移一行高: 第 0 行 %d, 第 1 行 %d, 行高 %d",
+			e0.CaretY, e1.CaretY, ta.taLineHeight())
+	}
+}
+
+// TestIMEEditorReportLifecycle 回传的**时机**: 焦点进出编辑框、光标/文本变化
+// 各发一条; 内容没变的重复重绘不重复发 (每帧跨一次语言边界要花钱, 宿主侧还会
+// 白跑一次 updateCursorAnchorInfo)。
+func TestIMEEditorReportLifecycle(t *testing.T) {
+	in := withStr(mkNode("input", map[string]float64{"width": 200, "height": 40}), "value", "hi")
+	btn := mkNode("button", nil)
+	root := mkNode("column", nil)
+	root.Children = []*GuiNode{btn, in}
+	fake, a := mountTestApp(t, root, 300, 140)
+
+	// 首帧: 焦点为空 —— 也必须明确回一条 Focused=false
+	// (宿主据此收起输入法并清掉手里的影子, 而不是保留上一次的文本)。
+	got := imeEditorsOf(fake)
+	if len(got) != 1 || got[0].Focused {
+		t.Fatalf("首帧回传 = %+v, want 恰好一条 Focused=false", got)
+	}
+
+	a.setFocus(in)
+	a.redraw()
+	got = imeEditorsOf(fake)
+	if len(got) != 2 || !got[1].Focused || got[1].Text != "hi" {
+		t.Fatalf("获焦后回传 = %+v, want Focused=true text=hi", got)
+	}
+
+	// 没有变化时重复重绘不该再发
+	a.redraw()
+	a.redraw()
+	if n := len(imeEditorsOf(fake)); n != 2 {
+		t.Fatalf("内容没变的重复重绘发了 %d 条 (应为 2)", n)
+	}
+
+	// 光标动了: 位置变了, 必须发 (候选词窗要跟着移)
+	in.caret = 2
+	a.redraw()
+	got = imeEditorsOf(fake)
+	if len(got) != 3 || got[2].SelStart != 2 {
+		t.Fatalf("光标移动后回传 = %+v, want SelStart=2", got)
+	}
+
+	// 受控值被改写 (JS 侧 setText): 文本变了也必须发
+	in.Props["value"] = object.NewString("hi!")
+	a.redraw()
+	got = imeEditorsOf(fake)
+	if len(got) != 4 || got[3].Text != "hi!" {
+		t.Fatalf("值变化后回传 = %+v, want text=hi!", got)
+	}
+
+	// 焦点回到按钮: 一条 Focused=false 收尾
+	a.setFocus(btn)
+	a.redraw()
+	got = imeEditorsOf(fake)
+	if len(got) != 5 || got[4].Focused {
+		t.Fatalf("失焦后回传 = %+v, want 一条 Focused=false", got)
+	}
+}
+
+// TestIMEEditorReportViaEvent 走真实事件路径 (IME 提交 → onInput → 受控回写):
+// 提交之后回传给宿主的光标必须已经跨过整批 —— 否则输入法会把候选窗摆回旧位置。
+func TestIMEEditorReportViaEvent(t *testing.T) {
+	var got []string
+	in := imeRecorder(t, withStr(mkNode("input", map[string]float64{"width": 200, "height": 40}), "value", ""), &got)
+	root := mkNode("column", nil)
+	root.Children = []*GuiNode{in}
+	fake, a := mountTestApp(t, root, 300, 140)
+	a.setFocus(in)
+	a.redraw()
+
+	pushAndPump(t, fake, a, Event{Kind: EventIMECommit, Text: "你好"})
+
+	ed := imeEditorsOf(fake)
+	if len(ed) == 0 {
+		t.Fatalf("IME 提交之后没有任何编辑框回传")
+	}
+	last := ed[len(ed)-1]
+	if !last.Focused || last.Text != "你好" || last.SelStart != 2 {
+		t.Fatalf("回传 = %+v, want text=你好 SelStart=2 (光标跨过整批)", last)
+	}
+}

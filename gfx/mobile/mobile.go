@@ -83,6 +83,10 @@ type Surface struct {
 
 	// imeHost 是宿主的软键盘开关回调 (SetIMEHost 绑定, 可为 nil)。
 	imeHost func(on bool)
+	// imeEditorHost 是宿主的"编辑框状态回传"回调 (SetIMEEditorHost 绑定, 可为 nil):
+	// 光标前后文本、选区、光标像素矩形 —— 宿主据此喂 InputConnection 与
+	// updateCursorAnchorInfo (候选词窗贴光标)。
+	imeEditorHost func(gfx.IMEEditor)
 
 	events chan gfx.Event
 	// wake 是 WaitEvents 的唤醒信号, 容量 1: 宿主每帧 Tick 一次叫醒泵,
@@ -287,6 +291,33 @@ func (s *Surface) IMECommit(text string) {
 		return
 	}
 	s.Post(gfx.Event{Kind: gfx.EventIMECommit, Text: text})
+}
+
+// SetIMEEditorHost 绑定"编辑框状态回传"回调 (libgox 装配层在创建表面后调;
+// nil = 不回传)。回调在内核 GUI 线程上执行 —— 宿主侧要碰 View/InputMethodManager
+// 必须自己 post 回主线程 (与 flush 回调同一分工)。
+func (s *Surface) SetIMEEditorHost(fn func(gfx.IMEEditor)) {
+	s.mu.Lock()
+	s.imeEditorHost = fn
+	s.mu.Unlock()
+}
+
+// ReportIMEEditor 实现 gfx 的可选 imeEditorReporter 接口: 把内核算好的编辑框
+// 状态转给宿主。没绑定回调时静默跳过 (无头测试 / 老宿主)。
+//
+// 不投事件队列而是**同步回调**: 这些字段是"宿主随时来问就答"的当前态
+// (Android 的 getTextBeforeCursor 是在输入法的调用栈里同步问的), 排进队列
+// 只会让它更旧。
+func (s *Surface) ReportIMEEditor(e gfx.IMEEditor) {
+	if s.isClosed() {
+		return
+	}
+	s.mu.Lock()
+	fn := s.imeEditorHost
+	s.mu.Unlock()
+	if fn != nil {
+		fn(e)
+	}
 }
 
 // Resize 报告表面尺寸/密度变化 (旋转、分屏、折叠态切换)。

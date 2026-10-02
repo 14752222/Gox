@@ -50,6 +50,11 @@ type fakeSurface struct {
 	// **nil 表示"这个后端没有平台视频层"** —— 真后端里 win32 / X11 / cocoa
 	// 现在就是这状态, 所以它同时是 `<video>` 降级路径的默认场景。
 	video *fakeVideoHost
+
+	// imeEditors 记录 M2 的"编辑框状态回传"(fakeSurface 因此同时满足
+	// imeEditorReporter 可选接口)。字段放共享设施、转发方法放 ime_test.go ——
+	// 与 dialog / video 同一套写法。
+	imeEditors []IMEEditor
 }
 
 // SetTitle / ResizeClient 实现 windowController 可选接口: 记录标题;

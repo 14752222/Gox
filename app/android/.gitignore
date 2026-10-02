@@ -9,3 +9,9 @@ local.properties
 # 根 .gitignore 里的 `*.so` 其实已经覆盖它, 这里显式重申一遍 —— 免得下次有人
 # 看到 jniLibs/ 是空的, 以为"仓库少了个文件"而去把二进制提交上来。
 app/src/main/jniLibs/
+
+# 签名材料: 文件里写着口令, 绝不入库。release 构建读 app/keystore.properties,
+# 它由 `gox cert android` / keytool 在本机生成 (见 README 的"可分发 APK"一节)。
+keystore.properties
+*.jks
+*.keystore

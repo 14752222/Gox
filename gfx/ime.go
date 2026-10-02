@@ -157,3 +157,132 @@ func (a *app) insertIMECommit(s string) {
 	}
 	a.insertIMEChars(target, s)
 }
+
+// ===== 编辑框状态 → 宿主 (M2: 候选词与光标位置回传) =====
+//
+// 移动端宿主的 InputConnection 要能回答输入法的三类问题:
+//
+//	① 光标前后是什么字 (getTextBeforeCursor / getExtractedText)
+//	   —— 选词、联想、全选、复制粘贴都靠它;
+//	② 光标在屏幕的哪儿 (updateCursorAnchorInfo)
+//	   —— 候选词窗必须贴着光标, 否则它会盖住输入框本身;
+//	③ 现在该不该弹键盘 (imeController.SetIMEEnabled)。
+//
+// ①② 要求内核把编辑框的**当前状态**回传出去, 这就是本节。
+//
+// 为什么不让宿主自己记账: 内核是受控模型 —— 文本真源是 JS 的 value prop, 光标
+// 位置在节点上, 宿主手里只可能有一份影子。而"影子过期"的症状恰好是最难查的
+// 那一类 (输入法拿旧文本做联想、候选窗贴着旧位置), 所以宁可每帧核对一次。
+
+// IMEEditor 是编辑框状态快照 (内核 → 宿主)。字段与 Android 的
+// InputConnection / CursorAnchorInfo 一一对应, 宿主侧不需要再猜。
+type IMEEditor struct {
+	// Text 是全文 (textarea 含 '\n')。宿主拿它实现 getExtractedText /
+	// getTextBeforeCursor; 所有偏移一律是 **rune 下标** (不是字节、不是 UTF-16
+	// 单元) —— 宿主侧要按平台口径换算, 别直接当 Java 的 char 下标用。
+	Text string
+	// SelStart / SelEnd 是选区两端 (rune 下标)。v1 内核没有范围选择
+	// (没有 shift+方向键), 所以恒有 SelStart == SelEnd; 字段先留着, 宿主据此
+	// 填 updateSelection, 将来加了范围选择不必再改协议。
+	SelStart, SelEnd int
+	// CaretX/Y/W/H 是光标矩形, **窗口像素坐标** (与 Surface.Size、鼠标事件
+	// 同一坐标系; 不是 dp)。W 恒为 1 (竖线光标)。
+	CaretX, CaretY, CaretW, CaretH int
+	// Focused = false 表示焦点已不在可编辑控件上 (宿主应收起输入法并清空影子)。
+	Focused bool
+	// Multiline = 编辑框是 textarea。宿主据此决定 inputType 是否带
+	// TYPE_TEXT_FLAG_MULTI_LINE —— 写死单行的话多行框里回车会被当成"完成",
+	// 用户按回车就再也换不了行。
+	Multiline bool
+}
+
+// imeEditorReporter 是 Surface 的**可选能力**: 回传编辑框状态。
+//
+// 与 imeController 同一思路 —— 不扩 Surface; 没实现的后端 (win32 走
+// WM_IME_*, cocoa 走 NSTextInputClient, X11 与测试用的假 Surface) 直接落空,
+// 行为与加这个接口之前完全一样。
+type imeEditorReporter interface {
+	ReportIMEEditor(e IMEEditor)
+}
+
+// caretRectOf 返回编辑框光标在窗口坐标系里的矩形。
+//
+// **必须与绘制侧同一口径** (input.go 的 paintField / search.go 的 paintSearch /
+// textarea.go 的 paintTextarea): 口径一旦漂移, 症状是"候选词窗比光标高半行"
+// 这种既不像 bug、又很难归因的观感问题。它只此一处实现, 就是为了防漂移。
+func caretRectOf(n *GuiNode) (x, y, w, h int) {
+	b := n.Box
+	size := n.FontSize()
+	if n.Tag == "textarea" {
+		area := n.taArea()
+		lh := n.taLineHeight()
+		lines := n.taLines()
+		line := n.taLineIndex(len(lines))
+		col := n.taCaretCol(lines)
+		rs := []rune(lines[line])
+		cx := area.X + runeWidth(string(rs[:col]), size)
+		cy := area.Y + line*lh - n.offsetY
+		return cx, cy + (lh-size)/2, 1, size
+	}
+	// input / search: 与 paintField 完全同序 —— 字段左留白 + 放大镜让位 +
+	// "光标之前那截文本"的宽度。placeholder 不参与 (值是空时光标在最左边)。
+	cx := b.X + fieldPadX + searchLeading(n)
+	if n.hasInputValue() {
+		runes := []rune(n.inputValue())
+		cw, _ := MeasureText(string(runes[:n.caretIndex(runes)]), size)
+		cx += cw
+	}
+	_, th := MeasureText("M", size)
+	if th < 1 {
+		th = 1
+	}
+	return cx, b.Y + (b.H-th)/2, 1, th
+}
+
+// imeEditorSnapshot 给编辑框拍一张状态快照 (纯函数, 不碰全局状态)。
+func imeEditorSnapshot(n *GuiNode) IMEEditor {
+	e := IMEEditor{Focused: true, Multiline: n.Tag == "textarea"}
+	if n.Tag == "textarea" {
+		lines := n.taLines()
+		e.Text = strings.Join(lines, "\n")
+		off := taOffsetOf(lines, n.taLineIndex(len(lines)), n.taCaretCol(lines))
+		e.SelStart, e.SelEnd = off, off
+	} else {
+		e.Text = n.inputValue()
+		off := n.caretIndex([]rune(e.Text))
+		e.SelStart, e.SelEnd = off, off
+	}
+	e.CaretX, e.CaretY, e.CaretW, e.CaretH = caretRectOf(n)
+	return e
+}
+
+// reportIMEEditor 把当前焦点编辑框的状态发给宿主 (每帧光栅化时调一次)。
+//
+// 为什么挂在**每帧**而不是挂在"焦点/文本/光标会变的那些调用点": 能改编辑框
+// 状态的地方有七八处 (点击定位、方向键、Home/End、退格、输入法提交、受控值被
+// JS 改写…), 逐个挂必然漏一处 —— 而漏掉的那一处不会有任何报错, 只表现成
+// "输入法偶尔拿旧文本"。挂在帧上天然覆盖全部路径 (任何一种变化都会标脏 →
+// 下一帧必到), 再按**快照内容去重**, 没变就不发, 于是也不会每帧跨一次
+// 语言边界 (光标闪烁不改变快照, 不会诱发重复上报)。
+func (a *app) reportIMEEditor() {
+	a.mu.Lock()
+	s := a.surface
+	n := a.focused
+	a.mu.Unlock()
+	r, ok := s.(imeEditorReporter)
+	if !ok {
+		return
+	}
+	var e IMEEditor
+	if t := imeTarget(n); t != nil {
+		e = imeEditorSnapshot(t)
+	}
+	a.mu.Lock()
+	same := a.imeReported && a.lastIME == e
+	a.lastIME, a.imeReported = e, true
+	a.mu.Unlock()
+	if same {
+		return
+	}
+	r.ReportIMEEditor(e)
+}

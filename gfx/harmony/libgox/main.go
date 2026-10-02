@@ -475,12 +475,16 @@ func dispatchSetInsets(e C.napi_env, arg func(int) C.napi_value) {
 			vals[i] = int(v)
 		}
 	}
-	// 经 gfx.Post 投回 GUI 线程再报内核: ReportViewport 会同步跑脚本侧的
-	// onViewportChange 订阅回调, 事件纪律 —— ArkTS 回调线程绝不直接执行 JS。
+	// 经 gfx.Post 投回 GUI 线程再报内核: 上报会**同步**跑脚本侧的 onViewportChange
+	// 订阅回调, 事件纪律 —— ArkTS 回调线程绝不直接执行 JS。
+	//
+	// **必须是 ReportInsets** (不是 ReportViewport): 后者是 patchAll 语义, 之后
+	// 任何一次 insets 分发都会把键盘高度清成 0 —— 与 Android 同一个坑, 见
+	// gfx.ReportInsets 的注释。
 	gfx.Post(func() {
-		gfx.ReportViewport(nil, gfx.Viewport{Insets: gfx.Insets{
+		gfx.ReportInsets(nil, gfx.Insets{
 			Top: vals[0], Right: vals[1], Bottom: vals[2], Left: vals[3],
-		}})
+		})
 	})
 }
 

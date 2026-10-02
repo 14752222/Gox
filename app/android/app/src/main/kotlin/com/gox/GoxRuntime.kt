@@ -71,6 +71,16 @@ object GoxRuntime {
      */
     external fun nativeIMECommit(text: String)
 
+    /**
+     * 软键盘高度上报 (设备像素; 0 = 收起)。任意线程可调。
+     *
+     * **单独一条而不是复用 [nativeSetInsets]**: 内核 Viewport 的合并是 upsert,
+     * 而键盘弹起那一刻 insets 往往没变 —— 复用会把安全区清成 0 (内核侧
+     * gfx.ReportKeyboardHeight 有同一段说明)。脚本侧用 gx/viewport 的
+     * `useKeyboardHeight()` / `keyboardVisible()` 消费它。
+     */
+    external fun nativeSetKeyboard(height: Int)
+
     // ── NativeHost 回填/上报通道 (Go 侧 //export 见 gfx/android/libgox/main.go) ──
     //
     // 全部可从任意线程调用: Go 侧一律 gfx.Post 投回 GUI 线程 (ResolveNative /

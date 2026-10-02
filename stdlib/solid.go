@@ -230,6 +230,8 @@ func solidRunEffectsDeep(sig *solidSignal, seen map[*solidObserver]struct{}) obj
 		if obs.ranGen >= solidPassGen {
 			continue
 		}
+		if obs.running {
+		}
 		if err := solidExecute(obs); err != nil && firstErr == nil {
 			firstErr = err
 		}

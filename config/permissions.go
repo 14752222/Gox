@@ -102,11 +102,33 @@ func KnownPermissions() []string {
 	return names
 }
 
-// AndroidUses 汇总权限清单的全部 Android uses-permission。
-// 任何清单都额外带 INTERNET（最小权限基线, Gox 运行时自身需要）。
+// AndroidBootstrap 是任何清单都恒有的 Android 基线权限。
+//
+// 收的是 **Gox 宿主自身无条件要用** 的权限, 与 PermissionRegistry 是两张不同的表:
+// 那张是"用户声明才注入"的逻辑能力, 这张是"永远注入"的环境前提。
+//
+//   - INTERNET: VM 的网络能力 (fetch / WebSocket)。
+//   - ACCESS_NETWORK_STATE: 宿主启动时读网络初值并注册 ConnectivityManager 回调
+//     (GoxNativeHostImpl.registerNetworkCallback + MainActivity.reportNetworkInitial)。
+//     少了它 `activeNetwork` 直接抛 SecurityException, 而且**崩在 Activity.onCreate
+//     里** —— 表现成"装完就打不开", 与脚本无关, 排查时极易误判成 so/脚本问题。
+//     (2026-10-02 模拟器验收实测踩到, 见 docs/mobile-regression-checklist.md)
+//
+// 两条都是 normal 级权限 (安装即授, 不弹运行时对话框), 恒定声明没有隐私代价。
+var AndroidBootstrap = []string{
+	"android.permission.INTERNET",
+	"android.permission.ACCESS_NETWORK_STATE",
+}
+
+// AndroidUses 汇总权限清单的全部 Android uses-permission:
+// 先铺 AndroidBootstrap 基线, 再按声明顺序展开逻辑权限 (按权限串去重)。
 func AndroidUses(perms []Permission) ([]string, error) {
-	seen := map[string]bool{"android.permission.INTERNET": true}
-	out := []string{"android.permission.INTERNET"}
+	seen := map[string]bool{}
+	out := make([]string, 0, len(AndroidBootstrap))
+	for _, u := range AndroidBootstrap {
+		seen[u] = true
+		out = append(out, u)
+	}
 	for _, p := range perms {
 		spec, err := LookupPermission(p.Name)
 		if err != nil {

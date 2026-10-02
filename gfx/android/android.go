@@ -124,6 +124,13 @@ static jmethodID gox_finished_mid(JNIEnv *env, jobject c) {
 static jmethodID gox_ime_mid(JNIEnv *env, jobject c) {
 	return (*env)->GetMethodID(env, c, "imeShow", "(Z)V");
 }
+// 编辑框状态回传 (M2): GoxHost.imeEditor(json: String) —— 光标前后的文本、选区
+// 与光标像素矩形。宿主据此实现 InputConnection 的文本查询与
+// updateCursorAnchorInfo (候选词窗贴着光标)。同样"找不到不算错": 老宿主降级成
+// "输入法只有 commit、没有上下文"。
+static jmethodID gox_ime_editor_mid(JNIEnv *env, jobject c) {
+	return (*env)->GetMethodID(env, c, "imeEditor", "(Ljava/lang/String;)V");
+}
 static jstring gox_new_utf(JNIEnv *env, const char *utf) {
 	return (*env)->NewStringUTF(env, utf);
 }
@@ -143,12 +150,15 @@ static void gox_copy_pixels(void *dst, const void *src, int n) {
 import "C"
 
 import (
+	"encoding/json"
 	"fmt"
 	"image"
 	"os"
 	"sync"
+	"unicode/utf8"
 	"unsafe"
 
+	"github.com/14752222/Gox/gfx"
 	"github.com/14752222/Gox/gfx/mobile"
 )
 
@@ -162,6 +172,8 @@ var (
 	flushMID C.jmethodID
 	finMID   C.jmethodID
 	imeMID   C.jmethodID
+	// imeEditorMID 是编辑框状态回传 (老宿主没有则为 nil, 降级)
+	imeEditorMID C.jmethodID
 	// frameBuf 是 Java 侧 allocateDirect 的那块内存 (全局引用, 只为持有它),
 	// framePtr 是它的裸地址 —— 引擎直接往里写。
 	frameBuf unsafe.Pointer
@@ -170,6 +182,10 @@ var (
 
 	warnedNoBuffer bool
 	warnedFlushErr bool
+
+	// lastIMEFocused 是上一次回传给宿主的"焦点在编辑框上" (M2)。只为日志去重:
+	// 焦点进出各一条, 而不是每次回传都打一行。只在内核 GUI 线程读写。
+	lastIMEFocused bool
 )
 
 // Logf 写一条日志到 logcat (tag "Gox"), 同时照旧写一份 stderr —— 真机上 stderr
@@ -210,7 +226,8 @@ func BindHost(host unsafe.Pointer) error {
 	mid := C.gox_flush_mid(e, clazz)
 	fin := C.gox_finished_mid(e, clazz)
 	ime := C.gox_ime_mid(e, clazz)
-	if C.gox_clear_exception(e) != 0 || mid == nil {
+	C.gox_clear_exception(e)
+	if mid == nil {
 		return fmt.Errorf("android: GoxHost.flush([I)V 找不到 (Kotlin 侧签名必须逐字符对上)")
 	}
 	if fin == nil {
@@ -220,9 +237,14 @@ func BindHost(host unsafe.Pointer) error {
 		C.gox_clear_exception(e)
 		Logf("GoxHost.imeShow(Z)V 找不到: 软键盘不可开关 (老宿主?)")
 	}
+	imeEditor := C.gox_ime_editor_mid(e, clazz)
+	if imeEditor == nil {
+		C.gox_clear_exception(e)
+		Logf("GoxHost.imeEditor(String)V 找不到: 编辑框状态不回传 (老宿主?) —— 输入法拿不到光标位置与前后文本")
+	}
 
 	mu.Lock()
-	hostObj, flushMID, finMID, imeMID = obj, mid, fin, ime
+	hostObj, flushMID, finMID, imeMID, imeEditorMID = obj, mid, fin, ime, imeEditor
 	mu.Unlock()
 	return nil
 }
@@ -367,6 +389,82 @@ func CallIMEShow(on bool) {
 		o = 1
 	}
 	C.gox_call_void_bool(e, C.jobject(obj), mid, o)
+}
+
+// CallIMEEditor 把内核给的编辑框状态回传给宿主 (M2): 光标前后的文本、选区与
+// 光标像素矩形。
+//
+// 为什么用 JSON 而不是拆成几个参数: 这份快照将来会加字段 (组合区间、行高、
+// 全文是否为多行…), 走 JSON 就不必每次同时改 C 签名、Go 导出与 Kotlin 声明
+// —— 那三处不同步的症状是运行时才炸的 JNI 绑定失败。
+//
+// 编码用标准库的 encoding/json: 文本里可能带引号/换行/emoji, 手写转义迟早漏
+// 一个 (漏掉的那个字符会让整个 JSON 解不出来, 宿主侧表现为"输入法突然不认识
+// 上下文了")。
+func CallIMEEditor(ed gfx.IMEEditor) {
+	// 焦点进/出编辑框各打一条 (只在**变化**时打, 不会按键盘刷屏)。
+	// 这是真机上唯一能确认"InputConnection 的上下文真源通了"的手段: 输入法
+	// 拿不到文本时的表现是"候选词不对/光标位置怪", 很难从画面反推。
+	// 只在 GUI 线程 (内核调回传的那条) 读写, 不需要锁。
+	if ed.Focused != lastIMEFocused {
+		lastIMEFocused = ed.Focused
+		if ed.Focused {
+			Logf("编辑框回传: focused=true 文本 %d rune, 选区 %d-%d, 光标 (%d,%d) %dx%d, multiline=%v",
+				utf8.RuneCountInString(ed.Text), ed.SelStart, ed.SelEnd,
+				ed.CaretX, ed.CaretY, ed.CaretW, ed.CaretH, ed.Multiline)
+		} else {
+			Logf("编辑框回传: focused=false (宿主应收起输入法并清空影子)")
+		}
+	}
+
+	e, done, err := env()
+	if err != nil {
+		return
+	}
+	defer done()
+
+	mu.Lock()
+	obj, mid := hostObj, imeEditorMID
+	mu.Unlock()
+	if obj == nil || mid == nil {
+		return
+	}
+	payload, jerr := json.Marshal(imeEditorJSON{
+		Text:      ed.Text,
+		SelStart:  ed.SelStart,
+		SelEnd:    ed.SelEnd,
+		X:         ed.CaretX,
+		Y:         ed.CaretY,
+		W:         ed.CaretW,
+		H:         ed.CaretH,
+		Focused:   ed.Focused,
+		Multiline: ed.Multiline,
+	})
+	if jerr != nil {
+		return // 结构里全是标量, 正常不可能失败; 真失败也只是少一次回传
+	}
+	cs := C.CString(string(payload))
+	js := C.gox_new_utf(e, cs)
+	C.free(unsafe.Pointer(cs))
+	C.gox_call_void(e, C.jobject(obj), mid, C.jobject(js))
+	if C.gox_clear_exception(e) != 0 {
+		Logf("GoxHost.imeEditor 抛了异常 (已清除, 输入法将拿不到光标位置)")
+	}
+}
+
+// imeEditorJSON 是发给宿主的编辑框快照的线上格式 (字段名即 Kotlin 侧读的键)。
+// 偏移一律是 **rune 下标** —— Kotlin 侧换算成 UTF-16 单元时要自己过一遍
+// (中文在 Java 里是 1 个 char, emoji 是 2 个, 直接当 char 下标用会错位)。
+type imeEditorJSON struct {
+	Text      string `json:"text"`
+	SelStart  int    `json:"selStart"`
+	SelEnd    int    `json:"selEnd"`
+	X         int    `json:"x"`
+	Y         int    `json:"y"`
+	W         int    `json:"w"`
+	H         int    `json:"h"`
+	Focused   bool   `json:"focused"`
+	Multiline bool   `json:"multiline"`
 }
 
 // NotifyFinished 通知宿主脚本已结束 (errMsg 为空表示正常结束)。

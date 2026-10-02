@@ -28,4 +28,25 @@ interface GoxHost {
      * 没有实现也不致命 —— Go 侧找不到本方法时降级成"软键盘不可开关"。
      */
     fun imeShow(show: Boolean)
+
+    /**
+     * 编辑框状态回传 (M2): 光标前后文本 / 选区 / 光标像素矩形, **由内核调**。
+     *
+     * 宿主拿它实现 `InputConnection` 的文本查询 (getTextBeforeCursor /
+     * getExtractedText) 与 `updateCursorAnchorInfo` —— 后者决定输入法的候选词窗
+     * 贴在光标旁边还是压在屏幕底部盖住输入框。没有它输入法也能提交结果, 只是
+     * 拿不到上下文、候选窗位置靠猜。
+     *
+     * json 字段 (内核对 gfx.IMEEditor 的序列化):
+     * ```
+     * {"text":"你好","selStart":2,"selEnd":2,"x":37,"y":410,"w":1,"h":14,
+     *  "focused":true,"multiline":false}
+     * ```
+     * 偏移是**引擎口径的 rune 下标** —— Kotlin 侧要换算成 UTF-16 单元再用
+     * (中文一字一单元、emoji 一字两单元, 直接当 char 下标会错位)。
+     *
+     * 与 [flush]/[finished] 一样运行在 **Go 的渲染线程**上: 要碰 View / 输入法
+     * 必须自己 post 回主线程。没有实现也不致命 (Go 侧找不到就跳过)。
+     */
+    fun imeEditor(json: String)
 }

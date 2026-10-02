@@ -79,6 +79,11 @@ type app struct {
 	// surfaceClosed 标记"事件源已结束" (P3-6): WaitEvents 返回 false 或
 	// EventClose 到达时置位, 由 processEvents 在冲刷完本轮后真正 close。
 	surfaceClosed bool
+
+	// lastIME / imeReported 是 M2 的"编辑框状态回传"去重缓存:
+	// 上一帧发给宿主的快照, 内容没变就不再跨一次语言边界 (见 reportIMEEditor)。
+	lastIME     IMEEditor
+	imeReported bool
 }
 
 var (
@@ -1434,6 +1439,9 @@ func (a *app) redraw() {
 		// 它是叠在窗口之上的另一层, 不参与脏矩形 diff, 位置就是刚刚算出的 Box。
 		flushVideoSurfaces(a)
 		markAllPrev(root)
+		// M2: 编辑框状态回传给人看的那一侧 (宿主 InputConnection / 候选词窗)。
+		// 必须在 Layout 之后 —— 光标矩形要用刚算出的 Box。
+		a.reportIMEEditor()
 		FillRect(a.img, Rect{0, 0, w, h}, white)
 		Draw(a.img, root)
 		a.drawFocusRing(a.img)
@@ -1446,6 +1454,9 @@ func (a *app) redraw() {
 	a.dirtyNodes = dirtyNodes // diffRects 读取
 	Layout(root, w, h)
 	flushVideoSurfaces(a) // 同 full 分支: 表面位置跟着本帧布局走
+	// M2: 同 full 分支 —— 局部帧也要回传 (光标移动/文本变化大多走的是局部帧,
+	// 漏了这里等于"打字时光标位置不回传", 候选词窗会停在旧位置)。
+	a.reportIMEEditor()
 	rects := mergeRects(a.diffRects(), 16)
 	a.dirtyNodes = nil
 

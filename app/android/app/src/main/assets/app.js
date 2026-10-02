@@ -1,4 +1,4 @@
-// Gox on Android —— M1 验收脚本: 点一下按钮, 计数加一。
+// Gox on Android —— 验收脚本: 点一下按钮计数加一, 底部随软键盘让位。
 //
 // 约束: 这是 APK 里的 asset, 引擎拿到的只有**字符串** (没有文件系统) ⇒ 只能 import
 // 内置模块 (gx/xxx), 不能 import 相对路径的 .js 文件。
@@ -11,7 +11,7 @@
 import { createSignal } from "gx/solid";
 import { h, render } from "gx/gfx";
 import { useDeviceInfo } from "gx/device";
-import { useInsets } from "gx/viewport";
+import { useInsets, useKeyboardHeight } from "gx/viewport";
 
 const k = useDeviceInfo().pixelRatio > 0 ? useDeviceInfo().pixelRatio : 1;
 const px = (v) => Math.round(v * k);
@@ -19,6 +19,11 @@ const px = (v) => Math.round(v * k);
 const [count, setCount] = createSignal(0);
 const [name, setName] = createSignal("");
 const ins = useInsets;
+// 软键盘高度是**独立通道** (宿主 nativeSetKeyboard → gx/viewport): 它不随
+// insets 走 (键盘弹起时安全区通常没变), 所以底部让位要把两者都算上。
+// 注意这里必须**无条件调用** useKeyboardHeight() —— 它是订阅型读数, 写进
+// 三元条件里短路掉就等于这个 effect 一个依赖都没有, 之后永不重跑 (静默失效)。
+const kb = useKeyboardHeight;
 
 render(
   <window title="Gox">
@@ -26,7 +31,7 @@ render(
       gap={px(12)}
       padding={px(20)}
       paddingTop={() => ins().top + px(20)}
-      paddingBottom={() => Math.max(ins().bottom, px(20))}
+      paddingBottom={() => Math.max(ins().bottom, kb(), px(20))}
       paddingLeft={() => Math.max(ins().left, px(20))}
       paddingRight={() => Math.max(ins().right, px(20))}
     >
@@ -41,6 +46,8 @@ render(
         onInput={(e) => setName(e.value)}
       />
       <text font={px(14)}>{() => "输入内容: " + name()}</text>
+      <text font={px(12)}>{() => "键盘高(px): " + kb()}</text>
+      <text font={px(10)}>{() => "insets: t=" + ins().top + " b=" + ins().bottom + " l=" + ins().left + " r=" + ins().right}</text>
     </column>
   </window>
 );

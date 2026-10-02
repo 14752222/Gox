@@ -74,6 +74,25 @@ adb logcat -s Gox:I
 - `GoxRuntime` 写成 `object` 而不是一堆 `static`：JNI 里实例方法与静态方法的**符号名相同**，
   只差第二个参数是 `jobject` 还是 `jclass`，而 Go 侧不用那个参数 —— 两种写法 ABI 等价。
 
+## 基线权限（删掉 = 启动即崩）
+
+宿主 `MainActivity.onCreate` 里 `registerNetworkCallback()` + `reportNetworkInitial()`
+是**无条件执行**的，依赖 `INTERNET` 与 `ACCESS_NETWORK_STATE` 两个 normal 级
+"运行时基线权限"（安装即授、不弹窗）。它们与用户声明的逻辑权限（`gox sync`
+按 `gox.json` 注入 `GOX:PERMISSIONS` 区块）是**两张不同的表**：
+
+| 位置 | 说明 |
+|---|---|
+| `config/permissions.go` 的 `AndroidBootstrap` | 基线唯一真源，`AndroidUses()` 恒定铺底 |
+| `scaffold/template/android/AndroidManifest.xml` | 模板（`gox sync` 生成新项目用） |
+| `app/android/app/src/main/AndroidManifest.xml` | 本壳工程手写维护，无注入区块 |
+
+三处必须镜像。**实测**（2026-10-02）：漏掉 `ACCESS_NETWORK_STATE` 时
+`registerNetworkCallback` 抛 `SecurityException` 直接杀死进程 —— 症状是
+"全新安装启动即闪退、logcat 只有 SecurityException"。Kotlin 侧
+`reportNetworkInitial` 另有 try/catch 降级兜底（缺权限时按"未连接"上报，
+不崩），但清单里该有还得有。
+
 ## 折叠屏（androidx.window 的 FoldingFeature）
 
 **链路**：Kotlin `WindowInfoTracker` → `FoldingFeature` → JSON → `nativeSetDisplayFold`
@@ -185,6 +204,47 @@ python tools/screencap.py crop out.png 10 20 260 120 4
 只有 5dp。这正是 v1 边界里"density 只上报不换算"那条，属于 M1 的渲染侧剩余工作，
 不是 bug。
 
+## M2 实测记录（2026-10-02，模拟器 x86_64 / API 34 / Gboard）
+
+IME 链路全部走通（取证同 M1：`tools/screencap.py` + `logcat -s Gox:I`）：
+
+1. **点输入框聚焦** → `编辑框回传: focused=true`（光标/文本快照通道建立）。
+2. **软键盘弹出** → `mInputShown=true`，`nativeSetKeyboard: 883 px` 入日志，
+   Gboard 候选词栏出现（InputConnection 上下文回传正确）。
+3. **`adb shell input text "hi"` 提交** → 输入框显示 `hi`、光标紧跟文本，
+   `输入内容: hi` 联动文本实时刷新（依赖脏区包围盒上传，见下）。
+4. **insets 上报** → `insets b=63`（API 30+ `getInsets(Type.ime|systemBars)`，
+   前置两件事：`WindowCompat.setDecorFitsSystemWindows(window,false)` 否则
+   IME insets 被系统消费不分发；初始化后 `requestApplyInsets()` 否则首次
+   分发早于 `nativeInit` 被卫语句挡掉、系统不再主动发）。
+
+**当天修掉的三个真 bug**：
+
+| 症状 | 根因 | 修法 |
+|---|---|---|
+| 全新安装启动即崩 | 清单缺 `ACCESS_NETWORK_STATE`（基线权限，见上文） | 三处镜像 + Kotlin 降级兜底 |
+| 输入联动文本卡旧值 | `lockCanvas(rect)` 把画布**裁剪到单个矩形**，多块脏区只刷第一块 | `blit` 先算多块脏区的**包围盒**再上传 |
+| 聚焦后秒崩 | `CursorAnchorInfo` 缺 matrix 抛异常；`decorFitsSystemWindows=true` 吞掉 IME insets | `setMatrix(Matrix())`；`setDecorFitsSystemWindows(false)` + `requestApplyInsets()` |
+| **键盘高度显示 0（真根因）** | `nativeSetInsets` 走 `gfx.ReportViewport`（**patchAll 含 patchKeyboard**）：键盘弹起后系统**再分发一次 insets**，把刚报上来的键盘高度清成 0 | 内核新增 `gfx.ReportInsets`（patchInsets 掩码，与 `ReportKeyboardHeight` 对称），Android/鸿蒙/iOS 三端宿主改走它；回归 `gfx/viewport_kb_test.go` 补「先键盘后 insets」这条真机顺序 |
+
+**排查教训（三段弯路，最终根因在内核）**：键盘高度显示 0 先后怀疑过三个方向，
+都被更硬的证据推翻 —— ① 怀疑内核 `ReportKeyboardHeight → useKeyboardHeight`
+的版本信号通知断了：写了内核回归 `gfx/viewport_kb_test.go`，首版在**泵外**
+（Go 测试 goroutine）调 `ReportViewport`，断言假阴性（`EvalVM` 返回后
+`currentVM` 已恢复为 nil，通知链里的脚本闭包被回调桥静默丢弃），挪进
+`RunTimersWithPump` 泵轮次后用例即绿 —— 但**旧用例只覆盖「先 insets 后键盘」**，
+恰好绕开了真机顺序，所以一直是绿的。② 拿警告环形缓冲的 dump 当实时日志，把
+"一次 dump 里的重放"当成事件顺序，得出过"泵睡死 / 双 app / rev 重置"等错误
+结论 —— `recordWarn` 在 Android 上只写 stderr（= /dev/null），dump 出来的每行
+时间戳都是 **dump 时刻**。改用实时探针（内核 `ProbeLog` → logcat）才拿到第一
+现场：键盘写入 883 之后 5ms 被一次 insets 上报写回 0。③ 怀疑"画面没更新"是
+宿主驱动问题，实测 ticker 全程在跑 —— 是"算对了没上屏"（上屏的正是被清成 0
+的那一帧）。
+
+**三条结论**：① 会通知脚本的上报测试必须在泵内调；② "画面没更新"先分清
+"没重算"与"算了没上屏"；③ 排查**时序问题**必须用带真实时间戳的实时日志，
+环形缓冲 dump 只能当"发生过什么"的清单用。
+
 ## 桌面能守住的部分（先跑它，再上真机）
 
 ```bash
@@ -203,11 +263,22 @@ go test ./gfx/mobile/      # 7+1 个用例, 纯 Go, 开发机直接跑
   实测出撕裂概率再定。（**换缓冲本身**的竞态已经处理：`gfx/android` 的 `uploadFrame` 是持锁
   做整段拷贝的，`BindFrameBuffer` 拿同一把锁换地址 ⇒ 旋转/分屏时不会出现"旧缓冲已被 JVM
   回收而引擎还在往里写"。）
-- **软键盘（IME）已接**：`GoxSurfaceView.onCreateInputConnection` 给了一个
-  `BaseInputConnection`，`commitText` → `nativeIMECommit`、`deleteSurroundingText`
+- **冷启动 insets 首报为 0**（2026-10-02 模拟器实测，像素级复现）：导航栏占位
+  （b=63）要等**下一次** insets 分发（比如弹一次键盘）才报上来 —— `nativeInit`
+  之后补的 `requestApplyInsets()` + 显式 `reportInsets(rootWindowInsets)` 拿到的
+  仍是 0。症状是启动后 `useInsets().bottom` 为 0，底部内容可能被手势条压住。
+  现场与待查项见 wb-issues 任务看板。
+- **软键盘（IME）已接，模拟器已验收**（M2，2026-10-02，见下方实测记录）：
+  `GoxSurfaceView.onCreateInputConnection` 给了一个 `BaseInputConnection`，
+  `commitText` → `nativeIMECommit`、`deleteSurroundingText`
   → `nativeKey("Backspace")`、`setComposingText` 忽略（v1 只做"结果提交"，
-  组合过程留在输入法里）。**本机未在真机验证过** —— 模拟器上无法完整验证中文
-  输入法行为，这也是看板 `rkOdiA` 仍在的原因。
+  组合过程留在输入法里）；`onCursorUpdate`/`updateCursorAnchor` 回传光标
+  位置与文本快照（**带位置参数必须先 `setMatrix`**，否则 `CursorAnchorInfo.Builder.build()`
+  抛 `IllegalArgumentException` 崩在主线程 —— 已修）。键盘高度经
+  `nativeSetKeyboard` → `gfx.ReportKeyboardHeight` 上报，脚本侧
+  `useKeyboardHeight()` 响应式读。**未验证项**：中文拼音输入法的组合行为
+  （模拟器只有 Gboard 英文环境，机制级验证覆盖了 ASCII 提交 / 候选词栏 /
+  光标同步，拼音逐键组合属 P1 逐键上报范畴）。
 - **单指触摸**：多指手势不识别，第二根手指按下即作废整个手势。
 - **density 只上报不换算**：`Display.Scale` / `pixelRatio` 有了，但 layout 的逻辑像素换算
   还没做（M1 剩余部分）。所以现在 `font={20}` 就是 20 个物理像素，在高密度屏上偏小。

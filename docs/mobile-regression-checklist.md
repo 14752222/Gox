@@ -62,6 +62,11 @@
       Android 运行时权限，见 gox sync 注入）
 - [ ] 拒绝权限后功能给出引导（openAppSettings 链路）
 - [ ] 未声明的权限不触发系统弹窗（App Store 审核红线）
+- [ ] **基线权限在清单里**（`INTERNET` + `ACCESS_NETWORK_STATE`，`config/`
+      的 `AndroidBootstrap` 铺底）：`aapt2 dump permissions <apk>` 核对。
+      缺失的症状是**全新安装启动即崩**（宿主 `registerNetworkCallback` 抛
+      `SecurityException`），2026-10-02 实测踩过。模板与手写壳三处镜像，
+      改动任一处触发本项。
 
 ### 3.5 前后台与生命周期
 - [ ] 切后台再回前台，画面恢复、事件继续响应（onAppStateChange）
@@ -131,6 +136,7 @@ gox-ios-simulator-app），可用于快速装机，但 **release 回归必须用
 
 | 日期 | 构建 commit | 包类型 | 机型（矩阵编号） | 结果 | 问题 |
 |---|---|---|---|---|---|
+| 2026-10-02 | _工作区（未打 tag）_ | debug（模拟器 x86_64 / API 34） | 模拟器，非矩阵机（M2 真机待补） | §3.1/3.2/3.3/3.4/3.7 模拟器可测项通过（详见 `app/android/README.md` M1/M2 实测记录）；中文拼音组合、真机项豁免 | 基线权限缺失启动崩（已修）；lockCanvas 单矩形脏区丢失（已修）；CursorAnchorInfo 缺 matrix 崩溃（已修） |
 | 2026-__-__ | _commit_ | release | M1 | __ 项通过 / __ 项豁免 | #issue |
 | 2026-__-__ | _commit_ | release | M2 | __ 项通过 / __ 项豁免 | #issue |
 

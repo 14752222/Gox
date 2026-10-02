@@ -220,8 +220,52 @@ const (
 // 对 Go 调用方 (后端 / 平台层) 而言, 传进来的 Viewport 就是"全量", 所以这里走
 // patchAll。脚本侧的 reportViewport 则按"实际出现了哪些键"逐字段上报 ——
 // 见 reportViewportPatch 与 jsReportViewport。
+//
+// **patchAll 的代价**: 只想报一个字段时不要用它 —— 其余字段会被按各自的零值
+// 写下去。三个"零值即合法"的字段各有一条只动自己的通道: ReportInsets (安全区)
+// / ReportKeyboardHeight (软键盘) / ReportMultiWindow (**没有**, 需要时照
+// ReportInsets 的样子加一个)。非零值可区分的字段 (WidthClass / Stage / …) 用
+// 本函数是安全的: 空串会被当成"没报"沿用旧值。
 func ReportViewport(win *Window, v Viewport) {
 	reportViewportPatch(win, v, patchAll)
+}
+
+// ReportKeyboardHeight 单独上报软键盘高度 (设备像素; 0 = 收起)。
+//
+// 为什么单独开一个入口而不是让宿主拼一个 Viewport 再调 ReportViewport: 后者是
+// patchAll 语义, 会把同一窗口先前报的 inset 一起清成 0 —— 而键盘弹起的那一次
+// 上报里 insets 通常**没变**, 宿主手里也没有那份值可填。走 patchKeyboard 掩码
+// 就只动键盘这一个字段 (见 viewportPatchMask 的注释)。
+//
+// 谁该调它: 移动端宿主 (Android 用 WindowInsets.Type.ime / getWindowVisibleDisplayFrame,
+// iOS 用键盘通知)。桌面端没有软键盘, 不需要调。
+func ReportKeyboardHeight(win *Window, h int) {
+	reportViewportPatch(win, Viewport{Keyboard: h}, patchKeyboard)
+}
+
+// ReportInsets 单独上报安全区 (insets; 设备像素)。
+//
+// 与 ReportKeyboardHeight 是同一个理由的**镜像**: ReportViewport 是 patchAll
+// 语义, 宿主"键盘弹起之后系统又分发一次 insets"时若走它, 会把刚刚报上来的键盘
+// 高度一起清成 0。
+//
+// 2026-10-02 模拟器实测的完整现场 (Android 上"键盘高(px)"永远是 0 的根因):
+//
+//	09:05:49.117  ReportKeyboardHeight 任务执行: 883
+//	09:05:49.119  text write: "键盘高(px): 0" -> "键盘高(px): 883"   ← 树里写对了
+//	09:05:49.122  viewport notify: rev=6                          ← 同一毫秒 insets 上报
+//	09:05:49.122  text write: "键盘高(px): 883" -> "键盘高(px): 0"   ← 被清回 0
+//	09:05:49.123  prop write: paddingBottom 883 -> 63
+//	09:05:49.203  show: whole                                     ← 上屏的就是这一帧
+//
+// 宿主侧的真实顺序是"先报键盘, 键盘弹起后系统还会再分发一次 insets" (见
+// MainActivity.reportInsets: reportKeyboard 在前, nativeSetInsets 在后), 而旧
+// 回归用例只覆盖了"先 insets 后键盘", 恰好绕开了这个组合 —— 所以测试是绿的、
+// 真机是坏的。新增的用例补上了这个顺序。
+//
+// 谁该调它: 移动端宿主 (Android WindowInsets / iOS safeAreaInsets / 鸿蒙)。
+func ReportInsets(win *Window, in Insets) {
+	reportViewportPatch(win, Viewport{Insets: in}, patchInsets)
 }
 
 // reportViewportPatch 是带"显式字段掩码"的上报实现。

@@ -23,7 +23,9 @@ func runSync(args []string) {
 
 重复执行不会重复追加（标记区块整体替换）。权限支持自定义用途文案:
   "permissions": [{ "name": "camera", "desc": "用于拍摄头像" }]
-默认最小权限: 未声明任何权限时仅 INTERNET。
+基线权限（无论是否声明都会注入, 宿主自身需要）:
+  INTERNET、ACCESS_NETWORK_STATE
+未声明任何逻辑权限时, 清单里就只有这两条。
 `)
 			return
 		}

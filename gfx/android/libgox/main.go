@@ -198,6 +198,10 @@ func Java_com_gox_GoxRuntime_nativeInit(e *C.JNIEnv, clazz C.jclass,
 	bindNativeHost(unsafe.Pointer(host))
 	// 软键盘开关走 GoxHost.imeShow (焦点进/出编辑框时内核调, 见 gfx/mobile)。
 	s.SetIMEHost(gfxandroid.CallIMEShow)
+	// M2: 编辑框状态回传 (光标前后文本/选区/光标矩形) 走 GoxHost.imeEditor ——
+	// 宿主据此实现 InputConnection 的文本查询与 updateCursorAnchorInfo, 输入法的
+	// 候选词窗才会贴着光标而不是盖住输入框。缺这个方法时宿主降级, 不致命。
+	s.SetIMEEditorHost(gfxandroid.CallIMEEditor)
 
 	mu.Lock()
 	surface = s
@@ -308,12 +312,17 @@ func Java_com_gox_GoxRuntime_nativeResize(e *C.JNIEnv, clazz C.jclass,
 func Java_com_gox_GoxRuntime_nativeSetInsets(e *C.JNIEnv, clazz C.jclass,
 	top C.jint, right C.jint, bottom C.jint, left C.jint) {
 
-	// 经 gfx.Post 投回 GUI 线程再报内核: ReportViewport 会同步跑脚本侧的
-	// onViewportChange 订阅回调, 事件纪律 —— JNI 回调线程绝不直接执行 JS。
+	// 经 gfx.Post 投回 GUI 线程再报内核: 上报会**同步**跑脚本侧的 onViewportChange
+	// 订阅回调, 事件纪律 —— JNI 回调线程绝不直接执行 JS。
+	//
+	// **必须是 ReportInsets, 不能用 ReportViewport**: 后者是 patchAll 语义, 而
+	// 宿主在键盘弹起后还会再分发一次 insets —— 那一次会把刚报上来的键盘高度一起
+	// 清成 0, 界面上"键盘高(px)"于是永远是 0 (2026-10-02 模拟器实测, 见
+	// gfx.ReportInsets 的注释)。
 	gfx.Post(func() {
-		gfx.ReportViewport(nil, gfx.Viewport{Insets: gfx.Insets{
+		gfx.ReportInsets(nil, gfx.Insets{
 			Top: int(top), Right: int(right), Bottom: int(bottom), Left: int(left),
-		}})
+		})
 	})
 }
 
@@ -325,6 +334,34 @@ func Java_com_gox_GoxRuntime_nativeIMECommit(e *C.JNIEnv, clazz C.jclass, text C
 	}
 	// 整批插入的语义在内核 gfx/ime.go —— 这里只投事件 (任意线程可调)。
 	s.IMECommit(goString(e, text))
+}
+
+// Java_com_gox_GoxRuntime_nativeSetKeyboard 上报软键盘高度 (设备像素, 0 = 收起)。
+//
+// 为什么要有这条通道: 引擎不是靠"窗口变小"来感知键盘的 (那要开
+// SOFT_INPUT_ADJUST_RESIZE, 而 SurfaceView 会跟着重排, 整棵树的尺寸都变) ——
+// 键盘高度是一个**环境读数**, 脚本侧用 useKeyboardHeight() 自己决定抬多少。
+// 不上报的话它恒为 0, "输入框不被键盘遮挡"根本无从实现。
+//
+// 单独一条而不是复用 nativeSetInsets: Viewport 的合并是 upsert, 而键盘弹起时
+// insets 通常没变 —— 复用会把安全区清成 0 (见 gfx.ReportKeyboardHeight)。
+//
+// 任意线程可调 (内部 gfx.Post 投回 GUI 线程再报内核)。
+//
+//export Java_com_gox_GoxRuntime_nativeSetKeyboard
+func Java_com_gox_GoxRuntime_nativeSetKeyboard(e *C.JNIEnv, clazz C.jclass, height C.jint) {
+	h := int(height)
+	// 打一条日志: 键盘高度是"界面没有被顶掉两倍/完全没让位"这类问题的第一现场,
+	// 而真机上除了 logcat 没有别的读法 (脚本侧读到的值要截图才看得见)。
+	// 只有**变化时**才会调到这里, 所以不会刷屏。
+	if h > 0 {
+		gfxandroid.Logf("软键盘弹出: 高度 %d px", h)
+	} else {
+		gfxandroid.Logf("软键盘收起")
+	}
+	gfx.Post(func() {
+		gfx.ReportKeyboardHeight(nil, h)
+	})
 }
 
 //export Java_com_gox_GoxRuntime_nativeDestroy

@@ -48,7 +48,21 @@ touchTarget；组件内部不得出现小于 48dp 且无命中扩张的可点元
 
 链路：宿主 IME（iOS 隐藏 UITextField / Android BaseInputConnection，结果提交
 制）→ `ReportViewport` → `gx/viewport` 的 `keyboardVisible` /
-`useKeyboardHeight()`。
+`useKeyboardHeight()`。键盘高度是**独立通道**（Android `nativeSetKeyboard` /
+iOS 键盘通知 → `gfx.ReportKeyboardHeight`，patchKeyboard 掩码只动键盘一个
+字段）—— 键盘弹起时 insets 通常没变，复用 `ReportViewport` 的全量语义会把
+安全区清成 0。安全区是同一个坑的**镜像**，也有独立通道 `gfx.ReportInsets`
+（patchInsets 掩码只动安全区）：Android 在键盘弹起后系统还会**再分发一次
+insets**，若那一次走 `ReportViewport`（patchAll 含 patchKeyboard）就会把刚
+报上来的键盘高度清成 0 —— 症状是页面上 `useKeyboardHeight()` 恒为 0
+（2026-10-02 模拟器实测的根因；回归 `gfx/viewport_kb_test.go` 补上了"先键盘、
+后 insets"这条真机顺序）。
+
+Android 端（M2，2026-10-02 模拟器验收）另有光标回传：`onCursorUpdate` →
+`CursorAnchorInfo`（insertion marker 位置 + 文本快照）。**宿主实现注意**：
+带位置参数必须先 `setMatrix(...)`，否则 `Builder.build()` 抛
+`IllegalArgumentException`；且必须 `setDecorFitsSystemWindows(window,false)`
+IME insets 才会分发到视图树（否则 `useKeyboardHeight()` 恒 0）。
 
 规则：
 
@@ -147,13 +161,13 @@ iconSize         = 16 | 20 | 24
 
 | 项 | 现状 | 差距 |
 |---|---|---|
-| 安全区 | 宿主上报链路已通，`useInsets()` 可用 | 无 |
-| 键盘高度 | `keyboardHeight` / `useKeyboardHeight()` 已注册 | 各宿主实测待 T24 回归矩阵覆盖 |
+| 安全区 | 宿主上报链路已通，`useInsets()` 可用 | 无（Android 模拟器实测 b=63，2026-10-02） |
+| 键盘高度 | `keyboardHeight` / `useKeyboardHeight()` 已注册；Android 模拟器实测上报到位（键盘 883px，内核回归 `gfx/viewport_kb_test.go`） | 各宿主实测待 T24 回归矩阵覆盖（iOS/鸿蒙） |
 | 断点 | `widthClass` / `isCompactWidth` / `isMediumWidth` / `isTabletLayout` 已注册（三档，600/840） | 无 |
 | 折叠屏 | 内核数据模型 + `reportPosture` 通道已通；`gx/viewport` 有 `reservedRegions()` / `hasFold()` / `layoutMode()`；Android / iOS / 鸿蒙**三端宿主均已接上报**（鸿蒙已交叉编译 + 契约测试 + assembleHap 构建通过，模拟器验收未做） | 折叠态**接续**（页面栈/滚动位置）v1 不做；鸿蒙模拟器验收待做（**口径：模拟器即可**，2026-10-02 拍板） |
 | 长按手势 | 内核无 `onLongPress` | S3 前如组件评审要求长按，先在 gfx 内核立项 |
 | 逻辑像素 | 换算靠脚本侧 `pixelRatio`（gx/device） | 内核收编 dp 单位是 P1 候选项 |
-| IME | 结果提交制 | 组合输入逐键上报属 P1 |
+| IME | 结果提交制；Android 光标/文本快照回传已接（M2，模拟器验收 2026-10-02：ASCII 提交、候选词栏、光标同步）；中文拼音组合行为模拟器无法验证 | 组合输入逐键上报属 P1 |
 
 ## 10. 验收（对齐任务验收标准）
 

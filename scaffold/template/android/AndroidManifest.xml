@@ -4,11 +4,15 @@
     <!--
       权限采用声明式注入: `gox sync` 读取 gox.json 的 permissions 字段,
       幂等地改写下面这个标记区块（整块替换, 重复执行不会重复追加）。
-      默认最小权限 —— 只声明 INTERNET, 未声明的权限一律不出现。
-      手工加的权限请放在区块外, 否则会在下次 sync 时被覆盖。
+      区块内恒有两条**基线权限**（Gox 宿主自身无条件要用, 与 gox.json 无关）:
+        INTERNET              VM 的 fetch / WebSocket
+        ACCESS_NETWORK_STATE  启动时读网络状态并注册 ConnectivityManager 回调
+                              —— 少了它 Activity.onCreate 会抛 SecurityException, 启动即崩
+      未声明的逻辑权限一律不出现。手工加的权限请放在区块外, 否则会在下次 sync 时被覆盖。
     -->
     <!--GOX:PERMISSIONS:START-->
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!--GOX:PERMISSIONS:END-->
 
     <!--

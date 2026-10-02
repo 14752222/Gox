@@ -100,7 +100,10 @@ my-app/
   `android/AndroidManifest.xml` 的 `<!--GOX:PERMISSIONS:START/END-->` 区块；
 - **iOS**: 每个逻辑权限映射为 Info.plist 的用途描述键，写进
   `ios/Info.plist` 的 `<!--GOX:USAGE:START/END-->` 区块；
-- 无论声明了什么，**Android 恒定包含 `INTERNET`**（Gox 运行时自身的最小需要）；
+- 无论声明了什么，**Android 恒定包含两条基线权限**（Gox 宿主自身无条件要用，
+  与 gox.json 无关）：`INTERNET`（VM 的 fetch / WebSocket）与
+  `ACCESS_NETWORK_STATE`（启动时读网络状态、注册 `ConnectivityManager` 回调）；
+  二者都是 normal 级权限，安装即授、不弹运行时对话框；
 - 区块内勿手工编辑 —— `gox sync` 整块替换，重复执行不会重复追加；
   手工加的权限请放在区块外。
 

@@ -124,8 +124,10 @@ func TestSyncShrinksBlock(t *testing.T) {
 	if strings.Contains(m, "CAMERA") {
 		t.Errorf("已删除的权限残留在清单里:\n%s", m)
 	}
-	if !strings.Contains(m, "INTERNET") {
-		t.Error("INTERNET 是最小权限基线, 必须始终存在")
+	for _, want := range AndroidBootstrap {
+		if !strings.Contains(m, want) {
+			t.Errorf("基线权限 %s 必须始终存在:\n%s", want, m)
+		}
 	}
 	p := readFile(t, filepath.Join(dir, "ios", "Info.plist"))
 	if strings.Contains(p, "NSCameraUsageDescription") {
@@ -157,14 +159,20 @@ func TestSyncRefusesMissingBlock(t *testing.T) {
 }
 
 func TestSyncMinimalDefault(t *testing.T) {
-	// 默认配置（零权限）: Android 只有 INTERNET, iOS 区块保持为空。
+	// 默认配置（零权限）: Android 只有基线权限（AndroidBootstrap）,
+	// 一条逻辑权限都不该出现; iOS 区块保持为空。
 	dir := syncTestDir(t)
 	if _, err := Sync(dir, Default("demo")); err != nil {
 		t.Fatal(err)
 	}
 	m := readFile(t, filepath.Join(dir, "android", "AndroidManifest.xml"))
-	if strings.Count(m, "<uses-permission") != 1 || !strings.Contains(m, "INTERNET") {
-		t.Errorf("默认权限应只有 INTERNET:\n%s", m)
+	if got := strings.Count(m, "<uses-permission"); got != len(AndroidBootstrap) {
+		t.Errorf("默认清单应有 %d 条基线权限, 实际 %d 条:\n%s", len(AndroidBootstrap), got, m)
+	}
+	for _, want := range AndroidBootstrap {
+		if !strings.Contains(m, want) {
+			t.Errorf("默认清单缺少基线权限 %s:\n%s", want, m)
+		}
 	}
 	p := readFile(t, filepath.Join(dir, "ios", "Info.plist"))
 	if strings.Contains(p, "UsageDescription") {
