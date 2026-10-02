@@ -17,6 +17,9 @@
 #   gox   本仓库构建 (核心基线, 必有)
 #   node  Node.js 同脚本基线 (Electron 主进程 = Node 运行时, 口径同构;
 #         注意这不是 Electron 完整 GUI 空壳的数据)
+#   goja  纯解释器对照系 (bench/goja 独立 module) —— gox 是解释器, 与 V8 比
+#         差的是"解释器 vs JIT"的固有差距; goja 同为纯解释器, 才是同类基线。
+#         首次需要联网拉依赖: cd bench/goja && go mod download; 构建失败自动跳过。
 #   electron  需要环境变量 ELECTRON_BIN 指向 electron 可执行文件 +
 #             scripts/bench/electron/ 目录; 无显示环境时请自行加 xvfb-run
 #   tauri     需要已构建的空壳二进制 (TAURI_BIN) —— Rust 侧构建一次,
@@ -32,11 +35,16 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUNS=3
 OUT="$ROOT/bench-results"
+
+# 本机 PATH 里的 grep 可能是坏的 (静默返回空); 优先用系统绝对路径。
+GREP=/usr/bin/grep
+[[ -x "$GREP" ]] || GREP=$(command -v grep)
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --runs) RUNS="$2"; shift 2 ;;
     --out)  OUT="$2"; shift 2 ;;
-    -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//' | head -40; exit 0 ;;
+    -h|--help) "$GREP" '^#' "$0" | sed 's/^# \{0,1\}//' | head -40; exit 0 ;;
     *) echo "未知参数 $1 (见 --help)"; exit 1 ;;
   esac
 done
@@ -61,13 +69,22 @@ run_wall() {
   echo $(( (t1 - t0) / 1000000 ))
 }
 
-# run_rss_kb <cmd...> : GNU time -v 的 Max RSS (KB); 不可用时退 0
+# run_rss_kb <cmd...> : 常驻内存峰值 (KB)。
+# 兼容两种 time: GNU `time -v` 报 "Maximum resident set size (kbytes)" (KB);
+# BSD/macOS `time -l` 报 "maximum resident set size" (bytes)。都没有时退 0。
 run_rss_kb() {
+  local out
   if [[ -x /usr/bin/time ]]; then
-    /usr/bin/time -v "$@" 2>&1 >/dev/null | grep "Maximum resident" | grep -oE '[0-9]+' | tail -1
-  else
-    echo 0
+    if /usr/bin/time -v true >/dev/null 2>&1; then
+      out=$(/usr/bin/time -v "$@" 2>&1 >/dev/null | "$GREP" "Maximum resident" | "$GREP" -oE '[0-9]+' | tail -1)
+      if [[ -n "$out" ]]; then echo "$out"; return; fi
+    fi
+    if /usr/bin/time -l true >/dev/null 2>&1; then
+      out=$(/usr/bin/time -l "$@" 2>&1 >/dev/null | "$GREP" "maximum resident set size" | "$GREP" -oE '[0-9]+' | tail -1)
+      if [[ -n "$out" ]]; then echo $(( out / 1024 )); return; fi
+    fi
   fi
+  echo 0
 }
 
 # median <n...>
@@ -77,6 +94,13 @@ median() { printf '%s\n' "$@" | sort -n | awk '{a[NR]=$1} END {print (NR%2) ? a[
 measure() {
   local stack="$1"; shift
   local s=() f=() t=() r=() v i
+  # 预热: 先把三个脚本各空跑一遍, 让二进制/依赖页缓存热起来, 消除"首个进程
+  # 冷启动"对中位数的偏置 (尤其 node 的冷启动波动很大)。
+  for i in 1 2; do
+    "$@" "$BENCH_DIR/startup_idle.js" >/dev/null 2>&1 || true
+    "$@" "$BENCH_DIR/fib28.js" >/dev/null 2>&1 || true
+    "$@" "$BENCH_DIR/timers_10k.js" >/dev/null 2>&1 || true
+  done
   for i in $(seq 1 "$RUNS"); do s+=("$(run_wall "$@" "$BENCH_DIR/startup_idle.js")"); done
   for i in $(seq 1 "$RUNS"); do f+=("$(run_wall "$@" "$BENCH_DIR/fib28.js")"); done
   for i in $(seq 1 "$RUNS"); do t+=("$(run_wall "$@" "$BENCH_DIR/timers_10k.js")"); done
@@ -102,6 +126,26 @@ else
   echo "[harness] 无 node, 跳过" >&2
 fi
 
+# goja: 纯解释器对照系 (独立 module)。构建失败 (如离线且依赖未下载) 自动跳过,
+# 不影响 gox/node 部分 —— 这正是"不联网也能跑"的要求。
+GOJA_BIN=""
+if [[ -f "$ROOT/bench/goja/go.mod" ]]; then
+  echo "[harness] 构建 goja runner (bench/goja 独立 module) ..." >&2
+  if (cd "$ROOT/bench/goja" && go build -o "$OUT/bench-goja" .) 2>"$OUT/.goja-build-err"; then
+    GOJA_BIN="$OUT/bench-goja"
+  else
+    echo "[harness] goja runner 构建失败, 跳过 goja 栈。" >&2
+    echo "[harness] 联网后执行: cd bench/goja && go mod download" >&2
+    sed 's/^/    /' "$OUT/.goja-build-err" >&2 || true
+  fi
+fi
+if [[ -n "$GOJA_BIN" ]]; then
+  echo "[harness] 测量 goja (纯解释器, 与 gox 同类) ..." >&2
+  ROWS="$ROWS$(measure goja "$GOJA_BIN")"$'\n'
+else
+  echo "[harness] 无 goja runner, 跳过" >&2
+fi
+
 if [[ -n "${ELECTRON_BIN:-}" ]]; then
   echo "[harness] 测量 electron ..." >&2
   ROWS="$ROWS$(measure electron "$ELECTRON_BIN" "$BENCH_DIR/electron")"$'\n'
@@ -114,15 +158,46 @@ fi
 STAMP=$(date -u +%Y%m%d-%H%M%S)
 JSON="$OUT/bench-$STAMP.json"
 python3 - "$JSON" <<PYEOF
-import sys, json, datetime
+import sys, json, datetime, os, platform, subprocess
 rows = []
 for line in """$ROWS""".strip().splitlines():
+    if not line.strip():
+        continue
     stack, startup, fib, timers, rss = line.split(",")
     rows.append({"stack": stack, "startup_ms": int(startup), "fib28_ms": int(fib),
                  "timers10k_ms": int(timers), "rss_kb": int(rss)})
-doc = {"generated_at": datetime.datetime.utcnow().isoformat() + "Z",
-       "runs_per_metric": $RUNS, "note": "wall time 中位数; RSS=GNU time VmHWM; node 列是 Electron 主进程同构口径",
-       "results": rows}
+
+def sh(cmd):
+    try:
+        return subprocess.check_output(cmd, shell=True, text=True, stderr=subprocess.DEVNULL).strip()
+    except Exception:
+        return ""
+
+cpu = sh("sysctl -n machdep.cpu.brand_string")
+if not cpu:
+    try:
+        with open("/proc/cpuinfo") as f:
+            for ln in f:
+                if ln.startswith("model name"):
+                    cpu = ln.split(":", 1)[1].strip(); break
+    except Exception:
+        pass
+host = {
+    "platform": platform.platform(),
+    "machine": platform.machine(),
+    "cpu": cpu,
+    "cores": os.cpu_count(),
+    "python": platform.python_version(),
+}
+doc = {
+    "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    "runs_per_metric": $RUNS,
+    "method": "每项外部 wall time 跑 $RUNS 次取中位数; RSS = 进程常驻峰值 (GNU time VmHWM / BSD time maxrss); 脚本本体零依赖",
+    "host": host,
+    "stacks": [r["stack"] for r in rows],
+    "note": "gox/node/goja 三列同源脚本; goja 是纯解释器对照系 (与 gox 同类), node 是 V8(JIT) 对照; node 列是 Electron 主进程同构口径, 非完整 GUI 空壳",
+    "results": rows,
+}
 json.dump(doc, open(sys.argv[1], "w"), ensure_ascii=False, indent=2)
 print(json.dumps(doc, ensure_ascii=False, indent=2))
 PYEOF

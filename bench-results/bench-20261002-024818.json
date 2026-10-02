@@ -1,0 +1,41 @@
+{
+  "generated_at": "2026-10-02T02:48:18.450341+00:00",
+  "runs_per_metric": 5,
+  "method": "每项外部 wall time 跑 5 次取中位数; RSS = 进程常驻峰值 (GNU time VmHWM / BSD time maxrss); 脚本本体零依赖",
+  "host": {
+    "platform": "macOS-26.6.2-arm64-arm-64bit-Mach-O",
+    "machine": "arm64",
+    "cpu": "Apple M2",
+    "cores": 8,
+    "python": "3.13.12"
+  },
+  "stacks": [
+    "gox",
+    "node",
+    "goja"
+  ],
+  "note": "gox/node/goja 三列同源脚本; goja 是纯解释器对照系 (与 gox 同类), node 是 V8(JIT) 对照; node 列是 Electron 主进程同构口径, 非完整 GUI 空壳",
+  "results": [
+    {
+      "stack": "gox",
+      "startup_ms": 11,
+      "fib28_ms": 322,
+      "timers10k_ms": 124,
+      "rss_kb": 22592
+    },
+    {
+      "stack": "node",
+      "startup_ms": 55,
+      "fib28_ms": 45,
+      "timers10k_ms": 152,
+      "rss_kb": 48432
+    },
+    {
+      "stack": "goja",
+      "startup_ms": 7,
+      "fib28_ms": 137,
+      "timers10k_ms": 121,
+      "rss_kb": 7792
+    }
+  ]
+}
