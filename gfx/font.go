@@ -84,11 +84,12 @@ func SetFontPath(paths ...string) {
 	}
 	rebuildCandidatesLocked()
 	// 已有缓存说明字体已经用过: 不重置的话新字体不会生效 (baseFont 是缓存值),
-	// 或者更糟 —— 新 face 配旧字形掩码。
+	// 或者更糟 —— 新 face 配旧字形掩码。样式轴那一层的缓存 (faceCache /
+	// 字体文件解析 / 族索引) 同样要清, 它们的键里都含着"当时有哪些字体"。
 	if baseFont != nil || len(faceBySize) > 0 {
 		baseFont = nil
 		faceBySize = map[int]font.Face{}
-		glyphLRU.reset()
+		resetFontCaches()
 	}
 }
 
@@ -384,9 +385,17 @@ type glyphEntry struct {
 	offX    int          // 掩码绘制偏移 (dr.Min 相对 dot)
 	offY    int
 	advance int // 前进宽度 (px)
+
+	// 合成标记 (§四 文本域缺口): 该族没有真实粗体/斜体面时, 由 blitGlyph
+	// 用"再压一遍" / "按基线剪切"近似出来。放在 entry 上而不是每次查表,
+	// 是因为它在同一次 (族, 轴, 字号) 请求里恒定, 而 blitGlyph 是逐字形
+	// 调用的热路径 —— 热路径上不该再查一次索引。
+	synthB bool
+	synthI bool
 }
 
-// glyphCache 是 rune → glyph 的 LRU 缓存 (单线程 GUI 访问, 锁仅为防御)。
+// glyphCache 是 "面 × 字号 × rune" → glyph 的 LRU 缓存 (单线程 GUI 访问,
+// 锁仅为防御)。
 type glyphCache struct {
 	mu    sync.Mutex
 	cap   int
@@ -396,19 +405,28 @@ type glyphCache struct {
 	hits, misses, evicts int
 }
 
+// glyphKey 是字形缓存的键。
+//
+// face 必须是"**请求的**面"而不是"最终用的面": 合成粗体与真粗体是两个请求,
+// 若两者恰好都解析到同一个文件 (族里没有粗体面 ⇒ 合成请求用正体面), 只按
+// 面去键就会让真粗体与合成粗体共用同一个掩码 —— 表现是"设了 bold 有时有
+// 时没有", 随渲染顺序漂移。所以键里带上请求的两个轴 (合成与否由
+// (face, bold, italic) 唯一决定, 见 faceForStyle)。
 type glyphKey struct {
-	size int
-	r    rune
+	face   int
+	bold   bool
+	italic bool
+	size   int
+	r      rune
 }
 
 func newGlyphCache(capacity int) *glyphCache {
 	return &glyphCache{cap: capacity, entry: map[glyphKey]*glyphEntry{}}
 }
 
-func (c *glyphCache) get(size int, r rune) *glyphEntry {
+func (c *glyphCache) get(k glyphKey) *glyphEntry {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	k := glyphKey{size, r}
 	if e, ok := c.entry[k]; ok {
 		c.hits++
 		return e
@@ -417,10 +435,9 @@ func (c *glyphCache) get(size int, r rune) *glyphEntry {
 	return nil
 }
 
-func (c *glyphCache) put(size int, r rune, e *glyphEntry) {
+func (c *glyphCache) put(k glyphKey, e *glyphEntry) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	k := glyphKey{size, r}
 	if _, exists := c.entry[k]; exists {
 		return
 	}
@@ -452,26 +469,61 @@ func (c *glyphCache) stats() (size, cap, hits, misses, evicts int) {
 	return len(c.entry), c.cap, c.hits, c.misses, c.evicts
 }
 
-// glyph 渲染 (或取缓存) 一个字符: 以 dot=(0,0) 调 face.Glyph,
-// 缓存掩码与偏移, 绘制时平移。
-func glyph(size int, r rune) (*glyphEntry, error) {
-	if e := glyphLRU.get(size, r); e != nil {
-		return e, nil
-	}
-	face, err := fontFace(size)
+// glyphFor 渲染 (或取缓存) 一个字符: 以 dot=(0,0) 调 face.Glyph, 缓存掩码
+// 与偏移, 绘制时平移。
+//
+// 缺字回退 (§四 文本域缺口): 请求的族里没有这个字符时退回**默认字体**再试
+// 一次 —— 这是"字体族"这个功能最容易被忽略的一半。选了 Menlo 之后中文全变
+// 豆腐块, 比不做字体族还糟; 而字体族本来就不该改变"覆盖范围", 只该改变
+// "字形风格"。
+func glyphFor(st TextStyle, r rune) (*glyphEntry, error) {
+	rf, err := faceForStyle(st)
 	if err != nil {
 		return nil, err
 	}
-	dr, mask, _, advance, ok := face.Glyph(fixed.P(0, 0), r)
+	k := glyphKey{face: rf.id, bold: st.Bold, italic: st.Italic, size: st.Size, r: r}
+	if e := glyphLRU.get(k); e != nil {
+		return e, nil
+	}
+	e, err := rasterizeGlyph(rf, st.Size, r)
+	if err != nil {
+		return nil, err
+	}
+	// 合成标记必须**落到 entry 上**才起作用: 真正画的时候 (blitGlyph) 只看
+	// entry, 手上没有 resolvedFace —— 少这一步的症状是"设了 bold 完全没反应"
+	// (而且是静默的: 形状/度量全对, 只是不粗)。
+	e.synthB, e.synthI = rf.synthB, rf.synthI
+	// 缺字回退: 只在"请求的不是默认字体"时才多试一次 —— 默认字体自己缺字
+	// 就是真缺字, 再试一次是白付出的代价 (而它是热路径)。
+	if e.mask == nil && !rf.isBase {
+		if base, err := baseFaceFor(st); err == nil {
+			if be, err := rasterizeGlyph(base, st.Size, r); err == nil && be.mask != nil {
+				// 合成标记跟着**请求**走: 回退只是换字形, 粗斜体意图不变。
+				be.synthB, be.synthI = rf.synthB, rf.synthI
+				e = be
+			}
+		}
+	}
+	if e.mask == nil {
+		e.synthB, e.synthI = false, false // 没掩码就没有"合成"可言
+	}
+	glyphLRU.put(k, e)
+	return e, nil
+}
+
+// rasterizeGlyph 用给定面光栅化一个字形 (不做缺字回退)。
+func rasterizeGlyph(rf resolvedFace, size int, r rune) (*glyphEntry, error) {
+	dr, mask, _, advance, ok := rf.face.Glyph(fixed.P(0, 0), r)
 	if !ok {
-		return &glyphEntry{advance: size / 2}, nil // 缺字形: 占位宽度
+		// 缺字形: 只记前进宽度 (占位), 不回退 —— 回退由调用方决定
+		return &glyphEntry{advance: size / 2}, nil
 	}
 	alpha, _ := mask.(*image.Alpha)
 	if alpha == nil {
 		// sfnt 的掩码总是 *image.Alpha; 其他实现回退为无掩码
 		return &glyphEntry{advance: advance.Ceil()}, nil
 	}
-	e := &glyphEntry{
+	return &glyphEntry{
 		// **必须深拷贝**: face.Glyph 返回的 *image.Alpha 是 face 自己的字段,
 		// 每次调用都复写同一块 Pix (见 cloneAlpha 的说明)。直接缓存这个指针
 		// 会让所有 rune 共享"最后一次光栅化"的结果。
@@ -479,9 +531,7 @@ func glyph(size int, r rune) (*glyphEntry, error) {
 		offX:    dr.Min.X,
 		offY:    dr.Min.Y,
 		advance: advance.Ceil(),
-	}
-	glyphLRU.put(size, r, e)
-	return e, nil
+	}, nil
 }
 
 // cloneAlpha 深拷贝一个 glyph 掩码。
@@ -534,20 +584,19 @@ func textAscent(size int) int {
 	return a
 }
 
+// ===== 度量 / 换行: 老入口 (只要字号) =====
+//
+// 下面这一组是"只传字号"的写法, 现在全部转调 textstyle.go 的 styled 版本
+// (§四 文本域缺口)。保留它们而不是把所有调用点改成传 TextStyle, 是因为
+// 绝大多数调用点是内置组件的自绘 (按钮标签、菜单项、分页页码…), 它们本来
+// 就只用得上字号 —— 让 60 处都去构造一个 TextStyle 只会把噪声搬个地方。
+//
+// 语义上它们等价于 TextStyle{Size: size}: 无族名 (走默认字体)、不合成粗斜、
+// 自动行高、零字距 —— 与加样式轴之前**逐像素一致**, 既有像素断言不受影响。
+
 // MeasureText 测量单行文本 (像素)。h 为行高 (含上下余量)。
 func MeasureText(text string, size int) (w, h int) {
-	if size < 8 {
-		size = 8
-	}
-	for _, r := range text {
-		e, err := glyph(size, r)
-		if err != nil {
-			return 0, 0
-		}
-		w += e.advance
-	}
-	h = size + size/4 // 近似行高 (ascent+descent 简化)
-	return w, h
+	return MeasureTextStyled(text, TextStyle{Size: size})
 }
 
 // ===== 自动换行 (P2-6) =====
@@ -555,158 +604,76 @@ func MeasureText(text string, size int) (w, h int) {
 // lineHeight 返回字号对应的行高。与 MeasureText 的 h 同口径 —— 多行文本的
 // 总高就是 行数 × lineHeight, 别处不要另算一套。
 func lineHeight(size int) int {
-	if size < 8 {
-		size = 8
-	}
-	return size + size/4
+	return lineHeightStyled(TextStyle{Size: size})
 }
 
 // runeAdvance 返回单个字符的前进宽度; 取不到字形时退化为半个字号宽
 // (与 glyph 的缺字形占位一致), 保证换行计算永远有正数可用。
 func runeAdvance(size int, r rune) int {
-	if r == '\t' {
-		// 制表符没有字形: 按 4 个空格算 (与终端习惯一致)
-		return 4 * runeAdvance(size, ' ')
-	}
-	e, err := glyph(size, r)
-	if err != nil || e.advance <= 0 {
-		return size / 2
-	}
-	return e.advance
+	return runeAdvanceStyled(TextStyle{Size: size}, r)
 }
 
 // runeWidth 返回字符串在给定字号下的像素宽度 (逐 rune 累加 advance)。
 func runeWidth(text string, size int) int {
-	w := 0
-	for _, r := range text {
-		w += runeAdvance(size, r)
-	}
-	return w
+	return runeWidthStyled(text, TextStyle{Size: size})
 }
 
 // ellipsisMark 是超行截断用的省略号。用三个点而不是 "…": 字体候选里
 // 微软雅黑有 U+2026, 但宋体/Segoe 的度量差异会让最后一行宽度抖动。
 const ellipsisMark = "..."
 
-// ellipsize 把一行裁到 maxWidth 内并补省略号: 从尾部逐个字符回退, 直到
-// "剩余内容 + ..." 放得下为止。maxWidth <= 0 (无约束) 时直接补后缀。
+// ellipsize 把一行裁到 maxWidth 内并补省略号 (算法见 ellipsizeStyled)。
 func ellipsize(line string, size, maxWidth int) string {
-	if maxWidth <= 0 {
-		return line + ellipsisMark
-	}
-	if runeWidth(line, size)+runeWidth(ellipsisMark, size) <= maxWidth {
-		return line + ellipsisMark
-	}
-	markW := runeWidth(ellipsisMark, size)
-	rs := []rune(line)
-	used := 0
-	for len(rs) > 0 {
-		adv := runeAdvance(size, rs[len(rs)-1])
-		if used+markW+adv > maxWidth {
-			break
-		}
-		used += adv
-		rs = rs[:len(rs)-1]
-	}
-	return string(rs) + ellipsisMark
+	return ellipsizeStyled(line, TextStyle{Size: size}, maxWidth)
 }
 
-// wrapText 把文本按 maxWidth 切成多行 (P2-6 的核心):
-//   - 显式 '\n' 强制换行, 连续换行保留空行;
-//   - 其余贪心逐 rune 累加 advance, 若加上下一个字符会超宽就折行 ——
-//     中西文一视同仁 (CJK 字符 advance 约等于字号, 自动按字折行);
-//   - maxWidth <= 0 表示"没有宽度约束": 只按 '\n' 切, 不折行;
-//   - 单字符本身就宽于 maxWidth 时让它独占一行 —— 否则内层无法收尾,
-//     maxWidth 比一个汉字还窄时会死循环;
-//   - maxLines > 0 时只保留前 maxLines 行, 末行补 "..." 并裁到放得下。
-//
-// 返回值至少一行 (空串文本也会得到 [""]), 调用方不必再判空。
+// wrapText 把文本按 maxWidth 切成多行 (算法见 wrapTextStyled)。
 func wrapText(text string, size, maxWidth, maxLines int) []string {
-	if size < 8 {
-		size = 8
-	}
-	var lines []string
-	for _, para := range strings.Split(text, "\n") {
-		if maxWidth <= 0 {
-			lines = append(lines, para)
-			continue
-		}
-		cur := make([]rune, 0, 32)
-		curW := 0
-		for _, r := range para {
-			adv := runeAdvance(size, r)
-			if curW > 0 && curW+adv > maxWidth {
-				lines = append(lines, string(cur))
-				cur = cur[:0]
-				curW = 0
-			}
-			cur = append(cur, r)
-			curW += adv
-		}
-		lines = append(lines, string(cur))
-	}
-	if len(lines) == 0 {
-		lines = []string{""}
-	}
-	if maxLines > 0 && len(lines) > maxLines {
-		lines = lines[:maxLines]
-		lines[maxLines-1] = ellipsize(lines[maxLines-1], size, maxWidth)
-	}
-	return lines
+	return wrapTextStyled(text, TextStyle{Size: size}, maxWidth, maxLines)
 }
 
 // MeasureTextMulti 多行测量: 宽 = 最长行, 高 = 行数 × 行高。
 // maxWidth <= 0 时按 '\n' 分行, maxLines > 0 时按省略号截断口径测量
 // (与 wrapText 完全一致, 所以布局尺寸和绘制结果不会打架)。
 func MeasureTextMulti(text string, size, maxWidth, maxLines int) (w, h int) {
-	if size < 8 {
-		size = 8
-	}
-	lines := wrapText(text, size, maxWidth, maxLines)
-	for _, ln := range lines {
-		if lw := runeWidth(ln, size); lw > w {
-			w = lw
-		}
-	}
-	return w, len(lines) * lineHeight(size)
+	return MeasureTextMultiStyled(text, TextStyle{Size: size}, maxWidth, maxLines)
 }
 
 // DrawText 在 img 的 (x,y) (左上角) 画单行文本, 限制在 clip 矩形内;
 // maxWidth > 0 时超出截断 (v1: 硬截断, 不加省略号)。
-// 返回实际绘制的宽度。
+// 返回实际绘制的宽度。样式版见 DrawTextStyled。
 func DrawText(img *image.RGBA, clip image.Rectangle, text string, x, y, size int, c color.RGBA, maxWidth int) int {
-	if size < 8 {
-		size = 8
-	}
-	// 子树不透明度 (P3-2): 文字走的是"字形覆盖度当 alpha"的混合 (见 blitGlyph,
-	// 只用 c.R/G/B), 所以这里不能像 FillRect 那样改 c.A —— 把淡出因子
-	// 编码进 alpha 通道传下去, blitGlyph 会乘到覆盖度上。
-	c = applyFade(c)
-	ascent := textAscent(size)
-	dotY := y + ascent
-	drawn := 0
-	for _, r := range text {
-		e, err := glyph(size, r)
-		if err != nil {
-			return drawn
-		}
-		if maxWidth > 0 && drawn+e.advance > maxWidth {
-			break
-		}
-		drawn += e.advance
-		if e.mask != nil {
-			blitGlyph(img, clip, e, x+e.offX, dotY+e.offY, c)
-		}
-		x += e.advance
-	}
-	return drawn
+	return DrawTextStyled(img, clip, text, x, y, TextStyle{Size: size}, c, maxWidth)
 }
+
+// italicSlopeNum / italicSlopeDen 是合成斜体的剪切斜率 (≈ tan 12°, 与大多数
+// 真斜体的倾斜角一致)。写成整数比而不是浮点: 每个字形行都要算一次偏移,
+// 而这是逐像素热路径。
+const (
+	italicSlopeNum = 21
+	italicSlopeDen = 100
+)
 
 // blitGlyph 把 glyph 掩码按颜色 alpha 混合写入 img (clip 裁剪)。
 //
+// baseY 是**基线的行号** (不是掩码顶边): 合成斜体要绕基线剪切 —— 字底钉住、
+// 字顶向右倾, 这才是 italic; 绕掩码顶边剪的观感是"整个字被斜着推出去",
+// 长字符串上尤其明显。
+//
 // 淡出 (P3-2) 的接法是"c.A 当额外覆盖度因子": 调用方 (DrawText) 已经
 // 把不透明度折进了 c.A, 这里再乘一次就得到 final alpha = 覆盖度 × 不透明度。
-func blitGlyph(img *image.RGBA, clip image.Rectangle, e *glyphEntry, dx, dy int, c color.RGBA) {
+func blitGlyph(img *image.RGBA, clip image.Rectangle, e *glyphEntry, dx, dy, baseY int, c color.RGBA) {
+	blitMask(img, clip, e, dx, dy, baseY, c)
+	if e.synthB {
+		// 合成粗体: 往右再压一遍 (1px 的横向涂抹)。它是**近似** —— 真粗体
+		// 是重新设计的字重 (笔画对比、字面宽度都不同), 这里只求"看起来更重"。
+		// 1px 是刻意的: 再宽会糊掉小字号 (12px 的中文一 smear 就成一团)。
+		blitMask(img, clip, e, dx+1, dy, baseY, c)
+	}
+}
+
+// blitMask 是单次掩码混合 (合成粗体就是同一份掩码压两遍)。
+func blitMask(img *image.RGBA, clip image.Rectangle, e *glyphEntry, dx, dy, baseY int, c color.RGBA) {
 	fade := uint32(c.A)
 	b := e.mask.Bounds()
 	for my := b.Min.Y; my < b.Max.Y; my++ {
@@ -714,8 +681,13 @@ func blitGlyph(img *image.RGBA, clip image.Rectangle, e *glyphEntry, dx, dy int,
 		if iy < clip.Min.Y || iy >= clip.Max.Y || iy < img.Rect.Min.Y || iy >= img.Rect.Max.Y {
 			continue
 		}
+		// 合成斜体: 离基线越高右移越多, 基线及以下不动。
+		shift := 0
+		if e.synthI {
+			shift = (baseY - iy) * italicSlopeNum / italicSlopeDen
+		}
 		for mx := b.Min.X; mx < b.Max.X; mx++ {
-			ix := dx + mx - b.Min.X
+			ix := dx + mx - b.Min.X + shift
 			if ix < clip.Min.X || ix >= clip.Max.X || ix < img.Rect.Min.X || ix >= img.Rect.Max.X {
 				continue
 			}

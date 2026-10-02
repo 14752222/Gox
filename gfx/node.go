@@ -130,6 +130,20 @@ type GuiNode struct {
 	caret     int
 	caretLine int
 
+	// 选区 (P2-6b 续): anchor 是"不动的那一头", caret 是"跟着走的那一头";
+	// active 表示当前确实存在选区 (两点重合 = 没有选区, 与浏览器一致)。
+	// 与 caret 同一套口径 (逻辑行, 列), 所以单行 input 的 anchorLine 恒为 0。
+	selAnchorLine int
+	selAnchorCol  int
+	selActive     bool
+
+	// taAimX / taAimSet 是 ↑↓ 的**期望像素横坐标**: 软换行之后"第几列"在
+	// 不同视觉行里对应的 x 并不相同 (比例字体), 按列号上下走会让光标左右
+	// 乱跳。一次连续的上下移动期间锁定同一个 aimX, 一旦左右移动或编辑就
+	// 失效 (-1 / false) —— 让下一次上下重新以当前位置为准。
+	taAimX   int
+	taAimSet bool
+
 	// 滚动状态 (P2-5): offsetY/offsetX 是当前纵横偏移, contentH/contentW 是
 	// 上一次布局测出的内容总尺寸 (都由布局/滚轮/拖拽维护, 不来自 props)。
 	// textarea (P2-6) 只用 offsetY 做内部纵向滚动 (行数直接由 value 数出来,
@@ -732,6 +746,9 @@ func disposeNode(n *GuiNode) {
 	n.focused = false
 	n.caret = 0
 	n.caretLine = 0
+	n.clearSel()
+	n.taAimSet = false
+	n.taAimX = 0
 	// 滚动状态同样复位 (偏移属于"这一棵子树自己的视图状态")
 	n.offsetY = 0
 	n.offsetX = 0

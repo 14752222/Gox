@@ -160,8 +160,12 @@ func TestMoveDegradesWhenBackendUnsupported(t *testing.T) {
 	t.Cleanup(resetScreenStateForTest)
 
 	d1, _ := twoDisplays()
-	s := newFakeSurface() // 只实现 Surface, 没有几何可选能力
-	s.w, s.h = 300, 200
+	// bareSurface 只实现 Surface 本体, **没有任何**几何可选能力 (windowMover /
+	// windowBoundsProvider / windowManager 全部落空) —— 正是"后端不支持"的替身。
+	//
+	// 合流备注 (2026-10-02): 这里原来用 newFakeSurface, 但合流后它无条件实现
+	// 了那几个记录型能力 (见 helpers_test.go 的说明), 已经当不了"不支持"的替身。
+	s := &bareSurface{}
 	f := &geoFactory{surf: s, disps: []Display{d1}, of: map[Surface]string{s: "D1"}}
 	win := mountWithFactory(t, f, WindowConfig{Title: "t", Width: 300, Height: 200})
 

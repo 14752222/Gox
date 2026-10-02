@@ -173,6 +173,7 @@ const (
 	nsModifierShift         = 1 << 17
 	nsModifierControl       = 1 << 18
 	nsModifierAlternate     = 1 << 19
+	nsModifierCommand       = 1 << 20
 	nsRunDefaultMode        = "kCFRunLoopDefaultMode" // NSDefaultRunLoopMode 的字符串值
 	clipUTType              = "public.utf8-plain-text"
 )
@@ -275,6 +276,7 @@ func init() {
 		[]objc.MethodDef{
 			{Cmd: objc.RegisterName("windowWillClose:"), Fn: impWindowWillClose},
 			{Cmd: objc.RegisterName("windowDidResize:"), Fn: impWindowDidResize},
+			{Cmd: objc.RegisterName("windowDidMove:"), Fn: impWindowDidMove},
 			{Cmd: objc.RegisterName("windowDidResignKey:"), Fn: impWindowResignKey},
 		})
 	if err != nil {
@@ -331,6 +333,10 @@ func impRightMouseUp(self objc.ID, cmd objc.SEL, ev objc.ID) uintptr {
 
 func impMouseMoved(self objc.ID, cmd objc.SEL, ev objc.ID) uintptr {
 	if s := surfaceOf(self); s != nil {
+		// 重申光标 (§四 窗口/系统缺口): AppKit 会在光标跨视图边界/切换应用
+		// 时把它复位成箭头, 只在形状变化时设一次是留不住的 —— 对应 win32
+		// 的 WM_SETCURSOR 分支 (那边是系统每次问, 这边是我们每次给)。
+		s.reapplyCursor()
 		x, y := pointInView(self, ev)
 		s.postDevice(gfx.Event{Kind: gfx.EventMouseMove, X: int(x), Y: int(y)})
 	}
@@ -409,6 +415,16 @@ func impWindowDidResize(self objc.ID, cmd objc.SEL, note objc.ID) uintptr {
 	return 0
 }
 
+// impWindowDidMove 窗口被移动 → 投 EventMove (与 win32 的 WM_MOVE 同一地位)。
+// delegate 方法只转发, 判定与坐标换算在 onWindowDidMove 里 —— 与建窗/关闭/
+// 改尺寸三条路径保持同一分工。
+func impWindowDidMove(self objc.ID, cmd objc.SEL, note objc.ID) uintptr {
+	if s := surfaceOf(self); s != nil {
+		s.onWindowDidMove()
+	}
+	return 0
+}
+
 func impWindowResignKey(self objc.ID, cmd objc.SEL, note objc.ID) uintptr {
 	if s := surfaceOf(self); s != nil {
 		// 窗口失活: 清悬停态 (与 win32 失焦 → MouseLeave 同思路)
@@ -452,6 +468,19 @@ type surface struct {
 	closed bool
 	w, h   int // 客户区尺寸, 设备像素 (与 Size()/EventResize 同一口径)
 	scale  float64
+
+	// 光标形状状态 (§四 窗口/系统缺口, 见 window.go): cursor 是当前
+	// NSCursor 句柄, cursorUnset 标记"当前形状没有对应光标"(含 "none"),
+	// 此时不再重申, 交给 AppKit 缺省箭头。
+	cursor      objc.ID
+	cursorUnset bool
+
+	// lastPosX/lastPosY/posKnown 是 EventMove 的去重账 (见 window.go 的
+	// onWindowDidMove): AppKit 拖动期间连续发 windowDidMove, 位置没变的不该
+	// 惊动脚本。placing 标记"还在建窗期"—— 那期间的移动只记基线不投事件。
+	lastPosX, lastPosY int
+	posKnown           bool
+	placing            bool
 }
 
 func newSurface(cfg gfx.WindowConfig) (gfx.Surface, error) {
@@ -476,6 +505,11 @@ func newSurface(cfg gfx.WindowConfig) (gfx.Surface, error) {
 	ptW, ptH := float64(w)/scale, float64(h)/scale
 
 	win := objc.ID(objc.GetClass("NSWindow")).Send(selAlloc)
+	// 内容区尺寸用点。**位置不在这里设**: initWithContentRect: 收的是内容区
+	// 矩形, 而 gfx 的位置口径是**外框左上角** (与 win32 的 SetWindowPos /
+	// GetWindowRect 一致) —— 两者差一条标题栏高度, 而标题栏多高只有建好
+	// 窗口才知道 (不该硬编码)。所以位置留到窗口存在之后走 MoveTo
+	// (见下方 cfg.HasPos 分支), 与"之后移动"共用同一段换算。
 	win = win.Send(selInitWithContent,
 		nsMakeRect(0, 0, ptW, ptH),
 		uintptr(nsStyleTitled|nsStyleClosable|nsStyleMiniaturizable|nsStyleResizable),
@@ -500,6 +534,9 @@ func newSurface(cfg gfx.WindowConfig) (gfx.Surface, error) {
 		// IME 缺省关闭: 焦点落进 input/textarea 时内核经 SetIMEEnabled(true)
 		// 打开 (render.go 的 setFocus)。在编辑框获焦之前, 键盘永远直入。
 		imeEnabled: false,
+		// 建窗期的 windowDidMove (initWithContentRect: / center 各一次)
+		// 不算移动, 见 onWindowDidMove。
+		placing: true,
 	}
 	// 注册表: view 与 delegate 两个 ObjC 身份都映射到 s (IMP 回调经
 	// surfaceOf 查回); close 时解除。
@@ -526,6 +563,11 @@ func newSurface(cfg gfx.WindowConfig) (gfx.Surface, error) {
 
 	s.allocBackbuffer(w, h)
 
+	// 合流备注 (2026-10-02): 这里原本还有一段 §四 的预落点
+	// (`if cfg.HasPos { s.MoveTo(cfg.X, cfg.Y) }`)。它与下面 M4 的
+	// ResolveWindowPlacement 是两套位置口径 (前者吃设备像素、自己除 scale,
+	// 后者吃"点"、由 gfx 层统一换算), 并存会让窗口先按一套落一次再按另一套
+	// 覆盖。统一保留 M4 的一套, 位置只在这下面一处决定。
 	win.Send(selMakeKeyAndOrder, objc.ID(0))
 	// 位置: 显式指定 (WindowConfig.X/Y/Display) 时按目标屏放置, 否则居中。
 	// ResolveWindowPlacement 返回的坐标单位是"点" (cocoa 的 PosInPoints), 正好
@@ -538,6 +580,8 @@ func newSurface(cfg gfx.WindowConfig) (gfx.Surface, error) {
 		win.Send(selCenter)
 	}
 	app.Send(selActivateIgnoring, true)
+	// 位置到此落地: 记基线并退出建窗期, 之后的 windowDidMove 才是脚本要听的。
+	s.finishPlacement()
 	return s, nil
 }
 
@@ -871,9 +915,13 @@ func (s *surface) sendKeyEvent(ev objc.ID, kind gfx.EventKind) {
 		key = keyFromCharacters(ev)
 	}
 	s.trySend(gfx.Event{
-		Kind:  kind,
-		Key:   key,
-		Ctrl:  flags&nsModifierControl != 0,
+		Kind: kind,
+		Key:  key,
+		// Cmd 与 Ctrl 都归一到 gfx 的 Ctrl: 前者是 macOS 的主修饰键 (Cmd+C
+		// 才是复制), 后者是 Windows/Linux 的。不归一的话, 所有带修饰键的
+		// 便捷功能 (复制/粘贴/快捷键表) 在 macOS 上全是死键 —— 而
+		// gfx.Event 只有一个 Ctrl 字段, 归一是唯一能同时支持两端的位置。
+		Ctrl:  flags&(nsModifierControl|nsModifierCommand) != 0,
 		Shift: flags&nsModifierShift != 0,
 		Alt:   flags&nsModifierAlternate != 0,
 	})

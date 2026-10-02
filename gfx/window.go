@@ -42,6 +42,16 @@ type Window struct {
 	mu    sync.Mutex
 	obj   *object.Object // 惰性构造的 JS 对象 (同一窗口复用同一个对象)
 	title string         // 最近一次设置的标题 (后端不支持时 title() 也能读回)
+
+	// 窗口管理状态 (§四 窗口/系统缺口, 与 title 同一手法): 后端不支持时
+	// 句柄自己记得住, 于是"设置-读回"在任何后端上都是一致的 —— 脚本不必
+	// 探测平台能力 (canIUse 是给"要不要用"用的, 不是给"读回自己刚设的值"用的)。
+	level      string // "" / "normal" / "top" / "bottom"
+	fullscreen bool
+	resizable  bool // 缺省 true (配置里用 NoResize 表达 false)
+	hasResize  bool // 是否用户显式设过 resizable
+	cursor     string
+	curSet     bool
 }
 
 // windowHandles 是"窗口号 → 句柄"的注册表 (M4 gx/screen 的 windows() 用它
@@ -85,9 +95,49 @@ func unregisterWindowHandle(id int) {
 // windowController 是 Surface 的**可选能力**: 运行期改标题 / 改客户区尺寸
 // (与 capturer / nativeDialogHost / imeController 同一模式: 不扩 Surface
 // 接口, 类型断言落空即静默降级 no-op —— 改不了标题不该让应用崩)。
+//
+// 这一组与下面 windowManager 分开是**刻意的**: 前者的平台实现差异极小
+// (每个后端都改得了标题与尺寸), 后者差异极大 (X11 的层级要 WM 配合、
+// 移动端根本没有"窗口位置")。分成两个接口, 后端可以只实现其中一组,
+// 两条断言各自落空各自降级, 不必为了补一个能力被迫实现一堆空方法。
 type windowController interface {
 	SetTitle(title string)
 	ResizeClient(w, h int)
+}
+
+// windowManager 是 Surface 的**可选能力**: 窗口层级 / 尺寸约束 / 全屏 / 激活。
+//
+// 方法名必须**导出**: win32 / x11 / cocoa 是另外的包 (它们 import gfx 来
+// 实现 gfx.Surface), Go 不允许跨包实现未导出方法 —— 与 capturer 同款理由。
+//
+// **没有 MoveTo**: 窗口位移归 windowMover (见 window_move.go) —— 那边的方法
+// 返回 error 且吃"虚拟桌面绝对坐标", 这里的方法都不返回错误。同一个后端类型
+// 上不可能有两个同名 MoveTo, 所以位移只有一处定义; 位置口径也随之一处定义
+// (工作区相对 + 设备像素, 对脚本可见)。
+type windowManager interface {
+	// SetLevel 设层级: "normal" / "top" / "bottom"。
+	SetLevel(level string)
+	// SetSizeConstraints 设用户缩放时的尺寸钳位 (0 = 该方向不约束)。
+	SetSizeConstraints(minW, minH, maxW, maxH int)
+	// SetResizable 开关用户拖边框改尺寸。
+	SetResizable(on bool)
+	// SetFullscreen 进出全屏。
+	SetFullscreen(on bool)
+	// Activate 把窗口带到前台 (模态被挡时点父窗口要把子窗口顶上来)。
+	Activate()
+}
+
+// cursorHost 是 Surface 的**可选能力**: 设置鼠标光标形状 (见 cursor.go
+// 的形状表)。不支持的后端静默 no-op —— 光标形状纯属观感, 拿不到就算了。
+type cursorHost interface {
+	SetCursor(shape string)
+}
+
+// boundsProvider 是 Surface 的**可选能力**: 读窗口外框在屏幕坐标系里的位置
+// 与尺寸。有了它 bounds() 才是真读数; 没有时退化为"最近一次 moveTo /
+// EventMove 记下的值 + Surface.Size() 当尺寸"。
+type boundsProvider interface {
+	Bounds() (x, y, w, h int)
 }
 
 // App 返回底层 app (Go 侧持有句柄时用; 测试用它断言窗口状态)。
@@ -179,6 +229,138 @@ func (w *Window) Surface() Surface {
 	return w.a.surface
 }
 
+// ===== 窗口管理 (层级 / 尺寸约束 / 全屏 / 激活) =====
+//
+// 合流备注 (2026-10-02): 本段原本还带一套 MoveTo/Center/Bounds (屏幕绝对
+// 坐标 + w.a.posX 缓存) 的窗口几何实现, 与 window_move.go 的 M4 那套
+// (工作区相对 + 多屏 displayId/scale + 后端 WindowBounds 真读数) 是**两套
+// 并存的坐标口径**。合流时保留 M4 那套 (gx/screen 与多屏协同都依赖它),
+// 本段只留坐标无关的能力 —— 位置相关的三个方法已删, 别再在这里补回来。
+
+// manager 取本窗口后端的管理能力 (不支持时为 nil)。
+func (w *Window) manager() windowManager {
+	if m, ok := w.Surface().(windowManager); ok {
+		return m
+	}
+	return nil
+}
+
+// SetLevel 设窗口层级 ("normal" / "top" / "bottom" 之外的取值归一为 normal)。
+func (w *Window) SetLevel(level string) {
+	if w == nil {
+		return
+	}
+	lv := windowLevel(level)
+	w.mu.Lock()
+	w.level = lv
+	w.mu.Unlock()
+	if m := w.manager(); m != nil {
+		m.SetLevel(lv)
+	}
+}
+
+// Level 返回最近一次设置的层级 ("normal" / "top" / "bottom")。
+func (w *Window) Level() string {
+	if w == nil {
+		return "normal"
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.level == "" {
+		return "normal"
+	}
+	return w.level
+}
+
+// SetSizeConstraints 设用户缩放窗口时的尺寸钳位 (0 = 该方向不约束)。
+// 负数按 0 处理 —— "负的宽度上限"没有任何合理语义, 静默归一比让后端去
+// 处理越界值安全 (win32 的 MINMAXINFO 收到负值会得到"拖不动"的怪窗口)。
+func (w *Window) SetSizeConstraints(minW, minH, maxW, maxH int) {
+	if w == nil {
+		return
+	}
+	clamp := func(v int) int {
+		if v < 0 {
+			return 0
+		}
+		return v
+	}
+	minW, minH, maxW, maxH = clamp(minW), clamp(minH), clamp(maxW), clamp(maxH)
+	if m := w.manager(); m != nil {
+		m.SetSizeConstraints(minW, minH, maxW, maxH)
+	}
+}
+
+// SetFullscreen 进出全屏。
+func (w *Window) SetFullscreen(on bool) {
+	if w == nil {
+		return
+	}
+	w.mu.Lock()
+	w.fullscreen = on
+	w.mu.Unlock()
+	if m := w.manager(); m != nil {
+		m.SetFullscreen(on)
+	}
+}
+
+// IsFullscreen 返回最近一次设置的全屏态。
+func (w *Window) IsFullscreen() bool {
+	if w == nil {
+		return false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.fullscreen
+}
+
+// SetResizable 设"用户能不能拖边框改尺寸"。与 SetSizeConstraints 是两件事:
+// 前者是开关, 后者是开着的钳位范围。
+func (w *Window) SetResizable(on bool) {
+	if w == nil || w.closed() {
+		return
+	}
+	w.mu.Lock()
+	w.resizable, w.hasResize = on, true
+	w.mu.Unlock()
+	if m := w.manager(); m != nil {
+		m.SetResizable(on)
+	}
+}
+
+// IsResizable 返回最近一次设置的缩放开关 (未设过时读配置的 NoResize 反值)。
+func (w *Window) IsResizable() bool {
+	if w == nil {
+		return false
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.resizable
+}
+
+// Activate 把窗口带到前台。
+func (w *Window) Activate() {
+	if w == nil || w.closed() {
+		return
+	}
+	if m := w.manager(); m != nil {
+		m.Activate()
+	}
+}
+
+// SetCursor 设窗口级光标 (形状名见 cursor.go); 空串表示"交还给节点上的
+// cursor prop 决定"。窗口级是**覆盖**: 忙等状态下脚本可以强行指成 "wait",
+// 清掉之后立刻回到"鼠标底下那个节点说了算"。
+func (w *Window) SetCursor(shape string) {
+	if w == nil || w.a == nil {
+		return
+	}
+	w.mu.Lock()
+	w.cursor, w.curSet = shape, true
+	w.mu.Unlock()
+	w.a.setCursorOverride(shape)
+}
+
 // closed 报告窗口是否已关闭。
 func (w *Window) closed() bool {
 	if w.a == nil {
@@ -254,6 +436,16 @@ func (w *Window) jsObject() object.Value {
 	// 坐标口径见 window_move.go 头部: x/y = 窗口外框左上角相对**当前显示器
 	// 工作区**左上角的偏移。moveTo 与 position 互为逆运算 (读回来再写回去 =
 	// 不动), 这是这一组 API 自洽性的最低要求。
+	//
+	// 下面 §四 那一批全部做成方法而不是属性: 位置/层级/全屏态都会在窗口
+	// 生命周期里变, 属性值在构造时被快照, 会永远返回初始值 (与 title 同一理由)。
+	//
+	// 合流备注 (2026-10-02): 这里**没有**收 §四 那版的 bounds()/position()
+	// 绑定 —— 那版直接吃 w.Bounds() 的四返回值 (屏幕绝对坐标), 与上面 M4
+	// 这套 (工作区相对 + displayId/scale) 是两套坐标口径; 两份同名绑定并存
+	// 会让后写的那份静默覆盖前者。位置口径统一由 M4 这套说了算 (§四 没有
+	// position() 之外的消费者), §四 的坐标无关能力 (层级/约束/全屏/光标/
+	// 模态) 全部保留。
 	o.SetProperty("moveTo", object.NewBuiltin("moveTo", func(args ...object.Value) object.Value {
 		if len(args) < 2 {
 			return object.NewTypeError("moveTo: (x, y) required")
@@ -291,11 +483,121 @@ func (w *Window) jsObject() object.Value {
 	o.SetProperty("display", object.NewBuiltin("display", func(args ...object.Value) object.Value {
 		return object.NewString(w.Display())
 	}))
+	o.SetProperty("level", object.NewBuiltin("level", func(args ...object.Value) object.Value {
+		return object.NewString(w.Level())
+	}))
+	o.SetProperty("setLevel", object.NewBuiltin("setLevel", func(args ...object.Value) object.Value {
+		if len(args) == 0 {
+			return object.NewTypeError("setLevel: level required")
+		}
+		w.SetLevel(object.ToString(args[0]))
+		return object.UndefinedSingleton
+	}))
+	// setConstraints({minWidth, minHeight, maxWidth, maxHeight}) —— 四项全可省,
+	// 省略即"该方向不约束"。传非对象静默 no-op (与配置解析的容错口径一致)。
+	o.SetProperty("setConstraints", object.NewBuiltin("setConstraints", func(args ...object.Value) object.Value {
+		if len(args) == 0 {
+			return object.NewTypeError("setConstraints: (options) required")
+		}
+		o, ok := args[0].(*object.Object)
+		if !ok {
+			return object.NewTypeError("setConstraints: options must be an object")
+		}
+		w.SetSizeConstraints(
+			objIntProp(o, "minWidth"), objIntProp(o, "minHeight"),
+			objIntProp(o, "maxWidth"), objIntProp(o, "maxHeight"))
+		return object.UndefinedSingleton
+	}))
+	o.SetProperty("setResizable", object.NewBuiltin("setResizable", func(args ...object.Value) object.Value {
+		if len(args) == 0 {
+			return object.NewTypeError("setResizable: (on) required")
+		}
+		w.SetResizable(args[0].IsTruthy())
+		return object.UndefinedSingleton
+	}))
+	o.SetProperty("isResizable", object.NewBuiltin("isResizable", func(args ...object.Value) object.Value {
+		return object.NewBoolean(w.IsResizable())
+	}))
+	o.SetProperty("setFullscreen", object.NewBuiltin("setFullscreen", func(args ...object.Value) object.Value {
+		on := true
+		if len(args) > 0 {
+			on = args[0].IsTruthy()
+		}
+		w.SetFullscreen(on)
+		return object.UndefinedSingleton
+	}))
+	o.SetProperty("isFullscreen", object.NewBuiltin("isFullscreen", func(args ...object.Value) object.Value {
+		return object.NewBoolean(w.IsFullscreen())
+	}))
+	o.SetProperty("activate", object.NewBuiltin("activate", func(args ...object.Value) object.Value {
+		w.Activate()
+		return object.UndefinedSingleton
+	}))
+	// setCursor(shape) / setCursor(null) —— null/undefined/空串都表示"清掉覆盖"。
+	o.SetProperty("setCursor", object.NewBuiltin("setCursor", func(args ...object.Value) object.Value {
+		if len(args) == 0 || args[0] == nil || args[0] == object.UndefinedSingleton || args[0] == object.NullSingleton {
+			w.SetCursor("")
+			return object.UndefinedSingleton
+		}
+		w.SetCursor(object.ToString(args[0]))
+		return object.UndefinedSingleton
+	}))
+	// isModal() / modalParent(): 模态子窗口问"我是谁的模态", 父窗口问
+	// "我被谁挡着"。两个都做成方法 —— 模态关系在窗口存活期间会变 (子窗口
+	// 一关, 父窗口就不再被挡), 属性快照会撒谎。
+	o.SetProperty("isModal", object.NewBuiltin("isModal", func(args ...object.Value) object.Value {
+		return object.NewBoolean(w.IsModal())
+	}))
+	// isBlocked() 是父窗口的视角: "我现在被一个模态子窗口挡着吗"。
+	// 脚本用它把主界面画成禁用态 (模态的全部价值之一就是"用户看得见
+	// 自己进不去")。
+	o.SetProperty("isBlocked", object.NewBuiltin("isBlocked", func(args ...object.Value) object.Value {
+		return object.NewBoolean(w.IsBlocked())
+	}))
+	o.SetProperty("modalParent", object.NewBuiltin("modalParent", func(args ...object.Value) object.Value {
+		if p := w.ModalParent(); p != nil {
+			return p.jsObject()
+		}
+		return object.NullSingleton
+	}))
+	o.SetProperty("modalChild", object.NewBuiltin("modalChild", func(args ...object.Value) object.Value {
+		if c := w.ModalChild(); c != nil {
+			return c.jsObject()
+		}
+		return object.NullSingleton
+	}))
 	// 登记到窗口注册表 (gx/screen 的 windows() / window(id) 靠它取标题)。
 	// 放在最后且只在这里做一次: jsObject 的 w.obj 缓存保证同一窗口只登记一次。
 	registerWindowHandle(w)
 	w.obj = o
 	return o
+}
+
+// rectObject 造一个 {x, y, ...} 的普通对象 (窗口几何的返回形状)。
+// width/height 为 0 时不挂这两个键 (position() 只要 x/y)。
+func rectObject(x, y, w, h int) object.Value {
+	o := object.NewObject()
+	o.SetProperty("x", object.NewNumber(float64(x)))
+	o.SetProperty("y", object.NewNumber(float64(y)))
+	if w > 0 || h > 0 {
+		o.SetProperty("width", object.NewNumber(float64(w)))
+		o.SetProperty("height", object.NewNumber(float64(h)))
+	}
+	return o
+}
+
+// objIntProp 读对象的数字属性 (缺失/类型不符 → 0)。窗口约束的容错口径:
+// 坏值当作"没设", 而不是让整次调用失败。
+func objIntProp(o *object.Object, name string) int {
+	v, ok := o.GetProperty(name)
+	if !ok {
+		return 0
+	}
+	n, ok := v.(*object.Number)
+	if !ok {
+		return 0
+	}
+	return int(n.Value)
 }
 
 // jsWindowObject 把 Go 侧句柄转成 JS 对象 (宿主嵌入时用)。

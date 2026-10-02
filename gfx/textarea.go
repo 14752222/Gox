@@ -17,17 +17,28 @@ import (
 //   2. **Enter 被消费**(插入换行) —— 单行 input 放行 Enter 让上层提交,
 //      多行输入框里 Enter 就是内容的一部分, 与 DOM 的 textarea 一致。
 //
-// "行" 的划分只有显式 '\n' 一种 (硬换行)。v1 **不做软换行**: 软换行会让
-// 光标的一维字符下标与二维行号之间多一层映射, 而横向只需要按内容区裁剪即可
-// 满足"能编辑"这个最低目标 (渲染层的 `<text wrap>` 才有软换行)。超长行会被
-// 右侧裁掉, 这是已知取舍。
+// ## 逻辑行与视觉行 (软换行, ru628k)
+//
+// 内容的"行"只有显式 '\n' 一种 (逻辑行, 也就是光标列号所在的那套坐标);
+// **屏幕上的行**则是把逻辑行按内容区宽度贪心折出来的结果 (视觉行)。
+// 换行算法与 `<text wrap>` 共用同一份 (wrapRuneSpans) —— 两处各写一份的话,
+// 漂移的症状是"光标画的位置和字不在同一格", 只在特定字符组合下出现。
+//
+// 只有三类动作需要视觉行 (见 textedit.go 的说明): ↑↓、Home/End、点击定位;
+// 再加上光标绘制与滚动跟随。插入/退格/左右移动在逻辑行里做就够了 ——
+// 换行是纯显示变换, 不会改变字符顺序。
+//
+// 软换行缺省**开** (与 CSS textarea 一致), `wrap={false}` 关掉。关掉之后
+// 超长行被右侧裁掉, 那是 v1 的已知取舍。
 //
 // 内容超出可视高度时**纵向滚动**, 复用 scroll 的 offset 思路但不需要视图
 // 容器: offsetY 是本节点的运行时字段, 由"编辑后把光标带回视野"
 // (taEnsureCaretVisible) 与滚轮共同维护, 布局时统一钳位。
 //
-// v1 不做: 选区/拖选、软换行、横向滚动、滚动条绘制(多行框通常不需要)、
-// Tab 插入缩进、撤销重做、IME (P2-7)、剪贴板 (P3-3)。
+// 选区 / 复制见 selection.go; 编辑语义的纯逻辑见 textedit.go。
+//
+// 仍不做: 横向滚动、滚动条绘制(多行框通常不需要)、Tab 插入缩进、撤销重做;
+// IME 见 ime.go (P2-7), 剪贴板见 clipboard.go (P3-3)。
 
 const (
 	// textareaDefaultRows 是无显式 height 时的缺省行数。
@@ -71,8 +82,15 @@ func (n *GuiNode) taLines() []string {
 	return strings.Split(n.taValue(), "\n")
 }
 
+// taTextStyle 是编辑框生效的文本样式 (字号/字体族/粗斜体/行高/字距)。
+// 与 `<text>` 同一套解析 —— 于是编辑框里能写 fontFamily="monospace" 做代码框。
+func (n *GuiNode) taTextStyle() TextStyle { return resolveTextStyle(n) }
+
+// taWraps 报告编辑框是否软换行 (缺省**开**, 与 CSS textarea 一致)。
+func (n *GuiNode) taWraps() bool { return propBoolOr(n, "wrap", true) }
+
 // taLineHeight 返回行高 (与换行/多行测量同一口径)。
-func (n *GuiNode) taLineHeight() int { return lineHeight(n.FontSize()) }
+func (n *GuiNode) taLineHeight() int { return lineHeightStyled(n.taTextStyle()) }
 
 // taLineIndex 把光标行号钳到 [0, 行数-1] (受控值可能被 JS 改短)。
 func (n *GuiNode) taLineIndex(count int) int {
@@ -105,6 +123,67 @@ func (n *GuiNode) taCaretCol(lines []string) int {
 	return c
 }
 
+// taCaretPos 是光标在**逻辑坐标**里的插入点 (已钳位)。
+func (n *GuiNode) taCaretPos() taPos {
+	lines := n.taLines()
+	return taClampPos(lines, taPos{n.caretLine, n.caret})
+}
+
+// ===== 视觉行 (软换行) =====
+
+// taVisualWrapWidth 返回折行用的内容宽度。宽到没边 / 没布局过 (<= 0) 时返回 0
+// = 不折 —— 让"还没布局"的中间态退化成不换行, 而不是把每个字都单独折成一行
+// (那会让光标在首帧跳到很奇怪的位置)。
+func (n *GuiNode) taVisualWrapWidth() int {
+	if !n.taWraps() {
+		return 0
+	}
+	w := n.taArea().W
+	if w <= 0 {
+		return 0
+	}
+	return w
+}
+
+// taVisualModel 算出当前宽度下的视觉行表 —— 所有"按屏幕行"的动作都查它。
+//
+// 返回的表**每个逻辑行至少一段**: 空行也占一段 (屏幕上它确实占一行),
+// 于是"视觉行号 × 行高"永远等于内容高度, 滚动与光标定位不必特判空行。
+func (n *GuiNode) taVisualModel() []taVisual {
+	lines := n.taLines()
+	st := n.taTextStyle()
+	maxW := n.taVisualWrapWidth()
+	out := make([]taVisual, 0, len(lines))
+	adv := func(r rune) int { return runeAdvanceStyled(st, r) }
+	for i, ln := range lines {
+		rs := []rune(ln)
+		for _, sp := range wrapRuneSpans(rs, adv, maxW) {
+			out = append(out, taVisual{line: i, start: sp.start, end: sp.end})
+		}
+	}
+	if len(out) == 0 {
+		out = append(out, taVisual{})
+	}
+	return out
+}
+
+// taVisualCount 是视觉行总数 (= 内容高度的行数)。
+func (n *GuiNode) taVisualCount() int { return len(n.taVisualModel()) }
+
+// taCaretVisual 返回光标所在的视觉行号 (在 model 里的下标)。
+func (n *GuiNode) taCaretVisual(model []taVisual) int {
+	p := n.taCaretPos()
+	return taVisualIndex(model, p.line, p.col)
+}
+
+// taCaretX 返回光标在自己那条视觉行里的像素偏移 (相对内容区左边界)。
+func (n *GuiNode) taCaretX(model []taVisual, st TextStyle) int {
+	p := n.taCaretPos()
+	line := n.taLines()[p.line]
+	i := taVisualIndex(model, p.line, p.col)
+	return taXOfCol([]rune(line), model[i], p.col, st)
+}
+
 // taArea 返回可编辑/可绘制的内容区 (盒内缩 textareaPadX/PadY)。
 func (n *GuiNode) taArea() Rect {
 	w := n.Box.W - 2*textareaPadX
@@ -118,9 +197,9 @@ func (n *GuiNode) taArea() Rect {
 	return Rect{X: n.Box.X + textareaPadX, Y: n.Box.Y + textareaPadY, W: w, H: h}
 }
 
-// taContentHeight 是全部逻辑行的总高。
+// taContentHeight 是全部**视觉**行的总高 (软换行之后行数才是屏幕行数)。
 func (n *GuiNode) taContentHeight() int {
-	return len(n.taLines()) * n.taLineHeight()
+	return n.taVisualCount() * n.taLineHeight()
 }
 
 // taMaxOffset 是 offsetY 的上限 (内容高 - 可视高); 内容不满一屏时为 0。
@@ -144,7 +223,7 @@ func (n *GuiNode) taClampOffset() {
 	}
 }
 
-// taEnsureCaretVisible 调整 offsetY 让光标所在行落在可视区内。
+// taEnsureCaretVisible 调整 offsetY 让光标所在**视觉行**落在可视区内。
 // 编辑之后必须调用 (否则在底部回车时光标会跑到框外, 用户以为输入丢了)。
 //
 // 注意调用时机: 要在 onInput 派发**之后**调用 —— 内容高度是按受控值算的,
@@ -155,8 +234,11 @@ func (n *GuiNode) taEnsureCaretVisible() {
 		return
 	}
 	lh := n.taLineHeight()
-	line := n.taLineIndex(len(n.taLines()))
-	top := line * lh
+	if lh <= 0 {
+		return
+	}
+	idx := n.taCaretVisual(n.taVisualModel())
+	top := idx * lh
 	bottom := top + lh
 	if bottom-top > area.H {
 		// 可视区连一行都放不下: 对齐行首, 至少让用户看到这一行的开头
@@ -214,158 +296,79 @@ func layoutTextarea(n *GuiNode) {
 	placeAbsoluteIn(n, area)
 }
 
-// taEdit 是一次按键对文本产生的结果 (纯数据, 无副作用)。
-type taEdit struct {
-	lines    []string // 新的逻辑行
-	line     int      // 新光标行
-	col      int      // 新光标列
-	changed  bool     // 文本内容变了 → 要派发 onInput
-	consumed bool     // 按键被编辑器接管 (false 时继续沿祖先链派发)
-}
+// ===== 按键 → 编辑结果 =====
 
-// taApplyKey 是编辑的全部逻辑, 写成**纯函数**: 入参是当前文本与光标, 出参是
-// 新文本与新光标, 不碰节点、不派发回调。这么做的好处有两个:
-//  1. 编辑语义 (尤其"行首退格要合并上一行"这类边界) 可以直接单测, 不需要
-//     真 VM 去承接 onInput 写回;
-//  2. 受控值只在一个地方被读一次, 不会出现"边改边读"的中间态。
-//
-// 按键分流与 input 一致, 唯一的区别是 **Enter 被消费**(插入换行): 多行框里
-// Enter 就是内容, 单行输入框才需要把它放行给上层做提交。
+// taApplyKey 是"不换行 / 无选区 / 无修饰键"这一档的兼容壳, 供单测与老调用方
+// 使用 (语义与加软换行之前逐字一致: 逻辑行即视觉行, ↑↓ 按列号钳位)。
 func taApplyKey(lines []string, line, col int, key string, ctrl, alt bool) taEdit {
-	if len(lines) == 0 {
-		lines = []string{""}
-	}
-	// 先钳位: 受控值可能被 JS 从外部改短
-	if line < 0 {
-		line = 0
-	}
-	if line > len(lines)-1 {
-		line = len(lines) - 1
-	}
-	if line < 0 {
-		line = 0
-	}
-	cur := []rune(lines[line])
-	if col < 0 {
-		col = 0
-	}
-	if col > len(cur) {
-		col = len(cur)
-	}
-	// 组合键留给脚本 (Ctrl+C / Ctrl+V 之类), 编辑器不抢。
-	if ctrl || alt {
-		return taEdit{lines: lines, line: line, col: col}
-	}
-
-	out := taEdit{lines: lines, line: line, col: col, consumed: true}
-	switch key {
-	case "Enter":
-		head, tail := string(cur[:col]), string(cur[col:])
-		out.lines = append([]string(nil), out.lines...)
-		out.lines[line] = head
-		out.lines = append(out.lines, "")
-		copy(out.lines[line+2:], out.lines[line+1:])
-		out.lines[line+1] = tail
-		out.line = line + 1
-		out.col = 0
-		out.changed = true
-	case "Backspace":
-		if col > 0 {
-			out.lines = append([]string(nil), out.lines...)
-			out.lines[line] = string(append(cur[:col-1], cur[col:]...))
-			out.col = col - 1
-			out.changed = true
-		} else if line > 0 {
-			// 行首退格 = 与上一行合并 (光标停在合并点, 与主流编辑器一致)
-			prev := []rune(out.lines[line-1])
-			out.lines = append([]string(nil), out.lines...)
-			out.lines[line-1] = string(prev) + out.lines[line]
-			out.lines = append(out.lines[:line], out.lines[line+1:]...)
-			out.line = line - 1
-			out.col = len(prev)
-			out.changed = true
-		}
-	case "Delete":
-		if col < len(cur) {
-			out.lines = append([]string(nil), out.lines...)
-			out.lines[line] = string(append(cur[:col], cur[col+1:]...))
-			out.changed = true
-		} else if line < len(out.lines)-1 {
-			// 行尾删除 = 把下一行接上来
-			out.lines = append([]string(nil), out.lines...)
-			out.lines[line] = out.lines[line] + out.lines[line+1]
-			out.lines = append(out.lines[:line+1], out.lines[line+2:]...)
-			out.changed = true
-		}
-	case "ArrowLeft":
-		if col > 0 {
-			out.col = col - 1
-		} else if line > 0 {
-			out.line = line - 1
-			out.col = len([]rune(out.lines[out.line]))
-		}
-	case "ArrowRight":
-		if col < len(cur) {
-			out.col = col + 1
-		} else if line < len(out.lines)-1 {
-			out.line = line + 1
-			out.col = 0
-		}
-	case "ArrowUp":
-		if line > 0 {
-			out.line = line - 1
-			if rl := len([]rune(out.lines[out.line])); out.col > rl {
-				out.col = rl // 上下移动时列号按新行长度钳位 (短行不会把光标顶到行外)
-			}
-		}
-	case "ArrowDown":
-		if line < len(out.lines)-1 {
-			out.line = line + 1
-			if rl := len([]rune(out.lines[out.line])); out.col > rl {
-				out.col = rl
-			}
-		}
-	case "Home":
-		out.col = 0
-	case "End":
-		out.col = len(cur)
-	default:
-		r, ok := printableRune(key)
-		if !ok {
-			// Escape / Tab / F1.. / Shift: 不消费, 让上层看得到。
-			out.consumed = false
-			return out
-		}
-		nv := make([]rune, 0, len(cur)+1)
-		nv = append(nv, cur[:col]...)
-		nv = append(nv, r)
-		nv = append(nv, cur[col:]...)
-		out.lines = append([]string(nil), out.lines...)
-		out.lines[line] = string(nv)
-		out.col = col + 1
-		out.changed = true
-	}
-	return out
+	return taApplyKeyEx(taEditIn{
+		lines: lines, line: line, col: col,
+		multi: true, aimX: -1, ctrl: ctrl, alt: alt,
+	}, key)
 }
 
-// handleTextareaKey 把按键交给 taApplyKey, 再把结果落到节点上并派发 onInput。
+// taEditInput 按当前节点状态组装内核需要的输入。
+//
+// "期望 x" (aimX) 的维护是这里唯一有点绕的地方: 连续上下移动期间必须锁住
+// 同一个 x, 否则比例字体下光标会左右横跳 (每一行的"第 5 列"对应的像素位置
+// 都不同); 而任何一次非上下按键都要把它作废 —— 左右移动/打字之后, 原来的
+// 那个 x 已经不该再约束光标了。
+func (a *app) taEditInput(ta *GuiNode, lines []string, key string, ev Event) taEditIn {
+	st := ta.taTextStyle()
+	model := ta.taVisualModel()
+	aim := -1
+	if key == "ArrowUp" || key == "ArrowDown" {
+		if ta.taAimSet {
+			aim = ta.taAimX
+		} else {
+			aim = ta.taCaretX(model, st)
+			ta.taAimX, ta.taAimSet = aim, true
+		}
+	} else {
+		ta.taAimSet = false
+	}
+	return taEditIn{
+		lines: lines, line: ta.caretLine, col: ta.caret,
+		vm: model, multi: true, st: st, aimX: aim,
+		sel:   taSel{line: ta.selAnchorLine, col: ta.selAnchorCol, active: ta.selActive},
+		ctrl:  ev.Ctrl,
+		alt:   ev.Alt,
+		shift: ev.Shift,
+	}
+}
+
+// taApplyEdit 把内核结果落到节点上 (标脏口径: 光标/选区动了也要重绘, 因为
+// 屏幕上的竖线与高亮块要跟着跑)。
+func taApplyEdit(ta *GuiNode, res taEdit) {
+	moved := res.line != ta.caretLine || res.col != ta.caret ||
+		res.sel != ta.selActive ||
+		(res.sel && (res.anchor.line != ta.selAnchorLine || res.anchor.col != ta.selAnchorCol))
+	ta.caretLine, ta.caret = res.line, res.col
+	ta.selAnchorLine, ta.selAnchorCol, ta.selActive = res.anchor.line, res.anchor.col, res.sel
+	if moved {
+		markNodeDirty(ta)
+	}
+}
+
+// handleTextareaKey 把按键交给内核, 再把结果落到节点上并派发 onInput。
 //
 // 与 input 一致: **只有"内容变化"的按键才派发 onInput** (移动光标不是编辑
 // 行为), 但移动光标仍要标脏 —— 屏幕上的竖线要跟着跑。
 func (a *app) handleTextareaKey(ta *GuiNode, key string, ev Event) bool {
+	// 剪贴板与全选 (Ctrl/Cmd + A/C/X/V) 要先于内核: 它们要碰系统剪贴板,
+	// 而内核是纯函数。没被认领的修饰键组合照旧放行给脚本。
+	if a.handleFieldClipboard(ta, key, ev) {
+		return true
+	}
 	lines := ta.taLines()
 	if len(lines) == 0 {
 		lines = []string{""}
 	}
-	res := taApplyKey(lines, ta.taLineIndex(len(lines)), ta.taCaretCol(lines),
-		key, ev.Ctrl, ev.Alt)
+	res := taApplyKeyEx(a.taEditInput(ta, lines, key, ev), key)
 	if !res.consumed {
 		return false
 	}
-	if moved := res.line != ta.caretLine || res.col != ta.caret; moved || res.changed {
-		markNodeDirty(ta)
-	}
-	ta.caretLine, ta.caret = res.line, res.col
+	taApplyEdit(ta, res)
 	if res.changed {
 		a.taEdited(ta, strings.Join(res.lines, "\n"))
 	}
@@ -385,49 +388,47 @@ func (a *app) taEdited(ta *GuiNode, value string) {
 	a.callHandler(ta, "onInput", arg)
 }
 
-// taSetCaretFromXY 把光标落到点击位置 (行按 y、列按 x 找最近的字符边界)。
-// 行的判定要加上 offsetY —— 屏幕上的第 k 行对应内容的第 k+offset/lh 行。
+// taSetCaretFromXY 把光标落到点击位置: 先按 y 找**视觉行**, 再按 x 用
+// taColAtX 找列 (与 ↑↓ 的换算同一口径)。
+//
+// y 要加上 offsetY 折算: 屏幕上的第 k 行对应内容的第 k + offsetY/lh 行。
 func (a *app) taSetCaretFromXY(ta *GuiNode, x, y int) {
-	area := ta.taArea()
 	lh := ta.taLineHeight()
 	if lh <= 0 {
 		return
 	}
+	area := ta.taArea()
 	if area.H <= 0 {
 		area.H = lh
 	}
-	lines := ta.taLines()
-	line := (y - area.Y + ta.offsetY) / lh
-	if line < 0 {
-		line = 0
+	model := ta.taVisualModel()
+	idx := (y - area.Y + ta.offsetY) / lh
+	if idx < 0 {
+		idx = 0
 	}
-	if line > len(lines)-1 {
-		line = len(lines) - 1
+	if idx > len(model)-1 {
+		idx = len(model) - 1
 	}
-	if line < 0 {
-		line = 0
+	if idx < 0 {
+		idx = 0
 	}
-	rs := []rune(lines[line])
-	size := ta.FontSize()
-	col := len(rs)
-	cur := 0
-	for i, r := range rs {
-		w := runeAdvance(size, r)
-		if x < area.X+cur+w/2 {
-			col = i
-			break
-		}
-		cur += w
-	}
-	if ta.caretLine == line && ta.caret == col {
+	v := model[idx]
+	rs := []rune(ta.taLines()[v.line])
+	pos := taPos{v.line, taColAtX(rs, v, x-area.X, ta.taTextStyle())}
+	if ta.caretLine == pos.line && ta.caret == pos.col {
 		return
 	}
-	ta.caretLine = line
-	ta.caret = col
+	ta.caretLine, ta.caret = pos.line, pos.col
 	markNodeDirty(ta)
 }
 
-// paintTextarea 绘制多行编辑框: 底 + 边框(获焦转强调色) + 可见行 + 竖线光标。
+// ===== 绘制 =====
+
+// paintTextarea 绘制多行编辑框: 底 + 边框(获焦转强调色) + 选区底 + 可见视觉行
+// + 竖线光标。
+//
+// 绘制顺序**不能换**: 选区高亮必须在文字之下。反过来写 (高亮盖在字上) 的
+// 症状是"一选中就看不见字" —— 而且只在选区颜色不透明时出现。
 func paintTextarea(img *image.RGBA, n *GuiNode, disabled bool) {
 	b := n.Box
 	if b.W <= 0 || b.H <= 0 {
@@ -451,21 +452,50 @@ func paintTextarea(img *image.RGBA, n *GuiNode, disabled bool) {
 		return
 	}
 
-	size := n.FontSize()
+	st := n.taTextStyle()
 	lh := n.taLineHeight()
 	textCol := tint(n.textColor(), disabled)
 
 	if !n.hasTaValue() {
 		if ph := n.taPlaceholder(); ph != "" {
-			_, th := MeasureText(ph, size)
-			DrawText(img, clip, ph, area.X, area.Y+(lh-th)/2, size,
+			_, th := MeasureTextStyled(ph, st)
+			DrawTextStyled(img, clip, ph, area.X, area.Y+(lh-th)/2, st,
 				tint(colorPlaceholder, disabled), area.W)
 		}
 		return
 	}
 
 	lines := n.taLines()
-	for i := range lines {
+	model := n.taVisualModel()
+
+	// 选区区间 (可能跨逻辑行; 空选区时 ok = false)
+	sa, sb, selOn := taSelRangeOf(n, lines)
+	if selOn && !disabled {
+		for i, v := range model {
+			y := area.Y + i*lh - n.offsetY
+			if y >= area.Y+area.H {
+				break
+			}
+			if y+lh <= area.Y {
+				continue
+			}
+			a, bb, full := taSelSpanOn(v, sa, sb)
+			if a == bb && !full {
+				continue
+			}
+			rs := []rune(lines[v.line])
+			x1 := area.X + taXOfCol(rs, v, a, st)
+			w := area.W
+			if !full {
+				w = taXOfCol(rs, v, bb, st) - taXOfCol(rs, v, a, st)
+			}
+			if w > 0 {
+				FillRect(img, Rect{X: x1, Y: y, W: w, H: lh}, colorSelection)
+			}
+		}
+	}
+
+	for i, v := range model {
 		y := area.Y + i*lh - n.offsetY
 		if y >= area.Y+area.H {
 			break // 后面的行都在可视区下方
@@ -473,19 +503,51 @@ func paintTextarea(img *image.RGBA, n *GuiNode, disabled bool) {
 		if y+lh <= area.Y {
 			continue // 已滚出上方
 		}
-		DrawText(img, clip, lines[i], area.X, y, size, textCol, area.W)
+		text := string([]rune(lines[v.line])[v.start:v.end])
+		if text == "" {
+			continue
+		}
+		DrawTextStyled(img, clip, text, area.X, y, st, textCol, area.W)
 	}
 
 	if n.isFocused() && !disabled && caretVisibleAt(time.Now()) {
-		line := n.taLineIndex(len(lines))
-		col := n.taCaretCol(lines)
-		rs := []rune(lines[line])
-		cx := area.X + runeWidth(string(rs[:col]), size)
-		cy := area.Y + line*lh - n.offsetY
+		idx := taVisualIndex(model, n.taCaretPos().line, n.taCaretPos().col)
+		v := model[idx]
+		cx := area.X + taXOfCol([]rune(lines[v.line]), v, n.taCaretPos().col, st)
+		cy := area.Y + idx*lh - n.offsetY
 		if cy+lh > area.Y && cy < area.Y+area.H {
-			FillRect(img, Rect{X: cx, Y: cy + (lh-size)/2, W: 1, H: size}, textCol)
+			FillRect(img, Rect{X: cx, Y: cy + (lh-st.Size)/2, W: 1, H: st.Size}, textCol)
 		}
 	}
+}
+
+// taSelRangeOf 取编辑框当前的选区 (规范化), 没有选区时 ok = false。
+func taSelRangeOf(n *GuiNode, lines []string) (a, b taPos, ok bool) {
+	return taNormSel(lines,
+		taSel{line: n.selAnchorLine, col: n.selAnchorCol, active: n.selActive},
+		taPos{n.caretLine, n.caret})
+}
+
+// taSelSpanOn 返回某条视觉行上被选中的列区间 [a,b] 与"是否整行选中"。
+//
+// 整行选中 (两端都不在本行) 时高亮要**铺到行尾**: 否则跨行选区在中间那些行上
+// 只高亮到最后一个字符, 看起来像"只选了一半"; 空行更是整行都不亮。
+func taSelSpanOn(v taVisual, sa, sb taPos) (a, b int, full bool) {
+	if v.line < sa.line || v.line > sb.line {
+		return 0, 0, false
+	}
+	a, b = v.start, v.end
+	if v.line == sa.line && sa.col > a {
+		a = sa.col
+	}
+	if v.line == sb.line && sb.col < b {
+		b = sb.col
+	}
+	if b < a {
+		b = a
+	}
+	full = v.line > sa.line && v.line < sb.line
+	return a, b, full
 }
 
 // hasTaValue 报告是否有真实值 (区分"空值的灰色 placeholder"与"用户真输入了")。

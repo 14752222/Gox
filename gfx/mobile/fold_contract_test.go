@@ -150,8 +150,20 @@ func TestIOSFoldExportNameMatchesSwift(t *testing.T) {
 		t.Errorf("折叠 API 的门槛不是 iOS 27.1 —— 写宽了会在 27.0 真机上崩")
 	}
 	// includeInactive 必须显式传 (Apple 两份文档对默认行为说法不一致)。
-	if !strings.Contains(fold, ".includeInactive") {
-		t.Errorf("缺少 .includeInactive —— 平展态就看不到那条零宽 division, hasFold 会退化成 false")
+	//
+	// 口径已随实现改过一次: 这段原本是**编译期调用**
+	// (`view.reservedRegions(kind: .division, options: .includeInactive)`), 现在走
+	// NSSelectorFromString 动态派发 (27.0 SDK 里没这个符号, 见 Swift 文件头),
+	// 选项位因此从 `.includeInactive` 变成 `FoldAPI.optionIncludeInactive`。
+	// 断言跟着改, 守的还是同一件事 —— 而且这里比原来更严一点: 原来只看"文件里
+	// 出现过该写法", 现在要求**division 与 occlusion 两条调用都带**。
+	if !strings.Contains(fold, "optionIncludeInactive") {
+		t.Errorf("缺少 includeInactive 选项位 —— 平展态就看不到那条零宽 division, hasFold 会退化成 false")
+	}
+	withOpt := regexp.MustCompile(
+		`FoldAPI\.selector,\s*FoldAPI\.kind\w+,\s*FoldAPI\.optionIncludeInactive`).FindAllString(fold, -1)
+	if len(withOpt) < 2 {
+		t.Errorf("只有 %d 条 reservedRegions 调用带了 includeInactive, 期望 division / occlusion 各一条", len(withOpt))
 	}
 	// 四个上报时机。
 	for _, sig := range []string{

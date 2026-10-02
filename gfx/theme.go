@@ -69,6 +69,7 @@ type Theme struct {
 	MenuHighlight color.RGBA // 菜单项高亮底
 	MenuShortcut  color.RGBA // 快捷键文字
 	MenuSep       color.RGBA // 菜单分隔线
+	Selection     color.RGBA // 文本选区高亮底 (input / textarea)
 }
 
 // themeCurrent 是当前生效的主题 (CurrentTheme 返回副本前的取用点)。
@@ -115,6 +116,9 @@ func themeLight() Theme {
 		MenuHighlight: color.RGBA{R: 0xDC, G: 0xE8, B: 0xF8, A: 255},
 		MenuShortcut:  color.RGBA{R: 0x77, G: 0x77, B: 0x77, A: 255},
 		MenuSep:       color.RGBA{R: 0xD0, G: 0xD0, B: 0xD0, A: 255},
+		// 选区底: 半透明强调蓝。**必须带 alpha** —— 选区画在文字之下, 用不
+		// 透明色会把被选中的字整段盖掉 (经典的"选中就看不见字" bug)。
+		Selection: color.RGBA{R: 0x9C, G: 0xC4, B: 0xEC, A: 0xB0},
 	}
 }
 
@@ -155,6 +159,9 @@ func themeDark() Theme {
 		MenuHighlight: color.RGBA{R: 0x2A, G: 0x3B, B: 0x52, A: 255},
 		MenuShortcut:  color.RGBA{R: 0x90, G: 0x90, B: 0x90, A: 255},
 		MenuSep:       color.RGBA{R: 0x3A, G: 0x3A, B: 0x3A, A: 255},
+		// 暗底上不能照抄亮色的浅蓝: 那样选区比正文还亮, 反差方向就反了。
+		// 这里用低饱和的深蓝 + 更高的 alpha (暗底本身对比度低)。
+		Selection: color.RGBA{R: 0x2E, G: 0x54, B: 0x7A, A: 0xD0},
 	}
 }
 
@@ -288,6 +295,8 @@ func (t *Theme) setToken(name string, c color.RGBA) bool {
 		t.MenuShortcut = c
 	case "menuSep":
 		t.MenuSep = c
+	case "selection":
+		t.Selection = c
 	default:
 		return false
 	}
@@ -403,6 +412,7 @@ func themeTokens(t *Theme) map[string]string {
 		"menuBarEdge":   hex(t.MenuBarEdge),
 		"menuActive":    hex(t.MenuActive),
 		"menuHighlight": hex(t.MenuHighlight),
+		"selection":     hex(t.Selection),
 		"menuShortcut":  hex(t.MenuShortcut),
 		"menuSep":       hex(t.MenuSep),
 	}
@@ -444,4 +454,5 @@ func syncThemeVars() {
 	colorMenuHighlight = t.MenuHighlight
 	colorMenuShortcut = t.MenuShortcut
 	colorMenuSep = t.MenuSep
+	colorSelection = t.Selection
 }

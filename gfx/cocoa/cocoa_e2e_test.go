@@ -61,6 +61,9 @@ func TestMain(m *testing.M) {
 	if err := runV1Scenarios(); err != nil {
 		v1Fail = err.Error()
 	}
+	if err := runWindowScenario(); err != nil {
+		wmFail = err
+	}
 	os.Exit(m.Run())
 }
 
