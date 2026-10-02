@@ -4,7 +4,7 @@
   "private": true,
   "description": "A Gox desktop GUI app (scaffolded by `gox create`)",
   "scripts": {
-    "dev": "goxjs src/main.js",
+    "dev": "goxjs dev src/main.js",
     "start": "goxjs src/main.js"
   },
   "devDependencies": {

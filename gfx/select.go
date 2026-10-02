@@ -174,72 +174,29 @@ func selectRows(sel *GuiNode) []*GuiNode {
 	return sel.popup.Children
 }
 
-// expandedSelects 收集树中所有处于展开态的 select。
-// 打开一个下拉时用它先收起其它的: 同时展开两个弹层在视觉和交互上都没有意义。
-func expandedSelects(root *GuiNode) []*GuiNode {
-	var out []*GuiNode
-	var walk func(n *GuiNode)
-	walk = func(n *GuiNode) {
-		if n.Tag == "select" && n.expanded {
-			out = append(out, n)
-		}
-		for _, c := range n.Children {
-			walk(c)
-		}
-	}
-	if root != nil {
-		walk(root)
-	}
-	return out
-}
-
 // ===== 展开 / 收起 =====
+//
+// 状态机本体在 popupfield.go (select / datepicker / colorpicker 三家共用);
+// 这里只负责"下拉的内容怎么造"与"展开时的键盘光标从哪一项开始"。
 
 // openSelect 展开下拉弹层。已经在展开态则不重复建树。
-//
-// 整帧标脏而不是只标 select 自己: 弹层新覆盖的那片区域不属于任何"框变了的
-// 节点", 局部重绘的脏矩形表达不了"凭空多出一块", 硬凑只会漏画。
-// 弹层展开是低频的用户动作, 整帧重绘的代价可以接受。
 func (a *app) openSelect(sel *GuiNode) {
 	if sel.expanded {
 		return
-	}
-	root := a.rootNode()
-	for _, other := range expandedSelects(root) {
-		a.closeSelect(other)
 	}
 	popup := buildSelectPopup(sel)
 	if popup == nil {
 		return // 没有可选项: 展开一个空盒子没有意义
 	}
-	sel.expanded = true
-	sel.popup = popup
+	// 光标从第一项起 (键盘方向键随后从它挪动)。要放在 openPopupField 之前:
+	// 后者会先收掉别的弹层, 而收弹层会把 highlight 复位。
 	sel.highlight = 0
-	markFullDirtyFor(sel)
+	a.openPopupField(sel, popup)
 }
 
-// closeSelect 收起下拉弹层并销毁它 (递归注销选项行上的 effect)。
+// closeSelect 收起下拉弹层并销毁它。
 func (a *app) closeSelect(sel *GuiNode) {
-	if !sel.expanded {
-		return
-	}
-	sel.expanded = false
-	sel.highlight = -1
-	popup := sel.popup
-	sel.popup = nil
-	if popup == nil {
-		return
-	}
-	// 焦点可能正落在即将销毁的选项行上: 先收回 select 自身, 否则焦点会
-	// 指向一个已经不在树上的节点, 键盘事件从此无处可去。
-	a.mu.Lock()
-	f := a.focused
-	a.mu.Unlock()
-	if f != nil && underNode(f, popup) {
-		a.setFocus(sel)
-	}
-	disposeNode(popup) // 会把它从 sel.Children 里摘掉 (Parent 保持有效)
-	markFullDirtyFor(sel)
+	a.closePopupField(sel)
 }
 
 // chooseOption 选中一个选项: 收起弹层 → 焦点收回 select → 派发 onChange。

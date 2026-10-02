@@ -2690,73 +2690,306 @@ func (p *Parser) parseImportDeclaration() *ast.ImportDeclaration {
 	return stmt
 }
 
+// parseExportDeclaration 解析 export 声明。
+//
+// ES 规范里 export 后面可以跟的东西比早期实现覆盖的多得多, 这里逐一补齐
+// (TS 产物与 npm 包 barrel 都重度依赖这些形式 —— 详见 docs/typescript.md):
+//
+//	export default <expr | function | class>
+//	export * from "m" / export * as ns from "m"
+//	export { a, b as c } [from "m"] / export {}
+//	export var/let/const/function/class ...
+//	export async function / async function* ...
+//
+// 解析失败时 addError 会带上当前 token 的准确行列, 而不是笼统的 "syntax error"。
 func (p *Parser) parseExportDeclaration() *ast.ExportDeclaration {
 	stmt := &ast.ExportDeclaration{Token: p.curToken()}
 	p.nextToken()
 
 	// export default ...
 	if p.curTokenIs(lexer.DEFAULT) {
-		stmt.IsDefault = true
-		p.nextToken()
-		// default 可以导出表达式或声明
-		if p.curTokenIs(lexer.FUNCTION) {
-			fn := p.parseFunctionDeclaration()
-			stmt.Declaration = fn
-		} else {
-			expr := p.parseExpression(LOWEST)
-			stmt.Declaration = &ast.ExpressionStatement{Token: p.curToken(), Expression: expr}
-			p.consumeSemicolon()
-		}
-		return stmt
+		return p.parseExportDefault(stmt)
 	}
 
-	// export { a, b }
+	// export * from "..."  /  export * as ns from "..."
+	if p.curTokenIs(lexer.ASTERISK) {
+		return p.parseExportStar(stmt)
+	}
+
+	// export { ... } [from "..."]
 	if p.curTokenIs(lexer.LBRACE) {
-		p.nextToken()
-		for !p.curTokenIs(lexer.RBRACE) && !p.curTokenIs(lexer.EOF) {
-			if p.curTokenIs(lexer.IDENTIFIER) {
-				stmt.NamedExports = append(stmt.NamedExports, p.curToken().Literal)
-			}
-			p.nextToken()
-			if p.curTokenIs(lexer.COMMA) {
-				p.nextToken()
-			}
-		}
-		if !p.curTokenIs(lexer.RBRACE) {
-			p.addError("expected '}' in export")
+		return p.parseExportNamed(stmt)
+	}
+
+	// export var/let/const/function/class/async function ...
+	if p.isExportDeclStart() {
+		if !p.parseExportDeclInto(&stmt.Declaration) {
 			return nil
 		}
-		p.nextToken()
-		// optional from "..."
-		if p.curTokenIs(lexer.IDENTIFIER) && p.curToken().Literal == "from" {
-			p.nextToken()
-			if !p.curTokenIs(lexer.STRING_LITERAL) {
-				p.addError("expected module path in export from")
-				return nil
-			}
-			// re-export: 我们简单处理，直接忽略来源模块
-		}
-		p.consumeSemicolon()
-		return stmt
-	}
-
-	// export const/let/function
-	if p.curTokenIs(lexer.LET) || p.curTokenIs(lexer.CONST) || p.curTokenIs(lexer.FUNCTION) {
-		var decl ast.Statement
-		switch p.curToken().Type {
-		case lexer.LET:
-			decl = p.parseLetStatement()
-		case lexer.CONST:
-			decl = p.parseConstStatement()
-		case lexer.FUNCTION:
-			decl = p.parseFunctionDeclaration()
-		}
-		stmt.Declaration = decl
 		return stmt
 	}
 
 	p.addError(fmt.Sprintf("unexpected token after export: %s", p.curToken().Type))
 	return nil
+}
+
+// isExportDeclStart 判断 export 后当前 token 能否开始一个"可导出声明"。
+// 注意 ASYNC 只有在后跟 FUNCTION 时才算声明 —— 模块顶层的 export 不允许裸
+// 表达式 (只有 default 允许), 所以这里收紧成只认 async function, 让
+// `export async ...` 落到"准确报错"分支而不是被当成表达式静默吞掉。
+func (p *Parser) isExportDeclStart() bool {
+	switch p.curToken().Type {
+	case lexer.VAR, lexer.LET, lexer.CONST, lexer.FUNCTION, lexer.CLASS:
+		return true
+	case lexer.ASYNC:
+		return p.peekTokenIs(lexer.FUNCTION)
+	}
+	return false
+}
+
+// parseExportDeclInto 解析 export 后的声明并写入 out。
+// 返回 false 表示下层解析已经报错 (调用方直接返回 nil, 避免把半截 AST 交出去)。
+//
+// 不直接返回 ast.Statement 是因为各 parseXxx 返回的是具体指针类型: 一个 nil 的
+// *ast.LetStatement 装进 Statement 接口后"不等于 nil", 调用方没法用 == nil 判空。
+func (p *Parser) parseExportDeclInto(out *ast.Statement) bool {
+	switch p.curToken().Type {
+	case lexer.VAR:
+		if s := p.parseVarStatement(); s != nil {
+			*out = s
+			return true
+		}
+	case lexer.LET:
+		if s := p.parseLetStatement(); s != nil {
+			*out = s
+			return true
+		}
+	case lexer.CONST:
+		if s := p.parseConstStatement(); s != nil {
+			*out = s
+			return true
+		}
+	case lexer.FUNCTION:
+		if s := p.parseFunctionDeclaration(); s != nil {
+			*out = s
+			return true
+		}
+	case lexer.CLASS:
+		if s := p.parseClassDeclaration(); s != nil {
+			*out = s
+			return true
+		}
+	case lexer.ASYNC:
+		p.nextToken() // cur = function
+		if fn := p.parseFunctionDeclaration(); fn != nil {
+			fn.IsAsync = true
+			*out = fn
+			return true
+		}
+	}
+	return false
+}
+
+// parseExportDefault 解析 export default 后的部分。
+//
+// 具名默认导出的语义 (规范 16.2.3.7): `export default function f(){}` 里的 f
+// 只作为**模块内局部绑定**存在, 不是命名导出 (命名导出只有 "default")。
+// 因此具名时走 FunctionDeclaration/ClassDeclaration (会登记局部绑定),
+// 匿名时走表达式路径。这样既保证 f 在模块内可用, 又不会把 f 混进导出表。
+func (p *Parser) parseExportDefault(stmt *ast.ExportDeclaration) *ast.ExportDeclaration {
+	stmt.IsDefault = true
+	p.nextToken() // 越过 default
+
+	switch p.curToken().Type {
+	case lexer.FUNCTION:
+		if p.defaultFunctionIsNamed() {
+			fn := p.parseFunctionDeclaration()
+			if fn == nil {
+				return nil
+			}
+			stmt.Declaration = fn
+			return stmt
+		}
+		fn := p.parseAnonymousFunctionExpression()
+		if fn == nil {
+			return nil
+		}
+		stmt.Declaration = &ast.ExpressionStatement{Token: fn.Token, Expression: fn}
+		p.consumeSemicolon()
+		return stmt
+
+	case lexer.ASYNC:
+		p.nextToken() // cur = function
+		if p.defaultFunctionIsNamed() {
+			fn := p.parseFunctionDeclaration()
+			if fn == nil {
+				return nil
+			}
+			fn.IsAsync = true
+			stmt.Declaration = fn
+			return stmt
+		}
+		fn := p.parseAnonymousFunctionExpression()
+		if fn == nil {
+			return nil
+		}
+		fn.IsAsync = true
+		stmt.Declaration = &ast.ExpressionStatement{Token: fn.Token, Expression: fn}
+		p.consumeSemicolon()
+		return stmt
+
+	case lexer.CLASS:
+		// 具名类 (class C {...}) 与匿名类 (class {...}) 分开; extends 也是
+		// 标识符, 别把 `class extends Base {}` 的 extends 当类名 (见
+		// parseClassExpression 的同类判断)。
+		if p.peekTokenIs(lexer.IDENTIFIER) && p.peekToken().Literal != "extends" {
+			cls := p.parseClassDeclaration()
+			if cls == nil {
+				return nil
+			}
+			stmt.Declaration = cls
+			return stmt
+		}
+		cls := p.parseClassExpression()
+		if cls == nil {
+			return nil
+		}
+		stmt.Declaration = &ast.ExpressionStatement{Token: p.curToken(), Expression: cls}
+		p.consumeSemicolon()
+		return stmt
+
+	default:
+		expr := p.parseExpression(LOWEST)
+		if expr == nil {
+			return nil
+		}
+		stmt.Declaration = &ast.ExpressionStatement{Token: p.curToken(), Expression: expr}
+		p.consumeSemicolon()
+		return stmt
+	}
+}
+
+// defaultFunctionIsNamed 判断 export default 后的 function 是否具名。
+// 具名: function f / function* f; 匿名: function() / function*()。
+func (p *Parser) defaultFunctionIsNamed() bool {
+	if p.peekTokenIs(lexer.IDENTIFIER) {
+		return true
+	}
+	return p.peekTokenIs(lexer.ASTERISK) && p.peek2TokenIs(lexer.IDENTIFIER)
+}
+
+// parseAnonymousFunctionExpression 从 FUNCTION 起始解析一个匿名(或可选具名)
+// 函数表达式, 供 export default 的匿名默认函数使用。cur 位于 FUNCTION。
+func (p *Parser) parseAnonymousFunctionExpression() *ast.FunctionExpression {
+	fn := &ast.FunctionExpression{Token: p.curToken()}
+	if p.peekTokenIs(lexer.ASTERISK) {
+		fn.IsGenerator = true
+		p.nextToken() // cur = *
+	}
+	if p.peekTokenIs(lexer.IDENTIFIER) {
+		p.nextToken()
+		fn.Name = &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
+	}
+	if !p.expectPeek(lexer.LPAREN) {
+		return nil
+	}
+	fn.Parameters = p.parseParameters(lexer.RPAREN)
+	if !p.curTokenIs(lexer.RPAREN) {
+		return nil
+	}
+	p.nextToken()
+	fn.Body = p.parseBlockStatement()
+	return fn
+}
+
+// parseExportStar 解析 export * from "m" 与 export * as ns from "m"。
+// cur 位于 ASTERISK。
+func (p *Parser) parseExportStar(stmt *ast.ExportDeclaration) *ast.ExportDeclaration {
+	p.nextToken() // 越过 *
+
+	if p.curTokenIs(lexer.IDENTIFIER) && p.curToken().Literal == "as" {
+		// export * as ns from "m": 以命名空间对象的形式再导出。
+		p.nextToken()
+		if !p.curTokenIs(lexer.IDENTIFIER) {
+			p.addError("expected namespace name after 'as' in export *")
+			return nil
+		}
+		stmt.Specifiers = []ast.ExportSpecifier{{Local: "*", Exported: p.curToken().Literal}}
+		p.nextToken()
+	} else {
+		stmt.IsStar = true
+	}
+
+	if !p.curTokenIs(lexer.IDENTIFIER) || p.curToken().Literal != "from" {
+		p.addError(fmt.Sprintf("expected 'from' in export *, got %s", p.curToken().Type))
+		return nil
+	}
+	p.nextToken()
+	if !p.curTokenIs(lexer.STRING_LITERAL) {
+		p.addError("expected module path string in export *")
+		return nil
+	}
+	stmt.Source = p.curToken().Literal
+	p.consumeSemicolon()
+	return stmt
+}
+
+// parseExportNamed 解析 export { ... } [from "..."] (含空导出 export {})。
+// cur 位于 LBRACE。
+func (p *Parser) parseExportNamed(stmt *ast.ExportDeclaration) *ast.ExportDeclaration {
+	p.nextToken() // 越过 {
+
+	for !p.curTokenIs(lexer.RBRACE) && !p.curTokenIs(lexer.EOF) {
+		// `default` 也是合法的导出名 (ES 把它当保留的导出名):
+		//   export { default } from "m"        // 再导出源模块的 default
+		//   export { a as default }            // 把 a 作为本模块的 default
+		// 它在词法层是专门的 DEFAULT token, 不是 IDENTIFIER。
+		if !p.curTokenIs(lexer.IDENTIFIER) && !p.curTokenIs(lexer.DEFAULT) {
+			p.addError(fmt.Sprintf("expected identifier in export, got %s", p.curToken().Type))
+			return nil
+		}
+		sp := ast.ExportSpecifier{Local: p.curToken().Literal, Exported: p.curToken().Literal}
+		p.nextToken()
+		if p.curTokenIs(lexer.IDENTIFIER) && p.curToken().Literal == "as" {
+			p.nextToken()
+			if !p.curTokenIs(lexer.IDENTIFIER) && !p.curTokenIs(lexer.DEFAULT) {
+				p.addError("expected name after 'as' in export")
+				return nil
+			}
+			sp.Exported = p.curToken().Literal
+			p.nextToken()
+		}
+		stmt.Specifiers = append(stmt.Specifiers, sp)
+		// 分隔符: 逗号或结束花括号。缺分隔符 (`{ a b }`) 是明确语法错误,
+		// 不能悄悄当成两个导出 —— 否则别名写漏 as 会被静默接受。
+		if p.curTokenIs(lexer.COMMA) {
+			p.nextToken()
+			continue
+		}
+		if p.curTokenIs(lexer.RBRACE) {
+			break
+		}
+		p.addError(fmt.Sprintf("expected ',' or '}' in export, got %s", p.curToken().Type))
+		return nil
+	}
+	if !p.curTokenIs(lexer.RBRACE) {
+		p.addError("expected '}' in export")
+		return nil
+	}
+	p.nextToken()
+
+	// 可选 `from "..."` → 具名再导出
+	if p.curTokenIs(lexer.IDENTIFIER) && p.curToken().Literal == "from" {
+		p.nextToken()
+		if !p.curTokenIs(lexer.STRING_LITERAL) {
+			p.addError("expected module path in export from")
+			return nil
+		}
+		stmt.Source = p.curToken().Literal
+		p.nextToken()
+	}
+	p.consumeSemicolon()
+	return stmt
 }
 
 // ==================== 辅助方法 ====================

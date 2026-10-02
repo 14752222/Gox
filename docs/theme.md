@@ -74,6 +74,7 @@ current();                           // 读当前 token 表 { token: "#rrggbbaa"
 | `menuHighlight` | 菜单项高亮底 | `#dce8f8ff` | `#2a3b52ff` |
 | `menuShortcut` | 快捷键文字 | `#777777ff` | `#909090ff` |
 | `menuSep` | 菜单分隔线 | `#d0d0d0ff` | `#3a3a3aff` |
+| `selection` | 文本选区高亮底（半透明） | `#9cc4ecb0` | `#2e547ad0` |
 
 颜色写法与 props 同一套：`#rgb` / `#rgba` / `#rrggbb` / `#rrggbbaa` /
 `rgb(r,g,b)` / `rgba(r,g,b,a)` / 命名色（见 `gfx/raster.go` 的 `namedColors`）。

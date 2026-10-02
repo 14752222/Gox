@@ -110,6 +110,18 @@ type GuiNode struct {
 	treeBuilt  bool
 	owner      *GuiNode
 
+	// 日历状态 (T08): calY/calM/calD 是**弹层光标**指向的那一天 (同时决定
+	// 弹层显示哪个月 —— 视图月份由光标推出来, 不另存一份, 两者就没有分叉的
+	// 可能)。calSet 区分"还没展开过"与合法日期 (0-0-0 不是日期)。
+	// 不复用 highlight: highlight 只能表达"第几格", 而方向键要能跨月。
+	calY, calM, calD int
+	calSet           bool
+
+	// 上传状态 (T08): upFiles 是**非受控**模式下的已选路径列表 (有 value
+	// prop 时以 prop 为准, 这个字段不被读)。upload 是这一族里唯一"两用"的
+	// 组件 —— 选文件的结果无法由脚本自己构造, 见 gfx/upload.go 的文件头。
+	upFiles []string
+
 	// 输入框状态 (P2-1): focused 是"是否持有键盘焦点"(由 setFocus 维护,
 	// 绘制时决定边框颜色与是否画光标), caret 是光标位置 (rune 下标)。
 	// textarea (P2-6) 复用这两个字段: caret 表示"列", caretLine 表示"行"
@@ -117,6 +129,20 @@ type GuiNode struct {
 	focused   bool
 	caret     int
 	caretLine int
+
+	// 选区 (P2-6b 续): anchor 是"不动的那一头", caret 是"跟着走的那一头";
+	// active 表示当前确实存在选区 (两点重合 = 没有选区, 与浏览器一致)。
+	// 与 caret 同一套口径 (逻辑行, 列), 所以单行 input 的 anchorLine 恒为 0。
+	selAnchorLine int
+	selAnchorCol  int
+	selActive     bool
+
+	// taAimX / taAimSet 是 ↑↓ 的**期望像素横坐标**: 软换行之后"第几列"在
+	// 不同视觉行里对应的 x 并不相同 (比例字体), 按列号上下走会让光标左右
+	// 乱跳。一次连续的上下移动期间锁定同一个 aimX, 一旦左右移动或编辑就
+	// 失效 (-1 / false) —— 让下一次上下重新以当前位置为准。
+	taAimX   int
+	taAimSet bool
 
 	// 滚动状态 (P2-5): offsetY/offsetX 是当前纵横偏移, contentH/contentW 是
 	// 上一次布局测出的内容总尺寸 (都由布局/滚轮/拖拽维护, 不来自 props)。
@@ -236,9 +262,20 @@ var knownTags = map[string]struct{}{
 	// T08 搜索框: input 的字段变体 (左侧放大镜; 获焦按 Enter 整段提交 onSearch)。
 	// 与 input 共用同一套字段机制 —— 见 gfx/search.go 的文件头。
 	"search": {},
+	// T08 表单容器两件套: label (字段标签 + 必填星号) / form (整表提交与取值)。
+	// 两者都不是取值控件, 但占了标签位就进白名单, 免得 h() 误报未知标签。
+	"label": {}, "form": {},
 	// T08 星级评分: 完全受控 (显示看 value, mousedown 几何命中即派发
 	// onChange({value})) —— 见 gfx/rating.go 的文件头。
 	"rating": {},
+	// T08 日期选择器 / 取色器: 与 select 同一套"字段 + 贴字段弹层"交互模型
+	// (展开态复用 expanded/popup, 状态机在 gfx/popupfield.go)。弹层内容由各自
+	// 的绘制分支整块画 (不物化子节点), 命中走几何 —— 见 datepicker.go 头注释。
+	// datepicker-popup / colorpicker-popup 由 Go 侧构造, 脚本写不到。
+	"datepicker": {}, "datepicker-popup": {},
+	"colorpicker": {}, "colorpicker-popup": {},
+	// T08 文件选择: 没有弹层 (点一下就调原生"打开文件"对话框), 见 upload.go。
+	"upload": {},
 	// P2-5 滚动容器
 	"scroll": {},
 	// P2-6 多行文本: textarea (编辑器) + text 的 wrap/ellipsis 已在 text 上
@@ -323,6 +360,10 @@ func JSBuiltinH(args ...object.Value) object.Value {
 	// 再跑任何 effect。
 	if len(args) > 1 {
 		if props, ok := args[1].(*object.Object); ok {
+			// T10 无障碍: 校验 aria-* 属性名与 role 取值。放在指令展开之前 ——
+			// 查的是**脚本写的原文**, 而 model/each 展开后补的键不是用户笔误的
+			// 来源 (它们由内核生成, 拼写必然是好的)。
+			a11yCheckProps(tagStr.Value, props)
 			// 元素级指令 (each / show) 先展开 (directive.go): 它们决定"这棵树长
 			// 什么样" (复制元素 / 决定建不建), 所以排在一切接线之前。返回非 nil
 			// 就表示这个元素被指令接管了 —— 元素副本由指令自己造, 这里直接收工。
@@ -356,6 +397,18 @@ func JSBuiltinH(args ...object.Value) object.Value {
 	// 放在 props/children 都接好之后: 包装脚本自己的 onClick 时要能读到它。
 	if node.Tag == "select" {
 		attachSelectHandler(node)
+	}
+	// T08 日历 / 色板: 与 select 同款 —— 内置的展开处理器包住脚本自己的
+	// onClick (组件语义与用户回调共存)。
+	if node.Tag == "datepicker" {
+		attachDatepickerHandler(node)
+	}
+	if node.Tag == "colorpicker" {
+		attachColorpickerHandler(node)
+	}
+	// T08 文件选择: 没有展开/收起, 处理器只负责发起一次原生选择。
+	if node.Tag == "upload" {
+		attachUploadHandler(node)
 	}
 	// 只有菜单栏直属的 menu 才是"点标题展开下拉"的一级菜单; 嵌在 menuitem
 	// 里的 menu 是子菜单, 由它的父项驱动展开 (见 openSubmenu)。
@@ -693,6 +746,9 @@ func disposeNode(n *GuiNode) {
 	n.focused = false
 	n.caret = 0
 	n.caretLine = 0
+	n.clearSel()
+	n.taAimSet = false
+	n.taAimX = 0
 	// 滚动状态同样复位 (偏移属于"这一棵子树自己的视图状态")
 	n.offsetY = 0
 	n.offsetX = 0
@@ -973,7 +1029,10 @@ func (n *GuiNode) buttonPadding() (padX, padY int) {
 func (n *GuiNode) hoverable() bool {
 	switch n.Tag {
 	case "button", "checkbox", "radio", "switch", "select", "select-option", "input", "search", "textarea", "slider",
-		"menu", "menu-item", "tooltip", "table-row", "tree-row", "list-item":
+		"menu", "menu-item", "tooltip", "table-row", "tree-row", "list-item",
+		// T08: 字段类三件套有"面", 悬停该有反馈 (日历/色板的弹层里没有可
+		// 悬停的子节点 —— 格子是画出来的, 不是节点)。
+		"datepicker", "colorpicker", "upload":
 		return true
 	}
 	return false

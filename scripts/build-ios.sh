@@ -14,6 +14,9 @@
 #     bash scripts/build-ios.sh                          # 模拟器 (iphonesimulator, arm64)
 #     bash scripts/build-ios.sh --sim                    # 同上 (兼容老参数)
 #     bash scripts/build-ios.sh --device                 # 真机 (iphoneos, 需签名证书)
+#     bash scripts/build-ios.sh --release                # Release 配置 (默认 Debug)
+#     bash scripts/build-ios.sh --archive                # 真机 Release + archive + 导出 .ipa
+#                                                        #   (TestFlight 分发用; 需签名证书)
 #     bash scripts/build-ios.sh --arch arm64,x86_64      # 模拟器 fat 库 (多架构 lipo)
 #
 # 环境变量 (gox build ios 会自动设置; 命令行参数优先):
@@ -21,8 +24,13 @@
 #     GOX_IOS_TARGET    simulator | device (默认 simulator)
 #     GOX_IOS_ARCH      额外模拟器架构 (如 x86_64, 与命令行 --arch 合并)
 #     GOX_ENTRY         打进 .app 的入口脚本 (默认 <project>/src/main.js)
+#     DEVELOPMENT_TEAM  archive/真机签名用的 Team ID (xcodebuild 原样透传)
+#     GOX_EXPORT_METHOD 分发方式: app-store-connect (默认, TestFlight/App Store)
+#                       | ad-hoc | development | enterprise
 #
 # 产物: <project>/dist/<name>.app
+#       --archive 时另有 dist/ios/Gox.xcarchive 与 dist/<name>.ipa
+#       (.ipa 经 `xcrun altool --upload-app -f <ipa> --apiKey <KEY>` 传 TestFlight)
 #
 # 依赖: Xcode (xcode-select -p 指向完整 Xcode 而不是 CLT)。
 set -euo pipefail
@@ -32,12 +40,16 @@ cd "$ROOT"
 
 SIM=""                # 缺省模拟器 (免签名); 命令行 --sim/--device 显式指定
 ARCHS=""
+CONFIG=Debug          # --release/--archive 切 Release (archive 隐含 Release)
+ARCHIVE=0             # --archive: 真机 Release + xcarchive + .ipa (TestFlight 链)
 while [ $# -gt 0 ]; do
   case "$1" in
     --sim) SIM=1; shift ;;
     --device) SIM=0; shift ;;
     --arch) ARCHS=$2; shift 2 ;;
-    *) echo "error: 未知参数 $1 (可用: --sim --device --arch <a[,b...]>)" >&2; exit 2 ;;
+    --release) CONFIG=Release; shift ;;
+    --archive) ARCHIVE=1; CONFIG=Release; SIM=0; shift ;;
+    *) echo "error: 未知参数 $1 (可用: --sim --device --arch <a[,b...]> --release --archive)" >&2; exit 2 ;;
   esac
 done
 # 命令行没指定目标时读环境变量 (gox build ios 传进来)
@@ -91,6 +103,7 @@ PYEOF
   fi
 fi
 APP_NAME=${GOX_NAME:-Gox}
+DIST_DIR_PREP="$PROJECT_DIR/dist"   # --archive 分支在 dist 组装段之前就要用
 
 SDK=$(xcrun -sdk "$SDK_NAME" --show-sdk-path)
 CC=$(xcrun -sdk "$SDK_NAME" --find clang)
@@ -152,35 +165,93 @@ if [ ! -d "$XCPROJ" ]; then
 fi
 
 if [ "$SIM" = 1 ]; then
-  echo "==> xcodebuild (iOS Simulator, ARCHS=${ARCH_LIST[*]})"
+  echo "==> xcodebuild (iOS Simulator, $CONFIG, ARCHS=${ARCH_LIST[*]})"
   # ARCHS 必须与 libgox.a 的架构对齐: generic destination 缺省会把工程支持的
   # 全部架构 (arm64 + x86_64) 各链一遍, 少编一边就会在另一个 slice 上链接失败。
   # -derivedDataPath: 中间产物/日志收进仓库 build/ 下, 不污染 ~/Library/Developer
   # 的全局 DerivedData (也免去沙箱/受限环境下写不了用户目录的问题)。
   xcodebuild \
-    -project "$XCPROJ" -scheme Gox -configuration Debug \
+    -project "$XCPROJ" -scheme Gox -configuration "$CONFIG" \
     -destination 'generic/platform=iOS Simulator' \
     -derivedDataPath "$SYMROOT/DerivedData" \
     ARCHS="${ARCH_LIST[*]}" ONLY_ACTIVE_ARCH=NO \
     SYMROOT="$SYMROOT" build
-  BUILT_APP="$SYMROOT/Debug-iphonesimulator/Gox.app"
+  BUILT_APP="$SYMROOT/$CONFIG-iphonesimulator/Gox.app"
 else
-  # 真机需要签名: 先探证书, 没有就给清晰指引, 别让 xcodebuild 的报错劝退人。
+  # 真机/archive 需要签名: 先探证书, 没有就给清晰指引, 别让 xcodebuild 的报错劝退人。
   if ! security find-identity -v -p codesigning 2>/dev/null | grep -q '"Apple Development\|"Apple Distribution\|"iOS Development\|"iOS Distribution'; then
     cat >&2 <<'EOF'
-gox build ios: 未检测到可用的签名证书 (--device 需要真机签名)。
+gox build ios: 未检测到可用的签名证书 (--device/--archive 需要真机签名)。
   1. Xcode → Settings → Accounts 登录 Apple ID (免费账号即可跑真机调试);
   2. 用 Xcode 打开 app/ios/Gox.xcodeproj, 在 Signing & Capabilities 勾选
      "Automatically manage signing" 并选择 Team;
-  3. 或在打包时显式指定: xcodebuild ... DEVELOPMENT_TEAM=<TeamID>;
-  4. 然后重跑 gox build ios --device。
+  3. 或在打包时显式指定: DEVELOPMENT_TEAM=<TeamID> bash scripts/build-ios.sh --archive;
+  4. 然后重跑 gox build ios --device / --archive。
 模拟器验证不需要证书: gox build ios --simulator。
 EOF
     exit 1
   fi
-  echo "==> xcodebuild (iOS Device)"
+  if [ "$ARCHIVE" = 1 ]; then
+    # ---- TestFlight 分发链: xcodebuild archive → exportArchive → .ipa ----
+    # .ipa 是 App Store Connect / TestFlight 的输入单位; 上传本身要 Apple
+    # Developer 账号的 API Key (见脚本末尾的成功提示), 这里把能自动化的都自动化。
+    ARCHIVE_PATH="$DIST_DIR_PREP/ios/Gox.xcarchive"
+    rm -rf "$ARCHIVE_PATH"
+    echo "==> xcodebuild archive (iOS Device, $CONFIG)"
+    if ! xcodebuild \
+        -project "$XCPROJ" -scheme Gox -configuration "$CONFIG" \
+        -destination 'generic/platform=iOS' \
+        -archivePath "$ARCHIVE_PATH" \
+        -derivedDataPath "$SYMROOT/DerivedData" \
+        SYMROOT="$SYMROOT" \
+        ${DEVELOPMENT_TEAM:+DEVELOPMENT_TEAM=$DEVELOPMENT_TEAM} \
+        archive; then
+      cat >&2 <<'EOF'
+gox build ios: archive 失败 (十有八九是签名配置)。
+  用 Xcode 打开 app/ios/Gox.xcodeproj → Signing & Capabilities 选好 Team,
+  或给脚本传 DEVELOPMENT_TEAM=<TeamID>; 再重跑 --archive。
+EOF
+      exit 1
+    fi
+    # ExportOptions.plist: 分发方式可换 (TestFlight 走 app-store-connect)。
+    EXPORT_DIR="$DIST_DIR_PREP/ios"
+    EXPORT_METHOD=${GOX_EXPORT_METHOD:-app-store-connect}
+    cat > "$EXPORT_DIR/ExportOptions.plist" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>method</key><string>$EXPORT_METHOD</string>
+  <key>signingStyle</key><string>automatic</string>
+  <key>uploadSymbols</key><true/>
+</dict>
+</plist>
+EOF
+    echo "==> exportArchive (method=$EXPORT_METHOD)"
+    if ! xcodebuild -exportArchive \
+        -archivePath "$ARCHIVE_PATH" \
+        -exportOptionsPlist "$EXPORT_DIR/ExportOptions.plist" \
+        -exportPath "$DIST_DIR_PREP" \
+        ${DEVELOPMENT_TEAM:+DEVELOPMENT_TEAM=$DEVELOPMENT_TEAM}; then
+      cat >&2 <<'EOF'
+gox build ios: 导出 .ipa 失败 (通常是签名身份/描述文件与分发方式不匹配)。
+  - TestFlight/App Store: 需要 Apple Distribution 证书 + App Store profile;
+  - ad-hoc: 需要 Ad Hoc profile 并把设备 UDID 加进去;
+  - 企业分发: GOX_EXPORT_METHOD=enterprise。
+  也可在 Xcode → Organizer 手动 Distribute App 对照报错排查。
+EOF
+      exit 1
+    fi
+    IPA=$(ls -t "$DIST_DIR_PREP"/*.ipa 2>/dev/null | head -1 || true)
+    echo "==> archive 完成: $ARCHIVE_PATH"
+    echo "==> .ipa 已导出: ${IPA:-<未找到>}"
+    echo "==> 传 TestFlight: xcrun altool --upload-app -f '$IPA' --apiKey <API_KEY_ID> --apiIssuer <ISSUER_ID>"
+    # archive 链的产物就是终态, 不再走下面的 dist/<name>.app 组装
+    exit 0
+  fi
+  echo "==> xcodebuild (iOS Device, $CONFIG)"
   if ! xcodebuild \
-      -project "$XCPROJ" -scheme Gox -configuration Debug \
+      -project "$XCPROJ" -scheme Gox -configuration "$CONFIG" \
       -destination 'generic/platform=iOS' \
       -derivedDataPath "$SYMROOT/DerivedData" \
       SYMROOT="$SYMROOT" build; then
@@ -191,7 +262,7 @@ gox build ios: 真机构建失败 (十有八九是签名配置)。
 EOF
     exit 1
   fi
-  BUILT_APP="$SYMROOT/Debug-iphoneos/Gox.app"
+  BUILT_APP="$SYMROOT/$CONFIG-iphoneos/Gox.app"
 fi
 
 if [ ! -d "$BUILT_APP" ]; then

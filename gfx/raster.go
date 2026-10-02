@@ -65,6 +65,10 @@ var (
 	colorMenuHighlight = color.RGBA{R: 0xDC, G: 0xE8, B: 0xF8, A: 255} // 菜单项高亮底
 	colorMenuShortcut  = color.RGBA{R: 0x77, G: 0x77, B: 0x77, A: 255} // 快捷键文字 (灰)
 	colorMenuSep       = color.RGBA{R: 0xD0, G: 0xD0, B: 0xD0, A: 255} // 分隔线
+
+	// 文本选区高亮底 (input / textarea)。半透明: 它画在文字**之下**, 不透明
+	// 会把选中的字盖掉。初值 = 亮色主题的 selection, 随主题经 syncThemeVars 更新。
+	colorSelection = color.RGBA{R: 0x9C, G: 0xC4, B: 0xEC, A: 0xB0}
 )
 
 // 弹层缺省外观的十六进制写法: Go 侧构造节点时写进 props, 于是"缺省样式"
@@ -351,28 +355,32 @@ func drawNode(img *image.RGBA, n *GuiNode) {
 		if n.textDrawnByTextAncestor() {
 			return
 		}
-		DrawText(img, clipRect, n.Text, n.Box.X, n.Box.Y, n.FontSize(),
-			tint(n.textColor(), disabled), n.Box.W)
+		// 样式 (字体族/粗斜/行高/字距) 沿父链解析 —— 与 layout 的测量走同一
+		// 个入口, 保证"盒子里装得下的"和"画出来的"是同一批字符。
+		DrawTextStyled(img, clipRect, n.Text, n.Box.X, n.Box.Y,
+			resolveTextStyle(n), tint(n.textColor(), disabled), n.Box.W)
 		return
 	}
 	switch n.Tag {
 	case "text":
 		// 文本容器: 拼接 #text 子节点; 开了 wrap 就逐行绘制 (行高统一取
-		// lineHeight, 与 textblock.go 的测量口径一致), 否则单行截断。
+		// resolveTextStyle 的行高, 与 textblock.go 的测量口径一致), 否则
+		// 单行截断。
 		if text := n.TextContent(); text != "" {
 			c := tint(n.textColor(), disabled)
+			st := resolveTextStyle(n)
 			if n.wrapsText() {
 				lines := n.blockLines(n.Box.W)
-				lh := lineHeight(n.FontSize())
+				lh := lineHeightStyled(st)
 				for i, ln := range lines {
 					if y := n.Box.Y + i*lh; y >= n.Box.Y+n.Box.H {
 						break // 盒高不够 (被父容器压过) 就不再画多余的整行
 					}
-					DrawText(img, clipRect, ln, n.Box.X, n.Box.Y+i*lh,
-						n.FontSize(), c, n.Box.W)
+					DrawTextStyled(img, clipRect, ln, n.Box.X, n.Box.Y+i*lh,
+						st, c, n.Box.W)
 				}
 			} else {
-				DrawText(img, clipRect, text, n.Box.X, n.Box.Y, n.FontSize(), c, n.Box.W)
+				DrawTextStyled(img, clipRect, text, n.Box.X, n.Box.Y, st, c, n.Box.W)
 			}
 		}
 	case "checkbox", "radio", "switch", "progress", "separator", "spacer":
@@ -436,6 +444,25 @@ func drawNode(img *image.RGBA, n *GuiNode) {
 	case "rating":
 		// 星级评分: 装饰先补画, 再逐格画星 (见 gfx/rating.go)。
 		paintRating(img, n, disabled)
+	case "label":
+		// 表单标签: 装饰 + 必填星号 (文字子节点由通用机制绘制)。
+		paintLabel(img, n, disabled)
+	case "form":
+		// 表单容器: 只有装饰 (背景/边框), 子节点由通用机制排布绘制。
+		paintBoxDecor(img, n, disabled)
+	case "datepicker":
+		// 日期字段: 白底 + 边框 + 值 + 日历图标 (见 gfx/datepicker.go)。
+		paintDatepicker(img, n, disabled)
+	case "datepicker-popup":
+		// 日历弹层: 整块自绘 (月份头 / 星期行 / 日期网格 / 回显)。
+		paintDatepickerPopup(img, n, disabled)
+	case "colorpicker":
+		paintColorpicker(img, n, disabled)
+	case "colorpicker-popup":
+		// 色板弹层: 整块自绘。
+		paintColorpickerPopup(img, n, disabled)
+	case "upload":
+		paintUpload(img, n, disabled)
 	case "scroll":
 		paintScroll(img, n, disabled)
 	case "textarea":

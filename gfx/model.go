@@ -31,10 +31,16 @@ import (
 //	input · textarea  model ⇄ value      onInput({value})   字符串
 //	slider            model ⇄ value      onInput({value})   数字 (控件给什么就是什么, 不做转换)
 //	select            model ⇄ value      onChange({value})  字符串
+//	datepicker        model ⇄ value      onChange({value})  "YYYY-MM-DD" 字符串
+//	colorpicker       model ⇄ value      onChange({value})  颜色字符串 (#rrggbb 或配色板原样)
+//	upload            model ⇄ value      onChange({paths})  字符串数组 (载荷里取 paths 那一项)
 //	rating            model ⇄ value      onChange({value})  数字 (第几颗星)
 //	checkbox · switch model ⇄ checked    onClick()          布尔 (写入 = 当前值取反)
 //	radio             model ⇄ checked    onClick()          选中时把 value 属性写进 model
 //	                  ^ checked 是**派生**的: model() === value, 互斥由"共用一个 model"天然成立
+//
+// upload 那一行是这一族里唯一的**两用**组件: 它没有 value 时自己也存一份已选列表,
+// model 只是把"有 value 时"的那种接法写短, 不改变它的非受控语义 (见 gfx/upload.go)。
 //
 // model 收两种东西:
 //
@@ -181,9 +187,10 @@ func modelWrite(set object.Value, val object.Value) {
 	}
 }
 
-// modelPickPayload 从事件载荷里取新值: input / textarea / slider / select / rating 都派发
-// 一个 `{value}` 对象, 这里原样转手 —— 类型由控件决定, model 不做任何转换
-// (不做转换才不会偷偷把 "3" 变成 3, 也不会把布尔变成 "true")。
+// modelPickPayload 从事件载荷里取新值: input / textarea / slider / select / rating /
+// datepicker / colorpicker 都派发一个 `{value}` 对象, 这里原样转手 —— 类型由控件决定,
+// model 不做任何转换 (不做转换才不会偷偷把 "3" 变成 3, 也不会把布尔变成 "true")。
+// 唯一的例外是 upload (载荷是 {files, paths}), 见 modelPickPaths。
 func modelPickPayload(arg object.Value) object.Value {
 	if arg == nil {
 		return object.UndefinedSingleton
@@ -192,6 +199,21 @@ func modelPickPayload(arg object.Value) object.Value {
 		return v
 	}
 	return object.UndefinedSingleton
+}
+
+// modelPickPaths 是 <upload> 的取载荷方式: 它的载荷形状是 {files, paths},
+// 而 value 读的是 paths, 所以写回也只取 paths 那一项。
+//
+// 载荷里没有 paths 时写回**空数组**而不是 undefined: upload 的 value 按数组解释,
+// 让 signal 从"数组"变成"undefined"会让下游的 .length / .map 直接抛错 ——
+// 而空数组正是"一个文件都没选"的准确表达 (与 uploadPaths 同口径)。
+func modelPickPaths(arg object.Value) object.Value {
+	if arg != nil {
+		if v, ok := arg.GetProperty("paths"); ok && v != nil {
+			return v
+		}
+	}
+	return object.NewArray(nil)
 }
 
 // modelToggle 造"取反"写值器: checkbox / switch 的 onClick **没有载荷**,
@@ -238,10 +260,17 @@ func expandModelProp(n *GuiNode, props *object.Object) {
 		modelSetProp(props, "value", readVal)
 		modelSetProp(props, "onInput", modelEvent(props, "onInput", mb, writable, modelPickPayload))
 
-	case "select", "rating":
+	case "select", "rating", "datepicker", "colorpicker":
 		modelOverrideWarn(n.Tag, props, "value")
 		modelSetProp(props, "value", readVal)
 		modelSetProp(props, "onChange", modelEvent(props, "onChange", mb, writable, modelPickPayload))
+
+	case "upload":
+		// upload 的载荷是 {files, paths}: 写回 value 该拿的是 paths (value 读的就是它),
+		// 而不是整个载荷对象 —— 否则 signal 里会躺一个"文件描述符数组", 显示与再读都对不上。
+		modelOverrideWarn(n.Tag, props, "value")
+		modelSetProp(props, "value", readVal)
+		modelSetProp(props, "onChange", modelEvent(props, "onChange", mb, writable, modelPickPaths))
 
 	case "checkbox", "switch":
 		modelOverrideWarn(n.Tag, props, "checked")
@@ -265,7 +294,7 @@ func expandModelProp(n *GuiNode, props *object.Object) {
 
 	default:
 		modelWarnOnce("tag:"+n.Tag,
-			"model: 只支持受控组件 (input/textarea/slider/select/rating/checkbox/switch/radio), 标签 %q 已忽略", n.Tag)
+			"model: 只支持受控组件 (input/search/textarea/slider/select/rating/datepicker/colorpicker/upload/checkbox/switch/radio), 标签 %q 已忽略", n.Tag)
 	}
 }
 

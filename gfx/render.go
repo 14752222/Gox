@@ -59,6 +59,12 @@ type app struct {
 	pressChain []*GuiNode
 	dragTarget *GuiNode // 鼠标捕获目标: 非空时 MouseMove 全部路由给它 (slider 等拖拽)
 
+	// textDrag 是"正在被拖选的编辑框" (input / textarea)。与 dragTarget 分开
+	// 保存而不是复用: 两者的 MouseMove 处理完全不同 (一个是改滚动/值, 一个是
+	// 移动插入点), 混在一个字段里就得靠标签再分流一次 —— 而标签在拖拽中途
+	// 可能变 (受控重建)。释放时机一致, 都走 endDrag。
+	textDrag *GuiNode
+
 	// swallowClick 吃掉紧随其后的那次点击 (P2-3): 点在下拉弹层之外时,
 	// 这次按下只用来"收起弹层", 不该顺带触发下面的控件。
 	// Down 与 Up 是两个事件, 所以这个消息要在两次事件之间留存。
@@ -84,6 +90,35 @@ type app struct {
 	// 上一帧发给宿主的快照, 内容没变就不再跨一次语言边界 (见 reportIMEEditor)。
 	lastIME     IMEEditor
 	imeReported bool
+
+	// 合流备注 (2026-10-02): 这里原本还有一套 §四 的位置缓存 (posX/posY/hasPos),
+	// 用来在"后端读不到位置"时让 bounds()/position() 退回最近一次记下的值。
+	// 合流后统一到 M4 的读数口径: **读数只认平台真值, 读不到就是读不到**
+	// (position() 报 ok=false, bounds() 的 x/y 报 0)。缓存字段已删 ——
+	// 它当时只被测试读、生产代码一个读者都没有, 留着只会让下一个改这块的人
+	// 以为"读不到位置有兜底"。
+
+	// 模态关系 (§四 窗口/系统缺口): modalParent 是"挡住本窗口的那个子窗口",
+	// 非空 ⇒ 本窗口的输入被屏蔽; modalChild 是"本窗口挡住的子窗口", 非空 ⇒
+	// 关本窗口时要顺带把它关掉。两者互逆, 由 attachModal/detachModal 成对维护。
+	//
+	// 为什么模态做在内核层而不是各后端: "谁被挡住"是**跨窗口的语义**, 后端
+	// 只看得到自己那个 hwnd。做在 gfx 层后, 假 Surface 也能完整测出模态行为
+	// (真后端的 EnableWindow 只是锦上添花的原生观感)。
+	modalParent *app
+	modalChild  *app
+
+	// 光标状态 (cursor.go): cursorOverride 是窗口级强制形状 (空 = 无覆盖),
+	// cursorShape 是最近一次真正下发给后端的形状 (避免每次 MouseMove 都
+	// 调一次平台 API)。
+	cursorOverride string
+	cursorShape    string
+
+	// win 是本窗口的句柄 (Mount 里挂上)。存指针而不是每次新造一个 Window:
+	// 句柄可以是"别的窗口的父窗口/模态父窗口"这类**跨窗口引用**, 若每次
+	// 现造一个包装, 两边拿到的 JS 对象就不是同一个 (== 比较会失败, 脚本
+	// 用 Set 记录窗口也没法去重)。
+	win *Window
 }
 
 var (
@@ -528,6 +563,14 @@ func (a *app) processEvents() bool {
 		if !ok {
 			break
 		}
+		// 模态屏蔽 (§四 窗口/系统缺口): 被模态子窗口挡着的窗口只保留
+		// 关闭/尺寸/移动/离场四类事件, 其余输入全部吞掉 —— 事件在**入口**
+		// 就被拦下, 于是焦点、悬停、按压、拖动这些交互态一个都不会被改,
+		// 解除遮挡后界面回到原样 (而不是留下"被挡住期间误点的痕迹")。
+		if a.blockedByModal() && a.modalBlocksEvent(ev.Kind) {
+			a.modalBump()
+			continue
+		}
 		a.dispatchEvent(ev)
 		if ev.Kind == EventClose {
 			sawClose = true
@@ -546,6 +589,10 @@ func (a *app) processEvents() bool {
 	if need {
 		a.redraw()
 	}
+	// T10 无障碍: 布局框刚刚刷新的这一刻, 检查焦点是否还站得住 (弹层开合 /
+	// 条件渲染摘节点 / 控件被禁用都会让焦点悬空)。校正本身若改了焦点会重新
+	// 标脏, 由下一轮 processEvents 画出新的焦点框。
+	a.a11yReconcileFocus()
 	if sawClose {
 		a.close()
 		return false
@@ -588,8 +635,7 @@ func (a *app) dispatchEvent(ev Event) {
 		a.mu.Lock()
 		a.needDraw = true
 		a.fullDirty = true
-		a.mu.Unlock()
-		// 屏幕适配 A (2026-09-19 拍板): resize 是**窗口级**事件, 派发给根节点
+		a.mu.Unlock() // 屏幕适配 A (2026-09-19 拍板): resize 是**窗口级**事件, 派发给根节点
 		// 链上的 onResize({width, height}) —— 不走焦点链 (焦点在哪个输入框上
 		// 与"窗口变了多大"无关), 直接从布局根找处理器。载荷字段名与
 		// getSystemInfo (设备 API 方案 B) 统一为 width/height, 两处词汇一次定好。
@@ -605,6 +651,43 @@ func (a *app) dispatchEvent(ev Event) {
 	case EventIMECommit:
 		// P2-7: 整批插入到当前焦点的编辑框 (焦点不可编辑时内部丢弃)
 		a.insertIMECommit(ev.Text)
+	case EventMove:
+		// 窗口被移动 (§四 窗口/系统缺口): 先把载荷换算到与 position() /
+		// bounds() / moveTo **同一个参照系** (所在显示器工作区左上角 + 设备
+		// 像素), 再派给布局根上的 onMove。
+		//
+		// 为什么要换算而不是原样转发: 后端填的 X/Y 是平台原生绝对坐标
+		// (win32/x11 设备像素、cocoa 点), 参照系与单位都与脚本口径不同。
+		// 原样转发会让 onMove 的载荷**喂不回 moveTo** —— 而"把它挪回去 /
+		// 按落点吸附"正是脚本最想干的事, 今天得自己查显示器几何补一次换算。
+		// 换算走 displayOfWorkSurface (与 moveTo 同一解析点), 于是两者严格
+		// 互逆: onMove 报 (a,b) ⇒ moveTo(a,b) 把窗口放回原处。
+		//
+		// 与 onResize 同样的派发口径: 窗口级事件走向布局根, **不走焦点链**
+		// —— 焦点在哪个输入框上与"窗口挪到哪儿了"无关。载荷字段与
+		// bounds() / position() 统一为 x/y (一次定好两处词汇)。
+		//
+		// 线程: 这里在 Pump 的 GUI 线程上 (DrainTasks 在同一条 goroutine 上
+		// 执行 moveOnGUI, 见 window_move.go 的线程纪律), 所以解析所在屏时
+		// 调后端 DisplayOf 是安全的。
+		mx, my := ev.X, ev.Y
+		a.mu.Lock()
+		s := a.surface
+		a.mu.Unlock()
+		if d, has := displayOfWorkSurface(s); has {
+			mx, my = toDevicePx(ev.X-d.WorkX, d), toDevicePx(ev.Y-d.WorkY, d)
+		}
+		a.mu.Lock()
+		a.needDraw = true // 位置变了通常意味着重绘 (跨屏时 Scale 也可能变)
+		a.mu.Unlock()
+		if root := a.rootNode(); root != nil {
+			if h := handlerInChain(root, "onMove"); h != nil {
+				arg := object.NewObject()
+				arg.SetProperty("x", object.NewNumber(float64(mx)))
+				arg.SetProperty("y", object.NewNumber(float64(my)))
+				a.callHandler(h, "onMove", arg)
+			}
+		}
 	}
 }
 
@@ -759,7 +842,6 @@ func (a *app) setFocus(target *GuiNode) {
 
 // handleKey 键盘事件: 先交给焦点链上的字段类组件内部消费 (下拉框的展开/
 // 高亮/选择), 未被消费的再沿祖先链找 JS 处理器。
-// Tab 遍历仍不做: 需要 focusable 注册表, 留待后续版本 (见 README 的 GUI 限制一节)。
 func (a *app) handleKey(key, name string, ev Event) {
 	a.mu.Lock()
 	n := a.focused
@@ -772,6 +854,24 @@ func (a *app) handleKey(key, name string, ev Event) {
 	}
 	if name == "onKeyDown" && a.handleFieldKey(n, key, ev) {
 		return
+	}
+	// T10 无障碍: Tab / Shift+Tab 在遍历序里换焦点 (绕回)。排在字段消费之后
+	// —— 输入框里按 Tab 也是"离开这个字段", 不是插入制表符 (文本编辑器的
+	// 制表符不在 v1 范围内)。焦点框由 drawFocusRing 照旧绘制。
+	if name == "onKeyDown" && key == "Tab" {
+		if a.a11yTab(ev.Shift) {
+			return
+		}
+	}
+	// T08 表单: 焦点在输入框里按回车 = 提交所在的 form (浏览器里
+	// <input> 回车提交表单的同一套直觉)。排在 a11y 激活之前 —— 两者互斥
+	// (formShouldSubmit 会在路上遇到可激活控件时退出), 顺序只影响可读性。
+	if name == "onKeyDown" && key == "Enter" && !ev.Ctrl && !ev.Alt && !ev.Shift {
+		if formShouldSubmit(n) {
+			if a.formSubmit(formInChain(n)) {
+				return
+			}
+		}
 	}
 	// 全局快捷键 (P3-5) 排在字段消费之后: 焦点在输入框里时 Ctrl+S 该不该
 	// 触发"保存"? 应该 —— 输入框不消费带 Ctrl 的组合键 (见 input.go),
@@ -811,6 +911,13 @@ func (a *app) handleKey(key, name string, ev Event) {
 		}
 		a.tooltipHide()
 	}
+	// T10 无障碍: 组件的方向键语义 (radio 组内移动 / 滑块调值 / 星级加减 /
+	// 切页翻页) 与 Enter/Space 激活。排在 Esc 兜底之后、脚本回调之前 ——
+	// 菜单与下拉的键盘处理更早 (它们是"弹层内部"的键盘), 这里管的是
+	// "焦点停在控件本体上"的那一类。没做事就不消费, 按键继续给脚本。
+	if name == "onKeyDown" && a.a11yHandleKey(n, key, ev) {
+		return
+	}
 	handler := handlerInChain(n, name)
 	if handler == nil {
 		return
@@ -830,6 +937,11 @@ func (a *app) handleKey(key, name string, ev Event) {
 // 拖动是"独占"交互 —— 鼠标从 A 拖到 B 的过程中划过一堆控件, 让它们挨个闪
 // 悬停高亮既难看, 也暗示"你可以点它们" (实际上这一串移动属于同一个手势)。
 func (a *app) handleMouseMove(x, y int) {
+	// 编辑框拖选优先于通用拖动: 选区跟着光标走, 不改变滚动/值。
+	if td := a.textDragTarget(); td != nil {
+		a.moveCaretTo(td, x, y)
+		return
+	}
 	a.mu.Lock()
 	drag := a.dragTarget
 	a.mu.Unlock()
@@ -949,7 +1061,7 @@ func (a *app) handleMouseDown(x, y int) {
 		a.releasePress()
 		return
 	}
-	if a.closeSelectOnOutsideClick(root, x, y) {
+	if a.closePopupFieldOnOutsideClick(root, x, y) {
 		// 这次按下只服务于"收起弹层": 置吞掉标记, 拖动悬停与按压态一并复位
 		a.mu.Lock()
 		a.swallowClick = true
@@ -973,6 +1085,16 @@ func (a *app) handleMouseDown(x, y int) {
 	if target == nil || target.disabledInChain() {
 		a.releasePress()
 		return
+	}
+	// 编辑框的文本拖选: 按下即定位插入点并把锚点钉在那儿 (选区随之后的
+	// MouseMove 增长)。这里**不 return** —— 编辑框照样走下面的按压流程,
+	// 视觉反馈与其它控件同一条路径 (标签分流的其余分支对编辑框都是 no-op)。
+	//
+	// 单行 input 也支持: 选区只是"同一行里的一段列区间", 与多行共用一套代码。
+	if ta := textareaInChain(target); ta != nil {
+		a.beginTextDrag(ta, x, y)
+	} else if in := inputInChain(target); in != nil {
+		a.beginTextDrag(in, x, y)
 	}
 	// slider (P2-8): 按下即锁定拖动目标, 并按点击位置**直接跳值** ——
 	// 不必"先按住再拖", 与浏览器 `<input type=range>` 的手感一致。
@@ -1012,21 +1134,22 @@ func (a *app) handleMouseDown(x, y int) {
 		a.ratingPick(rt, x)
 		return
 	}
-	a.setPress(pressChainOf(target))
-}
-
-// closeSelectOnOutsideClick 若有展开中的下拉框且 (x,y) 落在其弹层之外,
-// 收起它并返回 true。同时只处理一个: 打开新下拉前旧的一定已经收起了
-// (见 openSelect), 所以树上最多只有一个展开的弹层。
-func (a *app) closeSelectOnOutsideClick(root *GuiNode, x, y int) bool {
-	for _, sel := range expandedSelects(root) {
-		if sel.popup != nil && sel.popup.Box.Contains(x, y) {
-			continue
+	// datepicker / colorpicker 的弹层内容 (T08): 日历格子与色板格子画在
+	// 弹层自己的绘制分支里 (没有子节点可挂 onClick), 所以与 tabs/rating
+	// 同款 —— mousedown 几何命中即派发。判定顺序在 rating 之后: 三者标签
+	// 互斥, 顺序只影响可读性。命中在弹层之外时 dateHitAt/colorHitAt 返回
+	// -1 (点字段本身归字段的 on* 处理器), 于是这次按下继续走下面的通用流程。
+	if dp := datepickerInChain(target); dp != nil {
+		if dp.expanded && dp.dateHitAt(x, y) != 0 {
+			return
 		}
-		a.closeSelect(sel)
-		return true
 	}
-	return false
+	if cp := colorpickerInChain(target); cp != nil {
+		if cp.expanded && cp.colorHitAt(x, y) != -1 {
+			return
+		}
+	}
+	a.setPress(pressChainOf(target))
 }
 
 // closeMenuOnOutsideClick 若有展开中的菜单且 (x,y) 落在**整棵菜单树**
@@ -1142,12 +1265,16 @@ func (a *app) endDrag() {
 	a.mu.Lock()
 	t := a.dragTarget
 	a.dragTarget = nil
+	td := a.textDrag
+	a.textDrag = nil
 	s := a.surface
 	a.mu.Unlock()
-	if t == nil {
+	if t == nil && td == nil {
 		return
 	}
-	t.slideValSet = false
+	if t != nil {
+		t.slideValSet = false
+	}
 	if c, ok := s.(capturer); ok {
 		c.ReleasePointer()
 	}
@@ -1212,6 +1339,11 @@ func (a *app) setHover(target *GuiNode) {
 			markNodeDirty(n)
 		}
 	})
+	// 光标形状挂在悬停链的入口上而不是 handleMouseMove 里: 悬停链是"鼠标
+	// 底下是谁"的**唯一**判定点, 而光标形状要的正是同一个答案。放在这里,
+	// MouseMove / MouseLeave / 点击引发的链变化全都自动带上光标校正,
+	// 不必在四条路径上各抄一遍。
+	a.applyNodeCursor(target)
 }
 
 // setPress 设置按压链 (nil = 全部释放)。
@@ -1295,6 +1427,11 @@ func (a *app) close() {
 		a.mu.Lock()
 		a.closed = true
 		a.mu.Unlock()
+		// 模态关系先解: 被本窗口挡着的父窗口要立刻恢复可交互 (不等下一帧),
+		// 本窗口挡着的模态子窗口要跟着关掉 —— 否则它会变成"永远置顶、
+		// 关不掉、也没人能解除遮挡"的孤儿 (见 modal.go 的文件头)。
+		detachModal(a)
+		a.closeModalChild()
 		unregisterApp(a)
 	})
 }
@@ -1632,7 +1769,7 @@ func defaultWindowConfig() WindowConfig {
 	return WindowConfig{Title: "Gox", Width: 400, Height: 300}
 }
 
-// applyWindowConfig 从普通对象读 title/width/height (与字段级容错口径一致:
+// applyWindowConfig 从普通对象读窗口配置 (与字段级容错口径一致:
 // 类型不符的项静默落回缺省, "title 写成数字"这类笔误不至于让窗口开不出来)。
 func applyWindowConfig(cfg *WindowConfig, o *object.Object) {
 	if v, ok := o.GetProperty("title"); ok {
@@ -1650,6 +1787,66 @@ func applyWindowConfig(cfg *WindowConfig, o *object.Object) {
 			cfg.Height = int(n.Value)
 		}
 	}
+	// 位置: x/y 单独出现也算 (只给 x 时 y 用缺省)。x/y 是**相对目标显示器
+	// 工作区**的设备像素 (与 moveTo 同一口径, 见 WindowConfig 的说明)。
+	//
+	// 合流备注 (2026-10-02): §四 那版在这里额外记一个 HasPos 表示"脚本给过
+	// 没有"; 合流后统一由 windowPosSpecified(cfg) 现场判 (哨兵值 + 全零约定),
+	// 免得同一个事实存两份、迟早在某条路径上对不上。
+	if v, ok := o.GetProperty("x"); ok {
+		if n, ok := v.(*object.Number); ok {
+			cfg.X = int(n.Value)
+		}
+	}
+	if v, ok := o.GetProperty("y"); ok {
+		if n, ok := v.(*object.Number); ok {
+			cfg.Y = int(n.Value)
+		}
+	}
+	readBound(o, "minWidth", "minHeight", "maxWidth", "maxHeight", cfg)
+	if v, ok := o.GetProperty("resizable"); ok {
+		cfg.NoResize = !v.IsTruthy()
+	}
+	if v, ok := o.GetProperty("fullscreen"); ok {
+		cfg.Fullscreen = v.IsTruthy()
+	}
+	if v, ok := o.GetProperty("level"); ok {
+		cfg.Level = object.ToString(v)
+	}
+	// modal: 两种写法都收 —— `modal: parentHandle` (简写) 与
+	// `modal: true, parent: parentHandle` (显式)。前者是常态,
+	// 后者留给"配置对象是拼出来的"那类脚本。
+	if v, ok := o.GetProperty("modal"); ok {
+		if w := windowHandleOf(v); w != nil {
+			cfg.Modal, cfg.ModalParent = true, w
+		} else if v.IsTruthy() {
+			cfg.Modal = true // 父窗口另给 (见下面的 parent)
+		}
+	}
+	if v, ok := o.GetProperty("parent"); ok {
+		if w := windowHandleOf(v); w != nil {
+			cfg.Modal, cfg.ModalParent = true, w
+		}
+	}
+}
+
+// readBound 从配置对象读四个尺寸约束 (0/负数/坏类型 → 不约束)。
+// 负数按"不约束"处理: MINMAXINFO 上的负值在各平台表现不一 (win32 会得到
+// 拖不动的怪窗口), 归一在入口最省事。
+func readBound(o *object.Object, minWKey, minHKey, maxWKey, maxHKey string, cfg *WindowConfig) {
+	get := func(key string) int {
+		v, ok := o.GetProperty(key)
+		if !ok {
+			return 0
+		}
+		n, ok := v.(*object.Number)
+		if !ok || n.Value <= 0 {
+			return 0
+		}
+		return int(n.Value)
+	}
+	cfg.MinWidth, cfg.MinHeight = get(minWKey), get(minHKey)
+	cfg.MaxWidth, cfg.MaxHeight = get(maxWKey), get(maxHKey)
 }
 
 // windowConfigFromProps 从 <window> 元素的 props 读窗口配置 (容错口径同
@@ -1672,6 +1869,39 @@ func windowConfigFromProps(n *GuiNode) WindowConfig {
 	}
 	if v, ok := n.PropNum("height"); ok && v > 0 {
 		cfg.Height = int(v)
+	}
+	// 位置: x/y 单独出现也算 (与配置对象同口径; "给过没有"由
+	// windowPosSpecified 现场判, 不另存一份状态)。
+	if v, ok := n.PropNum("x"); ok {
+		cfg.X = int(v)
+	}
+	if v, ok := n.PropNum("y"); ok {
+		cfg.Y = int(v)
+	}
+	numProp := func(name string) int {
+		if v, ok := n.PropNum(name); ok && v > 0 {
+			return int(v)
+		}
+		return 0
+	}
+	cfg.MinWidth, cfg.MinHeight = numProp("minWidth"), numProp("minHeight")
+	cfg.MaxWidth, cfg.MaxHeight = numProp("maxWidth"), numProp("maxHeight")
+	if b, ok := n.PropBool("resizable"); ok {
+		cfg.NoResize = !b
+	}
+	if b, ok := n.PropBool("fullscreen"); ok {
+		cfg.Fullscreen = b
+	}
+	if s, ok := n.PropStr("level"); ok {
+		cfg.Level = s
+	}
+	// modal={parentHandle}: props 路径同样收句柄 (与配置对象一致)。
+	if v, ok := n.Props["modal"]; ok {
+		if w := windowHandleOf(v); w != nil {
+			cfg.Modal, cfg.ModalParent = true, w
+		} else if v.IsTruthy() {
+			cfg.Modal = true
+		}
 	}
 	return cfg
 }
@@ -1745,7 +1975,36 @@ func Mount(root *GuiNode, cfg WindowConfig) (*Window, error) {
 		dirtyNodes: map[*GuiNode]struct{}{},
 	}
 	registerApp(a)
+	// 缩放开关的初值来自配置 (缺省 true): 句柄的 isResizable() 要能读回
+	// "现在是什么状态", 而配置里用的是否定式 NoResize (见 WindowConfig
+	// 的说明), 在这里翻正一次, 之后各处口径统一。
+	win := &Window{a: a, title: cfg.Title, level: windowLevel(cfg.Level), resizable: !cfg.NoResize}
+	a.win = win
+	// 模态关系在首帧之前挂好: 若等首帧之后再挂, 父窗口会有一帧"点得动"的
+	// 窗口期 (用户手快就能点进去), 而模态的全部意义就是不给人这个窗口期。
+	// 父窗口自己去重 (覆盖式语义见 attachModal)。
+	if cfg.Modal && cfg.ModalParent != nil && cfg.ModalParent.a != nil {
+		attachModal(cfg.ModalParent.a, a)
+	}
+	// 窗口管理配置在首帧前落地 (尺寸约束/层级/全屏/位置都是"创建时既成
+	// 事实"的东西, 放到首帧后会让用户看见窗口先跳一下再变) —— 经句柄走,
+	// 于是"后端不支持就降级"的逻辑只有一份。
+	if cfg.Level != "" && windowLevel(cfg.Level) != "normal" {
+		win.SetLevel(cfg.Level)
+	}
+	if cfg.MinWidth+cfg.MinHeight+cfg.MaxWidth+cfg.MaxHeight > 0 {
+		win.SetSizeConstraints(cfg.MinWidth, cfg.MinHeight, cfg.MaxWidth, cfg.MaxHeight)
+	}
+	if cfg.NoResize {
+		win.SetResizable(false)
+	}
+	if windowPosSpecified(cfg) {
+		win.MoveTo(cfg.X, cfg.Y)
+	}
+	if cfg.Fullscreen {
+		win.SetFullscreen(true)
+	}
 
 	a.redraw() // 首帧
-	return &Window{a: a, title: cfg.Title}, nil
+	return win, nil
 }

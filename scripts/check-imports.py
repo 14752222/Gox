@@ -46,6 +46,9 @@ GO_FILES = [
     "gfx/dev.go", "gfx/native_app.go", "gfx/native_device.go", "gfx/native_geo.go",
     "gfx/native_media.go", "gfx/native_permission.go", "gfx/render.go", "gfx/router.go",
     "gfx/screen.go", "gfx/theme.go", "gfx/view.go", "gfx/viewport.go",
+    # T10 无障碍: 注册 gx/a11y（focusOrder/focusNode/focusNext/focusPrev/roles）。
+    # 漏加会让 docs/accessibility.md 的 import 示例被误判成「模块不存在」。
+    "gfx/a11y.go",
 ]
 
 TEXT_EXT = {".md", ".js", ".jsx", ".mjs", ".ts", ".tsx"}

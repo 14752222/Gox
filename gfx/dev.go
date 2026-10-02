@@ -30,6 +30,14 @@ func init() {
 	object.RegisterBuiltinModule("gx/dev", func() map[string]object.Value {
 		return map[string]object.Value{
 			"devSnapshot": object.NewBuiltin("devSnapshot", jsDevSnapshot),
+			// [M3] Inspector v1: 元素树查看 + console 留存 + REPL 求值。
+			// 实现分别在 dev_tree.go / dev_console.go / dev_eval.go;
+			// 名字是 API 真源 (scripts/check-imports.py 从这里抽取)。
+			"devTree":  object.NewBuiltin("devTree", jsDevTree),
+			"devNode":  object.NewBuiltin("devNode", jsDevNode),
+			"devProps": object.NewBuiltin("devProps", jsDevProps),
+			"devLogs":  object.NewBuiltin("devLogs", jsDevLogs),
+			"devEval":  object.NewBuiltin("devEval", jsDevEval),
 		}
 	})
 }

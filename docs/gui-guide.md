@@ -73,6 +73,7 @@ render(
 | 能力 | Windows（win32） | Linux（X11） | macOS（cocoa） | 说明 |
 |---|---|---|---|---|
 | 窗口 | 支持 | 支持（Wayland 走 XWayland） | 支持 | 多窗口见 [9.5](#95-多窗口)；macOS 上 `w.close()` 只解除注册不销毁平台窗口（与 win32 同语义） |
+| 窗口管理<br>（位置 / 层级 / 约束 / 全屏 / 光标 / 模态） | 全部支持 | 除光标形状外全部支持 | 全部支持 | 见 [9.5 的"窗口管理"](#95-多窗口)；未实现的能力**静默降级**为默认行为，不报错 |
 | 字体 | 静态候选路径 | 惰性扫描系统字体目录 | 静态候选优先 + 目录扫描 | Linux 扫 `/usr/share/fonts`、`~/.local/share/fonts` 等，**CJK 字体优先**，条目上限 2000；macOS 静态候选（PingFang / Hiragino Sans GB 等）排在扫描结果之前 |
 | 输入法（IME） | 支持 | 暂不支持 | 支持（组合过程不在框内内联绘制） | 见 [6.2](#62-输入法-ime)；macOS 经 NSTextInputClient 协议（消息转发实现），焦点在编辑框上时开启 |
 | 剪贴板 | 支持 | 暂不支持 | 支持（纯文本） | 见 [9.2](#92-剪贴板) |
@@ -84,7 +85,7 @@ macOS 后端（cocoa）已知限制：
 
 - **IME 组合过程不在框内内联绘制**（与 Windows 同口径：候选词上屏前由系统候选窗回显拼音，选定后整批提交）；正在组合时全部按键交给输入法（Enter 提交原串 / Esc 取消）。英文/符号键入与全部功能键经 `event.characters`/`keyCode` 直通，行为与旧版一致。
 - **保存文件对话框已全通**：`gx/dialog` 的 `saveFile`（2026-10-01 补脚本侧入口）—— Windows 走 `GetSaveFileNameW` + 覆盖确认，macOS 走 `NSSavePanel`，取消返回 `null`。
-- **多屏枚举已支持**（`gx/screen` 可见全部 NSScreen：frame/visibleFrame/缩放/主屏标记，ID 取 `NSScreenNumber` 稳定标识）；显示器插拔暂不派发 `onDisplayChange`（win32 有，cocoa 待补）。
+- **多屏枚举已支持**（`gx/screen` 可见全部 NSScreen：frame/visibleFrame/缩放/主屏标记，ID 取 `NSScreenNumber` 稳定标识）；显示器插拔 / 分辨率变化 / 窗口跨屏会派发 `onDisplayChange`（2026-10-02 补齐：NSApplicationDidChangeScreenParametersNotification + NSWindowDidChangeScreenNotification → `gfx.Post`，与 win32 的 WM_DISPLAYCHANGE 同构）。
 - 拖动（slider 等）在光标离开窗口后**仍然跟手**：AppKit 按住按键期间会持续投递 `mouseDragged:`，等价于天然鼠标捕获。
 
 找不到可用字体时文字整体不渲染，错误里会给出候选条数与最后一个失败原因。
@@ -105,7 +106,38 @@ macOS 后端（cocoa）已知限制：
 > 交互组件（`button` / `checkbox` / `radio` / `switch`）自动获得悬停提亮（各通道 +12）与按压压暗（-24）反馈，
 > 状态由渲染层维护，脚本无需（也无法）读写。`disabled` 的子树既不响应事件也不做交互反馈。
 >
-> 光标离开窗口 / 窗口失活会清除悬停与按压态。Tab 键焦点遍历尚未实现（需要 focusable 注册表）。
+> 光标离开窗口 / 窗口失活会清除悬停与按压态。**`Tab` / `Shift+Tab` 焦点遍历、方向键导航与
+> Enter/Space 激活已在无障碍层落地**（2026-10-02 起，见 [3.1](#31-焦点与键盘遍历无障碍) 与
+> [accessibility.md](accessibility.md)）；焦点仍可以只用鼠标改，键盘是新增的一条路，不是替换。
+
+### 3.1 焦点与键盘遍历（无障碍）
+
+键盘是一条**与鼠标并列**的路，不是替代：点击仍然能改焦点，键盘只是多了一条"不碰鼠标
+也能把事做完"的路。落地在 `gfx/a11y.go`（一层，全组件共用），完整规范、每个控件的键位表
+与验收清单见 [accessibility.md](accessibility.md)。
+
+- **`Tab` / `Shift+Tab`** 在遍历序里前进 / 后退，到两端**绕回**；遍历序为空时不消费这个键
+  （按键照旧给脚本）。
+- **谁进序**：标签表决定（`button` / `checkbox` / `radio` / `switch` / `slider` / `input` /
+  `search` / `textarea` / `select` / `rating` / `tabs` / `pagination` / `datepicker` /
+  `colorpicker` / `upload`），并可用 `focusable={true/false}` 覆盖；顺序按 `tabIndex`
+  （`>0` 升序前置、`0` 树序、`<0` 出序但仍可 `focusNode()`）。容器类默认**不进**序 ——
+  给纯布局盒子加停留点会让键盘用户为到达真控件多按几次空 Tab。
+- **焦点框**：2px 虚线（`colorFocusRing`），焦点在根 / 弹层自身 / 已关闭弹层内 / 被打开的
+  弹层盖住 / 节点被禁用时不画；窗口根写 `hideFocusRing` 可整体关掉（截图用）。
+- **方向键**按组件分工：`radio` 组 / `slider` / `rating` / `tabs` / `pagination` / `select`
+  与 `datepicker`（日历）/ `colorpicker`（色板）。一维组（前六个）到端**环绕**，二维组
+  （日历 / 色板）**停住**；带 `Ctrl` / `Alt` 的组合键一律不碰（那是快捷键的地盘）。
+- **`Enter` / `Space` 的"激活"就是"用鼠标点它"**：走同一个 `onClick` 出口，所以
+  `checkbox` 取反、`radio` 选中、`select` 展开不必各写一份键盘版逻辑。能不能被激活看
+  **role**（`<rect onClick>` 想被 Enter 激活要显式写 `role="button"`）。
+- **回车提交表单**：焦点在 `input` / `search` 里按 `Enter` = 提交所在的 `<form>`
+  （派发 `onSubmit({values})`）；焦点在按钮上按 `Enter` 是按下这个按钮。
+- **弹层焦点陷阱**：`dialog` / `drawer` 打开时 Tab 只在弹层内循环（不必维护陷阱栈），
+  关闭后焦点自动校正到遍历序里的第一个可聚焦节点。
+- **脚本侧接口**：`gx/a11y` 的 `focusOrder()`（当前遍历序快照，含 role / name / tabIndex /
+  box）、`focusNode(el)`、`focusNext()` / `focusPrev()`（与 Tab 同一条路径）、`roles()`。
+  用途是**回归与自检**：`focusOrder()` 里出现 `name` 为空的按钮，就是漏了 `aria-label`。
 
 ## 4. 内置元素参考
 
@@ -114,7 +146,7 @@ macOS 后端（cocoa）已知限制：
 | `column` / `row` | `gap` / `padding` / `margin`(子级) / `alignItems` / `justifyContent` / `flexGrow` / `flexShrink`(子级) / `wrap` / `width` / `height` | flex 风格容器，尺寸按内容确定（交叉轴默认 stretch）；`row` 加 `wrap` 放不下折行，`gap` 兼作行内间距与行间距 |
 | `view` | `each` / `show` / `fallback` / `key` / `stable` / `gap` | **布局透明的容器**（Fragment）：单子时尺寸完全跟随子节点、多子（列表）按父容器方向堆叠，自己不占盒子；**元素级指令就写在这类元素上** —— `each={rows}` 按列表重复本元素（keyed 复用 / `stable` / `fallback`），`show={open}` keep-alive 显隐。指令对任何内置元素标签都有效，写在 `<column>` / `<row>` 上就是"每一项一个盒子" |
 | `grid` | `columns`（1~32） | 等宽列网格：声明序逐行填格，列宽均分内容宽，格子无显式高时拉到行高；不做轨道语法 / colSpan（不等宽列用 `row` + 百分比组合） |
-| `text` | `font` / `color` / `width` / `wrap` / `ellipsis` | 默认单行文本、超宽硬截断；加 `wrap` 变成文本块（按宽度贪心折行、`\n` 强制换行），`ellipsis={n}` 只留 n 行并在末行补 `...`。**`font` 沿父链继承**（自身 > 最近祖先 > 默认 16），所以写在 `column` / `row` / `button` 上的 `font` 对其内全部文本生效 |
+| `text` | `font` / `color` / `width` / `wrap` / `ellipsis` / `fontFamily` / `fontWeight` / `fontStyle` / `lineHeight` / `letterSpacing` | 默认单行文本、超宽硬截断；加 `wrap` 变成文本块（按宽度贪心折行、`\n` 强制换行），`ellipsis={n}` 只留 n 行并在末行补 `...`。**五根文本样式轴沿父链继承**（自身 > 最近祖先 > 缺省），与 `font` 同一口径，见 [6.3](#63-多行文本与自动换行)。`fontFamily` 支持泛型名与族名；`fontWeight` / `fontStyle` 无真实字重变体时**合成**粗体/斜体 |
 | `rect` | `width` / `height` / `background` / `border` / `radius` / `shadow` / `borderWidth` / `borderStyle` | 通用盒子；未特判的标签也走这条绘制路径；装饰属性（圆角 / 阴影 / 渐变 / 边框宽度）见 [5.3](#53-装饰绘制) |
 | `button` | `onClick` / `disabled` / `background` / `border` / `color` / `font` / `padding` | 缺省浅灰底 + 深灰边框，文字子节点垂直居中；`disabled` 时整体变灰且不响应点击。标签字号同样走 `font` 继承（`font={13}` 写在这里就管标签） |
 | `checkbox` / `radio` | `checked` / `onClick` / `border` / `background` / `color` | 18×18 受控控件；`background` 是选中填充色，radio 互斥在 JS 侧用 signal 实现 |
@@ -123,6 +155,11 @@ macOS 后端（cocoa）已知限制：
 | `separator` | `vertical` / `background` | 横向 1px 高、宽度由容器拉伸；纵向宽度 1px，需显式 `height` |
 | `spacer` | `flexGrow` | 不绘制任何内容，仅吃主轴富余空间，用法 `<spacer flexGrow={1}/>` |
 | `select` | `value` / `options` / `onChange` / `placeholder` / `disabled` | 受控下拉框；`options` 可为字符串数组或 `{value,label}` 数组，选中派发 `onChange({value})`；键盘可开合/移动/选中/Esc 关闭 |
+| `datepicker` | `value` / `onChange` / `min` / `max` / `placeholder` / `disabled` | 受控日期选择器：字段 + 贴字段弹层（月历）。`value` 是 `"YYYY-MM-DD"`（**只有这一种格式**，非零填充与不存在的日期一律当无值），点格子派发 `onChange({value})`；`min`/`max` 拦在弹层展开与选中两处。键盘：`Enter`/`Space` 展开，`←/→` ±1 天、`↑/↓` ±7 天、`PageUp/PageDown` ±1 月、`Home/End` 本月首末日，`Esc` 收起（见 [3.1](#31-焦点与键盘遍历无障碍)） |
+| `colorpicker` | `value` / `onChange` / `colors` / `columns` / `placeholder` / `disabled` | 受控取色板：字段（色块 + 十六进制）+ 贴字段弹层（色格网格）。`colors` 缺省是 24 色内置色板，**显式给空数组就真的是空色板**（空色板不展开）；`columns` 1~32（缺省 8）。点色格派发 `onChange({value})`（值比较忽略大小写与空白）；键盘 `Enter`/`Space` 展开、方向键走格、`Home/End` 首末格，二维格子在边界**停住**不环绕 |
+| `upload` | `value` / `onChange` / `multiple` / `accept` / `filter` / `placeholder` / `disabled` | 文件选择字段（虚线边框 + `folder` 图标）：点击直接调**平台原生**"打开文件"对话框，弹出的载荷是 `{files, paths}`（对象数组 + 路径数组）。**受控/非受控两用**：有 `value` 就读它（字符串数组或 `{name,path}` 对象数组），没有就自己维护已选列表（选中立即更新显示）。`multiple` = 多次选择**累加**（底层对话框一次只回一个路径）；`filter`（`"图片\|*.png;*.jpg"`）优先于 `accept`；后端没接对话框时**什么都不做**（stderr 一次告警，绝不编造假文件名）。键盘 `Enter`/`Space` 打开对话框 |
+| `label` | `required` / `align` / `width` | 表单标签：单行文字 + `required` 时的红色星号，`align="right"` 整段贴右缘。**不给 `for`** —— 文字子节点就是名字，无障碍名由它出（见 [3.1](#31-焦点与键盘遍历无障碍)） |
+| `form` | `onSubmit` / `gap` / `padding` | 表单容器：纵排（语义与 `column` 一致），只加一件事——**回车提交**。焦点在 `input` / `search` 里按 `Enter` 派发 `onSubmit({values})`，`values` 只收**带 `name`** 的字段（与 HTML 一致）。标签列宽对齐归 `label` 自己管，`form` 不代劳 |
 | `tabs` / `tab` | `value` / `onChange`（tabs）、`title`（tab） | 选项卡：顶部标签条 + 内容区，`<tab title="文件">` 直接堆在 `<tabs>` 下即为页。`value` 存在 ⇒ 受控（点击只派发 `onChange({index, title})`，等脚本把新下标写回 signal）；缺省非受控（内部切换）。页是 **keep-alive** 的：全部页留树（输入框内容、滚动位置都保留），非激活页只是不布局、不绘制、不命中 |
 | `dialog` | `open` / `onClose` | 模态弹层：40% 黑遮罩 + 居中卡片（流内子节点即卡片内容）；点遮罩 / Esc / 卡片内按钮触发 `onClose`，遮罩吞掉其下点击 |
 | `toast` | `message` / `level` | 非模态提示，固定右上角；`level` 取 `success` / `warn` / `error` / `info` 决定色条，显隐由 JS 侧信号控制 |
@@ -136,10 +173,10 @@ macOS 后端（cocoa）已知限制：
 | `pagination` | `total` / `pageSize` / `current` / `onChange` | 分页器：**完全受控**（显示只看 `current`，点击页码只派发 `onChange({page, pageSize})`）。页数 = `ceil(total/pageSize)`（`pageSize` 缺省 10）；页数 > 7 时折叠出省略号（首尾恒可见、省略号不可点）；第 1 页点 `‹`、末页点 `›` 不派发 |
 | `icon` | `name` / `size` / `color` | 内置图标：`name` 取内置图标集（见下方清单），`size` 为边长（缺省 16），`color` 缺省继承文字色；未知名字静默不画。纯光栅原语绘制、三平台零依赖 |
 | `drawer` | `open` / `side` / `width` / `onClose` | 抽屉弹层：**复用 dialog 的弹层机制**（遮罩铺满窗口、模态、Esc/点遮罩关闭），内容卡片贴 `side`（`left`/`right`，缺省 `right`）边、宽按 `width`（缺省 280），打开时从侧边滑入（靠动画心跳推进进度，无新增定时器） |
-| `input` | `value` / `onInput` / `placeholder` / `disabled` | 单行受控输入（沿 `value` 显示，编辑派发 `onInput({value})`）；获焦边框转蓝并显示闪烁竖线光标，点击可定位光标；支持 ←/→/Home/End/Backspace/Delete，`Enter`/`Esc` 不消费；支持 IME 候选词整批提交（Windows） |
+| `input` | `value` / `onInput` / `placeholder` / `disabled` | 单行受控输入（沿 `value` 显示，编辑派发 `onInput({value})`）；获焦边框转蓝并显示闪烁竖线光标，点击可定位光标；支持 ←/→/Home/End/Backspace/Delete，`Enter`/`Esc` 不消费；**文本选区**（拖选 / Shift+方向键）与 `Ctrl/Cmd`+`A`/`C`/`X`/`V`（全选/复制/剪切/粘贴）；支持 IME 候选词整批提交（Windows） |
 | `search` | 同 `input` + `onSearch` | `input` 的字段变体：左侧放大镜，获焦按 `Enter` 整段提交 `onSearch({value})`（逐键 `onInput` 照旧），其余与 `input` 一致 |
 | `rating` | `value` / `max` / `onChange` / `color` / `disabled` | 星级评分：**完全受控**（显示只看 `value`，点击第几格就派发 `onChange({value})`，值不变不派发）。`max` 缺省 5、上限 10；每颗星占 20px 方格（缺省 100×20），星形半径按 min(格宽, 高) 自适应；实心星走 `color` prop（缺省主题强调色），其余空心描边。`model` 口径与 `select` 相同 |
-| `textarea` | `value` / `onInput` / `rows` / `placeholder` / `disabled` | 多行受控编辑器；光标 `{行,列}` 二维移动（↑↓←→/Home/End/Backspace/Delete），**`Enter` 插入换行**（不同于 input）；内容超高时纵向滚动并跟随光标；同样支持 IME。缺省 4 行 × 240px |
+| `textarea` | `value` / `onInput` / `rows` / `placeholder` / `disabled` / `wrap` | 多行受控编辑器；光标 `{行,列}` 二维移动（↑↓←→/Home/End/Backspace/Delete），**`Enter` 插入换行**（不同于 input）；**软换行缺省开**（按内容区宽度折行，`wrap={false}` 关掉），↑↓/Home/End/点击定位都按**屏幕上的行**走；选区与 `Ctrl/Cmd`+`A`/`C`/`X`/`V` 与 `input` 同一套；内容超高时纵向滚动并跟随光标；同样支持 IME。缺省 4 行 × 240px |
 | `scroll` | `width` / `height` / `onWheel` / `vlist` / `itemHeight` / `buffer` | 滚动容器：内容超高时右侧、超宽时底部出现 8px 轨道 + 比例滑块；滚轮滚动（一格 60px，`Shift+滚轮`走横向），滑块可拖拽，到边界后滚轮才冒泡给 `onWheel`；溢出的内容既画不出来也点不中。缺省高 200。加 `vlist itemHeight={N}` 即变成[虚拟化长列表](#_6-6-虚拟化长列表-vlist)：只物化可见的行，十万行与十行的成本一样 |
 | `image` | `src` / `width` / `height` / `disabled` | 显示 png / jpeg / gif 图片（Go 标准库解码，无新增依赖）；不给 `width`/`height` 时用图片自然尺寸，给了就按最近邻缩放；`src` 相对**进程工作目录**解析，加载失败画灰底交叉线占位（stderr 每个路径只警告一次），不中断其它内容 |
 | `video` | `src` / `poster` / `playing` / `autoplay` / `muted` / `loop` / `volume` / `controls` / `fit` | 视频框：**标签与宿主契约**（S8）。内核**不解码** —— 播放交给窗口后端可选实现的 `nativeVideoHost`（平台视频层：MF / AVPlayerLayer / SurfaceView），决策见 [video-decision.md](video-decision.md)。后端没这块能力时画 `poster` 封面（没封面就深色底 + 播放三角），并**诚实报错**：stderr 告警一次 + 对该节点派发一次 `onError({code:"unsupported"})`，`canIUse("video")` 照实回答 `false`。`playing`（等价 `autoplay`）、`muted` / `loop` / `volume` 都是**受控**属性，宿主上报的状态经 `onReady` / `onPlay` / `onPause` / `onEnded` / `onTimeUpdate({currentTime, duration})` 回到脚本。`fit` 取 `contain`（缺省）/ `cover` / `fill`；不给尺寸时用封面自然尺寸，兜底 320×180 |
@@ -161,10 +198,12 @@ macOS 后端（cocoa）已知限制：
 > 全部在 24×24 逻辑网格里用直线 / 矩形 / 圆拼装（像素风，三平台观感一致、零依赖）；冷门图标交给
 > 项目自己的 `<canvas>` 组件（`docs/gui-guide.md` 的 canvas 一节），内核不做无限扩张的图标库。
 
-> 受控组件（`input` / `search` / `textarea` / `select` / `rating` / `checkbox` / `switch` / `radio`）另有一条
+> 受控组件（`input` / `search` / `textarea` / `select` / `rating` / `datepicker` / `colorpicker` /
+> `upload` / `checkbox` / `switch` / `radio`）另有一条
 > **`model` 指令**：`<input model={draft} />` 一次接好读（`value`）与写（`onInput`），不用再手写
 > `value={() => draft()} onInput={(e) => setDraft(e.value)}`。语义表见 [6.0](#60-一条指令搞定读写model)，
-> 完整设计见 [gui-model-binding.md](gui-model-binding.md)。
+> 完整设计见 [gui-model-binding.md](gui-model-binding.md)（`upload` 的写回取载荷里的 `paths`，
+> 是这一族里唯一的例外，见该文 §3）。
 
 ## 5. 布局
 
@@ -290,6 +329,10 @@ h("input", {
 光标闪烁需要事件泵持续醒来，挂一个 `requestAnimationFrame` 循环即可
 （见 [testdata/input_demo.js](../testdata/input_demo.js)）。
 
+单行框也有**文本选区**：按住鼠标拖选、`Shift` + 方向键扩展、`Ctrl/Cmd`+`A` 全选，
+`Ctrl/Cmd`+`C`/`X`/`V` 复制/剪切/粘贴 —— 与 `<textarea>` 完全同一套实现，细节见
+[6.3 末尾的"选区与剪贴板"](#63-多行文本与自动换行)。
+
 ### 6.2 输入法 IME
 
 `<input>` / `<search>` / `<textarea>` 都支持候选词输入（Windows 后端）。切到中文输入法后敲拼音，
@@ -331,11 +374,65 @@ h("textarea", {
 })
 ```
 
-- 行只由 `\n` 切分（**不做软换行**），所以光标 `{行, 列}` 与文本严格对应；超长行会被右侧裁掉；
+- **软换行缺省开**（与 CSS `textarea` 一致）：长行按内容区宽度贪心折行，屏幕上看到几行就是几行；
+  `wrap={false}` 关掉，回到"超长行被右侧裁掉"的老行为。折行算法与 `<text wrap>` 共用同一份实现；
+- 换行是**纯显示**的：`value` 里仍然只有 `\n` 一种换行，逻辑行 / 列号与文本严格对应，
+  所以插入、退格、左右移动都不受折行影响；受影响的是**按屏幕行**的四类动作 ——
+  `↑`/`↓` 跨视觉行（并保持**像素横向位置**，"第 5 列"在不同行上对应的 x 不同）、
+  `Home`/`End` 跳到**屏幕上那一行**的首尾、点击定位按 y 找行按 x 找列、滚动跟随光标；
 - `Enter` **被编辑框消费**（插入换行）—— 与单行 `input` 相反，多行框里 Enter 就是内容；
-  `Esc` / `Tab` / 功能键 / 带 `Ctrl`+`Alt` 的组合键仍然放行给脚本；
+  `Esc` / 功能键 / 带 `Ctrl`+`Alt` 的组合键仍然放行给脚本；
+  **`Tab` 不再放行**（2026-10-02 起由无障碍层消费：它是"离开这个字段"的动作，见 [3.1](#31-焦点与键盘遍历无障碍)）；
 - 内容超过可视高度后自动纵向滚动，且**滚动跟随光标**（在底部回车时光标不会跑到框外）；
-  也可以把光标放进框里滚滚轮。
+  也可以把光标放进框里滚滚轮。行数按**视觉行**算，折出来的行照样能滚到底。
+
+#### 文本样式：字体族 / 粗斜体 / 行高 / 字距
+
+除 `font` 之外还有四根样式轴，全部**沿父链继承**（最近祖先优先），写在 `column` / `row` /
+`button` / `textarea` 上对其内全部文本生效 —— 与 `font` 同一口径：
+
+| prop | 取值 | 说明 |
+|---|---|---|
+| `fontFamily` | 族名 / 泛型名 / 字体文件路径 | `monospace` / `serif` / `sans-serif` 三个泛型名按平台挑一个真等宽/衬线族；认不出的族名**静默退回默认字体**（不报错、不改度量，一个笔误不该让整屏文字不变） |
+| `fontWeight` | `"bold"` / `600` / `"700"` / `"normal"` | ≥600 算粗。**`"normal"` 能主动关掉祖先的粗体**（"在粗体标题里让一个词正常"要靠这条） |
+| `fontStyle` | `"italic"` / `"oblique"` / `"normal"` | 斜体 |
+| `lineHeight` | 像素，`0` = 自动 | 自动值 = 字号 + 字号/4（保持与加样式轴之前逐像素一致） |
+| `letterSpacing` | 像素，可为负 | 加在**每个字符之后**（首字符不缩进，与 CSS 一致）；参与换行判定，负值做紧凑排版 |
+
+```js
+h("column", { fontFamily: "monospace", lineHeight: 22 },
+  h("text", { font: 14 }, "代码块：整列都是等宽 + 22px 行高"),
+  h("text", { font: 14, fontStyle: "italic" }, "斜体"),
+  h("text", { font: 14, fontWeight: "normal" }, "这里把祖先的粗体关掉"),
+)
+```
+
+- 没找到**真实**字重/斜体变体时**合成**：粗体是同一份掩码往右 1px 再压一遍，斜体绕**基线**
+  剪切（字底钉住、字顶向右倾）。真实变体优先，所以在装了真粗体的族上不会看到合成痕迹；
+- 量测与绘制共用同一套样式 —— 行高/字距会改变**内容尺寸**，两处若各算一套，就会出现
+  "盒子按 16px 排、文字按 18px 画"的错位；
+- 字体族索引**惰性构建**：不写 `fontFamily` 就绝不扫字体目录（本机实测建索引约 300ms），
+  用泛型名或族名时才建一次；
+- `<input>` / `<textarea>` 同样吃这五根轴（在编辑框上写 `fontFamily="monospace"` 就是代码输入框），
+  行高也会改变编辑框的滚动与视觉行划分。
+
+#### 选区、复制与剪贴板（`input` / `textarea` 通用）
+
+| 操作 | 效果 |
+|---|---|
+| 鼠标拖选 | 按下即定位插入点并钉住锚点，拖动扩展/收缩；松手**保留**选区。拖出窗口在 Windows/macOS 上仍然跟手（内部用 `CapturePointer`） |
+| `Shift` + `←`/`→`/`↑`/`↓`/`Home`/`End` | 扩展选区（锚点固定）；已选区时按不带 `Shift` 的方向键 = 收起并落到选区头/尾 |
+| `Ctrl`/`Cmd` + `A` | 全选 |
+| `Ctrl`/`Cmd` + `C` / `X` / `V` | 复制 / 剪切 / 粘贴（走系统剪贴板，见 [9.2](#92-剪贴板)） |
+| 打字 / `Enter` / `Backspace` / `Delete` | 有选区时**替换或删除选区**（选区的意义就在这里），没有选区时才是原来的单字符行为 |
+
+- 剪贴板剪贴/复制在**没有选区时不消费按键**（继续冒泡给脚本），也**不覆盖**用户已有的剪贴板 ——
+  "没选中就复制整行"那种解释会静默毁掉用户的数据；
+- 单行框粘贴多行文本时，换行折成**空格**（单行框渲染不了第二行，直接塞进去会像丢字）；
+- 拿不到剪贴板（后端不支持 / 被别的进程占着）**不影响剪切本身**：内容照样删掉，只是剪贴板没更新；
+- 选区高亮用主题的 `selection` token（半透明，画在文字**之下** —— 不透明会把选中的字盖掉），
+  见 [theme.md](theme.md)；
+- `Ctrl` 与 macOS 的 `Cmd` 都归一到同一个修饰位：`Cmd+C` 在 macOS 上就是复制，不需要两套判断。
 
 ### 6.4 滑块
 
@@ -421,6 +518,45 @@ vlist 那一列**与行数脱钩**：首帧渲染调用恒为 64 次（待物化
 2. **列表形状要对**：vlist 窗口化的是 `<scroll vlist><view each={rows}>…</view></scroll>`
    这种形状 —— 列表要能被容器找到（中间隔一层布局盒子也行）。找不到时告警一次并退化为普通滚动容器；
 3. **嵌套滚动区**：内层 `<scroll>` 里的列表归内层管，外层 vlist 不会去窗口化它（会错位）。
+
+### 6.7 字段类三件套：日期 / 颜色 / 文件
+
+`datepicker` / `colorpicker` 是"字段 + 贴字段弹层"这一族的第二、三个成员（第一个是
+`select`）：点字段展开、点外部或 `Esc` 收起、选中后**焦点回到字段**，三者共用同一套状态机，
+所以同族弹层天然互斥（展开一个会先收掉另一个）。
+
+```jsx
+const [birthday, setBirthday] = createSignal("");
+const [brand, setBrand] = createSignal("#2f80ed");
+const [attach, setAttach] = createSignal([]);
+
+<form gap={12} padding={16} onSubmit={(e) => save(e.values)}>
+  <row gap={8}>
+    <label required width={72}>生日</label>
+    <datepicker name="birthday" model={birthday} min="1920-01-01" max="2010-12-31" />
+  </row>
+  <row gap={8}>
+    <label width={72} align="right">主题色</label>
+    <colorpicker name="brand" model={brand} colors={["#ffffff", "#2f80ed", "#c0392b"]} columns={3} />
+  </row>
+  <row gap={8}>
+    <label width={72}>附件</label>
+    <upload name="attach" model={attach} accept=".pdf,.png" multiple />
+  </row>
+  <button onClick={submit}>保存</button>
+</form>
+```
+
+- **`datepicker` 只认 `"YYYY-MM-DD"`**（`value` 与 `onChange` 都是它）：非零填充（`2026-1-5`）、
+  日历上不存在的日期（`2026-02-30`）一律当"没有值"处理，不是报错也不是猜；
+- **`colorpicker` 的 `colors={[]}` 是空色板**（空色板不展开、点了没反应），要"用内置色板"
+  就整个不写这个 prop —— 24 色缺省色板有一份名单写在该文件头，想换就整份给全；
+- **`upload` 没有对话框后端时什么都不做**（stderr 一次告警），**绝不编造文件名**：静默编造
+  会让业务逻辑以为选到了文件，这是比"点了没反应"更坏的失败；
+- 三个都在 `gx/a11y` 的焦点序里，键盘行为见 [3.1](#31-焦点与键盘遍历无障碍)：
+  日历里 `←/→` 走天、`↑/↓` 走周、`PageUp/PageDown` 翻月，色板里方向键走格（边界停住）。
+- 日历与色板**没有为每个格子建节点**（整块自绘 + 几何命中，与 tabs / pagination / rating 同一套），
+  所以 `focusOrder()` 里看不到"42 个日期按钮"——需要"跳到某一天"用方向键或 `value`。
 
 ## 7. 绘制与动画
 
@@ -621,6 +757,39 @@ onCleanup(() => console.log("子树换代 / 销毁"))   // 顶层调用是 no-op
 [testdata/resource_demo.js](../testdata/resource_demo.js)（pending→ready / refetch 保旧值 / 失败后恢复）、
 [testdata/kit_demo.js](../testdata/kit_demo.js)（设计套件：令牌主题 + 变体按钮工厂 + 装饰卡片）。
 
+### 8.4 自适应断点（gx/viewport）
+
+断点是**命名阈值**：窗口宽度越过阈值就换一档。默认表 `sm:0 / md:600 / lg:840 / xl:1200`（dp），
+与尺寸类（`widthClass()` 的 compact/medium/expanded，阈值 600/840dp）复用同一组数字 ——
+前者是业务可自定义的"命名"，后者是内核对"物理宽度档"的分类。
+
+```js
+import { useBreakpoint, matchBreakpoint, breakpoints, setBreakpoints } from "gx/viewport";
+
+const bp = useBreakpoint();                 // () => "sm" | "md" | "lg" | "xl"（取值 + 订阅）
+
+const layout = () => {
+  bp();                                     // ← 先无条件订阅（matchBreakpoint 自身不订阅）
+  return matchBreakpoint({
+    sm: { cols: 1, side: false },
+    md: { cols: 1, side: true },
+    lg: { cols: 2, side: true },
+    xl: { cols: 2, side: true, info: true },
+  });
+};
+
+h("text", null, () => `breakpoint = ${bp()} / cols = ${layout().cols}`);
+```
+
+- `breakpoints()` 读表；`setBreakpoints({...})` 整表替换（自定义阈值，例如 `{phone:0, tablet:720, desk:1100}`）；
+  `resetBreakpoints()` 复位。非法项静默跳过，全非法时保持原表并告警（清空表会让 `breakpoint()` 永远返回空串，更难查）。
+- `above(name)` / `below(name)` / `between(a, b)` 是三个区间判定（未知档名一律 false；`between` 是半开区间 `[a,b)`，参数反序等价）。
+- **按窗口宽度算，不是屏幕宽度**：多窗口/分屏下每个窗口各算各的（客户区宽度 ÷ 所在显示器缩放）。
+- 订阅纪律同 §8.1：`useBreakpoint()` 是订阅型读数，必须**无条件调用**（写在三元分支里会漏掉订阅）。
+
+示例：[testdata/breakpoint_demo.js](../testdata/breakpoint_demo.js)（同一份代码在四个尺寸下自动换形态，按钮直接 resize 到四档）。
+完整 API 与坐标口径见 [multi-window.md](multi-window.md)。
+
 ## 9. 宿主能力
 
 ### 9.1 原生系统对话框
@@ -778,6 +947,150 @@ const wB = render(counter("Window B"), { title: "B", width: 320, height: 200 });
 
 示例：[testdata/multiwindow_demo.js](../testdata/multiwindow_demo.js)（开两个窗口各自计数，
 `File - Close window` / `Ctrl+Q` 关掉当前窗口，关一个另一个继续跑）。
+
+**窗口几何（M4）** —— 句柄还能读写窗口位置：
+
+```js
+const w = render(<window title="geo" width={320} height={200}>…</window>);
+w.moveTo(40, 60);                                  // 当前屏工作区内移动（缺参抛 TypeError）
+w.center();                                        // 当前屏工作区居中
+w.position();                                      // { x, y }（工作区相对，设备像素）
+w.bounds();                                        // { x, y, width, height, displayId, scale }
+w.display();                                       // 所在显示器 id
+```
+
+坐标口径是**窗口外框左上角相对其所在显示器工作区左上角**（设备像素）—— 详见
+[multi-window.md](multi-window.md) §1。把窗口拖到副屏后，`moveTo(0,0)` 就是"副屏工作区左上角"。
+
+**窗口列表 / 跨屏事件（M4）**：
+
+```js
+import { windows, window, onWindowDisplayChange, useWindowDisplay } from "gx/screen";
+
+windows();   // [{ id, title, scope, x, y, width, height, scale, displayId, active, focused }, …]
+window(3);   // 单个窗口条目；不存在 → null
+
+const off = onWindowDisplayChange(({ windowId, fromDisplay, toDisplay }) =>
+  console.log(`win ${windowId}: ${fromDisplay} -> ${toDisplay}`));
+off();       // 注销
+```
+
+**应用接续（M8）** —— 把一条导航栈（含 `route.state`）从一个作用域**搬迁**到另一个：
+
+```js
+import { createRouter, RouterView, useRouter } from "gx/router";
+
+const router = createRouter({ routes: [ /* … */ ], initial: "/" });
+const wa = render(<window title="home">{() => RouterView()}</window>);
+const wb = render(<window title="road">{() => RouterView()}</window>);
+
+await router.handoff(wa, wb);                        // 搬迁：road 接住整条栈，home 复位回首页
+await router.handoff(wa, wb, { keepSource: true });  // 复制：home 不动，road 拿克隆
+router.continuity();                                 // 只读内省：谁持有哪条栈（接续前体检）
+```
+
+`handoff` 与 `router.sync` 的镜像/共享/跟随模式不同：sync 之后源窗口仍在原页面继续存在，
+handoff 之后源被腾空（回到栈底/首页）—— 这才是"接续"的物理动作。完整语义、返回值与
+"跨设备接续不做"的边界见 [multi-window.md](multi-window.md) §6/§8。
+
+示例：[testdata/multiscreen_demo.js](../testdata/multiscreen_demo.js)（两窗口 + 跨屏事件 + 接续搬迁/复制）。
+#### 窗口管理：层级 / 约束 / 全屏 / 光标 / 模态
+
+> **两套 API 的分工（2026-10-02 合流后）**：**位置**归上面 M4 那一套
+> （`moveTo` / `center` / `position` / `bounds` / `display`，口径是"工作区相对 + 设备像素"）；
+> **窗口系统态**归本节（层级 / 尺寸约束 / 缩放开关 / 全屏 / 光标 / 模态）。
+> 位置相关的三个方法不在这里重复定义 —— 同一个后端类型上不可能有两个同名
+> `MoveTo`，gfx 层也只保留了一处坐标换算（`ResolveWindowPlacement`）。
+
+窗口自身的几何与系统态既能在根元素上声明，也能在句柄上运行时改：
+
+| `<window>` prop | 取值 | 说明 |
+|---|---|---|
+| `x` / `y` | 整数 | 初始位置，**相对目标显示器工作区**（外框左上角、设备像素），与 `moveTo` 同口径。**不写（或写哨兵 `DefaultWindowPos`）就不干预** —— 交给系统决定 |
+| `display` | 字符串 | 目标显示器 id（`gx/screen` 的 `screens()[].id`，也收数字序号）。给了它，`x` / `y` 就相对**那台屏**的工作区；只给 `display` 不给 `x`/`y` = 在那台屏上居中 |
+| `minWidth` / `minHeight` / `maxWidth` / `maxHeight` | 整数 | 尺寸约束；`0` = 该方向不限制 |
+| `resizable` | 布尔 | 允许用户拉伸窗口（缺省真）；`resizable={false}` 同时关掉最大化按钮 |
+| `fullscreen` | 布尔 | 开窗即全屏 |
+| `level` | `"normal"` / `"top"` / `"bottom"` | 窗口层级（置顶/置底）；认不出的值退回 `normal` |
+| `modal` | 布尔 / 窗口句柄 | 把本窗口设成**模态子窗口**：`modal` 或 `modal={true}` 用**当前活动窗口**当父窗口，`modal={wParent}` 指定父窗口 |
+
+> `h()` 手拼树时 `render(tree, {…})` 的配置对象支持同一批键（外加一个 `parent`，
+> 与 `modal: true` 配对使用，等价于 `modal: <句柄>`）。约束里的 `0` / 负数一律按
+> **不约束**处理 —— 负数在各平台表现不一（win32 上会得到一个拖不动的怪窗口），在入口归一最省事。
+
+对应的方法（都挂在 `render()` 返回的窗口句柄上，`w` 即句柄）：
+
+```js
+const w = render(tree, { title: "Inspector", width: 320, height: 200, x: 480, y: 120 })
+w.setConstraints({ minWidth: 280, maxWidth: 640, minHeight: 160 })
+w.setResizable(false); w.isResizable()       // → false
+w.setFullscreen(true); w.isFullscreen()      // → true
+w.setLevel("top"); w.level()                 // → "top"
+w.activate()                                 // 提到前台（抢焦点）
+w.setCursor("grab")                          // 改窗口级光标形状
+w.setCursor(null)                            // 清掉窗口级覆盖，回到按悬停节点决定
+```
+
+位置/几何（`moveTo` / `center` / `position` / `bounds` / `display`）见上面 M4 那一节。
+
+- **移动事件**：窗口被拖动时向布局根派发 `onMove({x, y})`
+  （win32 `WM_MOVE` / cocoa `windowDidMove` / X11 `ConfigureNotify`，三平台都上报）。
+  **建窗期的位置落地不上报** —— 脚本本来就知道窗口被放在哪（给过 `x`/`y`，或者接受了居中），
+  把它当真实移动上报会让"按顺序收头几个事件"的调用方平白多收一串 `EventMove`。
+  载荷 `{x, y}` 与下一段的**坐标口径表完全一致**（所在显示器工作区相对 + 设备像素）——
+  后端填的是平台原生绝对坐标，内核在派发前换算一次，于是 `onMove` 收到的值可以
+  **原样喂回 `moveTo`**（"挪回去 / 按落点吸附"不必自己查屏几何）：
+  `onMove` 报 `(a, b)` ⇒ `moveTo(a, b)` 把窗口放回原处。
+- **坐标口径**（`x` / `y` / `moveTo` / `position()` / `bounds()` / `onMove` 共用一套）：
+
+  | 轴 | 口径 |
+  |---|---|
+  | 原点 | **左上**（与 CSS 一致；macOS 内部是左下，换算在 cocoa 后端做掉） |
+  | 单位 | **设备像素**（不是点/逻辑像素）—— macOS 上进出都乘除 `backingScaleFactor` |
+  | 参照物 | **所在显示器的工作区左上角**（排除任务栏/状态栏），即 `moveTo(0,0)` = 贴着该屏工作区左上角 |
+  | 尺寸 | `width` / `height` 是**内容区**尺寸，不是外框 —— 两者差一条标题栏，这是平台事实，不做换算（换不准） |
+
+  > **跨屏后单位会重新对齐**（macOS）：窗口被拖到缩放不同的屏上（或那块屏的缩放设置被改）时，
+  > 同一个"点"尺寸对应的设备像素变了，所有以设备像素为准的量都会**当场重算并重新上报** ——
+  > 位置与尺寸各补一个 `onMove` / `onResize`，尺寸约束按新比值重新落地，输入坐标换算随之切换。
+  > 脚本侧不用做任何事。建窗时也会在窗口落到目标屏之后对齐一次（笔记本 Retina 主屏 + 外接
+  > 1080p 是最常见的组合，按主屏猜会让整块屏的鼠标坐标差一倍）。
+  > Windows 的坐标本来就是物理像素（Per-Monitor V2 DPI 感知）、Linux 恒为像素，都没有这个问题。
+
+- **光标形状**：任意节点可挂 `cursor` prop（沿父链继承），悬停到它上面时自动切形状，
+  值域取 CSS 的那一套（`default` / `pointer` / `text` / `crosshair` / `move` / `grab` /
+  `grabbing` / `wait` / `progress` / `help` / `not-allowed` / `ew-resize` / `ns-resize` /
+  `nwse-resize` / `nesw-resize` / `col-resize` / `row-resize` / `none`，以及 `hand`、`ibeam`
+  这类别名）。`input` / `search` / `textarea` 缺省就是 `text`，`button` / `menu` / `tab` 这类可点
+  控件缺省 `pointer` —— 不必逐个写。**认不出的形状退回 `default`**，不报错。
+  `w.setCursor(null)` 清掉窗口级覆盖，回到"按悬停节点自动解析"；同一个形状重复设置
+  不会重复调平台 API（悬停时每帧都会算一次形状）；
+- **模态子窗口**：`modal` 为真时，父窗口在子窗口关掉之前**收不到任何输入**
+  （键盘与鼠标都被拦住，窗口仍可拖动/缩放/关闭）。`isBlocked()` 查父窗口当前是否被挡，
+  `isModal()` / `modalParent()` / `modalChild()` 查这层关系。模态是**覆盖式**的
+  （同一父窗口只有一个模态子窗口，新的顶掉旧的），**关父窗口会连带关掉子窗口**，
+  父窗口不存在时静默降级为普通窗口。
+
+平台支持与降级（**没实现的就当没有，不报错**）：
+
+| 能力 | Windows | Linux | macOS |
+|---|---|---|---|
+| 位置 / 居中 / 读几何 | `SetWindowPos` / `GetWindowRect` | EWMH + ConfigureNotify | `setFrameOrigin:` |
+| 尺寸约束 | `WM_GETMINMAXINFO` | `WM_NORMAL_HINTS` | `setMinSize:` / `setMaxSize:` |
+| 缩放开关 / 全屏 | 样式位 + 全屏切换 | `_NET_WM_STATE_FULLSCREEN` | `setStyleMask:`（同步改样式位，不用异步的 `toggleFullScreen:`） |
+| 层级 `top`/`bottom` | `HWND_TOPMOST` / `HWND_BOTTOM` | `_NET_WM_STATE_ABOVE` / `_BELOW` | 窗口 `level` |
+| 光标形状 | `WM_SETCURSOR` + `LoadCursor` | 暂无（静默降级为默认箭头） | NSCursor |
+| 跨屏后缩放比刷新 | 无需（坐标本就是物理像素） | 无需（恒为像素） | `windowDidChangeBackingProperties:` |
+| 模态与 `onMove` | 支持 | 支持 | 支持 |
+
+> 读几何与"外框"口径：Windows / macOS 由平台直接给外框矩形，**Linux 下 `WindowBounds()`
+> 读的是客户区**（`TranslateCoordinates` 到根窗口）—— reparenting WM 会给窗口套一层
+> 自己的装饰，于是 `moveTo` 与 `bounds()` 之间差一圈标题栏。X11 后端整体标注为
+> "未经实机验证"，这处落差要靠 `_NET_FRAME_EXTENTS` 实机核对，暂时按协议原义实现。
+
+> 移动 / 缩放 / 全屏的**结果**以平台回报为准（`bounds()` 读的是平台现值，不是脚本设的期望值）——
+> 用户手动拖过窗口之后，读到的就是拖动后的位置。约束、层级、全屏在**首帧之前**就应用，
+> 所以不会出现"先闪一下普通窗口再变全屏"。
 
 ### 9.6 原生能力层
 
@@ -949,19 +1262,23 @@ import { devSnapshot } from "gx/dev";
 | [video_demo.js](../testdata/video_demo.js) | 视频框三态：封面 contain / 无封面占位 / `fit=cover` + 用户 background（桌面后端降级为封面 + 一次 `onError`） |
 | [events_demo.js](../testdata/events_demo.js) | 鼠标 / 滚轮 / 右键 / 修饰键 |
 | [focus_demo.js](../testdata/focus_demo.js) | 焦点框与 focus/blur |
+| [a11y_form_demo.js](../testdata/a11y_form_demo.js) | 无障碍键盘走查：纯键盘"填表 → 提交 → 关弹窗"，含 ② 提交结果与 ③ `focusOrder()` 自检投影；顺带覆盖 label / form / datepicker / colorpicker / upload（见 [3.1](#31-焦点与键盘遍历无障碍)） |
 | [hover_demo.js](../testdata/hover_demo.js) | 悬停与按压反馈 |
 | [dialog_demo.js](../testdata/dialog_demo.js) | 模态对话框与右上角 toast |
 | [tabs_demo.js](../testdata/tabs_demo.js) | 选项卡：受控切页 / keep-alive 页 / 非受控 |
 | [feedback_demo.js](../testdata/feedback_demo.js) | 反馈与数据类组件一屏：alert / tag / badge / avatar / icon / spinner / skeleton / pagination / empty / drawer |
 | [condrender_demo.js](../testdata/condrender_demo.js) | 条件渲染切面板（教学版，完整重建语义） |
 | [list_demo.js](../testdata/list_demo.js) | 数组信号增删列表 |
-| [model_demo.js](../testdata/model_demo.js) | `model` 双向绑定：八类控件一条指令 + 手写写法对照 |
+| [model_demo.js](../testdata/model_demo.js) | `model` 双向绑定：每类受控控件一条指令 + 手写写法对照 |
+| [shots/](../testdata/shots/) | 15 个组件一屏一例（官网画廊截图素材；生成方式见 [dev-workflow](dev-workflow.md#组件画廊截图流水线)） |
 
 **窗口、菜单与系统能力**
 
 | 示例 | 内容 |
 |---|---|
 | [multiwindow_demo.js](../testdata/multiwindow_demo.js) | 多窗口：两窗口独立计数、关一个另一个继续跑、全关退出 |
+| [multiscreen_demo.js](../testdata/multiscreen_demo.js) | 多屏协同（M8）：窗口列表 / 跨屏事件 / `router.handoff` 接续搬迁与复制（见 [multi-window.md](multi-window.md)） |
+| [breakpoint_demo.js](../testdata/breakpoint_demo.js) | 自适应断点（M4）：同一份代码在 sm/md/lg/xl 四档自动换形态（见 §8.4） |
 | [resize_demo.js](../testdata/resize_demo.js) | 窗口自适应：onResize 断点切栏 + 句柄 resize/setTitle |
 | [menu_demo.js](../testdata/menu_demo.js) | 菜单栏：下拉 / 子菜单 / 禁用项 / 快捷键 / 右键菜单 |
 | [clipboard_demo.js](../testdata/clipboard_demo.js) | 剪贴板：同步读写与失败降级 |
@@ -1033,9 +1350,11 @@ import { devSnapshot } from "gx/dev";
 | [README.md](../README.md) | 项目总览、安装、语言示例、打包与发版 |
 | [tutorial.md](tutorial.md) | 实战教程：API 调用方式与参数、内置模块导入、`gox create` 建工程、路由定义与注册 |
 | [gui-router.md](gui-router.md) | `gx/router` + `gx/screen` 使用手册（路由表 / 三级守卫 / 懒加载 / 两档状态保留 / 多窗口作用域 / 折叠双栏 / 排障表） |
+| [multi-window.md](multi-window.md) | 多窗口 / 多屏 / 自适应断点 / 应用接续：坐标口径、JS API、平台支持矩阵、`router.handoff` 语义与 v1 边界（M4/M8） |
 | [gui-tabbar.md](gui-tabbar.md) | 导航壳：TabBar（移动）/ SideNav（桌面）/ AppShell 分派器，安全区、软键盘、返回键、断点等平台差异的收口 |
 | [gui-patterns.md](gui-patterns.md) | 用户态模式手册（路由、状态、主题等惯用法） |
 | [gui-model-binding.md](gui-model-binding.md) | `model` 双向绑定：接口设计、语义表、与 Vue 的对照、反例 |
+| [accessibility.md](accessibility.md) | 无障碍与键盘导航规范：焦点模型 / 键位表 / aria 语义 / `gx/a11y` 模块 / 验收清单（T10） |
 | [desktop-distribution.md](desktop-distribution.md) | 各平台分发注意事项（图标、签名、打包格式） |
 
 > 组件现状台账、需求提示词、样式/选型调研、未决清单等**过程性文档不随仓库发布**：

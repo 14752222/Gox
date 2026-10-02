@@ -118,39 +118,44 @@ var (
 	selSetInitialResp     = objc.RegisterName("setInitialFirstResponder:")
 	selSetContentsSize    = objc.RegisterName("setContentSize:")
 	selContentView        = objc.RegisterName("contentView")
-	selBounds             = objc.RegisterName("bounds")
-	selSetWantsLayer      = objc.RegisterName("setWantsLayer:")
-	selLayer              = objc.RegisterName("layer")
-	selSetContents        = objc.RegisterName("setContents:")
-	selSetContentsScale   = objc.RegisterName("setContentsScale:")
-	selAddRep             = objc.RegisterName("addRepresentation:")
-	selBitmapData         = objc.RegisterName("bitmapData")
-	selAddTrackingArea    = objc.RegisterName("addTrackingArea:")
-	selConvertPoint       = objc.RegisterName("convertPoint:fromView:")
-	selLocationInWindow   = objc.RegisterName("locationInWindow")
-	selCharacters         = objc.RegisterName("characters")
-	selUTF8String         = objc.RegisterName("UTF8String")
-	selKeyCode            = objc.RegisterName("keyCode")
-	selModifierFlags      = objc.RegisterName("modifierFlags")
-	selDeltaY             = objc.RegisterName("deltaY")
-	selScrollingDeltaY    = objc.RegisterName("scrollingDeltaY")
-	selPreciseDeltas      = objc.RegisterName("hasPreciseScrollingDeltas")
-	selIsFlipped          = objc.RegisterName("isFlipped")
-	selAcceptsFirstResp   = objc.RegisterName("acceptsFirstResponder")
-	selStringWithUTF8     = objc.RegisterName("stringWithUTF8String:")
-	selMainScreen         = objc.RegisterName("mainScreen")
-	selBackingScale       = objc.RegisterName("backingScaleFactor")
-	selScreenFrame        = objc.RegisterName("frame") // NSScreen 的几何 (不是 bounds!)
-	selSetSubmenu         = objc.RegisterName("setSubmenu:")
-	selAddItem            = objc.RegisterName("addItem:")
-	selSetKeyEquivalent   = objc.RegisterName("setKeyEquivalent:")
-	selSetAction          = objc.RegisterName("setAction:")
-	selSetMainMenu        = objc.RegisterName("setMainMenu:")
-	selGeneralPasteboard  = objc.RegisterName("generalPasteboard")
-	selStringForType      = objc.RegisterName("stringForType:")
-	selClearContents      = objc.RegisterName("clearContents")
-	selSetStringForType   = objc.RegisterName("setString:forType:")
-	selDrain              = objc.RegisterName("drain")
+	// M4 窗口几何: setFrameOrigin: 挪窗口 (AppKit 原点在左下角!);
+	// isKeyWindow 判前台; "frame" 与 selScreenFrame 是同一个 selector 名,
+	// 直接复用 (NSWindow.frame 与 NSScreen.frame 是同一个 @selector)。
+	selSetFrameOrigin    = objc.RegisterName("setFrameOrigin:")
+	selIsKeyWindow       = objc.RegisterName("isKeyWindow")
+	selBounds            = objc.RegisterName("bounds")
+	selSetWantsLayer     = objc.RegisterName("setWantsLayer:")
+	selLayer             = objc.RegisterName("layer")
+	selSetContents       = objc.RegisterName("setContents:")
+	selSetContentsScale  = objc.RegisterName("setContentsScale:")
+	selAddRep            = objc.RegisterName("addRepresentation:")
+	selBitmapData        = objc.RegisterName("bitmapData")
+	selAddTrackingArea   = objc.RegisterName("addTrackingArea:")
+	selConvertPoint      = objc.RegisterName("convertPoint:fromView:")
+	selLocationInWindow  = objc.RegisterName("locationInWindow")
+	selCharacters        = objc.RegisterName("characters")
+	selUTF8String        = objc.RegisterName("UTF8String")
+	selKeyCode           = objc.RegisterName("keyCode")
+	selModifierFlags     = objc.RegisterName("modifierFlags")
+	selDeltaY            = objc.RegisterName("deltaY")
+	selScrollingDeltaY   = objc.RegisterName("scrollingDeltaY")
+	selPreciseDeltas     = objc.RegisterName("hasPreciseScrollingDeltas")
+	selIsFlipped         = objc.RegisterName("isFlipped")
+	selAcceptsFirstResp  = objc.RegisterName("acceptsFirstResponder")
+	selStringWithUTF8    = objc.RegisterName("stringWithUTF8String:")
+	selMainScreen        = objc.RegisterName("mainScreen")
+	selBackingScale      = objc.RegisterName("backingScaleFactor")
+	selScreenFrame       = objc.RegisterName("frame") // NSScreen 的几何 (不是 bounds!)
+	selSetSubmenu        = objc.RegisterName("setSubmenu:")
+	selAddItem           = objc.RegisterName("addItem:")
+	selSetKeyEquivalent  = objc.RegisterName("setKeyEquivalent:")
+	selSetAction         = objc.RegisterName("setAction:")
+	selSetMainMenu       = objc.RegisterName("setMainMenu:")
+	selGeneralPasteboard = objc.RegisterName("generalPasteboard")
+	selStringForType     = objc.RegisterName("stringForType:")
+	selClearContents     = objc.RegisterName("clearContents")
+	selSetStringForType  = objc.RegisterName("setString:forType:")
+	selDrain             = objc.RegisterName("drain")
 )
 
 // ===== AppKit 常量 =====
@@ -168,6 +173,7 @@ const (
 	nsModifierShift         = 1 << 17
 	nsModifierControl       = 1 << 18
 	nsModifierAlternate     = 1 << 19
+	nsModifierCommand       = 1 << 20
 	nsRunDefaultMode        = "kCFRunLoopDefaultMode" // NSDefaultRunLoopMode 的字符串值
 	clipUTType              = "public.utf8-plain-text"
 )
@@ -270,7 +276,12 @@ func init() {
 		[]objc.MethodDef{
 			{Cmd: objc.RegisterName("windowWillClose:"), Fn: impWindowWillClose},
 			{Cmd: objc.RegisterName("windowDidResize:"), Fn: impWindowDidResize},
+			{Cmd: objc.RegisterName("windowDidMove:"), Fn: impWindowDidMove},
 			{Cmd: objc.RegisterName("windowDidResignKey:"), Fn: impWindowResignKey},
+			// 窗口的 backing 属性变化 = 被拖到缩放不同的屏 / 那块屏的缩放设置
+			// 被改。这是 macOS 上"跨屏后缩放变了"的等价物, 用来刷新后端缓存的
+			// scale (见 window.go 的 applyBackingScale)。
+			{Cmd: objc.RegisterName("windowDidChangeBackingProperties:"), Fn: impWindowDidChangeBacking},
 		})
 	if err != nil {
 		panic("cocoa: register delegate class: " + err.Error())
@@ -326,6 +337,10 @@ func impRightMouseUp(self objc.ID, cmd objc.SEL, ev objc.ID) uintptr {
 
 func impMouseMoved(self objc.ID, cmd objc.SEL, ev objc.ID) uintptr {
 	if s := surfaceOf(self); s != nil {
+		// 重申光标 (§四 窗口/系统缺口): AppKit 会在光标跨视图边界/切换应用
+		// 时把它复位成箭头, 只在形状变化时设一次是留不住的 —— 对应 win32
+		// 的 WM_SETCURSOR 分支 (那边是系统每次问, 这边是我们每次给)。
+		s.reapplyCursor()
 		x, y := pointInView(self, ev)
 		s.postDevice(gfx.Event{Kind: gfx.EventMouseMove, X: int(x), Y: int(y)})
 	}
@@ -404,6 +419,27 @@ func impWindowDidResize(self objc.ID, cmd objc.SEL, note objc.ID) uintptr {
 	return 0
 }
 
+// impWindowDidMove 窗口被移动 → 投 EventMove (与 win32 的 WM_MOVE 同一地位)。
+// delegate 方法只转发, 判定与坐标换算在 onWindowDidMove 里 —— 与建窗/关闭/
+// 改尺寸三条路径保持同一分工。
+func impWindowDidMove(self objc.ID, cmd objc.SEL, note objc.ID) uintptr {
+	if s := surfaceOf(self); s != nil {
+		s.onWindowDidMove()
+	}
+	return 0
+}
+
+// impWindowDidChangeBacking: 窗口被拖到缩放不同的屏 (或那块屏的缩放设置被改)。
+//
+// 与 windowDidMove/windowDidResize 同一条纪律: 只做后端状态维护 + trySend
+// 入队, 不在这里执行 JS (由 Pump 在正确的执行上下文里交给脚本)。
+func impWindowDidChangeBacking(self objc.ID, cmd objc.SEL, note objc.ID) uintptr {
+	if s := surfaceOf(self); s != nil {
+		s.onBackingChanged()
+	}
+	return 0
+}
+
 func impWindowResignKey(self objc.ID, cmd objc.SEL, note objc.ID) uintptr {
 	if s := surfaceOf(self); s != nil {
 		// 窗口失活: 清悬停态 (与 win32 失焦 → MouseLeave 同思路)
@@ -447,6 +483,26 @@ type surface struct {
 	closed bool
 	w, h   int // 客户区尺寸, 设备像素 (与 Size()/EventResize 同一口径)
 	scale  float64
+
+	// 光标形状状态 (§四 窗口/系统缺口, 见 window.go): cursor 是当前
+	// NSCursor 句柄, cursorUnset 标记"当前形状没有对应光标"(含 "none"),
+	// 此时不再重申, 交给 AppKit 缺省箭头。
+	cursor      objc.ID
+	cursorUnset bool
+
+	// lastPosX/lastPosY/posKnown 是 EventMove 的去重账 (见 window.go 的
+	// onWindowDidMove): AppKit 拖动期间连续发 windowDidMove, 位置没变的不该
+	// 惊动脚本。placing 标记"还在建窗期"—— 那期间的移动只记基线不投事件。
+	lastPosX, lastPosY int
+	posKnown           bool
+	placing            bool
+
+	// 尺寸约束**按设备像素原值**记住 (见 window.go 的 pushConstraints):
+	// 推给 AppKit 的点值每次现算, 因为跨屏后"点 → 设备像素"的比值会变
+	// (applyBackingScale), 只推一次的话旧点值整体偏一倍。
+	conSet           bool
+	conMinW, conMinH int
+	conMaxW, conMaxH int
 }
 
 func newSurface(cfg gfx.WindowConfig) (gfx.Surface, error) {
@@ -463,6 +519,11 @@ func newSurface(cfg gfx.WindowConfig) (gfx.Surface, error) {
 	// Retina: gfx 的 Width/Height 是设备像素, 窗口内容尺寸用点
 	// (px/scale), layer.contentsScale 补回像素比 —— 图像与屏幕 1:1。
 	scale := 1.0
+	// **只是建窗前的猜测**: 点尺寸必须现在就给 (initWithContentRect: 收点),
+	// 而窗口最终落在哪块屏要 placement 之后才知道, 这里只能先按主屏的比值算。
+	// 落点之后 pinClientSize 会用窗口自己的 backingScaleFactor 重新对齐 ——
+	// 笔记本 Retina 主屏 (2x) + 外接 1080p (1x) 是最常见的组合, 猜错就是整块屏
+	// 的窗口鼠标坐标差一倍。
 	if scr := objc.ID(objc.GetClass("NSScreen")).Send(selMainScreen); scr != 0 {
 		if s := objc.Send[float64](scr, selBackingScale); s > 0 {
 			scale = s
@@ -471,6 +532,11 @@ func newSurface(cfg gfx.WindowConfig) (gfx.Surface, error) {
 	ptW, ptH := float64(w)/scale, float64(h)/scale
 
 	win := objc.ID(objc.GetClass("NSWindow")).Send(selAlloc)
+	// 内容区尺寸用点。**位置不在这里设**: initWithContentRect: 收的是内容区
+	// 矩形, 而 gfx 的位置口径是**外框左上角** (与 win32 的 SetWindowPos /
+	// GetWindowRect 一致) —— 两者差一条标题栏高度, 而标题栏多高只有建好
+	// 窗口才知道 (不该硬编码)。所以位置留到窗口存在之后走 MoveTo
+	// (见下方 cfg.HasPos 分支), 与"之后移动"共用同一段换算。
 	win = win.Send(selInitWithContent,
 		nsMakeRect(0, 0, ptW, ptH),
 		uintptr(nsStyleTitled|nsStyleClosable|nsStyleMiniaturizable|nsStyleResizable),
@@ -495,6 +561,9 @@ func newSurface(cfg gfx.WindowConfig) (gfx.Surface, error) {
 		// IME 缺省关闭: 焦点落进 input/textarea 时内核经 SetIMEEnabled(true)
 		// 打开 (render.go 的 setFocus)。在编辑框获焦之前, 键盘永远直入。
 		imeEnabled: false,
+		// 建窗期的 windowDidMove (initWithContentRect: / center 各一次)
+		// 不算移动, 见 onWindowDidMove。
+		placing: true,
 	}
 	// 注册表: view 与 delegate 两个 ObjC 身份都映射到 s (IMP 回调经
 	// surfaceOf 查回); close 时解除。
@@ -521,9 +590,31 @@ func newSurface(cfg gfx.WindowConfig) (gfx.Surface, error) {
 
 	s.allocBackbuffer(w, h)
 
+	// 合流备注 (2026-10-02): 这里原本还有一段 §四 的预落点
+	// (`if cfg.HasPos { s.MoveTo(cfg.X, cfg.Y) }`)。它与下面 M4 的
+	// ResolveWindowPlacement 是两套位置口径 (前者吃设备像素、自己除 scale,
+	// 后者吃"点"、由 gfx 层统一换算), 并存会让窗口先按一套落一次再按另一套
+	// 覆盖。统一保留 M4 的一套, 位置只在这下面一处决定。
 	win.Send(selMakeKeyAndOrder, objc.ID(0))
-	win.Send(selCenter)
+	// 位置: 显式指定 (WindowConfig.X/Y/Display) 时按目标屏放置, 否则居中。
+	// ResolveWindowPlacement 返回的坐标单位是"点" (cocoa 的 PosInPoints), 正好
+	// 是 cocoaFrameOrigin 期望的输入 —— 单位换算是 gfx 层的事, 这里不做二次解释。
+	if px, py, ok := gfx.ResolveWindowPlacement(cfg); ok {
+		fr := objc.Send[nsRect](win, selScreenFrame)
+		ax, ay := cocoaFrameOrigin(float64(px), float64(py), fr.Size.Height, mainScreenTopY())
+		win.Send(selSetFrameOrigin, nsPoint{X: ax, Y: ay})
+	} else {
+		win.Send(selCenter)
+	}
 	app.Send(selActivateIgnoring, true)
+	// 窗口现在落在目标屏上了: 把"点 ↔ 设备像素"的比值对齐到窗口**自己**那块屏
+	// 的真值 (上面 ptW/ptH 是按主屏猜的), 并把客户区尺寸钉回 cfg.Width/Height ——
+	// 脚本给的是设备像素尺寸, 不该因为落在缩放比不同的屏上而缩水 (见
+	// window.go 的 pinClientSize)。比值与主屏相同的常见情形下它是一个平台调用
+	// 都不发的空操作。
+	s.pinClientSize(s.currentScale(), w, h)
+	// 位置到此落地: 记基线并退出建窗期, 之后的 windowDidMove 才是脚本要听的。
+	s.finishPlacement()
 	return s, nil
 }
 
@@ -546,6 +637,9 @@ func ensureNSApp() objc.ID {
 		}
 		app.Send(selFinishLaunching)
 		app.Send(selSetActivationPol, uintptr(nsActivationRegular))
+		// 显示器变化观察 (onDisplayChange 的派发源): 注册进 defaultCenter,
+		// 插拔屏 / 分辨率变化 / 窗口跨屏时经 gfx.Post 通知内核。见 display.go。
+		installScreenObserver()
 		// 菜单: [Gox] → 退出 (Cmd+Q)。terminate: 在无 delegate 时直接结束进程,
 		// Pump 循环随进程一起结束 —— v1 可接受。
 		mainMenu := objc.ID(objc.GetClass("NSMenu")).Send(selAlloc)
@@ -716,6 +810,73 @@ func (s *surface) ResizeClient(w, h int) {
 	s.win.Send(selSetContentsSize, nsSize{Width: float64(w) / s.scale, Height: float64(h) / s.scale})
 }
 
+// ===== M4: 窗口几何 (windowMover / windowBoundsProvider / windowActiveProvider) =====
+
+// mainScreenTopY 求主屏顶边在 AppKit 全局坐标里的 y。
+//
+// AppKit 全局坐标是**左下原点、y 向上**, 而 gfx 的显示器坐标是**左上原点**
+// (见 display.go 的换算基准): topY = 主屏 origin.y + 主屏高。主屏 origin 通常是
+// (0,0), 所以它一般就等于主屏高度 —— 但显式加上 origin.y 才在"主屏被摆在上方"
+// 这种罕见排列里也对。
+func mainScreenTopY() float64 {
+	main := objc.ID(objc.GetClass("NSScreen")).Send(selMainScreen)
+	if main == 0 {
+		return 0
+	}
+	fr := objc.Send[nsRect](main, selScreenFrame)
+	return fr.Origin.Y + fr.Size.Height
+}
+
+// cocoaFrameOrigin 把"窗口外框左上角在 左上原点虚拟桌面坐标 (点)"换算成
+// AppKit setFrameOrigin: 需要的**左下原点**坐标。
+//
+// **这里是最容易错的一步**: setFrameOrigin 收的是外框左下角 (bottom-left),
+// 而 gfx 的 y 是外框左上角 (top-left), 且 AppKit 的 y 轴向**上**。
+// 所以真正要减掉的是"从屏幕顶边到窗口底边"的距离:
+//
+//	y_cocoa = screenTop - y_topLeft - frameHeight
+//
+// (任务书写的 screenHeight - y - height 在单屏主屏场景下等价于此式, 因为
+// screenTop = 主屏高。)把它抽成纯函数就是为了能用单测钉住符号与加减顺序 ——
+// AppKit 里 y 写反不会崩, 只会让窗口出现在屏幕外的下方, 非常难排查。
+func cocoaFrameOrigin(topX, topY, frameHeight, screenTop float64) (float64, float64) {
+	return topX, screenTop - topY - frameHeight
+}
+
+// MoveTo 实现 gfx 的可选 windowMover 接口 (M4): 把窗口外框左上角移到
+// 左上原点虚拟桌面坐标 (点)。gfx 层已把"工作区相对"换算成绝对坐标。
+func (s *surface) MoveTo(x, y int) error {
+	if s.win == 0 {
+		return fmt.Errorf("cocoa: window not created")
+	}
+	fr := objc.Send[nsRect](s.win, selScreenFrame)
+	ax, ay := cocoaFrameOrigin(float64(x), float64(y), fr.Size.Height, mainScreenTopY())
+	s.win.Send(selSetFrameOrigin, nsPoint{X: ax, Y: ay})
+	return nil
+}
+
+// WindowBounds 实现 gfx 的可选 windowBoundsProvider 接口 (M4): 外框左上角的
+// 左上原点坐标 (点) + 客户区尺寸 (设备像素, 与 Size 同口径)。
+func (s *surface) WindowBounds() (x, y, w, h int, ok bool) {
+	if s.win == 0 {
+		return 0, 0, 0, 0, false
+	}
+	fr := objc.Send[nsRect](s.win, selScreenFrame)
+	top := mainScreenTopY()
+	x = int(fr.Origin.X + 0.5)
+	y = int(top - (fr.Origin.Y + fr.Size.Height) + 0.5)
+	cw, ch := s.Size()
+	return x, y, cw, ch, true
+}
+
+// IsActive 实现 gfx 的可选 windowActiveProvider 接口 (M4): 是否 key window。
+func (s *surface) IsActive() bool {
+	if s.win == 0 {
+		return false
+	}
+	return s.win.Send(selIsKeyWindow) != 0
+}
+
 // ===== 可选能力: clipboardHost =====
 
 // ReadClipboardText 读系统剪贴板文本 (非文本/无内容返回空串, 不报错)。
@@ -787,9 +948,13 @@ func (s *surface) sendKeyEvent(ev objc.ID, kind gfx.EventKind) {
 		key = keyFromCharacters(ev)
 	}
 	s.trySend(gfx.Event{
-		Kind:  kind,
-		Key:   key,
-		Ctrl:  flags&nsModifierControl != 0,
+		Kind: kind,
+		Key:  key,
+		// Cmd 与 Ctrl 都归一到 gfx 的 Ctrl: 前者是 macOS 的主修饰键 (Cmd+C
+		// 才是复制), 后者是 Windows/Linux 的。不归一的话, 所有带修饰键的
+		// 便捷功能 (复制/粘贴/快捷键表) 在 macOS 上全是死键 —— 而
+		// gfx.Event 只有一个 Ctrl 字段, 归一是唯一能同时支持两端的位置。
+		Ctrl:  flags&(nsModifierControl|nsModifierCommand) != 0,
 		Shift: flags&nsModifierShift != 0,
 		Alt:   flags&nsModifierAlternate != 0,
 	})
@@ -846,6 +1011,10 @@ func (s *surface) onWindowDidResize() {
 	if changed {
 		s.allocBackbuffer(w, h) // 缓冲随之扩容, 下一次 Show 全帧重绘
 		s.trySend(gfx.Event{Kind: gfx.EventResize, W: w, H: h})
+		// M4: 窗口尺寸变了 → 让 gx/viewport 的断点/尺寸类订阅者重算。
+		// 回调跑在 GUI 线程, 但仍经 Post 排到 Pump 的 DrainTasks (与
+		// win32 WM_SIZE 同一条纪律: 平台回调只投递, 不直接执行 JS)。
+		gfx.Post(func() { gfx.NotifyViewportChanged() })
 	}
 }
 

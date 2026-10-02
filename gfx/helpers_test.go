@@ -55,6 +55,163 @@ type fakeSurface struct {
 	// imeEditorReporter 可选接口)。字段放共享设施、转发方法放 ime_test.go ——
 	// 与 dialog / video 同一套写法。
 	imeEditors []IMEEditor
+
+	// ===== 窗口管理 (§四 窗口/系统缺口) =====
+	//
+	// fakeSurface **无条件**实现 windowManager / cursorHost / windowMover /
+	// windowBoundsProvider (不像 dialog/video 那样用"注入了才满足"的形态):
+	// 这几个能力的新方法都是**纯记录**, 没有"未注入就退化成另一种行为"的
+	// 分支, 开着不影响任何既有用例。其中读位置用 `noBounds` 单独关掉 ——
+	// "后端读不到位置"的降级路径需要一个不实现它的替身, 而 Go 的接口满足性
+	// 是类型级、不能按实例开关。
+	//
+	// 为什么需要它们: 真后端 (win32/x11/cocoa) 的这些方法在本机多半跑不到
+	// (win32 要 Windows、x11 要 Linux), 而**语义** (位置传给谁、层级怎么
+	// 归一、模态怎么屏蔽) 全在 gfx 层 —— 用一个记录的替身就能把语义测穿。
+	noBounds bool // true 时 WindowBounds 报 ok=false (= "后端读不到位置")
+	bx, by   int  // WindowBounds 报的外框**绝对坐标** (虚拟桌面左上原点)
+	bw, bh   int  // WindowBounds 报的外框尺寸 (0 = 未设, 用 Size 兜底)
+	wm       *fakeWindowManager
+	cursors  []string // 收到过的 SetCursor 形状 (按调用序)
+}
+
+// fakeWindowManager 记录 windowManager 的调用。
+type fakeWindowManager struct {
+	mu          sync.Mutex
+	moves       [][2]int
+	levels      []string
+	constraints [][4]int
+	resizable   []bool
+	fullscreen  []bool
+	activates   int
+}
+
+func (m *fakeWindowManager) snapshot() (moves [][2]int, levels []string, cons [][4]int, res []bool, full []bool, act int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([][2]int(nil), m.moves...), append([]string(nil), m.levels...),
+		append([][4]int(nil), m.constraints...), append([]bool(nil), m.resizable...),
+		append([]bool(nil), m.fullscreen...), m.activates
+}
+
+// MoveTo 记录位置并同步 WindowBounds 的回报值 (真后端里两者必然一致)。
+//
+// 合流备注 (2026-10-02): 入参是**虚拟桌面绝对坐标**、且返回 error —— 与三个
+// 真后端 (win32 / x11 / cocoa) 以及 gfx 的 windowMover 接口一致。§四 那版是
+// "设备像素屏幕坐标 + 无返回值", 合流后统一到 M4 这一套: 坐标换算只能在
+// gfx 层做一次, 后端只承接绝对坐标。
+func (f *fakeSurface) MoveTo(x, y int) error {
+	f.mu.Lock()
+	f.bx, f.by = x, y
+	if f.bw == 0 {
+		f.bw, f.bh = f.w, f.h
+	}
+	m := f.wm
+	f.mu.Unlock()
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	m.moves = append(m.moves, [2]int{x, y})
+	m.mu.Unlock()
+	return nil
+}
+
+// SetLevel 记录层级。
+func (f *fakeSurface) SetLevel(level string) {
+	f.mu.Lock()
+	m := f.wm
+	f.mu.Unlock()
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.levels = append(m.levels, level)
+	m.mu.Unlock()
+}
+
+// SetSizeConstraints 记录约束。
+func (f *fakeSurface) SetSizeConstraints(minW, minH, maxW, maxH int) {
+	f.mu.Lock()
+	m := f.wm
+	f.mu.Unlock()
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.constraints = append(m.constraints, [4]int{minW, minH, maxW, maxH})
+	m.mu.Unlock()
+}
+
+// SetResizable 记录缩放开关。
+func (f *fakeSurface) SetResizable(on bool) {
+	f.mu.Lock()
+	m := f.wm
+	f.mu.Unlock()
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.resizable = append(m.resizable, on)
+	m.mu.Unlock()
+}
+
+// SetFullscreen 记录全屏开关。
+func (f *fakeSurface) SetFullscreen(on bool) {
+	f.mu.Lock()
+	m := f.wm
+	f.mu.Unlock()
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.fullscreen = append(m.fullscreen, on)
+	m.mu.Unlock()
+}
+
+// Activate 记录一次前台请求 (模态 bump 会用它)。
+func (f *fakeSurface) Activate() {
+	f.mu.Lock()
+	m := f.wm
+	f.mu.Unlock()
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	m.activates++
+	m.mu.Unlock()
+}
+
+// SetCursor 记录光标形状 (cursorHost)。
+func (f *fakeSurface) SetCursor(shape string) {
+	f.mu.Lock()
+	f.cursors = append(f.cursors, shape)
+	f.mu.Unlock()
+}
+
+// WindowBounds 回报窗口外框的**绝对坐标 + 客户区尺寸** (windowBoundsProvider)。
+//
+// noBounds 置真时 ok=false (= "后端读不到位置"), 用来验证 gfx 层的降级路径:
+// 读不到就是 0, **不拿脚本设过的期望值冒充事实** —— 期望值混进读数会让
+// "用户手动拖过窗口"这类场景读到假位置。
+func (f *fakeSurface) WindowBounds() (x, y, w, h int, ok bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.noBounds {
+		return 0, 0, 0, 0, false
+	}
+	cw, ch := f.Size()
+	if f.bw > 0 && f.bh > 0 {
+		cw, ch = f.bw, f.bh
+	}
+	return f.bx, f.by, cw, ch, true
+}
+
+// cursorLog 取收到过的光标形状序列。
+func (f *fakeSurface) cursorLog() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.cursors...)
 }
 
 // SetTitle / ResizeClient 实现 windowController 可选接口: 记录标题;
@@ -124,7 +281,12 @@ func (f *fakeSurface) WriteClipboardText(s string) error {
 }
 
 func newFakeSurface() *fakeSurface {
-	return &fakeSurface{events: make(chan Event, 16), arrived: make(chan struct{}, 16), w: 400, h: 300}
+	return &fakeSurface{
+		events:  make(chan Event, 16),
+		arrived: make(chan struct{}, 16),
+		w:       400, h: 300,
+		wm: &fakeWindowManager{},
+	}
 }
 
 func (f *fakeSurface) Show(img *image.RGBA) {

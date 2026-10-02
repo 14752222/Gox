@@ -34,6 +34,25 @@ cd app/ios && xcodegen generate && open Gox.xcodeproj
 真机: `bash scripts/build-ios.sh`（默认 iphoneos/arm64），Xcode 里选你的
 设备运行（需要签名：Signing & Capabilities 里选自己的 Team）。
 
+### TestFlight / App Store 分发
+
+```bash
+# Release 配置构建 (模拟器验证 Release 包也吃得到)
+bash scripts/build-ios.sh --release
+
+# 真机 Release + archive + 导出 .ipa (TestFlight 分发的输入单位)
+DEVELOPMENT_TEAM=<TeamID> bash scripts/build-ios.sh --archive
+
+# 上传 TestFlight (需要 App Store Connect API Key)
+xcrun altool --upload-app -f dist/<名字>.ipa --apiKey <API_KEY_ID> --apiIssuer <ISSUER_ID>
+```
+
+- 分发方式默认 `app-store-connect`，可用 `GOX_EXPORT_METHOD` 换
+  （ad-hoc / development / enterprise）。
+- archive 产物：`dist/ios/Gox.xcarchive` 与 `dist/*.ipa`。
+- 免费个人账号能跑真机调试，但 **TestFlight 上传必须付费开发者账号**
+  （Apple Distribution 证书 + App Store profile）。
+
 ## v1 已知边界（与 Android 壳同步）
 
 - 多指手势不支持：第二根手指按下即作废整个手势（见 `gfx/mobile.Touch` 注释）。
@@ -70,8 +89,11 @@ cd app/ios && xcodegen generate && open Gox.xcodeproj
 | `viewSafeAreaInsetsDidChange` | 折叠态下两侧 insets 不对称，常是姿态变化的伴随现象 |
 | `startEngine` 成功后**补报一次** | 首次布局早于 `gox_init` 时被吞掉的那一份 |
 
-**版本门槛**：`reservedRegions` 是 **iOS 27.1** 引入的（`#available(iOS 27.1, *)`）。
-写宽成 27.0 不会编译报错，但 27.0 真机上会 **unrecognized selector 直接崩**。
+**版本门槛**：`reservedRegions` 是 **iOS 27.1** 引入的。注意：写这版代码时的
+SDK（27.0）里**没有这个符号**，所以走的是**运行时动态派发**（见
+`GoxDisplayFold.swift` 文件头的踩坑说明）—— selector 存在（真机 27.1+）才走
+完整路径，不存在则整条 27.1 分支跳过，只报 sizeClass / 几何这些今天就能拿到
+的真实数据，不崩、不猜姿态。SDK 带上符号后应换回编译期调用并核对枚举原始值。
 `project.yml` 的 `deploymentTarget` 仍是 **15.0**：老系统走降级分支（当成非折叠
 设备），功能不受影响，提门槛只会白丢用户。
 

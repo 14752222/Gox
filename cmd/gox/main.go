@@ -44,6 +44,12 @@ func main() {
 		case "create", "new", "init":
 			runCreate(args[1:])
 			return
+		case "install", "i":
+			runNpmInstall(args[1:])
+			return
+		case "add":
+			runNpmAdd(args[1:])
+			return
 		case "dev":
 			runDev(args[1:])
 			return
@@ -58,6 +64,9 @@ func main() {
 			return
 		case "build":
 			runBuild(args[1:])
+			return
+		case "types":
+			runTypes(args[1:])
 			return
 		case "test262":
 			runTest262(args[1:])
@@ -102,12 +111,15 @@ func printUsage(w io.Writer) {
 用法:
   gox create <目录>            按默认模板生成一个 GUI 工程（脚手架）
   gox create <目录> --ts       同上, 生成 TypeScript/TSX 版模板
+  gox install                  按 package.json 的 dependencies 安装到 node_modules
+  gox add <pkg>[@<range>]      加一个纯 JS 依赖并写入 package.json / gox-lock.json
   gox <文件.js>                执行脚本文件（GUI 脚本会开窗口；.ts/.tsx 自动转译）
   gox dev [入口.js]            开发模式: 监听 .js/.ts/.tsx 变更并热重载（见 docs/dev-workflow.md）
   gox sync [目录]              把 gox.json 的权限声明注入 Android/iOS 清单
   gox icon [目录]              从 1024 源图一键生成全平台图标
   gox cert <android|windows|harmony|ios>  一键生成平台签名证书（快捷操作, gox cert -h 看详情）
   gox build <android|ios|windows|macos>  统一构建入口（sync → icon → 平台打包）
+  gox types [输出文件]          生成内置模块 .d.ts（缺省 src/gox.d.ts）
   gox test262 [-suite language]  Test262 合规率 runner（-h 看全部选项）
   gox update [--check] [--pre] [--manifest URL]  gox 自更新（流式下载/断点续传/pre 通道）
   gox                          启动交互式 REPL

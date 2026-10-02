@@ -1,6 +1,7 @@
 package gfx
 
 import (
+	"sort"
 	"strconv"
 	"strings"
 
@@ -1250,6 +1251,14 @@ func (r *router) jsObject() object.Value {
 		r.syncGroups = nil
 		return object.UndefinedSingleton
 	}))
+	// handoff: 把 from 的整条导航栈**搬迁**到 to (M8 应用接续)。
+	o.SetProperty("handoff", object.NewBuiltin("handoff", func(args ...object.Value) object.Value {
+		return r.jsHandoff(args...)
+	}))
+	// continuity: 只读内省 —— 现在哪个作用域持有哪条栈 (调试/接续前检查)。
+	o.SetProperty("continuity", object.NewBuiltin("continuity", func(args ...object.Value) object.Value {
+		return r.jsContinuity()
+	}))
 	o.SetProperty("rebuild", object.NewBuiltin("rebuild", func(args ...object.Value) object.Value {
 		r.bumpRevision()
 		return object.UndefinedSingleton
@@ -1450,6 +1459,178 @@ func (r *router) jsSync(args []object.Value) object.Value {
 		r.syncGroups = append(r.syncGroups, g)
 	}
 	return object.UndefinedSingleton
+}
+
+// ===== 应用接续 (M8, 2026-10-02) =====
+
+// jsHandoff 实现 router.handoff(from, to, opts?)。
+//
+// ## handoff 与 mirror / share / follow 的区别 (为什么必须是"搬迁")
+//
+//	router.sync([a, b], {mode:"mirror"})  —— 路径同步: a 导航 b 跟着走, 两条
+//	                                        栈**各自独立**继续存在 (状态各自独立)
+//	router.sync([a, b], {mode:"share"})   —— 路径 + 状态袋共享: 两个窗口是同
+//	                                        一份栈的两面镜子
+//	router.sync([a, b], {mode:"follow"})  —— 单向跟随 (只有源驱动目标)
+//	router.handoff(a, b)                  —— **搬迁**: a 的整条栈 (含每项的
+//	                                        route.state) 移到 b; a 回到自己的
+//	                                        栈底/首页, 此后两者毫无关系
+//
+// 语义差别落在"源窗口之后会怎样":
+//   - mirror/follow 之后**源窗口还在原页面** (它在继续导航, 只是顺带同步);
+//   - handoff 之后**源窗口回到首页** —— 因为它的栈已经被搬走了。这正是
+//     "接续"的物理动作: 用户把任务从一块屏挪到另一块, 源那边腾空。
+//
+// 想保留源 (只复制一份过去) 就传 `{keepSource: true}` —— 目标拿到克隆
+// (参数/状态袋都断开), 源不动。这条分支让 handoff 也能当"复制会话"用, 但
+// **默认仍是搬迁** (只给 keepSource 才是复制)。
+//
+// 返回 Promise (与 push/back 同形): 接续可能发生在守卫/懒加载之后, 接口形态
+// 必须容得下"还没结束"。
+func (r *router) jsHandoff(args ...object.Value) object.Value {
+	fromScope, okA := r.scopeNameOf(argOrNil(args))
+	toScope, okB := r.scopeNameOf(argOrNil(args[1:]))
+	if !okA || !okB {
+		return object.NewTypeError("gx/router handoff: from/to 必须是窗口句柄或作用域名字符串")
+	}
+	if fromScope == toScope {
+		return resolvedNav("same-scope", "from 与 to 是同一个作用域", nil)
+	}
+	keepSource := false
+	if o, ok := argOrNil(args[2:]).(*object.Object); ok {
+		keepSource = objPropBool(o, "keepSource")
+	}
+	src := r.sessionForOptional(fromScope)
+	if src == nil || len(src.stack) == 0 {
+		return resolvedNav("empty-source", "源作用域没有可搬迁的导航栈", nil)
+	}
+	dst := r.sessionFor(toScope) // 没有就建 (会自带一条 initial)
+
+	// 搬迁 = 直接搬走栈项指针 (route.state 是项上的对象, 随指针一起走);
+	// keepSource = 克隆每一项 (参数/状态袋都断开)。
+	var entries []*routeEntry
+	if keepSource {
+		entries = make([]*routeEntry, 0, len(src.stack))
+		for _, e := range src.stack {
+			entries = append(entries, cloneEntryForHandoff(e))
+		}
+	} else {
+		entries = append([]*routeEntry(nil), src.stack...)
+	}
+	dst.stack = entries
+	dst.index = clampRouteIndex(src.index, len(entries))
+
+	if !keepSource {
+		// 源回到栈底/首页: 只保留它的 initial (stack[0])。commitSignal 会让
+		// 源窗口的 RouterView 重建成首页 —— 这就是"腾空"对用户可见的效果。
+		src.stack = src.stack[:1]
+		src.index = 0
+		src.commitSignal()
+	}
+	dst.commitSignal()
+
+	p := object.NewPromise()
+	res := object.NewObject()
+	res.SetProperty("ok", object.NewBoolean(true))
+	res.SetProperty("kind", object.NewString("handoff"))
+	res.SetProperty("from", object.NewString(fromScope))
+	res.SetProperty("to", object.NewString(toScope))
+	res.SetProperty("count", object.NewNumber(float64(len(entries))))
+	res.SetProperty("keptSource", object.NewBoolean(keepSource))
+	res.SetProperty("route", routeEntryFromJS(dst.current()))
+	p.Resolve(res)
+	return p
+}
+
+// cloneEntryForHandoff 克隆一条栈项: 路径/参数/query 复制, 状态袋浅拷贝
+// (键值都在, 但此后两边改各自的)。
+func cloneEntryForHandoff(e *routeEntry) *routeEntry {
+	if e == nil {
+		return nil
+	}
+	c := *e
+	c.params = cloneStringMap(e.params)
+	c.query = cloneStringMap(e.query)
+	c.state = cloneStateBag(e.state)
+	c.js = nil
+	return &c
+}
+
+func cloneStringMap(m map[string]string) map[string]string {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		out[k] = v
+	}
+	return out
+}
+
+func cloneStateBag(v object.Value) object.Value {
+	o, ok := v.(*object.Object)
+	if !ok {
+		return v
+	}
+	n := object.NewObject()
+	for k, p := range o.Properties {
+		n.SetProperty(k, p.Value)
+	}
+	return n
+}
+
+func clampRouteIndex(i, n int) int {
+	if i < 0 || i >= n {
+		return n - 1
+	}
+	return i
+}
+
+// jsContinuity 实现 router.continuity(): 只读内省 —— 哪个作用域持有哪条栈。
+//
+// 接续前的"体检"用: 想知道往哪搬、源在哪一页、目标是不是已经有栈, 一次读全。
+// 不返回状态袋的**值** (只给键名): 内省接口不该让脚本顺手拿到别人的私有状态。
+func (r *router) jsContinuity() object.Value {
+	out := make([]object.Value, 0, len(r.order))
+	for _, sc := range r.order {
+		s, ok := r.sessions[sc]
+		if !ok {
+			continue
+		}
+		o := object.NewObject()
+		o.SetProperty("scope", object.NewString(sc))
+		o.SetProperty("depth", object.NewNumber(float64(len(s.stack))))
+		o.SetProperty("index", object.NewNumber(float64(s.index)))
+		o.SetProperty("path", object.NewString(currentPathOf(s)))
+		paths := make([]object.Value, 0, len(s.stack))
+		for _, e := range s.stack {
+			paths = append(paths, object.NewString(e.path))
+		}
+		o.SetProperty("stack", object.NewArray(paths))
+		o.SetProperty("stateKeys", object.NewArray(stateKeysOf(s.current())))
+		out = append(out, o)
+	}
+	return object.NewArray(out)
+}
+
+func stateKeysOf(e *routeEntry) []object.Value {
+	if e == nil {
+		return []object.Value{}
+	}
+	so, ok := e.state.(*object.Object)
+	if !ok {
+		return []object.Value{}
+	}
+	keys := make([]string, 0, len(so.Properties))
+	for k := range so.Properties {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys) // 稳定顺序: 内省结果不该随 map 迭代序抖动
+	out := make([]object.Value, 0, len(keys))
+	for _, k := range keys {
+		out = append(out, object.NewString(k))
+	}
+	return out
 }
 
 // ===== 注册 gx/router =====

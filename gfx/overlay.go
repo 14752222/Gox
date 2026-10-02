@@ -223,13 +223,12 @@ func (a *app) closeTopDialog() bool {
 	return false
 }
 
-// closeAnyExpandedSelect 收起任意一个展开中的下拉框, 返回是否关掉了。
-// Esc 的第一优先级: 先收下拉开着的下拉, 再考虑关对话。
+// closeAnyExpandedSelect 收起任意一个展开中的字段弹层 (下拉 / 日历 / 色板),
+// 返回是否关掉了。Esc 的第一优先级: 先收摊开的弹层, 再考虑关对话。
+//
+// 实现搬到 popupfield.go 了 (三家共用同一个状态机) —— 这里保留函数名,
+// 因为"Esc 先收下拉"是这个顺序在 overlay.go 里的一环, 名字换掉会让
+// 前后两段的优先级注释对不上。
 func (a *app) closeAnyExpandedSelect(root *GuiNode) bool {
-	list := expandedSelects(root)
-	if len(list) == 0 {
-		return false
-	}
-	a.closeSelect(list[len(list)-1])
-	return true
+	return a.closeTopPopupField()
 }

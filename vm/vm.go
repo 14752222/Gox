@@ -1,15 +1,17 @@
 package vm
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"os"
 	"path/filepath"
+	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
-	"runtime/debug"
 
 	"github.com/14752222/Gox/bytecode"
 	"github.com/14752222/Gox/compiler"
@@ -54,9 +56,239 @@ type tryEntry struct {
 }
 
 // ModuleExports 存储模块的导出。
+//
+// 导出有三种来源, 解析优先级 (规范: 显式命名导出 > export *):
+//  1. Named/Default/bindings: 本模块的直接导出 (default 走 Default, 词法声明走
+//     bindings 活绑定);
+//  2. forwards: 具名再导出 `export {a as b} from "m"` 与命名空间再导出
+//     `export * as ns from "m"` —— 读时才去源模块导出槽取值, 是"取值时解析"的
+//     活绑定等效语义 (见 resolve);
+//  3. stars: `export * from "m"` —— 转发源模块的自有可枚举导出, **不含 default**,
+//     且**不覆盖**本模块已存在的同名导出 (规范 16.2.3.5 GetExportedNames /
+//     ResolveExport)。
+//
+// 枚举顺序口径 (Object.keys(namespace)): 先按本模块导出登记顺序 (order),
+// 再按星号源出现顺序拼接各自登记顺序并去重; 没有登记顺序的导出 (内置模块直接
+// 塞进 Named 的 map) 按名字字典序补在末尾。Go map 迭代是随机的, 不排序会让
+// namespace 每次物化的键序都不同 —— 这里给一个稳定口径。
 type ModuleExports struct {
 	Default object.Value
 	Named   map[string]object.Value
+
+	// bindings: 活绑定导出。导出名 → 读取模块顶层帧槽位的函数。
+	bindings map[string]func() object.Value
+	// forwards: 具名/命名空间再导出。导出名 → 源模块 + 源导出名 ("*" = 命名空间)。
+	forwards map[string]forwardRef
+	// stars: export * from 的源模块 (按出现顺序, 保证枚举确定性)。
+	stars []*ModuleExports
+	// order: 导出名登记顺序 (Named/bindings/forwards 共享)。
+	order []string
+}
+
+// forwardRef 是一次再导出转发。
+type forwardRef struct {
+	src  *ModuleExports
+	name string // 源模块里的导出名; "*" 表示导出整个命名空间对象
+}
+
+func newModuleExports() *ModuleExports {
+	return &ModuleExports{Named: map[string]object.Value{}}
+}
+
+func (m *ModuleExports) noteOrder(name string) {
+	for _, n := range m.order {
+		if n == name {
+			return
+		}
+	}
+	m.order = append(m.order, name)
+}
+
+// setValue 记录一个值导出 (default 单独存 Default)。
+func (m *ModuleExports) setValue(name string, v object.Value) {
+	if name == "default" {
+		m.Default = v
+	} else {
+		if m.Named == nil {
+			m.Named = map[string]object.Value{}
+		}
+		m.Named[name] = v
+	}
+	m.noteOrder(name)
+}
+
+// setBinding 记录一个活绑定导出: get 返回模块顶层帧槽位的当前值。
+func (m *ModuleExports) setBinding(name string, get func() object.Value) {
+	if m.bindings == nil {
+		m.bindings = map[string]func() object.Value{}
+	}
+	m.bindings[name] = get
+	m.noteOrder(name)
+}
+
+// setForward 记录一次再导出转发。
+func (m *ModuleExports) setForward(name string, src *ModuleExports, srcName string) {
+	if m.forwards == nil {
+		m.forwards = map[string]forwardRef{}
+	}
+	m.forwards[name] = forwardRef{src: src, name: srcName}
+	m.noteOrder(name)
+}
+
+func (m *ModuleExports) addStar(src *ModuleExports) {
+	m.stars = append(m.stars, src)
+}
+
+// resolveWith 返回导出名 name 的当前值 (第二个返回值表示是否可解析),
+// 并携带 building (命名空间构造集)。
+//
+// path 用于打断循环再导出 (A export * from B, B export * from A): 一个模块在
+// 本次解析链上只参与一次, 否则环会无限递归。规范里循环再导出最终由
+// ResolveExport 的 null/ambiguous 结果终止, 这里以"链上重复即放弃"等效实现。
+//
+// 为什么需要两个集合: path 是"当前解析链"的环检测 (进入即标记、返回即清除),
+// 而 building 是"本次命名空间物化过程中正在构造的那些模块"的集合, 必须跨整棵
+// 递归共享。`export * as a from B` + `export * as b from A` 这种命名空间环里,
+// 若每层都用新集合, A→B→A→B… 会一路递归到栈溢出; 共享 building 后第二次遇到
+// 已构造中的模块直接给空对象占位, 环即终止。
+func (m *ModuleExports) resolveWith(name string, path, building map[*ModuleExports]bool) (object.Value, bool) {
+	if m == nil {
+		return nil, false
+	}
+	if path[m] {
+		return nil, false
+	}
+	path[m] = true
+	defer delete(path, m)
+
+	// 1) 本模块直接导出。
+	if m.Named != nil {
+		if v, ok := m.Named[name]; ok {
+			return v, true
+		}
+	}
+	if name == "default" && m.Default != nil {
+		return m.Default, true
+	}
+	if m.bindings != nil {
+		if get, ok := m.bindings[name]; ok {
+			if v := get(); v != nil {
+				return v, true
+			}
+			// 槽位尚未初始化 (循环导入的部分导出): 当作 undefined,
+			// 与旧实现"属性缺失 → GET_PROP 得 undefined"一致, 不抛错。
+			return object.UndefinedSingleton, true
+		}
+	}
+
+	// 2) 具名再导出 (优先级高于 export *)。
+	if m.forwards != nil {
+		if f, ok := m.forwards[name]; ok {
+			if f.name == "*" {
+				return f.src.buildNamespace(building), true
+			}
+			return f.src.resolveWith(f.name, path, building)
+		}
+	}
+
+	// 3) export * (default 永不转发)。
+	if name != "default" {
+		var found object.Value
+		hit := 0
+		for _, s := range m.stars {
+			if v, ok := s.resolveWith(name, path, building); ok {
+				found = v
+				hit++
+			}
+		}
+		if hit == 1 {
+			return found, true
+		}
+		// hit > 1: 多个星号源同名 → 规范判为 ambiguous, 不导出。
+	}
+	return nil, false
+}
+
+// exportNames 返回本模块对外可见的导出名, 顺序确定 (见 ModuleExports 注释)。
+func (m *ModuleExports) exportNames(seen map[*ModuleExports]bool) []string {
+	if m == nil || seen[m] {
+		return nil
+	}
+	seen[m] = true
+	defer delete(seen, m)
+
+	var names []string
+	have := map[string]bool{}
+	add := func(n string) {
+		if !have[n] {
+			have[n] = true
+			names = append(names, n)
+		}
+	}
+	for _, n := range m.order {
+		add(n)
+	}
+	// order 缺失的名字 (内置模块直接塞 Named) 字典序补末尾, 保证确定性。
+	var extra []string
+	for n := range m.Named {
+		if !have[n] {
+			extra = append(extra, n)
+		}
+	}
+	if len(extra) > 0 {
+		sort.Strings(extra)
+		for _, n := range extra {
+			add(n)
+		}
+	}
+	for _, s := range m.stars {
+		for _, n := range s.exportNames(seen) {
+			if n == "default" {
+				continue // default 不参与星号转发
+			}
+			add(n)
+		}
+	}
+	return names
+}
+
+// buildNamespace 把模块导出物化成一个命名空间对象。
+//
+// 这是导入方唯一拿到的"模块视图": OP_IMPORT / 动态 import / `export * as ns`
+// 都走它。因为是物化时逐名调用 resolve, 再导出转发读到的就是源模块导出槽的
+// **当前**值 —— 即"取值时读取源模块导出槽"的语义 (比在 export 语句处立刻拷贝
+// 更接近规范的活绑定)。
+//
+// building 是"正在构造的模块"集合, 跨整棵递归共享, 打断 `export * as ns`
+// 形成的命名空间环 (见 resolveWith 的注释)。
+func (m *ModuleExports) buildNamespace(building map[*ModuleExports]bool) *object.Object {
+	obj := object.NewObject()
+	if m == nil {
+		return obj
+	}
+	if building == nil {
+		building = map[*ModuleExports]bool{}
+	}
+	if building[m] {
+		return obj
+	}
+	building[m] = true
+	defer delete(building, m)
+
+	for _, name := range m.exportNames(map[*ModuleExports]bool{}) {
+		if name == "default" {
+			continue // default 单独放在最后, 保持直觉顺序
+		}
+		v, ok := m.resolveWith(name, map[*ModuleExports]bool{}, building)
+		if !ok {
+			continue // 二义/未解析: 不放进命名空间
+		}
+		obj.SetProperty(name, v)
+	}
+	if v, ok := m.resolveWith("default", map[*ModuleExports]bool{}, building); ok {
+		obj.SetProperty("default", v)
+	}
+	return obj
 }
 
 // currentVM 是当前正在执行的 VM 实例。
@@ -152,12 +384,20 @@ type VM struct {
 	// 栈上模板段之外还有外层操作数，无法区分边界。
 	tplParts [][]object.Value
 
-	// ── 运行时错误源码帧 (T05) ──
-	// srcFile/srcText 是当前执行的脚本文件与文本 (EvalFileVM 注入)。
+	// ── 运行时错误源码帧 (T05 / M2) ──
 	// mainPositions 是主脚本"语句首条指令 offset → 源码位置"的升序表;
 	// 函数体错误查抛出帧闭包的 Positions 表 (offset 空间按编译单元隔离)。
-	srcFile        string
-	srcText        string
+	//
+	// M2: 位置表记录的是**编译单元 (转译后 JS)** 的行列, 而展示要给用户 .ts 原文。
+	// 所以源码信息按"编译单元"建模为 srcUnit:
+	//   mainUnit  当前脚本 (入口/模块顶层) 的单元;
+	//   units     *CompiledFunction → 它所属单元的注册表 (跨 VM 共享 —— 模块 A
+	//             导出的函数可能被入口调用, 那时抛错帧属于 A 的单元, 而当前 VM
+	//             是入口)。注册发生在 createClosure。
+	srcFile        string // 顶层脚本文件名 (兼容 SetSourceInfo 的读取方)
+	srcText        string // 顶层脚本文本
+	mainUnit       *srcUnit
+	units          *unitRegistry
 	mainPositions  []object.SrcPos
 	lastThrowPC    int
 	hasThrowPC     bool
@@ -182,6 +422,7 @@ func New(ins bytecode.Instructions, constants *bytecode.ConstantPool, numLocals 
 		globals:   runtime.NewEnvironment(),
 		constants: constants,
 		modules:   map[string]*ModuleExports{},
+		units:     newUnitRegistry(),
 	}
 }
 
@@ -196,6 +437,7 @@ func NewWithGlobals(ins bytecode.Instructions, constants *bytecode.ConstantPool,
 		globals:   globals,
 		constants: constants,
 		modules:   map[string]*ModuleExports{},
+		units:     newUnitRegistry(),
 	}
 }
 
@@ -541,7 +783,6 @@ func (vm *VM) popFrame() *Frame {
 	for len(vm.tryStack) > 0 && vm.tryStack[len(vm.tryStack)-1].frameIdx > vm.frameIdx {
 		vm.tryStack = vm.tryStack[:len(vm.tryStack)-1]
 	}
-
 
 	// 传播闭包变量修改 (closure → outer frame)
 	// 仅当闭包创建于上一帧时才传播，避免跨帧变量错位
@@ -1495,14 +1736,7 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				// 加载失败: reject Promise
 				p.Reject(object.NewErrorWithName("Error", err.Error()))
 			} else {
-				modObj := object.NewObject()
-				if modExports.Default != nil {
-					modObj.SetProperty("default", modExports.Default)
-				}
-				for name, val := range modExports.Named {
-					modObj.SetProperty(name, val)
-				}
-				p.Resolve(modObj)
+				p.Resolve(modExports.buildNamespace(nil))
 			}
 			vm.stack.Push(p)
 		case bytecode.OP_GET_INDEX:
@@ -1947,15 +2181,8 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				}
 				continue
 			}
-			// 推入模块导出对象
-			modObj := object.NewObject()
-			if modExports.Default != nil {
-				modObj.SetProperty("default", modExports.Default)
-			}
-			for name, val := range modExports.Named {
-				modObj.SetProperty(name, val)
-			}
-			vm.stack.Push(modObj)
+			// 推入模块命名空间对象 (物化时解析再导出/星号导出, 见 buildNamespace)
+			vm.stack.Push(modExports.buildNamespace(nil))
 
 		case bytecode.OP_EXPORT:
 			// operand = 导出名常量索引，栈顶是导出值
@@ -1965,14 +2192,56 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				exportName = s.Value
 			}
 			val := vm.stack.Pop()
-			if vm.currentExports == nil {
-				vm.currentExports = &ModuleExports{Named: map[string]object.Value{}}
+			vm.ensureCurrentExports().setValue(exportName, val)
+
+		case bytecode.OP_EXPORT_BINDING:
+			// operand = 常量池索引 → [导出名(str), 槽位(int)]
+			// 记录"导出名 → 当前(模块顶层)帧槽位"的读取器, 不存值快照。
+			name, slot, ok := vm.bindingOperand(frame, operand)
+			if !ok {
+				return fmt.Errorf("VM: malformed EXPORT_BINDING operand at pc %d", frame.PC)
 			}
-			if exportName == "default" {
-				vm.currentExports.Default = val
-			} else {
-				vm.currentExports.Named[exportName] = val
+			locals := frame.Locals
+			vm.ensureCurrentExports().setBinding(name, func() object.Value {
+				if slot < len(locals) {
+					return locals[slot]
+				}
+				return nil
+			})
+
+		case bytecode.OP_EXPORT_FROM:
+			// operand = 常量池索引 → [模块路径(str), 源导出名(str), 目标导出名(str)]
+			// 记录转发 (读时读取源模块导出槽), 而不是当场拷贝值。
+			spec, srcName, target, ok := vm.reexportOperand(frame, operand)
+			if !ok {
+				return fmt.Errorf("VM: malformed EXPORT_FROM operand at pc %d", frame.PC)
 			}
+			src, err := vm.loadModule(spec)
+			if err != nil {
+				errVal := object.NewErrorWithName("Error", err.Error())
+				if !vm.handleThrow(errVal) {
+					return &ThrowError{Value: errVal}
+				}
+				continue
+			}
+			vm.ensureCurrentExports().setForward(target, src, srcName)
+
+		case bytecode.OP_EXPORT_STAR:
+			// operand = 模块路径常量索引; 记录星号再导出源。
+			specVal := frame.Constants.Get(operand)
+			spec := ""
+			if s, ok := specVal.(*object.String); ok {
+				spec = s.Value
+			}
+			src, err := vm.loadModule(spec)
+			if err != nil {
+				errVal := object.NewErrorWithName("Error", err.Error())
+				if !vm.handleThrow(errVal) {
+					return &ThrowError{Value: errVal}
+				}
+				continue
+			}
+			vm.ensureCurrentExports().addStar(src)
 
 		default:
 			return fmt.Errorf("VM: unknown opcode 0x%02x (%s)", op, op.Name())
@@ -2501,7 +2770,6 @@ func (vm *VM) handleThrowInner(val object.Value) bool {
 			continue
 		}
 
-
 		// 如果 try 条目在不同的帧中，先弹出帧。
 		// 栈恢复以帧的 StackBase 为准截断 (与 OP_RETURN 一致) ——
 		// 旧的"每帧无条件 Pop 一次"假设帧恰好遗留一个值, 在调用方
@@ -2540,12 +2808,51 @@ func (vm *VM) handleThrowInner(val object.Value) bool {
 	return false
 }
 
+// ensureCurrentExports 返回当前模块的导出表, 必要时惰性创建。
+// 导出指令 (OP_EXPORT 系列) 统一走它, 避免各处重复判空。
+func (vm *VM) ensureCurrentExports() *ModuleExports {
+	if vm.currentExports == nil {
+		vm.currentExports = newModuleExports()
+	}
+	return vm.currentExports
+}
+
+// bindingOperand 解析 OP_EXPORT_BINDING 的操作数: [导出名, 槽位]。
+func (vm *VM) bindingOperand(frame *Frame, operand uint16) (string, int, bool) {
+	arr, ok := frame.Constants.Get(operand).(*object.Array)
+	if !ok || len(arr.Elements) != 2 {
+		return "", 0, false
+	}
+	name, ok1 := arr.Elements[0].(*object.String)
+	slot, ok2 := arr.Elements[1].(*object.Number)
+	if !ok1 || !ok2 {
+		return "", 0, false
+	}
+	return name.Value, int(slot.Value), true
+}
+
+// reexportOperand 解析 OP_EXPORT_FROM 的操作数: [模块路径, 源导出名, 目标导出名]。
+func (vm *VM) reexportOperand(frame *Frame, operand uint16) (string, string, string, bool) {
+	arr, ok := frame.Constants.Get(operand).(*object.Array)
+	if !ok || len(arr.Elements) != 3 {
+		return "", "", "", false
+	}
+	spec, ok1 := arr.Elements[0].(*object.String)
+	srcName, ok2 := arr.Elements[1].(*object.String)
+	target, ok3 := arr.Elements[2].(*object.String)
+	if !ok1 || !ok2 || !ok3 {
+		return "", "", "", false
+	}
+	return spec.Value, srcName.Value, target.Value, true
+}
+
 // loadModule 加载并执行模块，返回导出对象。
 // 使用模块缓存避免重复加载。
 func (vm *VM) loadModule(spec string) (*ModuleExports, error) {
 	// 内置模块 (如 "gx/solid"、"gox") 优先于文件系统解析
 	if exports, ok := object.LookupBuiltinModule(spec); ok {
-		mod := &ModuleExports{Named: exports}
+		mod := newModuleExports()
+		mod.Named = exports
 		vm.modules[spec] = mod
 		return mod, nil
 	}
@@ -2558,12 +2865,19 @@ func (vm *VM) loadModule(spec string) (*ModuleExports, error) {
 			spec, strings.Join(object.RegisteredBuiltinModules(), ", "))
 	}
 
-	// 解析模块路径
-	absPath, resolveErr := vm.resolveModuleFile(spec)
+	// 解析模块路径: 裸说明符 (node_modules) 与相对/绝对路径分开走
+	absPath, resolveErr := vm.resolveModule(spec)
 	if resolveErr != nil {
 		return nil, resolveErr
 	}
 
+	return vm.loadModuleFile(spec, absPath)
+}
+
+// loadModuleFile 从已解析的磁盘路径加载、编译并执行模块。
+// 与 loadModule 拆开是为了让"解析"与"加载执行"各自可测（node_modules
+// 解析的测试只关心前者，不需要跑完整条编译执行链）。
+func (vm *VM) loadModuleFile(spec, absPath string) (*ModuleExports, error) {
 	// 检查缓存
 	if mod, ok := vm.modules[absPath]; ok {
 		return mod, nil
@@ -2571,20 +2885,29 @@ func (vm *VM) loadModule(spec string) (*ModuleExports, error) {
 
 	// 读取文件; TS 家族 (.ts/.tsx/.mts/.cts/.jsx) 先过类型剥离转译,
 	// 进编译管线的永远是 JS —— parser/compiler 不感知 TS 的存在。
-	source, err := osReadFile(absPath)
+	// orig 是用户原文, code 是进编译管线的 JS (两者分开: M2 源码帧要展示原文)。
+	orig, err := osReadFile(absPath)
 	if err != nil {
 		return nil, fmt.Errorf("Cannot find module '%s'", spec)
 	}
-	if tstransform.IsTS(absPath) {
-		source, err = tstransform.ToJS(source, absPath)
-		if err != nil {
-			return nil, err
+	code := orig
+	var lineMap *tstransform.LineMap
+	isTS := tstransform.IsTS(absPath)
+	if isTS {
+		res, terr := tstransform.TransformCached(orig, absPath)
+		if terr != nil {
+			return nil, terr
 		}
+		code = res.Code
+		lineMap = res.LineMap
 	}
 
 	// 编译模块
-	c, err := compileSource(string(source), true)
+	c, err := compileSource(string(code), true)
 	if err != nil {
+		if isTS {
+			err = remapSourceError(err, lineMap)
+		}
 		if se, ok := err.(*sourceError); ok && se.parse {
 			return nil, fmt.Errorf("Module parse error: %s", se.msg)
 		}
@@ -2593,7 +2916,7 @@ func (vm *VM) loadModule(spec string) (*ModuleExports, error) {
 
 	// 执行模块
 	savedExports := vm.currentExports
-	vm.currentExports = &ModuleExports{Named: map[string]object.Value{}}
+	vm.currentExports = newModuleExports()
 
 	// 保存当前模块路径并设置新基准
 	savedBase := vm.moduleBase
@@ -2608,12 +2931,24 @@ func (vm *VM) loadModule(spec string) (*ModuleExports, error) {
 	modVM.modules = vm.modules
 	modVM.moduleBase = vm.moduleBase
 	modVM.currentExports = vm.currentExports
+	// 源码单元注册表跨 VM 共享: 模块里定义的函数之后可能在入口 VM 上被调用,
+	// 抛错时要用模块自己的单元渲染帧 (M2 P0-1)。
+	modVM.units = vm.units
+	// M2 P0-1: 被 import 的模块此前不注入源码信息 ⇒ 模块内报错没有源码帧。
+	// 这里补齐 (原文 + 行映射 + 语句位置表), 与入口脚本同等对待。
+	modVM.SetSourceInfo(absPath, string(orig))
+	if isTS {
+		modVM.SetTranspileMap(lineMap, string(code))
+	}
+	modVM.mainUnit.isModule = true // 标记为模块单元: 其函数登记进 units 注册表
+	modVM.SetStmtPositions(c.StmtPositions())
 	if err := modVM.RunCompiled(c); err != nil {
 		// 执行失败不缓存半成品, 便于上层重试时报出同样错误
 		delete(vm.modules, absPath)
 		vm.currentExports = savedExports
 		vm.moduleBase = savedBase
-		return nil, fmt.Errorf("Module execution error: %v", err)
+		// 附加源码帧 (此前直接 %v, 模块内异常只有一行消息没有帧)。
+		return nil, fmt.Errorf("Module execution error: %v", modVM.AttachFrame(err))
 	}
 
 	// 恢复状态
@@ -2660,6 +2995,12 @@ func (vm *VM) createClosure(meta *bytecode.FunctionMetadata, frame *Frame) *obje
 		thisVal = frame.Closure.This
 	}
 
+	// M2: 记录"这个函数属于哪个源码单元" —— 模块导出的函数被入口调用时,
+	// 抛错帧属于模块的 .ts, 而不是当前(入口)VM 的单元。只登记模块单元:
+	// 入口函数的帧可直接回退 mainUnit, 登记它们只会让注册表无谓增长。
+	if vm.units != nil && vm.mainUnit != nil && vm.mainUnit.isModule {
+		vm.units.put(fn, vm.mainUnit)
+	}
 	return &object.Closure{
 		Fn:             fn,
 		Env:            vm.globals,
@@ -3345,29 +3686,42 @@ func EvalFile(path string) (object.Value, error) {
 
 // EvalFileVM 读取并执行 JS 脚本文件, 返回 VM 实例。
 // 供需要继续驱动事件循环 (严格定时器回调等) 的调用方使用。
-// TS 家族文件 (.ts/.tsx/...) 先过 tstransform 类型剥离再进编译管线,
-// 源码帧注入的也是转译后的文本 (与 stmt 位置同源)。
+// TS 家族文件 (.ts/.tsx/...) 先过 tstransform 类型剥离再进编译管线;
+// 源码帧展示用户写的 .ts 原文, 并用转译行映射把 JS 行列翻回 .ts (M2 P0-1)。
 func EvalFileVM(path string) (*VM, error) {
-	source, err := os.ReadFile(path)
+	orig, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("cannot read file: %v", err)
 	}
-	if tstransform.IsTS(path) {
-		source, err = tstransform.ToJS(source, path)
-		if err != nil {
-			return nil, err
+	// TS 家族 (.ts/.tsx/...) 先过类型剥离; code 是进编译管线的 JS, orig 是
+	// 用户原文 (源码帧展示的是它 —— M2: 报错定位到 .ts 源码行)。
+	code := orig
+	var lineMap *tstransform.LineMap
+	isTS := tstransform.IsTS(path)
+	if isTS {
+		res, terr := tstransform.TransformCached(orig, path)
+		if terr != nil {
+			return nil, terr
 		}
+		code = res.Code
+		lineMap = res.LineMap
 	}
 
-	c, err := compileSource(string(source), false)
+	c, err := compileSource(string(code), false)
 	if err != nil {
+		if isTS {
+			err = remapSourceError(err, lineMap)
+		}
 		return nil, evalEntryError(err)
 	}
 
 	vm := NewWithGlobals(c.Bytes(), c.Constants(), c.NumLocals(), stdlib.SetupGlobals())
 	vm.SetModuleBase(filepath.Dir(path))
-	// T05 源码帧: 注入脚本文本与语句位置表, 未捕获异常渲染出错行。
-	vm.SetSourceInfo(path, string(source))
+	// T05/M2 源码帧: 注入原文 + 行映射 + 语句位置表, 未捕获异常渲染出错行。
+	vm.SetSourceInfo(path, string(orig))
+	if isTS {
+		vm.SetTranspileMap(lineMap, string(code))
+	}
 	vm.SetStmtPositions(c.StmtPositions())
 	if err := vm.RunCompiled(c); err != nil {
 		return nil, fmt.Errorf("vm error: %v", vm.AttachFrame(err))
@@ -3392,6 +3746,328 @@ func resolvePath(base, spec string) string {
 		return filepath.Clean(spec)
 	}
 	return filepath.Clean(filepath.Join(base, spec))
+}
+
+// resolveModule 把模块说明符解析为磁盘上的真实文件。
+//
+// 两类说明符分开处理：
+//   - 裸说明符（"lodash" / "@scope/pkg" / "lodash/fp"）→ node_modules 解析；
+//   - 相对/绝对路径（"./x.js" / "/abs/x.js"）→ 原有文件解析。
+//
+// 裸说明符在 node_modules 里找不到时，回退到原有"相对 moduleBase 当路径解析"
+// 的行为 —— 历史脚本里有 `import "src/util.js"` 这种靠 moduleBase 的写法，
+// 不能因为引入 npm 解析就把它判死。两条路都落空时报错同时列出两份候选。
+func (vm *VM) resolveModule(spec string) (string, error) {
+	if !isBareSpecifier(spec) {
+		return vm.resolveModuleFile(spec)
+	}
+	nmPath, nmErr := vm.resolveNodeModule(spec)
+	if nmErr == nil {
+		return nmPath, nil
+	}
+	legacyPath, legacyErr := vm.resolveModuleFile(spec)
+	if legacyErr == nil {
+		return legacyPath, nil
+	}
+	// 都失败: 合并报错, 让用户一次看到 node_modules 与相对路径两边的候选。
+	return "", fmt.Errorf("Cannot find module '%s'\n  [node_modules] %v\n  [相对 moduleBase] %v",
+		spec, nmErr, legacyErr)
+}
+
+// isBareSpecifier 判断说明符是否为"裸包名"（需要 node_modules 解析）。
+//
+// 排除：相对路径（./ ../ . ..）、绝对路径（/ 或 \ 开头）、Windows 盘符
+// （C:\...）。"gox" / "gx/*" 已由 loadModule 在此函数之前拦下。
+func isBareSpecifier(spec string) bool {
+	if spec == "" || spec == "." || spec == ".." {
+		return false
+	}
+	if strings.HasPrefix(spec, "./") || strings.HasPrefix(spec, "../") {
+		return false
+	}
+	if strings.HasPrefix(spec, "/") || strings.HasPrefix(spec, `\`) {
+		return false
+	}
+	if len(spec) >= 2 && spec[1] == ':' { // Windows 盘符 C:\...
+		return false
+	}
+	return true
+}
+
+// splitPackageSpec 把裸说明符拆成"包名 + 子路径"。
+//
+//	"lodash"            → ("lodash", "")
+//	"lodash/fp"         → ("lodash", "fp")
+//	"@scope/pkg"        → ("@scope/pkg", "")
+//	"@scope/pkg/sub"    → ("@scope/pkg", "sub")
+func splitPackageSpec(spec string) (name, sub string) {
+	if strings.HasPrefix(spec, "@") {
+		parts := strings.SplitN(spec, "/", 3)
+		if len(parts) < 2 {
+			return spec, "" // 非法作用域名（"@scope" 单独），交给后续报错
+		}
+		name = parts[0] + "/" + parts[1]
+		if len(parts) == 3 {
+			sub = parts[2]
+		}
+		return name, sub
+	}
+	if i := strings.IndexByte(spec, '/'); i >= 0 {
+		return spec[:i], spec[i+1:]
+	}
+	return spec, ""
+}
+
+// moduleEntryExtensions 是 node_modules 入口解析尝试的源码后缀，顺序即优先级。
+// 在相对导入的 .js/.ts/.tsx 之外补上 npm 世界常见的 .mjs（ESM 真后缀）与
+// .cjs（CommonJS，v0 能解析但运行会因 require 未定义而报错 —— 见 docs/npm-compat.md）。
+var moduleEntryExtensions = []string{".js", ".mjs", ".cjs", ".jsx", ".ts", ".tsx", ".mts", ".cts"}
+
+// resolveNodeModule 从 moduleBase 起逐级向上查找 node_modules/<pkg>，
+// 命中后按 package.json 的 exports > module > main > browser > index.*
+// 顺序解析入口。
+//
+// 顺序理由（v1 口径，写死在此避免后来者当 bug）：
+//  1. exports —— Node 12+ 的官方、权威入口声明，也是唯一能表达"子路径 +
+//     条件"的字段，最精确，所以最高优先；
+//  2. module —— 打包器时代的事实标准，指向 ESM 入口。Gox 是 ESM-first，
+//     ESM 入口优先于 CJS 的 main；
+//  3. main —— Node 的经典入口（多为 CJS）。Gox v0 不做 CJS：main 指向 CJS
+//     时这里**仍会解析成功**，失败发生在运行期（require is not defined）。
+//     这是刻意的 loud failure，不在此处静默跳过；
+//  4. browser —— 浏览器条件入口（v1 只认字符串形式；对象映射形式不解析）；
+//  5. index.js / index.ts / index.tsx —— 老包不带任何入口字段时的兜底。
+//
+// 失败时报出所有尝试过的候选路径（含逐级 node_modules 目录），沿用
+// resolveModuleFile 的可排错风格。
+func (vm *VM) resolveNodeModule(spec string) (string, error) {
+	name, sub := splitPackageSpec(spec)
+	if name == "" || strings.HasSuffix(name, "/") {
+		return "", fmt.Errorf("Cannot find module '%s' (非法包名)", spec)
+	}
+
+	start := vm.moduleBase
+	if start == "" {
+		if wd, err := os.Getwd(); err == nil {
+			start = wd
+		}
+	}
+	if !filepath.IsAbs(start) {
+		if abs, err := filepath.Abs(start); err == nil {
+			start = abs
+		}
+	}
+	start = filepath.Clean(start)
+
+	var candidates []string
+	add := func(p string) {
+		candidates = append(candidates, filepath.Clean(p))
+	}
+
+	dir := start
+	for {
+		pkgDir := filepath.Join(dir, "node_modules", filepath.FromSlash(name))
+		if fi, err := os.Stat(pkgDir); err == nil && fi.IsDir() {
+			if path, ok := resolvePackageEntry(pkgDir, name, sub, add); ok {
+				return path, nil
+			}
+		} else {
+			add(pkgDir)
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			break // 已到根
+		}
+		dir = parent
+	}
+	return "", fmt.Errorf("Cannot find module '%s' (tried: %s)", spec, strings.Join(candidates, ", "))
+}
+
+// resolvePackageEntry 在已命中的包目录里解析入口文件或子路径。
+// 成功返回真实文件路径；失败返回 false（尝试过的候选已通过 add 记录）。
+func resolvePackageEntry(pkgDir, pkgName, sub string, add func(string)) (string, bool) {
+	pj, ok := readPackageJSON(filepath.Join(pkgDir, "package.json"))
+	if !ok {
+		add(filepath.Join(pkgDir, "package.json"))
+	}
+
+	if sub != "" {
+		// 子路径：先按 exports 的 "./sub" 键匹配（条件裁剪见 matchExports）
+		if pj != nil {
+			if raw, has := pj["exports"]; has {
+				if target, matched := matchExports(raw, "./"+sub); matched {
+					if path, ok := resolvePackageTarget(pkgDir, target, add); ok {
+						return path, true
+					}
+				}
+			}
+		}
+		// exports 缺该子路径时 v1 宽容处理：直接把 <pkgDir>/<sub> 当文件解析。
+		// （Node 会抛 ERR_PACKAGE_PATH_NOT_EXPORTED；v1 选择更宽松，见
+		// docs/npm-compat.md 的"exports 条件裁剪"边界说明。）
+		if path, ok := resolvePackageFile(filepath.Join(pkgDir, filepath.FromSlash(sub)), add); ok {
+			return path, true
+		}
+		return "", false
+	}
+
+	// 根入口：exports 的 "." 键
+	if pj != nil {
+		if raw, has := pj["exports"]; has {
+			if target, matched := matchExports(raw, "."); matched {
+				if path, ok := resolvePackageTarget(pkgDir, target, add); ok {
+					return path, true
+				}
+			}
+		}
+		// exports 未命中 → module > main > browser 逐字段退化
+		for _, field := range []string{"module", "main", "browser"} {
+			raw, has := pj[field]
+			if !has {
+				continue
+			}
+			s, isStr := raw.(string)
+			if !isStr || s == "" {
+				// browser 常见对象映射形式；v1 不解析，记一条候选便于排错
+				add(filepath.Join(pkgDir, field+"(对象映射形式, v1 不支持)"))
+				continue
+			}
+			if path, ok := resolvePackageFile(filepath.Join(pkgDir, filepath.FromSlash(s)), add); ok {
+				return path, true
+			}
+		}
+	}
+
+	// 兜底 index.*（老式无 package.json / 无入口字段的包）
+	if path, ok := resolvePackageFile(filepath.Join(pkgDir, "index"), add); ok {
+		return path, true
+	}
+	return "", false
+}
+
+// matchExports 在 package.json 的 exports 字段里找 key（"." 或 "./sub"）对应的目标。
+//
+// v1 支持的形态（够用即可；复杂形态显式不支持并在注释里写死）：
+//   - "exports": "./index.js"                     → 字符串，仅对 "." 生效
+//   - "exports": { ".": "./index.js", "./x": … }  → 以 "." 开头的子路径表
+//   - "exports": { "import": …, "default": … }    → 直接写在 exports 上的条件表
+//   - 目标值: 字符串 | 条件对象 | 数组（取第一个可用的）
+//   - 条件对象按 import > default 取；require 跳过（v0 不做 CJS）
+//
+// 不支持：通配子路径（"./*"）、多层嵌套条件的复杂组合。落空时返回
+// matched=false，调用方退化为直接文件解析并列出候选。
+func matchExports(raw any, key string) (any, bool) {
+	switch v := raw.(type) {
+	case string:
+		if key == "." {
+			return v, true
+		}
+		return nil, false
+	case map[string]any:
+		if hasSubpathKeys(v) {
+			target, ok := v[key]
+			if !ok {
+				return nil, false
+			}
+			return selectCondition(target), true
+		}
+		// 无 "." 键 → 直接挂在 exports 上的条件表，只服务根入口
+		if key == "." {
+			return selectCondition(v), true
+		}
+		return nil, false
+	}
+	return nil, false
+}
+
+// hasSubpathKeys 判断 exports 对象是否是"子路径表"（至少有一个键以 "." 开头）。
+func hasSubpathKeys(m map[string]any) bool {
+	for k := range m {
+		if strings.HasPrefix(k, ".") {
+			return true
+		}
+	}
+	return false
+}
+
+// selectCondition 从 exports 目标值里按条件优先级选出一个路径字符串。
+// v1 条件优先级: import > default。require 刻意跳过（Gox v0 不做 CommonJS，
+// 见 docs/npm-compat.md）。数组取第一个能选出的元素。
+func selectCondition(target any) any {
+	switch v := target.(type) {
+	case string:
+		return v
+	case []any:
+		for _, e := range v {
+			if r := selectCondition(e); r != nil {
+				return r
+			}
+		}
+		return nil
+	case map[string]any:
+		for _, cond := range []string{"import", "default"} {
+			if t, ok := v[cond]; ok {
+				if r := selectCondition(t); r != nil {
+					return r
+				}
+			}
+		}
+		return nil // 其它条件（browser/node/types…）v1 不认
+	}
+	return nil
+}
+
+// resolvePackageTarget 把 exports 目标（相对包目录的 "./..." 路径）解析为文件。
+// 非 "./" 开头的目标（指向其它包的裸说明符）v1 不支持。
+func resolvePackageTarget(pkgDir string, target any, add func(string)) (string, bool) {
+	s, ok := target.(string)
+	if !ok || s == "" || !strings.HasPrefix(s, "./") {
+		return "", false
+	}
+	return resolvePackageFile(filepath.Join(pkgDir, filepath.FromSlash(s)), add)
+}
+
+// resolvePackageFile 把一个"可能是文件 / 可能是目录 / 可能缺后缀"的目标
+// 解析为真实文件。尝试过的路径都通过 add 记录（便于报错排错）。
+func resolvePackageFile(target string, add func(string)) (string, bool) {
+	if fi, err := os.Stat(target); err == nil {
+		if !fi.IsDir() {
+			return target, true
+		}
+		// 命中目录 → 其下 index.*
+		for _, ext := range moduleEntryExtensions {
+			p := filepath.Join(target, "index"+ext)
+			add(p)
+			if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+				return p, true
+			}
+		}
+		return "", false
+	}
+	// 缺后缀 → 依次补后缀
+	for _, ext := range moduleEntryExtensions {
+		p := target + ext
+		add(p)
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+			return p, true
+		}
+	}
+	return "", false
+}
+
+// readPackageJSON 读取并解析 package.json。失败返回 (nil, false)，
+// 调用方按"无 package.json 的老式包"处理。
+func readPackageJSON(path string) (map[string]any, bool) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	// 用 any 而非强类型，是因为 exports 的形态多变（字符串/对象/数组嵌套）。
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil, false
+	}
+	return m, true
 }
 
 // resolveModuleFile 把模块说明符解析为磁盘上真实存在的文件。

@@ -19,11 +19,77 @@ import (
 	"time"
 )
 
+// DefaultWindowPos 是 WindowConfig.X/Y 的"平台自选位置"哨兵。
+//
+// 为什么需要哨兵: (0,0) 是一个**合法位置** (主屏工作区左上角), 不能用它表达
+// "没指定位置"。约定: X 或 Y 小于 -10000 时忽略位置, 交给平台自选
+// (Windows 的 CW_USEDEFAULT / cocoa 的居中)。此外全零 (Go 零值, 也是
+// render() 缺省) 同样按"未指定"处理 —— 见 ResolveWindowPlacement。
+const DefaultWindowPos = -100000
+
 // WindowConfig 窗口创建配置。
+//
+// X/Y 的口径与 Window.MoveTo / gx/screen 的 windowInfo().x/y **完全一致**:
+// 窗口外框左上角相对**目标显示器工作区**左上角的偏移 (设备像素)。
+// 跨屏换算 (工作区 → 虚拟桌面绝对坐标) 由 ResolveWindowPlacement 统一完成,
+// 后端只承接绝对坐标 —— 这样"坐标口径"只有一处定义。
+//
+// 字段分三批: 尺寸/标题 (P3-6)、位置与层级 (§四 窗口/系统缺口)、
+// 尺寸约束 / 全屏 / 模态 (同批)。**新增字段的零值一律等于"不干预"**,
+// 这样 `WindowConfig{Title: "T", Width: 320, Height: 200}` 这种老写法
+// 语义完全不变 (既有测试里的结构体字面量比较也不用改)。
 type WindowConfig struct {
 	Title  string
 	Width  int
 	Height int
+
+	// X/Y: 位置 (相对目标显示器工作区)。< DefaultWindowPos 或全零 = 平台自选。
+	X, Y int
+
+	// Display: 目标显示器 id (见 gx/screen 的 screens()[].id); 空 = 平台默认。
+	// 给定时 X/Y 相对**该屏**工作区; 若 X/Y 也未指定, 则在该屏工作区居中
+	// (这是"按屏放置"最常用的一种: render(<window display={id}>))。
+	//
+	// 合流备注 (2026-10-02): §四 那版另有一个 `HasPos bool` 表示"脚本到底
+	// 有没有指定位置"。合流后**删掉**了它 —— 位置是否指定由 DefaultWindowPos
+	// 哨兵 + 全零约定表达 (见 windowPosSpecified)。两套判据并存迟早对不上,
+	// 而且结构体字面量整体比较会凭空多出一个必须记得同步的字段。
+	Display string
+
+	// 尺寸约束 (像素, 0 = 不约束)。与 Web 的 minWidth/maxWidth 同义,
+	// 由后端落成平台级约束 (WM_GETMINMAXINFO / XSizeHints / NSWindow
+	// minSize+maxSize) —— 是"用户拖边框"的钳位, 不是布局钳位:
+	// 布局侧的 minWidth/maxWidth 仍然是节点自己的 props。
+	MinWidth, MinHeight int
+	MaxWidth, MaxHeight int
+
+	// NoResize 关掉用户缩放 (缺省 false = 可缩放)。用否定式命名是为了
+	// 让零值等于历史行为。
+	NoResize bool
+
+	// Fullscreen 启动即全屏 (缺省 false)。
+	Fullscreen bool
+
+	// Level 是窗口层级: "" / "normal" / "top" (置顶) / "bottom" (置底)。
+	// 未知值按 normal 处理 (静默, 不让笔误把窗口卡在某个怪层级上)。
+	Level string
+
+	// Modal 标记这是一个**模态子窗口**: 创建期间 ModalParent 那个窗口的
+	// 输入被屏蔽 (鼠标/键盘/滚轮/输入法), 直到本窗口关闭。
+	// ModalParent 为 nil 时 Modal 无效 (没有父就没有"挡住谁"可言),
+	// 只是开一个普通窗口 —— 静默降级比抛错好: 脚本拿不到父句柄是常见
+	// 疏忽, 不值得让整个窗口开不出来。
+	Modal       bool
+	ModalParent *Window
+}
+
+// windowLevel 归一化窗口层级名 (未知值 → "normal")。
+func windowLevel(s string) string {
+	switch s {
+	case "top", "bottom", "normal":
+		return s
+	}
+	return "normal"
 }
 
 // EventKind 窗口事件种类。
@@ -42,6 +108,23 @@ const (
 	// 之类的哨兵坐标既隐晦又和真实坐标混淆。
 	EventMouseLeave
 	EventResize
+	// EventMove 是窗口被移动 (§四 窗口/系统缺口)。载荷口径与 EventResize
+	// 的 W/H 一致: X/Y 是**窗口外框在屏幕坐标系里的左上角**, 由后端在收到
+	// 平台移动消息时填 (win32 WM_MOVE / cocoa windowDidMove / X11
+	// ConfigureNotify)。
+	//
+	// 注意它与鼠标事件的 X/Y 不是一回事 —— 那两个是客户区相对坐标, 这里
+	// 的两个是屏幕绝对坐标 (窗口自己"在哪")。Event 结构里 X/Y 已经被鼠标
+	// 占用, 这里按"字段名贴近语义、坐标系在文档里写清"而不是"避免重名"
+	// 来选: 把窗口坐标改名成 ScreenX/ScreenY 会让"读位置"这件事在多处
+	// 分裂成两套词汇。
+	//
+	// **字段留在绝对坐标上是刻意的**: 换算成脚本口径需要一个前提 —— "窗口
+	// 在哪块屏", 而那要查显示器几何 (后端 DisplayOf / 平台 API), 属于内核的
+	// 事; 后端只该报事实。render.go 派发 onMove 前会经 displayOfWorkSurface
+	// 换成"所在显示器工作区相对 + 设备像素", 与 position()/bounds()/moveTo
+	// 同一参照系 (于是脚本拿到的载荷能直接喂回 moveTo)。
+	EventMove
 	// EventIMECommit 是输入法提交的一批字符 (P2-7)。组合过程由平台自己的
 	// 组合窗显示, 只有"用户选定了候选词"这一刻才会拿到结果串, 因此它天然是
 	// 整批插入 —— 与 WM_CHAR 那种一次一个字符的路径完全不同。

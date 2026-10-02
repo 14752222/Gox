@@ -33,6 +33,18 @@ func init() {
 
 type factory struct{}
 
+// clampI16 把坐标钳进 int16 (xproto.CreateWindow 的 X/Y 是 int16)。
+// 多屏拼接的坐标偶尔会超出, 回绕会让窗口出现在屏幕另一头 (且不报错)。
+func clampI16(v int) int {
+	if v > 32767 {
+		return 32767
+	}
+	if v < -32768 {
+		return -32768
+	}
+	return v
+}
+
 func (f *factory) Create(cfg gfx.WindowConfig) (gfx.Surface, error) {
 	return newSurface(cfg)
 }
@@ -40,6 +52,10 @@ func (f *factory) Create(cfg gfx.WindowConfig) (gfx.Surface, error) {
 type surface struct {
 	conn *xgb.Conn
 	win  xproto.Window
+	// root 是本屏的根窗口 (多屏 X11 里通常只有一个根, 所有屏拼在它上面)。
+	// 窗口位置要经 TranslateCoordinates 换算到根坐标 —— WM 会把顶层窗口
+	// reparent 到一个 frame 窗口, GetGeometry 拿到的是相对 frame 的位置。
+	root xproto.Window
 	gc   xproto.Gcontext
 
 	wmProtocols xproto.Atom
@@ -55,6 +71,9 @@ type surface struct {
 	mu     sync.Mutex
 	closed bool
 	w, h   int
+	// x, y 是最近一次 ConfigureNotify 报的**父窗口坐标系**位置 (移动检测用;
+	// 对外报的屏幕坐标由 Bounds 现算, 见 window.go)。
+	x, y int
 }
 
 func newSurface(cfg gfx.WindowConfig) (gfx.Surface, error) {
@@ -84,8 +103,19 @@ func newSurface(cfg gfx.WindowConfig) (gfx.Surface, error) {
 		xproto.EventMaskKeyPress | xproto.EventMaskKeyRelease |
 		xproto.EventMaskButtonPress | xproto.EventMaskButtonRelease |
 		xproto.EventMaskPointerMotion | xproto.EventMaskLeaveWindow
+	// 位置: WindowConfig.X/Y/Display 显式指定时按目标屏放置 (ResolveWindowPlacement
+	// 把"工作区相对 + 设备像素"换算成根坐标里的绝对像素); 否则 (0,0) 交给 WM。
+	// X11 用 int16 传坐标 —— 超出范围的值钳一下, 免得回绕到屏幕另一头。
+	//
+	// 合流备注 (2026-10-02): §四 那版按 cfg.HasPos 直接吃绝对像素 (并裸转
+	// int16, 跨屏的大负坐标会回绕)。统一保留 ResolveWindowPlacement 这版:
+	// 它同时覆盖多屏目标屏选择与 int16 钳位。
+	winX, winY := 0, 0
+	if px, py, ok := gfx.ResolveWindowPlacement(cfg); ok {
+		winX, winY = clampI16(px), clampI16(py)
+	}
 	xproto.CreateWindow(conn, screen.RootDepth, win, screen.Root,
-		0, 0, uint16(w), uint16(h), 1,
+		int16(winX), int16(winY), uint16(w), uint16(h), 1,
 		xproto.WindowClassInputOutput, screen.RootVisual,
 		xproto.CwEventMask, []uint32{eventMask})
 
@@ -96,7 +126,7 @@ func newSurface(cfg gfx.WindowConfig) (gfx.Surface, error) {
 	xproto.CreateGC(conn, gc, xproto.Drawable(win), 0, nil)
 
 	s := &surface{
-		conn: conn, win: win, gc: gc,
+		conn: conn, win: win, root: screen.Root, gc: gc,
 		events: make(chan gfx.Event, 256),
 		evch:   make(chan xgb.Event, 256),
 		errch:  make(chan error, 1),
@@ -240,6 +270,28 @@ func (s *surface) ResizeClient(w, h int) {
 		[]uint32{uint32(w), uint32(h)})
 }
 
+// MoveTo 实现 gfx 的可选 windowMover 接口 (M4): 把窗口左上角移到虚拟桌面
+// 绝对坐标 (x,y)。X11 里也就是相对**根窗口**的坐标 —— ConfigureWindow 的
+// x/y 正是这个口径, gfx 层已把"工作区相对"换算好。
+func (s *surface) MoveTo(x, y int) error {
+	xproto.ConfigureWindow(s.conn, s.win,
+		uint16(xproto.ConfigWindowX|xproto.ConfigWindowY),
+		[]uint32{uint32(int32(x)), uint32(int32(y))})
+	return nil
+}
+
+// WindowBounds 实现 gfx 的可选 windowBoundsProvider 接口 (M4): 经
+// TranslateCoordinates 拿窗口相对**根窗口**的位置 (跨过 WM 的 frame), 再加
+// 客户区尺寸。
+func (s *surface) WindowBounds() (x, y, w, h int, ok bool) {
+	reply, err := xproto.TranslateCoordinates(s.conn, s.win, s.root, 0, 0).Reply()
+	if err != nil {
+		return 0, 0, 0, 0, false
+	}
+	cw, ch := s.Size()
+	return int(reply.DstX), int(reply.DstY), cw, ch, true
+}
+
 // Size 返回当前窗口尺寸 (ConfigureNotify 维护)。
 func (s *surface) Size() (int, int) {
 	s.mu.Lock()
@@ -375,11 +427,36 @@ func (s *surface) translate(ev xgb.Event) bool {
 	case *xproto.ConfigureNotifyEvent:
 		s.mu.Lock()
 		resized := int(e.Width) != s.w || int(e.Height) != s.h
+		moved := int(e.X) != s.x || int(e.Y) != s.y
 		s.w, s.h = int(e.Width), int(e.Height)
+		s.x, s.y = int(e.X), int(e.Y)
 		s.mu.Unlock()
 		if resized {
 			s.trySend(gfx.Event{Kind: gfx.EventResize, W: int(e.Width), H: int(e.Height)})
+			// M4: 尺寸变了 → 让 gx/viewport 的断点/尺寸类订阅者重算。
+			gfx.Post(func() { gfx.NotifyViewportChanged() })
 		}
+		// 移动 (§四 窗口/系统缺口): ConfigureNotify 的 X/Y 是**相对父窗口**
+		// 的坐标, 而 gfx 的 EventMove 口径是屏幕 (根窗口) 坐标。有 WM 重定
+		// 父 (reparenting) 时两者差着标题栏/边框, 直接转发是错的 —— 所以
+		// 这里做一次 TranslateCoordinates 换算。
+		//
+		// 往返是安全的: xgb 的回复由它自己的读协程按序号分发, 本函数虽在
+		// VM 线程上跑 (事件由读协程经通道递过来), 也不会与事件读抢 socket。
+		if moved {
+			root := xproto.Setup(s.conn).DefaultScreen(s.conn).Root
+			if rep, err := xproto.TranslateCoordinates(s.conn, s.win, root, 0, 0).Reply(); err == nil && rep != nil {
+				s.trySend(gfx.Event{Kind: gfx.EventMove, X: int(rep.DstX), Y: int(rep.DstY)})
+			}
+		}
+		// M4: 位置也可能变了 (用户拖动 / ConfigureWindow) → 让内核比对是否换屏。
+		//
+		// 合流备注 (2026-10-02): 上面 §四 的 EventMove 与这句刻意并存 —— 两者
+		// 服务于不同消费者, 不是重复: EventMove 是**给脚本**的"窗口动了"通知
+		// (屏幕绝对坐标); PostWindowDisplayCheck 是**内核自己**判断"跨屏了没"
+		// (决定该窗口归属哪个 display, 直接影响 position()/bounds() 报的
+		// displayId 与 HiDPI 缩放)。删掉任何一个都会丢一条链路。
+		gfx.PostWindowDisplayCheck(s)
 	}
 	return true
 }

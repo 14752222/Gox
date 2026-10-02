@@ -56,6 +56,9 @@ macos 选项:
   --arch <arch>  cpu 架构: arm64（缺省, Apple Silicon）/ amd64（Intel）/
                  universal（fat 二进制, 同时支持两种 Mac）
 
+桌面入口探测: main.js 优先, 回落 main.tsx → main.ts → main.jsx。
+TS/TSX 入口在打包前自动转译并以内嵌 JS 落地（无需 node 构建步骤）。
+
 桌面打包需要 Gox 源码仓库（自动向上查找, 或设 GOX_REPO 指定）。
 `)
 			return

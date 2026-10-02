@@ -22,7 +22,10 @@ final class GoxViewController: UIViewController {
     private var buffer: UnsafeMutableRawPointer?
     private var bufW = 0
     private var bufH = 0
-    private var inited = false
+    // internal 而不是 private: GoxDisplayFold.swift 的跨文件 extension 要读
+    // inited (补报时机) 与 renderScale (坐标换算) —— 同 module 内收窄只会
+    // 迫使两份状态各存一份, 那才是真 bug 源。
+    var inited = false
     private var displayLink: CADisplayLink?
     /// 引擎当前使用的像素比 (displayScale 变化时要重绑缓冲)
     private var currentScale: CGFloat = 0
@@ -41,7 +44,8 @@ final class GoxViewController: UIViewController {
     /// 没进层级 / windowScene 为 nil) 时**钳到 1** 而不是猜主屏 —— 1 是
     /// "未缩放", 至少不会把画面放大 3 倍; 真到布局时 viewDidLayoutSubviews
     /// 会再走一次, 那时链已通, 值会被纠正回来。
-    private var renderScale: CGFloat {
+    /// 见上: 跨文件 extension 也要用, 同 module 内保持 internal。
+    var renderScale: CGFloat {
         let s = view.traitCollection.displayScale
         if s > 0 { return s }
         if let sceneScale = view.window?.windowScene?.screen.scale, sceneScale > 0 {
@@ -301,8 +305,8 @@ final class GoxViewController: UIViewController {
     // MARK: - 帧缓冲
 
     private func resizeBuffer(pixelWidth: Int, pixelHeight: Int) {
-        if let b = buffer, bufW == pixelWidth, bufH == pixelHeight { return }
-        if let b = buffer { b.deallocate() }
+        if buffer != nil, bufW == pixelWidth, bufH == pixelHeight { return }
+        if buffer != nil { buffer?.deallocate() }
         bufW = max(pixelWidth, 1)
         bufH = max(pixelHeight, 1)
         buffer = UnsafeMutableRawPointer.allocate(byteCount: bufW * bufH * 4,

@@ -1,6 +1,6 @@
 # gx/model：受控组件的双向绑定（接口设计）
 
-> 状态：**已落地**（`gfx/model.go` 实现，`gfx/model_test.go` 9 个用例，`testdata/model_demo.js` 可跑）。
+> 状态：**已落地**（`gfx/model.go` 实现，`gfx/model_test.go` 10 个用例，`testdata/model_demo.js` 可跑）。
 > 定位：给**受控组件**加一条 `model` 指令，等价于 Vue 的 `v-model`。
 > `For / Show / Switch / Match` 的 API **一个字都没改**（理由见 §5）。
 
@@ -63,18 +63,29 @@ DX 差的根因 —— 不是不会写，是写错了没人告诉你。
 
 | 标签 | 读方向 | 写方向事件 | 写进去的值 |
 |---|---|---|---|
-| `input` · `textarea` | `value` | `onInput({value})` | 字符串 |
+| `input` · `textarea` · `search` | `value` | `onInput({value})` | 字符串 |
 | `slider` | `value` | `onInput({value})` | **数字**（控件给什么就是什么，不做转换） |
 | `select` | `value` | `onChange({value})` | 字符串 |
+| `datepicker` | `value` | `onChange({value})` | `"YYYY-MM-DD"` 字符串 |
+| `colorpicker` | `value` | `onChange({value})` | 颜色字符串（`#rrggbb` 或色板里的原样值） |
+| `upload` | `value` | `onChange({files, paths})` | **取载荷里的 `paths`**（字符串数组） |
+| `rating` | `value` | `onChange({value})` | **数字**（第几颗星） |
 | `checkbox` · `switch` | `checked` | `onClick()`（无载荷） | 布尔，**写入 = 当前值取反** |
 | `radio` | `checked`（**派生**：`model() === value`） | `onClick()` | 属性 `value` 原样写进 model |
 
-两条推论：
+字段类的载荷都是 `{value}`，只有 `upload` 例外 —— 它的载荷是 `{files, paths}`
+（文件对象数组 + 路径数组），而 `value` 读的正是 `paths`，所以写回也只取 `paths` 那一项；
+写回整个载荷会让 signal 里躺一个描述符对象，显示与再读都对不上
+（`TestModelPickerAndUpload` 钉住这条）。
+
+三条推论：
 
 - `radio` 的互斥不是"两边各写一遍取反"，而是**共用一个 model 的必然结果**
   （`<radio model={plan} value="free"/>` + `<radio model={plan} value="pro"/>`）；
 - `slider` 不做 `"3"` → `3` 这种类型转换。想转换就自己在 `[get, set]` 里转 ——
   内核不猜意图（`TestModelSliderAndSelect` 用 `typeof` 把这条钉住了）。
+- `upload` 是这一族里唯一的**两用**组件：它没有 `value` 时自己也存一份已选列表
+  （非受控），`model` 只把"有 value 时"的那种接法写短，不改变非受控语义。
 
 ## 4. 三条规则（都不静默）
 
@@ -169,6 +180,9 @@ DX 差的根因 —— 不是不会写，是写错了没人告诉你。
 <textarea rows={3} model={bio} />
 <slider min={0} max={100} model={volume} />          {/* volume 是数字 */}
 <select options={cities} model={city} />
+<datepicker model={due} />                            {/* due = "YYYY-MM-DD" */}
+<colorpicker model={brand} />                         {/* brand = "#rrggbb" */}
+<upload model={attachments} />                        {/* attachments = 路径数组 */}
 <checkbox model={agree} />                            {/* 点击自动取反 */}
 <switch model={dark} />
 <radio model={plan} value="free" />                   {/* 选中时 plan = "free" */}
@@ -208,7 +222,7 @@ DX 差的根因 —— 不是不会写，是写错了没人告诉你。
 
 ## 8. 边界与已知限制
 
-- **只覆盖内置受控组件**（上面表里那 7 个标签）。自定义组件要么透传 `model`，要么自己
+- **只覆盖内置受控组件**（上面表里那 12 个标签）。自定义组件要么透传 `model`，要么自己
   按 `get/set` 实现。
 - **`radio` 的 `value` 必须是字面量**：它是"选中时写回什么"的载荷，写成函数会让比较恒不
   相等（会警告）。
@@ -220,17 +234,18 @@ DX 差的根因 —— 不是不会写，是写错了没人告诉你。
 
 ## 9. 验证
 
-`gfx/model_test.go`（9 个用例，全链路真事件）：
+`gfx/model_test.go`（10 个用例，全链路真事件）：
 
 | 用例 | 钉住的语义 |
 |---|---|
 | `TestModelInputBothDirections` | 敲键写回 + 外部改 signal 后显示跟随（读方向不是快照） |
 | `TestModelCheckboxSwitchRadio` | 取反写回；radio 派生 `checked` 与互斥 |
 | `TestModelSliderAndSelect` | slider 写回是 **number**；select 写回字符串 |
+| `TestModelPickerAndUpload` | 字段+弹层那一族（datepicker / colorpicker）写回字符串；upload 写回的是 `paths` 而不是整个载荷 |
 | `TestModelPairSourceAndUserHandler` | `[get, set]` 自定义来源；model 与脚本 `onInput` 都跑 |
 | `TestModelMisuseWarnsAndDegrades` | 三类误用各有警告，且界面照旧渲染 |
 | `TestModelSignalCarriesSetter` | `getter.set` 这条凭据本身（`gx/solid` 的契约） |
-| `TestModelDemoScript` | 演示脚本：8 类绑定各点一次 + 不溢出窗口 |
+| `TestModelDemoScript` | 演示脚本：每类绑定各点一次（含三个新控件）+ 不溢出窗口 |
 
 ## 10. 相关文档
 
