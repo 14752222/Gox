@@ -92,3 +92,8 @@ dist/
 # 编译出的被测二进制与 stderr 中间文件不入库。
 bench-results/gox-bench
 bench-results/.last-err
+
+# macOS 访达噪音与仓库根目录的临时构建产物（gox CLI 用 scripts/build-npm.sh 出包，
+# 根目录的 gox 只是随手 go build 的二进制，不该入库）。
+.DS_Store
+/gox
