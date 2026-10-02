@@ -47,13 +47,18 @@ jobs:
         with:
           submodules: true
 
-      - name: 内置组件四处同步 / gx 模块三处同步 / 版本号一致 / npm 清单自洽
+      - name: 内置组件四处同步 / gx 模块三处同步 / 版本号一致 / npm 清单自洽 / 文档 import 一致
         run: |
           set -euo pipefail
           # 不加 `| tee` 之类的管道：失败时退出码会被管道后的命令吃掉，
           # 而这一行本身就是「编译/测试之前」的那道闸门，必须让它真的拦住。
           if ! python3 scripts/check-registries.py; then
             echo "::error::注册表一致性检查未通过 —— 具体是哪个标签缺哪个站点见上一条输出；本地可先跑 python3 scripts/check-registries.py --list 对表"
+            exit 1
+          fi
+          # 文档/示例 import 与内置模块导出表一致（编译期报错级 + 静默 undefined 级）
+          if ! python3 scripts/check-imports.py; then
+            echo "::error::文档/示例 import 检查未通过 —— 具体哪个文件哪一行 import 了不存在的名字见上一条输出；故意写错的示例须登记进脚本头部 ALLOW 豁免表"
             exit 1
           fi
 
