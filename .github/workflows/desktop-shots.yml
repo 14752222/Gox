@@ -1,0 +1,82 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# 组件画廊三平台截图矩阵 (T08 收尾: rLBsfd)
+#
+# 干什么: 在三个桌面平台上各跑一遍 gfx/gallery_shot_test.go 的离屏渲染,
+#   把 testdata/shots/*.js 的上屏帧 (PNG) 上传成 artifact。官网画廊里贴的
+#   那套 (website/public/components/shots/darwin/) 就来自同一条生成链,
+#   这里是它的 Windows / Linux 两翼。
+#
+# 为什么走离屏而不是开真窗口截图:
+#   - runner 上没有交互式桌面会话, win32 / x11 / cocoa 的窗口创建要么没条件、
+#     要么不可复现;
+#   - 但**光栅化 + 平台字体栈**这条链三平台都能真跑 —— 字体来自各平台系统
+#     字体 (见 gfx/font.go 的候选链), 所以三份 artifact 的像素**本来就该
+#     不一样**, 对照它们能抓到"某平台字体候选链断了 / 缺字形"这类回归。
+#
+# 为什么产物是 artifact 而不是直接提交进仓库:
+#   - 仓库只提交一套 (darwin) 当画廊素材; 三套都提交的话, 每次重生成都是
+#     三倍 diff, 而且"哪套是对的"没有判据 —— 官网该贴哪套是人的决定。
+#   - 流程: 这里出三套 → 人对照 → 确认要换素材时, 用对应平台重跑
+#     `GOX_SHOTS_OUT=website/public/components/shots go test ./gfx/ -run
+#     TestGalleryShotScripts` 并提交。
+#
+# 与 ci.yml 的关系: 互不阻塞。ci.yml 的 build-test 矩阵同样会跑
+#   TestGalleryShotScripts 的**非空白断言** (那个用例在 GOX_SHOTS_OUT 未设时
+#   只渲染 + 断言、不写文件), 所以"组件被画成空盒子"这类静默失效在常规 CI
+#   就会红; 本工作流只负责出图, 挂 paths 过滤把日常推送的噪音降到最低。
+# ─────────────────────────────────────────────────────────────────────────────
+name: desktop-shots
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "gfx/**"
+      - "testdata/shots/**"
+      - ".github/workflows/desktop-shots.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-shots-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  shots:
+    name: 截图 (${{ matrix.os }})
+    strategy:
+      # 三平台的红互不掩盖 —— 某平台字体候选链断掉时, 另外两套图照常出。
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      # 与 ci.yml 同款: 锁 go.mod 声明的版本。字体渲染在 Go 侧是自绘
+      # (真形字光栅化), 但 PNG 编码输出仍可能随 Go 补丁版变 —— 素材可比性
+      # 优先于"最新版"。
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # env 写法是刻意的: windows-latest 的 shell 是 PowerShell,
+      # `GOX_SHOTS_OUT=... go test` 这种 Unix 前缀写法在那里不成立。
+      - name: 离屏渲染 15 个组件截图
+        env:
+          GOX_SHOTS_OUT: shots
+          GOX_SHOTS_STATS: "1"
+        run: go test ./gfx/ -run TestGalleryShotScripts -count=1 -v
+
+      # 产物目录结构: shots/<GOOS>/<组件>.png —— 下载三份 artifact 后,
+      # 同名 PNG 跨平台两两对比 (肉眼或像素 diff) 即可。
+      - uses: actions/upload-artifact@v4
+        with:
+          name: component-shots-${{ matrix.os }}
+          path: shots
+          retention-days: 30

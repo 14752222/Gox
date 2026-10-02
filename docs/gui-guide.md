@@ -1115,6 +1115,7 @@ import { devSnapshot } from "gx/dev";
 | [condrender_demo.js](../testdata/condrender_demo.js) | 条件渲染切面板（教学版，完整重建语义） |
 | [list_demo.js](../testdata/list_demo.js) | 数组信号增删列表 |
 | [model_demo.js](../testdata/model_demo.js) | `model` 双向绑定：每类受控控件一条指令 + 手写写法对照 |
+| [shots/](../testdata/shots/) | 15 个组件一屏一例（官网画廊截图素材；生成方式见 [dev-workflow](dev-workflow.md#组件画廊截图流水线)） |
 
 **窗口、菜单与系统能力**
 

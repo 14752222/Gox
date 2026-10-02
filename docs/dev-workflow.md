@@ -49,3 +49,34 @@ ls src/*.js | entr -r goxjs src/main.js
   store.js 模块作用域里的 signal 状态都会回到初始值，不会跨重载保留。
 - **setInterval 等常驻定时器**同理会让 `RunTimers` 不返回，
   dev 循环拿不到控制权 —— 与 GUI 场景一样，建议用外部方案。
+
+## 组件画廊截图流水线
+
+官网组件页每节顶部那张图（`website/public/components/shots/<GOOS>/<组件>.png`）
+不是手画的示意图，而是**真实上屏帧**：`testdata/shots/` 下每个组件一个最小示例
+脚本，由 `gfx/gallery_shot_test.go` 挂到假 Surface 上离屏渲染后编码成 PNG。
+弹层类（select / datepicker / colorpicker）由生成器点一下字段、拍展开态。
+
+```bash
+# 只渲染 + 断言非空白（普通 go test ./gfx/ 也会跑这条断言，不写文件）
+go test ./gfx/ -run TestGalleryShotScripts -v
+
+# 生成 PNG 到 <目录>/<GOOS>/<组件>.png
+GOX_SHOTS_OUT=website/public/components/shots go test ./gfx/ -run TestGalleryShotScripts
+
+# 调阈值 / 看每张图的统计（颜色种类、非底色像素数）
+GOX_SHOTS_OUT=/tmp/shots GOX_SHOTS_STATS=1 go test ./gfx/ -run TestGalleryShotScripts -v
+```
+
+纪律（都有理由）：
+
+- **新增内置组件要同步补一个 `testdata/shots/<组件>.js`**。这个脚本同时是
+  "该组件能画出来"的活体回归用例 —— 四处注册表漏登记一个标签的症状就是
+  "渲染成空盒子"，进程不报错，而非空白判据（颜色种类 / 非底色像素阈值）会红。
+  生成器里的 `galleryClickTargets` 只列弹层类：收起态的日历/色板就是一行灰字。
+- **PNG 不是 golden 文件**：字体来自各平台系统字体，三平台的像素本来就不相等，
+  别拿它们做逐像素比对。仓库只提交一套（darwin），三平台对照靠
+  `.github/workflows/desktop-shots.yml` 的 CI 矩阵 artifact。
+- **离屏 ≠ 窗口后端**：这条链覆盖光栅化 + 平台字体栈，不覆盖 win32 / x11 /
+  cocoa 的窗口创建与上屏。要验证真窗口，直接 `./gox testdata/shots/<组件>.js`
+  跑起来看 —— 脚本本身就是按"可直接运行"写的。
