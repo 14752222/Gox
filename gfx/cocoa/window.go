@@ -40,6 +40,7 @@ var (
 
 	selSetFrameDisplay   = objc.RegisterName("setFrame:display:")
 	selSetMinSize        = objc.RegisterName("setMinSize:")
+	selMinSize           = objc.RegisterName("minSize") // 只读回 (断言跨屏后约束是否重推)
 	selSetMaxSize        = objc.RegisterName("setMaxSize:")
 	selSetStyleMask      = objc.RegisterName("setStyleMask:")
 	selStyleMask         = objc.RegisterName("styleMask")
@@ -157,6 +158,145 @@ func (s *surface) finishPlacement() {
 	s.mu.Unlock()
 }
 
+// ===== 缩放比 (scale) 的保鲜 =====
+//
+// cocoa 是三后端里**唯一缓存了"点 → 设备像素"比值**的后端:
+//   - win32 开了 Per-Monitor V2 DPI 感知, GetWindowRect / 客户区坐标 / 鼠标
+//     坐标本来就是物理像素, 没有可过期的缓存;
+//   - x11 的坐标是像素, 缩放比恒 1。
+// AppKit 则全用点, 而 gfx 全栈用设备像素。M4 合流后**位置**的单位换算已收归
+// gfx 层 (Display.PosInPoints / posScale, 见 window_move.go), 后端承接的是
+// 点; 但**客户区尺寸与输入坐标**仍由后端自己乘/除 scale:
+//
+//	postDevice        鼠标/滚轮坐标 → 设备像素 (命中测试用)
+//	Size() / w,h      客户区尺寸 (设备像素)
+//	onWindowDidResize 点尺寸 × scale ⇒ EventResize
+//	ResizeClient      设备像素 → 点
+//	SetSizeConstraints 设备像素 → 点
+//	allocBackbuffer   contentsScale / nsimg 点尺寸
+//	Bounds()          外框设备像素 (只用于 EventMove 的载荷)
+//
+// 这份缓存过期时的表现是"点不准 + 客户区尺寸读回错单位 + Retina 上发虚",
+// 而不是报错 —— 所以两处都要保鲜: 建窗落点之后对齐一次 (窗口最终落在哪块屏
+// 决定了起点比值), 之后靠 AppKit 的 windowDidChangeBackingProperties: 刷新。
+//
+// 为什么初始那次不能省: 建窗时只能按**主屏**缩放比把 cfg.Width/Height 换算成
+// 点 (initWithContentRect: 收点), 而窗口最终落到哪块屏要 placement 之后才知道。
+// 笔记本 Retina 主屏 (2x) + 外接 1080p (1x) 是最常见的组合, 猜错就是整块屏的
+// 窗口鼠标坐标差一倍。
+
+// currentScale 读窗口当前的 backingScaleFactor (AppKit 侧的真值)。
+func (s *surface) currentScale() float64 {
+	if s == nil {
+		return 1
+	}
+	v := s.view
+	if v == 0 {
+		v = s.win
+	}
+	if v == 0 {
+		return 1
+	}
+	scale := objc.Send[float64](v, selBackingScale)
+	if scale <= 0 {
+		return 1
+	}
+	return scale
+}
+
+// applyScale 是"改比值"的公共步骤: 更新缓存并按 (w, h) 设备像素重建缓冲。
+// 返回是否真的改了 —— 没改就一个平台调用都不发。
+func (s *surface) applyScale(newScale float64, w, h int) bool {
+	if s == nil || s.win == 0 || newScale <= 0 || w <= 0 || h <= 0 {
+		return false
+	}
+	s.mu.Lock()
+	same := newScale == s.scale && w == s.w && h == s.h
+	s.scale = newScale
+	s.mu.Unlock()
+	if same {
+		return false
+	}
+	// allocBackbuffer 内部会用**新的** s.scale 定 nsimg 的点尺寸与
+	// layer.contentsScale (两者比值必须一致, 否则 Retina 上会发虚)。
+	s.allocBackbuffer(w, h)
+	return true
+}
+
+// setScale 改比值, 客户区的**点**尺寸不变 —— 设备像素尺寸按新比值重算
+// (同一个窗口挪到 Retina 屏上, 点尺寸不动、设备像素翻倍)。返回新的设备像素
+// 尺寸与是否真的改了。
+func (s *surface) setScale(newScale float64) (w, h int, changed bool) {
+	if s == nil || s.win == 0 || newScale <= 0 {
+		return 0, 0, false
+	}
+	b := objc.Send[nsRect](s.win.Send(selContentView), selBounds)
+	w = int(b.Size.Width*newScale + 0.5)
+	h = int(b.Size.Height*newScale + 0.5)
+	if !s.applyScale(newScale, w, h) {
+		return w, h, false
+	}
+	return w, h, true
+}
+
+// pinClientSize 改比值, 并把客户区尺寸**钉在** wantW/wantH 设备像素 (点尺寸按
+// 新比值现算)。建窗落点之后用这个 —— 那时才知道窗口真正落在哪块屏上。
+//
+// 与 setScale 的差别: setScale 保持"点尺寸不变", 它适合**运行期**跨屏 (窗口
+// 的点尺寸本就不该因为挪了个屏而变); pinClientSize 保持"设备像素尺寸不变",
+// 适合**建窗期** (脚本给的是设备像素尺寸, 不能因为落在不同缩放的屏上就变)。
+func (s *surface) pinClientSize(newScale float64, wantW, wantH int) bool {
+	if s == nil || s.win == 0 || newScale <= 0 || wantW <= 0 || wantH <= 0 {
+		return false
+	}
+	if !s.applyScale(newScale, wantW, wantH) {
+		return false
+	}
+	s.win.Send(selSetContentsSize, nsSize{
+		Width:  float64(wantW) / newScale,
+		Height: float64(wantH) / newScale,
+	})
+	return true
+}
+
+// onBackingChanged 窗口的 backing 属性变了: 取 AppKit 侧的真值重新对齐。
+//
+// 拆成"读真值"与 applyBackingScale("按新比值重算") 两层, 是为了让后者能脱离
+// "真去插一块缩放不同的屏"被完整测到 (见 window_e2e_test.go)。
+func (s *surface) onBackingChanged() {
+	if s == nil {
+		return
+	}
+	s.applyBackingScale(s.currentScale())
+}
+
+// applyBackingScale 按新的"点 → 设备像素"比值重算全部派生量, 并把**随比值改变
+// 的量**补报给脚本 —— 不补的话内核那边存的位置/尺寸会一直停在旧单位上:
+//   - 尺寸: 点尺寸没动、设备像素变了 ⇒ EventResize (内核据此重排/重绘)
+//   - 位置: 点原点没动、设备像素坐标变了 ⇒ EventMove (内核的位置缓存靠它)
+//
+// 还有一件必须做的事是**重推尺寸约束**: 内核给的是设备像素, 落到 AppKit 是点,
+// 比值一变旧的点值就整体偏一倍 (400 设备像素在 1x 屏是 400pt、2x 屏只有 200pt)。
+func (s *surface) applyBackingScale(newScale float64) {
+	if s == nil || s.isClosed() {
+		return
+	}
+	w, h, changed := s.setScale(newScale)
+	if !changed {
+		return
+	}
+	if s.conSet {
+		s.pushConstraints()
+	}
+	s.trySend(gfx.Event{Kind: gfx.EventResize, W: w, H: h})
+	// 位置: 交给 onWindowDidMove 用**新** scale 重算并上报 (去重账也在那里维护)。
+	// 先把 posKnown 作废, 否则"点坐标没变"会被判成没动、事件投不出去。
+	s.mu.Lock()
+	s.posKnown = false
+	s.mu.Unlock()
+	s.onWindowDidMove()
+}
+
 // ===== boundsProvider =====
 
 // Bounds 读窗口外框的屏幕坐标 (左上原点, 设备像素) 与尺寸 (设备像素) ——
@@ -205,18 +345,32 @@ func (s *surface) SetLevel(level string) {
 	}
 }
 
-// SetSizeConstraints 设用户缩放时的尺寸钳位 (入参是设备像素, 这里换成点)。
+// SetSizeConstraints 设用户缩放时的尺寸钳位 (入参是**设备像素**)。
 //
-// maxW/maxH 为 0 表示"不约束": AppKit 的 setMaxSize: 对 0 的解释是
-// "最大 0 点", 会把窗口钳成不可用 —— 所以必须显式给一个大值而不是原样传 0。
-// 用 1e9 点 (≈ 3.5 亿像素宽) 当"无限": 比 FLT_MAX 安全, 不会在 AppKit
-// 内部的取整/相加里溢出。
+// 只**记住设备像素原值**, 换算成点推给 AppKit 的动作交给 pushConstraints:
+// 窗口跨到缩放不同的屏上时比值会变 (见 applyBackingScale), 只推一次的话旧点值
+// 会整体偏一倍。
 func (s *surface) SetSizeConstraints(minW, minH, maxW, maxH int) {
 	if s == nil || s.win == 0 {
 		return
 	}
 	s.mu.Lock()
+	s.conMinW, s.conMinH, s.conMaxW, s.conMaxH = minW, minH, maxW, maxH
+	s.conSet = true
+	s.mu.Unlock()
+	s.pushConstraints()
+}
+
+// pushConstraints 按**当前** scale 把记住的设备像素约束换成点推给 AppKit。
+//
+// maxW/maxH 为 0 表示"不约束": AppKit 的 setMaxSize: 对 0 的解释是
+// "最大 0 点", 会把窗口钳成不可用 —— 所以必须显式给一个大值而不是原样传 0。
+// 用 1e9 点 (≈ 3.5 亿像素宽) 当"无限": 比 FLT_MAX 安全, 不会在 AppKit
+// 内部的取整/相加里溢出。
+func (s *surface) pushConstraints() {
+	s.mu.Lock()
 	scale := s.scale
+	minW, minH, maxW, maxH := s.conMinW, s.conMinH, s.conMaxW, s.conMaxH
 	s.mu.Unlock()
 	if scale <= 0 {
 		scale = 1

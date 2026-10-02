@@ -64,6 +64,9 @@ func TestMain(m *testing.M) {
 	if err := runWindowScenario(); err != nil {
 		wmFail = err
 	}
+	if err := runBackingScaleScenario(); err != nil {
+		bsFail = err
+	}
 	os.Exit(m.Run())
 }
 

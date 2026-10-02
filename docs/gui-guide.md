@@ -1050,6 +1050,13 @@ w.setCursor(null)                            // 清掉窗口级覆盖，回到�
   | 参照物 | **所在显示器的工作区左上角**（排除任务栏/状态栏），即 `moveTo(0,0)` = 贴着该屏工作区左上角 |
   | 尺寸 | `width` / `height` 是**内容区**尺寸，不是外框 —— 两者差一条标题栏，这是平台事实，不做换算（换不准） |
 
+  > **跨屏后单位会重新对齐**（macOS）：窗口被拖到缩放不同的屏上（或那块屏的缩放设置被改）时，
+  > 同一个"点"尺寸对应的设备像素变了，所有以设备像素为准的量都会**当场重算并重新上报** ——
+  > 位置与尺寸各补一个 `onMove` / `onResize`，尺寸约束按新比值重新落地，输入坐标换算随之切换。
+  > 脚本侧不用做任何事。建窗时也会在窗口落到目标屏之后对齐一次（笔记本 Retina 主屏 + 外接
+  > 1080p 是最常见的组合，按主屏猜会让整块屏的鼠标坐标差一倍）。
+  > Windows 的坐标本来就是物理像素（Per-Monitor V2 DPI 感知）、Linux 恒为像素，都没有这个问题。
+
 - **光标形状**：任意节点可挂 `cursor` prop（沿父链继承），悬停到它上面时自动切形状，
   值域取 CSS 的那一套（`default` / `pointer` / `text` / `crosshair` / `move` / `grab` /
   `grabbing` / `wait` / `progress` / `help` / `not-allowed` / `ew-resize` / `ns-resize` /
@@ -1073,6 +1080,7 @@ w.setCursor(null)                            // 清掉窗口级覆盖，回到�
 | 缩放开关 / 全屏 | 样式位 + 全屏切换 | `_NET_WM_STATE_FULLSCREEN` | `setStyleMask:`（同步改样式位，不用异步的 `toggleFullScreen:`） |
 | 层级 `top`/`bottom` | `HWND_TOPMOST` / `HWND_BOTTOM` | `_NET_WM_STATE_ABOVE` / `_BELOW` | 窗口 `level` |
 | 光标形状 | `WM_SETCURSOR` + `LoadCursor` | 暂无（静默降级为默认箭头） | NSCursor |
+| 跨屏后缩放比刷新 | 无需（坐标本就是物理像素） | 无需（恒为像素） | `windowDidChangeBackingProperties:` |
 | 模态与 `onMove` | 支持 | 支持 | 支持 |
 
 > 读几何与"外框"口径：Windows / macOS 由平台直接给外框矩形，**Linux 下 `WindowBounds()`

@@ -288,10 +288,13 @@ func (s *surface) Bounds() (int, int, int, int) {
 
 // 编译期断言: *surface 必须满足 windowManager + boundsProvider。
 // (刻意**不**断言 cursorHost —— 本后端不实现光标形状, 见文件头。)
+//
+// **刻意不含 MoveTo**: 位移归 M4 的 windowMover (x11.go 里的
+// MoveTo(x, y) error), 见上面的合流备注 —— 断言写成不带 error 的版本会让整个
+// 包编译不过 (合流时踩过)。
 var (
 	_ gfx.Surface = (*surface)(nil)
 	_ interface {
-		MoveTo(x, y int)
 		SetLevel(level string)
 		SetSizeConstraints(minW, minH, maxW, maxH int)
 		SetResizable(on bool)

@@ -23,7 +23,8 @@ import (
 //     仍然只投递事件 (WM_MOVE / WM_SETCURSOR 的新分支也一样)。
 
 var (
-	procGetWindowRect     = user32.NewProc("GetWindowRect")
+	// procGetWindowRect 在 win32.go 的 M4 那一批里已声明, 这里不再重复
+	// (同一个包里的重复声明会让整个包编译不过)。
 	procSetWindowLongPtrW = user32.NewProc("SetWindowLongPtrW")
 	procGetWindowLongPtrW = user32.NewProc("GetWindowLongPtrW")
 	// 32 位进程里 SetWindowLongPtrW 并不导出 (它只是头文件里的宏)。
@@ -360,10 +361,13 @@ func setWindowStyle(hwnd, style uintptr) {
 // "改个方法名"这种笔误在别的后端上表现为"功能没了但不报错"。用接口字面量
 // 断言后, 不满足时**编译**就报错 —— 与 fakeSurface 必须同步转发
 // nativeDialogHost 新方法那条教训同源 (见 helpers_test.go 的注释)。
+//
+// **刻意不含 MoveTo**: 位移归 M4 的 windowMover (win32.go 里的
+// MoveTo(x, y) error —— 移不动要能报错, gfx 层只认带 error 的那个), 见上面的
+// 合流备注。断言写成不带 error 的版本会让整个包编译不过。
 var (
 	_ gfx.Surface = (*surface)(nil)
 	_ interface {
-		MoveTo(x, y int)
 		SetLevel(level string)
 		SetSizeConstraints(minW, minH, maxW, maxH int)
 		SetResizable(on bool)
