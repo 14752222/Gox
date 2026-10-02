@@ -44,6 +44,44 @@ type Window struct {
 	title string         // 最近一次设置的标题 (后端不支持时 title() 也能读回)
 }
 
+// windowHandles 是"窗口号 → 句柄"的注册表 (M4 gx/screen 的 windows() 用它
+// 拿标题/内省口)。
+//
+// 为什么需要它: 内核的 app (render.go) 不记标题 (标题只在句柄上), 而
+// windows() 要遍历 appsSnapshot 输出脚本可见的窗口列表 —— 中间缺的这条
+// "app.id → *Window" 的桥就落在这里。句柄在 jsObject() 里登记 (那是它
+// 成为 JS 对象的时刻); 关闭时经 unregisterWindowHandle 摘除。
+//
+// **只读、不参与渲染逻辑** —— 与 Active/WindowCount 同性质。
+var (
+	windowHandlesMu sync.Mutex
+	windowHandles   = map[int]*Window{}
+)
+
+// registerWindowHandle 登记一个窗口句柄 (幂等)。
+func registerWindowHandle(w *Window) {
+	if w == nil || w.a == nil {
+		return
+	}
+	windowHandlesMu.Lock()
+	windowHandles[w.a.id] = w
+	windowHandlesMu.Unlock()
+}
+
+// windowHandleByID 按窗口号取句柄 (没有 → nil)。
+func windowHandleByID(id int) *Window {
+	windowHandlesMu.Lock()
+	defer windowHandlesMu.Unlock()
+	return windowHandles[id]
+}
+
+// unregisterWindowHandle 摘除窗口号对应的句柄 (close 时调用)。
+func unregisterWindowHandle(id int) {
+	windowHandlesMu.Lock()
+	delete(windowHandles, id)
+	windowHandlesMu.Unlock()
+}
+
 // windowController 是 Surface 的**可选能力**: 运行期改标题 / 改客户区尺寸
 // (与 capturer / nativeDialogHost / imeController 同一模式: 不扩 Surface
 // 接口, 类型断言落空即静默降级 no-op —— 改不了标题不该让应用崩)。
@@ -86,7 +124,12 @@ func (w *Window) Close() {
 	if a == nil {
 		return
 	}
-	Post(func() { a.close() })
+	id := a.id
+	Post(func() {
+		a.close()
+		// 摘掉窗口注册表里的句柄 (gx/screen 的 windows() 只应看到活着的窗口)。
+		unregisterWindowHandle(id)
+	})
 }
 
 // SetTitle 改窗口标题。后端不支持时只更新句柄内记录 (title() 仍读得回),
@@ -206,6 +249,51 @@ func (w *Window) jsObject() object.Value {
 		w.Resize(int(cw.Value), int(ch.Value))
 		return object.UndefinedSingleton
 	}))
+	// ===== M4 窗口几何 (moveTo / center / bounds / position / display) =====
+	//
+	// 坐标口径见 window_move.go 头部: x/y = 窗口外框左上角相对**当前显示器
+	// 工作区**左上角的偏移。moveTo 与 position 互为逆运算 (读回来再写回去 =
+	// 不动), 这是这一组 API 自洽性的最低要求。
+	o.SetProperty("moveTo", object.NewBuiltin("moveTo", func(args ...object.Value) object.Value {
+		if len(args) < 2 {
+			return object.NewTypeError("moveTo: (x, y) required")
+		}
+		x, okX := args[0].(*object.Number)
+		y, okY := args[1].(*object.Number)
+		if !okX || !okY {
+			return object.NewTypeError("moveTo: x and y must be numbers")
+		}
+		w.MoveTo(int(x.Value), int(y.Value))
+		return object.UndefinedSingleton
+	}))
+	o.SetProperty("center", object.NewBuiltin("center", func(args ...object.Value) object.Value {
+		w.Center()
+		return object.UndefinedSingleton
+	}))
+	o.SetProperty("position", object.NewBuiltin("position", func(args ...object.Value) object.Value {
+		x, y, _ := w.Position()
+		po := object.NewObject()
+		po.SetProperty("x", object.NewNumber(float64(x)))
+		po.SetProperty("y", object.NewNumber(float64(y)))
+		return po
+	}))
+	o.SetProperty("bounds", object.NewBuiltin("bounds", func(args ...object.Value) object.Value {
+		x, y, bw, bh, disp, scale := w.Bounds()
+		bo := object.NewObject()
+		bo.SetProperty("x", object.NewNumber(float64(x)))
+		bo.SetProperty("y", object.NewNumber(float64(y)))
+		bo.SetProperty("width", object.NewNumber(float64(bw)))
+		bo.SetProperty("height", object.NewNumber(float64(bh)))
+		bo.SetProperty("displayId", object.NewString(disp))
+		bo.SetProperty("scale", object.NewNumber(scale))
+		return bo
+	}))
+	o.SetProperty("display", object.NewBuiltin("display", func(args ...object.Value) object.Value {
+		return object.NewString(w.Display())
+	}))
+	// 登记到窗口注册表 (gx/screen 的 windows() / window(id) 靠它取标题)。
+	// 放在最后且只在这里做一次: jsObject 的 w.obj 缓存保证同一窗口只登记一次。
+	registerWindowHandle(w)
 	w.obj = o
 	return o
 }

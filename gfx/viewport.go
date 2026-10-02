@@ -790,8 +790,244 @@ func resetViewportStateForTest() {
 	viewportHooks = nil
 	viewportRev++
 	viewportEnvGet, viewportEnvSet = nil, nil
+	breakpointCustom = nil
 	nativeMu.Unlock()
 }
+
+// resetBreakpointsForTest 把断点表复位 (用例之间不许串味)。
+func resetBreakpointsForTest() {
+	nativeMu.Lock()
+	breakpointCustom = nil
+	nativeMu.Unlock()
+}
+
+// ===== 断点系统 (M4 自适应断点布局, 2026-10-02) =====
+//
+// ## 与尺寸类的关系 (为什么不是"第二套阈值")
+//
+// 尺寸类 (SizeCompact/Medium/Expanded, 见 deriveSizeClasses) 是**物理分类**:
+// 它回答"这块窗口在平台眼里算什么" (手机 / 折叠展开 / 平板), 阈值 600 / 840dp
+// 直接抄 Android WindowManager / Material 的官方分界, 宿主报了 WidthClass 就以
+// 宿主为准。
+//
+// 断点是**命名阈值**: 它回答"脚本想在哪几个宽度上换布局", 是应用层的语言
+// (sm / md / lg / xl 这种叫法比 compact/medium/expanded 更适合表达"窄栏 /
+// 常规 / 宽栏 / 超宽")。默认表刻意**复用同一组数字** (md:600 / lg:840), 于是
+// 默认情况下两者互相印证而不是打架:
+//
+//	sm  (0..599)   ↔ compact
+//	md  (600..839) ↔ medium
+//	lg  (840..1199)┐
+//	xl  (≥1200)    ┘↔ expanded (断点把 expanded 再切一刀, 给超宽桌面留出 xl)
+//
+// **边界差 1dp 的说明**: deriveSizeClasses 把 840dp 判成 medium (闭区间),
+// 而断点表 md:600 / lg:840 按"下界"语义把 840dp 归到 lg。两处阈值数值完全
+// 一致, 只是"命中的那一格"不同 —— 这是"物理分类"与"命名阈值"的语义差异, 不是
+// 两套互相矛盾的阈值表。若要严格对齐, `setBreakpoints({sm:0, md:600, lg:841})`
+// 即可 (断点本来就是可覆盖的)。历史包袱更少的做法是把 lg 设成 840 的下一格,
+// 但那会让"lg 门槛是 840"这条常识失效, 所以默认表选择直觉优先。
+//
+// 断点随**窗口宽度**走 (不是屏幕宽度): 分屏 / 自由窗口下窗口才是布局的真相 ——
+// 与 gx/viewport 的立场一致 ("gx/screen 答设备, gx/viewport 答窗口")。
+
+// breakpointEntry 是断点表里的一档: 名字 + 该档的**下界** (dp)。
+type breakpointEntry struct {
+	name string
+	dp   float64
+}
+
+// defaultBreakpointTable 是默认断点表 (dp)。顺序按 dp 升序 —— 求值依赖这个序。
+var defaultBreakpointTable = []breakpointEntry{
+	{"sm", 0}, {"md", 600}, {"lg", 840}, {"xl", 1200},
+}
+
+// breakpointCustom 是宿主/脚本覆盖过的断点表 (nil/空 = 用默认表)。
+// 与 viewports 共用 nativeMu (同文件、同一条纪律, 见文件头"锁的复用说明")。
+var breakpointCustom []breakpointEntry
+
+// breakpointTableLocked 取"当前生效表"的副本 (调用时须持有 nativeMu)。
+func breakpointTableLocked() []breakpointEntry {
+	if len(breakpointCustom) > 0 {
+		return append([]breakpointEntry(nil), breakpointCustom...)
+	}
+	return append([]breakpointEntry(nil), defaultBreakpointTable...)
+}
+
+// breakpointTableSnapshot 取当前生效断点表 (加锁)。
+func breakpointTableSnapshot() []breakpointEntry {
+	nativeMu.Lock()
+	defer nativeMu.Unlock()
+	return breakpointTableLocked()
+}
+
+// breakpointNameAt 求 dp 落在哪一档: 取"下界 <= dp 中最大的那一档"。
+//
+// dp 低于所有下界时 (只可能出现在自定义表把最小档抬到了 0 以上的情况) 归到
+// 最小档, 而不是返回空串 —— "没有断点命中"对调用方没有任何可用的含义, 而最小档
+// 兜底与 CSS 的 "mobile first" 直觉一致。
+func breakpointNameAt(dp float64, table []breakpointEntry) string {
+	name := ""
+	best := -1.0
+	for _, b := range table {
+		if dp >= b.dp && b.dp >= best {
+			best = b.dp
+			name = b.name
+		}
+	}
+	if name == "" && len(table) > 0 {
+		name = table[0].name
+	}
+	return name
+}
+
+// breakpointThreshold 取某一档的下界 (未知档 → false)。
+func breakpointThreshold(name string, table []breakpointEntry) (float64, bool) {
+	for _, b := range table {
+		if b.name == name {
+			return b.dp, true
+		}
+	}
+	return 0, false
+}
+
+// windowWidthDP 取窗口客户区宽度换算成 dp (拿不到窗口则退回 0)。
+//
+// 换算基准是**窗口所在显示器**的缩放 (与 deriveSizeClasses 同一口径), 而
+// displayOfWorkWindow 在后端不支持时退化为虚拟屏 —— 此时 scale=1, dp=px。
+func windowWidthDP(win *Window) float64 {
+	w, _ := windowPixelSize(win)
+	scale := 1.0
+	if d, ok := displayOfWorkWindow(win); ok && d.Scale > 0 {
+		scale = d.Scale
+	}
+	return float64(w) / scale
+}
+
+// currentBreakpointName 求窗口当前命中哪一档断点。
+func currentBreakpointName(win *Window) string {
+	return breakpointNameAt(windowWidthDP(win), breakpointTableSnapshot())
+}
+
+// breakpointAbove / below / between 是三个区间判定 (未知档名 → false)。
+//
+// between 用**半开区间** [a 的下界, b 的下界): 于是 between("md","lg") 精确
+// 等于"当前档是 md"那一格, 与 breakpointNameAt 的语义逐字对齐。a 的下界大于
+// b 时自动交换 (参数顺序无关)。
+func breakpointAbove(name string, win *Window) bool {
+	thr, ok := breakpointThreshold(name, breakpointTableSnapshot())
+	return ok && windowWidthDP(win) >= thr
+}
+
+func breakpointBelow(name string, win *Window) bool {
+	thr, ok := breakpointThreshold(name, breakpointTableSnapshot())
+	return ok && windowWidthDP(win) < thr
+}
+
+func breakpointBetween(a, b string, win *Window) bool {
+	table := breakpointTableSnapshot()
+	lo, okA := breakpointThreshold(a, table)
+	hi, okB := breakpointThreshold(b, table)
+	if !okA || !okB {
+		return false
+	}
+	if lo > hi {
+		lo, hi = hi, lo
+	}
+	dp := windowWidthDP(win)
+	return dp >= lo && dp < hi
+}
+
+// breakpointMatch 实现 matchBreakpoint({sm:val, md:val, …})。
+//
+// 取值规则: 在"给了值且是合法档名"的键里, 取**下界 <= dp 中最大的一档**的值;
+// 一个都没命中 (比如只给了 md/lg 而窗口在 sm) 返回 undefined —— 让"没覆盖到"
+// 显式暴露, 而不是悄悄退回一个不相关的档。
+func breakpointMatch(obj *object.Object, win *Window) object.Value {
+	table := breakpointTableSnapshot()
+	dp := windowWidthDP(win)
+	best := -1.0
+	var picked object.Value
+	for name, desc := range obj.Properties {
+		thr, ok := breakpointThreshold(name, table)
+		if !ok || dp < thr {
+			continue
+		}
+		if thr >= best {
+			best = thr
+			picked = desc.Value
+		}
+	}
+	if picked == nil {
+		return object.UndefinedSingleton
+	}
+	return picked
+}
+
+// breakpointsToJS 把断点表输出成普通对象 (name → dp)。
+func breakpointsToJS(table []breakpointEntry) object.Value {
+	o := object.NewObject()
+	for _, b := range table {
+		o.SetProperty(b.name, object.NewNumber(b.dp))
+	}
+	return o
+}
+
+// jsSetBreakpoints 实现 setBreakpoints({sm:0, md:600, …}): 整表替换。
+//
+// 校验口径 (与仓库其它上报一致): 名字非空、数值 >= 0、至少一档。不合规的项
+// 静默跳过; 若最后一项都不剩则**保持原表不变并告警** —— 把表清空会让
+// breakpoint() 永远返回空串, 那比"这次设置没生效"更难排查。
+func jsSetBreakpoints(args ...object.Value) object.Value {
+	var entries []breakpointEntry
+	if o, ok := argOrNil(args).(*object.Object); ok {
+		for name, desc := range o.Properties {
+			if name == "" {
+				continue
+			}
+			if n, ok := desc.Value.(*object.Number); ok && n.Value >= 0 {
+				entries = append(entries, breakpointEntry{name: name, dp: n.Value})
+			}
+		}
+	}
+	if len(entries) == 0 {
+		recordWarn("gx/viewport setBreakpoints: 没有可用的断点项, 保持原表不变")
+		return object.UndefinedSingleton
+	}
+	// 按 dp 升序排 (求值依赖顺序); 同值保持稳定 (Go sort.SliceStable)。
+	sortBreakpoints(entries)
+	nativeMu.Lock()
+	breakpointCustom = entries
+	nativeMu.Unlock()
+	notifyViewportChanged()
+	return object.UndefinedSingleton
+}
+
+// sortBreakpoints 按 dp 升序做稳定插入排序 (档数通常 <10, 插入排序足够)。
+func sortBreakpoints(entries []breakpointEntry) {
+	for i := 1; i < len(entries); i++ {
+		for j := i; j > 0 && entries[j].dp < entries[j-1].dp; j-- {
+			entries[j], entries[j-1] = entries[j-1], entries[j]
+		}
+	}
+}
+
+// jsResetBreakpoints 恢复默认断点表。
+func jsResetBreakpoints(args ...object.Value) object.Value {
+	nativeMu.Lock()
+	breakpointCustom = nil
+	nativeMu.Unlock()
+	notifyViewportChanged()
+	return object.UndefinedSingleton
+}
+
+// NotifyViewportChanged 让宿主/后端宣告"窗口可视环境变了" —— 典型场景是
+// **窗口 resize**: 尺寸类与断点都取决于窗口宽度, 而 resize 不经过
+// ReportViewport (宿主没报任何字段)。所以后端在 WM_SIZE / windowDidResize /
+// ConfigureNotify 里 (经 gfx.Post) 调它, 让 useBreakpoint/useViewport 这类
+// 取值函数重算。它**不改任何数据**, 只抬版本号 + 派发订阅。
+//
+// **必须在 GUI 线程调用** (会跑脚本回调), 平台回调先 gfx.Post 转投。
+func NotifyViewportChanged() { notifyViewportChanged() }
 
 func init() {
 	object.RegisterBuiltinModule("gx/viewport", func() map[string]object.Value {
@@ -920,6 +1156,45 @@ func init() {
 				}
 				return jsOffViewportChange(args[0])
 			}),
+
+			// ---- 断点系统 (M4) ----
+			"breakpoints": scr("breakpoints", func(args ...object.Value) object.Value {
+				return breakpointsToJS(breakpointTableSnapshot())
+			}),
+			"breakpoint": scr("breakpoint", func(args ...object.Value) object.Value {
+				return object.NewString(currentBreakpointName(windowArg(args)))
+			}),
+			// useBreakpoint(): 取值函数 + 订阅。窗口宽度变化 (resize) 或宿主
+			// 上报 viewport 都会让读它的函数 prop / 函数子节点重算。
+			"useBreakpoint": scr("useBreakpoint", func(args ...object.Value) object.Value {
+				w := windowArg(args)
+				return object.NewBuiltin("useBreakpoint", func(args ...object.Value) object.Value {
+					if g := viewportEnvSignal(); g != nil {
+						object.CallFunction(g, nil) // 读一次 = 订阅一次
+					}
+					return object.NewString(currentBreakpointName(w))
+				})
+			}),
+			"above": scr("above", func(args ...object.Value) object.Value {
+				return object.NewBoolean(breakpointAbove(object.ToString(argOrNil(args)), windowArg(args[1:])))
+			}),
+			"below": scr("below", func(args ...object.Value) object.Value {
+				return object.NewBoolean(breakpointBelow(object.ToString(argOrNil(args)), windowArg(args[1:])))
+			}),
+			"between": scr("between", func(args ...object.Value) object.Value {
+				return object.NewBoolean(breakpointBetween(object.ToString(argOrNil(args)),
+					object.ToString(argOrNil(args[1:])), windowArg(args[2:])))
+			}),
+			// matchBreakpoint({sm: "窄", lg: "宽"}): 返回命中档的值。
+			"matchBreakpoint": scr("matchBreakpoint", func(args ...object.Value) object.Value {
+				obj, ok := argOrNil(args).(*object.Object)
+				if !ok {
+					return object.UndefinedSingleton
+				}
+				return breakpointMatch(obj, windowArg(args[1:]))
+			}),
+			"setBreakpoints":   scr("setBreakpoints", jsSetBreakpoints),
+			"resetBreakpoints": scr("resetBreakpoints", jsResetBreakpoints),
 
 			"reportViewport": scr("reportViewport", jsReportViewport),
 			"resetViewport":  scr("resetViewport", jsResetViewport),

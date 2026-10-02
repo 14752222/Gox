@@ -95,6 +95,16 @@ type Display struct {
 	WorkH   int
 	Scale   float64 // 设备像素比 (1.0 / 1.25 / 1.5 / 2.0 …)
 	Primary bool
+	// PosInPoints 标记本显示器的**位置坐标单位是点** (AppKit/macOS) 而不是
+	// 设备像素。只影响 X/Y/WorkX/WorkY 三个位置量; W/H/WorkW/WorkH 恒为设备
+	// 像素 (屏幕尺寸的口径不随平台变, 否则脚本侧的 dp 换算要多一套)。
+	//
+	// 为什么必须显式标出来: win32/x11 的虚拟桌面坐标天然是物理像素, 而
+	// AppKit 的全局坐标是**点、左下原点** —— 两种后端的"位置单位"不同。
+	// gfx 层的 windowWorkAreaPos / moveOnGUI / ResolveWindowPlacement 靠这个
+	// 标记把"设备像素"与"后端位置单位"互转; 少了它, Retina(scale=2) 上
+	// moveTo 与 position 会差一倍 (而且不报错, 只是窗口挪错地方)。
+	PosInPoints bool
 	// Foldable + Posture + Hinge 是折叠屏三件套。非折叠屏恒为
 	// false / "flat" / nil。
 	Foldable bool
@@ -820,6 +830,47 @@ func init() {
 			"offDisplayChange": scr("offDisplayChange", func(args ...object.Value) object.Value {
 				return removeScreenHook(args)
 			}),
+
+			// ---- 窗口列表 (M4) ----
+			"windows": scr("windows", func(args ...object.Value) object.Value {
+				return windowsToJS()
+			}),
+			"window": scr("window", func(args ...object.Value) object.Value {
+				id := 0
+				if n, ok := argOrNil(args).(*object.Number); ok {
+					id = int(n.Value)
+				}
+				return windowByIDToJS(id)
+			}),
+
+			// ---- 窗口换屏事件 (M4/M8) ----
+			"onWindowDisplayChange": scr("onWindowDisplayChange", func(args ...object.Value) object.Value {
+				return addWindowDisplayHook(args)
+			}),
+			"offWindowDisplayChange": scr("offWindowDisplayChange", func(args ...object.Value) object.Value {
+				if len(args) == 0 {
+					return object.UndefinedSingleton
+				}
+				removeWindowDisplayHook(args[0])
+				return object.UndefinedSingleton
+			}),
+			// useWindowDisplay(): 取值函数 + 订阅, 返回最近一次换屏事件
+			// ({windowId, fromDisplay, toDisplay}); 还没发生过 → null。
+			"useWindowDisplay": scr("useWindowDisplay", func(args ...object.Value) object.Value {
+				return object.NewBuiltin("useWindowDisplay", func(args ...object.Value) object.Value {
+					g := windowDisplaySignal()
+					screenMu.Lock()
+					last := windowDisplayLast
+					screenMu.Unlock()
+					if g != nil {
+						object.CallFunction(g, nil) // 读一次 = 订阅一次
+					}
+					if last == nil {
+						return object.NullSingleton
+					}
+					return last
+				})
+			}),
 		}
 	})
 }
@@ -933,12 +984,17 @@ func (r *windowRefValue) GetProperty(string) (object.Value, bool) {
 }
 func (r *windowRefValue) SetProperty(string, object.Value) {}
 
-// windowInfoToJS 组装 {width,height,scale,screenWidth,screenHeight,platform}。
+// windowInfoToJS 组装 {x,y,width,height,scale,screenWidth,screenHeight,platform}。
 //
 // 字段名一次定好 (agent_doc/gui-responsive-screen-options.md §3.1 列的那条): 窗口尺寸用
 // width/height (与 render 的窗口配置、onResize 事件同词), **屏幕**尺寸用
 // screenWidth/screenHeight —— 两组名字不同, 因为它们回答的是不同的问题,
 // 混用一个名字是以后最容易踩的坑。
+//
+// x/y (M4 补): 窗口外框左上角相对**所在显示器工作区**左上角的偏移 —— 与
+// moveTo/position/bounds 同一口径 (见 window_move.go 头部)。注意显示器保留区
+// (hinge/regions) 用的是**显示器原点**坐标, 要换算到窗口坐标需补上工作区原点
+// (displayOfWorkWindow 的 WorkX/WorkY)。
 func windowInfoToJS(win *Window) object.Value {
 	o := object.NewObject()
 	var w, h int
@@ -954,6 +1010,9 @@ func windowInfoToJS(win *Window) object.Value {
 		w, h = s.Size()
 	}
 	d, _ := displayOfWorkWindow(win)
+	ox, oy, _ := windowWorkAreaPos(win)
+	o.SetProperty("x", object.NewNumber(float64(ox)))
+	o.SetProperty("y", object.NewNumber(float64(oy)))
 	o.SetProperty("width", object.NewNumber(float64(w)))
 	o.SetProperty("height", object.NewNumber(float64(h)))
 	o.SetProperty("scale", object.NewNumber(d.Scale))
@@ -964,6 +1023,247 @@ func windowInfoToJS(win *Window) object.Value {
 	o.SetProperty("screenId", object.NewString(d.ID))
 	o.SetProperty("platform", object.NewString(platformName()))
 	return o
+}
+
+// ===== 窗口列表 (M4, 2026-10-02) =====
+//
+// windows() / window(id) 让脚本看见"本进程现在有哪些窗口、在哪、多大"。数据源
+// 是内核的 appsSnapshot (只读, 不改 render.go) + windowHandles 注册表 (标题)。
+//
+// 字段口径:
+//
+//	id      窗口号 (render 句柄的 id(); 永不复用)
+//	title   当前标题 (句柄上最近一次设置的值)
+//	scope   路由作用域名 ("win:<id>")
+//	x,y     窗口外框左上角相对其所在显示器工作区的偏移 (与 windowInfo 同口径)
+//	width   客户区宽 (设备像素)
+//	height  客户区高
+//	scale   所在显示器缩放
+//	displayId 所在显示器 id
+//	active  是否是内核"最近挂载/最近活跃"的窗口 (与 currentApp 同义)
+//	focused 是否拥有系统键盘焦点 (后端支持 windowActiveProvider 时; 否则 = active)
+//
+// active 与 focused 刻意都保留: 多窗口下"我最近开的是哪个" (active) 与
+// "用户此刻在敲哪个" (focused) 是两件事, 用错一个就会出现"给后台窗口设焦点"
+// 这类诡异行为。
+
+// windowEntryToJS 把一个窗口 app 组装成 windows() 里的一项。
+func windowEntryToJS(a *app) object.Value {
+	// 复用已登记的句柄 (标题在它上面); Go 侧直接 Mount 的窗口可能还没登记,
+	// 用一个临时句柄包住 app —— 除标题外的字段都能照常读。
+	w := windowHandleByID(a.id)
+	if w == nil {
+		w = &Window{a: a}
+	}
+	o := object.NewObject()
+	o.SetProperty("id", object.NewNumber(float64(a.id)))
+	o.SetProperty("title", object.NewString(w.Title()))
+	o.SetProperty("scope", object.NewString(appScope(a)))
+
+	x, y, _ := windowWorkAreaPos(w)
+	o.SetProperty("x", object.NewNumber(float64(x)))
+	o.SetProperty("y", object.NewNumber(float64(y)))
+	var bw, bh int
+	if s := w.Surface(); s != nil {
+		bw, bh = s.Size()
+	}
+	o.SetProperty("width", object.NewNumber(float64(bw)))
+	o.SetProperty("height", object.NewNumber(float64(bh)))
+
+	d, _ := displayOfWorkWindow(w)
+	o.SetProperty("scale", object.NewNumber(d.Scale))
+	o.SetProperty("displayId", object.NewString(d.ID))
+
+	appMu.Lock()
+	act := a == activeApp
+	appMu.Unlock()
+	o.SetProperty("active", object.NewBoolean(act))
+	o.SetProperty("focused", object.NewBoolean(windowIsFocused(w)))
+	return o
+}
+
+func windowsToJS() object.Value {
+	list := appsSnapshot()
+	out := make([]object.Value, 0, len(list))
+	for _, a := range list {
+		out = append(out, windowEntryToJS(a))
+	}
+	return object.NewArray(out)
+}
+
+// windowByIDToJS 实现 window(winId): 找不到 → null。
+func windowByIDToJS(id int) object.Value {
+	for _, a := range appsSnapshot() {
+		if a.id == id {
+			return windowEntryToJS(a)
+		}
+	}
+	return object.NullSingleton
+}
+
+// ===== 窗口换屏事件 (M4/M8, 2026-10-02) =====
+//
+// 与 NotifyDisplaysChanged (显示器插拔/分辨率变化, 无载荷) 分开: 这条回答的是
+// "**哪个窗口**从哪块屏到了哪块屏", 应用接续/跨屏布局要的正是这个。
+//
+// ## 为什么"变没变"由内核比对, 而不是后端各比各的
+//
+// 后端只知道自己的 Surface (不知道 gfx 的窗口号), 要它自己算 from/to 就得把
+// "上次在哪块屏"存进每个后端 —— 三份重复状态、三处可能不同步。所以后端只
+// 调 PostWindowDisplayCheck(s) 说"这个窗口可能换屏了", 由内核在这里用
+// lastWindowDisplay 表比对并填 WindowID。平台细节留在后端, 判定统一在内核。
+
+// NotifyWindowDisplayChanged 是"窗口换屏"事件的载荷。
+//
+// 类型名沿用任务书的字面 (它描述的是这条通知本身); 派发入口是
+// PostWindowDisplayCheck (后端投递) / dispatchWindowDisplayChanged (内核)。
+type NotifyWindowDisplayChanged struct {
+	WindowID    int
+	FromDisplay string
+	ToDisplay   string
+}
+
+var (
+	// lastWindowDisplay: 窗口号 → 上次已知所在显示器 (首次不报"从空串换屏")。
+	lastWindowDisplay  = map[int]string{}
+	windowDisplayHooks []object.Value
+	windowDisplayRev   int
+	windowDisplayGet   object.Value // 惰性构造的 signal getter
+	windowDisplaySet   object.Value
+	// windowDisplayLast 是最近一次事件的 JS 快照 (useWindowDisplay 的读数)。
+	windowDisplayLast object.Value
+)
+
+// windowDisplaySignal 惰性造窗口换屏事件的 signal getter (同 envSignal 的模式)。
+func windowDisplaySignal() object.Value {
+	screenMu.Lock()
+	defer screenMu.Unlock()
+	return windowDisplaySignalLocked()
+}
+
+func windowDisplaySignalLocked() object.Value {
+	if windowDisplayGet != nil {
+		return windowDisplayGet
+	}
+	exports, ok := object.LookupBuiltinModule("gx/solid")
+	if !ok {
+		return nil
+	}
+	createSignal, ok := exports["createSignal"]
+	if !ok || !object.IsCallable(createSignal) {
+		return nil
+	}
+	res := object.CallFunction(createSignal, nil, object.NullSingleton)
+	arr, ok := res.(*object.Array)
+	if !ok || len(arr.Elements) != 2 {
+		return nil
+	}
+	windowDisplayGet, windowDisplaySet = arr.Elements[0], arr.Elements[1]
+	return windowDisplayGet
+}
+
+// CheckWindowDisplay 比对窗口所在显示器与上次记录, 变了就派发换屏事件。
+//
+// **必须在 GUI 线程调用** (会跑脚本回调) —— 后端经 gfx.Post 转投。后端不支持
+// DisplayOf 时 displayOfSurface 恒返回主屏, 于是永远不报 (安静降级)。
+func CheckWindowDisplay(s Surface) {
+	if a := appForSurface(s); a != nil {
+		checkWindowDisplayForApp(a)
+	}
+}
+
+// CheckAllWindowsDisplay 逐个窗口做一次换屏比对。
+//
+// 给"回调只拿到 NSWindow / 通知对象, 但与后端的 surface 注册表对不上号"的
+// 后端用 (cocoa 的 NSWindowDidChangeScreen 就是这种: 通知的 object 是 NSWindow,
+// 而 surfReg 注册的是 view/delegate)。逐窗口比对的代价很小 (窗口数是几个),
+// 换来的是后端不需要维护"NSWindow → surface"的第四张映射表。
+func CheckAllWindowsDisplay() {
+	for _, a := range appsSnapshot() {
+		checkWindowDisplayForApp(a)
+	}
+}
+
+func checkWindowDisplayForApp(a *app) {
+	if a == nil {
+		return
+	}
+	cur := displayOfSurface(a.surface)
+	screenMu.Lock()
+	last, seen := lastWindowDisplay[a.id]
+	if !seen || last == "" {
+		// 首次见到这个窗口: 只记不报 (否则会报一条 "从 '' 换到主屏" 的噪音)。
+		lastWindowDisplay[a.id] = cur
+		screenMu.Unlock()
+		return
+	}
+	if cur == last {
+		screenMu.Unlock()
+		return
+	}
+	lastWindowDisplay[a.id] = cur
+	screenMu.Unlock()
+
+	dispatchWindowDisplayChanged(NotifyWindowDisplayChanged{
+		WindowID: a.id, FromDisplay: last, ToDisplay: cur,
+	})
+}
+
+// dispatchWindowDisplayChanged 抬高版本 + 派发 onWindowDisplayChange 回调。
+func dispatchWindowDisplayChanged(ev NotifyWindowDisplayChanged) {
+	payload := object.NewObject()
+	payload.SetProperty("windowId", object.NewNumber(float64(ev.WindowID)))
+	payload.SetProperty("fromDisplay", object.NewString(ev.FromDisplay))
+	payload.SetProperty("toDisplay", object.NewString(ev.ToDisplay))
+
+	screenMu.Lock()
+	windowDisplayRev++
+	windowDisplayLast = payload
+	set := windowDisplaySet
+	hooks := append([]object.Value(nil), windowDisplayHooks...)
+	screenMu.Unlock()
+
+	if set != nil {
+		object.CallFunction(set, nil, payload)
+	}
+	for _, fn := range hooks {
+		object.CallFunction(fn, nil, payload)
+		if err := takeCallbackErr(); err != nil {
+			recordWarn("gx/screen onWindowDisplayChange: 回调抛错: %v", err)
+		}
+	}
+}
+
+// PostWindowDisplayCheck 是给"不一定在 GUI 线程"的调用点的便捷入口: 内部经
+// gfx.Post 排到 GUI 线程再比对。平台回调 (WndProc / NSNotification) 直接用这个。
+func PostWindowDisplayCheck(s Surface) {
+	Post(func() { CheckWindowDisplay(s) })
+}
+
+// addWindowDisplayHook 登记 onWindowDisplayChange(fn), 返回注销函数。
+func addWindowDisplayHook(args []object.Value) object.Value {
+	if len(args) == 0 || !object.IsCallable(args[0]) {
+		return object.NewTypeError("onWindowDisplayChange: 需要回调函数")
+	}
+	fn := args[0]
+	screenMu.Lock()
+	windowDisplayHooks = append(windowDisplayHooks, fn)
+	screenMu.Unlock()
+	return object.NewBuiltin("offWindowDisplayChange", func(args ...object.Value) object.Value {
+		removeWindowDisplayHook(fn)
+		return object.UndefinedSingleton
+	})
+}
+
+func removeWindowDisplayHook(fn object.Value) {
+	screenMu.Lock()
+	for i, h := range windowDisplayHooks {
+		if h == fn {
+			windowDisplayHooks = append(windowDisplayHooks[:i], windowDisplayHooks[i+1:]...)
+			break
+		}
+	}
+	screenMu.Unlock()
 }
 
 // platformName 报告当前窗口后端名 ("windows" / "x11" / "cocoa" / "headless")。
@@ -1052,6 +1352,12 @@ func resetScreenStateForTest() {
 	screenHooks = nil
 	screenRevision++
 	screenEnvGet, screenEnvSet = nil, nil
+	// 窗口换屏事件的状态同属本模块单例, 一并复位 (用例之间不许串味)。
+	lastWindowDisplay = map[int]string{}
+	windowDisplayHooks = nil
+	windowDisplayLast = nil
+	windowDisplayRev++
+	windowDisplayGet, windowDisplaySet = nil, nil
 	screenMu.Unlock()
 }
 

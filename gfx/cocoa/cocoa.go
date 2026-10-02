@@ -118,39 +118,44 @@ var (
 	selSetInitialResp     = objc.RegisterName("setInitialFirstResponder:")
 	selSetContentsSize    = objc.RegisterName("setContentSize:")
 	selContentView        = objc.RegisterName("contentView")
-	selBounds             = objc.RegisterName("bounds")
-	selSetWantsLayer      = objc.RegisterName("setWantsLayer:")
-	selLayer              = objc.RegisterName("layer")
-	selSetContents        = objc.RegisterName("setContents:")
-	selSetContentsScale   = objc.RegisterName("setContentsScale:")
-	selAddRep             = objc.RegisterName("addRepresentation:")
-	selBitmapData         = objc.RegisterName("bitmapData")
-	selAddTrackingArea    = objc.RegisterName("addTrackingArea:")
-	selConvertPoint       = objc.RegisterName("convertPoint:fromView:")
-	selLocationInWindow   = objc.RegisterName("locationInWindow")
-	selCharacters         = objc.RegisterName("characters")
-	selUTF8String         = objc.RegisterName("UTF8String")
-	selKeyCode            = objc.RegisterName("keyCode")
-	selModifierFlags      = objc.RegisterName("modifierFlags")
-	selDeltaY             = objc.RegisterName("deltaY")
-	selScrollingDeltaY    = objc.RegisterName("scrollingDeltaY")
-	selPreciseDeltas      = objc.RegisterName("hasPreciseScrollingDeltas")
-	selIsFlipped          = objc.RegisterName("isFlipped")
-	selAcceptsFirstResp   = objc.RegisterName("acceptsFirstResponder")
-	selStringWithUTF8     = objc.RegisterName("stringWithUTF8String:")
-	selMainScreen         = objc.RegisterName("mainScreen")
-	selBackingScale       = objc.RegisterName("backingScaleFactor")
-	selScreenFrame        = objc.RegisterName("frame") // NSScreen 的几何 (不是 bounds!)
-	selSetSubmenu         = objc.RegisterName("setSubmenu:")
-	selAddItem            = objc.RegisterName("addItem:")
-	selSetKeyEquivalent   = objc.RegisterName("setKeyEquivalent:")
-	selSetAction          = objc.RegisterName("setAction:")
-	selSetMainMenu        = objc.RegisterName("setMainMenu:")
-	selGeneralPasteboard  = objc.RegisterName("generalPasteboard")
-	selStringForType      = objc.RegisterName("stringForType:")
-	selClearContents      = objc.RegisterName("clearContents")
-	selSetStringForType   = objc.RegisterName("setString:forType:")
-	selDrain              = objc.RegisterName("drain")
+	// M4 窗口几何: setFrameOrigin: 挪窗口 (AppKit 原点在左下角!);
+	// isKeyWindow 判前台; "frame" 与 selScreenFrame 是同一个 selector 名,
+	// 直接复用 (NSWindow.frame 与 NSScreen.frame 是同一个 @selector)。
+	selSetFrameOrigin    = objc.RegisterName("setFrameOrigin:")
+	selIsKeyWindow       = objc.RegisterName("isKeyWindow")
+	selBounds            = objc.RegisterName("bounds")
+	selSetWantsLayer     = objc.RegisterName("setWantsLayer:")
+	selLayer             = objc.RegisterName("layer")
+	selSetContents       = objc.RegisterName("setContents:")
+	selSetContentsScale  = objc.RegisterName("setContentsScale:")
+	selAddRep            = objc.RegisterName("addRepresentation:")
+	selBitmapData        = objc.RegisterName("bitmapData")
+	selAddTrackingArea   = objc.RegisterName("addTrackingArea:")
+	selConvertPoint      = objc.RegisterName("convertPoint:fromView:")
+	selLocationInWindow  = objc.RegisterName("locationInWindow")
+	selCharacters        = objc.RegisterName("characters")
+	selUTF8String        = objc.RegisterName("UTF8String")
+	selKeyCode           = objc.RegisterName("keyCode")
+	selModifierFlags     = objc.RegisterName("modifierFlags")
+	selDeltaY            = objc.RegisterName("deltaY")
+	selScrollingDeltaY   = objc.RegisterName("scrollingDeltaY")
+	selPreciseDeltas     = objc.RegisterName("hasPreciseScrollingDeltas")
+	selIsFlipped         = objc.RegisterName("isFlipped")
+	selAcceptsFirstResp  = objc.RegisterName("acceptsFirstResponder")
+	selStringWithUTF8    = objc.RegisterName("stringWithUTF8String:")
+	selMainScreen        = objc.RegisterName("mainScreen")
+	selBackingScale      = objc.RegisterName("backingScaleFactor")
+	selScreenFrame       = objc.RegisterName("frame") // NSScreen 的几何 (不是 bounds!)
+	selSetSubmenu        = objc.RegisterName("setSubmenu:")
+	selAddItem           = objc.RegisterName("addItem:")
+	selSetKeyEquivalent  = objc.RegisterName("setKeyEquivalent:")
+	selSetAction         = objc.RegisterName("setAction:")
+	selSetMainMenu       = objc.RegisterName("setMainMenu:")
+	selGeneralPasteboard = objc.RegisterName("generalPasteboard")
+	selStringForType     = objc.RegisterName("stringForType:")
+	selClearContents     = objc.RegisterName("clearContents")
+	selSetStringForType  = objc.RegisterName("setString:forType:")
+	selDrain             = objc.RegisterName("drain")
 )
 
 // ===== AppKit 常量 =====
@@ -522,7 +527,16 @@ func newSurface(cfg gfx.WindowConfig) (gfx.Surface, error) {
 	s.allocBackbuffer(w, h)
 
 	win.Send(selMakeKeyAndOrder, objc.ID(0))
-	win.Send(selCenter)
+	// 位置: 显式指定 (WindowConfig.X/Y/Display) 时按目标屏放置, 否则居中。
+	// ResolveWindowPlacement 返回的坐标单位是"点" (cocoa 的 PosInPoints), 正好
+	// 是 cocoaFrameOrigin 期望的输入 —— 单位换算是 gfx 层的事, 这里不做二次解释。
+	if px, py, ok := gfx.ResolveWindowPlacement(cfg); ok {
+		fr := objc.Send[nsRect](win, selScreenFrame)
+		ax, ay := cocoaFrameOrigin(float64(px), float64(py), fr.Size.Height, mainScreenTopY())
+		win.Send(selSetFrameOrigin, nsPoint{X: ax, Y: ay})
+	} else {
+		win.Send(selCenter)
+	}
 	app.Send(selActivateIgnoring, true)
 	return s, nil
 }
@@ -719,6 +733,73 @@ func (s *surface) ResizeClient(w, h int) {
 	s.win.Send(selSetContentsSize, nsSize{Width: float64(w) / s.scale, Height: float64(h) / s.scale})
 }
 
+// ===== M4: 窗口几何 (windowMover / windowBoundsProvider / windowActiveProvider) =====
+
+// mainScreenTopY 求主屏顶边在 AppKit 全局坐标里的 y。
+//
+// AppKit 全局坐标是**左下原点、y 向上**, 而 gfx 的显示器坐标是**左上原点**
+// (见 display.go 的换算基准): topY = 主屏 origin.y + 主屏高。主屏 origin 通常是
+// (0,0), 所以它一般就等于主屏高度 —— 但显式加上 origin.y 才在"主屏被摆在上方"
+// 这种罕见排列里也对。
+func mainScreenTopY() float64 {
+	main := objc.ID(objc.GetClass("NSScreen")).Send(selMainScreen)
+	if main == 0 {
+		return 0
+	}
+	fr := objc.Send[nsRect](main, selScreenFrame)
+	return fr.Origin.Y + fr.Size.Height
+}
+
+// cocoaFrameOrigin 把"窗口外框左上角在 左上原点虚拟桌面坐标 (点)"换算成
+// AppKit setFrameOrigin: 需要的**左下原点**坐标。
+//
+// **这里是最容易错的一步**: setFrameOrigin 收的是外框左下角 (bottom-left),
+// 而 gfx 的 y 是外框左上角 (top-left), 且 AppKit 的 y 轴向**上**。
+// 所以真正要减掉的是"从屏幕顶边到窗口底边"的距离:
+//
+//	y_cocoa = screenTop - y_topLeft - frameHeight
+//
+// (任务书写的 screenHeight - y - height 在单屏主屏场景下等价于此式, 因为
+// screenTop = 主屏高。)把它抽成纯函数就是为了能用单测钉住符号与加减顺序 ——
+// AppKit 里 y 写反不会崩, 只会让窗口出现在屏幕外的下方, 非常难排查。
+func cocoaFrameOrigin(topX, topY, frameHeight, screenTop float64) (float64, float64) {
+	return topX, screenTop - topY - frameHeight
+}
+
+// MoveTo 实现 gfx 的可选 windowMover 接口 (M4): 把窗口外框左上角移到
+// 左上原点虚拟桌面坐标 (点)。gfx 层已把"工作区相对"换算成绝对坐标。
+func (s *surface) MoveTo(x, y int) error {
+	if s.win == 0 {
+		return fmt.Errorf("cocoa: window not created")
+	}
+	fr := objc.Send[nsRect](s.win, selScreenFrame)
+	ax, ay := cocoaFrameOrigin(float64(x), float64(y), fr.Size.Height, mainScreenTopY())
+	s.win.Send(selSetFrameOrigin, nsPoint{X: ax, Y: ay})
+	return nil
+}
+
+// WindowBounds 实现 gfx 的可选 windowBoundsProvider 接口 (M4): 外框左上角的
+// 左上原点坐标 (点) + 客户区尺寸 (设备像素, 与 Size 同口径)。
+func (s *surface) WindowBounds() (x, y, w, h int, ok bool) {
+	if s.win == 0 {
+		return 0, 0, 0, 0, false
+	}
+	fr := objc.Send[nsRect](s.win, selScreenFrame)
+	top := mainScreenTopY()
+	x = int(fr.Origin.X + 0.5)
+	y = int(top - (fr.Origin.Y + fr.Size.Height) + 0.5)
+	cw, ch := s.Size()
+	return x, y, cw, ch, true
+}
+
+// IsActive 实现 gfx 的可选 windowActiveProvider 接口 (M4): 是否 key window。
+func (s *surface) IsActive() bool {
+	if s.win == 0 {
+		return false
+	}
+	return s.win.Send(selIsKeyWindow) != 0
+}
+
 // ===== 可选能力: clipboardHost =====
 
 // ReadClipboardText 读系统剪贴板文本 (非文本/无内容返回空串, 不报错)。
@@ -849,6 +930,10 @@ func (s *surface) onWindowDidResize() {
 	if changed {
 		s.allocBackbuffer(w, h) // 缓冲随之扩容, 下一次 Show 全帧重绘
 		s.trySend(gfx.Event{Kind: gfx.EventResize, W: w, H: h})
+		// M4: 窗口尺寸变了 → 让 gx/viewport 的断点/尺寸类订阅者重算。
+		// 回调跑在 GUI 线程, 但仍经 Post 排到 Pump 的 DrainTasks (与
+		// win32 WM_SIZE 同一条纪律: 平台回调只投递, 不直接执行 JS)。
+		gfx.Post(func() { gfx.NotifyViewportChanged() })
 	}
 }
 

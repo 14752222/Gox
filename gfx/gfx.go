@@ -19,11 +19,32 @@ import (
 	"time"
 )
 
+// DefaultWindowPos 是 WindowConfig.X/Y 的"平台自选位置"哨兵。
+//
+// 为什么需要哨兵: (0,0) 是一个**合法位置** (主屏工作区左上角), 不能用它表达
+// "没指定位置"。约定: X 或 Y 小于 -10000 时忽略位置, 交给平台自选
+// (Windows 的 CW_USEDEFAULT / cocoa 的居中)。此外全零 (Go 零值, 也是
+// render() 缺省) 同样按"未指定"处理 —— 见 ResolveWindowPlacement。
+const DefaultWindowPos = -100000
+
 // WindowConfig 窗口创建配置。
+//
+// X/Y 的口径与 Window.MoveTo / gx/screen 的 windowInfo().x/y **完全一致**:
+// 窗口外框左上角相对**目标显示器工作区**左上角的偏移 (设备像素)。
+// 跨屏换算 (工作区 → 虚拟桌面绝对坐标) 由 ResolveWindowPlacement 统一完成,
+// 后端只承接绝对坐标 —— 这样"坐标口径"只有一处定义。
 type WindowConfig struct {
 	Title  string
 	Width  int
 	Height int
+
+	// X/Y: 位置 (相对目标显示器工作区)。< DefaultWindowPos 或全零 = 平台自选。
+	X, Y int
+
+	// Display: 目标显示器 id (见 gx/screen 的 screens()[].id); 空 = 平台默认。
+	// 给定时 X/Y 相对**该屏**工作区; 若 X/Y 也未指定, 则在该屏工作区居中
+	// (这是"按屏放置"最常用的一种: render(<window display={id}>))。
+	Display string
 }
 
 // EventKind 窗口事件种类。

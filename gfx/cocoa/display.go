@@ -12,11 +12,14 @@
 //	               win32 的 MonitorFromWindow 同一立场)
 //
 // 字段口径 (与 win32/display.go 对齐):
-//   - W/H 是**设备像素** (点 × backingScaleFactor): gfx 的窗口尺寸是设备像素,
-//     屏幕尺寸用同一口径脚本侧才不用区分平台;
-//   - X/Y/WorkX/WorkY 是**左上原点**的虚拟桌面坐标: NSScreen 的全局坐标是
-//     底左原点、y 向上, 这里统一换算 (以主屏顶边为基准线);
-//   - Work* 来自 visibleFrame (排除菜单栏与 Dock), 同样乘 scale;
+//   - W/H/WorkW/WorkH 是**设备像素** (点 × backingScaleFactor): gfx 的窗口尺寸
+//     是设备像素, 屏幕尺寸用同一口径脚本侧才不用区分平台;
+//   - X/Y/WorkX/WorkY 是**左上原点、点**的虚拟桌面坐标: NSScreen 的全局坐标
+//     是底左原点、y 向上, 这里统一换算成左上原点 (以主屏顶边为基准线)。
+//     **位置单位是"点"而不是设备像素** —— 这是 AppKit 的原生窗口坐标单位, 由
+//     Display.PosInPoints 标出, gfx 的 windowWorkAreaPos / moveOnGUI /
+//     ResolveWindowPlacement 据此在"设备像素 ↔ 点"之间换算。win32/x11 的
+//     虚拟桌面坐标天然是物理像素, 故那条路径不需要这个标记。
 //   - ID 用 deviceDescription 里的 NSScreenNumber (CGDirectDisplayID):
 //     稳定标识, 插拔/重排后仍指向同一块屏 —— 与 win32 用设备名的理由相同;
 //     序号 (screens 数组下标) 会变, 不能当 ID。
@@ -87,13 +90,15 @@ func (f *factory) Displays() []gfx.Display {
 			H:    int(frame.Size.Height*scale + 0.5),
 			// visibleFrame 排除菜单栏/Dock: 其 origin.y 就是可用区底边
 			// (底左原点), 顶边 = origin.y + 高。
-			WorkX:   int(vis.Origin.X),
-			WorkY:   int(topY - (vis.Origin.Y + vis.Size.Height)),
-			WorkW:   int(vis.Size.Width*scale + 0.5),
-			WorkH:   int(vis.Size.Height*scale + 0.5),
-			Scale:   scale,
-			Primary: scr == main,
-			Posture: "flat",
+			WorkX: int(vis.Origin.X),
+			WorkY: int(topY - (vis.Origin.Y + vis.Size.Height)),
+			WorkW: int(vis.Size.Width*scale + 0.5),
+			WorkH: int(vis.Size.Height*scale + 0.5),
+			Scale: scale,
+			// 位置是点 (AppKit 全局坐标), 不是设备像素 —— gfx 层据此换算。
+			PosInPoints: true,
+			Primary:     scr == main,
+			Posture:     "flat",
 		})
 	}
 	if len(out) == 0 {
@@ -178,6 +183,9 @@ var (
 	selDefaultCenter      = objc.RegisterName("defaultCenter")
 	selAddObserverSelName = objc.RegisterName("addObserver:selector:name:object:")
 	selScreenChanged      = objc.RegisterName("goxScreenParamsChanged:")
+	// M4: 窗口换屏走**另一个** selector —— 参数变化 (插拔屏) 只抬环境版本;
+	// 窗口换屏还要回答"哪个窗口从哪到哪", 由 gfx.CheckAllWindowsDisplay 比对。
+	selWindowScreenChanged = objc.RegisterName("goxWindowScreenChanged:")
 )
 
 func init() {
@@ -186,6 +194,7 @@ func init() {
 		objc.GetClass("NSObject"), nil, nil,
 		[]objc.MethodDef{
 			{Cmd: selScreenChanged, Fn: impScreenParamsChanged},
+			{Cmd: selWindowScreenChanged, Fn: impWindowScreenChanged},
 		})
 	if err != nil {
 		panic("cocoa: register screen observer class: " + err.Error())
@@ -199,6 +208,16 @@ func impScreenParamsChanged(self objc.ID, cmd objc.SEL, note objc.ID) uintptr {
 	return 0
 }
 
+// impWindowScreenChanged 处理 NSWindowDidChangeScreenNotification (窗口被拖到
+// 另一块屏)。判定"哪块屏变了"统一交给内核 (gfx.CheckAllWindowsDisplay): 通知
+// 的 object 是 NSWindow, 而后端的 surface 注册表按 view/delegate 建, 两者对不上
+// 号 —— 与其再维护一张 NSWindow→surface 映射, 不如让内核逐窗口比对 (窗口数是
+// 个位数, 且只有真的换了屏的那一个会派发事件)。
+func impWindowScreenChanged(self objc.ID, cmd objc.SEL, note objc.ID) uintptr {
+	gfx.Post(func() { gfx.CheckAllWindowsDisplay() })
+	return 0
+}
+
 // installScreenObserver 注册显示器变化通知 (GUI 线程, 进程一次 —— 由
 // ensureNSApp 的 sync.Once 保证)。观察者实例存活到进程结束: AppKit 对
 // defaultCenter 里的观察者是 unretained (weak) 引用, 实例必须有人持着 ——
@@ -209,10 +228,10 @@ func installScreenObserver() {
 		return
 	}
 	center := objc.ID(objc.GetClass("NSNotificationCenter")).Send(selDefaultCenter)
-	for _, name := range []string{
-		"NSApplicationDidChangeScreenParametersNotification",
-		"NSWindowDidChangeScreenNotification",
-	} {
-		center.Send(selAddObserverSelName, observer, selScreenChanged, nsString(name), objc.ID(0))
-	}
+	// 插拔屏 / 改分辨率 / 屏排列变化 → 环境版本 (无载荷)。
+	center.Send(selAddObserverSelName, observer, selScreenChanged,
+		nsString("NSApplicationDidChangeScreenParametersNotification"), objc.ID(0))
+	// 窗口被拖到另一块屏 → 带载荷的换屏事件 (M4)。
+	center.Send(selAddObserverSelName, observer, selWindowScreenChanged,
+		nsString("NSWindowDidChangeScreenNotification"), objc.ID(0))
 }

@@ -60,6 +60,12 @@ var (
 	procSetWindowPos     = user32.NewProc("SetWindowPos")
 	procAdjustWindowRect = user32.NewProc("AdjustWindowRect")
 
+	// M4 窗口几何: 读外框位置 (GetWindowRect) / 前台窗口判定 (GetForegroundWindow)。
+	// 位置换算成"工作区相对"由 gfx 层统一做 (见 gfx/window_move.go), 这里只给
+	// 虚拟桌面绝对坐标。
+	procGetWindowRect       = user32.NewProc("GetWindowRect")
+	procGetForegroundWindow = user32.NewProc("GetForegroundWindow")
+
 	// P2-7: 输入法 (IME)。imm32 在极老的 Windows 上可能缺席, 懒加载 +
 	// 返回值判空即可 (取不到上下文就当这次没有输入法)。
 	imm32                        = syscall.NewLazyDLL("imm32.dll")
@@ -401,12 +407,20 @@ func newSurface(cfg gfx.WindowConfig) (gfx.Surface, error) {
 
 	title, _ := syscall.UTF16PtrFromString(cfg.Title)
 	hInst, _, _ := procGetModuleHandleW.Call(0)
+	// 位置: WindowConfig.X/Y/Display 显式指定时按目标屏放置 (ResolveWindowPlacement
+	// 统一把"工作区相对 + 设备像素"换算成**虚拟桌面绝对像素**); 否则交给
+	// CW_USEDEFAULT (Windows 自己级联摆放)。
+	const cwUseDefault = 0x80000000
+	px, py := uintptr(cwUseDefault), uintptr(cwUseDefault)
+	if x, y, ok := gfx.ResolveWindowPlacement(cfg); ok && x > -30000 && y > -30000 {
+		px, py = uintptr(int32(x)), uintptr(int32(y))
+	}
 	hwnd, _, err := procCreateWindowExW.Call(
 		0,
 		uintptr(unsafe.Pointer(className)),
 		uintptr(unsafe.Pointer(title)),
 		WS_OVERLAPPEDWINDOW|WS_VISIBLE,
-		0x80000000, 0x80000000, // CW_USEDEFAULT
+		px, py,
 		uintptr(cfg.Width), uintptr(cfg.Height),
 		0, 0, hInst, 0,
 	)
@@ -547,6 +561,9 @@ func globalWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 		w, h := int(lo16(lParam)), int(hi16(lParam))
 		s.reallocDIB(w, h)
 		s.trySend(gfx.Event{Kind: gfx.EventResize, W: w, H: h})
+		// M4: 窗口尺寸变了 → 让 gx/viewport 的断点/尺寸类订阅者重算。
+		// WndProc 不执行 JS, 只 Post (与 WM_DISPLAYCHANGE 同一条纪律)。
+		gfx.Post(func() { gfx.NotifyViewportChanged() })
 		return 0
 	case WM_PAINT:
 		var ps paintStruct
@@ -567,6 +584,12 @@ func globalWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 		// 执行 JS。统一经 Post 排到 Pump 的 DrainTasks —— 与仓库既有的
 		// "WndProc 绝不执行 JS, 一律投递任务" 纪律一致。
 		gfx.Post(func() { gfx.NotifyDisplaysChanged() })
+		// M4: WM_DPICHANGED 是"窗口被拖到了另一块 DPI 不同的屏"(同 DPI 跨屏
+		// 不触发) —— 正是窗口换屏的信号。交给内核比对上一次所在的屏, 变了就
+		// 派发 onWindowDisplayChange (见 gfx/screen.go 的 CheckWindowDisplay)。
+		if msg == WM_DPICHANGED {
+			gfx.PostWindowDisplayCheck(s)
+		}
 		r, _, _ := procDefWindowProcW.Call(hwnd, uintptr(msg), wParam, lParam)
 		return r
 	case WM_CLOSE:
@@ -993,6 +1016,45 @@ func (s *surface) ResizeClient(w, h int) {
 	)
 	procSetWindowPos.Call(uintptr(s.hwnd), 0, 0, 0, uintptr(outerW), uintptr(outerH),
 		swpNoMove|swpNoZOrder|swpNoActivate)
+}
+
+// MoveTo 实现 gfx 的可选 windowMover 接口 (M4): 把窗口外框左上角移到
+// 虚拟桌面绝对坐标 (x,y)。参数已是绝对坐标 —— gfx 层 (window_move.go) 负责把
+// 脚本的"工作区相对"位置换算过来。
+//
+// 标志位: SWP_NOSIZE|SWP_NOZORDER|SWP_NOACTIVATE —— 只挪位置, 不改尺寸、
+// 不改 Z 序、不抢焦点 (否则 moveTo 会把用户正在别的窗口里打的字打断)。
+func (s *surface) MoveTo(x, y int) error {
+	const (
+		swpNoSize     = 0x0001
+		swpNoZOrder   = 0x0004
+		swpNoActivate = 0x0010
+	)
+	r, _, err := procSetWindowPos.Call(uintptr(s.hwnd), 0, uintptr(x), uintptr(y), 0, 0,
+		swpNoSize|swpNoZOrder|swpNoActivate)
+	if r == 0 {
+		return err
+	}
+	return nil
+}
+
+// WindowBounds 实现 gfx 的可选 windowBoundsProvider 接口 (M4): 返回外框左上角
+// 的虚拟桌面绝对坐标 + 客户区尺寸。x/y 的单位与 win32/display.go 的 Display.X/Y
+// 一致 (设备像素)。
+func (s *surface) WindowBounds() (x, y, w, h int, ok bool) {
+	var rc rect32
+	if r, _, _ := procGetWindowRect.Call(uintptr(s.hwnd), uintptr(unsafe.Pointer(&rc))); r == 0 {
+		return 0, 0, 0, 0, false
+	}
+	cw, ch := s.Size()
+	return int(rc.Left), int(rc.Top), cw, ch, true
+}
+
+// IsActive 实现 gfx 的可选 windowActiveProvider 接口 (M4): 本窗口是不是前台
+// 窗口。GetForegroundWindow 拿到的是全系统前台窗, 与 hwnd 相等即"有焦点"。
+func (s *surface) IsActive() bool {
+	fg, _, _ := procGetForegroundWindow.Call()
+	return fg != 0 && syscall.Handle(fg) == s.hwnd
 }
 
 // reallocDIB 重建 DIB 帧缓冲 (尺寸变化时)。

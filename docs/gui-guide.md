@@ -699,6 +699,39 @@ onCleanup(() => console.log("子树换代 / 销毁"))   // 顶层调用是 no-op
 [testdata/resource_demo.js](../testdata/resource_demo.js)（pending→ready / refetch 保旧值 / 失败后恢复）、
 [testdata/kit_demo.js](../testdata/kit_demo.js)（设计套件：令牌主题 + 变体按钮工厂 + 装饰卡片）。
 
+### 8.4 自适应断点（gx/viewport）
+
+断点是**命名阈值**：窗口宽度越过阈值就换一档。默认表 `sm:0 / md:600 / lg:840 / xl:1200`（dp），
+与尺寸类（`widthClass()` 的 compact/medium/expanded，阈值 600/840dp）复用同一组数字 ——
+前者是业务可自定义的"命名"，后者是内核对"物理宽度档"的分类。
+
+```js
+import { useBreakpoint, matchBreakpoint, breakpoints, setBreakpoints } from "gx/viewport";
+
+const bp = useBreakpoint();                 // () => "sm" | "md" | "lg" | "xl"（取值 + 订阅）
+
+const layout = () => {
+  bp();                                     // ← 先无条件订阅（matchBreakpoint 自身不订阅）
+  return matchBreakpoint({
+    sm: { cols: 1, side: false },
+    md: { cols: 1, side: true },
+    lg: { cols: 2, side: true },
+    xl: { cols: 2, side: true, info: true },
+  });
+};
+
+h("text", null, () => `breakpoint = ${bp()} / cols = ${layout().cols}`);
+```
+
+- `breakpoints()` 读表；`setBreakpoints({...})` 整表替换（自定义阈值，例如 `{phone:0, tablet:720, desk:1100}`）；
+  `resetBreakpoints()` 复位。非法项静默跳过，全非法时保持原表并告警（清空表会让 `breakpoint()` 永远返回空串，更难查）。
+- `above(name)` / `below(name)` / `between(a, b)` 是三个区间判定（未知档名一律 false；`between` 是半开区间 `[a,b)`，参数反序等价）。
+- **按窗口宽度算，不是屏幕宽度**：多窗口/分屏下每个窗口各算各的（客户区宽度 ÷ 所在显示器缩放）。
+- 订阅纪律同 §8.1：`useBreakpoint()` 是订阅型读数，必须**无条件调用**（写在三元分支里会漏掉订阅）。
+
+示例：[testdata/breakpoint_demo.js](../testdata/breakpoint_demo.js)（同一份代码在四个尺寸下自动换形态，按钮直接 resize 到四档）。
+完整 API 与坐标口径见 [multi-window.md](multi-window.md)。
+
 ## 9. 宿主能力
 
 ### 9.1 原生系统对话框
@@ -856,6 +889,53 @@ const wB = render(counter("Window B"), { title: "B", width: 320, height: 200 });
 
 示例：[testdata/multiwindow_demo.js](../testdata/multiwindow_demo.js)（开两个窗口各自计数，
 `File - Close window` / `Ctrl+Q` 关掉当前窗口，关一个另一个继续跑）。
+
+**窗口几何（M4）** —— 句柄还能读写窗口位置：
+
+```js
+const w = render(<window title="geo" width={320} height={200}>…</window>);
+w.moveTo(40, 60);                                  // 当前屏工作区内移动（缺参抛 TypeError）
+w.center();                                        // 当前屏工作区居中
+w.position();                                      // { x, y }（工作区相对，设备像素）
+w.bounds();                                        // { x, y, width, height, displayId, scale }
+w.display();                                       // 所在显示器 id
+```
+
+坐标口径是**窗口外框左上角相对其所在显示器工作区左上角**（设备像素）—— 详见
+[multi-window.md](multi-window.md) §1。把窗口拖到副屏后，`moveTo(0,0)` 就是"副屏工作区左上角"。
+
+**窗口列表 / 跨屏事件（M4）**：
+
+```js
+import { windows, window, onWindowDisplayChange, useWindowDisplay } from "gx/screen";
+
+windows();   // [{ id, title, scope, x, y, width, height, scale, displayId, active, focused }, …]
+window(3);   // 单个窗口条目；不存在 → null
+
+const off = onWindowDisplayChange(({ windowId, fromDisplay, toDisplay }) =>
+  console.log(`win ${windowId}: ${fromDisplay} -> ${toDisplay}`));
+off();       // 注销
+```
+
+**应用接续（M8）** —— 把一条导航栈（含 `route.state`）从一个作用域**搬迁**到另一个：
+
+```js
+import { createRouter, RouterView, useRouter } from "gx/router";
+
+const router = createRouter({ routes: [ /* … */ ], initial: "/" });
+const wa = render(<window title="home">{() => RouterView()}</window>);
+const wb = render(<window title="road">{() => RouterView()}</window>);
+
+await router.handoff(wa, wb);                        // 搬迁：road 接住整条栈，home 复位回首页
+await router.handoff(wa, wb, { keepSource: true });  // 复制：home 不动，road 拿克隆
+router.continuity();                                 // 只读内省：谁持有哪条栈（接续前体检）
+```
+
+`handoff` 与 `router.sync` 的镜像/共享/跟随模式不同：sync 之后源窗口仍在原页面继续存在，
+handoff 之后源被腾空（回到栈底/首页）—— 这才是"接续"的物理动作。完整语义、返回值与
+"跨设备接续不做"的边界见 [multi-window.md](multi-window.md) §6/§8。
+
+示例：[testdata/multiscreen_demo.js](../testdata/multiscreen_demo.js)（两窗口 + 跨屏事件 + 接续搬迁/复制）。
 
 ### 9.6 原生能力层
 
@@ -1041,6 +1121,8 @@ import { devSnapshot } from "gx/dev";
 | 示例 | 内容 |
 |---|---|
 | [multiwindow_demo.js](../testdata/multiwindow_demo.js) | 多窗口：两窗口独立计数、关一个另一个继续跑、全关退出 |
+| [multiscreen_demo.js](../testdata/multiscreen_demo.js) | 多屏协同（M8）：窗口列表 / 跨屏事件 / `router.handoff` 接续搬迁与复制（见 [multi-window.md](multi-window.md)） |
+| [breakpoint_demo.js](../testdata/breakpoint_demo.js) | 自适应断点（M4）：同一份代码在 sm/md/lg/xl 四档自动换形态（见 §8.4） |
 | [resize_demo.js](../testdata/resize_demo.js) | 窗口自适应：onResize 断点切栏 + 句柄 resize/setTitle |
 | [menu_demo.js](../testdata/menu_demo.js) | 菜单栏：下拉 / 子菜单 / 禁用项 / 快捷键 / 右键菜单 |
 | [clipboard_demo.js](../testdata/clipboard_demo.js) | 剪贴板：同步读写与失败降级 |
@@ -1112,6 +1194,7 @@ import { devSnapshot } from "gx/dev";
 | [README.md](../README.md) | 项目总览、安装、语言示例、打包与发版 |
 | [tutorial.md](tutorial.md) | 实战教程：API 调用方式与参数、内置模块导入、`gox create` 建工程、路由定义与注册 |
 | [gui-router.md](gui-router.md) | `gx/router` + `gx/screen` 使用手册（路由表 / 三级守卫 / 懒加载 / 两档状态保留 / 多窗口作用域 / 折叠双栏 / 排障表） |
+| [multi-window.md](multi-window.md) | 多窗口 / 多屏 / 自适应断点 / 应用接续：坐标口径、JS API、平台支持矩阵、`router.handoff` 语义与 v1 边界（M4/M8） |
 | [gui-tabbar.md](gui-tabbar.md) | 导航壳：TabBar（移动）/ SideNav（桌面）/ AppShell 分派器，安全区、软键盘、返回键、断点等平台差异的收口 |
 | [gui-patterns.md](gui-patterns.md) | 用户态模式手册（路由、状态、主题等惯用法） |
 | [gui-model-binding.md](gui-model-binding.md) | `model` 双向绑定：接口设计、语义表、与 Vue 的对照、反例 |
