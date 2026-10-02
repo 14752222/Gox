@@ -911,7 +911,7 @@ func TestA11yFormDemoKeyboardWalkthrough(t *testing.T) {
 				t.Fatalf("初态该没有焦点: %v", viewTexts(root))
 			}
 			if !has("(还没提交)") {
-				t.Fatalf("初态该是" + "还没提交" + ": %v", viewTexts(root))
+				t.Fatalf("初态该是"+"还没提交"+": %v", viewTexts(root))
 			}
 			bottom := 0
 			for _, n := range allNodes(root) {

@@ -1037,11 +1037,11 @@ w.setCursor(null)                            // 清掉窗口级覆盖，回到�
   （win32 `WM_MOVE` / cocoa `windowDidMove` / X11 `ConfigureNotify`，三平台都上报）。
   **建窗期的位置落地不上报** —— 脚本本来就知道窗口被放在哪（给过 `x`/`y`，或者接受了居中），
   把它当真实移动上报会让"按顺序收头几个事件"的调用方平白多收一串 `EventMove`。
-  ⚠️ **`onMove` 的载荷是"屏幕绝对坐标"**（平台原生口径，多屏下副屏就是负值/大值），
-  与 `position()` / `bounds()` 报的"工作区相对"**不是同一个参照系** —— 要换算请配合
-  `bounds().displayId` 查 `gx/screen` 的 `screens()[].workX/workY`。
-  （这处双口径是合流产物，见 [multi-window.md](multi-window.md) 的待裁定项。）
-- **坐标口径**（`x` / `y` / `moveTo` / `position()` / `bounds()` 共用一套）：
+  载荷 `{x, y}` 与下一段的**坐标口径表完全一致**（所在显示器工作区相对 + 设备像素）——
+  后端填的是平台原生绝对坐标，内核在派发前换算一次，于是 `onMove` 收到的值可以
+  **原样喂回 `moveTo`**（"挪回去 / 按落点吸附"不必自己查屏几何）：
+  `onMove` 报 `(a, b)` ⇒ `moveTo(a, b)` 把窗口放回原处。
+- **坐标口径**（`x` / `y` / `moveTo` / `position()` / `bounds()` / `onMove` 共用一套）：
 
   | 轴 | 口径 |
   |---|---|

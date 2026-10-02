@@ -402,11 +402,11 @@ func TestUploadA11yShape(t *testing.T) {
 
 func TestUploadBaseName(t *testing.T) {
 	cases := map[string]string{
-		"/tmp/a.png":         "a.png",
-		`C:\Users\me\b.jpg`:  "b.jpg",
-		"/tmp/dir/":          "dir", // 末尾分隔符: 取到最后一个非空段
-		"plain.txt":          "plain.txt",
-		"/":                  "/",
+		"/tmp/a.png":        "a.png",
+		`C:\Users\me\b.jpg`: "b.jpg",
+		"/tmp/dir/":         "dir", // 末尾分隔符: 取到最后一个非空段
+		"plain.txt":         "plain.txt",
+		"/":                 "/",
 	}
 	for in, want := range cases {
 		if got := uploadBaseName(in); got != want {

@@ -309,21 +309,28 @@ func TestWindowBoundsNoBackendRead(t *testing.T) {
 	}
 }
 
-// TestWindowEventMoveUpdatesCacheAndRedraws: 窗口被用户拖动时后端投一条
-// EventMove, 位置缓存与重绘请求都要跟上。
+// TestWindowEventMoveRedrawsAndDoesNotFabricatePosition: 窗口被用户拖动时后端
+// 投一条 EventMove, 重绘请求要跟上; 但事件不该顺手编一个位置出来 —— 读数
+// 依旧只认平台真值。
 //
-// 缓存断言不经 bounds() 转手: EventMove 的载荷是**屏幕绝对坐标** (平台原生
-// 口径), 而 bounds()/position() 报的是"工作区相对", 两者不是一套参照系。
-func TestWindowEventMoveUpdatesCacheAndRedraws(t *testing.T) {
+// 合流备注 (2026-10-02): §四 那版在事件分支里把载荷写进位置缓存, 让
+// bounds()/position() 在"后端读不到位置"时有个兜底值。合流后统一到 M4 的
+// 读数口径 (读不到就是读不到), 缓存字段已删 —— 这个用例是防止它被补回来的
+// 守卫: 用户手动拖过窗口之后缓存就是过期数据, 拿它顶替事实比报 0 危险。
+func TestWindowEventMoveRedrawsAndDoesNotFabricatePosition(t *testing.T) {
 	f := newMgmtFactory(t)
-	_, a, fake := mountManaged(t, f, nil, WindowConfig{Title: "P"})
+	w, a, fake := mountManaged(t, f, nil, WindowConfig{Title: "P"})
+
+	// 先让后端"读不到位置": 从此 position() 恒 ok=false。
+	fake.mu.Lock()
+	fake.noBounds = true
+	fake.bx, fake.by, fake.bw, fake.bh = 0, 0, 0, 0
+	fake.mu.Unlock()
 
 	pushAndPump(t, fake, a, Event{Kind: EventMove, X: 640, Y: 480})
-	a.mu.Lock()
-	x, y, has := a.posX, a.posY, a.hasPos
-	a.mu.Unlock()
-	if !has || x != 640 || y != 480 {
-		t.Fatalf("EventMove 后位置缓存 = (%d,%d) 已记=%v, want (640,480) true", x, y, has)
+	if x, y, ok := w.Position(); ok || x != 0 || y != 0 {
+		t.Fatalf("EventMove 之后 position() = (%d,%d) ok=%v, want (0,0) false "+
+			"(事件不该给读数兜底)", x, y, ok)
 	}
 
 	// 重绘请求: 直接调 dispatchEvent (不经泵) 才能观察到"还没来得及被冲刷"
@@ -335,41 +342,47 @@ func TestWindowEventMoveUpdatesCacheAndRedraws(t *testing.T) {
 	}
 }
 
-// TestWindowEventMoveFullChain: onMove 全链路 —— 事件 → 布局根处理器 → 脚本
-// 更新文本。这是"脚本能感知窗口被挪走"的唯一入口。
+// TestWindowEventMoveFullChain: onMove 全链路 —— 事件 → 换算 → 布局根处理器 →
+// 脚本更新文本; 并且载荷是**工作区相对坐标**, 与 position() / moveTo 同一
+// 参照系。
+//
+// 这一条同时钉住"互逆", 也就是本次统一口径的全部意义: 后端报绝对坐标
+// (640,480), 而这块屏的工作区原点在 y=40 (菜单栏/任务栏让出的可用区), 于是
+// 脚本看到 (640,440); 把这个值原样喂回 moveTo, 后端收到的必须还是 (640,480)。
+// 两处换算共用 displayOfWorkSurface 才成立 —— 各解析一次是"读数与写数差一块
+// 屏"的经典来源。
 func TestWindowEventMoveFullChain(t *testing.T) {
-	fake := newFakeSurface()
-	SetDefaultFactory(&fakeFactory{fake})
-	t.Cleanup(func() { SetDefaultFactory(nil) })
+	f := newMgmtFactory(t)
 
 	v, err := vm.EvalVM(`
 		import { createSignal } from "gx/solid";
 		import { h, render } from "gx/gfx";
 		const [pos, setPos] = createSignal("none");
-		render(
+		globalThis.win = render(
 			h("column", {
 				onMove: (e) => setPos(e.x + "," + e.y),
 			}, h("text", {font: 14}, () => pos())),
 			{title: "M", width: 300, height: 200});
+		globalThis.back = () => globalThis.win.moveTo(640, 440);
 	`)
 	if err != nil {
 		t.Fatalf("EvalVM: %v", err)
 	}
 	assertGlobalText(t, v, "none")
 
-	a := appForSurface(fake)
-	if a == nil {
-		t.Fatalf("窗口未注册")
-	}
+	fake := f.surface(t, 0)
 	runPumpSteps(t, v, fake, []func(){
-		func() { fake.push(Event{Kind: EventMove, X: 128, Y: 64}) },
+		// 1) 后端投一条**绝对坐标**的移动事件。
+		func() { fake.push(Event{Kind: EventMove, X: 640, Y: 480}) },
+		// 2) 脚本看到的必须是换算后的工作区相对坐标 (480 - 40 = 440)。
+		func() { assertGlobalText(t, v, "640,440") },
+		// 3) 把 onMove 收到的坐标原样喂回 moveTo。
+		func() { callGlobalFn(t, v, "back") },
+		// 4) 后端收到的必须回到原处: 绝对 (640, 440 + 40 = 480)。
 		func() {
-			assertGlobalText(t, v, "128,64")
-			a.mu.Lock()
-			x, y, has := a.posX, a.posY, a.hasPos
-			a.mu.Unlock()
-			if !has || x != 128 || y != 64 {
-				t.Fatalf("位置缓存 = (%d,%d) has=%v, want (128,64) true", x, y, has)
+			moves, _, _, _, _, _ := fake.wm.snapshot()
+			if len(moves) == 0 || moves[len(moves)-1] != [2]int{640, 480} {
+				t.Fatalf("回喂 moveTo 之后后端收到的绝对坐标 = %v, want 末项 [640 480]", moves)
 			}
 		},
 	})

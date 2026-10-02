@@ -385,6 +385,21 @@ func findDisplay(id string) (Display, bool) {
 	return Display{}, false
 }
 
+// displayOfWorkSurface 返回某个面所在显示器。这是"当前在哪块屏"的**唯一**
+// 解析点: 窗口几何 (moveTo / center / bounds / position)、移动事件 (onMove)
+// 的坐标换算、以及布局避让 (avoidReserved) 都走它, 于是"脚本报的坐标"与
+// "脚本写回的坐标"必然落在同一个参照系里 —— 两处各解析一次是"读数与写数
+// 差一块屏"的经典来源。
+//
+// **拿不到归属时退回主屏, 不许改成 ok=false**: 纯 Go 的布局 (没有窗口、没有
+// 后端) 也要能按某块屏的保留区避让, 而"主屏"是唯一不依赖上下文的选择
+// (layout.go 的 avoidReserved 就是这么用的); 后端没实现 displayProvider 时
+// 同理 (见 win32/display.go 的兜底说明)。退回主屏这件事由 displayOfSurface
+// 负责, 本函数只是把 id 换成 Display。
+func displayOfWorkSurface(s Surface) (Display, bool) {
+	return findDisplay(displayOfSurface(s))
+}
+
 // displayOfWorkWindow 返回某个窗口所在显示器 (win 为 nil → 活跃窗口)。
 func displayOfWorkWindow(win *Window) (Display, bool) {
 	var s Surface
@@ -395,7 +410,7 @@ func displayOfWorkWindow(win *Window) (Display, bool) {
 		s = a.surface
 		a.mu.Unlock()
 	}
-	return findDisplay(displayOfSurface(s))
+	return displayOfWorkSurface(s)
 }
 
 // displaySplitRatio 给出折叠屏在 half-open 姿态下的横向/纵向分割比例

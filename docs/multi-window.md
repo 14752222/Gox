@@ -22,6 +22,7 @@
 | `w.position()` | 读 | 同上，`{x, y}` |
 | `w.bounds()` | 读 | `{x, y, width, height, displayId, scale}`，x/y 同上 |
 | `w.moveTo(x, y)` | 写 | 同上，相对**当前所在屏**的工作区 |
+| `onMove({x, y})` | 读（事件载荷） | 同上 —— 后端投的是平台原生绝对坐标，内核在派发前换算一次，所以载荷能直接喂回 `moveTo` |
 | `windows()[i].x / .y` | 读 | 同上 |
 | `w.display()` | 读 | 显示器 id |
 

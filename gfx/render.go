@@ -86,11 +86,12 @@ type app struct {
 	// EventClose 到达时置位, 由 processEvents 在冲刷完本轮后真正 close。
 	surfaceClosed bool
 
-	// 窗口位置缓存 (§四 窗口/系统缺口): 后端不支持读位置 (无 boundsProvider)
-	// 时, bounds()/position() 就报"最近一次 moveTo 或 EventMove 记下的值"。
-	// hasPos 区分"从没定过位"与"位置恰好是 (0,0)"。
-	posX, posY int
-	hasPos     bool
+	// 合流备注 (2026-10-02): 这里原本还有一套 §四 的位置缓存 (posX/posY/hasPos),
+	// 用来在"后端读不到位置"时让 bounds()/position() 退回最近一次记下的值。
+	// 合流后统一到 M4 的读数口径: **读数只认平台真值, 读不到就是读不到**
+	// (position() 报 ok=false, bounds() 的 x/y 报 0)。缓存字段已删 ——
+	// 它当时只被测试读、生产代码一个读者都没有, 留着只会让下一个改这块的人
+	// 以为"读不到位置有兜底"。
 
 	// 模态关系 (§四 窗口/系统缺口): modalParent 是"挡住本窗口的那个子窗口",
 	// 非空 ⇒ 本窗口的输入被屏蔽; modalChild 是"本窗口挡住的子窗口", 非空 ⇒
@@ -646,21 +647,39 @@ func (a *app) dispatchEvent(ev Event) {
 		// P2-7: 整批插入到当前焦点的编辑框 (焦点不可编辑时内部丢弃)
 		a.insertIMECommit(ev.Text)
 	case EventMove:
-		// 窗口被移动 (§四 窗口/系统缺口): 先记进位置缓存 (bounds() 在后端
-		// 不支持读位置时靠它), 再把 {x, y} 派给布局根上的 onMove。
+		// 窗口被移动 (§四 窗口/系统缺口): 先把载荷换算到与 position() /
+		// bounds() / moveTo **同一个参照系** (所在显示器工作区左上角 + 设备
+		// 像素), 再派给布局根上的 onMove。
+		//
+		// 为什么要换算而不是原样转发: 后端填的 X/Y 是平台原生绝对坐标
+		// (win32/x11 设备像素、cocoa 点), 参照系与单位都与脚本口径不同。
+		// 原样转发会让 onMove 的载荷**喂不回 moveTo** —— 而"把它挪回去 /
+		// 按落点吸附"正是脚本最想干的事, 今天得自己查显示器几何补一次换算。
+		// 换算走 displayOfWorkSurface (与 moveTo 同一解析点), 于是两者严格
+		// 互逆: onMove 报 (a,b) ⇒ moveTo(a,b) 把窗口放回原处。
 		//
 		// 与 onResize 同样的派发口径: 窗口级事件走向布局根, **不走焦点链**
 		// —— 焦点在哪个输入框上与"窗口挪到哪儿了"无关。载荷字段与
 		// bounds() / position() 统一为 x/y (一次定好两处词汇)。
+		//
+		// 线程: 这里在 Pump 的 GUI 线程上 (DrainTasks 在同一条 goroutine 上
+		// 执行 moveOnGUI, 见 window_move.go 的线程纪律), 所以解析所在屏时
+		// 调后端 DisplayOf 是安全的。
+		mx, my := ev.X, ev.Y
 		a.mu.Lock()
-		a.posX, a.posY, a.hasPos = ev.X, ev.Y, true
+		s := a.surface
+		a.mu.Unlock()
+		if d, has := displayOfWorkSurface(s); has {
+			mx, my = toDevicePx(ev.X-d.WorkX, d), toDevicePx(ev.Y-d.WorkY, d)
+		}
+		a.mu.Lock()
 		a.needDraw = true // 位置变了通常意味着重绘 (跨屏时 Scale 也可能变)
 		a.mu.Unlock()
 		if root := a.rootNode(); root != nil {
 			if h := handlerInChain(root, "onMove"); h != nil {
 				arg := object.NewObject()
-				arg.SetProperty("x", object.NewNumber(float64(ev.X)))
-				arg.SetProperty("y", object.NewNumber(float64(ev.Y)))
+				arg.SetProperty("x", object.NewNumber(float64(mx)))
+				arg.SetProperty("y", object.NewNumber(float64(my)))
 				a.callHandler(h, "onMove", arg)
 			}
 		}
@@ -1943,9 +1962,6 @@ func Mount(root *GuiNode, cfg WindowConfig) (*Window, error) {
 		root:       root,
 		fullDirty:  true,
 		dirtyNodes: map[*GuiNode]struct{}{},
-	}
-	if windowPosSpecified(cfg) {
-		a.posX, a.posY, a.hasPos = cfg.X, cfg.Y, true
 	}
 	registerApp(a)
 	// 缩放开关的初值来自配置 (缺省 true): 句柄的 isResizable() 要能读回

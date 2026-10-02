@@ -970,4 +970,3 @@ func jsA11yRoles(args ...object.Value) object.Value {
 	}
 	return object.NewArray(out)
 }
-
