@@ -103,6 +103,13 @@ EXEMPT_INTRINSIC = {
                   "固有尺寸不参与"),
     "menu-popup": POPUP_BOX + "（一级下拉挂在菜单标题下方，子菜单挂在触发项右侧）",
     "select-popup": POPUP_BOX + "（贴字段正下方且等宽，见 gfx/layout.go 的 select-popup 分支）",
+    "datepicker-popup": (POPUP_BOX + "（贴字段正下方，尺寸由 datepickerPopupSize 按"
+                        "7 格 × 行数 + 回显行算出，见 gfx/datepicker.go）"
+                        "；弹层内容是整块自绘的（月份头/星期行/日期格都没有子节点），"
+                        "所以固有尺寸不参与"),
+    "colorpicker-popup": (POPUP_BOX + "（贴字段正下方，尺寸由 colorpickerPopupSize 按"
+                          "色板行列数算出，见 gfx/colorpicker.go）"
+                          "；弹层内容是整块自绘的，所以固有尺寸不参与"),
     "tooltip-popup": ("弹层盒子由 positionTooltipPopup 显式定位（gfx/tooltip.go：按 placement"
                       "贴触发盒旁边，越界翻转 + clamp 进窗口），不走 layoutNode ——"
                       "内容是单行文字，绘制分支自画，没有子节点可排"),

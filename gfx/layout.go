@@ -87,6 +87,12 @@ func layoutNode(n *GuiNode) {
 		layoutGrid(n)
 	case "button":
 		layoutButton(n)
+	case "label":
+		// T08 标签: 单行文字 + 可选必填星号, align="right" 时整段贴右缘。
+		layoutLabel(n)
+	case "form":
+		// T08 表单容器: 纵排 (gap 缺省已在 h() 里补好), 语义与 column 一致。
+		layoutStack(n, false)
 	case "select":
 		layoutSelect(n)
 	case "select-option":
@@ -95,6 +101,17 @@ func layoutNode(n *GuiNode) {
 	case "select-popup":
 		// 下拉弹层: 纵排选项 (盒子由 layoutSelect 定: 贴在字段正下方且等宽)
 		layoutStack(n, false)
+	case "datepicker":
+		// T08 日期字段: 内容全由绘制分支画, 弹层由这里定位 (贴字段正下方)。
+		layoutDatepicker(n)
+	case "datepicker-popup":
+		// 日历弹层: 内容整块自绘 (没有子节点可排), 盒子由 layoutDatepicker 定。
+	case "colorpicker":
+		layoutColorpicker(n)
+	case "colorpicker-popup":
+		// 色板弹层: 同上 (整块自绘)。
+	case "upload":
+		layoutUpload(n)
 	case "dialog":
 		layoutDialog(n)
 	case "drawer":
@@ -468,6 +485,50 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 		if h == 0 {
 			h = selectRowH
 		}
+	case "label":
+		cw, ch := intrinsicLabel(n)
+		if w == 0 {
+			w = cw
+		}
+		if h == 0 {
+			h = ch
+		}
+	case "datepicker":
+		// T08 日期字段: 高 28 (与 select/input 同一常量), 宽按当前值/placeholder。
+		cw, ch := intrinsicDatepicker(n)
+		if w == 0 {
+			w = cw
+		}
+		if h == 0 {
+			h = ch
+		}
+	case "colorpicker":
+		// T08 颜色字段: 色块 + 十六进制文本。
+		cw, ch := intrinsicColorpicker(n)
+		if w == 0 {
+			w = cw
+		}
+		if h == 0 {
+			h = ch
+		}
+	case "upload":
+		// T08 文件字段: 图标 + 已选文件名。
+		cw, ch := intrinsicUpload(n)
+		if w == 0 {
+			w = cw
+		}
+		if h == 0 {
+			h = ch
+		}
+	case "form":
+		// 表单容器: 与 column 同一套内容尺寸 (gap 已由 h() 补上)。
+		cw, ch := stackContentSize(n, false)
+		if w == 0 {
+			w = cw
+		}
+		if h == 0 {
+			h = ch
+		}
 	case "toast":
 		// 提示卡片: 宽按 message 文本 + 左侧色条 + 两侧留白; 高给 36 (单行
 		// 文本在 36px 卡片里垂直居中看起来才不局促)。
@@ -764,7 +825,13 @@ func placeAbsoluteIn(n *GuiNode, area Rect) {
 func (n *GuiNode) gapOf() int {
 	v, ok := n.PropNum("gap")
 	if !ok && n.isPassthrough() && n.Parent != nil {
-		v, _ = n.Parent.PropNum("gap")
+		v, ok = n.Parent.PropNum("gap")
+	}
+	if !ok && n.Tag == "form" {
+		// 表单缺省行距 (T08): 放在这里而不是 h() 里补 prop —— 布局与固有
+		// 尺寸测量都经 gapOf, 而"不经过 h() 直接建树"的路径 (Go 侧单测、
+		// 内核内部构造) 也得拿到同一个缺省值。一处口径, 两个入口一致。
+		v = formDefaultGap
 	}
 	if v < 0 {
 		return 0

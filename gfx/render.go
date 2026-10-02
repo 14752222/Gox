@@ -541,6 +541,10 @@ func (a *app) processEvents() bool {
 	if need {
 		a.redraw()
 	}
+	// T10 无障碍: 布局框刚刚刷新的这一刻, 检查焦点是否还站得住 (弹层开合 /
+	// 条件渲染摘节点 / 控件被禁用都会让焦点悬空)。校正本身若改了焦点会重新
+	// 标脏, 由下一轮 processEvents 画出新的焦点框。
+	a.a11yReconcileFocus()
 	if sawClose {
 		a.close()
 		return false
@@ -754,7 +758,6 @@ func (a *app) setFocus(target *GuiNode) {
 
 // handleKey 键盘事件: 先交给焦点链上的字段类组件内部消费 (下拉框的展开/
 // 高亮/选择), 未被消费的再沿祖先链找 JS 处理器。
-// Tab 遍历仍不做: 需要 focusable 注册表, 留待后续版本 (见 README 的 GUI 限制一节)。
 func (a *app) handleKey(key, name string, ev Event) {
 	a.mu.Lock()
 	n := a.focused
@@ -767,6 +770,24 @@ func (a *app) handleKey(key, name string, ev Event) {
 	}
 	if name == "onKeyDown" && a.handleFieldKey(n, key, ev) {
 		return
+	}
+	// T10 无障碍: Tab / Shift+Tab 在遍历序里换焦点 (绕回)。排在字段消费之后
+	// —— 输入框里按 Tab 也是"离开这个字段", 不是插入制表符 (文本编辑器的
+	// 制表符不在 v1 范围内)。焦点框由 drawFocusRing 照旧绘制。
+	if name == "onKeyDown" && key == "Tab" {
+		if a.a11yTab(ev.Shift) {
+			return
+		}
+	}
+	// T08 表单: 焦点在输入框里按回车 = 提交所在的 form (浏览器里
+	// <input> 回车提交表单的同一套直觉)。排在 a11y 激活之前 —— 两者互斥
+	// (formShouldSubmit 会在路上遇到可激活控件时退出), 顺序只影响可读性。
+	if name == "onKeyDown" && key == "Enter" && !ev.Ctrl && !ev.Alt && !ev.Shift {
+		if formShouldSubmit(n) {
+			if a.formSubmit(formInChain(n)) {
+				return
+			}
+		}
 	}
 	// 全局快捷键 (P3-5) 排在字段消费之后: 焦点在输入框里时 Ctrl+S 该不该
 	// 触发"保存"? 应该 —— 输入框不消费带 Ctrl 的组合键 (见 input.go),
@@ -805,6 +826,13 @@ func (a *app) handleKey(key, name string, ev Event) {
 			return
 		}
 		a.tooltipHide()
+	}
+	// T10 无障碍: 组件的方向键语义 (radio 组内移动 / 滑块调值 / 星级加减 /
+	// 切页翻页) 与 Enter/Space 激活。排在 Esc 兜底之后、脚本回调之前 ——
+	// 菜单与下拉的键盘处理更早 (它们是"弹层内部"的键盘), 这里管的是
+	// "焦点停在控件本体上"的那一类。没做事就不消费, 按键继续给脚本。
+	if name == "onKeyDown" && a.a11yHandleKey(n, key, ev) {
+		return
 	}
 	handler := handlerInChain(n, name)
 	if handler == nil {
@@ -944,7 +972,7 @@ func (a *app) handleMouseDown(x, y int) {
 		a.releasePress()
 		return
 	}
-	if a.closeSelectOnOutsideClick(root, x, y) {
+	if a.closePopupFieldOnOutsideClick(root, x, y) {
 		// 这次按下只服务于"收起弹层": 置吞掉标记, 拖动悬停与按压态一并复位
 		a.mu.Lock()
 		a.swallowClick = true
@@ -1007,21 +1035,22 @@ func (a *app) handleMouseDown(x, y int) {
 		a.ratingPick(rt, x)
 		return
 	}
-	a.setPress(pressChainOf(target))
-}
-
-// closeSelectOnOutsideClick 若有展开中的下拉框且 (x,y) 落在其弹层之外,
-// 收起它并返回 true。同时只处理一个: 打开新下拉前旧的一定已经收起了
-// (见 openSelect), 所以树上最多只有一个展开的弹层。
-func (a *app) closeSelectOnOutsideClick(root *GuiNode, x, y int) bool {
-	for _, sel := range expandedSelects(root) {
-		if sel.popup != nil && sel.popup.Box.Contains(x, y) {
-			continue
+	// datepicker / colorpicker 的弹层内容 (T08): 日历格子与色板格子画在
+	// 弹层自己的绘制分支里 (没有子节点可挂 onClick), 所以与 tabs/rating
+	// 同款 —— mousedown 几何命中即派发。判定顺序在 rating 之后: 三者标签
+	// 互斥, 顺序只影响可读性。命中在弹层之外时 dateHitAt/colorHitAt 返回
+	// -1 (点字段本身归字段的 on* 处理器), 于是这次按下继续走下面的通用流程。
+	if dp := datepickerInChain(target); dp != nil {
+		if dp.expanded && dp.dateHitAt(x, y) != 0 {
+			return
 		}
-		a.closeSelect(sel)
-		return true
 	}
-	return false
+	if cp := colorpickerInChain(target); cp != nil {
+		if cp.expanded && cp.colorHitAt(x, y) != -1 {
+			return
+		}
+	}
+	a.setPress(pressChainOf(target))
 }
 
 // closeMenuOnOutsideClick 若有展开中的菜单且 (x,y) 落在**整棵菜单树**

@@ -436,6 +436,25 @@ func drawNode(img *image.RGBA, n *GuiNode) {
 	case "rating":
 		// 星级评分: 装饰先补画, 再逐格画星 (见 gfx/rating.go)。
 		paintRating(img, n, disabled)
+	case "label":
+		// 表单标签: 装饰 + 必填星号 (文字子节点由通用机制绘制)。
+		paintLabel(img, n, disabled)
+	case "form":
+		// 表单容器: 只有装饰 (背景/边框), 子节点由通用机制排布绘制。
+		paintBoxDecor(img, n, disabled)
+	case "datepicker":
+		// 日期字段: 白底 + 边框 + 值 + 日历图标 (见 gfx/datepicker.go)。
+		paintDatepicker(img, n, disabled)
+	case "datepicker-popup":
+		// 日历弹层: 整块自绘 (月份头 / 星期行 / 日期网格 / 回显)。
+		paintDatepickerPopup(img, n, disabled)
+	case "colorpicker":
+		paintColorpicker(img, n, disabled)
+	case "colorpicker-popup":
+		// 色板弹层: 整块自绘。
+		paintColorpickerPopup(img, n, disabled)
+	case "upload":
+		paintUpload(img, n, disabled)
 	case "scroll":
 		paintScroll(img, n, disabled)
 	case "textarea":

@@ -495,7 +495,7 @@ func TestModelMisuseWarnsAndDegrades(t *testing.T) {
 // 手工设成脚本里 <window> 的尺寸 —— 顺带能断言"内容没溢出窗口"
 // (窗口不是滚动容器: 溢出部分既画不出来也点不中)。
 func TestModelDemoScript(t *testing.T) {
-	const demoW, demoH = 700, 620
+	const demoW, demoH = 700, 705
 
 	object.GlobalScheduler().ClearAll()
 	t.Cleanup(func() { object.GlobalScheduler().ClearAll() })
@@ -506,6 +506,9 @@ func TestModelDemoScript(t *testing.T) {
 	}
 	fake := newFakeSurface()
 	fake.w, fake.h = demoW, demoH
+	// upload 那一行会弹原生"打开文件"对话框: 注入假对话框, 否则整条链路走降级路径
+	// ("后端不支持"打 stderr 且什么都不做), 演示里的 files 会永远停在 0。
+	fake.dialog = &fakeDialogHost{openPath: "/tmp/demo-report.pdf", openOk: true}
 	SetDefaultFactory(&fakeFactory{fake})
 	defer SetDefaultFactory(nil)
 
@@ -523,6 +526,7 @@ func TestModelDemoScript(t *testing.T) {
 		// 0) 初态 + 不溢出窗口
 		func() {
 			for _, frag := range []string{"name=Ada", "bio=0 字符", "volume=40", "city=beijing",
+				"due=2026-11-20", "brand=#ffffff", "files=0",
 				"agree=false", "dark=false", "plan=free"} {
 				if !stateHas(frag) {
 					t.Fatalf("初态缺 %q (文本 = %v)", frag, viewTexts(root))
@@ -587,10 +591,54 @@ func TestModelDemoScript(t *testing.T) {
 			}
 			click(fake, opts[1])
 		},
-		// 6) select 写回; 焦点交给 [get, set] 来源那一行
+		// 6) select 写回; 焦点先交给 [get, set] 来源那一行
 		func() {
 			if !stateHas("city=shanghai") {
 				t.Fatalf("select 没写回: %v", viewTexts(root))
+			}
+			focusInput(fake, lineIn(t, root, "[get, set] 来源", "input"))
+		},
+		// 6b–6f) T08 三个新控件: datepicker / colorpicker / upload 各点一次。
+		//   这一段会被插在步骤 6 与 7 之间, 而步骤 7 要往 [get, set] 那个输入框里敲字,
+		//   所以最后一步必须把焦点交回去 (每个弹层的选中都会把焦点收回字段)。
+		func() { click(fake, lineIn(t, root, "datepicker", "datepicker")) },
+		// 6c) 点日历里的第 5 天 (2026-11-01 是周日 ⇒ 前置空格 0)
+		func() {
+			dp := lineIn(t, root, "datepicker", "datepicker")
+			if dp.popup == nil {
+				t.Fatalf("日历没展开")
+			}
+			x, y := dateCellCenter(dp, 0, 5)
+			fake.push(Event{Kind: EventMouseDown, X: x, Y: y})
+			fake.push(Event{Kind: EventMouseUp, X: x, Y: y})
+		},
+		func() {
+			if !stateHas("due=2026-11-05") {
+				t.Fatalf("datepicker 没写回: %v", viewTexts(root))
+			}
+			click(fake, lineIn(t, root, "colorpicker", "colorpicker"))
+		},
+		// 6e) 点色板第 3 格 (#2f80ed)
+		func() {
+			cp := lineIn(t, root, "colorpicker", "colorpicker")
+			if cp.popup == nil {
+				t.Fatalf("色板没展开")
+			}
+			x, y := colorSwatchCenter(cp, 2)
+			fake.push(Event{Kind: EventMouseDown, X: x, Y: y})
+			fake.push(Event{Kind: EventMouseUp, X: x, Y: y})
+		},
+		// 6f) 色值写回; 点 upload (假对话框直接给一个路径), 之后把焦点交回 [get, set] 那一行
+		func() {
+			if !stateHas("brand=#2f80ed") {
+				t.Fatalf("colorpicker 没写回: %v", viewTexts(root))
+			}
+			click(fake, lineIn(t, root, "upload", "upload"))
+		},
+		func() {
+			// upload 的 model 写回取的是载荷里的 paths ⇒ 长度 1 (不是 undefined / 不是载荷对象)
+			if !stateHas("files=1") {
+				t.Fatalf("upload 没写回: %v", viewTexts(root))
 			}
 			focusInput(fake, lineIn(t, root, "[get, set] 来源", "input"))
 		},
@@ -654,6 +702,112 @@ func demoPhaseButton(t *testing.T, root *GuiNode, label string) *GuiNode {
 	}
 	t.Fatalf("找不到按钮 %q", label)
 	return nil
+}
+
+// TestModelPickerAndUpload model 覆盖 T08 的三个新控件。语义表按载荷形状分两支:
+//
+//	datepicker · colorpicker  model ⇄ value  onChange({value})
+//	upload                    model ⇄ value  onChange({files, paths}) ⇒ 写回**取 paths**
+//
+// upload 那一支与别的标签不同, 所以必须走真链路断言: 如果写回的是整个载荷对象,
+// signal 里会躺一个 {files, paths} 而不是路径数组 —— 这种错在"Props 里有没有键"
+// 的断言下完全看不出来, 只有点开弹层真选一次才暴露。
+func TestModelPickerAndUpload(t *testing.T) {
+	// 钉住"今天", 让日历的视图月份只由 value 决定 (否则用例会随运行日期漂移)
+	pinToday(t, 2026, 11, 20)
+
+	v, fake := evalUI(t, `
+		import { createSignal } from "gx/solid";
+		import { h, render } from "gx/gfx";
+
+		const [due, setDue] = createSignal("2026-11-20");
+		const [brand, setBrand] = createSignal("#ffffff");
+		const [files, setFiles] = createSignal([]);
+		render(
+			<window title="model" width={460} height={420}>
+				<column gap={10}>
+					<datepicker model={due} />
+					<colorpicker model={brand} colors={["#ffffff", "#000000", "#2f80ed"]} columns={3} />
+					<upload model={files} />
+				</column>
+			</window>
+		);
+		globalThis.getDue = () => due();
+		globalThis.getBrand = () => brand();
+		globalThis.fileCount = () => files().length;
+		globalThis.firstFile = () => String(files()[0]);
+	`)
+	// upload 的点击会去弹原生"打开文件"对话框: 不注入假对话框的话整条链路会走
+	// 降级路径 ("后端不支持"打 stderr 且什么都不做), 用例会以"点了没反应"失败。
+	fake.dialog = &fakeDialogHost{openPath: "/tmp/report.pdf", openOk: true}
+
+	runPumpSteps(t, v, fake, []func(){
+		// 0) 读方向: 显示值来自 signal (model 补的 value 是函数, 不是快照); 展开日历
+		func() {
+			root := uiRoot(t)
+			if got, _ := findFirst(root, "datepicker").PropStr("value"); got != "2026-11-20" {
+				t.Fatalf("datepicker 初值 = %q, want 2026-11-20", got)
+			}
+			if got, _ := findFirst(root, "colorpicker").PropStr("value"); got != "#ffffff" {
+				t.Fatalf("colorpicker 初值 = %q, want #ffffff", got)
+			}
+			if got := modelNum(t, v, "fileCount"); got != 0 {
+				t.Fatalf("upload 初值长度 = %v, want 0", got)
+			}
+			click(fake, findFirst(root, "datepicker"))
+		},
+		// 1) 点日历里的第 5 天 (2026-11-01 是周日 ⇒ 前置空格 0)
+		func() {
+			dp := findFirst(uiRoot(t), "datepicker")
+			if dp.popup == nil {
+				t.Fatalf("日历没展开")
+			}
+			x, y := dateCellCenter(dp, 0, 5)
+			fake.push(Event{Kind: EventMouseDown, X: x, Y: y})
+			fake.push(Event{Kind: EventMouseUp, X: x, Y: y})
+		},
+		// 2) 写方向: signal 里是新日期; 读方向: 字段显示也跟着走; 展开色板
+		func() {
+			if got := modelStr(t, v, "getDue"); got != "2026-11-05" {
+				t.Fatalf("选中第 5 天后 due = %q, want 2026-11-05 (model 的写回没生效)", got)
+			}
+			if got, _ := findFirst(uiRoot(t), "datepicker").PropStr("value"); got != "2026-11-05" {
+				t.Fatalf("datepicker 显示 = %q, want 2026-11-05 (读方向没跟上)", got)
+			}
+			click(fake, findFirst(uiRoot(t), "colorpicker"))
+		},
+		// 3) 点色板第 3 格 (#2f80ed)
+		func() {
+			cp := findFirst(uiRoot(t), "colorpicker")
+			if cp.popup == nil {
+				t.Fatalf("色板没展开")
+			}
+			x, y := colorSwatchCenter(cp, 2)
+			fake.push(Event{Kind: EventMouseDown, X: x, Y: y})
+			fake.push(Event{Kind: EventMouseUp, X: x, Y: y})
+		},
+		// 4) 色值写回; 点 upload 起原生对话框 (假对话框直接给一个路径)
+		func() {
+			if got := modelStr(t, v, "getBrand"); got != "#2f80ed" {
+				t.Fatalf("选中第三格后 brand = %q, want #2f80ed", got)
+			}
+			click(fake, findFirst(uiRoot(t), "upload"))
+		},
+		// 5) upload 写回的是 paths (不是整个 {files, paths}), 且显示与值同源
+		func() {
+			if got := modelNum(t, v, "fileCount"); got != 1 {
+				t.Fatalf("选完文件后 files.length = %v, want 1", got)
+			}
+			if got := modelStr(t, v, "firstFile"); got != "/tmp/report.pdf" {
+				t.Fatalf("files[0] = %q, want /tmp/report.pdf", got)
+			}
+			// 显示与值同源: upload 的文本是**自绘**的 (没有 text 子节点), 所以这里
+			// 读它的显示内容本身 —— 用 viewTexts 会永远看不到东西。
+			if text, ok := findFirst(uiRoot(t), "upload").uploadDisplay(); !ok || text != "report.pdf" {
+				t.Fatalf("upload 显示 = %q ok=%v, want report.pdf", text, ok)
+			}
+		},
+	})
 }
 
 // TestModelSignalCarriesSetter signal 自带 setter (model 的凭据) 是可断言的

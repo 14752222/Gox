@@ -105,7 +105,38 @@ macOS 后端（cocoa）已知限制：
 > 交互组件（`button` / `checkbox` / `radio` / `switch`）自动获得悬停提亮（各通道 +12）与按压压暗（-24）反馈，
 > 状态由渲染层维护，脚本无需（也无法）读写。`disabled` 的子树既不响应事件也不做交互反馈。
 >
-> 光标离开窗口 / 窗口失活会清除悬停与按压态。Tab 键焦点遍历尚未实现（需要 focusable 注册表）。
+> 光标离开窗口 / 窗口失活会清除悬停与按压态。**`Tab` / `Shift+Tab` 焦点遍历、方向键导航与
+> Enter/Space 激活已在无障碍层落地**（2026-10-02 起，见 [3.1](#31-焦点与键盘遍历无障碍) 与
+> [accessibility.md](accessibility.md)）；焦点仍可以只用鼠标改，键盘是新增的一条路，不是替换。
+
+### 3.1 焦点与键盘遍历（无障碍）
+
+键盘是一条**与鼠标并列**的路，不是替代：点击仍然能改焦点，键盘只是多了一条"不碰鼠标
+也能把事做完"的路。落地在 `gfx/a11y.go`（一层，全组件共用），完整规范、每个控件的键位表
+与验收清单见 [accessibility.md](accessibility.md)。
+
+- **`Tab` / `Shift+Tab`** 在遍历序里前进 / 后退，到两端**绕回**；遍历序为空时不消费这个键
+  （按键照旧给脚本）。
+- **谁进序**：标签表决定（`button` / `checkbox` / `radio` / `switch` / `slider` / `input` /
+  `search` / `textarea` / `select` / `rating` / `tabs` / `pagination` / `datepicker` /
+  `colorpicker` / `upload`），并可用 `focusable={true/false}` 覆盖；顺序按 `tabIndex`
+  （`>0` 升序前置、`0` 树序、`<0` 出序但仍可 `focusNode()`）。容器类默认**不进**序 ——
+  给纯布局盒子加停留点会让键盘用户为到达真控件多按几次空 Tab。
+- **焦点框**：2px 虚线（`colorFocusRing`），焦点在根 / 弹层自身 / 已关闭弹层内 / 被打开的
+  弹层盖住 / 节点被禁用时不画；窗口根写 `hideFocusRing` 可整体关掉（截图用）。
+- **方向键**按组件分工：`radio` 组 / `slider` / `rating` / `tabs` / `pagination` / `select`
+  与 `datepicker`（日历）/ `colorpicker`（色板）。一维组（前六个）到端**环绕**，二维组
+  （日历 / 色板）**停住**；带 `Ctrl` / `Alt` 的组合键一律不碰（那是快捷键的地盘）。
+- **`Enter` / `Space` 的"激活"就是"用鼠标点它"**：走同一个 `onClick` 出口，所以
+  `checkbox` 取反、`radio` 选中、`select` 展开不必各写一份键盘版逻辑。能不能被激活看
+  **role**（`<rect onClick>` 想被 Enter 激活要显式写 `role="button"`）。
+- **回车提交表单**：焦点在 `input` / `search` 里按 `Enter` = 提交所在的 `<form>`
+  （派发 `onSubmit({values})`）；焦点在按钮上按 `Enter` 是按下这个按钮。
+- **弹层焦点陷阱**：`dialog` / `drawer` 打开时 Tab 只在弹层内循环（不必维护陷阱栈），
+  关闭后焦点自动校正到遍历序里的第一个可聚焦节点。
+- **脚本侧接口**：`gx/a11y` 的 `focusOrder()`（当前遍历序快照，含 role / name / tabIndex /
+  box）、`focusNode(el)`、`focusNext()` / `focusPrev()`（与 Tab 同一条路径）、`roles()`。
+  用途是**回归与自检**：`focusOrder()` 里出现 `name` 为空的按钮，就是漏了 `aria-label`。
 
 ## 4. 内置元素参考
 
@@ -123,6 +154,11 @@ macOS 后端（cocoa）已知限制：
 | `separator` | `vertical` / `background` | 横向 1px 高、宽度由容器拉伸；纵向宽度 1px，需显式 `height` |
 | `spacer` | `flexGrow` | 不绘制任何内容，仅吃主轴富余空间，用法 `<spacer flexGrow={1}/>` |
 | `select` | `value` / `options` / `onChange` / `placeholder` / `disabled` | 受控下拉框；`options` 可为字符串数组或 `{value,label}` 数组，选中派发 `onChange({value})`；键盘可开合/移动/选中/Esc 关闭 |
+| `datepicker` | `value` / `onChange` / `min` / `max` / `placeholder` / `disabled` | 受控日期选择器：字段 + 贴字段弹层（月历）。`value` 是 `"YYYY-MM-DD"`（**只有这一种格式**，非零填充与不存在的日期一律当无值），点格子派发 `onChange({value})`；`min`/`max` 拦在弹层展开与选中两处。键盘：`Enter`/`Space` 展开，`←/→` ±1 天、`↑/↓` ±7 天、`PageUp/PageDown` ±1 月、`Home/End` 本月首末日，`Esc` 收起（见 [3.1](#31-焦点与键盘遍历无障碍)） |
+| `colorpicker` | `value` / `onChange` / `colors` / `columns` / `placeholder` / `disabled` | 受控取色板：字段（色块 + 十六进制）+ 贴字段弹层（色格网格）。`colors` 缺省是 24 色内置色板，**显式给空数组就真的是空色板**（空色板不展开）；`columns` 1~32（缺省 8）。点色格派发 `onChange({value})`（值比较忽略大小写与空白）；键盘 `Enter`/`Space` 展开、方向键走格、`Home/End` 首末格，二维格子在边界**停住**不环绕 |
+| `upload` | `value` / `onChange` / `multiple` / `accept` / `filter` / `placeholder` / `disabled` | 文件选择字段（虚线边框 + `folder` 图标）：点击直接调**平台原生**"打开文件"对话框，弹出的载荷是 `{files, paths}`（对象数组 + 路径数组）。**受控/非受控两用**：有 `value` 就读它（字符串数组或 `{name,path}` 对象数组），没有就自己维护已选列表（选中立即更新显示）。`multiple` = 多次选择**累加**（底层对话框一次只回一个路径）；`filter`（`"图片\|*.png;*.jpg"`）优先于 `accept`；后端没接对话框时**什么都不做**（stderr 一次告警，绝不编造假文件名）。键盘 `Enter`/`Space` 打开对话框 |
+| `label` | `required` / `align` / `width` | 表单标签：单行文字 + `required` 时的红色星号，`align="right"` 整段贴右缘。**不给 `for`** —— 文字子节点就是名字，无障碍名由它出（见 [3.1](#31-焦点与键盘遍历无障碍)） |
+| `form` | `onSubmit` / `gap` / `padding` | 表单容器：纵排（语义与 `column` 一致），只加一件事——**回车提交**。焦点在 `input` / `search` 里按 `Enter` 派发 `onSubmit({values})`，`values` 只收**带 `name`** 的字段（与 HTML 一致）。标签列宽对齐归 `label` 自己管，`form` 不代劳 |
 | `tabs` / `tab` | `value` / `onChange`（tabs）、`title`（tab） | 选项卡：顶部标签条 + 内容区，`<tab title="文件">` 直接堆在 `<tabs>` 下即为页。`value` 存在 ⇒ 受控（点击只派发 `onChange({index, title})`，等脚本把新下标写回 signal）；缺省非受控（内部切换）。页是 **keep-alive** 的：全部页留树（输入框内容、滚动位置都保留），非激活页只是不布局、不绘制、不命中 |
 | `dialog` | `open` / `onClose` | 模态弹层：40% 黑遮罩 + 居中卡片（流内子节点即卡片内容）；点遮罩 / Esc / 卡片内按钮触发 `onClose`，遮罩吞掉其下点击 |
 | `toast` | `message` / `level` | 非模态提示，固定右上角；`level` 取 `success` / `warn` / `error` / `info` 决定色条，显隐由 JS 侧信号控制 |
@@ -161,10 +197,12 @@ macOS 后端（cocoa）已知限制：
 > 全部在 24×24 逻辑网格里用直线 / 矩形 / 圆拼装（像素风，三平台观感一致、零依赖）；冷门图标交给
 > 项目自己的 `<canvas>` 组件（`docs/gui-guide.md` 的 canvas 一节），内核不做无限扩张的图标库。
 
-> 受控组件（`input` / `search` / `textarea` / `select` / `rating` / `checkbox` / `switch` / `radio`）另有一条
+> 受控组件（`input` / `search` / `textarea` / `select` / `rating` / `datepicker` / `colorpicker` /
+> `upload` / `checkbox` / `switch` / `radio`）另有一条
 > **`model` 指令**：`<input model={draft} />` 一次接好读（`value`）与写（`onInput`），不用再手写
 > `value={() => draft()} onInput={(e) => setDraft(e.value)}`。语义表见 [6.0](#60-一条指令搞定读写model)，
-> 完整设计见 [gui-model-binding.md](gui-model-binding.md)。
+> 完整设计见 [gui-model-binding.md](gui-model-binding.md)（`upload` 的写回取载荷里的 `paths`，
+> 是这一族里唯一的例外，见该文 §3）。
 
 ## 5. 布局
 
@@ -333,7 +371,8 @@ h("textarea", {
 
 - 行只由 `\n` 切分（**不做软换行**），所以光标 `{行, 列}` 与文本严格对应；超长行会被右侧裁掉；
 - `Enter` **被编辑框消费**（插入换行）—— 与单行 `input` 相反，多行框里 Enter 就是内容；
-  `Esc` / `Tab` / 功能键 / 带 `Ctrl`+`Alt` 的组合键仍然放行给脚本；
+  `Esc` / 功能键 / 带 `Ctrl`+`Alt` 的组合键仍然放行给脚本；
+  **`Tab` 不再放行**（2026-10-02 起由无障碍层消费：它是"离开这个字段"的动作，见 [3.1](#31-焦点与键盘遍历无障碍)）；
 - 内容超过可视高度后自动纵向滚动，且**滚动跟随光标**（在底部回车时光标不会跑到框外）；
   也可以把光标放进框里滚滚轮。
 
@@ -421,6 +460,45 @@ vlist 那一列**与行数脱钩**：首帧渲染调用恒为 64 次（待物化
 2. **列表形状要对**：vlist 窗口化的是 `<scroll vlist><view each={rows}>…</view></scroll>`
    这种形状 —— 列表要能被容器找到（中间隔一层布局盒子也行）。找不到时告警一次并退化为普通滚动容器；
 3. **嵌套滚动区**：内层 `<scroll>` 里的列表归内层管，外层 vlist 不会去窗口化它（会错位）。
+
+### 6.7 字段类三件套：日期 / 颜色 / 文件
+
+`datepicker` / `colorpicker` 是"字段 + 贴字段弹层"这一族的第二、三个成员（第一个是
+`select`）：点字段展开、点外部或 `Esc` 收起、选中后**焦点回到字段**，三者共用同一套状态机，
+所以同族弹层天然互斥（展开一个会先收掉另一个）。
+
+```jsx
+const [birthday, setBirthday] = createSignal("");
+const [brand, setBrand] = createSignal("#2f80ed");
+const [attach, setAttach] = createSignal([]);
+
+<form gap={12} padding={16} onSubmit={(e) => save(e.values)}>
+  <row gap={8}>
+    <label required width={72}>生日</label>
+    <datepicker name="birthday" model={birthday} min="1920-01-01" max="2010-12-31" />
+  </row>
+  <row gap={8}>
+    <label width={72} align="right">主题色</label>
+    <colorpicker name="brand" model={brand} colors={["#ffffff", "#2f80ed", "#c0392b"]} columns={3} />
+  </row>
+  <row gap={8}>
+    <label width={72}>附件</label>
+    <upload name="attach" model={attach} accept=".pdf,.png" multiple />
+  </row>
+  <button onClick={submit}>保存</button>
+</form>
+```
+
+- **`datepicker` 只认 `"YYYY-MM-DD"`**（`value` 与 `onChange` 都是它）：非零填充（`2026-1-5`）、
+  日历上不存在的日期（`2026-02-30`）一律当"没有值"处理，不是报错也不是猜；
+- **`colorpicker` 的 `colors={[]}` 是空色板**（空色板不展开、点了没反应），要"用内置色板"
+  就整个不写这个 prop —— 24 色缺省色板有一份名单写在该文件头，想换就整份给全；
+- **`upload` 没有对话框后端时什么都不做**（stderr 一次告警），**绝不编造文件名**：静默编造
+  会让业务逻辑以为选到了文件，这是比"点了没反应"更坏的失败；
+- 三个都在 `gx/a11y` 的焦点序里，键盘行为见 [3.1](#31-焦点与键盘遍历无障碍)：
+  日历里 `←/→` 走天、`↑/↓` 走周、`PageUp/PageDown` 翻月，色板里方向键走格（边界停住）。
+- 日历与色板**没有为每个格子建节点**（整块自绘 + 几何命中，与 tabs / pagination / rating 同一套），
+  所以 `focusOrder()` 里看不到"42 个日期按钮"——需要"跳到某一天"用方向键或 `value`。
 
 ## 7. 绘制与动画
 
@@ -949,13 +1027,14 @@ import { devSnapshot } from "gx/dev";
 | [video_demo.js](../testdata/video_demo.js) | 视频框三态：封面 contain / 无封面占位 / `fit=cover` + 用户 background（桌面后端降级为封面 + 一次 `onError`） |
 | [events_demo.js](../testdata/events_demo.js) | 鼠标 / 滚轮 / 右键 / 修饰键 |
 | [focus_demo.js](../testdata/focus_demo.js) | 焦点框与 focus/blur |
+| [a11y_form_demo.js](../testdata/a11y_form_demo.js) | 无障碍键盘走查：纯键盘"填表 → 提交 → 关弹窗"，含 ② 提交结果与 ③ `focusOrder()` 自检投影；顺带覆盖 label / form / datepicker / colorpicker / upload（见 [3.1](#31-焦点与键盘遍历无障碍)） |
 | [hover_demo.js](../testdata/hover_demo.js) | 悬停与按压反馈 |
 | [dialog_demo.js](../testdata/dialog_demo.js) | 模态对话框与右上角 toast |
 | [tabs_demo.js](../testdata/tabs_demo.js) | 选项卡：受控切页 / keep-alive 页 / 非受控 |
 | [feedback_demo.js](../testdata/feedback_demo.js) | 反馈与数据类组件一屏：alert / tag / badge / avatar / icon / spinner / skeleton / pagination / empty / drawer |
 | [condrender_demo.js](../testdata/condrender_demo.js) | 条件渲染切面板（教学版，完整重建语义） |
 | [list_demo.js](../testdata/list_demo.js) | 数组信号增删列表 |
-| [model_demo.js](../testdata/model_demo.js) | `model` 双向绑定：八类控件一条指令 + 手写写法对照 |
+| [model_demo.js](../testdata/model_demo.js) | `model` 双向绑定：每类受控控件一条指令 + 手写写法对照 |
 
 **窗口、菜单与系统能力**
 
@@ -1036,6 +1115,7 @@ import { devSnapshot } from "gx/dev";
 | [gui-tabbar.md](gui-tabbar.md) | 导航壳：TabBar（移动）/ SideNav（桌面）/ AppShell 分派器，安全区、软键盘、返回键、断点等平台差异的收口 |
 | [gui-patterns.md](gui-patterns.md) | 用户态模式手册（路由、状态、主题等惯用法） |
 | [gui-model-binding.md](gui-model-binding.md) | `model` 双向绑定：接口设计、语义表、与 Vue 的对照、反例 |
+| [accessibility.md](accessibility.md) | 无障碍与键盘导航规范：焦点模型 / 键位表 / aria 语义 / `gx/a11y` 模块 / 验收清单（T10） |
 | [desktop-distribution.md](desktop-distribution.md) | 各平台分发注意事项（图标、签名、打包格式） |
 
 > 组件现状台账、需求提示词、样式/选型调研、未决清单等**过程性文档不随仓库发布**：

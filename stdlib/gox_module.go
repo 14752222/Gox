@@ -43,6 +43,8 @@ func setupGoxUmbrella(env *runtime.Environment) {
 			"gx/update",
 			"gx/theme",
 			"gx/dev",
+			// T10 无障碍: 焦点遍历序 / 程序化聚焦 / 隐式 role 表 (gfx/a11y.go)。
+			"gx/a11y",
 			// 统一应用能力层 (2026-09-21): 设备/生命周期/定位/媒体/权限。
 			// 五者都只依赖 NativeHost 契约 (gfx/native.go), 无头宿主里
 			// 它们照常存在 —— 只是 canIUse 全 false、异步 API 报 unsupported。

@@ -19,6 +19,9 @@
 //   input · textarea    model ⇄ value      onInput({value})   字符串
 //   slider              model ⇄ value      onInput({value})   数字 (不转换)
 //   select              model ⇄ value      onChange({value})  字符串
+//   datepicker          model ⇄ value      onChange({value})  "YYYY-MM-DD"
+//   colorpicker         model ⇄ value      onChange({value})  颜色字符串
+//   upload              model ⇄ value      onChange({paths})  字符串数组 (取载荷里的 paths)
 //   checkbox · switch   model ⇄ checked    onClick()          布尔 (写入取反)
 //   radio               model ⇄ checked    onClick()          选中时把 value 属性写进 model
 //   model 可传: signal (自带 setter) 或 [get, set] 二元组 (自定义来源)
@@ -37,11 +40,15 @@ const [dark, setDark] = createSignal(false);
 const [plan, setPlan] = createSignal("free");
 const [profile, setProfile] = createSignal({ nick: "" }); // 自定义来源 (嵌套字段)
 const [phase, setPhase] = createSignal("editing"); // Switch 的多状态
+// T08 三个新控件: 字段 + 贴字段弹层那一族 (datepicker / colorpicker) 与两用的 upload
+const [due, setDue] = createSignal("2026-11-20");
+const [brand, setBrand] = createSignal("#ffffff");
+const [files, setFiles] = createSignal([]);
 
 const cities = ["beijing", "shanghai", "shenzhen"];
 const phaseIs = (p) => phase() === p;
 
-// Line 是"标签 + 控件们"的通用外壳: 把每个标签的示例压成一行, 好在 620 高里全放下。
+// Line 是"标签 + 控件们"的通用外壳: 把每个标签的示例压成一行, 好在 705 高里全放下。
 // 注意 JSX 的组件子节点是**变参** (`(p, ...kids)`), 不是 p.children。
 const Line = (p, ...kids) => (
   <row gap={8} alignItems="center">
@@ -53,7 +60,7 @@ const Line = (p, ...kids) => (
 // ===== 界面 =====
 
 render(
-  <window title="gx/model — two-way binding" width={700} height={620}>
+  <window title="gx/model — two-way binding" width={700} height={705}>
     <column gap={9} padding={14}>
       <text font={17}>gx/model — 受控组件的一条指令</text>
       <text font={11} color="#8a93a0" wrap width={660}>
@@ -98,6 +105,23 @@ render(
           <text font={11} color="#2e7d32">{() => "city = " + city()}</text>
         </Line>
 
+        {/* 字段 + 弹层那一族: model 与 select 同一形状 (value ⇄ onChange({value})) */}
+        <Line label="datepicker">
+          <datepicker width={168} model={due} />
+          <text font={11} color="#2e7d32">{() => "due = " + due()}</text>
+        </Line>
+
+        <Line label="colorpicker">
+          <colorpicker width={168} model={brand} colors={["#ffffff", "#000000", "#2f80ed"]} columns={3} />
+          <text font={11} color="#2e7d32">{() => "brand = " + brand()}</text>
+        </Line>
+
+        {/* upload 的载荷是 {files, paths}, 所以它的 model 写回 value 取 paths 那一项 */}
+        <Line label="upload">
+          <upload width={168} model={files} />
+          <text font={11} color="#2e7d32">{() => "files = " + files().length}</text>
+        </Line>
+
         <Line label="checkbox">
           <checkbox model={agree} />
           <text font={11} color="#2e7d32">{() => "agree = " + agree()}</text>
@@ -129,7 +153,9 @@ render(
         <text font={12} color="#4a5560" width={64}>③ state</text>
         <text font={11} color="#3a4450" wrap width={572}>
           {() => "name=" + name() + " · bio=" + bio().length + " 字符 · volume=" + volume() +
-            " · city=" + city() + " · agree=" + agree() + " · dark=" + dark() + " · plan=" + plan()}
+            " · city=" + city() + " · due=" + due() + " · brand=" + brand() +
+            " · files=" + files().length + " · agree=" + agree() + " · dark=" + dark() +
+            " · plan=" + plan()}
         </text>
       </row>
 

@@ -121,13 +121,31 @@ func printableRune(key string) (rune, bool) {
 // 返回 true 表示按键已被消费, 不再走 JS 回调 (脚本仍可用 onKeyDown 观察
 // 未被消费的键)。
 func (a *app) handleFieldKey(n *GuiNode, key string, ev Event) bool {
-	// 顺序: 多行编辑框 → 单行输入框 → 下拉框。三者互斥 (一个焦点链上不会
-	// 同时出现两个), 顺序只影响"万一嵌了"时的优先级。
+	// 带 Ctrl/Alt 的组合键一律不碰 (整条字段链统一在这里挡): 那是快捷键与
+	// 脚本的地盘 (Ctrl+C 复制、Ctrl+← 将来是"按词移动光标")。挡在**最外层**
+	// 而不是各分支各写一遍, 是因为 select 的键盘分支早期漏了这一条 ——
+	// 结果 Ctrl+↓ 在别处都放行、在下拉框上却会展开, 同一个组合键的行为
+	// 取决于焦点落在哪种控件上。
+	if ev.Ctrl || ev.Alt {
+		return false
+	}
+	// 顺序: 多行编辑框 → 单行输入框 → 日历 → 色板 → 下拉框 → 文件选择。
+	// 六者互斥 (一个焦点链上不会同时出现两个), 顺序只影响"万一嵌了"时的
+	// 优先级。
 	if ta := textareaInChain(n); ta != nil {
 		return a.handleTextareaKey(ta, key, ev)
 	}
 	if in := inputInChain(n); in != nil {
 		return a.handleInputKey(in, key, ev)
+	}
+	if dp := datepickerInChain(n); dp != nil {
+		return a.handleDatepickerKey(dp, key, ev)
+	}
+	if cp := colorpickerInChain(n); cp != nil {
+		return a.handleColorpickerKey(cp, key, ev)
+	}
+	if up := uploadInChain(n); up != nil {
+		return a.handleUploadKey(up, key, ev)
 	}
 	sel := selectInChain(n)
 	if sel == nil {
