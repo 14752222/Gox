@@ -65,6 +65,9 @@ func main() {
 		case "build":
 			runBuild(args[1:])
 			return
+		case "types":
+			runTypes(args[1:])
+			return
 		case "test262":
 			runTest262(args[1:])
 			return
@@ -116,6 +119,7 @@ func printUsage(w io.Writer) {
   gox icon [目录]              从 1024 源图一键生成全平台图标
   gox cert <android|windows|harmony|ios>  一键生成平台签名证书（快捷操作, gox cert -h 看详情）
   gox build <android|ios|windows|macos>  统一构建入口（sync → icon → 平台打包）
+  gox types [输出文件]          生成内置模块 .d.ts（缺省 src/gox.d.ts）
   gox test262 [-suite language]  Test262 合规率 runner（-h 看全部选项）
   gox update [--check] [--pre] [--manifest URL]  gox 自更新（流式下载/断点续传/pre 通道）
   gox                          启动交互式 REPL

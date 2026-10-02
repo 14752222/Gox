@@ -22,11 +22,18 @@ import (
 	"strings"
 
 	"github.com/14752222/Gox/icongen"
+	"github.com/14752222/Gox/tstransform"
 )
 
 // importRe 匹配 import/export ... from "./xxx" 的相对路径模块。
 // 只收集以 . 开头的相对路径, 忽略内置/绝对路径。
 var importRe = regexp.MustCompile(`(?m)^\s*(?:import|export)\b[^;]*?\bfrom\s+["'](\.[^"']+)["']`)
+
+// tsSpecRe 匹配相对导入里显式的 TS 扩展名 ("./x.ts" / "../y.tsx" 等)。
+// 打包时 TS 模块会被转译并以 .js 落地, 说明符必须同步改写, 否则生成的运行时
+// 会去找一个不存在的 .tsx 文件。无扩展名的导入不用改 —— 运行时的解析器
+// (vm.resolveModuleFile) 本就按 .js → .ts → .tsx 回落, 而我们会落成 .js。
+var tsSpecRe = regexp.MustCompile(`(\bfrom\s*["'])(\.{1,2}/[^"']+)\.(?:ts|tsx|mts|cts|jsx)(["'])`)
 
 // appMainGo 是生成的应用入口模板。
 // 运行: 解压嵌入的 JS → vm.EvalFile 执行 → 打印顶层结果 → 跑定时器事件循环。
@@ -422,24 +429,20 @@ func main() {
 		fatal("cannot write main.go: %v", err)
 	}
 
-	// 写入 app/ 目录下的 JS 文件
+	// 写入 app/ 目录下的 JS 文件。
+	// TS 入口 (.ts/.tsx) 的工程: 在**嵌入前**先转译每个 TS 模块, 落地成 .js,
+	// 并把相对导入的 .ts/.tsx 说明符改写成 .js —— 这样生成的运行时模板只认
+	// JS, 不需要把 tstransform 链接进去 (理由见 prepareAppFiles)。
+	appFiles, err := prepareAppFiles(absInput, files)
+	if err != nil {
+		fatal("%v", err)
+	}
 	appDir := filepath.Join(tmp, "app")
 	if err := os.MkdirAll(appDir, 0o755); err != nil {
 		fatal("cannot create app dir: %v", err)
 	}
-	baseDir := filepath.Dir(absInput)
-	for path, data := range files {
-		// 入口脚本固定命名为 main.js, 模块按相对入口目录的路径存放
-		rel := "main.js"
-		if path != absInput {
-			var err error
-			rel, err = filepath.Rel(baseDir, path)
-			if err != nil {
-				fatal("cannot compute relative path for %s: %v", path, err)
-			}
-			rel = filepath.ToSlash(rel)
-		}
-		dest := filepath.Join(appDir, rel)
+	for rel, data := range appFiles {
+		dest := filepath.Join(appDir, filepath.FromSlash(rel))
 		if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 			fatal("cannot create dir for %s: %v", dest, err)
 		}
@@ -591,10 +594,17 @@ func main() {
 }
 
 // collectModules 递归收集 source 中相对 import 的模块文件。
+//
+// TS 感知: 说明符 "./math.js" 允许回落到 math.ts, 无扩展名按 .js/.ts/.tsx 依次
+// 试探, 目录说明符走 index.*。这与 vm 侧模块解析保持同一套回落顺序, 否则
+// "开发时能跑、打包时找不到模块"。
 func collectModules(entry string, source []byte, files map[string][]byte, verbose bool) error {
 	for _, m := range importRe.FindAllSubmatch(source, -1) {
 		spec := string(m[1])
-		modPath := filepath.Clean(filepath.Join(filepath.Dir(entry), spec))
+		modPath, ok := resolveImportPath(filepath.Dir(entry), spec)
+		if !ok {
+			return fmt.Errorf("cannot read module '%s' (imported from %s): 文件不存在", spec, entry)
+		}
 		if _, ok := files[modPath]; ok {
 			continue
 		}
@@ -611,6 +621,96 @@ func collectModules(entry string, source []byte, files map[string][]byte, verbos
 		}
 	}
 	return nil
+}
+
+// resolveImportPath 把一个相对说明符解析成磁盘文件, 带 TS 回落。
+func resolveImportPath(dir, spec string) (string, bool) {
+	cand := filepath.Clean(filepath.Join(dir, spec))
+	if fi, err := os.Stat(cand); err == nil && !fi.IsDir() {
+		return cand, true
+	}
+	ext := strings.ToLower(filepath.Ext(spec))
+	base := strings.TrimSuffix(cand, filepath.Ext(cand))
+	switch ext {
+	case ".js", ".jsx":
+		// TS 官方 ESM 风格: source 写 "./x.js", 实际文件是 x.ts。
+		for _, e := range []string{".ts", ".tsx"} {
+			if fileExistsP(base + e) {
+				return base + e, true
+			}
+		}
+	case "":
+		for _, e := range []string{".js", ".jsx", ".ts", ".tsx"} {
+			if fileExistsP(cand + e) {
+				return cand + e, true
+			}
+		}
+	}
+	// 目录说明符 → index.*
+	if fi, err := os.Stat(cand); err == nil && fi.IsDir() {
+		for _, e := range []string{"index.js", "index.jsx", "index.ts", "index.tsx"} {
+			p := filepath.Join(cand, e)
+			if fileExistsP(p) {
+				return p, true
+			}
+		}
+	}
+	return "", false
+}
+
+// prepareAppFiles 把"绝对路径 → 源内容"的模块集转成"app 目录相对路径 → 最终
+// 嵌入内容"。
+//
+// 选型说明 (P0-3): 这里选择"**嵌入前先转译、落地成 JS**", 而不是把 tstransform
+// 链接进生成的运行时模板。理由:
+//   - 生成的运行时模板越薄越好: 它服务的是发布产物, 不该背一个只在打包时用一
+//     次的转译器 (esbuild 会额外增大二进制);
+//   - 转译只在构建机上发生一次, 产物启动时零转译开销;
+//   - 模板保持"只认 JS", 与纯 JS 工程的产物走完全相同的路径, 减少分叉。
+//
+// 代价: TS 模块名会从 .ts/.tsx 变成 .js, 所以必须同步改写相对导入说明符
+// (rewriteTSImportSpecifiers), 否则解析不到。
+func prepareAppFiles(entry string, files map[string][]byte) (map[string][]byte, error) {
+	baseDir := filepath.Dir(entry)
+	out := make(map[string][]byte, len(files))
+	for path, data := range files {
+		rel := "main.js"
+		if path != entry {
+			r, err := filepath.Rel(baseDir, path)
+			if err != nil {
+				return nil, fmt.Errorf("cannot compute relative path for %s: %v", path, err)
+			}
+			rel = filepath.ToSlash(r)
+		}
+		if tstransform.IsTS(path) {
+			res, err := tstransform.TransformCached(data, path)
+			if err != nil {
+				return nil, err
+			}
+			data = res.Code
+			if path != entry {
+				rel = replaceExtJS(rel)
+			}
+		}
+		// 无论源是不是 TS 都要改写: 被它导入的 .ts 模块已经改名成 .js 了。
+		out[rel] = rewriteTSImportSpecifiers(data)
+	}
+	return out, nil
+}
+
+// replaceExtJS 把相对路径的扩展名换成 .js (app.tsx → app.js)。
+func replaceExtJS(rel string) string {
+	return strings.TrimSuffix(rel, filepath.Ext(rel)) + ".js"
+}
+
+// rewriteTSImportSpecifiers 把相对导入里的 .ts/.tsx/.mts/.cts/.jsx 改成 .js。
+func rewriteTSImportSpecifiers(code []byte) []byte {
+	return tsSpecRe.ReplaceAll(code, []byte("$1$2.js$3"))
+}
+
+func fileExistsP(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
 }
 
 func fatal(format string, args ...interface{}) {

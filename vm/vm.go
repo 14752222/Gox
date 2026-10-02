@@ -7,10 +7,10 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
-	"runtime/debug"
 
 	"github.com/14752222/Gox/bytecode"
 	"github.com/14752222/Gox/compiler"
@@ -153,12 +153,20 @@ type VM struct {
 	// 栈上模板段之外还有外层操作数，无法区分边界。
 	tplParts [][]object.Value
 
-	// ── 运行时错误源码帧 (T05) ──
-	// srcFile/srcText 是当前执行的脚本文件与文本 (EvalFileVM 注入)。
+	// ── 运行时错误源码帧 (T05 / M2) ──
 	// mainPositions 是主脚本"语句首条指令 offset → 源码位置"的升序表;
 	// 函数体错误查抛出帧闭包的 Positions 表 (offset 空间按编译单元隔离)。
-	srcFile        string
-	srcText        string
+	//
+	// M2: 位置表记录的是**编译单元 (转译后 JS)** 的行列, 而展示要给用户 .ts 原文。
+	// 所以源码信息按"编译单元"建模为 srcUnit:
+	//   mainUnit  当前脚本 (入口/模块顶层) 的单元;
+	//   units     *CompiledFunction → 它所属单元的注册表 (跨 VM 共享 —— 模块 A
+	//             导出的函数可能被入口调用, 那时抛错帧属于 A 的单元, 而当前 VM
+	//             是入口)。注册发生在 createClosure。
+	srcFile        string // 顶层脚本文件名 (兼容 SetSourceInfo 的读取方)
+	srcText        string // 顶层脚本文本
+	mainUnit       *srcUnit
+	units          *unitRegistry
 	mainPositions  []object.SrcPos
 	lastThrowPC    int
 	hasThrowPC     bool
@@ -183,6 +191,7 @@ func New(ins bytecode.Instructions, constants *bytecode.ConstantPool, numLocals 
 		globals:   runtime.NewEnvironment(),
 		constants: constants,
 		modules:   map[string]*ModuleExports{},
+		units:     newUnitRegistry(),
 	}
 }
 
@@ -197,6 +206,7 @@ func NewWithGlobals(ins bytecode.Instructions, constants *bytecode.ConstantPool,
 		globals:   globals,
 		constants: constants,
 		modules:   map[string]*ModuleExports{},
+		units:     newUnitRegistry(),
 	}
 }
 
@@ -542,7 +552,6 @@ func (vm *VM) popFrame() *Frame {
 	for len(vm.tryStack) > 0 && vm.tryStack[len(vm.tryStack)-1].frameIdx > vm.frameIdx {
 		vm.tryStack = vm.tryStack[:len(vm.tryStack)-1]
 	}
-
 
 	// 传播闭包变量修改 (closure → outer frame)
 	// 仅当闭包创建于上一帧时才传播，避免跨帧变量错位
@@ -2502,7 +2511,6 @@ func (vm *VM) handleThrowInner(val object.Value) bool {
 			continue
 		}
 
-
 		// 如果 try 条目在不同的帧中，先弹出帧。
 		// 栈恢复以帧的 StackBase 为准截断 (与 OP_RETURN 一致) ——
 		// 旧的"每帧无条件 Pop 一次"假设帧恰好遗留一个值, 在调用方
@@ -2579,20 +2587,29 @@ func (vm *VM) loadModuleFile(spec, absPath string) (*ModuleExports, error) {
 
 	// 读取文件; TS 家族 (.ts/.tsx/.mts/.cts/.jsx) 先过类型剥离转译,
 	// 进编译管线的永远是 JS —— parser/compiler 不感知 TS 的存在。
-	source, err := osReadFile(absPath)
+	// orig 是用户原文, code 是进编译管线的 JS (两者分开: M2 源码帧要展示原文)。
+	orig, err := osReadFile(absPath)
 	if err != nil {
 		return nil, fmt.Errorf("Cannot find module '%s'", spec)
 	}
-	if tstransform.IsTS(absPath) {
-		source, err = tstransform.ToJS(source, absPath)
-		if err != nil {
-			return nil, err
+	code := orig
+	var lineMap *tstransform.LineMap
+	isTS := tstransform.IsTS(absPath)
+	if isTS {
+		res, terr := tstransform.TransformCached(orig, absPath)
+		if terr != nil {
+			return nil, terr
 		}
+		code = res.Code
+		lineMap = res.LineMap
 	}
 
 	// 编译模块
-	c, err := compileSource(string(source), true)
+	c, err := compileSource(string(code), true)
 	if err != nil {
+		if isTS {
+			err = remapSourceError(err, lineMap)
+		}
 		if se, ok := err.(*sourceError); ok && se.parse {
 			return nil, fmt.Errorf("Module parse error: %s", se.msg)
 		}
@@ -2616,12 +2633,24 @@ func (vm *VM) loadModuleFile(spec, absPath string) (*ModuleExports, error) {
 	modVM.modules = vm.modules
 	modVM.moduleBase = vm.moduleBase
 	modVM.currentExports = vm.currentExports
+	// 源码单元注册表跨 VM 共享: 模块里定义的函数之后可能在入口 VM 上被调用,
+	// 抛错时要用模块自己的单元渲染帧 (M2 P0-1)。
+	modVM.units = vm.units
+	// M2 P0-1: 被 import 的模块此前不注入源码信息 ⇒ 模块内报错没有源码帧。
+	// 这里补齐 (原文 + 行映射 + 语句位置表), 与入口脚本同等对待。
+	modVM.SetSourceInfo(absPath, string(orig))
+	if isTS {
+		modVM.SetTranspileMap(lineMap, string(code))
+	}
+	modVM.mainUnit.isModule = true // 标记为模块单元: 其函数登记进 units 注册表
+	modVM.SetStmtPositions(c.StmtPositions())
 	if err := modVM.RunCompiled(c); err != nil {
 		// 执行失败不缓存半成品, 便于上层重试时报出同样错误
 		delete(vm.modules, absPath)
 		vm.currentExports = savedExports
 		vm.moduleBase = savedBase
-		return nil, fmt.Errorf("Module execution error: %v", err)
+		// 附加源码帧 (此前直接 %v, 模块内异常只有一行消息没有帧)。
+		return nil, fmt.Errorf("Module execution error: %v", modVM.AttachFrame(err))
 	}
 
 	// 恢复状态
@@ -2668,6 +2697,12 @@ func (vm *VM) createClosure(meta *bytecode.FunctionMetadata, frame *Frame) *obje
 		thisVal = frame.Closure.This
 	}
 
+	// M2: 记录"这个函数属于哪个源码单元" —— 模块导出的函数被入口调用时,
+	// 抛错帧属于模块的 .ts, 而不是当前(入口)VM 的单元。只登记模块单元:
+	// 入口函数的帧可直接回退 mainUnit, 登记它们只会让注册表无谓增长。
+	if vm.units != nil && vm.mainUnit != nil && vm.mainUnit.isModule {
+		vm.units.put(fn, vm.mainUnit)
+	}
 	return &object.Closure{
 		Fn:             fn,
 		Env:            vm.globals,
@@ -3353,29 +3388,42 @@ func EvalFile(path string) (object.Value, error) {
 
 // EvalFileVM 读取并执行 JS 脚本文件, 返回 VM 实例。
 // 供需要继续驱动事件循环 (严格定时器回调等) 的调用方使用。
-// TS 家族文件 (.ts/.tsx/...) 先过 tstransform 类型剥离再进编译管线,
-// 源码帧注入的也是转译后的文本 (与 stmt 位置同源)。
+// TS 家族文件 (.ts/.tsx/...) 先过 tstransform 类型剥离再进编译管线;
+// 源码帧展示用户写的 .ts 原文, 并用转译行映射把 JS 行列翻回 .ts (M2 P0-1)。
 func EvalFileVM(path string) (*VM, error) {
-	source, err := os.ReadFile(path)
+	orig, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("cannot read file: %v", err)
 	}
-	if tstransform.IsTS(path) {
-		source, err = tstransform.ToJS(source, path)
-		if err != nil {
-			return nil, err
+	// TS 家族 (.ts/.tsx/...) 先过类型剥离; code 是进编译管线的 JS, orig 是
+	// 用户原文 (源码帧展示的是它 —— M2: 报错定位到 .ts 源码行)。
+	code := orig
+	var lineMap *tstransform.LineMap
+	isTS := tstransform.IsTS(path)
+	if isTS {
+		res, terr := tstransform.TransformCached(orig, path)
+		if terr != nil {
+			return nil, terr
 		}
+		code = res.Code
+		lineMap = res.LineMap
 	}
 
-	c, err := compileSource(string(source), false)
+	c, err := compileSource(string(code), false)
 	if err != nil {
+		if isTS {
+			err = remapSourceError(err, lineMap)
+		}
 		return nil, evalEntryError(err)
 	}
 
 	vm := NewWithGlobals(c.Bytes(), c.Constants(), c.NumLocals(), stdlib.SetupGlobals())
 	vm.SetModuleBase(filepath.Dir(path))
-	// T05 源码帧: 注入脚本文本与语句位置表, 未捕获异常渲染出错行。
-	vm.SetSourceInfo(path, string(source))
+	// T05/M2 源码帧: 注入原文 + 行映射 + 语句位置表, 未捕获异常渲染出错行。
+	vm.SetSourceInfo(path, string(orig))
+	if isTS {
+		vm.SetTranspileMap(lineMap, string(code))
+	}
 	vm.SetStmtPositions(c.StmtPositions())
 	if err := vm.RunCompiled(c); err != nil {
 		return nil, fmt.Errorf("vm error: %v", vm.AttachFrame(err))

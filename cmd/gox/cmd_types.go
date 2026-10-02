@@ -1,0 +1,321 @@
+package main
+
+// cmd_types.go 实现 `gox types [out]` —— 从 Go 侧内置模块注册表生成 .d.ts。
+//
+// 为什么放在 CLI 而不是脚手架静态文件: 内置模块的导出面由
+// object.RegisterBuiltinModule("gx/...", …) 在 Go 源码里决定, 手写的 .d.ts 一定
+// 会随实现漂移。这个命令把"真源"(注册表) 直接翻译成声明文件, 让 IDE/tsc 与
+// 运行时看到同一份导出面, 并把漂移变成一次可重跑的命令。
+//
+// 类型精度边界 (诚实声明, 不编造签名):
+//   - 内置导出几乎都是 Go 闭包 (*object.BuiltinFunction / *object.BuiltinMethod),
+//     Go 侧没有可反射的参数/返回类型信息, 所以统一生成
+//     `(...args: any[]): any` 并加注「类型待补」;
+//   - 非函数的内置值 (如 process.env 快照) 生成 `export const NAME: any` 并加注;
+//   - JSX 全局命名空间 (内置元素 <window> <row> ...) 与注册表无关, 是一段固定
+//     的宽松声明 (任何标签/属性都合法), 见 jsxPreamble;
+//   - 用户模块的导出以"清单"形式附在文末 (不是 ambient 声明 —— TS 全局 .d.ts
+//     不允许对相对模块做 ambient 声明, 会报 TS2436)。边界见 docs/typescript.md。
+
+import (
+	"fmt"
+	"io/fs"
+	"os"
+	"path/filepath"
+	"regexp"
+	"sort"
+	"strings"
+	"sync"
+
+	"github.com/14752222/Gox/object"
+	"github.com/14752222/Gox/stdlib"
+)
+
+// registerOnce 保证 stdlib 的注册函数跑一次。
+//
+// 关键: gx/solid、gx/storage、gx/update 与聚合入口 gox 的注册发生在
+// stdlib.SetupGlobals 调用的 setup* 函数里 (不是 init), 不主动触发就会漏掉
+// 这些模块 —— 生成的声明会缺一大块, 而且不报错 (静默缺失)。gfx 侧 (gx/gfx
+// 等) 与 fs/path/http/process 走 init, 导入即注册, 不受影响。
+var registerOnce sync.Once
+
+func ensureBuiltinsRegistered() {
+	registerOnce.Do(func() { _ = stdlib.SetupGlobals() })
+}
+
+// runTypes 实现 `gox types [out]`。
+func runTypes(args []string) {
+	out := ""
+	for _, a := range args {
+		switch {
+		case a == "-h" || a == "--help":
+			fmt.Fprint(os.Stdout, `用法: gox types [输出文件]
+
+从内置模块注册表 (object.RegisterBuiltinModule) 生成类型声明:
+  - 每个 gx/* 子模块与聚合入口 gox、以及 fs/path/http/process;
+  - 导出签名无法推断时用 (...args: any[]): any, 并标注「类型待补」;
+  - 附 JSX 内置元素的宽松声明与用户模块导出清单。
+
+输出缺省: 有 src/ 目录时写 src/gox.d.ts, 否则写 gox.d.ts;
+输出为 - 时打印到标准输出。文件所在目录会被扫描, 用户模块清单据此生成。
+`)
+			return
+		case a == "-":
+			// "-" = 打印到 stdout (Unix 惯例); 必须放在 HasPrefix("-") 之前。
+			if out != "" {
+				typesFatal("只能指定一个输出路径, 多出来的: " + a)
+			}
+			out = a
+		case strings.HasPrefix(a, "-"):
+			typesFatal("未知选项: " + a)
+		default:
+			if out != "" {
+				typesFatal("只能指定一个输出路径, 多出来的: " + a)
+			}
+			out = a
+		}
+	}
+	if out == "" {
+		out = defaultTypesOut()
+	}
+	// 输出为 - 时不做用户模块清单 (否则会在仓库根递归扫描, 又慢又没意义)。
+	scanDir := ""
+	if out != "-" {
+		scanDir = filepath.Dir(out)
+	}
+	text := generateTypes(scanDir)
+
+	if out == "-" {
+		fmt.Print(text)
+		return
+	}
+	if err := os.MkdirAll(filepath.Dir(out), 0o755); err != nil {
+		typesFatal(err.Error())
+	}
+	if err := os.WriteFile(out, []byte(text), 0o644); err != nil {
+		typesFatal(err.Error())
+	}
+	fmt.Printf("已生成 %s\n", out)
+	fmt.Println("  - 内置模块导出 (签名待补的已标注; 不编造签名)")
+	fmt.Println("  - JSX 内置元素宽松声明 + 用户模块导出清单")
+}
+
+// typesFatal 打印 gox types 的错误并退出。
+func typesFatal(msg string) {
+	fmt.Fprintf(os.Stderr, "gox types: %s\n", msg)
+	os.Exit(1)
+}
+
+// defaultTypesOut 输出缺省路径: 有 src/ 写 src/gox.d.ts, 否则 gox.d.ts。
+func defaultTypesOut() string {
+	if fi, err := os.Stat("src"); err == nil && fi.IsDir() {
+		return filepath.Join("src", "gox.d.ts")
+	}
+	return "gox.d.ts"
+}
+
+// generateTypes 生成声明文本。scanDir 下的用户模块会被列为导出清单。
+func generateTypes(scanDir string) string {
+	ensureBuiltinsRegistered()
+	var b strings.Builder
+	b.WriteString(typesHeader)
+
+	// 模块名 (RegisteredBuiltinModules 已按字典序)。逐个取导出名并排序,
+	// 保证输出对同一份注册表字节确定 —— 模板一致性测试靠这一点。
+	for _, name := range object.RegisteredBuiltinModules() {
+		exports, ok := object.LookupBuiltinModule(name)
+		if !ok {
+			continue
+		}
+		fmt.Fprintf(&b, "declare module %q {\n", name)
+		keys := make([]string, 0, len(exports))
+		for k := range exports {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		if len(keys) == 0 {
+			b.WriteString("  // (无导出)\n")
+		}
+		for _, k := range keys {
+			// "default" 不能作为绑定名直接写 `export const default`; 非法标识符
+			// 也跳过 (注册表理论上可以有任意字符串键)。
+			if k == "default" {
+				if isBuiltinFunc(exports[k]) {
+					b.WriteString("  /** 类型待补: 默认导出 (内置函数, 签名未推断). */\n")
+					b.WriteString("  export default function (...args: any[]): any;\n")
+				} else {
+					b.WriteString("  /** 类型待补: 默认导出 (内置常量, 类型未推断). */\n")
+					b.WriteString("  const _default: any;\n  export default _default;\n")
+				}
+				continue
+			}
+			if !identRe.MatchString(k) {
+				fmt.Fprintf(&b, "  // 跳过非法标识符导出名: %q\n", k)
+				continue
+			}
+			if isBuiltinFunc(exports[k]) {
+				fmt.Fprintf(&b, "  /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */\n")
+				fmt.Fprintf(&b, "  export function %s(...args: any[]): any;\n", k)
+			} else {
+				fmt.Fprintf(&b, "  /** 类型待补: 运行时内置常量 (由 Go 注册, 类型未推断). */\n")
+				fmt.Fprintf(&b, "  export const %s: any;\n", k)
+			}
+		}
+		b.WriteString("}\n\n")
+	}
+
+	b.WriteString(jsxPreamble)
+	b.WriteString(userModuleManifest(scanDir))
+	return b.String()
+}
+
+// isBuiltinFunc 判断一个内置导出是否是可调用对象 (决定声明成 function 还是 const)。
+func isBuiltinFunc(v object.Value) bool {
+	switch v.(type) {
+	case *object.BuiltinFunction, *object.BuiltinMethod:
+		return true
+	}
+	return false
+}
+
+// identRe 校验导出名是否可直接用作 TS 标识符。
+var identRe = regexp.MustCompile(`^[A-Za-z_$][A-Za-z0-9_$]*$`)
+
+// typesHeader 是生成文件的抬头。刻意不含时间戳 —— 否则每次生成都 diff,
+// "模板与生成结果一致"的测试会永远失败。
+const typesHeader = `// Code generated by ` + "`gox types`" + `. DO NOT EDIT.
+//
+// gox 内置模块与 JSX 元素的类型声明 (给 IDE / tsc 检查用)。
+// gox 引擎运行时不需要这份文件: .tsx 在加载前由引擎自动剥离类型 (esbuild
+// 转译, JSX 原样保留给引擎自己的降级管线)。
+//
+// 本文件是**全局脚本** (顶层没有 import/export), 这样 JSX 命名空间全局可见,
+// .tsx 才认 <window> / <row> / <text> 这类内置标签。
+//
+// 类型精度: 内置导出多为 Go 闭包, 无法反射出参数/返回类型, 一律给
+// (...args: any[]): any 并标注「类型待补」—— 这是刻意的: 宁可宽松, 也不编造。
+// 需要精确签名时, 在业务代码里就近写 interface 收窄, 或见 docs/typescript.md。
+
+`
+
+// jsxPreamble 是 JSX 内置元素与常用事件的宽松声明。
+// 与注册表无关 (标签/属性的真源在 gfx 的 knownTags 与各布局/绘制分支),
+// 因此是一段固定文本, 刻意宽松 —— 内置元素 prop 面很大, 宁少报错不误报。
+const jsxPreamble = `// ===== JSX 内置元素 (宽松) =====
+
+interface GoxElementProps {
+  onClick?: (e?: any) => void;
+  onInput?: (e: { value: any }) => void;
+  onChange?: (e: { value: any }) => void;
+  onKeyDown?: (e: { key: string }) => void;
+  onWheel?: (e: { deltaY: number; shift: boolean }) => void;
+  [prop: string]: any;
+}
+
+declare namespace JSX {
+  type Element = any;
+  interface ElementChildrenAttribute {
+    children: {};
+  }
+  interface IntrinsicElements {
+    [tag: string]: GoxElementProps;
+  }
+}
+
+`
+
+// userModuleManifest 扫描 scanDir 下的脚本模块, 列出每个模块的顶层导出名。
+//
+// 为什么是"清单"而不是 declare module: TS 的全局 .d.ts 里对**相对路径**写
+// ambient module 声明会直接报 TS2436; 写成模块增强又要求目标模块已存在且
+// 会与真实导出冲突。所以这里只提供"起点"参考 —— 对 .ts 模块本身, 类型已在
+// 源文件里, 本清单价值有限; 对 .js 模块, 它是手写 d.ts 的起步。
+func userModuleManifest(scanDir string) string {
+	if scanDir == "" {
+		return ""
+	}
+	var files []string
+	_ = filepath.WalkDir(scanDir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		name := d.Name()
+		if strings.HasSuffix(name, ".d.ts") {
+			return nil // 声明文件不是实现, 不列
+		}
+		switch strings.ToLower(filepath.Ext(name)) {
+		case ".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs":
+			files = append(files, p)
+		}
+		return nil
+	})
+	sort.Strings(files)
+
+	var b strings.Builder
+	b.WriteString("// ===== 用户模块导出清单 (起点, 非类型推断) =====\n")
+	b.WriteString("// 说明: TS 全局 .d.ts 不能对相对模块做 ambient 声明 (TS2436), 故此处以清单\n")
+	b.WriteString("// 形式列出各模块的顶层导出名, 供手写 interface / 补全类型时参考。\n")
+	b.WriteString("// .ts/.tsx 的类型本就写在源文件里; 对 .js 模块, 这是补 d.ts 的起点。\n//\n")
+	wrote := false
+	for _, f := range files {
+		src, err := os.ReadFile(f)
+		if err != nil {
+			continue
+		}
+		names := exportedNames(string(src))
+		if len(names) == 0 {
+			continue
+		}
+		rel, err := filepath.Rel(scanDir, f)
+		if err != nil {
+			rel = f
+		}
+		fmt.Fprintf(&b, "//   %s\n", filepath.ToSlash(rel))
+		for _, n := range names {
+			fmt.Fprintf(&b, "//     export const %s: any;\n", n)
+		}
+		wrote = true
+	}
+	if !wrote {
+		b.WriteString("//   (未发现带顶层导出的模块)\n")
+	}
+	return b.String()
+}
+
+// exportDeclRe 抓取 `export const/let/var/function/class ... NAME` 形式的顶层导出。
+// 只做最小识别 (不解析 AST) —— 清单本就是"起点", 不是权威类型来源。
+var exportDeclRe = regexp.MustCompile(`(?m)^\s*export\s+(?:default\s+)?(?:async\s+)?(?:const|let|var|function|class)\s+([A-Za-z_$][\w$]*)`)
+
+// exportBracesRe 抓取 `export { a, b as c }`。
+var exportBracesRe = regexp.MustCompile(`(?m)^\s*export\s*\{([^}]*)\}`)
+
+// exportedNames 汇总一个源文件的顶层导出名 (去重 + 排序)。
+func exportedNames(src string) []string {
+	set := map[string]bool{}
+	for _, m := range exportDeclRe.FindAllStringSubmatch(src, -1) {
+		set[m[1]] = true
+	}
+	for _, m := range exportBracesRe.FindAllStringSubmatch(src, -1) {
+		for _, raw := range strings.Split(m[1], ",") {
+			raw = strings.TrimSpace(raw)
+			if raw == "" {
+				continue
+			}
+			// "a as b" → 取导出名 b; "type T" → 跳过 (纯类型, 不是运行时值)。
+			if strings.HasPrefix(raw, "type ") {
+				continue
+			}
+			parts := strings.Split(raw, " as ")
+			name := strings.TrimSpace(parts[len(parts)-1])
+			if name != "" {
+				set[name] = true
+			}
+		}
+	}
+	out := make([]string, 0, len(set))
+	for k := range set {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}

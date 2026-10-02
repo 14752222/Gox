@@ -1,25 +1,32 @@
 package main
 
-// gox dev —— 开发期间热更新: 监听入口所在 src/ 目录的 .js/.ts/.tsx 变更,
-// 进程内丢弃旧 VM、重建新 VM 并重新执行入口文件。
-// TS/TSX 文件在进引擎前自动过 esbuild 类型剥离（JSX 原样保留）。
+// gox dev —— 开发期间热更新。
+//
+// 两条路径 (M2 P1-6):
+//
+//  1. **进程内重载** (非 GUI 脚本, 或显式要求): 监听入口所在目录的
+//     .js/.ts/.tsx 变更, 丢弃旧 VM、重建新 VM 并重新执行入口。适用于
+//     "执行完即返回" 的脚本。
+//
+//  2. **进程级热重启** (GUI/常驻脚本, 或 --restart): 把应用作为**子进程**运行;
+//     文件变更 → 杀旧进程 + 起新进程。原因: render(...) 之后脚本阻塞在窗口
+//     消息泵里, 进程内的 dev 循环根本拿不到控制权 (旧实现明确写着这个 TODO)。
+//     进程级重启能立刻用上"改一行 → 界面更新", 代价是**丢内存状态** —— 这与
+//     组件级 HMR (保留 signal/状态) 是两回事, 边界见 docs/typescript.md。
 //
 // 用法:
 //
-//	gox dev               等价于 gox dev <默认入口>（main.js 优先, 回落 main.tsx/ts/jsx）
-//	gox dev <入口.js|入口.ts|入口.tsx>   监听该文件所在目录 (递归含子目录)
+//	gox dev                    探测默认入口 (main.js 优先, 回落 main.tsx/ts/jsx)
+//	gox dev <入口>             监听该文件所在目录 (递归含子目录)
+//	gox dev --restart <入口>   强制进程级热重启 (即使没检测到 GUI 工程)
 //
-// 适用边界: 见 docs/dev-workflow.md。GUI 常驻脚本 (render(...) 后依赖
-// 消息泵保活) 会在泵循环里阻塞, dev 循环拿不到控制权 —— 当前实现只对
-// "执行完即返回" 的脚本提供热更新。
-//
-// TODO(dev-gui): GUI 常驻脚本的热替换需要复用已有窗口句柄、只替换根元素
-// 树 (窗口是进程级资源, 重建 VM 不能重建窗口)。元素树状态语义 (signal
-// 订阅如何迁移、旧树何时销毁) 需要先在 gfx 上游讨论, 本次不做。
+// GUI 工程判定: 入口向上查找 gox.json —— 脚手架生成的工程都有, 是"这是常驻
+// 应用"最可靠的静态信号。判定不了的常驻脚本可用 --restart 明确指定。
 
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -35,23 +42,49 @@ import (
 // 写入 + 重命名成对事件) 合并为一次重载。
 const devDebounce = 250 * time.Millisecond
 
-// runDev 实现 `gox dev [入口.js]`。
+// devSpawn 启动一个子进程跑入口脚本。抽成变量以便测试替换 (不真起 GUI)。
+var devSpawn = defaultDevSpawn
+
+// defaultDevSpawn 用当前 gox 可执行文件拉起 `gox <entry>`。
+func defaultDevSpawn(entry string) (*exec.Cmd, error) {
+	exe, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.Command(exe, entry)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	cmd.Stdin = os.Stdin
+	cmd.Env = os.Environ()
+	return cmd, nil
+}
+
+// runDev 实现 `gox dev [入口] [--restart]`。
 func runDev(args []string) {
 	entry := devDefaultEntry()
+	forceRestart := false
 	for _, a := range args {
 		switch {
 		case a == "-h" || a == "--help":
-			fmt.Fprint(os.Stdout, `用法: gox dev [入口.js]
+			fmt.Fprint(os.Stdout, `用法: gox dev [入口] [--restart]
 
-监听入口文件所在目录 (递归含子目录) 的 .js/.jsx/.ts/.tsx 变更, 每次变更后
-丢弃旧 VM、重建 VM 并重新执行入口文件。默认入口依次探测:
-src/main.js → src/main.tsx → src/main.ts → src/main.jsx。
-TS/TSX 文件在进引擎前自动完成类型剥离 (esbuild 转译), JSX 原样保留。
+监听入口所在目录 (递归含子目录) 的 .js/.jsx/.ts/.tsx 变更并热更新。
 
-适用于执行完即返回的脚本; GUI 常驻脚本暂不支持热更新,
-见 docs/dev-workflow.md。
+两种模式 (自动选择):
+  - 普通脚本: 进程内丢弃旧 VM、重建并重跑入口 (快, 保留进程)。
+  - GUI/常驻脚本: 进程级热重启 —— 杀旧子进程 + 起新子进程。
+    判据: 入口向上能找到 gox.json; 或用 --restart 强制。
+
+默认入口依次探测: src/main.js → src/main.tsx → src/main.ts → src/main.jsx。
+TS/TSX 在加载前自动完成类型剥离 (esbuild), JSX 原样保留; 转译产物带
+持久化缓存 (~/.gox/cache/transpile), 重启时命中缓存基本不重算。
+
+注意: 进程级热重启会**丢失内存状态** (signal/表单输入等)。组件级 HMR
+(保留状态、只换元素树) 是后续里程碑, 当前未实现。详见 docs/typescript.md。
 `)
 			return
+		case a == "--restart":
+			forceRestart = true
 		case strings.HasPrefix(a, "-"):
 			devFatal("未知选项: " + a)
 		default:
@@ -77,12 +110,21 @@ TS/TSX 文件在进引擎前自动完成类型剥离 (esbuild 转译), JSX 原�
 		devFatal(err.Error())
 	}
 
+	restartMode := forceRestart || isGUIProject(abs)
+	if restartMode {
+		fmt.Printf("[dev] watching %s (entry: %s) — 进程级热重启\n", root, filepath.Base(abs))
+		devRunRestartLoop(watcher, abs)
+		return
+	}
+
 	fmt.Printf("[dev] watching %s (entry: %s)\n", root, filepath.Base(abs))
+	devRunInProcessLoop(watcher, abs)
+}
 
-	// 首次运行
-	devRun(abs, 0)
+// devRunInProcessLoop 是原行为: 每次变更重建 VM 重跑入口 (执行完即返回的脚本)。
+func devRunInProcessLoop(watcher *fsnotify.Watcher, entry string) {
+	devRun(entry, 0)
 
-	// 防抖状态: 变更先计数, 停止变更 devDebounce 后统一重载一次。
 	var (
 		mu      sync.Mutex
 		pending int
@@ -94,7 +136,7 @@ TS/TSX 文件在进引擎前自动完成类型剥离 (esbuild 转译), JSX 原�
 		pending = 0
 		timer = nil
 		mu.Unlock()
-		devRun(abs, n)
+		devRun(entry, n)
 	}
 
 	for {
@@ -103,17 +145,7 @@ TS/TSX 文件在进引擎前自动完成类型剥离 (esbuild 转译), JSX 原�
 			if !ok {
 				return
 			}
-			if ev.Op&fsnotify.Chmod != 0 {
-				continue
-			}
-			// 新建子目录也要挂上监听, 否则新增目录里的改动收不到
-			if ev.Op&fsnotify.Create != 0 {
-				if fi, err := os.Stat(ev.Name); err == nil && fi.IsDir() {
-					devWatchDir(watcher, ev.Name)
-					continue
-				}
-			}
-			if !devInteresting(ev.Name) {
+			if !devHandleEvent(watcher, ev) {
 				continue
 			}
 			mu.Lock()
@@ -132,7 +164,137 @@ TS/TSX 文件在进引擎前自动完成类型剥离 (esbuild 转译), JSX 原�
 	}
 }
 
-// devRun 执行一次入口脚本: 新建 VM (模块缓存随实例重建) → EvalFile → 跑定时器。
+// devRestarter 管理"一个入口 = 一个子进程"的杀旧起新。
+type devRestarter struct {
+	entry string
+	child *exec.Cmd
+}
+
+// kill 杀掉当前子进程 (若有)。Kill (SIGKILL) 跨平台可用; GUI 进程收不到优雅
+// 退出的机会, 但 dev 场景可接受 —— 窗口资源随进程消失, 下次启动重开。
+func (r *devRestarter) kill() {
+	if r.child == nil || r.child.Process == nil {
+		return
+	}
+	_ = r.child.Process.Kill()
+	_, _ = r.child.Process.Wait()
+	r.child = nil
+}
+
+// start 杀掉旧子进程并拉起新子进程, 返回启动耗时 (供实测打印)。
+func (r *devRestarter) start() (time.Duration, error) {
+	r.kill()
+	t0 := time.Now()
+	cmd, err := devSpawn(r.entry)
+	if err != nil {
+		return 0, err
+	}
+	if err := cmd.Start(); err != nil {
+		return 0, err
+	}
+	r.child = cmd
+	return time.Since(t0), nil
+}
+
+// devRunRestartLoop 以子进程方式运行入口, 变更时杀旧起新。
+//
+// 计时口径: 从**第一个变更事件到达**到新子进程 Start() 返回 —— 这才是用户
+// 感知的"改一行 → 界面更新"延迟 (含防抖 + 杀进程 + 拉起)。打印出来便于实测。
+func devRunRestartLoop(watcher *fsnotify.Watcher, entry string) {
+	var (
+		mu       sync.Mutex
+		pending  int
+		timer    *time.Timer
+		changeAt time.Time
+	)
+	restarter := &devRestarter{entry: entry}
+	restart := func(changes int) {
+		mu.Lock()
+		t0 := changeAt
+		if t0.IsZero() {
+			t0 = time.Now()
+		}
+		changeAt = time.Time{}
+		pending = 0
+		timer = nil
+		mu.Unlock()
+
+		if _, err := restarter.start(); err != nil {
+			fmt.Fprintf(os.Stderr, "[dev] 启动子进程失败: %v\n", err)
+			return
+		}
+		d := time.Since(t0)
+		if changes > 0 {
+			fmt.Printf("[dev] restarted %s in %s (%d change%s)\n",
+				filepath.Base(entry), d.Round(time.Millisecond), changes, plural(changes))
+		} else {
+			fmt.Printf("[dev] started %s in %s\n", filepath.Base(entry), d.Round(time.Millisecond))
+		}
+	}
+
+	restart(0)
+	defer restarter.kill()
+
+	for {
+		select {
+		case ev, ok := <-watcher.Events:
+			if !ok {
+				return
+			}
+			if !devHandleEvent(watcher, ev) {
+				continue
+			}
+			mu.Lock()
+			if pending == 0 {
+				changeAt = time.Now()
+			}
+			pending++
+			if timer != nil {
+				timer.Stop()
+			}
+			timer = time.AfterFunc(devDebounce, func() { restart(1) })
+			mu.Unlock()
+		case err, ok := <-watcher.Errors:
+			if !ok {
+				return
+			}
+			fmt.Fprintf(os.Stderr, "[dev] watcher error: %v\n", err)
+		}
+	}
+}
+
+// devHandleEvent 处理单个 fsnotify 事件: 过滤 + 给新目录挂监听。
+// 返回 true 表示"这是值得触发重载的变更"。
+func devHandleEvent(watcher *fsnotify.Watcher, ev fsnotify.Event) bool {
+	if ev.Op&fsnotify.Chmod != 0 {
+		return false
+	}
+	// 新建子目录也要挂上监听, 否则新增目录里的改动收不到
+	if ev.Op&fsnotify.Create != 0 {
+		if fi, err := os.Stat(ev.Name); err == nil && fi.IsDir() {
+			devWatchDir(watcher, ev.Name)
+			return false
+		}
+	}
+	return devInteresting(ev.Name)
+}
+
+// isGUIProject 报告入口是否属于一个 GUI 工程 (向上找 gox.json)。
+func isGUIProject(entry string) bool {
+	dir := filepath.Dir(entry)
+	for {
+		if _, err := os.Stat(filepath.Join(dir, "gox.json")); err == nil {
+			return true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return false
+		}
+		dir = parent
+	}
+}
+
+// devRun 执行一次入口脚本 (进程内模式): 新建 VM → EvalFile → 跑事件循环。
 // 出错打印但不退出, 继续等下一次变更。
 func devRun(entry string, changes int) {
 	if changes > 0 {

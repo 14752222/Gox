@@ -4,8 +4,9 @@
   "private": true,
   "description": "A Gox desktop GUI app in TypeScript (scaffolded by `gox create --ts`)",
   "scripts": {
-    "dev": "goxjs src/main.tsx",
-    "start": "goxjs src/main.tsx"
+    "dev": "goxjs dev src/main.tsx",
+    "start": "goxjs src/main.tsx",
+    "types": "goxjs types src/gox.d.ts"
   },
   "devDependencies": {
     "@goxjs/goxjs": "^0.5.0"
