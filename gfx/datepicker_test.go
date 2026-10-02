@@ -576,15 +576,22 @@ func TestDatepickerPopupPaintsSelectedAndToday(t *testing.T) {
 	if dp.popup.Box.W <= 0 {
 		t.Fatalf("前置条件: 弹层该已布局")
 	}
-	// 选中日 (11-03) 的格子应以强调色填充
-	cx, cy := dateCellCenter(dp, 0, 3)
-	if got := img.RGBAAt(cx, cy); got != pxAccent {
-		t.Fatalf("选中日格子中心 = %v, want %v (强调色)", got, pxAccent)
+	// 选中日 (11-03) 的格子应以强调色填充。
+	// 不断言格子**中心**像素 —— 中心正好落在日期数字的笔画边缘上 (抗锯齿混出浅色),
+	// 拿它当"填充色"断言会随字体渲染细节漂移 (与下面"今天"格同一教训)。
+	// 改成数整个格子的强调色像素: 数字笔画再粗也盖不过半个格子。
+	b := dp.popup.Box
+	selCell := Rect{
+		X: b.X + dpPopupPad + 2*dpCellW, // 2026-11-03 是周二 ⇒ 第 2 列 (日=0)
+		Y: b.Y + dpPopupPad + dpHeadH + dpWeekH,
+		W: dpCellW, H: dpCellH,
+	}
+	if n := countColor(img, selCell, pxAccent); n < dpCellW*dpCellH/2 {
+		t.Fatalf("选中日格子应被强调色填充 (只数到 %d/%d 个像素, 格子 %v)", n, dpCellW*dpCellH, selCell)
 	}
 	// 今天 (11-20) 只有描边, 不是填充: 用"强调色像素数"判断,
 	// 不去看格子中心 —— 中心正好落在日期数字的笔画边缘上 (抗锯齿混出浅灰),
 	// 拿它当"底色"断言会随字体渲染细节漂移。
-	b := dp.popup.Box
 	todayCell := Rect{
 		X: b.X + dpPopupPad + 5*dpCellW, // 2026-11-20 是周五 ⇒ 第 5 列 (日=0)
 		Y: b.Y + dpPopupPad + dpHeadH + dpWeekH + 2*dpCellH,
