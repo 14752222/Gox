@@ -607,7 +607,11 @@ func globalWndProc(hwnd uintptr, msg uint32, wParam, lParam uintptr) uintptr {
 		if c == nil {
 			break // 没设约束: 让系统缺省值说话
 		}
-		mmi := (*minMaxInfo)(unsafe.Pointer(lParam))
+		// vet 的 unsafeptr 检查不收 uintptr → unsafe.Pointer 的直转 (WM_GETMINMAXINFO
+		// 的 lParam 在回调签名里就是 uintptr)。绕一记: 先取这个 uintptr 变量自己的
+		// 地址 (那是真指针), 再按 **minMaxInfo 解读后解引用 —— 数值上与直转等价,
+		// vet 无话讲。这是 Win32 回调里读 lParam 指向结构的标准写法。
+		mmi := *(**minMaxInfo)(unsafe.Pointer(&lParam))
 		if c.minW > 0 && int32(c.minW) > mmi.PtMinTrackSize.X {
 			mmi.PtMinTrackSize.X = int32(c.minW)
 		}

@@ -45,7 +45,7 @@
 | `docs/gui-guide.md` | §4 元素表（新标签）、§6 绑定、§8 视图、§11 示例索引 | 用户手册 |
 | `docs/gui-patterns.md` | §9 视图 | 模式手册 |
 | `docs/gui-model-binding.md` | 接口设计与迁移对照 | 设计说明书 |
-| `agent_doc/gui-component-status.md` | 追加「落地记录」小节（本文档的 §32 / §33） | 权威现状记录 |
+| `tdrive 项目资产盘的 `agent_doc/gui-component-status.md`` | 追加「落地记录」小节（本文档的 §32 / §33） | 权威现状记录 |
 | `website/components/*.md` | `patterns.md` 的 `#view` 段（指令表）、`index.md` 的受控组件约定 ③、`limits.md` 的限制清单 | 官网组件参考 |
 | `website/api/gx.md` | 聚合入口 `gox` 示例、`gx/view` 导出表、模块地图 | 官网 API 页 |
 | `website/guide/gui.md` | 响应式章节里的受控/绑定说明 | 官网入门页 |
@@ -155,4 +155,4 @@ curl -s "https://registry.npmjs.org/-/npm/v1/attestations/@goxjs%2Fgoxjs@0.3.0" 
 - `scripts/build-npm.sh` —— 五平台交叉编译 + 可选 `--into-package`
 - `npm/package.json` / `npm/bin/gox.js` / `npm/README.md` —— 包定义三件套；2026-09-24 起住在
   **独立仓库** [gox-npm](https://github.com/14752222/gox-npm)（主仓库里只留子模块指针）
-- `agent_doc/gui-component-status.md` —— 每次能力落地后追加的「落地记录」
+- `tdrive 项目资产盘的 `agent_doc/gui-component-status.md`` —— 每次能力落地后追加的「落地记录」

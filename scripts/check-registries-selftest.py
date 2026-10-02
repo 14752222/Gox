@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -56,6 +57,27 @@ def sub(root, rel, old, new):
         raise SystemExit("注入锚点没找到（源码改了就要同步改自测）：%s :: %r" % (rel, old[:70]))
     with open(p, "w", encoding="utf-8") as f:
         f.write(s.replace(old, new, 1))
+
+
+VERSION_RE = re.compile(r'const version\s*=\s*"([^"]+)"')
+
+
+def unhook_version(root):
+    """把 main.go 的版本号改成一个**必然不同**的值 (加 -selftest 后缀)。
+
+    不能拿当前版本号当注入锚点: 每发一次版锚点就失效一次。2026-10-02 实测
+    0.7.0 → 0.9.0 后锚点 0 命中, SystemExit 直接把后面两个用例 (binaries/、
+    bin 文件) 一起中止 —— 负向用例连脱三例, 而脚本退出码还是非 0, 看着像
+    "抓到故障了", 其实抓的是自己的锚点。改成正则现取现改, 与版本号无关。
+    """
+    p = os.path.join(root, "cmd/gox/main.go")
+    with open(p, encoding="utf-8") as f:
+        s = f.read()
+    m = VERSION_RE.search(s)
+    if not m:
+        raise SystemExit("main.go 里找不到 const version 声明（源码改了就要同步改自测）")
+    with open(p, "w", encoding="utf-8") as f:
+        f.write(s[:m.start(1)] + m.group(1) + "-selftest" + s[m.end(1):])
 
 
 def run(root):
@@ -110,7 +132,7 @@ CASES = [
 
     ("main.go 与 package.json 版本号脱钩",
      "版本号不一致",
-     lambda r: sub(r, "cmd/gox/main.go", 'const version = "0.7.0"', 'const version = "0.7.1"')),
+     unhook_version),
 
     ("package.json files 漏掉 binaries/",
      "没有 binaries/",
