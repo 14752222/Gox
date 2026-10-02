@@ -525,6 +525,30 @@ h("column", null,
 > 顺带一条同源的静默坑：**子节点区的 `//` 不是注释**。在 `<column>` 里写一行 `// 说明`
 > 会被当成一个**文本子节点**渲染出来（不报错、不出警告）；JSX 注释要写 `{/* … */}`
 > （空插值，解析时被跳过），或者把注释挪到 JSX 外面。
+>
+> **另一条同族的静默坑：三元 / 短路会"吃掉"订阅。** 函数子节点 / 函数 prop 的 effect
+> 只追踪**实际读到**的信号 —— 把订阅型读数（`useXxx()` 一族，哪些带订阅见 §9 的分族表）
+> 写在某个分支里，首帧走的若是另一条分支，那次调用根本没发生 ⇒ 依赖集为空，
+> 之后**永远不重跑**，且没有任何警告：
+>
+> ```js
+> // ❌ 首帧 hasFold() 为 false ⇒ useReservedRegions()() 没被调用 ⇒ 订阅没建立，
+> //    后来折叠上报、保留区变了，这条文本也不更新
+> {() => hasFold()
+>   ? "折痕 " + useReservedRegions()().division.length + " 条"
+>   : "未检测到折痕"}
+>
+> // ✅ 先无条件取一次订阅型读数，再按值分支 —— 订阅恒建立，条件也跟着重跑
+> {() => {
+>   const r = useReservedRegions()();   // 先订阅
+>   if (!hasFold()) return "未检测到折痕";
+>   return "折痕 " + r.division.length + " 条";
+> }}
+> ```
+>
+> 纯读数（`hasFold()` / `posture()` / `widthClass()` 这类不订阅的）写在哪个分支都没关系
+> —— 但需要"跟着环境变"的那次订阅调用必须**无条件执行**；条件本身是纯读数时，
+> 也要靠同一 effect 里的订阅型读数把它"带"着重跑。
 
 求值结果按类型分派：元素直接挂载，数组递归展开，`false`/`true`/`null`/`undefined` 渲染为**空**，
 字符串与数字渲染为文本，其他对象走 `toString()`。元素 ↔ 标量相互切换时复用同一个内部占位节点，
@@ -824,11 +848,11 @@ try {
 （"是否分栏由姿态决定，折痕只负责怎么分"）的共同结论。
 
 ```js
-import { posture, hinge, regions, reservedRegions, hasFold, layoutMode } from "gx/viewport";
-import { splitRatio, hingeOrientation } from "gx/screen";
+import { reservedRegions, hasFold, layoutMode } from "gx/viewport";
+import { posture, hinge, regions, splitRatio, hingeOrientation } from "gx/screen";
 
-const r = reservedRegions();        // { division:[…], occlusion:[…], all:[…] }
-const m = layoutMode();             // { posture, widthClass, foldAware, suggested }
+const r = reservedRegions();        // 纯读数（不订阅）: { division:[…], occlusion:[…], all:[…] }
+const m = layoutMode();             // 同上: { posture, widthClass, foldAware, suggested }
 ```
 
 | 读数 | 返回 | 要点 |
@@ -838,6 +862,25 @@ const m = layoutMode();             // { posture, widthClass, foldAware, suggest
 | `layoutMode(win?)` | `{posture, widthClass, foldAware, suggested}` | `suggested` ∈ `"single"` / `"dual"` / `"tablet"`。**只给建议，框架不改布局** |
 | `splitRatio(win?)` | number | 折痕分割比例，钳 [0.2, 0.8]；无折痕退化 0.5 |
 | `hingeOrientation(win?)` | string | `"vertical"`（左右折，折痕是竖条）/ `"horizontal"`（上下折） |
+| `useReservedRegions(win?)` | `() => {division, occlusion, all}` | **两段式**：外层绑窗口返回 getter，内层 `get()` 才订阅 + 取值。**同时**订阅两个信号（窗口环境 + 屏表）—— 只读一个是常见疏漏，症状是"折一下不更新，转个屏才更新" |
+| `useLayoutMode(win?)` | `() => {posture, widthClass, foldAware, suggested}` | 同上两段式，`layoutMode()` 的订阅版 |
+
+**订阅型 vs 纯读数**（"会不会跟着环境变"的分族；把订阅型写进三元 / 短路的某条分支是静默坑，见 §8.1）：
+
+- **订阅型**（调用时读版本号信号 = 建立订阅，环境变化会让引用它的 effect 重跑）：
+  - **两段式**（外层绑窗口返回 getter、内层才订阅 + 取值，**少写一层括号拿到的是函数对象，属性全是 undefined**）：
+    gx/screen 的 `useScreen()()` / `useScreens()()` / `usePosture()()` / `useWindowInfo()()`；
+    gx/viewport 的 `useReservedRegions()()` / `useLayoutMode()()`
+  - **一段式**（调用即订阅）：gx/viewport 的 `useViewport()` / `useInsets()` / `useKeyboardHeight()` / `useMultiWindow()`
+- **纯读数**（每次读当前快照，**不订阅**）：gx/viewport 的 `viewport()` / `insets()` / `keyboardHeight()` /
+  `keyboardVisible()` / `multiWindow()` / `isSplit()` / `splitInfo()` / `contentArea()` / `safeAreaStyle()` /
+  `widthClass()` / `isCompactWidth()` / `isMediumWidth()` / `isExpandedWidth()` / `isTabletLayout()` /
+  `reservedRegions()` / `hasFold()` / `layoutMode()`；gx/screen 的 `posture()` / `hinge()` / `regions()` /
+  `splitRatio()` / `hingeOrientation()` / `windowInfo()`
+
+纯读数不是"错的"：`hasFold()` 是结构性信号（有折痕的机器恒 true），事件回调（`onViewportChange` /
+`onDisplayChange`）里读纯读数也够用。**错的是把订阅型读数写进三元 / 短路的某条分支** ——
+首帧没走到的分支不建立订阅，effect 零依赖、永不重跑且无警告（§8.1）。
 
 **避让（opt-in）**：内核元素默认**不**避让保留区（历史行为不变，避免老界面莫名位移）。
 要避让就显式声明：
@@ -976,11 +1019,12 @@ import { devSnapshot } from "gx/dev";
 | `hinge()` 的宽度读出来是 0，回填后折痕像丢了 | `hinge()` / `regions()` 的**输出**用 `width`/`height`，而 `reportPosture` 的**入参**只读 `w`/`h` ⇒ 回填时静默读成 0（折痕宽度只影响双栏比例，所以什么错都不报） | 两种拼法现在都认（2026-09-22 起，短名优先）：`reportPosture({ hinge: hinge() })` 可以直接回填 |
 | 响应式 prop / 条件 / 列表只有第一帧是对的 | prop 收到的是**取值函数**，写成快照（`disabled={count() === 0}`、`each={rows()}`）之后就再也不同步 | 一律传函数：`disabled={() => count() === 0}` / `each={rows}` / `show={cond}`。内核会对非法形态打去重警告（见 §8.1） |
 | **文本停在第一帧，信号变了它不动** | **子节点**同样在调用当场求值：``<text>count: {count()}</text>`` 里的 `count()` 在 `h()` 之前就求值完，`h()` 建出来的是一个静态文本节点 | 写成函数子节点：``<text>{() => `count: ${count()}`}</text>``。**这条没有警告、也不可能有** —— 文本子节点天生收标量，运行期分不出"静态文本"和"快照"（§8.1），只能靠纪律 |
+| **折叠 / 转屏后界面不更新，也不报错不警告** | 订阅型读数写在**三元 / 短路**里被"吃掉"：effect 只追踪实际读到的信号，首帧没走到的分支里那次调用没发生 ⇒ 依赖集为空、永不重跑（§8.1） | **先无条件取一次订阅型读数再分支**：`const r = useReservedRegions()(); if (!hasFold()) return "未检测到折痕"; …`。哪些读数带订阅见 §9 的"订阅型 vs 纯读数"分族 |
 | **`<video>` 只有封面/播放三角，没有画面** | 本后端**没有平台视频层**（`nativeVideoHost`）—— 桌面三后端目前都没接。这不是 bug：内核不解码、也不假装在播 | 先问再选路：`canIUse("video")` 为 `false` 就跳系统播放器（`gx/media` 的 `preview()`）。现象上 stderr 会有一条告警，且该节点收到一次 `onError({code:"unsupported"})`（决策与后端接入见 [video-decision.md](video-decision.md)） |
 
 > 本表里"JSX 缺省工厂"、"缺名导入"、"嵌套解构"、"折痕键名"四件事都在 2026-09-22
 > 修在框架里了；文档里其它地方若还写着"必须自己 import h""嵌套解构不支持"，以本节为准。
-> 表里唯一**没有、也不会有**警告的是"文本子节点写成快照"那条 —— 它天生无法判定（§8.1），不是漏了没做。
+> 表里**没有、也不会有**警告的是"文本子节点写成快照"与"订阅写在条件分支里被吃掉"两条 —— 前者天生无法判定，后者在首帧之前分不出哪条分支会被走（§8.1），都不是漏了没做。
 
 ## 13. 相关文档
 
