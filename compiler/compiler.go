@@ -1240,94 +1240,110 @@ func (c *Compiler) compileThrowStatement(stmt *ast.ThrowStatement) error {
 }
 
 func (c *Compiler) compileTryStatement(stmt *ast.TryStatement) error {
-	// 计算 catch 和 finally 的跳转目标
-	var catchPC int
-	var finallyPC int
-
-	// try body
-	if stmt.CatchBody != nil {
-		catchPC = c.emitter.EmitJump(bytecode.OP_PUSH_TRY) // 暂时占位
-	} else if stmt.FinallyBody != nil {
-		catchPC = c.emitter.EmitJump(bytecode.OP_PUSH_TRY) // 暂时占位
-	} else {
-		// 无 catch 无 finally: 不需要 try handler，直接编译 body
+	// 无 catch 无 finally: 不需要 try handler，直接编译 body。
+	if stmt.CatchBody == nil && stmt.FinallyBody == nil {
 		return c.compileBlockStatement(stmt.Body)
 	}
 
-	// 如果有 finally，设置 finallyPC
-	if stmt.FinallyBody != nil {
-		finallyPC = c.emitter.EmitJump(bytecode.OP_PUSH_FINALLY) // 暂时占位
+	// 目标字节码形状 (三条路径汇入同一个 finally 块):
+	//
+	//   PUSH_TRY <catchPC|0>      ; 异常时 handleThrowInner 按 catch/finally 分发
+	//   PUSH_FINALLY <finallyPC>  ; (仅当有 finally)
+	//   <try body>
+	//   POP_TRY                   ; try 正常完成, 摘掉处理器
+	//   JUMP tryStateNormal       ; ── 正常路径跳过 catch ──
+	// catchPC:                      ; 异常落点, 栈顶是错误值
+	//   [PUSH_FINALLY <finallyPC>] ; 有 finally 时给 catch 体再挂一层 finally 保护
+	//   <catch body>              ; (catch 参数从栈顶取; 无参数则 POP)
+	//   POP_TRY
+	//   JUMP afterCatch           ; ── catch 正常完成 ──
+	// tryStateNormal:              ; try / catch 两条正常路径汇合
+	//   (无 finally 时到这就结束了, PatchJump(skipCatch) 落在这)
+	// finallyPC:                   ; 异常路径进入 finally: pendingThrow 已由
+	//                              ; handleThrowInner 设置, 不往栈上放错误值
+	// afterCatch:
+	//   <finally body>
+	//   END_FINALLY               ; pendingThrow 非 nil 则重抛, 否则正常继续
+	//
+	// 历史缺陷 (riUpgO, 2026-10-03 修): 旧实现给「无 catch 但有 finally」的形状
+	// 伪造了一个只 POP 错误值的假 catch 处理器 ⇒ 异常被丢弃; 且正常路径的
+	// skipCatch 跳到整个语句末尾, 直接跳过 finally 块 ⇒ finally 在无异常时
+	// 从不执行。VM 侧 handleThrowInner 的 finallyPC 分支(设 pendingThrow →
+	// 跳 finally → END_FINALLY 重抛)是完备的, 只是编译器从未让它走通。
+
+	hasCatch := stmt.CatchBody != nil
+	hasFinally := stmt.FinallyBody != nil
+
+	// PUSH_TRY: catch 存在时 catchPC 指向 catch 体, 否则 0 (纯 finally 形状,
+	// 让 handleThrowInner 走它的 finallyPC 分支)。
+	var tryJump int
+	if hasCatch {
+		tryJump = c.emitter.EmitJump(bytecode.OP_PUSH_TRY)
+	} else {
+		pos := c.emitter.Emit(bytecode.OP_PUSH_TRY, 0)
+		_ = pos
+	}
+
+	// PUSH_FINALLY 占位 (回填到 finally 体入口)。
+	var finallyJump int
+	if hasFinally {
+		finallyJump = c.emitter.EmitJump(bytecode.OP_PUSH_FINALLY)
 	}
 
 	// try body
 	if err := c.compileBlockStatement(stmt.Body); err != nil {
 		return err
 	}
-
-	// try 正常结束: 弹出 try handler
 	c.emitter.EmitNoOperand(bytecode.OP_POP_TRY)
-
-	// 跳过 catch body，跳到 finally (或结束)
 	skipCatch := c.emitter.EmitJump(bytecode.OP_JUMP)
 
-	// === catch handler ===
-	c.emitter.PatchJump(catchPC) // 回填 PUSH_TRY 的 catch 目标
-	if stmt.CatchBody != nil {
-		// 如果有 finally，catch body 也需要 finally 保护
-		if stmt.FinallyBody != nil {
-			// 重新 push try with only finally (catchPC = 0xFFFF 表示无 catch)
-			catchFinally := c.emitter.EmitJump(bytecode.OP_PUSH_FINALLY)
-			c.emitter.PatchJump(finallyPC) // 回填 PUSH_FINALLY (try body 的)
-			finallyPC = catchFinally       // catch body 的 finally
+	// === catch 体 (异常落点, 栈顶 = 错误值) ===
+	if hasCatch {
+		c.emitter.PatchJump(tryJump)
 
-			// 弹出 catch 参数 (在栈上)
-			if stmt.CatchParam != nil {
-				if err := c.compileCatchBodyWithParam(stmt.CatchParam, stmt.CatchBody); err != nil {
-					return err
-				}
-			} else {
-				c.emitter.EmitNoOperand(bytecode.OP_POP)
-				if err := c.compileBlockStatement(stmt.CatchBody); err != nil {
-					return err
-				}
+		var catchFinally int
+		if hasFinally {
+			// catch 体自身再挂一层 finally 保护: catch 里再 throw 也要经过 finally。
+			// PUSH_FINALLY 只改栈顶条目的 finallyPC, 不建条目 —— 外层 try 条目
+			// 已在进入 catch 时被 handleThrow 消费, 必须先 PUSH_TRY 0 立个纯
+			// finally 条目 (catchPC=0), 否则这个 PUSH_FINALLY 会把 finallyPC
+			// 错写到更外层的条目上 (riUpgO)。
+			c.emitter.Emit(bytecode.OP_PUSH_TRY, 0)
+			catchFinally = c.emitter.EmitJump(bytecode.OP_PUSH_FINALLY)
+		}
+
+		if stmt.CatchParam != nil {
+			if err := c.compileCatchBodyWithParam(stmt.CatchParam, stmt.CatchBody); err != nil {
+				return err
 			}
-			c.emitter.EmitNoOperand(bytecode.OP_POP_TRY)
-			skipFinally := c.emitter.EmitJump(bytecode.OP_JUMP)
-			c.emitter.PatchJump(catchFinally)
-			// 跳过重复的 finally body
-			c.emitter.PatchJump(skipFinally)
 		} else {
-			// 无 finally 的 catch
-			if stmt.CatchParam != nil {
-				if err := c.compileCatchBodyWithParam(stmt.CatchParam, stmt.CatchBody); err != nil {
-					return err
-				}
-			} else {
-				c.emitter.EmitNoOperand(bytecode.OP_POP)
-				if err := c.compileBlockStatement(stmt.CatchBody); err != nil {
-					return err
-				}
+			c.emitter.EmitNoOperand(bytecode.OP_POP)
+			if err := c.compileBlockStatement(stmt.CatchBody); err != nil {
+				return err
 			}
 		}
-	} else if stmt.FinallyBody != nil {
-		// 无 catch 但有 finally: 异常到这里，设置 pendingError
-		// 弹出错误值并暂存
-		c.emitter.EmitNoOperand(bytecode.OP_POP) // 弹出错误值 (会通过 pendingError 传递)
-		c.emitter.PatchJump(finallyPC)
+		c.emitter.EmitNoOperand(bytecode.OP_POP_TRY)
+		skipFinally := c.emitter.EmitJump(bytecode.OP_JUMP)
+
+		if hasFinally {
+			// catch 的 finally 保护条目指向同一个 finally 体 (finally 只编译一份)。
+			c.emitter.PatchJump(catchFinally)
+		}
+		c.emitter.PatchJump(skipFinally)
 	}
 
-	// === finally body ===
-	if stmt.FinallyBody != nil {
-		if stmt.CatchBody == nil {
-			// 无 catch: finallyPC 已经在 catchPC 位置回填
-		}
+	// === tryStateNormal: try/catch 的正常路径汇合点 ===
+	// 无 finally 时它就是语句出口 (旧实现的 skipCatch 曾跳过 finally —— 缺陷点)。
+	c.emitter.PatchJump(skipCatch)
+
+	// === finally 体 (共享一份, 三条路径都到这) ===
+	if hasFinally {
+		c.emitter.PatchJump(finallyJump) // try 侧 PUSH_FINALLY 的目标
 		if err := c.compileBlockStatement(stmt.FinallyBody); err != nil {
 			return err
 		}
 		c.emitter.EmitNoOperand(bytecode.OP_END_FINALLY)
 	}
-
-	c.emitter.PatchJump(skipCatch)
 
 	return nil
 }
