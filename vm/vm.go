@@ -295,6 +295,23 @@ func (m *ModuleExports) buildNamespace(building map[*ModuleExports]bool) *object
 // 用于从 stdlib 回调 JS 闭包时找到正确的 VM。
 var currentVM *VM
 
+// setCallbackErrorValueFromThrow 把 Go 侧的运行期错误还原成原始 JS 抛出值,
+// 存入 object 层供 stdlib 作为 rejection reason。
+//
+// 必须走这里而不是让 stdlib 重新包一层: callbackError 只是 Go 字符串
+// (已含 "Error: " 前缀), 重新包一层会得到 "Error: Error: x" 双前缀,
+// 且丢失原始 Error 对象 —— 而规范要求 catch 侧拿到的与抛出的
+// 严格相等 (===)。
+func setCallbackErrorValueFromThrow(err error) {
+	if te, ok := err.(*ThrowError); ok {
+		object.SetCallbackErrorValue(te.Value)
+	} else if jt, ok := err.(*jsThrow); ok {
+		// 栈溢出等结构化错误: 恢复为对应类型的 Error 对象,
+		// 供 stdlib 的 callbackThrown 保留错误类型传播
+		object.SetCallbackErrorValue(object.NewErrorWithName(jt.Name, jt.Message))
+	}
+}
+
 func init() {
 	// 注册回调桥: stdlib → object → vm
 	//
@@ -313,13 +330,7 @@ func init() {
 			// "函数正常返回" 与 "函数抛出了非 Error 异常"。
 			object.SetCallbackError(err)
 			// 保留原始抛出值 (throw x 的 x), 供 rejection reason 使用
-			if te, ok := err.(*ThrowError); ok {
-				object.SetCallbackErrorValue(te.Value)
-			} else if jt, ok := err.(*jsThrow); ok {
-				// 栈溢出等结构化错误: 恢复为对应类型的 Error 对象，
-				// 供 stdlib 的 callbackThrown 保留错误类型传播
-				object.SetCallbackErrorValue(object.NewErrorWithName(jt.Name, jt.Message))
-			}
+			setCallbackErrorValueFromThrow(err)
 			return object.UndefinedSingleton
 		}
 		return result
@@ -332,6 +343,7 @@ func init() {
 		val, done, err := currentVM.genResume(gen, arg)
 		if err != nil {
 			object.SetCallbackError(err)
+			setCallbackErrorValueFromThrow(err)
 			return object.UndefinedSingleton, true
 		}
 		return val, done
@@ -344,6 +356,7 @@ func init() {
 		val, done, err := currentVM.genThrow(gen, throwVal)
 		if err != nil {
 			object.SetCallbackError(err)
+			setCallbackErrorValueFromThrow(err)
 			return object.UndefinedSingleton, true
 		}
 		return val, done
@@ -1241,7 +1254,6 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 					}
 					continue
 				}
-
 			case *object.Closure:
 				// generator 函数调用: 不执行函数体, 返回 Generator 对象
 				if callee.Fn != nil && callee.Fn.IsGenerator {
@@ -3161,7 +3173,8 @@ func (vm *VM) genThrow(gen *object.Generator, throwVal object.Value) (object.Val
 		gen.Done = true
 		return object.UndefinedSingleton, true, nil
 	}
-	vm.rebuildGenFrame(gen)
+	genFrame := vm.rebuildGenFrame(gen)
+	genFrameIdx := vm.frameIdx
 
 	// 仅当 generator 帧自身挂有 try 处理器时才查找处理器:
 	// tryStack 中残留的更深/更浅帧条目属于无关执行上下文，
@@ -3175,6 +3188,12 @@ func (vm *VM) genThrow(gen *object.Generator, throwVal object.Value) (object.Val
 	}
 	if !hasOwnHandler || !vm.handleThrow(throwVal) {
 		gen.Done = true
+		// rebuildGenFrame 刚压入的帧必须回收: 否则它留在帧栈上压住
+		// 外层 async wrapper 帧, wrapper 的 OP_RETURN 会在错误栈基上
+		// 取值 ⇒ async 调用返回函数体的值而不是 Promise (rZn4IS)。
+		// 注意顺序: 先取 frame/索引再 handleThrow, 因为 handleThrow
+		// 可能已经把 vm.frameIdx 降到更低。
+		vm.unwindGenFrame(genFrame, genFrameIdx)
 		return object.UndefinedSingleton, true, &ThrowError{Value: throwVal}
 	}
 
@@ -3212,24 +3231,33 @@ func (vm *VM) rebuildGenFrame(gen *object.Generator) *Frame {
 }
 
 // runSuspendedGen 运行已重建帧的 generator 直到下一个 yield 或结束。
+//
 func (vm *VM) runSuspendedGen(gen *object.Generator) (object.Value, bool, error) {
+	genFrameIdx := vm.frameIdx
 	frame := vm.currentFrame()
 	prevGen := vm.currentGenerator
 	vm.currentGenerator = gen
-	err := vm.runFrom(vm.frameIdx)
+	err := vm.runFrom(genFrameIdx)
 	vm.currentGenerator = prevGen
-	return vm.finishGenRun(gen, frame, err)
+	return vm.finishGenRun(gen, frame, genFrameIdx, err)
 }
 
 // finishGenRun 处理 generator 一次恢复运行的收尾。
-func (vm *VM) finishGenRun(gen *object.Generator, frame *Frame, err error) (object.Value, bool, error) {
+func (vm *VM) finishGenRun(gen *object.Generator, frame *Frame, genFrameIdx int, err error) (object.Value, bool, error) {
 	if err != nil {
 		if ysig, ok := err.(*YieldSignal); ok {
 			gen.Value = ysig.value
 			return ysig.value, false, nil
 		}
-		// 其他错误: generator 终止
+		// 其他错误: generator 终止。
+		//
+		// 必须把 generator 帧弹掉。runLoop 因异常返回时该帧仍留在帧栈上
+		// (只有跑到边界的正常路径才会自然 popFrame), 而外层 async 的
+		// wrapper 帧正等着执行 OP_RETURN 把 __spawn 交出的 promise 返回给
+		// 调用方。帧泄漏会让 wrapper 帧被压住、OP_RETURN 在错误栈基上取值
+		// ⇒ async 调用返回 undefined 而不是 Promise (2026-10-02, rZn4IS)。
 		gen.Done = true
+		vm.unwindGenFrame(frame, genFrameIdx)
 		return object.UndefinedSingleton, true, err
 	}
 
@@ -3241,6 +3269,23 @@ func (vm *VM) finishGenRun(gen *object.Generator, frame *Frame, err error) (obje
 	}
 	gen.Value = result
 	return result, true, nil
+}
+
+// unwindGenFrame 回收因异常终止而仍留在帧栈上的 generator 帧。
+//
+// 只弹到 generator 自己那一帧为止 (含), 绝不动外层帧 —— 外层的 async
+// wrapper 还要继续执行 OP_RETURN。栈按该帧的 StackBase 截断, 与
+// OP_RETURN 的收尾语义一致。
+func (vm *VM) unwindGenFrame(frame *Frame, genFrameIdx int) {
+	for vm.frameIdx > genFrameIdx {
+		vm.popFrame()
+	}
+	if vm.frameIdx == genFrameIdx {
+		vm.popFrame()
+	}
+	if vm.stack.Len() > frame.StackBase {
+		vm.stack.Truncate(frame.StackBase)
+	}
 }
 
 // addValues 实现 JavaScript 的 + 运算符 (数字加法或字符串拼接)。

@@ -49,8 +49,17 @@ func step(gen *object.Generator, arg object.Value, result *object.Promise, throw
 	// async 函数体抛出的异常: 回调桥把它记为 callbackError，
 	// 而 GeneratorNext/GeneratorThrow 会退化成 (undefined, true)。
 	// 不检查的话异常会被静默吞掉，promise 变成 resolve(undefined)。
+	//
+	// 优先用原始抛出值 (callbackErrorValue) 作为 rejection reason: 它就是
+	// `throw new Error("x")` 里的那个 Error 对象本身 —— 规范要求 catch 侧
+	// 拿到的与抛出的严格相等。cbErr 只是 Go 侧字符串 (已含 "Error: " 前缀)，
+	// 拿它重新包一层会得到 "Error: Error: x" 的双前缀消息，且丢失原始对象。
 	if cbErr := object.TakeCallbackError(); cbErr != nil {
-		result.Reject(object.NewErrorWithName("Error", cbErr.Error()))
+		if thrown := object.TakeCallbackErrorValue(); thrown != object.UndefinedSingleton {
+			result.Reject(thrown)
+		} else {
+			result.Reject(object.NewErrorWithName("Error", cbErr.Error()))
+		}
 		return
 	}
 
