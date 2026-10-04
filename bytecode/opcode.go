@@ -102,6 +102,10 @@ const (
 	OP_NEW         Opcode = 0x66 // new 构造函数调用
 	OP_CALL_SPREAD Opcode = 0x67 // 调用函数 (参数在数组中, operand=参数个数)
 	OP_CALL_METHOD Opcode = 0x68 // 调用方法 (栈: [fn, this, args...], operand=参数个数)
+	// OP_CALL_METHOD_SPREAD: 调用方法但实参在数组里 (栈: [fn, this, argsArray])。
+	// 用于「转发运行期实参」的场景 —— 隐式 constructor 的 super(...arguments)
+	// 与用户手写的 super(...args): argc 是编译期常量, 表达不了运行期实参个数。
+	OP_CALL_METHOD_SPREAD Opcode = 0x69
 
 	// 0x70-0x7F: 对象和数组
 	OP_NEW_ARRAY       Opcode = 0x70 // 创建数组 (operand = 元素个数)
@@ -212,6 +216,7 @@ var opcodeNames = map[Opcode]string{
 	OP_CALL: "CALL", OP_RETURN: "RETURN", OP_RETURN_VOID: "RETURN_VOID",
 	OP_FUNCTION: "FUNCTION", OP_ARROW_FUNC: "ARROW_FUNC", OP_CLOSURE: "CLOSURE",
 	OP_NEW: "NEW", OP_CALL_SPREAD: "CALL_SPREAD", OP_CALL_METHOD: "CALL_METHOD",
+	OP_CALL_METHOD_SPREAD: "CALL_METHOD_SPREAD",
 	OP_NEW_ARRAY: "NEW_ARRAY", OP_NEW_OBJECT: "NEW_OBJECT",
 	OP_GET_PROP: "GET_PROP", OP_SET_PROP: "SET_PROP",
 	OP_GET_INDEX: "GET_INDEX", OP_SET_INDEX: "SET_INDEX",

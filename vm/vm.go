@@ -1421,81 +1421,21 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			}
 			thisVal := vm.stack.Pop()
 			fn := vm.stack.Pop()
-
-			switch callee := fn.(type) {
-			case *object.BuiltinFunction:
-				// 内建函数: 不传 this，直接传参数
-				result := callee.Fn(args...)
-				if result == nil {
-					result = object.UndefinedSingleton
-				}
-				if thrown, err := vm.throwIfError(result, callee.ReturnIsValue); thrown {
-					if err != nil {
-						return err
-					}
-					continue
-				}
-				vm.stack.Push(result)
-				if err := vm.checkCallbackErr(); err != nil {
-					if terr := vm.rethrowBridgeError(err); terr != nil {
-						return terr
-					}
-					continue
-				}
-			case *object.BuiltinMethod:
-				// 内建方法: this 作为第一个参数传递
-				result := callee.Fn(thisVal, args...)
-				if result == nil {
-					result = object.UndefinedSingleton
-				}
-				if thrown, err := vm.throwIfError(result, false); thrown {
-					if err != nil {
-						return err
-					}
-					continue
-				}
-				vm.stack.Push(result)
-				if err := vm.checkCallbackErr(); err != nil {
-					if terr := vm.rethrowBridgeError(err); terr != nil {
-						return terr
-					}
-					continue
-				}
-			case *object.Closure:
-				// 创建绑定了 this 的新闭包
-				methodClosure := &object.Closure{
-					Fn:             callee.Fn,
-					Env:            callee.Env,
-					This:           thisVal,
-					IsArrow:        callee.IsArrow,
-					CapturedLocals: callee.CapturedLocals,
-				}
-				// generator 方法调用: 创建 Generator (this 绑定保留在闭包中)
-				if methodClosure.Fn != nil && methodClosure.Fn.IsGenerator {
-					vm.stack.Push(object.NewGenerator(methodClosure, args))
-				} else {
-					if err := vm.callClosure(methodClosure, args); err != nil {
-						if terr := vm.throwJSError(err); terr != nil {
-							return terr
-						}
-						continue
-					}
-				}
-			case *object.Proxy:
-				// 代理方法调用: 转发到 apply trap，this 为 thisVal
-				result, err := vm.proxyApply(callee, thisVal, args)
-				if err != nil {
-					if terr := vm.rethrowBridgeError(err); terr != nil {
-						return terr
-					}
-					continue
-				}
-				vm.stack.Push(result)
-			default:
-				if err := vm.throwNamedError("TypeError", "%s is not a function", describeCallee(fn)); err != nil {
-					return err
-				}
-				continue
+			if err := vm.invokeWithThis(fn, thisVal, args); err != nil {
+				return err
+			}
+		case bytecode.OP_CALL_METHOD_SPREAD:
+			// 方法调用但实参在数组里: 栈 [fn, this, argsArray]。
+			// 隐式 constructor 的 super(...arguments) 与用户手写 super(...args) 走这里。
+			arr := vm.stack.Pop()
+			thisVal := vm.stack.Pop()
+			fn := vm.stack.Pop()
+			var args []object.Value
+			if a, ok := arr.(*object.Array); ok {
+				args = a.Elements
+			}
+			if err := vm.invokeWithThis(fn, thisVal, args); err != nil {
+				return err
 			}
 		case bytecode.OP_NEW:
 			// new Constructor(args...) — 简化实现
@@ -1529,7 +1469,6 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				// （module 模式下的 `super`、嵌套类里对 enclosing 变量的取值等）
 				// 编成 OP_LOAD slot，靠帧装配时拷贝 CapturedLocals 前缀取值。
 				// 漏掉它 → 前缀全 nil → 读外层绑定报 TDZ（rIIXSR，2026-10-05）。
-				// 回归: vm/new_captured_locals_test.go。
 				newClosure := &object.Closure{
 					Fn:             closure.Fn,
 					Env:            closure.Env,
@@ -1540,10 +1479,11 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				}
 				// 调用构造函数 (同步执行到返回)
 				//
-				// 错误必须先回收本帧再走抛出流程 (与 OP_CALL_METHOD 的错误路径同一
-				// 约定)。此前直接 `return err`: 异常逃过 handleThrow ⇒ 外层
-				// `try { new X() } catch` 抓不到，且构造函数帧不回收（rVI6Eb）。
-				// 回归: vm/new_throw_catch_test.go。
+				// 错误必须先回收本帧再走抛出流程 (与 OP_CALL_METHOD 的
+				// callClosure/runFrom 错误路径同一约定)。此前直接 `return err`:
+				//   - 有问题的错误逃过 handleThrow ⇒ 外层 `try { new X() } catch`
+				//     抓不到 (rVI6Eb);
+				//   - 且不回收构造函数帧 ⇒ 帧栈残留。
 				startIdx := vm.frameIdx + 1
 				if err := vm.callClosure(newClosure, args); err != nil {
 					vm.unwindFramesTo(startIdx)
@@ -2712,6 +2652,70 @@ func builtinName(v object.Value) string {
 // 直接用 Inspect 会把整个内建对象 (含 prototype 上的几十个方法) 塞进错误信息，
 // 例如 `Array(3)` 未定义时会打印几千字符。这里对超长描述做截断，
 // 并优先使用构造器/函数的名字。
+// invokeWithThis 以 thisVal 为 this 调用 fn, args 为实参。
+//
+// OP_CALL_METHOD 与 OP_CALL_METHOD_SPREAD 共用: 两者只差实参来源 (栈上定长 vs
+// 数组), 调用语义完全一致。返回值遵守 VM 的统一约定 ——
+//   - nil: 调用已完成 (结果已压栈), 或异常已被 catch/finally 接住, 调用方继续;
+//   - 非 nil: 异常继续向外传播, 调用方 return。
+func (vm *VM) invokeWithThis(fn, thisVal object.Value, args []object.Value) error {
+	switch callee := fn.(type) {
+	case *object.BuiltinFunction:
+		// 内建函数: 不传 this，直接传参数
+		result := callee.Fn(args...)
+		if result == nil {
+			result = object.UndefinedSingleton
+		}
+		if thrown, err := vm.throwIfError(result, callee.ReturnIsValue); thrown {
+			return err
+		}
+		vm.stack.Push(result)
+		if err := vm.checkCallbackErr(); err != nil {
+			return vm.rethrowBridgeError(err)
+		}
+	case *object.BuiltinMethod:
+		// 内建方法: this 作为第一个参数传递
+		result := callee.Fn(thisVal, args...)
+		if result == nil {
+			result = object.UndefinedSingleton
+		}
+		if thrown, err := vm.throwIfError(result, false); thrown {
+			return err
+		}
+		vm.stack.Push(result)
+		if err := vm.checkCallbackErr(); err != nil {
+			return vm.rethrowBridgeError(err)
+		}
+	case *object.Closure:
+		// 创建绑定了 this 的新闭包
+		methodClosure := &object.Closure{
+			Fn:             callee.Fn,
+			Env:            callee.Env,
+			This:           thisVal,
+			IsArrow:        callee.IsArrow,
+			CapturedLocals: callee.CapturedLocals,
+		}
+		// generator 方法调用: 创建 Generator (this 绑定保留在闭包中)
+		if methodClosure.Fn != nil && methodClosure.Fn.IsGenerator {
+			vm.stack.Push(object.NewGenerator(methodClosure, args))
+		} else {
+			if err := vm.callClosure(methodClosure, args); err != nil {
+				return vm.throwJSError(err)
+			}
+		}
+	case *object.Proxy:
+		// 代理方法调用: 转发到 apply trap，this 为 thisVal
+		result, err := vm.proxyApply(callee, thisVal, args)
+		if err != nil {
+			return vm.rethrowBridgeError(err)
+		}
+		vm.stack.Push(result)
+	default:
+		return vm.throwNamedError("TypeError", "%s is not a function", describeCallee(fn))
+	}
+	return nil
+}
+
 func describeCallee(v object.Value) string {
 	if v == nil {
 		return "undefined"

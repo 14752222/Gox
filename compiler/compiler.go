@@ -1937,6 +1937,20 @@ func (c *Compiler) compileClassConstructor(fields []*ast.ClassField, ctor *ast.C
 		c.finallyRetSlot = prevFinallyRetSlot
 	}()
 
+	// 隐式 constructor + 有父类: 语义等价于 constructor(...args){ super(...args) }。
+	// 必须先转发父构造 (父类实例字段 + 父构造体) 再跑本类字段初始化 —— 顺序与规范
+	// 一致 (父字段先于子字段)。旧实现隐式构造是空体, 父类实例字段从不初始化
+	// (静默全 undefined) —— 即 rCzckg。
+	if ctor == nil && superName != "" {
+		// [fn] → [fn, this] → [fn, this, arguments] → CALL_METHOD_SPREAD
+		c.emitSuperLoad(superName)
+		c.emitter.EmitNoOperand(bytecode.OP_THIS)
+		c.emitter.Emit(bytecode.OP_LOAD, uint16(argumentsSlot))
+		c.emitter.EmitNoOperand(bytecode.OP_CALL_METHOD_SPREAD)
+		// super() 的返回值 (父构造结果) 丢弃: 隐式构造体里没有表达式语句层。
+		c.emitter.EmitNoOperand(bytecode.OP_POP)
+	}
+
 	// 实例字段赋值: this.field = value / this[expr] = value
 	for _, field := range fields {
 		c.emitter.EmitNoOperand(bytecode.OP_THIS)
@@ -3640,6 +3654,17 @@ func (c *Compiler) compileCallExpression(node *ast.CallExpression) error {
 			return fmt.Errorf("compiler: super call outside class")
 		}
 		_ = super
+		// super(...args): 实参个数运行期才知道, 走「实参在数组里」的方法调用。
+		// 栈: [fn] → [fn, this] → [fn, this, argsArray] → CALL_METHOD_SPREAD。
+		if hasSpreadArgs(node.Arguments) {
+			c.emitSuperLoad(c.currentSuperClass)
+			c.emitter.EmitNoOperand(bytecode.OP_THIS)
+			if err := c.compileArgumentsArray(node.Arguments); err != nil {
+				return err
+			}
+			c.emitter.EmitNoOperand(bytecode.OP_CALL_METHOD_SPREAD)
+			return nil
+		}
 		// LOAD_GLOBAL SuperClass → OP_THIS → 参数 → OP_CALL_METHOD
 		// 注意: 这里不 emit POP, 返回值 (父构造结果) 留在栈上由外层语句/表达式消费,
 		// 否则表达式语句还会再补一个 POP, 造成双重弹出破坏栈。
@@ -3714,19 +3739,8 @@ func (c *Compiler) compileCallExpression(node *ast.CallExpression) error {
 
 	if hasSpread {
 		// 有 spread: 收集参数到数组，再用 OP_CALL_SPREAD 调用
-		c.emitter.Emit(bytecode.OP_NEW_ARRAY, 0)
-		for _, arg := range node.Arguments {
-			if spread, ok := arg.(*ast.SpreadElement); ok {
-				if err := c.compileExpression(spread.Argument); err != nil {
-					return err
-				}
-				c.emitter.EmitNoOperand(bytecode.OP_ARRAY_SPREAD)
-			} else {
-				if err := c.compileExpression(arg); err != nil {
-					return err
-				}
-				c.emitter.EmitNoOperand(bytecode.OP_ARRAY_PUSH)
-			}
+		if err := c.compileArgumentsArray(node.Arguments); err != nil {
+			return err
 		}
 		// 编译函数
 		if err := c.compileExpression(node.Function); err != nil {
@@ -3759,6 +3773,26 @@ func hasSpreadArgs(args []ast.Expression) bool {
 		}
 	}
 	return false
+}
+
+// compileArgumentsArray 把实参列表 (含 spread 元素) 收集成一个数组压栈。
+// 供 OP_CALL_SPREAD / OP_CALL_METHOD_SPREAD 这类「实参个数运行期才知道」的调用复用。
+func (c *Compiler) compileArgumentsArray(args []ast.Expression) error {
+	c.emitter.Emit(bytecode.OP_NEW_ARRAY, 0)
+	for _, arg := range args {
+		if spread, ok := arg.(*ast.SpreadElement); ok {
+			if err := c.compileExpression(spread.Argument); err != nil {
+				return err
+			}
+			c.emitter.EmitNoOperand(bytecode.OP_ARRAY_SPREAD)
+		} else {
+			if err := c.compileExpression(arg); err != nil {
+				return err
+			}
+			c.emitter.EmitNoOperand(bytecode.OP_ARRAY_PUSH)
+		}
+	}
+	return nil
 }
 
 func (c *Compiler) compileMemberExpression(node *ast.MemberExpression) error {

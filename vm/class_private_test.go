@@ -13,13 +13,13 @@ import (
 // 子类与同名类互不串槽。this.#x 编译为运行时动态键 (GET_INDEX/SET_INDEX),
 // 类外的 #x 是编译期错误。
 //
-// ⚠️ 已知既有缺陷（**非**本特性引入, 已建单 rCzckg）: 子类**未显式声明
-// constructor** 时, 隐式 constructor 不调用父类构造 —— 父类实例字段在子实例上
-// 是 undefined。根因在 compiler.compileClassConstructor: 形参 superName 零引用,
-// `ctor == nil` 分支不发射 super(...)。
-// 注意边界: 子类**显式**写 constructor(){ super() } 时父类构造正常执行,
-// 所以不是「extends 一律坏」。
-// 涉及隐式构造的用例只断言「子类摸不到父类私有」这一隔离语义, 不断言父字段的值。
+// 曾有的既有缺陷（rCzckg, 2026-10-05 已修）: 子类**未显式声明 constructor** 时,
+// 隐式 constructor 不调用父类构造 —— 父类实例字段在子实例上是 undefined。
+// 修法: compileClassConstructor 对 `ctor == nil && superName != ""` 发射
+// `super(...arguments)`（新增 OP_CALL_METHOD_SPREAD）。回归见
+// vm/class_ctor_forward_test.go。
+// 注意边界: 同一嵌套作用域里对 **父类名** 的解析仍受 compiler 缺 captured-locals
+// 分析影响（已建单 rIIXSR），与本特性的隔离语义无关。
 
 // evalP 是 evalOut 的别名（本文件用短名）。
 func evalP(t *testing.T, src string) string {
@@ -87,8 +87,8 @@ func TestPrivateInOperator(t *testing.T) {
 	}
 }
 
-// TestPrivateInheritanceIsolation 子类摸不到父类的同名私有
-// (只断言隔离; 父字段在子实例上的值受既有 extends 缺陷影响, 不断言)。
+// TestPrivateInheritanceIsolation 子类摸不到父类的同名私有。
+// (rCzckg 修复后隐式构造会转发 super(...args), 但本用例只断言隔离语义。)
 func TestPrivateInheritanceIsolation(t *testing.T) {
 	got := evalP(t, `
 		class D { #p = 1; }
