@@ -1524,19 +1524,40 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 					}
 				}
 				// 设置 this 为新对象
+				//
+				// 必须结转 CapturedLocals: 构造函数体里对外层作用域绑定的引用
+				// （module 模式下的 `super`、嵌套类里对 enclosing 变量的取值等）
+				// 编成 OP_LOAD slot，靠帧装配时拷贝 CapturedLocals 前缀取值。
+				// 漏掉它 → 前缀全 nil → 读外层绑定报 TDZ（rIIXSR，2026-10-05）。
+				// 回归: vm/new_captured_locals_test.go。
 				newClosure := &object.Closure{
-					Fn:      closure.Fn,
-					Env:     closure.Env,
-					This:    newObj,
-					IsArrow: closure.IsArrow,
+					Fn:             closure.Fn,
+					Env:            closure.Env,
+					This:           newObj,
+					IsArrow:        closure.IsArrow,
+					CapturedLocals: closure.CapturedLocals,
+					CreatedAtFrame: closure.CreatedAtFrame,
 				}
 				// 调用构造函数 (同步执行到返回)
+				//
+				// 错误必须先回收本帧再走抛出流程 (与 OP_CALL_METHOD 的错误路径同一
+				// 约定)。此前直接 `return err`: 异常逃过 handleThrow ⇒ 外层
+				// `try { new X() } catch` 抓不到，且构造函数帧不回收（rVI6Eb）。
+				// 回归: vm/new_throw_catch_test.go。
 				startIdx := vm.frameIdx + 1
 				if err := vm.callClosure(newClosure, args); err != nil {
-					return err
+					vm.unwindFramesTo(startIdx)
+					if terr := vm.rethrowBridgeError(err); terr != nil {
+						return terr
+					}
+					continue
 				}
 				if err := vm.runFrom(startIdx); err != nil {
-					return err
+					vm.unwindFramesTo(startIdx)
+					if terr := vm.rethrowBridgeError(err); terr != nil {
+						return terr
+					}
+					continue
 				}
 				// 如果构造函数返回对象，使用返回的对象
 				result := vm.stack.Pop()
