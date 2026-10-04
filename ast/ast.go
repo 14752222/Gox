@@ -612,6 +612,17 @@ func (di *DynamicImportExpression) String() string {
 }
 func (di *DynamicImportExpression) expressionNode() {}
 
+// PrivateIdentifier 表示裸私有名表达式, 只作为 `#x in obj` 的左操作数
+// (其余位置的 #x 都是 obj.#x 成员访问, 由 MemberExpression.Private 表达)。
+type PrivateIdentifier struct {
+	Token lexer.Token // PRIVATE_NAME token, Literal 含 #
+	Name  string      // 不含 # 的裸名
+}
+
+func (pi *PrivateIdentifier) TokenLiteral() string { return pi.Token.Literal }
+func (pi *PrivateIdentifier) String() string       { return "#" + pi.Name }
+func (pi *PrivateIdentifier) expressionNode()      {}
+
 // ==================== Class ====================
 
 // ClassMethod 表示 class 中的一个方法。
@@ -625,6 +636,7 @@ type ClassMethod struct {
 	IsSetter      bool       // 是否 setter
 	IsGenerator   bool       // 是否生成器方法: *name() {}
 	IsAsync       bool       // 是否 async 方法: async name() {}
+	IsPrivate     bool       // 是否 #name 私有成员 (Name 含前导 #)
 	Parameters    []*Parameter
 	Body          *BlockStatement
 	FieldValue    Expression // 字段值 (方法解析时若为字段则非 nil)
@@ -633,7 +645,8 @@ type ClassMethod struct {
 // ClassField 表示 class 的实例字段。
 type ClassField struct {
 	Token       lexer.Token
-	Name        string     // 字段名
+	Name        string     // 字段名 (私有字段含前导 #)
+	IsPrivate   bool       // 是否 #name 私有字段
 	ComputedKey Expression // 计算属性名 [expr] (非 nil 时优先于 Name)
 	Value       Expression // 字段值 (nil = 无初始化)
 }
@@ -946,6 +959,9 @@ func (ce *CallExpression) expressionNode() {}
 // MemberExpression 表示属性访问。
 // 例如: obj.prop (点访问), arr[0] (方括号访问)
 type MemberExpression struct {
+	// Private 非 nil 时是 this.#name 访问: 值为不带 # 的私有名。
+	// 与 Property 互斥 (私有访问编译为运行时动态键, 不走编译期属性常量)。
+	Private string
 	Token    lexer.Token // . 或 [
 	Object   Expression
 	Property Expression // Identifier (点访问) 或 Expression (方括号访问)

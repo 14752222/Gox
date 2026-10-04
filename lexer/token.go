@@ -46,6 +46,7 @@ const (
 	QUESTION  // ?
 	TILDE     // ~
 	AT        // @ (装饰器预留)
+	PRIVATE_NAME // #name 私有名 (类私有字段/方法, # 是名字的一部分)
 
 	// ==================== 多字符运算符 ====================
 	EQ              // ==
@@ -409,6 +410,8 @@ func (t TokenType) String() string {
 		return "BIT_NOT"
 	case AT:
 		return "AT"
+	case PRIVATE_NAME:
+		return "PRIVATE_NAME"
 	case CLASS:
 		return "CLASS"
 	case SUPER:

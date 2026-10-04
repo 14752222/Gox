@@ -19,10 +19,10 @@
 | # | 项 | 现状证据 | 影响面 |
 |---|---|---|---|
 | P0-1 | **`await` 被拒 Promise + `try/catch` 不生效** | `docs/js-runtime-api-tutorial.md` §5.3 已知限制 1 明文 | async/await 是基于 generator 实现的，`await` 编译为 `yield`，rejected 后生成器无法恢复 ⇒ try/catch 块失效。**这是语义级 bug，不是"限制"**，普通用户第一周就会踩到 |
-| P0-2 | **私有字段 / 私有方法 `#name`** | Grep `PrivateName\|#name` 于 `parser/ compiler/ vm/` **零命中**；`test262-t04-report.md` §四列为**高风险最大收益 ~3449 例** | 现代 class 代码的基础设施（React 风格组件、库封装都依赖）。缺失会导致整类源码无法运行 |
+| P0-2 | ~~**私有字段 / 私有方法 `#name`**~~ **已于 2026-10-03 落地** | 原口径（`PrivateName\|#name` 于 `parser/ compiler/ vm/` 零命中）已失效：lexer 新增 `PRIVATE_NAME` token，ast 新增 `PrivateIdentifier` 与 `IsPrivate` 标记，compiler 用 `\x00<类前缀>:<裸名>` 混编码键落地（`Object.keys`/`JSON.stringify`/for-in/`obj["#x"]` 全部摸不到，子类与同名类互不串槽）。测试 `vm/class_private_test.go` 9 例 + `parser/class_private_test.go` 4 例全绿（含 `#x in obj`、私有访问器、静态私有、私有与公有同名不冲突）—— 与原口径同为 2026-10-02 复测，**已不再零命中** | 现代 class 代码的基础设施（React 风格组件、库封装都依赖）。**test262 收益待 runner 复测**（本地无套件，徽章另行更新）；`super(...args)` spread 与隐式构造函数缺口另见 rCzckg |
 | P0-3 | **`for await...of`** | Grep `for await\|ForAwait\|AsyncIterator` **零命中**；T04 报告列 ~1500 例、中高风险 | 异步迭代是 async 生态的标准写法；曾试探后**完整回退**（runner 里应保留回退记录） |
 
-> 附带：AsyncGenerator 目前"可编译执行但 `.next()` 协议不符"（T04 报告）。修 P0-2/P0-3 时需一并处理。
+> 附带：AsyncGenerator 目前"可编译执行但 `.next()` 协议不符"（T04 报告）。修 P0-3 时需一并处理（P0-2 已落地）。
 
 ## 二、P0 —— 平台空白
 
@@ -99,7 +99,7 @@
 
 1. **先做"零成本兑付"**：P1-5（`saveFile`）、P1-15（官网文案）、P1-16（补 tag）、P1-17（提交工作区）—— 半天内可清完，且直接改善外部可见度。
 2. **再攻 P0-1**：`await` + try/catch 是语义级 bug，修它比堆合规率更值。
-3. **P0-2 → P0-3**：按 T04 报告既定顺序（私有字段 ~3449 例收益最大）。
+3. **~~P0-2~~ → P0-3**：P0-2（私有字段 / 私有方法 `#name`）**已于 2026-10-03 落地**（见 §一）；剩余 P0-3（`for await...of`，T04 报告列 ~1500 例）按原顺序继续。
 4. **并行推进平台验收**：P0-5/P0-6（Android 交叉编译重跑 + 真机）、P1-9~P1-14 的清单画勾。
 5. ~~**鸿蒙 P0-4 单独立项**~~ **已兑付大半（2026-10-02）**：壳工程、NAPI 通道与折叠上报链路已落地并通过命令行构建；剩余「DevEco 自动签名 + 模拟器 HF1 验收」（口径：模拟器即可，HF2 折叠上报逻辑已由桌面资产测试覆盖）无需再单独立项，按清单画勾即可。
 

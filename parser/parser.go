@@ -117,6 +117,7 @@ func New(l *lexer.Lexer) *Parser {
 	p.registerPrefix(lexer.NEW, p.parseNewExpression)
 	p.registerPrefix(lexer.YIELD, p.parseYieldExpression)
 	p.registerPrefix(lexer.AWAIT, p.parseAwaitExpression)
+	p.registerPrefix(lexer.PRIVATE_NAME, p.parsePrivateIdentifier)
 	p.registerPrefix(lexer.ASYNC, p.parseAsyncExpression)
 	p.registerPrefix(lexer.CLASS, p.parseClassExpression)
 	p.registerPrefix(lexer.JSX_LT, p.parseJSXElement)
@@ -1976,6 +1977,10 @@ func (p *Parser) parseIndexExpression(left ast.Expression) ast.Expression {
 func (p *Parser) parseMemberExpression(left ast.Expression) ast.Expression {
 	mexp := &ast.MemberExpression{Token: p.curToken(), Object: left}
 	p.nextToken()
+	// obj.#x: 属性名位置是私有名 (Lexer 切出 PRIVATE_NAME, Literal 含 #)
+	if p.curTokenIs(lexer.PRIVATE_NAME) {
+		return p.parsePrivateMemberExpression(left)
+	}
 	// 属性名可以是标识符或关键字 (如 obj.default, obj.class)
 	if !p.curTokenIs(lexer.IDENTIFIER) && !isKeywordProperty(p.curToken().Type) {
 		p.addError(fmt.Sprintf("expected property name, got %s", p.curToken().Type))
@@ -1983,6 +1988,90 @@ func (p *Parser) parseMemberExpression(left ast.Expression) ast.Expression {
 	}
 	mexp.Property = &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
 	mexp.Computed = false
+	return mexp
+}
+
+// parsePrivateIdentifier 解析裸私有名 (仅 `#x in obj` 左侧合法)。
+// 其余场景的 #x 由成员访问/类体分支处理, 走不到这;
+// 万一走到 (如 + #x), 产生的节点在编译期由 emitPrivateKey 校验类上下文。
+func (p *Parser) parsePrivateIdentifier() ast.Expression {
+	lit := p.curToken().Literal
+	name := lit
+	if len(name) > 0 && name[0] == '#' {
+		name = name[1:]
+	}
+	return &ast.PrivateIdentifier{Token: p.curToken(), Name: name}
+}
+
+// parsePrivateAccessor 解析 get #name() / set #name(v) 私有访问器。
+// curToken 在 PRIVATE_NAME 上; IsGetter/IsSetter 已由调用方设置。
+func (p *Parser) parsePrivateAccessor(member *ast.ClassMethod) *ast.ClassMethod {
+	member.IsPrivate = true
+	member.Name = p.curToken().Literal
+	if p.peekTokenIs(lexer.LPAREN) {
+		p.nextToken() // cur = (
+		member.Parameters = p.parseParameters(lexer.RPAREN)
+		if !p.curTokenIs(lexer.RPAREN) {
+			return nil
+		}
+		p.nextToken() // cur = {
+		member.Body = p.parseBlockStatement()
+		p.nextToken() // 前进到下一成员/分隔符
+		return member
+	}
+	p.addError("private accessor must be followed by '('")
+	return nil
+}
+
+// parsePrivateMember 解析类体中的 #name 成员 (字段 / 方法 / static 字段)。
+// curToken 在 PRIVATE_NAME 上 (Literal 含前导 #), static 前缀已由 parseClassMember 识别。
+// 返回约定与 parseClassMember 一致: 方法 (Body != nil)、字段 (FieldValue != nil 或裸字段)。
+// 私有名无计算属性形式 (#[expr] 非法), 也不能叫 #constructor。
+func (p *Parser) parsePrivateMember(member *ast.ClassMethod) *ast.ClassMethod {
+	member.IsPrivate = true
+	member.Name = p.curToken().Literal // "#x" 含 # 完整形式
+
+	if member.Name == "#constructor" {
+		p.addError("private name '#constructor' is not allowed")
+		return nil
+	}
+
+	// #name(...) {} 私有方法
+	if p.peekTokenIs(lexer.LPAREN) {
+		p.nextToken() // cur = (
+		member.Parameters = p.parseParameters(lexer.RPAREN)
+		if !p.curTokenIs(lexer.RPAREN) {
+			return nil
+		}
+		p.nextToken() // cur = {
+		member.Body = p.parseBlockStatement()
+		// parseBlockStatement 返回时 cur 停在 } 上 (与 ctor/getter 路径一致),
+		// 再前进一格到下一成员/分隔符。
+		p.nextToken()
+		return member
+	}
+
+	// #name = expr 私有字段
+	if p.peekTokenIs(lexer.ASSIGN) {
+		p.nextToken() // cur = =
+		p.nextToken() // cur = 表达式首
+		member.FieldValue = p.parseExpression(LOWEST)
+		p.nextToken() // 前进到分隔符/下一个成员
+		return member
+	}
+
+	// 裸私有字段 #name;
+	p.nextToken() // 前进到分隔符/下一个成员
+	return member
+}
+
+// parsePrivateMemberExpression 解析点访问后的私有名: obj.#x。
+// curToken 已在 PRIVATE_NAME 上 (Literal 含前导 #)。
+// 私有访问编译为运行时动态键 (前缀由外围类决定, 编译期不可知),
+// 这里只记录裸名; 是否处于合法类体上下文由编译器校验。
+func (p *Parser) parsePrivateMemberExpression(left ast.Expression) ast.Expression {
+	mexp := &ast.MemberExpression{Token: p.curToken(), Object: left}
+	mexp.Private = p.curToken().Literal // "#x" 形式, 编译器去 #
 	return mexp
 }
 
@@ -2365,7 +2454,7 @@ func (p *Parser) parseClassDeclaration() *ast.ClassDeclaration {
 			cls.Methods = append(cls.Methods, member)
 		} else {
 			// 实例字段: name = value
-			field := &ast.ClassField{Token: member.Token, Name: member.Name, ComputedKey: member.ComputedKey, Value: member.FieldValue}
+			field := &ast.ClassField{Token: member.Token, Name: member.Name, IsPrivate: member.IsPrivate, ComputedKey: member.ComputedKey, Value: member.FieldValue}
 			cls.Fields = append(cls.Fields, field)
 		}
 		// 跳过成员间的分隔符 (分号)
@@ -2433,7 +2522,7 @@ func (p *Parser) parseClassExpression() ast.Expression {
 		} else if member.Body != nil {
 			cls.Methods = append(cls.Methods, member)
 		} else {
-			field := &ast.ClassField{Token: member.Token, Name: member.Name, ComputedKey: member.ComputedKey, Value: member.FieldValue}
+			field := &ast.ClassField{Token: member.Token, Name: member.Name, IsPrivate: member.IsPrivate, ComputedKey: member.ComputedKey, Value: member.FieldValue}
 			cls.Fields = append(cls.Fields, field)
 		}
 		for p.curTokenIs(lexer.SEMICOLON) {
@@ -2454,11 +2543,22 @@ func (p *Parser) parseClassExpression() ast.Expression {
 func (p *Parser) parseClassMember() *ast.ClassMethod {
 	member := &ast.ClassMethod{Token: p.curToken()}
 
+	// 私有成员: #name (字段/方法/访问器都支持)。# 是名字的一部分,
+	// Name 存含 # 的完整形式, IsPrivate 标记供编译器分发。
+	if p.curTokenIs(lexer.PRIVATE_NAME) {
+		return p.parsePrivateMember(member)
+	}
+
 	// static 关键字
 	if p.curTokenIs(lexer.IDENTIFIER) && p.curToken().Literal == "static" &&
 		!p.peekTokenIs(lexer.LPAREN) && !p.peekTokenIs(lexer.ASSIGN) {
 		member.IsStatic = true
 		p.nextToken()
+		// static #name ...: static 之后是私有成员, 进入私有分支
+		// (IsStatic 已带上, parsePrivateMember 里会作为静态处理)
+		if p.curTokenIs(lexer.PRIVATE_NAME) {
+			return p.parsePrivateMember(member)
+		}
 	}
 
 	// async 方法/生成器: async name() {} / async *name() {} / async [expr]() {}
@@ -2500,6 +2600,20 @@ func (p *Parser) parseClassMember() *ast.ClassMethod {
 
 	// get/set 访问器: get name() {} / set name(v) {} / get [expr]() / set [expr](v)
 	// get/set 后跟 IDENTIFIER+( 或 [ 时按访问器处理, 其余情况它是字段名。
+	// get #name() / set #name(v): 私有访问器 —— 分发进 parsePrivateMember
+	// 之前的特判 (其内部按访问器形状解析)。
+	if p.curTokenIs(lexer.IDENTIFIER) &&
+		(p.curToken().Literal == "get" || p.curToken().Literal == "set") &&
+		p.peekTokenIs(lexer.PRIVATE_NAME) {
+		isGet := p.curToken().Literal == "get"
+		if isGet {
+			member.IsGetter = true
+		} else {
+			member.IsSetter = true
+		}
+		p.nextToken() // cur = #name
+		return p.parsePrivateAccessor(member)
+	}
 	if p.curTokenIs(lexer.IDENTIFIER) &&
 		(p.curToken().Literal == "get" || p.curToken().Literal == "set") &&
 		((p.peekTokenIs(lexer.IDENTIFIER) && p.peek2TokenIs(lexer.LPAREN)) ||

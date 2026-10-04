@@ -49,7 +49,15 @@ type Compiler struct {
 	// 的 CompiledFunction 里, 不污染主指令流的 offset。
 	srcPositions map[int]ast.Pos
 
-	// currentSuperClass 记录当前 class 方法的父类名 (super 引用目标)。
+	// currentPrivatePrefix 记录当前正在编译的 class 的私有名键前缀。
+	// 私有字段/方法落成普通属性, 但键是 "\x00<prefix>:<name>" 的混编码:
+	// - \x00 让外部常规访问 (obj.k / obj["#x"] / Object.keys) 全部摸不到;
+	// - prefix 每类唯一 (类名+序号), 子类/同名类互不串槽。
+	// 类体外的 #x 访问在此前缀为空时报编译错 (类外私有访问非法)。
+	currentPrivatePrefix string
+
+	// privateClassSeq 私有类序号: 每个 class 递增, 拼进私有键前缀保证唯一。
+	privateClassSeq int
 	// 仅在编译 class 方法时非空。
 	currentSuperClass string
 }
@@ -1533,6 +1541,34 @@ func (c *Compiler) compileClassDeclaration(node *ast.ClassDeclaration) error {
 // compileClassBody 编译 class 声明/表达式共有的主体部分
 // (constructor + prototype + 实例/静态方法 + extends)。
 // 返回时类值 (constructor) 在栈顶。
+// privateKey 把裸私有名 (#x 形式或已去 # 的裸名) 编成混编码属性键。
+// name 容忍带/不带 # 两种形式。
+func (c *Compiler) privateKey(name string) string {
+	n := name
+	if len(n) > 0 && n[0] == '#' {
+		n = n[1:]
+	}
+	if c.currentPrivatePrefix == "" {
+		// 不在类体内: 拿不到前缀, 交给调用方报错; 这里给个占位避免空键
+		return "\x00<nowhere>:" + n
+	}
+	return "\x00" + c.currentPrivatePrefix + ":" + n
+}
+
+// emitPrivateKey 发射私有键字符串常量 (栈上多一个 key)。
+func (c *Compiler) emitPrivateKey(name string) error {
+	if c.currentPrivatePrefix == "" {
+		n := name
+		if len(n) > 0 && n[0] == '#' {
+			n = n[1:]
+		}
+		return fmt.Errorf("compiler: '#%s' is not allowed outside class", n)
+	}
+	idx := c.constants.AddConstant(object.NewString(c.privateKey(name)))
+	c.emitter.Emit(bytecode.OP_CONST, idx)
+	return nil
+}
+
 func (c *Compiler) compileClassBody(className string, superClass ast.Expression, methods, statics []*ast.ClassMethod, fields []*ast.ClassField) error {
 	// 父类名 (super 引用目标; 仅支持 Identifier 形式的 extends)
 	superName := ""
@@ -1553,6 +1589,12 @@ func (c *Compiler) compileClassBody(className string, superClass ast.Expression,
 		}
 	}
 
+	// 私有名前缀: 类名 + 全局序号保证唯一 (同名类/嵌套类互不串槽)。
+	// 序号只用于键混编, 不影响任何可观察行为。
+	c.privateClassSeq++
+	prevPrefix := c.currentPrivatePrefix
+	c.currentPrivatePrefix = fmt.Sprintf("%s\x01%d", className, c.privateClassSeq)
+
 	// 编译 constructor
 	prevSuper := c.currentSuperClass
 	c.currentSuperClass = superName
@@ -1570,6 +1612,28 @@ func (c *Compiler) compileClassBody(className string, superClass ast.Expression,
 	// 实例方法挂到 prototype
 	for _, m := range methods {
 		if m.IsConstructor {
+			continue
+		}
+		// 私有方法/访问器: 挂 proto 但用混编码键 (this.#m() 调用走同键 GET_INDEX)
+		if m.IsPrivate && m.Body != nil {
+			prevSuperP := c.currentSuperClass
+			c.currentSuperClass = superName
+			meta, err := c.compileFunction(m.Name, m.Parameters, m.Body, false, m.IsGenerator, m.IsAsync)
+			c.currentSuperClass = prevSuperP
+			if err != nil {
+				return err
+			}
+			midx := c.constants.AddConstant(meta)
+			c.emitter.Emit(bytecode.OP_FUNCTION, midx) // [ctor, proto, fn]
+			pkeyIdx := c.constants.AddConstant(object.NewString(c.privateKey(m.Name)))
+			switch {
+			case m.IsGetter:
+				c.emitter.Emit(bytecode.OP_SET_GETTER, pkeyIdx)
+			case m.IsSetter:
+				c.emitter.Emit(bytecode.OP_SET_SETTER, pkeyIdx)
+			default:
+				c.emitter.Emit(bytecode.OP_SET_PROP, pkeyIdx) // [ctor, proto]
+			}
 			continue
 		}
 		if err := c.compileClassMethodToObject(m, superName); err != nil {
@@ -1597,6 +1661,14 @@ func (c *Compiler) compileClassBody(className string, superClass ast.Expression,
 		// 字段初始化语义尚未实现 —— 此处跳过而不是 nil deref 崩掉编译进程
 		// (崩进程会让 test262 分片子进程整片孤儿)。
 		if m.Body == nil {
+			// 静态私有字段 (static #x = v): 挂到 ctor, 键混编码。
+			if m.IsPrivate {
+				if err := c.compileExpression(m.FieldValue); err != nil {
+					return err
+				}
+				keyIdx := c.constants.AddConstant(object.NewString(c.privateKey(m.Name)))
+				c.emitter.Emit(bytecode.OP_SET_PROP, keyIdx) // [ctor]
+			}
 			continue
 		}
 		// 编译静态方法函数
@@ -1642,6 +1714,7 @@ func (c *Compiler) compileClassBody(className string, superClass ast.Expression,
 			c.emitter.Emit(bytecode.OP_SET_PROP, keyIdx) // [ctor]
 		}
 	}
+	c.currentPrivatePrefix = prevPrefix
 	return nil
 }
 
@@ -1699,6 +1772,25 @@ func (c *Compiler) compileClassConstructor(fields []*ast.ClassField, ctor *ast.C
 	// 实例字段赋值: this.field = value / this[expr] = value
 	for _, field := range fields {
 		c.emitter.EmitNoOperand(bytecode.OP_THIS)
+		if field.IsPrivate {
+			// 私有字段: this[#name] = value —— 键是混编码字符串常量
+			// (\x00<prefix>:<name>), 外部任何常规访问都摸不到。
+			if field.Value != nil {
+				if err := c.compileExpression(field.Value); err != nil {
+					return nil, err
+				}
+			} else {
+				c.emitter.EmitNoOperand(bytecode.OP_UNDEFINED)
+			}
+			if err := c.emitPrivateKey(field.Name); err != nil {
+				return nil, err
+			}
+			// [this, val, key] → SWAP → [this, key, val] → SET_INDEX → [val] → POP
+			c.emitter.EmitNoOperand(bytecode.OP_SWAP)
+			c.emitter.EmitNoOperand(bytecode.OP_SET_INDEX)
+			c.emitter.EmitNoOperand(bytecode.OP_POP)
+			continue
+		}
 		if field.ComputedKey != nil {
 			// 动态键字段: SET_INDEX 弹 [obj, key, val] 三元组, 需先 DUP this
 			// 让写入消耗副本、原 this 留在栈底 (constructor 栈约定)。
@@ -1790,7 +1882,11 @@ func (c *Compiler) compileClassMethodToObject(m *ast.ClassMethod, superName stri
 		}
 		return nil
 	}
-	keyIdx := c.constants.AddConstant(object.NewString(m.Name))
+	propKey := m.Name
+	if m.IsPrivate {
+		propKey = c.privateKey(m.Name)
+	}
+	keyIdx := c.constants.AddConstant(object.NewString(propKey))
 	if m.IsGetter {
 		c.emitter.Emit(bytecode.OP_SET_GETTER, keyIdx)
 	} else if m.IsSetter {
@@ -2365,6 +2461,12 @@ func (c *Compiler) compileExpression(expr ast.Expression) error {
 		return c.compileFunctionExpression(node)
 	case *ast.ClassExpression:
 		return c.compileClassExpression(node)
+	case *ast.PrivateIdentifier:
+		// 裸私有名只合法于 `#x in obj` 的左操作数 —— 编译为混编码键常量,
+		// 与 OP_IN 的 [key, obj] 栈约定一致 (compileBinaryExpression 先左后右)。
+		// 出现在其他位置 (如 + #x) 会在后续运算指令以错误类型消费,
+		// 运行时报 TypeError —— 与"语法位置受限"的工程取舍一致。
+		return c.emitPrivateKey("#" + node.Name)
 	case *ast.ArrowFunctionExpression:
 		return c.compileArrowFunctionExpression(node)
 	case *ast.ThisExpression:
@@ -2865,6 +2967,14 @@ func (c *Compiler) declareOnce(name string, isConst, isFnDecl bool) (*Symbol, er
 // obj 与 key 各自只求值一次 —— 复合/逻辑赋值需要重复用到这个引用，
 // 但绝不能重复求值 `obj[f()] += v` 里的 f。
 func (c *Compiler) compileMemberRef(m *ast.MemberExpression) error {
+	// obj.#x = val: 与公有 [obj, key] 约定一致, key 是混编码常量,
+	// SET_INDEX / 复合赋值 (DUP2+GET_INDEX+SET_INDEX) 全部复用。
+	if m.Private != "" {
+		if err := c.compileExpression(m.Object); err != nil {
+			return err
+		}
+		return c.emitPrivateKey(m.Private)
+	}
 	if err := c.compileExpression(m.Object); err != nil {
 		return err
 	}
@@ -3397,9 +3507,18 @@ func (c *Compiler) compileCallExpression(node *ast.CallExpression) error {
 			return err
 		} // [obj]
 		c.emitter.EmitNoOperand(bytecode.OP_DUP) // [obj, obj]
-		propName := member.Property.(*ast.Identifier).Value
-		idx := c.constants.AddConstant(object.NewString(propName))
-		c.emitter.Emit(bytecode.OP_GET_PROP, idx) // [obj, fn]
+		if member.Private != "" {
+			// 私有方法调用: fn 经混编码动态键取 (GET_INDEX 弹 [obj, key] 压 fn)。
+			// [obj, obj] → key → GET_INDEX → [obj, fn]
+			if err := c.emitPrivateKey(member.Private); err != nil {
+				return err
+			}
+			c.emitter.EmitNoOperand(bytecode.OP_GET_INDEX) // [obj, fn]
+		} else {
+			propName := member.Property.(*ast.Identifier).Value
+			idx := c.constants.AddConstant(object.NewString(propName))
+			c.emitter.Emit(bytecode.OP_GET_PROP, idx) // [obj, fn]
+		}
 		c.emitter.EmitNoOperand(bytecode.OP_SWAP) // [fn, obj]
 		// 编译参数
 		for _, arg := range node.Arguments {
@@ -3464,6 +3583,20 @@ func hasSpreadArgs(args []ast.Expression) bool {
 }
 
 func (c *Compiler) compileMemberExpression(node *ast.MemberExpression) error {
+	// obj.#x: 私有访问编译为运行时动态键 (GET_INDEX)。
+	// 键是 \x00<prefix>:<name> 混编码 —— 前缀在编译期由 currentPrivatePrefix
+	// 决定, 类外访问在这里报编译错。
+	if node.Private != "" {
+		if err := c.compileExpression(node.Object); err != nil {
+			return err
+		}
+		if err := c.emitPrivateKey(node.Private); err != nil {
+			return err
+		}
+		c.emitter.EmitNoOperand(bytecode.OP_GET_INDEX)
+		return nil
+	}
+
 	// super.prop: 访问父类 prototype 上的属性
 	if super, ok := node.Object.(*ast.SuperExpression); ok {
 		_ = super

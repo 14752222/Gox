@@ -378,6 +378,18 @@ func (l *Lexer) nextToken() Token {
 		// readTemplateLiteral 内部处理了字符消费，需要提前返回
 		return l.readTemplateLiteral(line, col)
 
+	case '#':
+		// #name 私有名: # 后必须紧跟标识符起始字符。
+		// 字面 # (无标识符跟随) 仍走 ILLEGAL —— Gox 无 shebang/私有名以外的 # 用法。
+		// 注意: 标识符路径必须提前 return —— readIdentifier 停在下一个字符上,
+		// 落到底部公共 readChar() 会多吞一个字符 (实测把 #m( 的 ( 吞掉)。
+		l.readChar()
+		if isIdentifierStart(l.ch) {
+			ident := l.readIdentifier()
+			return Token{Type: PRIVATE_NAME, Literal: "#" + ident, Line: line, Column: col}
+		}
+		tok = Token{Type: ILLEGAL, Literal: "#", Line: line, Column: col}
+
 	case 0:
 		tok = Token{Type: EOF, Literal: "", Line: line, Column: col}
 

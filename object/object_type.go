@@ -325,6 +325,9 @@ func (o *Object) HasOwnSymbolProperty(sym *Symbol) bool {
 //
 // 当 InsertOrder 为 nil (对象由字面量直接构造、未经过 SetProperty) 时，
 // 回退到字典序排序，保证与历史行为一致。
+// Keys 返回自有键, 过滤掉私有混编码键 (\x00 前缀) —— 枚举类 API
+// (Object.keys / JSON.stringify / for-in) 统一经此, 类私有成员天然不可见。
+// 内部按名读写 (GetProperty/SetProperty) 不经此, 不受影响。
 func (o *Object) Keys() []string {
 	keys := make([]string, 0, len(o.Properties))
 
@@ -333,7 +336,7 @@ func (o *Object) Keys() []string {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
-		return keys
+		return visibleKeys(keys)
 	}
 
 	var indexKeys, strKeys []string
@@ -381,7 +384,25 @@ func (o *Object) Keys() []string {
 
 	keys = append(keys, indexKeys...)
 	keys = append(keys, strKeys...)
-	return keys
+	return visibleKeys(keys)
+}
+
+// IsPrivateHiddenKey 判定 key 是否为类私有成员的混编码存储键
+// (\x00 前缀, 见 compiler.privateKey)。这类键对 JS 层一切常规枚举
+// (Object.keys/values/entries、for-in、JSON.stringify) 都不可见。
+func IsPrivateHiddenKey(key string) bool {
+	return len(key) > 0 && key[0] == 0
+}
+
+// visibleKeys 过滤私有混编码键 (Keys 的收尾公用)。
+func visibleKeys(keys []string) []string {
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if !IsPrivateHiddenKey(k) {
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 // IsArrayIndexKey 判断属性名是否为 ECMAScript 的 array index:
