@@ -19,7 +19,7 @@
 | # | 项 | 现状证据 | 影响面 |
 |---|---|---|---|
 | P0-1 | ~~**`await` 被拒 Promise + `try/catch` 不生效**~~ **已于 2026-10-03 修复（`04cbdeb`）** | **原口径描述是错的**。真实症状不是「rejected 后生成器无法恢复」，而是 **generator 帧异常终止时未回收**：异常退出时 `runLoop` 是带着错误返回的、只有正常路径才 `popFrame` ⇒ generator 帧留在栈上压住外层 async wrapper 帧，wrapper 执行 `OP_RETURN` 时在错误栈基上取值，返回 `undefined` 而非 `__spawn` 的 promise ⇒ 调用方拿到非 Promise、`try/catch` 抓不到。修法 `unwindGenFrame`（只弹到 generator 自己那帧，绝不动外层）+ `genThrow` 必须在 `handleThrow` **之前**取帧。回归 `vm/async_throw_test.go` 6 例，变异验证过 | 影响面比「await 语义」更广：**任何从 generator 抛出的异常都泄漏帧**（含同步 `function*`）。同批还修掉 try/finally 三条路径全坏（`3148491`，见 §十一） |
-| P0-2 | ~~**私有字段 / 私有方法 `#name`**~~ **已于 2026-10-03 落地** | 原口径（`PrivateName\|#name` 于 `parser/ compiler/ vm/` 零命中）已失效：lexer 新增 `PRIVATE_NAME` token，ast 新增 `PrivateIdentifier` 与 `IsPrivate` 标记，compiler 用 `\x00<类前缀>:<裸名>` 混编码键落地（`Object.keys`/`JSON.stringify`/for-in/`obj["#x"]` 全部摸不到，子类与同名类互不串槽）。测试 `vm/class_private_test.go` 9 例 + `parser/class_private_test.go` 4 例全绿（含 `#x in obj`、私有访问器、静态私有、私有与公有同名不冲突）—— 与原口径同为 2026-10-02 复测，**已不再零命中** | 现代 class 代码的基础设施（React 风格组件、库封装都依赖）。**test262 收益待 runner 复测**（本地无套件，徽章另行更新）；`super(...args)` spread 与隐式构造函数缺口另见 rCzckg |
+| P0-2 | ~~**私有字段 / 私有方法 `#name`**~~ **已于 2026-10-03 落地** | 原口径（`PrivateName\|#name` 于 `parser/ compiler/ vm/` 零命中）已失效：lexer 新增 `PRIVATE_NAME` token，ast 新增 `PrivateIdentifier` 与 `IsPrivate` 标记，compiler 用 `\x00<类前缀>:<裸名>` 混编码键落地（`Object.keys`/`JSON.stringify`/for-in/`obj["#x"]` 全部摸不到，子类与同名类互不串槽）。测试 `vm/class_private_test.go` 9 例 + `parser/class_private_test.go` 4 例全绿（含 `#x in obj`、私有访问器、静态私有、私有与公有同名不冲突）—— 与原口径同为 2026-10-02 复测，**已不再零命中** | 现代 class 代码的基础设施（React 风格组件、库封装都依赖）。**test262 复测已完成（2026-10-04，本地浅克隆套件）**：该特性净 **+30 例**（7844/23726 = **33.06%**；私有字段之前的基线 7814 = 32.93%）。期间暴露并修掉一个**编译器 panic**（`delete obj.#x` 整进程 abort，`97b3c15`），另揭出 213 例规范早错缺口单独立项（`rpEXH2`）。`super(...args)` spread 与隐式构造函数缺口另见 rCzckg |
 | P0-3 | **`for await...of`** | Grep `for await\|ForAwait\|AsyncIterator` **零命中**；T04 报告列 ~1500 例、中高风险 | 异步迭代是 async 生态的标准写法；曾试探后**完整回退**（runner 里应保留回退记录） |
 
 > 附带：AsyncGenerator 目前"可编译执行但 `.next()` 协议不符"（T04 报告）。修 P0-3 时需一并处理（P0-2 已落地）。
@@ -99,7 +99,7 @@
 
 1. ~~**先做"零成本兑付"**~~ **四项已全部闭环（2026-10-04 复核）**：P1-5（`saveFile`）、P1-15（官网文案）、P1-16（tag 经复核本就已打）、P1-17（工作区已清）—— 见 §八 / §五。
 2. ~~**再攻 P0-1**~~ **已闭环（`04cbdeb`，2026-10-03）**：原判的「`await` + try/catch 语义级 bug」实为 generator 帧异常终止未回收，已修（见 §一 P0-1）。
-3. **~~P0-2~~ → P0-3**：P0-2（私有字段 / 私有方法 `#name`）**已于 2026-10-03 落地**（见 §一）；剩余 P0-3（`for await...of`，T04 报告列 ~1500 例）按原顺序继续。
+3. **~~P0-2~~ → P0-3**：P0-2（私有字段 / 私有方法 `#name`）**已于 2026-10-03 落地**（见 §一）；剩余 P0-3（`for await...of`，T04 报告列 ~1500 例）按原顺序继续；另 P0-2 落地时揭出的 **213 例早错缺口**（`rpEXH2`）建议单独排一轮 —— 纯增益（约 +0.9pp），与 `for await` 无耦合。
 4. **并行推进平台验收**：P0-5/P0-6（Android 交叉编译重跑 + 真机）、P1-9~P1-14 的清单画勾。
 5. ~~**鸿蒙 P0-4 单独立项**~~ **已兑付大半（2026-10-02）**：壳工程、NAPI 通道与折叠上报链路已落地并通过命令行构建；剩余「DevEco 自动签名 + 模拟器 HF1 验收」（口径：模拟器即可，HF2 折叠上报逻辑已由桌面资产测试覆盖）无需再单独立项，按清单画勾即可。
 
@@ -188,6 +188,7 @@
 | **P0-1** async 函数体 throw 被吞成 undefined | ✅ 已修（`04cbdeb`）：generator 帧异常终止未回收（详见 §一 P0-1）；回归 `vm/async_throw_test.go` 6 例，变异验证过 |
 | try / finally 三条路径全坏 | ✅ 已修（`3148491`）：`compileTryStatement` 重写 —— 纯 finally 形状改 `PUSH_TRY 0`（不再伪造只 POP 的假 catch），try 正常 / catch 正常 / 异常三条路径汇入**同一份** finally 体，catch 的 finally 保护改 `PUSH_TRY 0` + `PUSH_FINALLY`（旧写法孤儿）。变异验证打在 `handleThrowInner` 的 `pendingThrow` 设置上，3 例精确复现。**残留**：return / break / continue 穿 try 体时 finally 仍不执行（`rMkA8D`） |
 | **P0-2** 类私有字段 / 私有方法 `#name` | ✅ 已落地（`7a3f37b`）：详见 §一 P0-2 |
+| 私有名引发的编译期 panic | ✅ 已修（`97b3c15`）：`delete obj.#x` / `super.#m()` 会让 `compileDelete` 与 super 方法调用分支的 `Property.(*ast.Identifier)` 撞 nil ⇒ **整进程 abort**（test262 里 158 例被记为 crashed，还连带吃掉了 3 分钟孤儿重派）。规范上两者都是**早错 SyntaxError**，改在解析期拒绝 + 编译器兜底。test262 class 子树 A/B：16.77% → **19.13%**（+160 例），耗时 4m13s → 1m09s；全量回到 **33.06%**（7844/23726） |
 
 ## 待确认（信息缺口）
 
