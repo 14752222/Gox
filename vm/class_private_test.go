@@ -150,6 +150,42 @@ func TestPrivateOutsideClassIsCompileError(t *testing.T) {
 	}
 }
 
+// TestPrivateDeleteAndSuperAreEarlyErrors delete / super 位置的私有名是规范早错,
+// 且**绝不能让编译器 panic** —— 私有访问的 MemberExpression.Property 是 nil,
+// 而 compileDelete 与 super 方法调用分支都硬断言 Property.(*ast.Identifier)。
+// 曾实测 `delete this.#x` 把整个进程 abort:
+//
+//	panic: interface conversion: ast.Expression is nil, not *ast.Identifier
+//
+// (2026-10-04 由 test262 的 elements/syntax/early-errors/delete/* 158 例 "crashed" 抓出)
+func TestPrivateDeleteAndSuperAreEarlyErrors(t *testing.T) {
+	cases := []string{
+		"class C { #x = 1; m(){ return delete this.#x } }",
+		"class C { static #x = 1; static m(){ return delete C.#x } }",
+		"class C { #x = 1; m(){ return (delete this.#x, 5) } }",
+		"class D { #m(){ return 1 } } class E extends D { n(){ return super.#m() } }",
+	}
+	for _, src := range cases {
+		_, err := EvalVM(src)
+		if err == nil {
+			t.Errorf("应报错但通过了: %q", src)
+			continue
+		}
+		msg := err.Error()
+		if !strings.Contains(msg, "SyntaxError") {
+			t.Errorf("错误应含 SyntaxError（test262 negative 判定要求）: %q -> %v", src, err)
+		}
+	}
+	// 反向守卫: 同位置的合法私有访问不能被误伤。
+	got := evalP(t, `
+		class C { #x = 1; m(){ return this.#x } }
+		__out.push("ok:" + new C().m());
+	`)
+	if got != "ok:1\n" {
+		t.Errorf("合法私有访问被误伤, got %q", got)
+	}
+}
+
 // TestPrivateConstructorNameRejected #constructor 私有名非法。
 func TestPrivateConstructorNameRejected(t *testing.T) {
 	_, err := EvalVM("class X { #constructor() {} }")

@@ -69,6 +69,11 @@ func TestPrivateMemberShapes(t *testing.T) {
 func TestPrivateMemberNegative(t *testing.T) {
 	bad := []string{
 		"class X { #constructor() {} }",
+		// delete / super 位置的私有名是规范早错, 必须**解析期**拒绝
+		// (也是编译器 Property 断言 panic 的入口, 见 vm 侧同名守卫用例)。
+		"class X { #x = 1; m(){ return delete this.#x } }",
+		"class X { static #s = 1; static m(){ return delete X.#s } }",
+		"class D { #m(){ return 1 } } class E extends D { n(){ return super.#m() } }",
 	}
 	for _, src := range bad {
 		if _, ok := parseSrc(t, src); ok {

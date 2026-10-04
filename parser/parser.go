@@ -1326,6 +1326,15 @@ func (p *Parser) parseUnaryExpression() ast.Expression {
 	}
 	p.nextToken()
 	expr.Right = p.parseExpression(UNARY)
+	// delete obj.#x: 规范定义为**早错**（私有成员不可删除，ES2022 ClassFieldDefinitionEvaluation 起）。
+	// 必须在解析期拦下 —— 编译器的 compileDelete 只认 Property 是 *ast.Identifier，
+	// 而私有访问的名字在 MemberExpression.Private（Property 为 nil），漏到编译期会 panic。
+	if expr.Operator == "delete" {
+		if mem, ok := expr.Right.(*ast.MemberExpression); ok && mem.Private != "" {
+			p.addError(fmt.Sprintf("SyntaxError: 'delete' of private member '#%s' is not allowed",
+				strings.TrimPrefix(mem.Private, "#")))
+		}
+	}
 	return expr
 }
 
@@ -2072,6 +2081,12 @@ func (p *Parser) parsePrivateMember(member *ast.ClassMethod) *ast.ClassMethod {
 func (p *Parser) parsePrivateMemberExpression(left ast.Expression) ast.Expression {
 	mexp := &ast.MemberExpression{Token: p.curToken(), Object: left}
 	mexp.Private = p.curToken().Literal // "#x" 形式, 编译器去 #
+	// super.#x: 规范早错 —— super 的属性访问只接受公有名。
+	// 同 delete：不拦会在 super 方法调用分支触发 Property 断言 panic。
+	if _, isSuper := left.(*ast.SuperExpression); isSuper {
+		p.addError(fmt.Sprintf("SyntaxError: private member '#%s' is not allowed on 'super'",
+			strings.TrimPrefix(mexp.Private, "#")))
+	}
 	return mexp
 }
 

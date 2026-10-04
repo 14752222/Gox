@@ -2773,6 +2773,11 @@ func (c *Compiler) compileUnaryExpression(node *ast.UnaryExpression) error {
 func (c *Compiler) compileDelete(target ast.Expression) error {
 	// delete obj.prop 或 delete obj[idx]
 	if member, ok := target.(*ast.MemberExpression); ok {
+		// delete obj.#x: 规范早错, 解析器已拦; 这里兜底只为杜绝下面
+		// Property.(*ast.Identifier) 断言在私有访问(Property=nil)上 panic。
+		if member.Private != "" {
+			return fmt.Errorf("compiler: SyntaxError: 'delete' of private member '%s' is not allowed", member.Private)
+		}
 		// 编译对象
 		if err := c.compileExpression(member.Object); err != nil {
 			return err
@@ -3490,6 +3495,10 @@ func (c *Compiler) compileCallExpression(node *ast.CallExpression) error {
 			c.emitSuperLoad(c.currentSuperClass)
 			pidx := c.constants.AddConstant(object.NewString("prototype"))
 			c.emitter.Emit(bytecode.OP_GET_PROP, pidx)
+			// super.#m(): 规范早错, 解析器已拦; 兜底防 Property 断言 panic。
+			if member.Private != "" {
+				return fmt.Errorf("compiler: SyntaxError: private member access on 'super' is not allowed")
+			}
 			propName := member.Property.(*ast.Identifier).Value
 			keyIdx := c.constants.AddConstant(object.NewString(propName))
 			c.emitter.Emit(bytecode.OP_GET_PROP, keyIdx) // [fn]
