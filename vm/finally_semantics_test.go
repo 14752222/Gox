@@ -1,7 +1,6 @@
 package vm
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -14,8 +13,9 @@ import (
 //   2. 正常完成          ⇒ finally 从不执行;
 //   3. catch 里再 throw  ⇒ 直接穿透, finally 不跑。
 // 修法: 纯 finally 形状 PUSH_TRY 0 (不造假 catch), 三条路径汇入共享 finally 块,
-// 由 handleThrowInner 既有的 finallyPC 分支 (pendingThrow → finally → END_FINALLY
-// 重抛) 驱动异常传播。
+// 由 handleThrowInner 的 finallyPC 分支 (标记条目 inFinally + 记下挂起值 →
+// 跳进 finally → END_FINALLY 重抛) 驱动异常传播。挂起值挂在 tryStack 条目上
+// 而不是 VM 全局 —— 见 tryEntry.inFinally 的注释与 TestFinallyPendingThrowNoLeak。
 
 func runFinallyEval(t *testing.T, src string) string {
 	t.Helper()
@@ -130,29 +130,242 @@ func TestFinallyThrowInsideFinallyCatchPath(t *testing.T) {
 	}
 }
 
-// TestFinallyKnownGapReturnBreakContinue 记录已知缺口 (不锁行为, 只防误解):
-// return/break/continue 穿过 **try 体** 时 finally 仍不执行 —— 编译器尚未为
-// 这三类控制转移生成 finally 内联。旧实现同样如此 (修复前后行为一致),
-// 属独立缺口, 见看板对应单。本测试用 t.Skip 显式声明, 等缺口修好后改回真断言。
-func TestFinallyKnownGapReturnBreakContinue(t *testing.T) {
-	t.Skip("已知缺口: return/break/continue 穿 try 体时 finally 不执行 (待编译器内联 finally)")
+// TestFinallyControlTransferRunsFinally 是 rMkA8D 的回归: return / break /
+// continue 穿过 **try 体** 时必须先把 finally 跑完再转移控制。
+//
+// 旧实现只在「try 正常完成」与「抛异常」两条路径跑 finally, 控制转移路径直接
+// 跳走 ⇒ finally 整段被跳过, 且被跳过的 OP_POP_TRY 让 vm.tryStack 留下死条目。
+// 修法 (compiler.emitTryUnwind): 为这三类转移生成「逐层 POP_TRY + 内联 finally
+// 体」的收尾链, return 的值经隐藏槽暂存后再 OP_RETURN。
+//
+// 期望值全部与 Node 实测一致 (见 docs / 看板 rMkA8D 的取证记录)。
+func TestFinallyControlTransferRunsFinally(t *testing.T) {
+	cases := []struct{ name, src, want string }{
+		{
+			"return 穿 try 体",
+			`function a(){ try { return "a-ret" } finally { __out.push("a-fin") } }
+			 __out.push("A:" + a());`,
+			"a-fin\nA:a-ret\n",
+		},
+		{
+			"裸 return 穿 try 体",
+			`function b(){ try { return } finally { __out.push("b-fin") } }
+			 __out.push("B:" + b());`,
+			"b-fin\nB:undefined\n",
+		},
+		{
+			"嵌套 try/finally + return: 内层 finally 先跑",
+			`function e(){ try { try { return "e-ret" } finally { __out.push("e-inner") } } finally { __out.push("e-outer") } }
+			 __out.push("E:" + e());`,
+			"e-inner\ne-outer\nE:e-ret\n",
+		},
+		{
+			"finally 里的 return 覆盖 try 里的 return",
+			`function f(){ try { return "f-try" } finally { return "f-fin" } }
+			 __out.push("F:" + f());`,
+			"F:f-fin\n",
+		},
+		{
+			"finally 里的 throw 覆盖 try 里的 return",
+			`function k(){ try { return "k-ret" } finally { throw new Error("k-thrown") } }
+			 try { __out.push("K:" + k()) } catch(x){ __out.push("K-caught:" + x.message) }`,
+			"K-caught:k-thrown\n",
+		},
+		{
+			"catch 体里 return 同样要跑 finally",
+			`function i(){ try { throw new Error("x") } catch(err){ return "i-ret" } finally { __out.push("i-fin") } }
+			 __out.push("I:" + i());`,
+			"i-fin\nI:i-ret\n",
+		},
+		{
+			"finally 改外层变量后再 return",
+			`let n = 0;
+			 function nn(){ try { return "n-ret" } finally { n = 42 } }
+			 __out.push("N:" + nn() + "," + n);`,
+			"N:n-ret,42\n",
+		},
+		{
+			"break 穿 try 体",
+			`let c = ""; for (let k = 0; k < 3; k++) { try { if (k === 1) break; c += k } finally { c += "f" } }
+			 __out.push("C:" + c);`,
+			"C:0ff\n",
+		},
+		{
+			"continue 穿 try 体",
+			`let d = ""; for (let k = 0; k < 3; k++) { try { if (k === 1) continue; d += k } finally { d += "f" } }
+			 __out.push("D:" + d);`,
+			"D:0ff2f\n",
+		},
+		{
+			"带标签的 break 穿两层 try",
+			`let h = ""; outer: for (let i = 0; i < 3; i++) { for (let k = 0; k < 3; k++) { try { if (i === 1) break outer; h += "" + i + k } finally { h += "F" } } }
+			 __out.push("H:" + h);`,
+			"H:00F01F02FF\n",
+		},
+		{
+			"switch 里的 break 穿 try",
+			`function o(){ let s = ""; switch (1) { case 1: try { s += "o1"; break } finally { s += "o-f" } default: s += "o3" } return s }
+			 __out.push("O:" + o());`,
+			"O:o1o-f\n",
+		},
+		{
+			"只 break 内层循环时不碰外层 try 的 finally 归属",
+			`let pv = ""; for (let i = 0; i < 2; i++) { try { for (let k = 0; k < 2; k++) { if (k === 1) break; pv += "" + i + k } if (i === 1) break } finally { pv += "F" } }
+			 __out.push("P:" + pv);`,
+			"P:00F10F\n",
+		},
+		{
+			"finally 体里再嵌套 try/return",
+			`function q(){ try { return "q1" } finally { try { return "q2" } finally { __out.push("q-inner") } } }
+			 __out.push("Q:" + q());`,
+			"q-inner\nQ:q2\n",
+		},
+		{
+			"finally 含 var/let/function/class 声明: 内联重复编译不得误报重复声明",
+			`function r(){ try { return "r" } finally { var v = 1; let l = 2; function g(){ return 3 } class K {} } }
+			 __out.push("R:" + r());`,
+			"R:r\n",
+		},
+		{
+			"无 finally 的 try/catch 里 return 不受影响 (回归守卫)",
+			`function m(){ try { return "m-try" } catch(e2) { return "m-catch" } }
+			 __out.push("M:" + m());`,
+			"M:m-try\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := evalOut(t, tc.src); got != tc.want {
+				t.Errorf("want:\n%s\ngot:\n%s", tc.want, got)
+			}
+		})
+	}
 }
 
-// TestFinallyLoopContinue 循环里 continue: 不抛异常的轮次 finally 应执行。
-// (continue 穿过 try 体时 finally 仍是已知缺口 —— 这里只锁「不 continue 的
-// 轮次」这个已修好的行为, 并留档差距。)
+// TestFinallyLoopContinue 循环里 continue: 本轮 finally 必须执行 (rMkA8D)。
+// k=0 → 0+100; k=1 (continue) → finally 仍 +100; k=2 → 2+100, 合计 302。
+// 旧实现跳过 continue 轮的 finally, 得 202。
 func TestFinallyLoopContinue(t *testing.T) {
 	got := evalOut(t, `
 		function j(){ let s=0; for(let k=0;k<3;k++){ try { if(k===1) continue; s+=k } finally { s+=100 } } return s }
 		__out.push("j:" + j());
 	`)
-	// k=0: s+=0, fin s+=100; k=1: continue (finally 缺口, 不加); k=2: s+=2, s+=100
-	// 修好的轮次贡献 0+100+2+100 = 202。continue 轮的 finally 是独立缺口(见单)。
-	want := "j:202\n"
+	want := "j:302\n"
 	if got != want {
 		t.Errorf("循环+finally\nwant:\n%s\ngot:\n%s", want, got)
 	}
-	_ = strings.Contains
+}
+
+// TestFinallyPendingThrowNoLeak 是「进入 finally 后挂起的异常不得残留 / 不得被覆盖」
+// 的回归。
+//
+// 旧实现把它放在 VM 全局 pendingThrow, 两类坏形状:
+//  1. finally 里 return / throw 直接离开 ⇒ 挂起值没机会被清, 残留到之后某个
+//     毫不相干的 END_FINALLY 上被误重抛 (最恶劣: 正常代码突然"抛出"一个
+//     几十行前的老异常);
+//  2. 嵌套 finally 互相覆盖 ⇒ 外层挂起值被内层清掉, 原异常被静默吞掉。
+// 修法: 挂起值改挂在 tryStack 条目上 (tryEntry.inFinally / pendingVal),
+// 随条目出栈自然消失, 嵌套时各持一份。
+func TestFinallyPendingThrowNoLeak(t *testing.T) {
+	cases := []struct{ name, src, want string }{
+		{
+			"finally 里 throw 逃出后, 同帧后续 finally 不得误重抛",
+			`function f1(){
+				try { try { throw "A" } finally { throw "B" } } catch(e) { __out.push("caught:" + e) }
+				try { __out.push("body2") } finally { __out.push("fin2") }
+				__out.push("done")
+			 }
+			 f1();`,
+			"caught:B\nbody2\nfin2\ndone\n",
+		},
+		{
+			"内层 catch 吃掉新异常后, 外层 finally 仍要重抛原异常",
+			`function f2(){
+				try { throw "A2" } finally {
+					try { throw "B2" } catch(e) { __out.push("caught:" + e) }
+					__out.push("finbody")
+				}
+			 }
+			 try { f2() } catch(e) { __out.push("outer:" + e) }`,
+			"caught:B2\nfinbody\nouter:A2\n",
+		},
+		{
+			"内层带 finally 的新异常覆盖外层挂起值",
+			`function f3(){
+				try { throw "A3" } finally {
+					try { throw "B3" } finally { __out.push("inner-fin") }
+				}
+			 }
+			 try { f3() } catch(e) { __out.push("outer:" + e) }`,
+			"inner-fin\nouter:B3\n",
+		},
+		{
+			"try{throw}finally{return} 之后同帧 finally 不得误重抛",
+			`function g(){ try { throw "A4" } finally { return "g-ret" } }
+			 __out.push("g:" + g());
+			 function after(){ try { __out.push("body4") } finally { __out.push("fin4") } }
+			 after();
+			 __out.push("done4");`,
+			"g:g-ret\nbody4\nfin4\ndone4\n",
+		},
+		{
+			"跨帧: 子函数挂起的异常不得泄漏到调用方",
+			`function h(){ try { throw "x1" } finally { throw "x2" } }
+			 try { h() } catch(e) { __out.push("caught:" + e) }
+			 function after(){ try { __out.push("body5") } finally { __out.push("fin5") } }
+			 after();
+			 __out.push("done5");`,
+			"caught:x2\nbody5\nfin5\ndone5\n",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := evalOut(t, tc.src); got != tc.want {
+				t.Errorf("want:\n%s\ngot:\n%s", tc.want, got)
+			}
+		})
+	}
+}
+
+// TestCatchDoesNotPopOuterTryEntry 是「catch 体不得弹掉外层 try 条目」的回归。
+//
+// 编译器曾在 catch 体末尾**无条件**发一条 POP_TRY。无 finally 的 try/catch 里
+// catch 体开头并没有压入 finally 保护条目, 而进入 catch 时原始 try 条目已被
+// handleThrowInner 弹出 ⇒ 这条 POP_TRY 弹掉的是更外层 try 的条目, 后果是
+// 外层 finally 整段被跳过 (异常也不再被外层 finally 兜住)。
+//
+// 修法: 该 POP_TRY 只在 hasFinally 时发射 (与 catch 体开头那次 PUSH_TRY 0 配对)。
+// 形状取自 probe4; 期望值与 Node 实测一致。
+func TestCatchDoesNotPopOuterTryEntry(t *testing.T) {
+	// A: 内层 catch 之后外层 try 体继续抛 —— 外层 finally 必须仍然生效
+	got := evalOut(t, `
+		function a(){
+			try {
+				try { throw "in" } catch(e) { __out.push("caught:" + e) }
+				throw "boom";
+			} finally { __out.push("outer-fin") }
+		}
+		try { a() } catch(e) { __out.push("outer-caught:" + e) }
+	`)
+	if want := "caught:in\nouter-fin\nouter-caught:boom\n"; got != want {
+		t.Errorf("外层 finally 被内层 catch 顶掉\nwant:\n%s\ngot:\n%s", want, got)
+	}
+
+	// D: 三层 — 最内层 catch, 外面两层 finally 都要跑, 且新异常穿出两层 finally
+	got = evalOut(t, `
+		function d(){
+			try {
+				try {
+					try { throw "in4" } catch(e) { __out.push("caught:" + e) }
+					throw "boom4";
+				} finally { __out.push("mid-fin") }
+			} finally { __out.push("outer-fin") }
+		}
+		try { d() } catch(e) { __out.push("caught-outer:" + e) }
+	`)
+	if want := "caught:in4\nmid-fin\nouter-fin\ncaught-outer:boom4\n"; got != want {
+		t.Errorf("多层 finally 被内层 catch 顶掉\nwant:\n%s\ngot:\n%s", want, got)
+	}
 }
 
 // 防未使用告警 (runFinallyEval 供外部场景用; 保留以便后续测试扩展)。

@@ -53,6 +53,21 @@ type tryEntry struct {
 	finallyPC int // finally 块的 PC (0 = 无 finally)
 	stackBase int // 进入 try 时的栈高度
 	frameIdx  int // 进入 try 时的帧索引
+
+	// inFinally 标记本条目已进入自己的 finally 体 (由 handleThrowInner 置位)。
+	//
+	// 此时条目**留在 tryStack 上**, 由 pendingVal 承载挂起的异常值, 直到:
+	//   - finally 体正常结束 ⇒ OP_END_FINALLY 弹出它并重新抛出 pendingVal;
+	//   - finally 体里又抛出异常 ⇒ 展开经过本条目时把它丢弃 (新异常覆盖旧异常)。
+	//
+	// 挂起值不放在 VM 全局变量里, 是因为旧的全局 pendingThrow 有两类坏形状:
+	//   (1) finally 里 return / throw 直接离开本帧 ⇒ 挂起值没机会被清, 残留到
+	//       之后某个毫不相干的 END_FINALLY 上被误重抛;
+	//   (2) 嵌套 finally 互相覆盖 ⇒ 外层挂起值被内层清掉, 原异常被静默吞掉。
+	// 挂在条目上则天然随条目出栈而消失, 嵌套时各条目各持一份。
+	inFinally bool
+	// pendingVal 是进入 finally 时挂起的异常值 (inFinally 为真时有效)。
+	pendingVal object.Value
 }
 
 // ModuleExports 存储模块的导出。
@@ -372,9 +387,10 @@ type VM struct {
 	constants  *bytecode.ConstantPool
 	lastPopped object.Value // 最后弹出的值 (用于测试)
 
-	// try-catch-finally 支持
-	tryStack     []tryEntry   // try 处理器栈
-	pendingThrow object.Value // finally 块中待重新抛出的错误 (nil = 无)
+	// try-catch-finally 支持。
+	// 「进入 finally 后待重抛的异常」不是 VM 全局状态: 它挂在 tryStack 的条目上
+	// (tryEntry.inFinally / pendingVal), 这样控制转移离开 finally 时不会残留。
+	tryStack []tryEntry // try 处理器栈
 
 	// 模块系统
 	modules        map[string]*ModuleExports // 模块缓存 (按绝对路径)
@@ -1330,6 +1346,8 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 					FinallyPC:    te.finallyPC,
 					RelStackBase: te.stackBase - curFrame.StackBase,
 					RelFrameIdx:  te.frameIdx - vm.frameIdx,
+					InFinally:    te.inFinally,
+					PendingVal:   te.pendingVal,
 				}}, gen.PendingTries...)
 			}
 			// 保存帧栈残留的中间值 (如 2 + (yield 3) 中的 2)
@@ -2166,15 +2184,19 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			}
 			// 异常已被捕获，继续执行 (PC 已被 handleThrow 设置)
 		case bytecode.OP_END_FINALLY:
-			// finally 块结束: 如果有待重新抛出的错误，重新抛出
-			if vm.pendingThrow != nil {
-				val := vm.pendingThrow
-				vm.pendingThrow = nil
-				if !vm.handleThrow(val) {
-					return &ThrowError{Value: val}
+			// finally 块结束。栈顶若正是本帧刚跑完 finally 的条目 (inFinally),
+			// 说明它是「带着挂起异常」进来的 ⇒ 弹出它并重新抛出挂起值;
+			// 否则本 finally 是从「try 正常完成 / catch 完成」路径进来的,
+			// 没有挂起值, 直接继续。
+			if n := len(vm.tryStack); n > 0 {
+				top := vm.tryStack[n-1]
+				if top.inFinally && top.frameIdx == vm.frameIdx {
+					vm.tryStack = vm.tryStack[:n-1]
+					if !vm.handleThrow(top.pendingVal) {
+						return &ThrowError{Value: top.pendingVal}
+					}
 				}
 			}
-			// 无 pending error: 正常继续
 
 		// ===== 模块系统 =====
 		case bytecode.OP_IMPORT:
@@ -2782,6 +2804,15 @@ func (vm *VM) handleThrowInner(val object.Value) bool {
 			continue
 		}
 
+		// 本条目正在跑自己的 finally: 现在这个异常正是从那个 finally 体里抛出来
+		// 并穿出去的 ⇒ 丢弃本条目挂起的旧异常 (新异常覆盖旧异常), 继续向外找。
+		// 这就是「finally 里 throw 会替换原异常」的落点; 同时保证不会有挂起值
+		// 残留到之后某个 END_FINALLY 上被误重抛。
+		if entry.inFinally {
+			vm.tryStack = vm.tryStack[:len(vm.tryStack)-1]
+			continue
+		}
+
 		// 如果 try 条目在不同的帧中，先弹出帧。
 		// 栈恢复以帧的 StackBase 为准截断 (与 OP_RETURN 一致) ——
 		// 旧的"每帧无条件 Pop 一次"假设帧恰好遗留一个值, 在调用方
@@ -2810,8 +2841,11 @@ func (vm *VM) handleThrowInner(val object.Value) bool {
 			return true
 		}
 		if entry.finallyPC > 0 {
-			// 有 finally 但无 catch: 保存待抛出值，跳到 finally 块
-			vm.pendingThrow = val
+			// 有 finally 但无 catch: 条目**留在 tryStack 上**并标记 inFinally,
+			// 由 pendingVal 承载挂起值, 然后跳进 finally 体。
+			entry.inFinally = true
+			entry.pendingVal = val
+			vm.tryStack = append(vm.tryStack, entry)
 			vm.currentFrame().PC = entry.finallyPC
 			return true
 		}
@@ -3220,10 +3254,12 @@ func (vm *VM) rebuildGenFrame(gen *object.Generator) *Frame {
 	// 把 yield 时保存的 try 处理器条目按相对值换算后重新挂回
 	for _, te := range gen.PendingTries {
 		vm.tryStack = append(vm.tryStack, tryEntry{
-			catchPC:   te.CatchPC,
-			finallyPC: te.FinallyPC,
-			stackBase: frame.StackBase + te.RelStackBase,
-			frameIdx:  vm.frameIdx + te.RelFrameIdx,
+			catchPC:    te.CatchPC,
+			finallyPC:  te.FinallyPC,
+			stackBase:  frame.StackBase + te.RelStackBase,
+			frameIdx:   vm.frameIdx + te.RelFrameIdx,
+			inFinally:  te.InFinally,
+			pendingVal: te.PendingVal,
 		})
 	}
 	gen.PendingTries = nil

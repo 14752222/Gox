@@ -37,6 +37,12 @@ type GenTryEntry struct {
 	FinallyPC    int // finally 块 PC (0 = 无 finally)
 	RelStackBase int // 相对 generator 帧栈基址的 try 时的栈高度
 	RelFrameIdx  int // 相对 generator 帧索引的偏移 (通常为 0)
+
+	// InFinally / PendingVal: 条目已进入自己的 finally 体时挂起的异常值。
+	// yield 若发生在 finally 体内 (或它的保护范围内), 这两项必须一并保存 ——
+	// 否则恢复后 OP_END_FINALLY 找不到挂起值, 原异常会被静默吞掉。
+	InFinally  bool
+	PendingVal Value
 }
 
 // NewGenerator 创建生成器对象。

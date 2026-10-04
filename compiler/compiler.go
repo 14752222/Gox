@@ -60,6 +60,36 @@ type Compiler struct {
 	privateClassSeq int
 	// 仅在编译 class 方法时非空。
 	currentSuperClass string
+
+	// tryScopes 是当前函数内「仍活跃」的 try 处理器条目的编译期镜像 ——
+	// 对应运行时 vm.tryStack 里属于当前帧的那一段。长度即 try 嵌套深度。
+	//
+	// 用途 (rMkA8D): return / break / continue 需要跳出一个或多个 try 时,
+	// 必须由内向外逐个 POP_TRY, 并对带 finally 的条目**内联执行 finally 体**,
+	// 之后才真正转移控制。这是 ES「控制转移穿过 try 体时先跑 finally」的落点。
+	// 跨函数边界必须清空 (见 compileFunctionSelf) —— 内层函数的控制转移
+	// 不该触碰外层帧的 try 条目。
+	tryScopes []tryScope
+
+	// finallyRetSlot 是「穿 finally 的 return 值」暂存槽 (惰性分配, -1 = 未分配)。
+	//
+	// 值必须经槽位而不是求值栈传递: 内联的 finally 体里若还有 return /
+	// break / continue, 留在栈上的值会被那条跳转带到不相干的位置。
+	// 每个函数一份, 进出函数时保存/恢复。
+	finallyRetSlot int
+}
+
+// tryScope 是一个活跃 try 处理器条目的编译期描述 (对应运行时 vm.tryStack 的一条)。
+//
+// 一个 try/catch/finally 语句会按需压入 1~2 条:
+//   - try 体: 一条 (运行时 PUSH_TRY [catchPC] 必然发射);
+//   - catch 体: 仅当存在 finally 时再压一条 (运行时 catch 体开头的
+//     PUSH_TRY 0 + PUSH_FINALLY, 保证 catch 里再 throw 也过 finally)。
+//
+// finallyBody 是该条目的 finally 体 (两条共享同一份 AST)。
+type tryScope struct {
+	hasFinally  bool
+	finallyBody *ast.BlockStatement
 }
 
 // controlContext 表示一个循环/switch/标签块的控制流上下文。
@@ -68,11 +98,17 @@ type controlContext struct {
 	isLoop        bool   // continue 只对循环有效
 	breakJumps    []int  // 待回填的 break 跳转位置
 	continueJumps []int  // 待回填的 continue 跳转位置
+
+	// tryScopes 是创建本 context 时的 try 嵌套深度。
+	// break / continue 跳出本 context 时, 需要收尾 (len(c.tryScopes) - tryScopes)
+	// 层 try: 更深说明目标在 try 之外, 必须先跑 finally 再跳;
+	// 相等说明目标仍在所有活跃 try 之内, 直接跳即可 (finally 不跑)。
+	tryScopes int
 }
 
 // pushControl 压入一个控制上下文, 返回其指针。
 func (c *Compiler) pushControl(label string, isLoop bool) *controlContext {
-	ctx := &controlContext{label: label, isLoop: isLoop}
+	ctx := &controlContext{label: label, isLoop: isLoop, tryScopes: len(c.tryScopes)}
 	c.controlStack = append(c.controlStack, ctx)
 	return ctx
 }
@@ -118,6 +154,7 @@ func New() *Compiler {
 		constants:            bytecode.NewConstantPool(),
 		scope:                NewFunctionScope(nil),
 		currentArgumentsSlot: -1,
+		finallyRetSlot:       -1,
 	}
 }
 
@@ -764,11 +801,98 @@ func (c *Compiler) compileConstStatement(stmt *ast.ConstStatement) error {
 	return nil
 }
 
+// allocFinallyRetSlot 惰性分配 (并全函数复用) 「穿 finally 的 return 值」暂存槽。
+//
+// 槽号取当前作用域链上所有层 nextSlot 的最大值 —— 活跃变量都落在各自作用域的
+// nextSlot 之下, 因此该号必然空闲 (已结束的兄弟块复用同一批槽位不冲突: 它们的
+// 变量早已出作用域)。分配后把链上每层的 nextSlot 都抬到它之上, 否则之后在同一
+// 链上新建的作用域会再次发出同一个槽号。
+func (c *Compiler) allocFinallyRetSlot() int {
+	if c.finallyRetSlot >= 0 {
+		return c.finallyRetSlot
+	}
+	slot := 0
+	for s := c.scope; s != nil; s = s.Parent() {
+		if s.nextSlot > slot {
+			slot = s.nextSlot
+		}
+		if s.IsFuncLayer() {
+			break
+		}
+	}
+	c.finallyRetSlot = slot
+	next := slot + 1
+	for s := c.scope; s != nil; s = s.Parent() {
+		if s.nextSlot < next {
+			s.nextSlot = next
+		}
+		if s.IsFuncLayer() {
+			break
+		}
+	}
+	return slot
+}
+
+// emitTryUnwind 生成「从当前控制点退出到 targetDepth 层 try 之外」的收尾代码:
+// 由内向外逐个 POP_TRY, 并对带 finally 的条目**内联执行 finally 体**。
+// 调用方随后必须紧接着发真正的转移指令 (OP_RETURN / OP_JUMP / OP_LOOP)。
+//
+// finally 体在这里被重复编译一份 —— 这是有意的: finally 何时执行取决于控制
+// 转移点, 而字节码没有「子程序返回」原语。重复编译对声明是安全的:
+//   - let/const/class/function 声明落在各自新开的块作用域里, 互不干扰;
+//   - var 绑定已在函数入口统一 hoist 并标记 IsVarLike, 再次编译走复用分支
+//     (见 compileVarStatement 的 declareVar), 不会误报重复声明。
+func (c *Compiler) emitTryUnwind(targetDepth int) error {
+	for i := len(c.tryScopes) - 1; i >= targetDepth; i-- {
+		sc := c.tryScopes[i]
+		// 先摘掉本条目: finally 体里再抛异常时不该重新进入自己。
+		c.emitter.EmitNoOperand(bytecode.OP_POP_TRY)
+		if !sc.hasFinally || sc.finallyBody == nil {
+			continue
+		}
+		// 内联编译 finally 体。此刻本条目及更内层条目已「退出」, 故把视角截到
+		// i 层 —— finally 体里若还有 return/break/continue, 它只需再收尾
+		// 0..i-1 这些仍活跃的 try。
+		// 用「满切片表达式」saved[:i:i] 把容量也压到 i, 免得递归编译中途
+		// append 把新条目写回 saved 的底层数组、污染外层视角。
+		saved := c.tryScopes
+		c.tryScopes = saved[:i:i]
+		err := c.compileBlockStatement(sc.finallyBody)
+		c.tryScopes = saved
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (c *Compiler) compileReturnStatement(stmt *ast.ReturnStatement) error {
-	if stmt.ReturnValue != nil {
+	hasValue := stmt.ReturnValue != nil
+	if hasValue {
 		if err := c.compileExpression(stmt.ReturnValue); err != nil {
 			return err
 		}
+	}
+	// 不在任何 try 内: 直接返回 (原路径)。
+	if len(c.tryScopes) == 0 {
+		if hasValue {
+			c.emitter.EmitNoOperand(bytecode.OP_RETURN)
+		} else {
+			c.emitter.EmitNoOperand(bytecode.OP_RETURN_VOID)
+		}
+		return nil
+	}
+	// 穿 try 体返回: 值先挪进隐藏槽, 再内联跑完所有 finally, 最后才真返回。
+	// 值经槽位而非求值栈传递 —— finally 体里的 return/break/continue 会把
+	// 栈上的残值带到不相干的位置。
+	if hasValue {
+		c.emitter.Emit(bytecode.OP_STORE, uint16(c.allocFinallyRetSlot()))
+	}
+	if err := c.emitTryUnwind(0); err != nil {
+		return err
+	}
+	if hasValue {
+		c.emitter.Emit(bytecode.OP_LOAD, uint16(c.allocFinallyRetSlot()))
 		c.emitter.EmitNoOperand(bytecode.OP_RETURN)
 	} else {
 		c.emitter.EmitNoOperand(bytecode.OP_RETURN_VOID)
@@ -1267,17 +1391,22 @@ func (c *Compiler) compileTryStatement(stmt *ast.TryStatement) error {
 	//   JUMP afterCatch           ; ── catch 正常完成 ──
 	// tryStateNormal:              ; try / catch 两条正常路径汇合
 	//   (无 finally 时到这就结束了, PatchJump(skipCatch) 落在这)
-	// finallyPC:                   ; 异常路径进入 finally: pendingThrow 已由
-	//                              ; handleThrowInner 设置, 不往栈上放错误值
+	// finallyPC:                   ; 异常路径进入 finally: 挂起值已由
+	//                              ; handleThrowInner 记在 tryStack 条目上
+	//                              ; (tryEntry.inFinally/pendingVal), 不往栈上放错误值
 	// afterCatch:
 	//   <finally body>
-	//   END_FINALLY               ; pendingThrow 非 nil 则重抛, 否则正常继续
+	//   END_FINALLY               ; 栈顶是本帧的 inFinally 条目则重抛它, 否则正常继续
 	//
 	// 历史缺陷 (riUpgO, 2026-10-03 修): 旧实现给「无 catch 但有 finally」的形状
 	// 伪造了一个只 POP 错误值的假 catch 处理器 ⇒ 异常被丢弃; 且正常路径的
 	// skipCatch 跳到整个语句末尾, 直接跳过 finally 块 ⇒ finally 在无异常时
-	// 从不执行。VM 侧 handleThrowInner 的 finallyPC 分支(设 pendingThrow →
+	// 从不执行。VM 侧 handleThrowInner 的 finallyPC 分支(标记条目 inFinally →
 	// 跳 finally → END_FINALLY 重抛)是完备的, 只是编译器从未让它走通。
+	//
+	// 控制转移 (rMkA8D, 2026-10-04 修): return / break / continue 跳出 try 体时
+	// 不经过上面任何一条路径 —— 编译器在转移点现场内联一份 finally 体
+	// (见 emitTryUnwind), 逐层发 POP_TRY 后紧跟真正的转移指令。
 
 	hasCatch := stmt.CatchBody != nil
 	hasFinally := stmt.FinallyBody != nil
@@ -1298,9 +1427,13 @@ func (c *Compiler) compileTryStatement(stmt *ast.TryStatement) error {
 		finallyJump = c.emitter.EmitJump(bytecode.OP_PUSH_FINALLY)
 	}
 
-	// try body
-	if err := c.compileBlockStatement(stmt.Body); err != nil {
-		return err
+	// try body —— 编译器视角同步压入本 try 的处理器条目, 让 try 体里的
+	// return/break/continue 知道要收尾几层 finally (rMkA8D)。
+	c.tryScopes = append(c.tryScopes, tryScope{hasFinally: hasFinally, finallyBody: stmt.FinallyBody})
+	bodyErr := c.compileBlockStatement(stmt.Body)
+	c.tryScopes = c.tryScopes[:len(c.tryScopes)-1]
+	if bodyErr != nil {
+		return bodyErr
 	}
 	c.emitter.EmitNoOperand(bytecode.OP_POP_TRY)
 	skipCatch := c.emitter.EmitJump(bytecode.OP_JUMP)
@@ -1318,19 +1451,34 @@ func (c *Compiler) compileTryStatement(stmt *ast.TryStatement) error {
 			// 错写到更外层的条目上 (riUpgO)。
 			c.emitter.Emit(bytecode.OP_PUSH_TRY, 0)
 			catchFinally = c.emitter.EmitJump(bytecode.OP_PUSH_FINALLY)
+			// 编译期镜像同步压栈: catch 体里的 return/break/continue 同样要
+			// 先收尾这层 finally 保护条目 (rMkA8D)。
+			c.tryScopes = append(c.tryScopes, tryScope{hasFinally: true, finallyBody: stmt.FinallyBody})
 		}
 
+		var catchErr error
 		if stmt.CatchParam != nil {
-			if err := c.compileCatchBodyWithParam(stmt.CatchParam, stmt.CatchBody); err != nil {
-				return err
-			}
+			catchErr = c.compileCatchBodyWithParam(stmt.CatchParam, stmt.CatchBody)
 		} else {
 			c.emitter.EmitNoOperand(bytecode.OP_POP)
-			if err := c.compileBlockStatement(stmt.CatchBody); err != nil {
-				return err
-			}
+			catchErr = c.compileBlockStatement(stmt.CatchBody)
 		}
-		c.emitter.EmitNoOperand(bytecode.OP_POP_TRY)
+		if hasFinally {
+			c.tryScopes = c.tryScopes[:len(c.tryScopes)-1]
+		}
+		if catchErr != nil {
+			return catchErr
+		}
+		// 摘掉 catch 体开头那层 finally 保护条目 —— 只在 hasFinally 时才有。
+		//
+		// 绝不能无条件发 POP_TRY: 无 finally 时 catch 体开头**没有**压入保护条目
+		// (上面 `if hasFinally` 才发 PUSH_TRY 0), 而进入 catch 时原始 try 条目
+		// 已被 handleThrowInner 弹出 ⇒ 无条件的 POP_TRY 会弹掉更外层 try 的条目,
+		// 让外层 finally 整段被跳过 (probe4: `try{ try{}catch(){} throw x }finally{}`
+		// 的外层 finally 不执行)。
+		if hasFinally {
+			c.emitter.EmitNoOperand(bytecode.OP_POP_TRY)
+		}
 		skipFinally := c.emitter.EmitJump(bytecode.OP_JUMP)
 
 		if hasFinally {
@@ -1451,6 +1599,10 @@ func (c *Compiler) compileBreakStatement(stmt *ast.BreakStatement) error {
 	if ctx == nil {
 		return fmt.Errorf("Uncaught SyntaxError: Illegal break statement")
 	}
+	// 目标在若干层 try 之外时, 先把这些 try 的 finally 跑掉再跳 (rMkA8D)。
+	if err := c.emitTryUnwind(ctx.tryScopes); err != nil {
+		return err
+	}
 	ctx.breakJumps = append(ctx.breakJumps, c.emitter.EmitJump(bytecode.OP_JUMP))
 	return nil
 }
@@ -1467,6 +1619,10 @@ func (c *Compiler) compileContinueStatement(stmt *ast.ContinueStatement) error {
 	// continue 只能作用于循环
 	if !ctx.isLoop {
 		return fmt.Errorf("Uncaught SyntaxError: Illegal continue statement: 'continue' must be inside a loop")
+	}
+	// 目标在若干层 try 之外时, 先把这些 try 的 finally 跑掉再跳 (rMkA8D)。
+	if err := c.emitTryUnwind(ctx.tryScopes); err != nil {
+		return err
 	}
 	ctx.continueJumps = append(ctx.continueJumps, c.emitter.EmitJump(bytecode.OP_LOOP))
 	return nil
@@ -1768,6 +1924,10 @@ func (c *Compiler) compileClassConstructor(fields []*ast.ClassField, ctor *ast.C
 	c.controlStack = nil
 	prevPendingLabel := c.pendingLabel
 	c.pendingLabel = ""
+	prevTryScopes := c.tryScopes
+	c.tryScopes = nil
+	prevFinallyRetSlot := c.finallyRetSlot
+	c.finallyRetSlot = -1
 
 	// 实例字段赋值: this.field = value / this[expr] = value
 	for _, field := range fields {
@@ -1839,6 +1999,8 @@ func (c *Compiler) compileClassConstructor(fields []*ast.ClassField, ctor *ast.C
 	c.currentArgumentsSlot = prevArgumentsSlot
 	c.controlStack = prevControlStack
 	c.pendingLabel = prevPendingLabel
+	c.tryScopes = prevTryScopes
+	c.finallyRetSlot = prevFinallyRetSlot
 
 	meta := bytecode.NewFunctionMetadata("constructor", fnIns, fnScope.NumLocals(), len(paramSpecs), paramSpecs, false)
 	meta.BaseSlot = baseSlot
@@ -3978,10 +4140,15 @@ func (c *Compiler) compileFunctionSelf(name, selfName string, params []*ast.Para
 	c.srcPositions = nil
 
 	// 函数边界重置控制流: 标签/break/continue 不能跨函数。
+	// try 条目镜像同理清空 —— 内层函数的控制转移绝不能收尾外层帧的 finally。
 	prevControlStack := c.controlStack
 	c.controlStack = nil
 	prevPendingLabel := c.pendingLabel
 	c.pendingLabel = ""
+	prevTryScopes := c.tryScopes
+	c.tryScopes = nil
+	prevFinallyRetSlot := c.finallyRetSlot
+	c.finallyRetSlot = -1
 
 	// 默认参数处理: 对有默认值的参数，检查是否为 undefined
 	for i, param := range params {
@@ -4046,6 +4213,8 @@ func (c *Compiler) compileFunctionSelf(name, selfName string, params []*ast.Para
 	c.currentArgumentsSlot = prevArgumentsSlot
 	c.controlStack = prevControlStack
 	c.pendingLabel = prevPendingLabel
+	c.tryScopes = prevTryScopes
+	c.finallyRetSlot = prevFinallyRetSlot
 
 	meta := bytecode.NewFunctionMetadata(
 		name, fnIns,
@@ -4134,6 +4303,10 @@ func (c *Compiler) compileAsyncFunctionSelf(name, selfName string, params []*ast
 	c.controlStack = nil
 	prevPendingLabel := c.pendingLabel
 	c.pendingLabel = ""
+	prevTryScopes := c.tryScopes
+	c.tryScopes = nil
+	prevFinallyRetSlot := c.finallyRetSlot
+	c.finallyRetSlot = -1
 
 	spawnIdx := c.constants.AddConstant(object.NewString("__spawn"))
 	// 调用约定: fn 必须在栈顶。先压参数, 再 FUNCTION 创建 gen closure,
@@ -4152,6 +4325,8 @@ func (c *Compiler) compileAsyncFunctionSelf(name, selfName string, params []*ast
 	c.scope = prevScope
 	c.controlStack = prevControlStack
 	c.pendingLabel = prevPendingLabel
+	c.tryScopes = prevTryScopes
+	c.finallyRetSlot = prevFinallyRetSlot
 
 	meta := bytecode.NewFunctionMetadata(name, wrapperIns, wrapperScope.NumLocals(), len(params), paramSpecs, isArrow)
 	meta.BaseSlot = baseSlot
