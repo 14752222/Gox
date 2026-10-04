@@ -1429,9 +1429,12 @@ func (c *Compiler) compileTryStatement(stmt *ast.TryStatement) error {
 
 	// try body —— 编译器视角同步压入本 try 的处理器条目, 让 try 体里的
 	// return/break/continue 知道要收尾几层 finally (rMkA8D)。
+	savedTryLen := len(c.tryScopes)
 	c.tryScopes = append(c.tryScopes, tryScope{hasFinally: hasFinally, finallyBody: stmt.FinallyBody})
 	bodyErr := c.compileBlockStatement(stmt.Body)
-	c.tryScopes = c.tryScopes[:len(c.tryScopes)-1]
+	if len(c.tryScopes) > savedTryLen {
+		c.tryScopes = c.tryScopes[:savedTryLen]
+	}
 	if bodyErr != nil {
 		return bodyErr
 	}
@@ -1463,7 +1466,7 @@ func (c *Compiler) compileTryStatement(stmt *ast.TryStatement) error {
 			c.emitter.EmitNoOperand(bytecode.OP_POP)
 			catchErr = c.compileBlockStatement(stmt.CatchBody)
 		}
-		if hasFinally {
+		if hasFinally && len(c.tryScopes) > 0 {
 			c.tryScopes = c.tryScopes[:len(c.tryScopes)-1]
 		}
 		if catchErr != nil {
@@ -1928,6 +1931,11 @@ func (c *Compiler) compileClassConstructor(fields []*ast.ClassField, ctor *ast.C
 	c.tryScopes = nil
 	prevFinallyRetSlot := c.finallyRetSlot
 	c.finallyRetSlot = -1
+	// defer: 保证错误早退路径也恢复, 否则 compileTryStatement 的 [:len-1] 会 panic (rCzckg 回归)。
+	defer func() {
+		c.tryScopes = prevTryScopes
+		c.finallyRetSlot = prevFinallyRetSlot
+	}()
 
 	// 实例字段赋值: this.field = value / this[expr] = value
 	for _, field := range fields {
@@ -4149,6 +4157,11 @@ func (c *Compiler) compileFunctionSelf(name, selfName string, params []*ast.Para
 	c.tryScopes = nil
 	prevFinallyRetSlot := c.finallyRetSlot
 	c.finallyRetSlot = -1
+	// defer: 保证错误早退路径也恢复, 否则 compileTryStatement 的 [:len-1] 会 panic (rCzckg 回归)。
+	defer func() {
+		c.tryScopes = prevTryScopes
+		c.finallyRetSlot = prevFinallyRetSlot
+	}()
 
 	// 默认参数处理: 对有默认值的参数，检查是否为 undefined
 	for i, param := range params {
@@ -4307,6 +4320,11 @@ func (c *Compiler) compileAsyncFunctionSelf(name, selfName string, params []*ast
 	c.tryScopes = nil
 	prevFinallyRetSlot := c.finallyRetSlot
 	c.finallyRetSlot = -1
+	// defer: 保证错误早退路径也恢复, 否则 compileTryStatement 的 [:len-1] 会 panic (rCzckg 回归)。
+	defer func() {
+		c.tryScopes = prevTryScopes
+		c.finallyRetSlot = prevFinallyRetSlot
+	}()
 
 	spawnIdx := c.constants.AddConstant(object.NewString("__spawn"))
 	// 调用约定: fn 必须在栈顶。先压参数, 再 FUNCTION 创建 gen closure,
