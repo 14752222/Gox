@@ -415,6 +415,9 @@ type VM struct {
 	modules        map[string]*ModuleExports // 模块缓存 (按绝对路径)
 	moduleBase     string                    // 模块基准路径 (用于解析相对路径)
 	currentExports *ModuleExports            // 当前模块的导出对象
+	// moduleMode 标记"本 VM 的主帧是模块顶层"。仅影响主帧 this 取值:
+	// script 顶层 this = globalThis, module 顶层 this = undefined (见 OP_THIS)。
+	moduleMode bool
 
 	// generator 支持
 	currentGenerator *object.Generator // 当前正在执行的 generator (OP_YIELD 时使用)
@@ -2377,8 +2380,19 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			vm.stack.Push(vm.inOperator(obj, key))
 		case bytecode.OP_THIS:
 			frame := vm.currentFrame()
-			if frame.Closure != nil && frame.Closure.This != nil {
-				vm.stack.Push(frame.Closure.This)
+			if frame.Closure == nil {
+				// 主帧: script 顶层 this = globalThis (与严格模式无关);
+				// module 顶层 this = undefined。复用 globals 里已装配的
+				// globalThis 绑定以保证 `this === globalThis` 的对象同一性;
+				// 未装配时保持 undefined (无 stdlib 的裸 VM)。
+				if vm.moduleMode {
+					vm.stack.Push(object.UndefinedSingleton)
+				} else {
+					vm.stack.Push(vm.globalThisValue())
+				}
+			} else if frame.This != nil {
+				// 普通函数帧: callClosure 已按 sloppy 规则归一并写入 frame.This。
+				vm.stack.Push(frame.This)
 			} else {
 				vm.stack.Push(object.UndefinedSingleton)
 			}
@@ -2580,9 +2594,11 @@ func (vm *VM) callFunction(fn object.Value, this object.Value, args []object.Val
 		return result, nil
 
 	case *object.Closure:
-		// 绑定 this (箭头函数复用自身 this)
+		// 绑定 this: 箭头函数复用自身的词法 this; 非箭头函数一律以传入的
+		// this 作接收者 (this 为 nil 即"无接收者", 等价 undefined —— 交给
+		// callClosure 按 sloppy 归一到 globalThis, 不再沿用闭包创建时的 this)。
 		bound := callee
-		if this != nil && !callee.IsArrow {
+		if !callee.IsArrow {
 			bound = &object.Closure{
 				Fn:             callee.Fn,
 				Env:            callee.Env,
@@ -3019,26 +3035,31 @@ func (vm *VM) invokeWithThis(fn, thisVal object.Value, args []object.Value) erro
 			return vm.rethrowBridgeError(err)
 		}
 	case *object.Closure:
-		// 创建绑定了 this 的新闭包
-		methodClosure := &object.Closure{
-			Fn:             callee.Fn,
-			Env:            callee.Env,
-			This:           thisVal,
-			IsArrow:        callee.IsArrow,
-			CapturedLocals: callee.CapturedLocals,
+		// 箭头函数: this 是创建时的词法绑定, 与调用形态 (含方法调用) 无关 ——
+		// 原样调用, 不重绑 thisVal。非箭头函数: 用 thisVal 作接收者创建绑定闭包
+		// (callClosure 再按 sloppy 规则把 undefined/null 归一为 globalThis)。
+		bound := callee
+		if !callee.IsArrow {
+			bound = &object.Closure{
+				Fn:             callee.Fn,
+				Env:            callee.Env,
+				This:           thisVal,
+				IsArrow:        callee.IsArrow,
+				CapturedLocals: callee.CapturedLocals,
+			}
 		}
 		// generator 方法调用: 创建 Generator (this 绑定保留在闭包中)。
 		// 有形参前导段时同样先建立前导帧, 由主循环同步绑定形参后冻结。
-		if methodClosure.Fn != nil && methodClosure.Fn.IsGenerator {
-			if genHasPrologue(methodClosure.Fn) {
-				if err := vm.setupGenPrologueFrame(methodClosure, args); err != nil {
+		if bound.Fn != nil && bound.Fn.IsGenerator {
+			if genHasPrologue(bound.Fn) {
+				if err := vm.setupGenPrologueFrame(bound, args); err != nil {
 					return vm.throwJSError(err)
 				}
 			} else {
-				vm.stack.Push(object.NewGenerator(methodClosure, args))
+				vm.stack.Push(object.NewGenerator(bound, args))
 			}
 		} else {
-			if err := vm.callClosure(methodClosure, args); err != nil {
+			if err := vm.callClosure(bound, args); err != nil {
 				return vm.throwJSError(err)
 			}
 		}
@@ -3398,6 +3419,8 @@ func (vm *VM) loadModuleFile(spec, absPath string) (*ModuleExports, error) {
 	modVM.modules = vm.modules
 	modVM.moduleBase = vm.moduleBase
 	modVM.currentExports = vm.currentExports
+	// 模块顶层 this 必须是 undefined (与 script 顶层 this = globalThis 相对)。
+	modVM.moduleMode = true
 	// 源码单元注册表跨 VM 共享: 模块里定义的函数之后可能在入口 VM 上被调用,
 	// 抛错时要用模块自己的单元渲染帧 (M2 P0-1)。
 	modVM.units = vm.units
@@ -3432,6 +3455,58 @@ func (vm *VM) SetModuleBase(path string) {
 
 // ===== 辅助方法 =====
 
+// globalThisValue 返回全局对象绑定 (globals 里由 stdlib 装配); 未装配 (裸 VM)
+// 时回退 undefined。
+func (vm *VM) globalThisValue() object.Value {
+	if g, ok := vm.globals.Get("globalThis"); ok {
+		return g
+	}
+	return object.UndefinedSingleton
+}
+
+// normalizedThis 实现 sloppy 模式的 this 归一: 非箭头函数被以 undefined/null
+// (含"无接收者的裸调用"——等价于 undefined 接收者) 调用时, this 替换为
+// globalThis; 有真实接收者 (对象 / 构造实例 / 基类 this) 原样返回。
+//
+// Gox 目前没有 strict 模式, 一律按 sloppy 处理 (不引入 strict 分支)。
+func (vm *VM) normalizedThis(t object.Value) object.Value {
+	if t == nil || t == object.UndefinedSingleton || t == object.NullSingleton {
+		return vm.globalThisValue()
+	}
+	return t
+}
+
+// resolveFrameThis 由被调闭包算出该帧生效的 this:
+//   - 箭头函数: 词法绑定, 取闭包携带的 This (创建时从所在帧捕获);
+//   - 非箭头函数: 按 sloppy 归一 (undefined/null → globalThis)。
+func (vm *VM) resolveFrameThis(closure *object.Closure) object.Value {
+	if closure == nil {
+		return nil
+	}
+	if closure.IsArrow {
+		return closure.This
+	}
+	return vm.normalizedThis(closure.This)
+}
+
+// frameThis 求"当前帧的 this", 供箭头函数在创建时做词法捕获。
+// 优先取帧上已归一的 This; 主帧再按 script(globalThis)/module(undefined) 区分。
+func (vm *VM) frameThis(frame *Frame) object.Value {
+	if frame.This != nil {
+		return frame.This
+	}
+	if frame.Closure == nil {
+		if vm.moduleMode {
+			return object.UndefinedSingleton
+		}
+		return vm.globalThisValue()
+	}
+	if frame.Closure.This != nil {
+		return frame.Closure.This
+	}
+	return object.UndefinedSingleton
+}
+
 // createClosure 从 FunctionMetadata 创建闭包。
 // 捕获当前帧的外层局部变量 (slots 0..BaseSlot-1)。
 func (vm *VM) createClosure(meta *bytecode.FunctionMetadata, frame *Frame) *object.Closure {
@@ -3456,10 +3531,13 @@ func (vm *VM) createClosure(meta *bytecode.FunctionMetadata, frame *Frame) *obje
 		}
 	}
 
-	// this 绑定: 箭头函数复用外层 this
-	var thisVal object.Value = object.UndefinedSingleton
-	if frame.Closure != nil && frame.Closure.This != nil {
-		thisVal = frame.Closure.This
+	// this 绑定: 只有箭头函数在创建时按词法捕获所在帧的 this (含主帧的
+	// globalThis); 非箭头函数的 this 由**调用形态**决定, 不在此绑定 ——
+	// 留 nil, 由 callClosure 按 sloppy 规则归一 (裸调用 → globalThis)。
+	// 若这里给非箭头也写入外层 this, 裸调用会错误继承创建处的方法 this。
+	var thisVal object.Value
+	if meta.IsArrow {
+		thisVal = vm.frameThis(frame)
 	}
 
 	// M2: 记录"这个函数属于哪个源码单元" —— 模块导出的函数被入口调用时,
@@ -3515,6 +3593,8 @@ func (vm *VM) callClosure(closure *object.Closure, args []object.Value) error {
 	}
 	frame := NewFrame(fn.Instructions, constants, fn.NumLocals)
 	frame.Closure = closure
+	// 本帧生效的 this: 箭头取词法捕获, 非箭头按 sloppy 归一 (裸调用 → globalThis)。
+	frame.This = vm.resolveFrameThis(closure)
 	// 记录进入本帧时的栈高度, 返回时据此截断清理本帧残留栈值
 	frame.StackBase = vm.stack.Len()
 
@@ -3792,6 +3872,7 @@ func (vm *VM) rebuildGenFrame(gen *object.Generator, reuseLocals bool) *Frame {
 		PC:           gen.PC,
 		Locals:       locals,
 		Closure:      gen.Closure,
+		This:         vm.resolveFrameThis(gen.Closure),
 		Constants:    &bytecode.ConstantPool{Constants: gen.Constants},
 		StackBase:    stackBase,
 	}
