@@ -4561,11 +4561,11 @@ func (c *Compiler) compileCallExpression(node *ast.CallExpression) error {
 	// 检查是否有 spread 参数
 	hasSpread := hasSpreadArgs(node.Arguments)
 
-	// 类字段初始化器内的直接 eval: 发射 OP_EVAL_MARK, 让运行期 eval 内建
+	// 类字段初始化器内的直接 eval: 发射 OP_EVAL_MARK, 让运行期的 eval 内建
 	// 进入受限模式 (PerformEval 补充早错)。必须是「直接」调用 —— 被调表达
 	// 式是标识符 `eval`(而非 (0, eval) / eval.call 这类间接形式), 且当前
-	// 正编译字段初始化器表达式。标记紧贴被调函数加载之后、OP_CALL 之前发射,
-	// 保证只被本次调用消费。
+	// 正编译字段初始化器表达式。标记在 OP_CALL/OP_CALL_SPREAD 之前发射,
+	// VM 消费时还会再核对被调确为全局 %eval% (遮蔽场景不受限)。
 	restrictedEval := c.inClassFieldInit && isDirectEvalCallee(node.Function)
 
 	if hasSpread {

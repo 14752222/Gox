@@ -429,6 +429,12 @@ type VM struct {
 	// 边界外的处理器留给错误传播回外层后、由外层的抛出路径匹配。
 	throwBoundary int
 
+	// pendingEvalInit 标记「紧接着的这次调用是类字段初始化器内的直接 eval
+	// 候选」(OP_EVAL_MARK 置位)。OP_CALL / OP_CALL_SPREAD 取出后立即清零,
+	// 仅当被调恰为全局 %eval% 内建时才置 stdlib 的一次性受限标志。按调用
+	// 取用 (而非 stdlib 包级全局常驻) 可避免多 VM 并发互相干扰与遮蔽泄漏。
+	pendingEvalInit bool
+
 	// 模板字面量分段收集器 (支持嵌套): 每层对应一个 OP_TEMPLATE_START，
 	// 该层内 quasi/表达式产生的字符串依次 append，OP_TEMPLATE_END 时 join 入栈。
 	// 不用操作数栈保存段的原因是模板可能作为二元运算的操作数出现——
@@ -1296,6 +1302,9 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			numArgs := int(operand)
 			// 弹出函数
 			fn := vm.stack.Pop()
+			// 上一指令若是 OP_EVAL_MARK, 这一拍就是被标记的直接 eval 调用。
+			// 仅当被调确为全局 %eval% 内建时才置受限标志 (其余情况丢弃)。
+			vm.consumeEvalMark(fn)
 			// 收集参数 (栈上是 arg1, arg2, ..., argN, 逆序弹出)
 			args := make([]object.Value, numArgs)
 			for i := numArgs - 1; i >= 0; i-- {
@@ -1434,6 +1443,7 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 		case bytecode.OP_CALL_SPREAD:
 			// 参数在数组中，栈: [args_array, func]
 			fn := vm.stack.Pop()
+			vm.consumeEvalMark(fn)
 			arr := vm.stack.Pop()
 			var args []object.Value
 			if a, ok := arr.(*object.Array); ok {
@@ -1507,10 +1517,11 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			}
 		case bytecode.OP_EVAL_MARK:
 			// 编译器在「类字段初始化器内的直接 eval」调用前发射此指令。
-			// 置位 stdlib 的一次性标志; 紧随其后的 OP_CALL 调用 eval 内建时
-			// 消费该标志进入受限模式 (PerformEval: 源码含 arguments 抛早错)。
-			// 无栈效果。
-			stdlib.MarkDirectEvalInit()
+			// 只在本 VM 上置「下一次调用是直接 eval 候选」标记, 无栈效果。
+			// 真正进入受限模式由紧随其后的 OP_CALL / OP_CALL_SPREAD 判定:
+			// 仅当被调恰为全局 %eval% 内建时才置 stdlib 的一次性标志, 否则
+			// 丢弃 —— eval 被局部变量遮蔽时既不会误限, 也不会泄漏给后续调用。
+			vm.pendingEvalInit = true
 		case bytecode.OP_NEW:
 			// new Constructor(args...) — 简化实现
 			numArgs := int(operand)
@@ -3138,6 +3149,25 @@ func describeCallee(v object.Value) string {
 		s = s[:64] + "..."
 	}
 	return s
+}
+
+// consumeEvalMark 消费一次 OP_EVAL_MARK: 弹出被调值后调用。
+// 只有当被调恰为全局 %eval% 内建 (直接 eval 规范要求引用的值即内建本身)
+// 时, 才置位 stdlib 的一次性受限标志, 让 eval 内建进入「类字段初始化器内
+// 直接 eval」的补充早错模式; 否则直接丢弃标记 —— 被局部变量遮蔽的 eval
+// 不是直接 eval, 既不应受限, 标记也不能泄漏给后续无关的 eval 调用。
+// 无论是否命中都把 vm.pendingEvalInit 清零 (标记只对紧邻的这一次调用有效)。
+func (vm *VM) consumeEvalMark(fn object.Value) {
+	if !vm.pendingEvalInit {
+		return
+	}
+	vm.pendingEvalInit = false
+	if vm.globals == nil {
+		return
+	}
+	if v, ok := vm.globals.Get("eval"); ok && v == fn {
+		stdlib.MarkDirectEvalInit()
+	}
 }
 
 // propKey 将值转换为属性键字符串 (与 stdlib.toPropKey 一致)。
