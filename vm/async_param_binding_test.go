@@ -128,6 +128,30 @@ func TestAsyncFunctionParamThrowRejects(t *testing.T) {
 	}
 }
 
+// 生成器: 默认值创建的闭包捕获形参后, 函数体内对形参的重新赋值必须对
+// 该闭包可见 (前导帧与函数体共享同一 binding cell —— 见 rebuildGenFrame 的
+// reuseLocals)。若不共享, 闭包会读到形参初值而非重新赋值后的值。
+func TestGeneratorPrologueClosureSharesBinding(t *testing.T) {
+	got := runAsyncEval(t, `
+		function* g(a, f = () => a) { a = 6; yield f(); }
+		__out.push("v:" + g(1).next().value);
+	`)
+	if !strings.Contains(got, "v:6") {
+		t.Errorf("前导段闭包应与函数体共享形参绑定 (期望 6), got:\n%s", got)
+	}
+}
+
+// async generator 同款: 前导段闭包与函数体共享形参绑定。
+func TestAsyncGeneratorPrologueClosureSharesBinding(t *testing.T) {
+	got := runAsyncEval(t, `
+		async function* g(a, f = () => a) { a = 9; yield f(); }
+		g(1).next().then(function(r){ __out.push("v:" + r.value); });
+	`)
+	if !strings.Contains(got, "v:9") {
+		t.Errorf("async 生成器前导段闭包应共享形参绑定 (期望 9), got:\n%s", got)
+	}
+}
+
 // 生成器形参副作用顺序: 多个默认值按形参顺序求值, 先于函数体。
 func TestGeneratorParamDefaultsOrder(t *testing.T) {
 	got := runAsyncEval(t, `
