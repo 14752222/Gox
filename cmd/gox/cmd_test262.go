@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -42,6 +43,19 @@ import (
 //   - 单用例超时不杀 goroutine（VM 没有步数预算中断），泄漏的 goroutine
 //     会留到进程退出 —— runner 是一次性 CLI，可接受；-timeout 默认 3s 兜底。
 //
+// 并行模型（与 -jobs 参数无关的确定性）:
+//   - 引擎有包级可变状态（vm.currentVM、object.callbackError[Value]、
+//     stdlib 的 solid 栈等），同一进程内**连续**跑多个用例时前一个会污染
+//     后一个 —— 用例判定取决于"它和谁同进程、谁在它前面跑"。因此用例的
+//     结果与分片方式强相关。
+//   - 于是分片数必须**固定**（test262ShardCount），且与 -jobs 解耦：
+//     每个用例永远落在同一个分片、同一个前驱序列里，-jobs 只决定"同时
+//     跑几个分片"（并发度）。若分片数跟着 -jobs 变，-jobs 就改变了每个
+//     用例的邻居 ⇒ 通过数随 -jobs 翻转（实测 A7 子集：jobs 1/2 通过 11，
+//     jobs 4/8 只通过 6）。
+//   - 分片清单（含源码）由父进程落临时文件、子进程直读：子进程若各自扫盘
+//     收集，S 片就是 S 倍收集成本（全量扫盘约 6.5s）。
+//
 // 用法:
 //   gox test262 [-root 目录] [-suite language] [-filter 正则] [-jobs N]
 //               [-timeout 秒] [-json 文件] [-maxfail N] [-quiet] [-list]
@@ -52,22 +66,35 @@ import (
 
 // test262Case 是一个用例的元数据与源码。
 type test262Case struct {
-	RelPath   string   `json:"path"`            // 相对 test262/test 的路径
-	Negative  string   `json:"negative_phase"`  // "" | parse | early | resolution | runtime
-	NegType   string   `json:"negative_type"`   // 期望错误类型（negative 时）
-	Flags     []string `json:"flags"`           // module/async/raw/onlyStrict/noStrict/generated...
-	Includes  []string `json:"includes"`        // harness 依赖（assert.js/sta.js/...）
-	Features  []string `json:"features"`        // 用例 feature 标签（仅记录，不参与判定）
-	Source    string   `json:"-"`               // 用例源码（-json 不落盘）
-	Boundaries string  `json:"-"`               // 原始 frontmatter（调试用）
+	RelPath    string   `json:"path"`           // 相对 test262/test 的路径
+	Negative   string   `json:"negative_phase"` // "" | parse | early | resolution | runtime
+	NegType    string   `json:"negative_type"`  // 期望错误类型（negative 时）
+	Flags      []string `json:"flags"`          // module/async/raw/onlyStrict/noStrict/generated...
+	Includes   []string `json:"includes"`       // harness 依赖（assert.js/sta.js/...）
+	Features   []string `json:"features"`       // 用例 feature 标签（仅记录，不参与判定）
+	Source     string   `json:"source"`         // 用例源码（仅分片 manifest 用；-json 报告走 test262Result，不含它）
+	Boundaries string   `json:"-"`              // 原始 frontmatter（调试用）
 }
+
+// test262ShardCount 是固定分片数 —— 与 -jobs 解耦是整个 runner 确定性的关键。
+//
+// 引擎有包级可变状态（vm.currentVM / object.callbackError / stdlib solid 栈），
+// 同一进程内连续跑用例会互相污染 ⇒ 用例判定取决于"同进程邻居"。分片数若跟着
+// -jobs 变，每个用例的邻居就变，通过数随 -jobs 翻转。钉死分片数后，每个用例
+// 永远落在同一片、同一前驱序列，-jobs 只影响并发度。
+//
+// 取 128 的取舍: 足够大 ⇒ 同一分片内相邻用例在全局序里相隔 128 条（基本落到
+// 不同目录），跨用例污染接近"每例一进程"的隔离效果；又足够小 ⇒ 进程数与启动
+// 开销可控（尤其本机单进程启动约 0.45s）。分片清单由父进程预先落盘，子进程不
+// 再扫盘，故分片数不带来收集成本。
+const test262ShardCount = 128
 
 // test262Result 是单个用例的判定结果。
 type test262Result struct {
-	RelPath string `json:"path"`
-	Pass    bool   `json:"pass"`
-	Phase   string `json:"phase"` // pass / compile / runtime / timeout / harness / crashed
-	Err     string `json:"error,omitempty"`
+	RelPath string  `json:"path"`
+	Pass    bool    `json:"pass"`
+	Phase   string  `json:"phase"` // pass / compile / runtime / timeout / harness / crashed
+	Err     string  `json:"error,omitempty"`
 	Seconds float64 `json:"seconds"`
 }
 
@@ -533,13 +560,13 @@ func runTest262(args []string) {
 	rootFlag := fs.String("root", "", "test262 仓库根目录（默认 $GOX_TEST262 或 ./test262）")
 	suite := fs.String("suite", "language", "用例子集: language | built-ins | annexB | all")
 	filter := fs.String("filter", "", "只跑路径匹配该正则的用例（相对 test/ 目录）")
-	jobs := fs.Int("jobs", runtime.NumCPU(), "并行 worker 数 (进程分片)")
+	jobs := fs.Int("jobs", runtime.NumCPU(), "并发分片数上限 (分片数与 -jobs 无关, 见 test262ShardCount)")
 	timeoutSec := fs.Int("timeout", 3, "单用例超时秒数")
 	jsonOut := fs.String("json", "", "把全量结果写成 JSON 报告（供基线对比）")
 	maxFail := fs.Int("maxfail", 0, "失败数达到 N 即停止（0=不限制）")
 	quiet := fs.Bool("quiet", false, "只输出汇总（默认失败清单也打前 20 条）")
 	list := fs.Bool("list", false, "只列出用例清单不执行")
-	shard := fs.String("shard", "", "内部参数: 分片执行 \"i/N\" —— 只跑 idx%%N==i 的用例")
+	casefile := fs.String("casefile", "", "内部参数: 分片清单文件（每行一个用例 JSON, 含源码）")
 	jsonlOut := fs.String("jsonl", "", "内部参数: 分片子进程逐用例 JSONL 落点 (崩溃也保住已完成用例)")
 	one := fs.String("one", "", "内部参数: 只跑单个用例 (孤儿重派, 进程级隔离)")
 	if err := fs.Parse(args); err != nil {
@@ -591,6 +618,22 @@ func runTest262(args []string) {
 		return
 	}
 
+	// ── 分片清单模式 (子进程) —— 第二优先级 ──
+	// 父进程已把本分片的用例 (含源码) 落成 JSONL manifest: 子进程直读执行,
+	// 不再扫盘收集。必须在 collectCases 之前 —— 固定分片数下每个子进程都重扫
+	// 一遍全量的话, 收集成本是分片数的倍数 (全量扫盘约 6.5s × S)。
+	if *casefile != "" {
+		loaded, err := readCaseManifest(*casefile)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "gox test262: -casefile 读取失败 %q: %v\n", *casefile, err)
+			os.Exit(1)
+		}
+		// 子进程内串行执行 (jobs=1); stopOnTimeout 让遇超时即退, 把泄漏的
+		// VM goroutine 与后续用例并发之前扼杀, 剩余用例交主进程孤儿重派。
+		executeCases(root, loaded, *suite, 1, *timeoutSec, *maxFail, "", *jsonlOut, *quiet, true)
+		return
+	}
+
 	cases, err := collectCases(root, *suite, *filter)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "gox test262: 收集用例失败: %v\n", err)
@@ -607,118 +650,154 @@ func runTest262(args []string) {
 		os.Exit(1)
 	}
 
-	// ── 分片子进程模式 ──
+	// ── 分片进程并行 ──
 	//
-	// 引擎的 stdlib → object → vm 回调桥依赖包级 currentVM 单例
-	// (vm/vm.go), 两个 VM 在同一进程并发执行会跨实例窜状态（实测
-	// concurrent map fatal）。在回调桥改造成按调用链传 VM 之前,
-	// 多核并行用**进程分片**实现: 主进程 spawn N 个自己, 每个分片
-	// 单线程跑 1/N 的用例, 主进程聚合 JSON。
-	//
-	// 附带韧性收益: 引擎侧任何残余的 fatal error 崩掉的是一个分片
-	// 进程, 其余分片的成果不受牵连（主进程把崩溃分片的未完成用例
-	// 标记为 crashed）。
-	if *shard == "" && *jobs > 1 {
-		if os.Getenv("GOX_TEST262_SHARD_CHILD") == "1" {
-			// 分片子进程不该走到这里 —— 说明 shard 参数丢了。
-			// 防递归兜底: 退化为单进程全量, 绝不允许子进程再 spawn。
-			*jobs = 1
-		} else {
-			runSharded(cases, args, *jobs, *jsonOut != "")
-			return
-		}
-	}
-
-	if *shard != "" {
-		var shardIdx, shardTotal int
-		if _, err := fmt.Sscanf(*shard, "%d/%d", &shardIdx, &shardTotal); err != nil || shardTotal <= 0 || shardIdx < 0 || shardIdx >= shardTotal {
-			fmt.Fprintf(os.Stderr, "gox test262: -shard 参数应为 \"i/N\" (0 <= i < N), 得到 %q\n", *shard)
-			os.Exit(2)
-		}
-		var mine []test262Case
-		for i, c := range cases {
-			if i%shardTotal == shardIdx {
-				mine = append(mine, c)
-			}
-		}
-		cases = mine
-		executeCases(root, cases, *suite, 1, *timeoutSec, *maxFail, *jsonOut, *jsonlOut, *quiet, true)
-		return
-	}
-
-	executeCases(root, cases, *suite, 1, *timeoutSec, *maxFail, *jsonOut, "", *quiet, false)
+	// 并行用**进程分片**实现: 父进程按固定分片数 (test262ShardCount) 切用例、
+	// 落清单, 用 jobs 个并发槽 spawn 子进程, 子进程内串行执行, 父进程聚合。
+	// 分片数固定 ⇒ 每个用例的判定与 -jobs 无关; 进程级隔离 ⇒ 引擎 fatal 只崩
+	// 一个分片, 其余分片成果不受牵连 (崩溃分片的未完成用例由孤儿重派接手)。
+	runSharded(cases, args, *jobs, *maxFail, *jsonOut != "")
 }
 
-// runSharded 把用例分成 N 片 spawn 子进程执行并聚合报告。
+// runSharded 按**固定分片数** (test262ShardCount) 切用例, 用 jobs 个并发槽
+// spawn 子进程执行并聚合报告。分片数与 -jobs 无关 —— 见 test262ShardCount
+// 的说明: 引擎的包级状态使"用例结果取决于同进程邻居", 分片数跟 -jobs 变就
+// 会让通过数随 -jobs 翻转; 钉死分片数后 -jobs 只决定并发度。
+//
+// 分片的用例清单 (含源码) 由父进程落成临时 manifest, 子进程用 -casefile 直读,
+// 不再各自扫盘收集 (否则 S 片 = S 倍收集成本)。
+//
+// -maxfail 由父进程全局判定 (子进程不提前退出): 累计各分片失败数, 达到阈值
+// 即停派后续分片。子进程若各自提前退出, 其未跑用例会落进"差集"被当孤儿重派,
+// 反而把 -maxfail 想省的工作又跑回来。
 //
 // 韧性设计: 子进程逐用例把结果追加成 JSONL (崩溃也保住已完成用例);
 // 分片子进程遇首个超时即退出 (超时泄漏的 VM 与后续用例并发会触发
 // vm 包包级状态的 fatal error, 不可 recover —— 提前退出扼杀泄漏)。
 // 主进程聚合后对"应收 - 已完成"差集做孤儿重派: 一个用例一个进程,
 // 彻底进程级隔离。重派后仍缺失的标记 crashed。
-func runSharded(cases []test262Case, parentArgs []string, n int, wantJSON bool) {
+func runSharded(cases []test262Case, parentArgs []string, jobs, maxFail int, wantJSON bool) {
 	exe, err := os.Executable()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "gox test262: 无法定位可执行文件: %v\n", err)
 		os.Exit(1)
 	}
-	// 传递用户原始参数, 附加 -shard 与子进程 JSON 落点。
-	// 注意: -jobs/-json/-shard 都带值, 必须 skipNext 连值一起跳过 ——
-	// 否则值会以裸位置参数混进 childArgs, flag 包遇到位置参数即停止
-	// 解析, 子进程的 -shard 失效 → 又走 runSharded → 递归 spawn。
-	childArgs := []string{"test262"}
+	// 传递用户原始参数 (供子进程/孤儿重派复用), 剥掉 runSharded 自己管理的
+	// -jobs/-maxfail/-json 与子进程专用参数。注意都带值, 必须 skipNext 连值
+	// 一起跳过 —— 否则值会以裸位置参数混进 baseArgs, flag 包遇到位置参数即
+	// 停止解析。
+	baseArgs := []string{"test262"}
 	skipNext := false
 	for _, a := range parentArgs {
 		if skipNext {
 			skipNext = false
 			continue
 		}
-		if a == "-jobs" || a == "-json" || a == "-shard" || a == "-one" {
+		if a == "-jobs" || a == "-json" || a == "-maxfail" || a == "-casefile" || a == "-jsonl" || a == "-one" {
 			skipNext = true
 			continue
 		}
-		if strings.HasPrefix(a, "-jobs=") || strings.HasPrefix(a, "-shard=") || strings.HasPrefix(a, "-json=") {
+		if strings.HasPrefix(a, "-jobs=") || strings.HasPrefix(a, "-json=") ||
+			strings.HasPrefix(a, "-maxfail=") || strings.HasPrefix(a, "-casefile=") ||
+			strings.HasPrefix(a, "-jsonl=") {
 			continue
 		}
-		childArgs = append(childArgs, a)
+		baseArgs = append(baseArgs, a)
 	}
 
-	tmpJSONLs := make([]string, n)
-	procs := make([]*exec.Cmd, n)
-	var baseArgs []string // 供孤儿重派复用的基础参数 (不含 -shard/-jsonl)
-	for i := 0; i < n; i++ {
-		f, err := os.CreateTemp("", "gox-test262-shard-*.jsonl")
+	shardTotal := test262ShardCount
+	if shardTotal > len(cases) {
+		shardTotal = len(cases)
+	}
+	if shardTotal < 1 {
+		shardTotal = 1
+	}
+	concurrency := jobs
+	if concurrency > shardTotal {
+		concurrency = shardTotal
+	}
+	if concurrency < 1 {
+		concurrency = 1
+	}
+
+	// 分片: 全局序里 idx%S 相同的用例归同一片 (父进程算好后落清单)。
+	shardCases := make([][]test262Case, shardTotal)
+	for idx := range cases {
+		s := idx % shardTotal
+		shardCases[s] = append(shardCases[s], cases[idx])
+	}
+	caseFiles := make([]string, shardTotal)  // 分片清单 (含源码)
+	jsonlFiles := make([]string, shardTotal) // 分片结果 JSONL
+	for i := 0; i < shardTotal; i++ {
+		cf, err := os.CreateTemp("", "gox-test262-cases-*.jsonl")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "gox test262: 创建分片清单失败: %v\n", err)
+			os.Exit(1)
+		}
+		if err := writeCaseManifest(cf, shardCases[i]); err != nil {
+			cf.Close()
+			fmt.Fprintf(os.Stderr, "gox test262: 写分片清单失败: %v\n", err)
+			os.Exit(1)
+		}
+		cf.Close()
+		caseFiles[i] = cf.Name()
+
+		rf, err := os.CreateTemp("", "gox-test262-shard-*.jsonl")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "gox test262: 创建分片临时文件失败: %v\n", err)
 			os.Exit(1)
 		}
-		f.Close()
-		tmpJSONLs[i] = f.Name()
-		childArgs = append(childArgs, "-shard", fmt.Sprintf("%d/%d", i, n), "-jsonl", tmpJSONLs[i])
-		if os.Getenv("GOX_TEST262_DEBUG") != "" {
-			fmt.Fprintf(os.Stderr, "[debug] 分片 %d 命令: %s %v\n", i, exe, childArgs)
-		}
-		procs[i] = exec.Command(exe, childArgs...)
-		procs[i].Env = append(os.Environ(), "GOX_TEST262_SHARD_CHILD=1")
-		procs[i].Stdout = nil
-		procs[i].Stderr = os.Stderr
-		if i == 0 {
-			baseArgs = append([]string(nil), childArgs[:len(childArgs)-4]...) // 供孤儿重派复用
-		}
-		childArgs = childArgs[:len(childArgs)-4] // 复用参数 slice, 摘掉本片的 4 个附加参数
+		rf.Close()
+		jsonlFiles[i] = rf.Name()
 	}
 
-	fmt.Printf("分片执行: %d 进程 × %d 用例左右\n", n, (len(cases)+n-1)/n)
+	fmt.Printf("分片执行: 固定 %d 片 × 并发 %d × 每片约 %d 用例\n",
+		shardTotal, concurrency, (len(cases)+shardTotal-1)/shardTotal)
 	start := time.Now()
+	var next atomic.Int64
+	var failTotal atomic.Int64
+	var stopDispatch atomic.Bool
+	dispatched := make([]bool, shardTotal) // 记录哪些分片真跑过 (供孤儿判定排除 -maxfail 停派片)
 	var wg sync.WaitGroup
-	for i := 0; i < n; i++ {
+	for w := 0; w < concurrency; w++ {
 		wg.Add(1)
-		go func(idx int) {
+		go func() {
 			defer wg.Done()
-			if err := procs[idx].Run(); err != nil {
-				fmt.Fprintf(os.Stderr, "gox test262: 分片 %d 异常退出: %v\n", idx, err)
+			for {
+				if stopDispatch.Load() {
+					return
+				}
+				i := int(next.Add(1)) - 1
+				if i >= shardTotal {
+					return
+				}
+				dispatched[i] = true
+				args := append(append([]string(nil), baseArgs...),
+					"-casefile", caseFiles[i], "-jsonl", jsonlFiles[i])
+				if os.Getenv("GOX_TEST262_DEBUG") != "" {
+					fmt.Fprintf(os.Stderr, "[debug] 分片 %d 命令: %s %v\n", i, exe, args)
+				}
+				cmd := exec.Command(exe, args...)
+				cmd.Env = append(os.Environ(), "GOX_TEST262_SHARD_CHILD=1")
+				cmd.Stdout = nil
+				cmd.Stderr = os.Stderr
+				if err := cmd.Run(); err != nil {
+					fmt.Fprintf(os.Stderr, "gox test262: 分片 %d 异常退出: %v\n", i, err)
+				}
+				// 全局 -maxfail: 累计本片失败数, 达到阈值即停派后续分片。
+				if maxFail > 0 {
+					fails := 0
+					for _, r := range readJSONL(jsonlFiles[i]) {
+						if !r.Pass && r.Phase != "harness" {
+							fails++
+						}
+					}
+					if failTotal.Add(int64(fails)) >= int64(maxFail) {
+						stopDispatch.Store(true)
+					}
+				}
 			}
-		}(i)
+		}()
 	}
 	wg.Wait()
 	elapsed := time.Since(start)
@@ -727,29 +806,37 @@ func runSharded(cases []test262Case, parentArgs []string, n int, wantJSON bool) 
 	report := jsonReport{Suite: readSuiteArg(parentArgs), ByGroup: map[string]groupStat{}}
 	var results []test262Result
 	seen := map[string]bool{}
-	for i := 0; i < n; i++ {
-		lines := readJSONL(tmpJSONLs[i])
-		if len(lines) == 0 {
+	for i := 0; i < shardTotal; i++ {
+		lines := readJSONL(jsonlFiles[i])
+		if len(lines) == 0 && len(shardCases[i]) > 0 {
 			fmt.Fprintf(os.Stderr, "gox test262: 分片 %d 无结果产出\n", i)
 		}
 		results = append(results, lines...)
-		os.Remove(tmpJSONLs[i])
+		os.Remove(jsonlFiles[i])
+		os.Remove(caseFiles[i])
 	}
 	for _, r := range results {
 		seen[r.RelPath] = true
 	}
 
-	// 孤儿重派: 分片超时退出/崩溃遗留的用例, 一个用例一个进程重跑
+	// 孤儿重派: 分片超时退出/崩溃遗留的用例, 一个用例一个进程重跑。
+	// 只针对"已派发但未产出"的用例 —— -maxfail 主动停派的分片不算缺失,
+	// 否则停止后差集又会把整个分片重派回来, -maxfail 形同虚设。
 	var missing []test262Case
-	for _, c := range cases {
-		if !seen[c.RelPath] {
-			missing = append(missing, c)
+	for i := 0; i < shardTotal; i++ {
+		if !dispatched[i] {
+			continue
+		}
+		for _, c := range shardCases[i] {
+			if !seen[c.RelPath] {
+				missing = append(missing, c)
+			}
 		}
 	}
 	if len(missing) > 0 {
 		fmt.Printf("孤儿重派: %d 个用例未完成 (分片超时退出/崩溃), 单用例进程隔离重跑\n", len(missing))
 		var mu sync.Mutex
-		sem := make(chan struct{}, n)
+		sem := make(chan struct{}, concurrency)
 		var wg sync.WaitGroup
 		for _, c := range missing {
 			wg.Add(1)
@@ -897,6 +984,45 @@ func appendJSONL(path string, r test262Result) {
 	_, _ = f.Write(append(line, '\n'))
 }
 
+// writeCaseManifest 把一个分片的用例 (含源码) 写成 JSONL 清单, 供子进程
+// 用 -casefile 直读 —— 避免每个分片各自扫盘收集全量用例。
+func writeCaseManifest(f *os.File, cases []test262Case) error {
+	w := bufio.NewWriter(f)
+	for i := range cases {
+		line, err := json.Marshal(&cases[i])
+		if err != nil {
+			return err
+		}
+		if _, err := w.Write(append(line, '\n')); err != nil {
+			return err
+		}
+	}
+	return w.Flush()
+}
+
+// readCaseManifest 读回 writeCaseManifest 落盘的分片清单。
+func readCaseManifest(path string) ([]test262Case, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var out []test262Case
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var c test262Case
+		if err := json.Unmarshal([]byte(line), &c); err != nil {
+			return nil, fmt.Errorf("第 %d 行不是合法用例清单: %v", len(out)+1, err)
+		}
+		if c.RelPath != "" {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
 // readJSONL 读取逐用例 JSONL (分片子进程/孤儿进程的成果文件)。
 func readJSONL(path string) []test262Result {
 	data, err := os.ReadFile(path)
@@ -917,12 +1043,12 @@ func readJSONL(path string) []test262Result {
 	return out
 }
 
-// executeCases 在当前进程内执行一批用例: 分片子进程路径 (jobs=1) 或
-// jobs==1 的单进程路径。stdout 静音 / worker 池 / 汇总打印 / JSON 落盘
-// 都收敛在这里, 主进程的分片并行逻辑 (runSharded) 不进入本函数。
+// executeCases 在当前进程内串行执行一批用例 (jobs=1 的 worker 池)。
+// 只被两条子进程路径调用: 分片清单 (-casefile) 与孤儿重派 (-one 不经此),
+// 主进程的分片并行逻辑 (runSharded) 不进入本函数。
 //
 // jsonlOut 非空时逐用例把结果追加成 JSONL —— 子进程崩溃 (VM 深层的
-// concurrent map fatal 无法 recover) 只丢正在执行的一个用例。
+// concurrent map fatal / 栈溢出无法 recover) 只丢正在执行的一个用例。
 // stopOnTimeout 为 true 时 (分片子进程), 出现第一个超时就停止派发后续
 // 用例并退出进程: 超时泄漏的 VM goroutine 无法中断, 它与后续用例的
 // VM 并发会触发包级状态的 concurrent map fatal —— 提前退出把泄漏
