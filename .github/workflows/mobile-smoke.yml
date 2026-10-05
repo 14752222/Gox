@@ -1,5 +1,6 @@
 # ─────────────────────────────────────────────────────────────────────────────
 # 移动端构建冒烟：Android 打包（libgox.so + gradle assembleDebug）+ iOS 模拟器编译
+#               + npm 包内容核对（mobile/ 是否真的进 @goxjs/goxjs 发布面，M11）
 #
 # 为什么需要这个文件（T22）：桌面三平台已有 ci.yml 闸门，但移动端构建完全依赖
 # 本地手工（Windows/macOS 各一套工具链），跨平台编译回归（NDK/Xcode 升级、
@@ -176,3 +177,81 @@ jobs:
           name: gox-ios-simulator-app
           path: ${{ runner.temp }}/smoke-work/gox-smoke-ios-sim.zip
           if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # npm 包内容核对（M11）：移动端产物有没有真的进 @goxjs/goxjs 的发布面。
+  #
+  # 为什么单独一条「查包内容」的作业：上一轮发空壳包（0.2.0 丢了全部二进制）的
+  # 教训是——CI 全绿 ≠ 包内容对。忽略规则、files 白名单、staging 目录三者任一
+  # 出岔子，编译与打包都照样成功，只有把 tarball 解开逐条比对才看得见。
+  # 所以这里跟 release.yml 的「打包校验」用同一份判据，但跑在每次 main 推送，
+  # 不必等到发版才发现。
+  #
+  # 只验 android：ios 要 macos 专属作业（见 release.yml 的 mobile-ios），
+  # harmony 要 DevEco SDK（托管 runner 没有）—— 这两条各自在别处覆盖/说明。
+  # ─────────────────────────────────────────────────────────────────────────────
+  npm-package:
+    name: npm 包内容核对（mobile/ 进包）
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: 交叉编译 android libgox.so 并 staging 进包目录
+        run: |
+          set -euo pipefail
+          if [ -z "${ANDROID_NDK_HOME:-}" ]; then
+            export ANDROID_NDK_HOME="$(ls -d "${ANDROID_HOME:-/usr/local/lib/android/sdk}"/ndk/* 2>/dev/null | sort -V | tail -1)"
+          fi
+          if [ -z "${ANDROID_NDK_HOME:-}" ] || [ ! -d "$ANDROID_NDK_HOME" ]; then
+            echo "::error::找不到 Android NDK（ANDROID_HOME=$ANDROID_HOME）"
+            exit 1
+          fi
+          bash scripts/build-npm-mobile.sh --into-package --platform android --abi arm64-v8a
+
+      # tarball 名由包名 + 版本推导，不去解析 npm 的 stdout（各版本输出格式不同）。
+      # pack 目标用相对路径：Windows 的 Git Bash 里 /tmp 不会被转换（本机踩到过）。
+      - name: npm pack + tar -tzf 逐条核对包内容
+        run: |
+          set -euo pipefail
+          cd npm
+          NAME=$(node -p "require('./package.json').name.replace(/^@/, '').replace('/', '-')")
+          VERSION=$(node -p "require('./package.json').version")
+          DEST="../dist/npm-pack"
+          mkdir -p "$DEST"
+          rm -f "$DEST/$NAME-$VERSION.tgz"
+          npm pack --pack-destination "$DEST"
+          TARBALL="$DEST/$NAME-$VERSION.tgz"
+          [ -f "$TARBALL" ] || { echo "::error::npm pack 没有产出 $TARBALL"; exit 1; }
+
+          CONTENT=$(tar -tzf "$TARBALL" | sort)
+          echo "包内容："
+          echo "$CONTENT"
+
+          missing=""
+          for want in package/package.json package/bin/gox.js \
+                      package/mobile/manifest.json \
+                      package/mobile/android/arm64-v8a/libgox.so; do
+            printf '%s\n' "$CONTENT" | grep -qx "$want" || missing="$missing ${want#package/}"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::包里缺少：$missing ；若 mobile/ 整目录缺失，检查 npm/.npmignore 与根 .gitignore 是否把手伸进了包内容"
+            exit 1
+          fi
+          echo "::notice::mobile/ 已进包，共 $(printf '%s\n' "$CONTENT" | wc -l) 个条目"
+
+      # 包目录里的 mobile/ 只是打包用的过客（与 release.yml 同理）
+      - name: 清理包目录
+        if: always()
+        run: rm -rf npm/mobile

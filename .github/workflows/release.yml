@@ -31,6 +31,11 @@
 #   包 —— 会发出一个没有二进制的空壳包（本地 Windows 不复现、Linux CI 上必现）。
 #   所以：产物不进包目录、包目录里放占位 .npmignore、.gitignore 里不写 npm/ 下路径。
 #
+# 移动端（M11）：同一套 staging 思路，产物落在 npm/mobile/（scripts/build-npm-mobile.sh
+#   --into-package），发完即删。desktop 的 binaries/ 与 mobile/ 都在 files 白名单里。
+#   三个移动平台里只有 android（NDK，ubuntu 可编）与 ios（Xcode，macos 专属作业）
+#   进 CI；harmony 需要 DevEco SDK，托管 runner 装不了 —— 见 mobile-ios 作业尾部注释。
+#
 # 发版动作：改 npm/package.json 的 version → 提交 → push 到 main（或打 tag），
 #           registry 上出现带 provenance 证明的新版本即成功。
 # ─────────────────────────────────────────────────────────────────────────────
@@ -149,10 +154,12 @@ jobs:
 
   publish:
     name: 构建并发布
-    needs: decide
+    # mobile-ios 先生成 iOS 侧 libgox.a（macOS 专属工具链），本作业下载后
+    # 与 android 一起合并进包目录 —— 单一 runner 编不出全部移动端目标。
+    needs: [decide, mobile-ios]
     if: needs.decide.outputs.publish == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
       # npm/ 等目录是独立仓库的子模块，判重与打包都要读到里面的 package.json。
       - uses: actions/checkout@v7
@@ -198,6 +205,35 @@ jobs:
       - name: 交叉编译五平台二进制并放进包目录
         run: bash ./scripts/build-npm.sh --into-package
 
+      # ── 移动端产物（mobile/）─────────────────────────────────────────────
+      # android 在本 runner 编（镜像自带 NDK，与 mobile-smoke.yml 同一姿势）：
+      #   scripts/build-npm-mobile.sh 内部调 build-android.sh，产物带 ELF 校验。
+      # ios 由上面的 mobile-ios 作业产出（c-archive 只能在 macOS 上编），
+      #   下载后落到 npm/mobile/ios/，再重扫一次清单把两边条目合并。
+      # harmony 不在 CI：鸿蒙要 DevEco SDK 的 clang+sysroot，托管 runner 装不了
+      #   （需华为账号/许可）；它只随本地或自建 runner 的 build-npm-mobile.sh 产出。
+      - name: 交叉编译 android libgox.so 并放进包目录
+        run: |
+          set -euo pipefail
+          if [ -z "${ANDROID_NDK_HOME:-}" ]; then
+            export ANDROID_NDK_HOME="$(ls -d "${ANDROID_HOME:-/usr/local/lib/android/sdk}"/ndk/* 2>/dev/null | sort -V | tail -1)"
+          fi
+          if [ -z "${ANDROID_NDK_HOME:-}" ] || [ ! -d "$ANDROID_NDK_HOME" ]; then
+            echo "::error::找不到 Android NDK（ANDROID_HOME=$ANDROID_HOME）—— runner 镜像变了？"
+            exit 1
+          fi
+          echo "==> NDK: $ANDROID_NDK_HOME"
+          bash ./scripts/build-npm-mobile.sh --into-package --platform android --abi arm64-v8a
+
+      - name: 下载 iOS libgox.a 并入包目录
+        uses: actions/download-artifact@v4
+        with:
+          name: gox-mobile-ios
+          path: npm/mobile/ios
+
+      - name: 重扫 mobile 清单（合并 android + ios 条目）
+        run: bash ./scripts/build-npm-mobile.sh --into-package --manifest-only
+
       - name: 校验二进制齐全
         run: |
           set -euo pipefail
@@ -209,6 +245,17 @@ jobs:
               exit 1
             fi
             ls -lh "$BIN"
+          done
+          echo "── 移动端 ──"
+          for f in mobile/android/arm64-v8a/libgox.so \
+                   mobile/ios/iphonesimulator-arm64/libgox.a \
+                   mobile/ios/iphoneos-arm64/libgox.a \
+                   mobile/manifest.json; do
+            if [ ! -f "npm/$f" ]; then
+              echo "::error::缺少 npm/$f"
+              exit 1
+            fi
+            ls -lh "npm/$f"
           done
 
       - name: 冒烟测试（跑打包后的入口，而不是裸二进制）
@@ -251,7 +298,11 @@ jobs:
           for want in package/package.json package/bin/gox.js package/README.md \
                       package/binaries/linux-x64/gox package/binaries/linux-arm64/gox \
                       package/binaries/darwin-x64/gox package/binaries/darwin-arm64/gox \
-                      package/binaries/windows-x64/gox.exe; do
+                      package/binaries/windows-x64/gox.exe \
+                      package/mobile/manifest.json \
+                      package/mobile/android/arm64-v8a/libgox.so \
+                      package/mobile/ios/iphonesimulator-arm64/libgox.a \
+                      package/mobile/ios/iphoneos-arm64/libgox.a; do
             if ! printf '%s\n' "$CONTENT" | grep -qx "$want"; then
               missing="$missing ${want#package/}"
             fi
@@ -289,10 +340,10 @@ jobs:
             gh release create "$TAG" --title "$TAG" --generate-notes --target "$GITHUB_SHA"
           fi
 
-      # 包目录里的 binaries/ 只是打包用的过客，别留在工作区（失败时也清）
+      # 包目录里的 binaries/ 与 mobile/ 只是打包用的过客，别留在工作区（失败时也清）
       - name: 清理包目录里的二进制
         if: always()
-        run: rm -rf npm/binaries
+        run: rm -rf npm/binaries npm/mobile
 
   # ─────────────────────────────────────────────────────────────────────────────
   # macOS universal（fat 二进制）合并产物 → Release Assets（r3uF0e / RELEASE_NOTES
@@ -371,3 +422,47 @@ jobs:
             --clobber
           gh release view "$TAG" --json assets \
             -q '.assets[].name' | sed 's/^/已上传: /'
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # iOS 移动端静态库 → npm 包 mobile/ios/（M11 移动端发布面）
+  #
+  # 为什么单独一个 macos 作业：libgox.a 是 c-archive，链接要 Xcode 的 clang +
+  #   iOS SDK；ubuntu 上的 publish 作业编不出来。所以这里先产出、以 artifact 交给
+  #   publish 合并 —— 与 desktop 五平台（任意主机）、android（NDK，ubuntu 亦可）
+  #   天然分成两组不同。
+  #
+  # 复用现成脚本：build-npm-mobile.sh --platform ios 内部调
+  #   scripts/build-ios.sh --lib-only（同一份 CGO_CFLAGS/LDFLAGS，避免两处漂移）。
+  #
+  # harmony 为什么不在 CI：鸿蒙侧要 DevEco SDK 的 OHOS clang + musl sysroot，
+  #   GitHub 托管 runner 上装不了（需华为账号/许可，体积也大）。所以
+  #   mobile/harmony/ 只随本地 / 自建 runner 产出 —— 见
+  #   scripts/build-npm-mobile.sh 头部说明与 M11 边的未完成边界。
+  # ─────────────────────────────────────────────────────────────────────────────
+  mobile-ios:
+    name: iOS libgox.a（npm mobile/ios）
+    needs: decide
+    if: needs.decide.outputs.publish == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: 交叉编译 libgox.a（模拟器 + 真机）
+        run: bash ./scripts/build-npm-mobile.sh --platform ios --out dist/npm-mobile
+
+      # 只传 ios/ 子树：publish 用 download-artifact 的 path 落成 npm/mobile/ios/，
+      # 于是 artifact 内部相对路径（<sdk>-arm64/libgox.a）正好接上。
+      - name: 归档 iOS 移动端产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: gox-mobile-ios
+          path: dist/npm-mobile/ios/**
+          if-no-files-found: error

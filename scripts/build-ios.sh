@@ -18,6 +18,8 @@
 #     bash scripts/build-ios.sh --archive                # 真机 Release + archive + 导出 .ipa
 #                                                        #   (TestFlight 分发用; 需签名证书)
 #     bash scripts/build-ios.sh --arch arm64,x86_64      # 模拟器 fat 库 (多架构 lipo)
+#     bash scripts/build-ios.sh --lib-only                # 只编 libgox.a(+.h)，不碰壳工程/xcodebuild
+#                                                         #   （给 npm 包 staging 用: scripts/build-npm-mobile.sh）
 #
 # 环境变量 (gox build ios 会自动设置; 命令行参数优先):
 #     GOX_PROJECT_DIR   用户项目目录 (默认仓库根; 读取其 gox.json / ios/ 骨架)
@@ -42,6 +44,7 @@ SIM=""                # 缺省模拟器 (免签名); 命令行 --sim/--device �
 ARCHS=""
 CONFIG=Debug          # --release/--archive 切 Release (archive 隐含 Release)
 ARCHIVE=0             # --archive: 真机 Release + xcarchive + .ipa (TestFlight 链)
+LIB_ONLY=0            # --lib-only: 编完 libgox.a 就停（npm 包 staging 用，见 build-npm-mobile.sh）
 while [ $# -gt 0 ]; do
   case "$1" in
     --sim) SIM=1; shift ;;
@@ -49,7 +52,8 @@ while [ $# -gt 0 ]; do
     --arch) ARCHS=$2; shift 2 ;;
     --release) CONFIG=Release; shift ;;
     --archive) ARCHIVE=1; CONFIG=Release; SIM=0; shift ;;
-    *) echo "error: 未知参数 $1 (可用: --sim --device --arch <a[,b...]> --release --archive)" >&2; exit 2 ;;
+    --lib-only) LIB_ONLY=1; shift ;;
+    *) echo "error: 未知参数 $1 (可用: --sim --device --arch <a[,b...]> --release --archive --lib-only)" >&2; exit 2 ;;
   esac
 done
 # 命令行没指定目标时读环境变量 (gox build ios 传进来)
@@ -141,6 +145,16 @@ done
 
 # c-archive 会同时产出 libgox.h (含全部 //export 的声明)。
 echo "==> libgox.a 架构: ${ARCH_LIST[*]}"
+
+# --lib-only: 到这里 libgox.a/.h 已落在 dist/ios/<sdk>-<arch>/，不再碰壳工程与
+# xcodebuild —— npm 包只要这个静态库（scripts/build-npm-mobile.sh 会来取）。
+if [ "$LIB_ONLY" = 1 ]; then
+  for a in "${ARCH_LIST[@]}"; do
+    ls -lh "dist/ios/$SDK_NAME-$a/libgox.a"
+  done
+  echo "完成 (--lib-only): dist/ios/$SDK_NAME-<arch>/libgox.a"
+  exit 0
+fi
 
 # ---- 拷进壳工程 (pbxproj 按这个路径 -force_load; 目录名沿用 iphonesimulator-arm64) ----
 APP_LIBS="$ROOT/app/ios/libs/$SDK_NAME-${ARCH_LIST[0]}"
