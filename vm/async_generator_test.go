@@ -212,3 +212,87 @@ func TestAsyncGeneratorNoRegressionPlainAsyncAndSyncGen(t *testing.T) {
 		}
 	}
 }
+
+// 异步 yield* 委托 (r6e5qp): 委托 async generator, 收集其全部 yield 值,
+// 且 yield* 表达式的值为被委托生成器的 return 值。
+func TestAsyncGeneratorYieldStarAsyncDelegate(t *testing.T) {
+	got := runAsyncEval(t, `
+		async function* inner(){ yield 1; yield 2; return "inner-ret"; }
+		async function* outer(){ const v = yield* inner(); __out.push("v:" + v); yield 3; }
+		(async function(){
+			const out = [];
+			for await (const x of outer()) out.push(x);
+			__out.push("out:" + JSON.stringify(out));
+		})();
+	`)
+	for _, want := range []string{"v:inner-ret", "out:[1,2,3]"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("异步 yield* 委托结果不正确, 缺少 %q, got:\n%s", want, got)
+		}
+	}
+}
+
+// 异步 yield* 委托: 消费者 next(v) 的值要转发给被委托迭代器的 next(v);
+// 同步可迭代对象与同步 generator 也能被异步委托消费。
+func TestAsyncGeneratorYieldStarForwardNext(t *testing.T) {
+	got := runAsyncEval(t, `
+		async function* pass(){ const a = yield "a"; yield "got:" + a; }
+		async function* fwd(){ yield* pass(); }
+		async function* fwdArr(){ yield* [10, 20]; }
+		(async function(){
+			const it = fwd();
+			__out.push("1:" + JSON.stringify(await it.next()));
+			__out.push("2:" + JSON.stringify(await it.next("FWD")));
+			__out.push("3:" + JSON.stringify(await it.next()));
+			const arr = [];
+			for await (const v of fwdArr()) arr.push(v);
+			__out.push("arr:" + JSON.stringify(arr));
+		})();
+	`)
+	for _, want := range []string{
+		`1:{"value":"a","done":false}`,
+		`2:{"value":"got:FWD","done":false}`,
+		`3:{"done":true}`,
+		"arr:[10,20]",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("yield* next(v) 转发不正确, 缺少 %q, got:\n%s", want, got)
+		}
+	}
+}
+
+// 异步 yield*: 消费者 throw(e) 转发给被委托迭代器的 throw(e)。
+func TestAsyncGeneratorYieldStarThrowForward(t *testing.T) {
+	got := runAsyncEval(t, `
+		var d = {
+			[Symbol.asyncIterator](){ return this; },
+			next(){ return {done:false, value:"n1"}; },
+			throw(e){ return {done:false, value:"caught:" + e}; }
+		};
+		async function* g(){ yield* d; }
+		(async function(){
+			const it = g();
+			__out.push("1:" + JSON.stringify(await it.next()));
+			__out.push("2:" + JSON.stringify(await it.throw("boom")));
+		})();
+	`)
+	for _, want := range []string{`1:{"value":"n1","done":false}`, `2:{"value":"caught:boom","done":false}`} {
+		if !strings.Contains(got, want) {
+			t.Errorf("yield* throw 转发不正确, 缺少 %q, got:\n%s", want, got)
+		}
+	}
+}
+
+// 异步 yield*: next() 结果为非对象 → TypeError (不得访问其 then)。
+func TestAsyncGeneratorYieldStarNonObjectThrows(t *testing.T) {
+	got := runAsyncEval(t, `
+		async function* g(){
+			try { yield* { [Symbol.asyncIterator](){ return { next(){ return 42; } }; } }; }
+			catch (e) { __out.push("caught:" + e.name); }
+		}
+		(async function(){ await g().next(); })();
+	`)
+	if !strings.Contains(got, "caught:TypeError") {
+		t.Errorf("非对象迭代结果应抛 TypeError, got:\n%s", got)
+	}
+}

@@ -2169,6 +2169,53 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				}
 				continue
 			}
+		case bytecode.OP_ASYNC_ITER_NEXT_ARG:
+			// async generator 的 yield* 委托: 同 ASYNC_ITER_NEXT, 但把消费者
+			// 传入的 next(v) 实参转发给被委托迭代器。栈 [iter, arg] → [step]。
+			arg := vm.stack.Pop()
+			iter := vm.stack.Pop()
+			switch it := iter.(type) {
+			case *object.Generator:
+				// 同步 generator 被异步委托: 传入 arg 作为其 yield 的恢复值。
+				val, done, err := vm.genResume(it, arg)
+				if err != nil {
+					return err
+				}
+				step := object.NewObject()
+				step.SetProperty("value", val)
+				step.SetProperty("done", object.NewBoolean(done))
+				vm.stack.Push(step)
+			case *runtime.Iterator:
+				val, done := it.Next()
+				step := object.NewObject()
+				step.SetProperty("value", val)
+				step.SetProperty("done", object.NewBoolean(done))
+				vm.stack.Push(step)
+			case *object.Object, *object.AsyncGenerator:
+				var nextFn object.Value
+				var found bool
+				if ag, isAG := it.(*object.AsyncGenerator); isAG {
+					nextFn, found = ag.GetProperty("next")
+				} else {
+					nextFn, found = it.(*object.Object).GetProperty("next")
+				}
+				if !found || !object.IsCallable(nextFn) {
+					if err := vm.throwNamedError("TypeError", "async iterator has no callable next()"); err != nil {
+						return err
+					}
+					continue
+				}
+				res, err := vm.callFunction(nextFn, iter, []object.Value{arg})
+				if err != nil {
+					return err
+				}
+				vm.stack.Push(res)
+			default:
+				if err := vm.throwNamedError("TypeError", "%s is not async-iterable", iter.Inspect()); err != nil {
+					return err
+				}
+				continue
+			}
 
 		// ===== 作用域 =====
 		case bytecode.OP_PUSH_SCOPE, bytecode.OP_POP_SCOPE:

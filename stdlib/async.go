@@ -36,6 +36,18 @@ func setupAsync(env *runtime.Environment) {
 			return ag
 		}), false)
 
+	// __async_iter_check: async generator yield* 委托的迭代结果校验
+	// (AsyncGeneratorYieldDelegate: Await 之后 innerResult 必须是对象, 否则
+	// TypeError)。返回 Error 对象即由 VM 抛出 (内置函数错误约定)。
+	env.Declare("__async_iter_check", object.NewBuiltin("__async_iter_check",
+		func(args ...object.Value) object.Value {
+			v := argAt(args, 0)
+			if !object.IsObjectValue(v) {
+				return object.NewErrorWithName("TypeError", "iterator result is not an object")
+			}
+			return v
+		}), false)
+
 	spawn := object.NewBuiltin("__spawn", func(args ...object.Value) object.Value {
 		result := object.NewPromise()
 		if len(args) == 0 {
@@ -51,6 +63,48 @@ func setupAsync(env *runtime.Environment) {
 		return result
 	})
 	env.Declare("__spawn", spawn, false)
+
+	setupAsyncGeneratorIntrinsics(env)
+}
+
+// setupAsyncGeneratorIntrinsics 装配 AsyncGenerator 的内建原型链 (最小可用版)。
+//
+// 规范结构:
+//
+//	%AsyncGeneratorFunction%            全局 AsyncGeneratorFunction (函数对象)
+//	  .prototype = %AsyncGeneratorFunction.prototype% (AGFFP)
+//	  AGFFP.prototype = %AsyncGeneratorPrototype%      (AGP)
+//	%AsyncGeneratorPrototype% (AGP): constructor = AGFFP, @@toStringTag = "AsyncGenerator"
+//	async function* 实例: [[Prototype]] = AGP
+//
+// 已知边界 (牵扯函数对象公共模型, 本版未接入): 本运行时的函数对象尚未建立
+// [[Prototype]] (Object.getPrototypeOf(fn) 对闭包返回 null), 因此
+// `Object.getPrototypeOf(async function*(){}) === AGFFP` 尚不成立, 且
+// `%AsyncGeneratorFunction%` 目前不可真正构造。这里先保证三块内建对象存在且
+// 互相正确链接, 并把 async generator 实例的 [[Prototype]] 指向 AGP。
+func setupAsyncGeneratorIntrinsics(env *runtime.Environment) {
+	tagSym := object.GetGlobalSymbol("Symbol.toStringTag")
+
+	agProto := object.NewObject()     // %AsyncGeneratorPrototype%
+	agFuncProto := object.NewObject() // %AsyncGeneratorFunction.prototype%
+	agFunc := object.NewBuiltin("AsyncGeneratorFunction", func(args ...object.Value) object.Value {
+		return object.NewErrorWithName("TypeError", "AsyncGeneratorFunction construction is not supported")
+	})
+
+	agProto.SetProperty("constructor", agFuncProto)
+	if tagSym != nil {
+		agProto.SetSymbolProperty(tagSym, object.NewString("AsyncGenerator"))
+	}
+	agFuncProto.SetProperty("prototype", agProto)
+	agFuncProto.SetProperty("constructor", agFunc)
+	if tagSym != nil {
+		agFuncProto.SetSymbolProperty(tagSym, object.NewString("AsyncGeneratorFunction"))
+	}
+	agFunc.SetProperty("prototype", agFuncProto)
+
+	env.Declare("AsyncGeneratorFunction", agFunc, false)
+	// 让 AsyncGenerator 实例的 [[Prototype]] 指向 AGP (此前为 nil)。
+	object.SetAsyncGeneratorProto(agProto)
 }
 
 // step 驱动 generator 一步, 完成后 resolve 结果 Promise。

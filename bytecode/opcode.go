@@ -160,6 +160,11 @@ const (
 	// runtime.Iterator), 把「步进结果」压栈 —— 可能是 Promise (由后续
 	// OP_YIELD 交给 __spawn 解析) 或直接的 {value, done} 对象。
 	OP_ASYNC_ITER_NEXT Opcode = 0xA6
+	// OP_ASYNC_ITER_NEXT_ARG: 同 OP_ASYNC_ITER_NEXT, 但把实参传给 next(v)。
+	// 供 async generator 的 yield* 异步委托使用 (AsyncGeneratorYieldDelegate):
+	// 消费者 next(v) 的值必须转发给被委托迭代器的 next(v)。
+	// 栈: [iter, arg] → [step] (弹出两者, 压入步进结果/其 Promise)。
+	OP_ASYNC_ITER_NEXT_ARG Opcode = 0xA7
 
 	// 0xB0-0xBF: 作用域
 	OP_PUSH_SCOPE Opcode = 0xB0 // 进入新块作用域
@@ -252,6 +257,7 @@ var opcodeNames = map[Opcode]string{
 	OP_PACK_ARRAY: "PACK_ARRAY", OP_PACK_OBJECT: "PACK_OBJECT",
 	OP_GET_ITERATOR: "GET_ITERATOR", OP_ITER_NEXT: "ITER_NEXT",
 	OP_GET_ASYNC_ITERATOR: "GET_ASYNC_ITERATOR", OP_ASYNC_ITER_NEXT: "ASYNC_ITER_NEXT",
+	OP_ASYNC_ITER_NEXT_ARG: "ASYNC_ITER_NEXT_ARG",
 	OP_FOR_IN_INIT: "FOR_IN_INIT", OP_FOR_IN_NEXT: "FOR_IN_NEXT", OP_FOR_IN_END: "FOR_IN_END",
 	OP_PUSH_SCOPE: "PUSH_SCOPE", OP_POP_SCOPE: "POP_SCOPE",
 	OP_TYPEOF: "TYPEOF", OP_INSTANCEOF: "INSTANCEOF",
