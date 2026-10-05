@@ -83,6 +83,7 @@ func metaToCompiledFunction(meta *bytecode.FunctionMetadata, consts []object.Val
 		IsArrow:        meta.IsArrow,
 		IsGenerator:    meta.IsGenerator,
 		IsAsync:        meta.IsAsync,
+		IsAsyncGenerator: meta.IsAsyncGenerator,
 		BaseSlot:       meta.BaseSlot,
 		ArgumentsSlot:  meta.ArgumentsSlot,
 		SelfSlot:       meta.SelfSlot,

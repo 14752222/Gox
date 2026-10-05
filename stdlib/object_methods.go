@@ -200,6 +200,11 @@ func setupObjectGlobal() *object.BuiltinFunction {
 			}
 			return object.NullSingleton
 		}
+		// 函数对象: [[Prototype]] 按种类指向 Function/GeneratorFunction/
+		// AsyncFunction/AsyncGeneratorFunction.prototype。
+		if fp := object.FuncPrototypeOf(args[0]); fp != nil {
+			return fp
+		}
 		return object.NullSingleton
 	}))
 
@@ -801,17 +806,8 @@ func setupGlobalFunctions(env *runtime.Environment) {
 	boolFn.SetProperty("name", object.NewString("Boolean"))
 	env.Declare("Boolean", boolFn, false)
 
-	// ===== Function() 构造器 =====
-	// new Function("a", "b", "return a+b") 将参数与函数体字符串编译为可调用闭包。
-	// 函数方法 (call/apply/bind/toString) 由各可调用类型的 GetProperty 直接
-	// 提供 (见 object/funcproto.go)，Function 构造器额外承载 prototype 属性。
-	funcFn := object.NewBuiltin("Function", func(args ...object.Value) object.Value {
-		return newDynamicFunction(env, args)
-	})
-	funcFn.SetProperty("name", object.NewString("Function"))
-	funcFn.SetProperty("length", object.NewNumber(1))
-	funcFn.SetProperty("prototype", object.NewObject())
-	env.Declare("Function", funcFn, false)
+	// Function() 构造器已移至 setupFunctionIntrinsics (stdlib/function_proto.go)，
+	// 因为它要参与函数对象 [[Prototype]] 链的早期装配。
 
 	// NaN, Infinity, undefined 全局常量
 	env.Declare("NaN", object.NewNumber(math.NaN()), true)

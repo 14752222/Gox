@@ -2756,6 +2756,14 @@ func protoOf(v object.Value) object.Value {
 		return t.Proto
 	case *object.Array:
 		return t.GetProto()
+	// 函数对象的 [[Prototype]] 按种类指向内建原型 (Function/GeneratorFunction/
+	// AsyncFunction/AsyncGeneratorFunction.prototype)，用于 instanceof 等沿链查找。
+	case *object.Closure:
+		return object.FuncPrototypeOf(t)
+	case *object.BuiltinFunction:
+		return object.FuncPrototypeOf(t)
+	case *object.BuiltinMethod:
+		return object.FuncPrototypeOf(t)
 	// Temporal 类型把原型放在类型注册表里 (见 object.SetTemporalProto)，
 	// 各自实现了 GetProto()。缺了这些分支，instanceof 会退化成名称匹配，
 	// 而构造器名 ("Instant") 与类型标识并不对应。
@@ -3326,6 +3334,28 @@ func (vm *VM) createClosure(meta *bytecode.FunctionMetadata, frame *Frame) *obje
 	if vm.units != nil && vm.mainUnit != nil && vm.mainUnit.isModule {
 		vm.units.put(fn, vm.mainUnit)
 	}
+	// 函数对象自身的 [[Prototype]]: 按函数种类选择内建原型
+	// (普通/箭头/类构造器 → %Function.prototype%; function* →
+	// %GeneratorFunction.prototype%; async function → %AsyncFunction.prototype%;
+	// async function* → %AsyncGeneratorFunction.prototype%)。这些原型对象由
+	// stdlib 装配并注册 (object.GetXxxPrototype); 尚未注册时保持 nil，
+	// 由 object.FuncPrototypeOf 回退到全局 %Function.prototype%。
+	funcProto := object.GetFunctionPrototype()
+	switch {
+	case meta.IsAsyncGenerator:
+		if p := object.GetAsyncGeneratorFunctionPrototype(); p != nil {
+			funcProto = p
+		}
+	case meta.IsGenerator:
+		if p := object.GetGeneratorFunctionPrototype(); p != nil {
+			funcProto = p
+		}
+	case meta.IsAsync:
+		if p := object.GetAsyncFunctionPrototype(); p != nil {
+			funcProto = p
+		}
+	}
+
 	return &object.Closure{
 		Fn:             fn,
 		Env:            vm.globals,
@@ -3333,6 +3363,7 @@ func (vm *VM) createClosure(meta *bytecode.FunctionMetadata, frame *Frame) *obje
 		IsArrow:        meta.IsArrow,
 		CapturedLocals: captured,
 		CreatedAtFrame: vm.frameIdx,
+		FuncPrototype:  funcProto,
 	}
 }
 

@@ -56,21 +56,9 @@ func setupEvalAndMisc(env *runtime.Environment) {
 	aggFn.SetProperty("prototype", object.NewObject())
 	env.Declare("AggregateError", aggFn, false)
 
-	// ===== Function.prototype 可调用 (规范行为) =====
-	if fv, ok := env.Get("Function"); ok {
-		if proto, found := fv.GetProperty("prototype"); found {
-			if po, isObj := proto.(*object.Object); isObj {
-				// Function.prototype 自身是函数，调用返回 undefined
-				callable := object.NewBuiltin("", func(args ...object.Value) object.Value {
-					return object.UndefinedSingleton
-				})
-				// 保留 prototype 对象上已有的 constructor 反向引用
-				callable.SetProperty("prototype", po)
-				po.SetProperty("constructor", callable)
-				fv.SetProperty("prototype", callable)
-			}
-		}
-	}
+	// 注: %Function.prototype% 的可调用性 (Function.prototype() 返回 undefined)
+	// 已由 setupFunctionIntrinsics 在装配期直接建好 (见 stdlib/function_proto.go)，
+	// 此处不再替换该对象 —— 否则会与函数对象 [[Prototype]] 链上的同一对象失配。
 }
 
 // runGlobalEval 编译并同步执行源码，返回最后一个语句的值。

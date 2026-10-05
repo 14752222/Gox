@@ -57,8 +57,16 @@ func SetupGlobals() *runtime.Environment {
 	setupObjectPrototype(objectObj)
 	if p, ok := objectObj.GetProperty("prototype"); ok {
 		SetObjectPrototypeRef(p)
+		// 同时注册到 object 层: 供函数 .prototype 对象设置默认 [[Prototype]]。
+		object.SetObjectPrototype(p)
 	}
 	env.Declare("Object", objectObj, false)
+
+	// ===== 函数对象原型链 (Function / GeneratorFunction / AsyncFunction) =====
+	// 必须在 setupAsync 之前: 后者要把 %AsyncGeneratorFunction.prototype% 链接到
+	// %Function.prototype%。本函数同时注册全局 Function 构造器 (原先在
+	// setupGlobalFunctions 里创建)。
+	setupFunctionIntrinsics(env)
 
 	// ===== Array =====
 	arrayObj := setupArrayGlobal()

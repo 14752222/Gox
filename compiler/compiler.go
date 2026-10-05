@@ -4797,6 +4797,10 @@ func (c *Compiler) compileAsyncGeneratorSelf(name, selfName string, params []*as
 	meta.BaseSlot = baseSlot
 	meta.ArgumentsSlot = argumentsSlot
 	meta.IsAsync = true
+	// wrapper 的 [[Prototype]] 是 %AsyncGeneratorFunction.prototype%，
+	// 单靠 IsAsync/IsGenerator 无法与普通 async 函数区分 (内层体才 IsGenerator)，
+	// 故显式标记种类供 vm.createClosure 选择函数对象原型 (见 object.FuncPrototypeOf)。
+	meta.IsAsyncGenerator = true
 	return meta, nil
 }
 

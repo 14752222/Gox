@@ -181,6 +181,10 @@ func setupReflectProxy(env *runtime.Environment) {
 		case *object.Array:
 			return t.GetProto()
 		}
+		// 函数对象 (Closure/BuiltinFunction/BuiltinMethod) 的 [[Prototype]]。
+		if fp := object.FuncPrototypeOf(target); fp != nil {
+			return fp
+		}
 		return object.NullSingleton
 	}))
 

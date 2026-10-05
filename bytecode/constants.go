@@ -95,9 +95,14 @@ type FunctionMetadata struct {
 	IsArrow       bool            // 是否箭头函数
 	IsGenerator   bool            // 是否生成器函数 (function*)
 	IsAsync       bool            // 是否 async 函数
-	BaseSlot      int             // 函数自身变量的起始槽位 (外层作用域的变量数)
-	ArgumentsSlot int             // arguments 对象槽位 (-1 表示未使用/箭头函数)
-	SelfSlot      int             // 命名函数表达式的自引用槽位 (-1 表示无)
+	// IsAsyncGenerator 标识 async generator 的 wrapper。注意: 该 wrapper 的
+	// IsAsync=true 但 IsGenerator=false (内层体才是 generator)，单靠两者无法
+	// 与普通 async 函数区分 —— 而二者的函数对象 [[Prototype]] 不同
+	// (AsyncGeneratorFunction.prototype vs AsyncFunction.prototype)，故显式记。
+	IsAsyncGenerator bool
+	BaseSlot         int             // 函数自身变量的起始槽位 (外层作用域的变量数)
+	ArgumentsSlot    int             // arguments 对象槽位 (-1 表示未使用/箭头函数)
+	SelfSlot         int             // 命名函数表达式的自引用槽位 (-1 表示无)
 	// Positions 是函数体语句的源码位置表 (offset 升序, 可为 nil)。
 	// 运行时错误渲染源码帧用 (T05)。
 	Positions []SrcPos

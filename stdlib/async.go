@@ -85,11 +85,20 @@ func setupAsync(env *runtime.Environment) {
 func setupAsyncGeneratorIntrinsics(env *runtime.Environment) {
 	tagSym := object.GetGlobalSymbol("Symbol.toStringTag")
 
-	agProto := object.NewObject()     // %AsyncGeneratorPrototype%
-	agFuncProto := object.NewObject() // %AsyncGeneratorFunction.prototype%
+	agProto := object.NewObjectWithProto(objectPrototype) // %AsyncGeneratorPrototype%
+	agFuncProto := object.NewObject()                     // %AsyncGeneratorFunction.prototype%
+	// %AsyncGeneratorFunction.prototype%.[[Prototype]] = %Function.prototype%
+	// (由 setupFunctionIntrinsics 先装配)。
+	if fp := object.GetFunctionPrototype(); fp != nil {
+		agFuncProto.Proto = fp
+	}
 	agFunc := object.NewBuiltin("AsyncGeneratorFunction", func(args ...object.Value) object.Value {
 		return object.NewErrorWithName("TypeError", "AsyncGeneratorFunction construction is not supported")
 	})
+	// %AsyncGeneratorFunction%.[[Prototype]] = %Function% (与 GeneratorFunction 同)。
+	if fv, ok := env.Get("Function"); ok {
+		agFunc.FuncPrototype = fv
+	}
 
 	agProto.SetProperty("constructor", agFuncProto)
 	if tagSym != nil {
@@ -105,6 +114,8 @@ func setupAsyncGeneratorIntrinsics(env *runtime.Environment) {
 	env.Declare("AsyncGeneratorFunction", agFunc, false)
 	// 让 AsyncGenerator 实例的 [[Prototype]] 指向 AGP (此前为 nil)。
 	object.SetAsyncGeneratorProto(agProto)
+	// 供 vm.createClosure 给 async generator 函数对象选 [[Prototype]]。
+	object.SetAsyncGeneratorFunctionPrototype(agFuncProto)
 }
 
 // step 驱动 generator 一步, 完成后 resolve 结果 Promise。

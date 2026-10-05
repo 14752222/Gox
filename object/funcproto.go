@@ -110,3 +110,115 @@ func arrayLikeArgs(v Value) []Value {
 	}
 	return args
 }
+
+// ===== 函数对象 [[Prototype]] 注册表 =====
+//
+// 函数对象有两套原型:
+//   - .prototype 属性 (实例侧): new fn() 创建对象的 [[Prototype]]，存于
+//     Closure.Proto；
+//   - [[Prototype]] (函数自身): 按函数种类指向不同的内建原型对象。
+//
+// 规范口径 (经 Node 实测):
+//
+//	Object.getPrototypeOf(function(){})          === %Function.prototype%
+//	Object.getPrototypeOf(()=>{})                === %Function.prototype%
+//	Object.getPrototypeOf(class {})              === %Function.prototype%
+//	Object.getPrototypeOf(function*(){})         === %GeneratorFunction.prototype%
+//	Object.getPrototypeOf(async function(){})    === %AsyncFunction.prototype%
+//	Object.getPrototypeOf(async function*(){})   === %AsyncGeneratorFunction.prototype%
+//	Object.getPrototypeOf(内置函数)               === %Function.prototype%
+//
+// 这些内建原型对象由 stdlib 装配 (见 stdlib/function_proto.go)，通过下面的
+// setter 注册；object 层不反向依赖 stdlib。
+
+var (
+	functionPrototype               Value
+	generatorFunctionPrototype      Value
+	asyncFunctionPrototype          Value
+	asyncGeneratorFunctionPrototype Value
+	generatorPrototype              Value // %GeneratorPrototype% (生成器实例原型)
+	objectPrototypeRef              Value // %Object.prototype% (函数 .prototype 的默认原型)
+)
+
+// SetObjectPrototype 注册全局 %Object.prototype%。
+// 用于给普通函数的 .prototype 对象 (实例原型) 设置默认 [[Prototype]]。
+func SetObjectPrototype(v Value) { objectPrototypeRef = v }
+
+// GetObjectPrototype 返回全局 %Object.prototype%。
+func GetObjectPrototype() Value { return objectPrototypeRef }
+
+// SetFunctionPrototype 注册全局 %Function.prototype%。
+func SetFunctionPrototype(v Value) { functionPrototype = v }
+
+// GetFunctionPrototype 返回全局 %Function.prototype%。
+func GetFunctionPrototype() Value { return functionPrototype }
+
+// SetGeneratorFunctionPrototype 注册 %GeneratorFunction.prototype%。
+func SetGeneratorFunctionPrototype(v Value) { generatorFunctionPrototype = v }
+
+// GetGeneratorFunctionPrototype 返回 %GeneratorFunction.prototype%。
+func GetGeneratorFunctionPrototype() Value { return generatorFunctionPrototype }
+
+// SetAsyncFunctionPrototype 注册 %AsyncFunction.prototype%。
+func SetAsyncFunctionPrototype(v Value) { asyncFunctionPrototype = v }
+
+// GetAsyncFunctionPrototype 返回 %AsyncFunction.prototype%。
+func GetAsyncFunctionPrototype() Value { return asyncFunctionPrototype }
+
+// SetAsyncGeneratorFunctionPrototype 注册 %AsyncGeneratorFunction.prototype%。
+func SetAsyncGeneratorFunctionPrototype(v Value) { asyncGeneratorFunctionPrototype = v }
+
+// GetAsyncGeneratorFunctionPrototype 返回 %AsyncGeneratorFunction.prototype%。
+func GetAsyncGeneratorFunctionPrototype() Value { return asyncGeneratorFunctionPrototype }
+
+// SetGeneratorPrototype 注册 %GeneratorPrototype% (生成器实例的 [[Prototype]])。
+func SetGeneratorPrototype(v Value) { generatorPrototype = v }
+
+// GetGeneratorPrototype 返回 %GeneratorPrototype%。
+func GetGeneratorPrototype() Value { return generatorPrototype }
+
+// FuncPrototypeOf 返回函数对象自身的 [[Prototype]]；非函数对象返回 nil。
+// 内建函数默认继承全局 %Function.prototype% (除非显式指定 FuncPrototype，
+// 例如 %Function.prototype% 自身继承 Object.prototype)。
+func FuncPrototypeOf(v Value) Value {
+	switch f := v.(type) {
+	case *Closure:
+		if f.FuncPrototype != nil {
+			return f.FuncPrototype
+		}
+		return functionPrototype
+	case *BuiltinFunction:
+		if f.FuncPrototype != nil {
+			return f.FuncPrototype
+		}
+		return functionPrototype
+	case *BuiltinMethod:
+		if f.FuncPrototype != nil {
+			return f.FuncPrototype
+		}
+		return functionPrototype
+	}
+	return nil
+}
+
+// funcProtoLookupChain 沿函数对象的 [[Prototype]] 链查找属性。
+// 供 Closure/BuiltinFunction/BuiltinMethod 的 GetProperty 在专有分支之后兜底
+// (例如 .constructor 应解析到 Function / GeneratorFunction 等)。
+func funcProtoLookupChain(v Value, name string) (Value, bool) {
+	p := FuncPrototypeOf(v)
+	// 最多 64 层防环 (正常链长 <= 4)。
+	for i := 0; i < 64 && p != nil; i++ {
+		if val, ok := p.GetProperty(name); ok {
+			return val, true
+		}
+		switch t := p.(type) {
+		case *Object:
+			p = t.Proto
+		case *Array:
+			p = t.GetProto()
+		default:
+			p = nil
+		}
+	}
+	return nil, false
+}

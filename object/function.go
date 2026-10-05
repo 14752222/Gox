@@ -32,6 +32,10 @@ type CompiledFunction struct {
 	IsGenerator bool
 	// IsAsync 标识是否为 async 函数
 	IsAsync bool
+	// IsAsyncGenerator 标识 async generator 的 wrapper (IsAsync=true 且
+	// IsGenerator=false，需要显式区分于普通 async 函数)。决定函数对象
+	// [[Prototype]] 与 .prototype 实例原型的种类。
+	IsAsyncGenerator bool
 	// BaseSlot 是函数自身变量的起始槽位 (= 外层作用域的变量数)
 	// 参数和局部变量从 BaseSlot 开始排列
 	BaseSlot int
@@ -101,6 +105,11 @@ type Closure struct {
 	CreatedAtFrame int               // 创建时的帧索引 (用于递归自引用检测)
 	Proto          Value             // prototype 属性 (new 实例的原型; 箭头函数无)
 	Props          map[string]Value  // 其他可设置属性 (如 class 的静态方法)
+	// FuncPrototype 是函数对象自身的 [[Prototype]] (与实例侧的 Proto 不同)。
+	// 按函数种类指向 %Function.prototype% / %GeneratorFunction.prototype% /
+	// %AsyncFunction.prototype% / %AsyncGeneratorFunction.prototype%。
+	// 由 vm.createClosure 赋值；nil 时回退到全局 %Function.prototype%。
+	FuncPrototype Value
 }
 
 func (c *Closure) Type() ObjectType { return CLOSURE_OBJ }
@@ -139,23 +148,47 @@ func (c *Closure) GetProperty(name string) (Value, bool) {
 		}
 		return NewInt(0), true
 	case "prototype":
-		// 箭头函数没有 prototype
-		if c.IsArrow {
+		// 箭头函数、async 函数(非生成器)都没有 prototype 属性。
+		// 注意 async generator 的 wrapper 也是 IsAsync=true 但 IsGenerator=false，
+		// 它**有** prototype —— 需用 IsAsyncGenerator 把它排除。
+		if c.IsArrow || (c.Fn != nil && c.Fn.IsAsync && !c.Fn.IsGenerator && !c.Fn.IsAsyncGenerator) {
 			return UndefinedSingleton, true
 		}
 		if c.Proto != nil {
 			return c.Proto, true
 		}
 		// 惰性创建默认 prototype (含 constructor 自引用)
-		if c.Proto == nil {
-			p := NewObject()
-			p.SetProperty("constructor", c)
-			c.Proto = p
+		p := NewObject()
+		p.SetProperty("constructor", c)
+		// 实例原型 (fn.prototype) 的 [[Prototype]]:
+		//   普通/async 函数 → %Object.prototype%; function* → %GeneratorPrototype%;
+		//   async function* → %AsyncGeneratorPrototype%。(async 函数无 prototype,
+		//   已在上方提前返回。)
+		if c.Fn != nil {
+			if c.Fn.IsAsyncGenerator {
+				if gp := GetAsyncGeneratorProto(); gp != nil {
+					p.Proto = gp
+				}
+			} else if c.Fn.IsGenerator {
+				if gp := GetGeneratorPrototype(); gp != nil {
+					p.Proto = gp
+				}
+			} else if op := GetObjectPrototype(); op != nil {
+				p.Proto = op
+			}
+		} else if op := GetObjectPrototype(); op != nil {
+			p.Proto = op
 		}
+		c.Proto = p
 		return c.Proto, true
 	case "call", "apply", "bind", "toString":
 		// Function.prototype 共享方法实现见 funcproto.go
 		return funcProtoLookup(c, name)
+	}
+	// 其余属性沿函数对象 [[Prototype]] 链查找 (如 .constructor → Function /
+	// GeneratorFunction / AsyncFunction / AsyncGeneratorFunction)。
+	if val, ok := funcProtoLookupChain(c, name); ok {
+		return val, true
 	}
 	return nil, false
 }
@@ -195,6 +228,9 @@ type BuiltinFunction struct {
 	// VM 不会将其抛出。典型例子: Error/TypeError 等错误构造器——
 	// new Error("x") 与 Error("x") 都应返回错误对象本身，而不是 throw。
 	ReturnIsValue bool
+	// FuncPrototype 是函数对象自身的 [[Prototype]]。nil 时回退到全局
+	// %Function.prototype% (绝大多数内置函数如此)。
+	FuncPrototype Value
 }
 
 func (b *BuiltinFunction) Type() ObjectType { return BUILTIN_OBJ }
@@ -219,6 +255,10 @@ func (b *BuiltinFunction) GetProperty(name string) (Value, bool) {
 	case "call", "apply", "bind", "toString":
 		return funcProtoLookup(b, name)
 	}
+	// 其余属性沿函数对象 [[Prototype]] 链查找 (如 .constructor)。
+	if val, ok := funcProtoLookupChain(b, name); ok {
+		return val, true
+	}
 	return nil, false
 }
 
@@ -240,6 +280,9 @@ func NewBuiltin(name string, fn func(args ...Value) Value) *BuiltinFunction {
 type BuiltinMethod struct {
 	Name string
 	Fn   func(this Value, args ...Value) Value
+	// FuncPrototype 是函数对象自身的 [[Prototype]]。nil 时回退到全局
+	// %Function.prototype%。
+	FuncPrototype Value
 }
 
 func (b *BuiltinMethod) Type() ObjectType { return BUILTIN_OBJ }
@@ -257,6 +300,9 @@ func (b *BuiltinMethod) GetProperty(name string) (Value, bool) {
 		return NewInt(0), true
 	case "call", "apply", "bind", "toString":
 		return funcProtoLookup(b, name)
+	}
+	if val, ok := funcProtoLookupChain(b, name); ok {
+		return val, true
 	}
 	return nil, false
 }
