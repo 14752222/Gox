@@ -2253,7 +2253,16 @@ func (c *Compiler) compileClassConstructor(fields []*ast.ClassField, ctor *ast.C
 	paramSpecs := []bytecode.ParameterSpec{}
 	paramSlots := []int{}
 	if ctor != nil {
-		for _, param := range ctor.Parameters {
+		for i, param := range ctor.Parameters {
+			if param.Pattern != nil {
+				// 解构模式参数: 隐藏槽存原始实参, 函数入口处解构到各绑定
+				// (与 compileFunctionSelf 同口径; 默认值/解构由 compileParamBinding 生成)。
+				name := fmt.Sprintf("__param_%d", i)
+				paramSpecs = append(paramSpecs, bytecode.ParameterSpec{Name: name, IsRest: param.Rest})
+				sym := fnScope.Define(name, false)
+				paramSlots = append(paramSlots, sym.Slot)
+				continue
+			}
 			paramSpecs = append(paramSpecs, bytecode.ParameterSpec{Name: param.Name, HasDefault: param.Default != nil, IsRest: param.Rest})
 			sym := fnScope.Define(param.Name, false)
 			sym.Declared = true  // 参数是真实声明: 函数体内 let 同名 → SyntaxError
@@ -2289,6 +2298,16 @@ func (c *Compiler) compileClassConstructor(fields []*ast.ClassField, ctor *ast.C
 		c.tryScopes = prevTryScopes
 		c.finallyRetSlot = prevFinallyRetSlot
 	}()
+
+	// 参数默认值 + 解构模式绑定: 必须先于字段初始化与构造体执行
+	// (规范: 参数在函数体运行前绑定)。ctor == nil 时无参数, 自然跳过。
+	var ctorDeclaredParams []*ast.Parameter
+	if ctor != nil {
+		ctorDeclaredParams = ctor.Parameters
+	}
+	if err := c.compileParamBinding(ctorDeclaredParams, paramSlots); err != nil {
+		return nil, err
+	}
 
 	// 隐式 constructor + 有父类: 语义等价于 constructor(...args){ super(...args) }。
 	// 必须先转发父构造 (父类实例字段 + 父构造体) 再跑本类字段初始化 —— 顺序与规范
@@ -2386,8 +2405,39 @@ func (c *Compiler) compileClassConstructor(fields []*ast.ClassField, ctor *ast.C
 	meta.ArgumentsSlot = argumentsSlot
 	meta.IsStrict = c.strict
 	meta.Positions = toSrcPosList(fnSrcPositions)
-	_ = paramSlots
 	return meta, nil
+}
+
+// compileParamBinding 在函数入口生成参数默认值与解构模式绑定序列。
+// 调用前提: 函数帧已建立, VM 已按 ParameterSpec 把实参放进 paramSlots 对应槽位
+// (rest 参数已收集成数组)。普通函数与 class constructor 共用此逻辑。
+//
+//   - 默认值: 仅当槽内值**恰为 undefined** 时用默认表达式替换 (规范 9.2.10:
+//     null 不触发默认, 会原样进入解构并触发 RequireObjectCoercible)。
+//   - 解构模式: LOAD 隐藏槽 → 解构到各绑定 (默认值已在此之前填入隐藏槽)。
+func (c *Compiler) compileParamBinding(params []*ast.Parameter, paramSlots []int) error {
+	for i, param := range params {
+		if param.Default == nil {
+			continue
+		}
+		slot := paramSlots[i]
+		c.emitter.Emit(bytecode.OP_LOAD, uint16(slot))
+		if err := c.compileDestructureDefault(param.Default); err != nil {
+			return err
+		}
+		c.emitter.Emit(bytecode.OP_STORE, uint16(slot))
+	}
+	for i, param := range params {
+		if param.Pattern == nil {
+			continue
+		}
+		slot := paramSlots[i]
+		c.emitter.Emit(bytecode.OP_LOAD, uint16(slot))
+		if err := c.compilePatternBind(param.Pattern, true); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // compileClassMethodToObject 将 class 实例方法编译为函数并挂到栈顶下方的对象上。
@@ -3891,6 +3941,18 @@ func (c *Compiler) compileArrayPatternBind(pattern *ast.ArrayPattern, isDecl boo
 
 // emitArrayElementBind 取一个数组元素 (elision 也取一次), 解默认值并绑定目标。
 func (c *Compiler) emitArrayElementBind(iterSlot int, elem *ast.PatternElement, isDecl bool, doneIdx, valueIdx uint16) error {
+	// 成员目标: 目标引用的求值必须先于 IteratorStepValue (规范 13.15.5
+	// AssignmentElement 步骤 1, rvdPPH)。先把 obj/key 求值进隐藏槽, 取到值后再写回。
+	objSlot, keySlot := -1, -1
+	if !isDecl {
+		if m, ok := elem.Target.(*ast.MemberExpression); ok {
+			var err error
+			objSlot, keySlot, err = c.emitMemberRefStash(m)
+			if err != nil {
+				return err
+			}
+		}
+	}
 	c.emitter.Emit(bytecode.OP_LOAD, uint16(iterSlot)) // [it]
 	// 迭代器已耗尽 (槽被清空): 不再调 next(), 直接给 undefined (规范:
 	// iteratorRecord.[[done]] 为 true 时后续绑定不再步进)。
@@ -3926,12 +3988,27 @@ func (c *Compiler) emitArrayElementBind(iterSlot int, elem *ast.PatternElement, 
 			return err
 		}
 	}
+	if objSlot >= 0 {
+		c.emitMemberRefStoreStashed(objSlot, keySlot)
+		return nil
+	}
 	return c.bindPatternTarget(elem.Target, isDecl)
 }
 
 // compileArrayRestCollect 把迭代器剩余值收集成新数组, 绑定到 rest 目标。
 // 收集到 done 为止 (耗尽), 故 rest 之后迭代器已全部消费、无需再 close。
 func (c *Compiler) compileArrayRestCollect(iterSlot int, target ast.Expression, isDecl bool, doneIdx, valueIdx uint16) error {
+	// 成员 rest 目标: 引用同样先于 rest 收集求值 (规范 AssignmentRestElement)。
+	objSlot, keySlot := -1, -1
+	if !isDecl {
+		if m, ok := target.(*ast.MemberExpression); ok {
+			var err error
+			objSlot, keySlot, err = c.emitMemberRefStash(m)
+			if err != nil {
+				return err
+			}
+		}
+	}
 	c.emitter.Emit(bytecode.OP_NEW_ARRAY, 0) // [arr]
 	loopStart := c.emitter.Pos()
 	c.emitter.Emit(bytecode.OP_LOAD, uint16(iterSlot)) // [arr, it]
@@ -3959,6 +4036,10 @@ func (c *Compiler) compileArrayRestCollect(iterSlot int, target ast.Expression, 
 	c.emitter.EmitNoOperand(bytecode.OP_POP)
 	c.emitter.PatchJump(afterRest)
 	// [arr] → 绑定 rest 目标 → []
+	if objSlot >= 0 {
+		c.emitMemberRefStoreStashed(objSlot, keySlot)
+		return nil
+	}
 	return c.bindPatternTarget(target, isDecl)
 }
 
@@ -4001,6 +4082,18 @@ func (c *Compiler) compileObjectPatternBind(pattern *ast.ObjectPattern, isDecl b
 			c.emitter.EmitNoOperand(bytecode.OP_ARRAY_PUSH)
 			c.emitter.EmitNoOperand(bytecode.OP_POP)
 		}
+		// 成员目标: 目标引用的求值先于 GetV (规范 ObjectAssignmentPattern 的
+		// AssignmentProperty 求值序, rvdPPH)。先把 obj/key 求值进隐藏槽。
+		objSlot, keySlot := -1, -1
+		if !isDecl {
+			if m, ok := prop.Value.(*ast.MemberExpression); ok {
+				var err error
+				objSlot, keySlot, err = c.emitMemberRefStash(m)
+				if err != nil {
+					return err
+				}
+			}
+		}
 		// 获取属性 → [obj, val]
 		c.emitter.EmitNoOperand(bytecode.OP_GET_INDEX)
 
@@ -4012,16 +4105,31 @@ func (c *Compiler) compileObjectPatternBind(pattern *ast.ObjectPattern, isDecl b
 		}
 
 		// 存储到目标 (标识符 / 成员 / 嵌套模式; nil 表示无)
-		if err := c.bindPatternTarget(prop.Value, isDecl); err != nil {
+		if objSlot >= 0 {
+			c.emitMemberRefStoreStashed(objSlot, keySlot)
+		} else if err := c.bindPatternTarget(prop.Value, isDecl); err != nil {
 			return err
 		}
 	}
 
 	if hasRest {
+		// 成员 rest 目标: 引用先于 CopyDataProperties (rest 拷贝) 求值。
+		objSlot, keySlot := -1, -1
+		if !isDecl {
+			if m, ok := pattern.RestTarget.(*ast.MemberExpression); ok {
+				var err error
+				objSlot, keySlot, err = c.emitMemberRefStash(m)
+				if err != nil {
+					return err
+				}
+			}
+		}
 		// [obj] → [obj, excluded] → OBJECT_REST → [obj, restObj] → 绑定 rest 目标 → [obj]
 		c.emitter.Emit(bytecode.OP_LOAD, uint16(exclSlot))
 		c.emitter.EmitNoOperand(bytecode.OP_OBJECT_REST)
-		if err := c.bindPatternTarget(pattern.RestTarget, isDecl); err != nil {
+		if objSlot >= 0 {
+			c.emitMemberRefStoreStashed(objSlot, keySlot)
+		} else if err := c.bindPatternTarget(pattern.RestTarget, isDecl); err != nil {
 			return err
 		}
 	}
@@ -4068,22 +4176,50 @@ func (c *Compiler) bindPatternTarget(target ast.Expression, isDecl bool) error {
 			return fmt.Errorf("SyntaxError: invalid destructuring binding target")
 		}
 		// 赋值模式的成员目标 (x.y / x[k]): 值已在栈顶 [val]。
-		// compileMemberRef 压 [val, obj, key] → 两次 DUP_BELOW2 旋转成
-		// [obj, key, val] → SET_INDEX 写回并推回 val → [val] → POP。
+		// compileMemberRef 压 [val, obj, key] → 旋转 → SET_INDEX 写回。
 		if err := c.compileMemberRef(t); err != nil {
 			return err
 		}
-		c.emitter.EmitNoOperand(bytecode.OP_DUP_BELOW2)
-		c.emitter.EmitNoOperand(bytecode.OP_POP)
-		c.emitter.EmitNoOperand(bytecode.OP_DUP_BELOW2)
-		c.emitter.EmitNoOperand(bytecode.OP_POP)
-		c.emitter.EmitNoOperand(bytecode.OP_SET_INDEX)
-		c.emitter.EmitNoOperand(bytecode.OP_POP)
+		c.emitMemberRefStoreFromStack()
 		return nil
 	case *ast.ArrayPattern, *ast.ObjectPattern:
 		return c.compilePatternBind(target, isDecl)
 	}
 	return fmt.Errorf("compiler: unsupported destructuring target %T", target)
+}
+
+// emitMemberRefStoreFromStack 在栈为 [..., val, obj, key] 时写回 val:
+// 两次 DUP_BELOW2 把 [val, obj, key] 旋成 [obj, key, val] → SET_INDEX 写回并
+// 推回 val → [val] → POP。消费 val, 净栈深 -3 (相对进入时多了 obj/key 两份)。
+func (c *Compiler) emitMemberRefStoreFromStack() {
+	c.emitter.EmitNoOperand(bytecode.OP_DUP_BELOW2)
+	c.emitter.EmitNoOperand(bytecode.OP_POP)
+	c.emitter.EmitNoOperand(bytecode.OP_DUP_BELOW2)
+	c.emitter.EmitNoOperand(bytecode.OP_POP)
+	c.emitter.EmitNoOperand(bytecode.OP_SET_INDEX)
+	c.emitter.EmitNoOperand(bytecode.OP_POP)
+}
+
+// emitMemberRefStash 把成员目标的 obj/key 求值后存入两个隐藏槽并返回槽号。
+// 用于解构赋值里「目标引用必须先于取值 (IteratorStepValue / GetV) 求值」的场景
+// (规范 13.15.5 AssignmentElement 步骤 1, rvdPPH)。
+func (c *Compiler) emitMemberRefStash(m *ast.MemberExpression) (int, int, error) {
+	objSlot := c.allocHiddenSlot()
+	keySlot := c.allocHiddenSlot()
+	if err := c.compileMemberRef(m); err != nil {
+		return -1, -1, err
+	}
+	c.emitter.Emit(bytecode.OP_STORE, uint16(keySlot))
+	c.emitter.Emit(bytecode.OP_STORE, uint16(objSlot))
+	return objSlot, keySlot, nil
+}
+
+// emitMemberRefStoreStashed 把栈顶值 [val] 写回 stash 的成员引用并消费它。
+// [val] → LOAD obj,key → [val,obj,key] → emitMemberRefStoreFromStack。
+func (c *Compiler) emitMemberRefStoreStashed(objSlot, keySlot int) {
+	c.emitter.Emit(bytecode.OP_LOAD, uint16(objSlot))
+	c.emitter.Emit(bytecode.OP_LOAD, uint16(keySlot))
+	c.emitMemberRefStoreFromStack()
 }
 
 // emitSyncIterClose 生成同步 IteratorClose: LOAD 槽内迭代器 → ITER_CLOSE。
@@ -4899,52 +5035,9 @@ func (c *Compiler) compileFunctionSelf(name, selfName string, params []*ast.Para
 		c.finallyRetSlot = prevFinallyRetSlot
 	}()
 
-	// 默认参数处理: 对有默认值的参数，检查是否为 undefined
-	for i, param := range params {
-		if param.Default == nil {
-			continue
-		}
-		slot := paramSlots[i]
-
-		// LOAD param_slot → [param_val]
-		c.emitter.Emit(bytecode.OP_LOAD, uint16(slot))
-		// JUMP_IF_NULL → 如果为 null/undefined，跳到设置默认值 (不弹出)
-		defJump := c.emitter.EmitJump(bytecode.OP_JUMP_IF_NULL)
-		// 不为空: 弹出已加载的值，跳过默认值设置
-		c.emitter.EmitNoOperand(bytecode.OP_POP)
-		endJump := c.emitter.EmitJump(bytecode.OP_JUMP)
-		// 设置默认值
-		c.emitter.PatchJump(defJump)
-		c.emitter.EmitNoOperand(bytecode.OP_POP) // 弹出 undefined
-		if err := c.compileExpression(param.Default); err != nil {
-			return nil, err
-		}
-		c.emitter.Emit(bytecode.OP_STORE, uint16(slot))
-		// 结束
-		c.emitter.PatchJump(endJump)
-	}
-
-	// rest 参数处理: 最后一个参数如果是 rest，收集剩余参数
-	if len(params) > 0 && params[len(params)-1].Rest {
-		restParam := params[len(params)-1]
-		restSlot := len(params) - 1 // rest 参数的 slot
-		// 在 VM 的 callClosure 中处理 rest 参数收集
-		// 这里只需要标记 IsRest，VM 会自动处理
-		_ = restParam
-		_ = restSlot
-	}
-
-	// 解构模式参数绑定: LOAD 隐藏槽 → 解构到局部变量
-	// 顺序在默认参数处理之后 (默认值已填入隐藏槽)
-	for i, param := range params {
-		if param.Pattern == nil {
-			continue
-		}
-		slot := paramSlots[i]
-		c.emitter.Emit(bytecode.OP_LOAD, uint16(slot))
-		if err := c.compilePatternBind(param.Pattern, true); err != nil {
-			return nil, err
-		}
+	// 参数默认值 + 解构模式绑定 (rest 收集由 VM 依 ParameterSpec.IsRest 完成)。
+	if err := c.compileParamBinding(params, paramSlots); err != nil {
+		return nil, err
 	}
 
 	// 形参前导段到此结束 (下一字节即函数体首指令)。生成器函数调用时

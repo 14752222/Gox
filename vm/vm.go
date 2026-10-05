@@ -4339,7 +4339,9 @@ func (vm *VM) objectRest(src, excluded object.Value) (object.Value, error) {
 			if err := vm.checkCallbackErr(); err != nil {
 				return nil, err
 			}
-			rest.SetProperty(k, v)
+			// CreateDataProperty 语义: 绕过 __proto__ setter 等原型链副作用,
+			// 直接建自有可枚举数据属性 (源的自有 "__proto__" 要原样复制)。
+			rest.DefineOwnProperty(k, object.DataProperty(v))
 		}
 		for _, sym := range s.SymbolKeys() {
 			desc, ok := s.SymbolProperties[sym.ID]
@@ -4375,7 +4377,7 @@ func (vm *VM) objectRest(src, excluded object.Value) (object.Value, error) {
 			if v == nil {
 				v = object.UndefinedSingleton
 			}
-			rest.SetProperty(k, v)
+			rest.DefineOwnProperty(k, object.DataProperty(v))
 		}
 	case *object.String:
 		for i, ch := range object.SplitCharsUTF16(s.Value) {
@@ -4383,7 +4385,7 @@ func (vm *VM) objectRest(src, excluded object.Value) (object.Value, error) {
 			if excludedStr[k] {
 				continue
 			}
-			rest.SetProperty(k, object.NewString(ch))
+			rest.DefineOwnProperty(k, object.DataProperty(object.NewString(ch)))
 		}
 	}
 	return rest, nil
