@@ -128,6 +128,30 @@ func TestAsyncFunctionParamThrowRejects(t *testing.T) {
 	}
 }
 
+// 普通 async 函数: **解构**形参抛错同样须走 rejected Promise (非同步抛出),
+// 且正常解构仍可读 (Node 22 实测: f(null) 不抛, p 为 Promise 且 rejected)。
+func TestAsyncFunctionParamDestructureThrowRejects(t *testing.T) {
+	got := runAsyncEval(t, `
+		async function f({x}) { return x; }
+		var sync = "none";
+		var p;
+		try { p = f(null); } catch(e){ sync = "sync-throw"; }
+		__out.push("sync:" + sync);
+		__out.push("isPromise:" + (p instanceof Promise));
+		p.then(
+			function(){ __out.push("resolved"); },
+			function(){ __out.push("rejected"); }
+		);
+		async function g({x, y = 3}) { return x + y; }
+		g({x:1}).then(function(v){ __out.push("g:" + v); });
+	`)
+	for _, want := range []string{"sync:none", "isPromise:true", "rejected", "g:4"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("缺少 %q, got:\n%s", want, got)
+		}
+	}
+}
+
 // 生成器: 默认值创建的闭包捕获形参后, 函数体内对形参的重新赋值必须对
 // 该闭包可见 (前导帧与函数体共享同一 binding cell —— 见 rebuildGenFrame 的
 // reuseLocals)。若不共享, 闭包会读到形参初值而非重新赋值后的值。
