@@ -6,7 +6,7 @@
 > 只增加了"窗口号"这一个小身份（见 §8.1）。
 > **示例**：`testdata/router_demo.js`（核心）、`testdata/router_page_detail.js`（懒加载模块）、
 > `testdata/router_window_demo.js`（多窗口 + 多屏 + 折叠）。
-> **前置阅读**：`agent_doc/gui-routing-options.md`（选型对比，本文是它的落地结果）、
+> **前置阅读**：`agent_doc/gui-routing-options.md`（选型对比，本文是它的落地结果；`agent_doc/` 过程文档已迁往项目共享资产盘、仅协作者可见，仓库里不留副本）、
 > `docs/gui-patterns.md` §1-§2（无路由时代的用户态写法，仍适用于 3 页以内的小工具）。
 
 ---

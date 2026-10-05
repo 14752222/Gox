@@ -3,7 +3,7 @@
 #
 # 与 build-npm.sh 的关键差异：**这条路必须开 cgo**。移动端的窗口/输入/软键盘
 # 只存在于 Java 侧，跨语言桥接绕不开 JNI —— 这是 2026-09-18 拍板路线 A 时对
-# 「纯 Go、零 cgo」硬约束的正式修订（见 agent_doc/mobile-port-plan.md）。
+# 「纯 Go、零 cgo」硬约束的正式修订（见 agent_doc/mobile-port-plan.md；agent_doc/ 已迁往项目共享资产盘，仓库不留副本）。
 #
 # 产物落在 dist/android/<abi>/libgox.so（dist/ 已 gitignore），由 app/android
 # 壳工程拷进 jniLibs/。

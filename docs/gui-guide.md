@@ -608,7 +608,7 @@ h("row", { transition: 350, opacity: () => (visible() ? 1 : 0.15) }, /* ... */)
 ```
 
 可动画属性只有 `width` / `height` / `left` / `top` / `opacity` 五个（`value`、`padding`、`gap` 等
-刻意排除，理由见 `agent_doc/gui-component-status.md` §20）。**首次赋值不做过渡**
+刻意排除，理由见 `agent_doc/gui-component-status.md` §20；`agent_doc/` 过程文档已迁往项目共享资产盘、仅协作者可见，仓库里不留副本）。**首次赋值不做过渡**
 （与 CSS 一致），想要入场动画用命令式 API：
 
 ```js

@@ -19,7 +19,7 @@ package gfx
 //
 // 新增能力 = 内核加一个方法名 + 宿主加一个分支, **ABI 永远是一次调用**。
 // 词汇参照 uniapp 的 getSystemInfo/getLocation/chooseImage 那一族, 但不承诺
-// 逐 API 对齐 (选型见 agent_doc/gui-device-api-options.md §3.2 方案 B)。
+// 逐 API 对齐 (选型见 agent_doc/gui-device-api-options.md §3.2 方案 B; agent_doc/ 已迁往项目共享资产盘, 仓库不留副本)。
 //
 // ## 四件套
 //

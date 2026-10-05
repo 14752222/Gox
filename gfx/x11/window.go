@@ -31,7 +31,7 @@ import (
 // ## 状态
 //
 // 与 x11.go 的其余部分一致: **代码已实现但未经 Linux 实机验证**
-// (见 agent_doc/gui-guide.md §2 的平台矩阵)。可编译、协议用法确定,
+// (见 agent_doc/gui-guide.md §2 的平台矩阵; agent_doc/ 已迁往项目共享资产盘, 仓库不留副本)。可编译、协议用法确定,
 // 但观感与 WM 差异需要实机确认。
 //
 // 光标形状 (cursorHost) **本后端不实现**: Xlib 的 XCreateFontCursor 是

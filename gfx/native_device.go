@@ -31,7 +31,7 @@ import (
 
 // DeviceInfo 是设备与应用信息。
 //
-// 字段名一次定好 (与 agent_doc/gui-device-api-options.md §3.2 的清单对齐)。
+// 字段名一次定好 (与 agent_doc/gui-device-api-options.md §3.2 的清单对齐; agent_doc/ 已迁往项目共享资产盘, 仓库不留副本)。
 // 屏幕尺寸用 screenWidth/screenHeight —— 与 gx/screen 的 windowInfo 保持同一
 // 词汇: **窗口**尺寸叫 width/height, **屏幕**尺寸叫 screenWidth/screenHeight,
 // 两组名字不同是因为它们回答的是不同的问题, 混用一个名字是以后最容易踩的坑。

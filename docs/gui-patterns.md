@@ -3,7 +3,7 @@
 > 「怎么用已有的内核能力组织出常见应用形态」的模式层文档。每个模式都满足三个标准：
 > **零内核改动**、可整段复制、有 testdata demo + 全链路测试兜底。
 >
-> 来源：2026-09-18 选型拍板（`agent_doc/undecided-and-unimplemented.md` §一）——
+> 来源：2026-09-18 选型拍板（`agent_doc/undecided-and-unimplemented.md` §一；`agent_doc/` 过程文档已迁往项目共享资产盘、仅协作者可见，仓库里不留副本）——
 > 路由 A「用户态 signal 模式（模式文档 + testdata demo）」与屏幕适配 A
 > 「onResize + useWindowSize」的落地交付物；2026-09-19 增补状态 B
 > createResource、onMount/onCleanup、devtools A（gx/dev）、样式 F（用户态

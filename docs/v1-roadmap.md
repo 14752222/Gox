@@ -2,7 +2,7 @@
 
 > 生成：2026-10-01 ｜ 基线：工作区版本号 **0.9.0**（`npm/package.json` 与 `cmd/gox/main.go` 一致；
 > 最新提交 `efe8cc6 release: v0.8.0`；**修订（2026-10-04）**：v0.8.0 / v0.9.0 的 tag 与 GitHub Release **均已发布**（远端实测），本行原写的「尚未打 tag」已作废）
-> 依据：17 篇 `docs/` + README + `app/NATIVE-HOST.md` + `agent_doc/undecided-and-unimplemented.md`（2026-09-18 快照）
+> 依据：17 篇 `docs/` + README + `app/NATIVE-HOST.md` + `agent_doc/undecided-and-unimplemented.md`（2026-09-18 快照；`agent_doc/` 过程文档已迁往项目共享资产盘、仅协作者可见，仓库里不留副本）
 > + 代码 Grep 交叉验证。
 
 ## 判定口径

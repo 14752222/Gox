@@ -12,7 +12,7 @@ package win32
 //	Call(method, args) —— 执行一个方法 (可当场返回, 也可 Pending 后经
 //	    gfx.ResolveNative 回填)
 //
-// 移动端这个契约是给 Kotlin/Swift 宿主实现的 (agent_doc/mobile-port-plan.md);
+// 移动端这个契约是给 Kotlin/Swift 宿主实现的 (agent_doc/mobile-port-plan.md; agent_doc/ 已迁往项目共享资产盘, 仓库不留副本);
 // 桌面上没有第二层语言边界, 宿主就是后端包自己 —— 本文件就是"宿主该怎么写"的
 // 活样板, 同时也是无宿主场景的对照基线: 移动端能报的能力 (电池/定位/相机…)
 // 在桌面上要么给真实值 (电量、网络), 要么诚实地缺省 (定位 -> unavailable),

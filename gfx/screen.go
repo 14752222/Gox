@@ -12,7 +12,7 @@ import (
 
 // ===== gx/screen: 显示器 / 屏幕信息 / 折叠姿态 (多屏与折叠屏适配的地基) =====
 //
-// 这个模块解决的是 agent_doc/gui-responsive-screen-options.md 里 G-b / G-d 那一类
+// 这个模块解决的是 agent_doc/gui-responsive-screen-options.md (已迁往项目共享资产盘, 仓库不留副本) 里 G-b / G-d 那一类
 // 缺口: 脚本此前完全看不见"我在哪块屏幕上、多大、缩放多少、是不是折着的"。
 // 响应式布局的全部机制 (signal + 条件渲染 + 函数 prop) 早就到位, 缺的只是
 // "屏幕尺寸/姿态成为信号" 这一步 —— 本文件补上它, 并把它做成 gx/router
