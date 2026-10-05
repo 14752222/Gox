@@ -1472,9 +1472,13 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			// 创建新对象
 			newObj := object.NewObject()
 			if closure, ok := fn.(*object.Closure); ok {
-				// generator 不能 new (简化: 当作普通调用创建 generator)
-				if closure.Fn != nil && closure.Fn.IsGenerator {
-					vm.stack.Push(object.NewGenerator(closure, args))
+				// generator / async 函数不是构造器: new 必须抛 TypeError
+				// (规范: 它们没有 [[Construct]])。旧实现把 new generator 当作
+				// 普通调用返回 Generator，与规范不符且掩盖用法错误。
+				if closure.Fn != nil && (closure.Fn.IsGenerator || closure.Fn.IsAsync) {
+					if err := vm.throwNamedError("TypeError", "%s is not a constructor", describeCallee(fn)); err != nil {
+						return err
+					}
 					continue
 				}
 				// 设置新对象的原型为构造函数的 prototype (支持 instanceof)
@@ -3340,21 +3344,7 @@ func (vm *VM) createClosure(meta *bytecode.FunctionMetadata, frame *Frame) *obje
 	// async function* → %AsyncGeneratorFunction.prototype%)。这些原型对象由
 	// stdlib 装配并注册 (object.GetXxxPrototype); 尚未注册时保持 nil，
 	// 由 object.FuncPrototypeOf 回退到全局 %Function.prototype%。
-	funcProto := object.GetFunctionPrototype()
-	switch {
-	case meta.IsAsyncGenerator:
-		if p := object.GetAsyncGeneratorFunctionPrototype(); p != nil {
-			funcProto = p
-		}
-	case meta.IsGenerator:
-		if p := object.GetGeneratorFunctionPrototype(); p != nil {
-			funcProto = p
-		}
-	case meta.IsAsync:
-		if p := object.GetAsyncFunctionPrototype(); p != nil {
-			funcProto = p
-		}
-	}
+	funcProto := object.FuncPrototypeForCompiled(fn)
 
 	return &object.Closure{
 		Fn:             fn,

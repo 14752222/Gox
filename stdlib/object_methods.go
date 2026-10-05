@@ -815,11 +815,27 @@ func setupGlobalFunctions(env *runtime.Environment) {
 	env.Declare("undefined", object.UndefinedSingleton, true)
 }
 
-// newDynamicFunction 实现 new Function([p1, ..., pn], body)。
-// 规范语义: 除最后一个参数外都是形参名，最后一个参数是函数体源码。
-// 将其包装为函数表达式经 object.CompileSource 桥编译 (vm 包注册实现)，
-// 取顶层包装函数构建闭包；闭包的 Env 是全局环境 (动态函数只访问全局作用域)。
-func newDynamicFunction(env *runtime.Environment, args []object.Value) object.Value {
+// dynamicFuncKind 是 CreateDynamicFunction 的函数种类。
+type dynamicFuncKind int
+
+const (
+	dynFuncNormal dynamicFuncKind = iota // Function
+	dynFuncGenerator                     // GeneratorFunction
+	dynFuncAsync                         // AsyncFunction
+	dynFuncAsyncGenerator                // AsyncGeneratorFunction
+)
+
+// newDynamicFunction 实现 CreateDynamicFunction: Function / GeneratorFunction /
+// AsyncFunction / AsyncGeneratorFunction 共用的动态函数构造。
+// 规范语义: 除最后一个参数外都是形参名，最后一个参数是函数体源码；
+// 将 (形参, 函数体) 拼成对应种类的函数表达式源码，经 object.CompileSource 桥
+// 编译 (vm 包注册实现)，取顶层包装函数构建闭包。
+//
+// 闭包的 Env 是全局环境 (动态函数只访问全局作用域)；[[Prototype]] 按编译出的
+// 函数种类装配 (FuncPrototypeForCompiled)，故造出的 GeneratorFunction 实例
+// 继承 %GeneratorFunction.prototype%、其 .prototype 的 [[Prototype]] 指向
+// %GeneratorPrototype% —— 与静态声明完全一致。
+func newDynamicFunction(env *runtime.Environment, args []object.Value, kind dynamicFuncKind) object.Value {
 	params := make([]string, 0, len(args))
 	body := ""
 	for i, a := range args {
@@ -829,7 +845,7 @@ func newDynamicFunction(env *runtime.Environment, args []object.Value) object.Va
 			body = toStr(a)
 		}
 	}
-	// 基本合法性检查: 形参不能含 ) { 等破坏结构的内容
+	// 基本合法性检查: 形参不能含 ) { 等破坏结构的内容 (node 实测此类为 SyntaxError)
 	for _, p := range params {
 		for _, ch := range p {
 			if ch == ')' || ch == '{' || ch == '}' || ch == ',' || ch == '[' || ch == ']' {
@@ -837,13 +853,28 @@ func newDynamicFunction(env *runtime.Environment, args []object.Value) object.Va
 			}
 		}
 	}
-	src := "(function anonymous(" + strings.Join(params, ",") + ") {\n" + body + "\n})"
+	var head string
+	switch kind {
+	case dynFuncGenerator:
+		head = "function* anonymous"
+	case dynFuncAsync:
+		head = "async function anonymous"
+	case dynFuncAsyncGenerator:
+		head = "async function* anonymous"
+	default:
+		head = "function anonymous"
+	}
+	src := "(" + head + "(" + strings.Join(params, ",") + ") {\n" + body + "\n})"
 
 	fn, err := object.CompileSource(src)
 	if err != nil {
 		return object.NewErrorWithName("SyntaxError", err.Error())
 	}
-	return &object.Closure{Fn: fn, Env: env}
+	return &object.Closure{
+		Fn:            fn,
+		Env:           env,
+		FuncPrototype: object.FuncPrototypeForCompiled(fn),
+	}
 }
 
 // defineOneProperty 按 property descriptor 定义一个属性。

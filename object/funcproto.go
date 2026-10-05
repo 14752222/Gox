@@ -201,6 +201,34 @@ func FuncPrototypeOf(v Value) Value {
 	return nil
 }
 
+// FuncPrototypeForCompiled 按函数种类返回其函数对象 [[Prototype]]。
+// 供 vm.createClosure 与动态函数构造 (CreateDynamicFunction) 共用:
+//   - IsAsyncGenerator         → %AsyncGeneratorFunction.prototype%
+//   - IsGenerator (非 async)   → %GeneratorFunction.prototype%
+//   - IsAsync (非 generator)   → %AsyncFunction.prototype%
+//   - 其余 (普通/箭头/方法/类)  → %Function.prototype%
+//
+// 未注册对应内建原型时回退到 %Function.prototype% (乃至 nil)。
+func FuncPrototypeForCompiled(fn *CompiledFunction) Value {
+	if fn != nil {
+		switch {
+		case fn.IsAsyncGenerator:
+			if asyncGeneratorFunctionPrototype != nil {
+				return asyncGeneratorFunctionPrototype
+			}
+		case fn.IsGenerator:
+			if generatorFunctionPrototype != nil {
+				return generatorFunctionPrototype
+			}
+		case fn.IsAsync:
+			if asyncFunctionPrototype != nil {
+				return asyncFunctionPrototype
+			}
+		}
+	}
+	return functionPrototype
+}
+
 // funcProtoLookupChain 沿函数对象的 [[Prototype]] 链查找属性。
 // 供 Closure/BuiltinFunction/BuiltinMethod 的 GetProperty 在专有分支之后兜底
 // (例如 .constructor 应解析到 Function / GeneratorFunction 等)。

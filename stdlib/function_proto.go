@@ -42,7 +42,7 @@ func setupFunctionIntrinsics(env *runtime.Environment) {
 
 	// %Function% 构造器: new Function(...) / Function(...) 动态编译源码。
 	funcCtor := object.NewBuiltin("Function", func(args ...object.Value) object.Value {
-		return newDynamicFunction(env, args)
+		return newDynamicFunction(env, args, dynFuncNormal)
 	})
 	funcCtor.SetProperty("name", object.NewString("Function"))
 	funcCtor.SetProperty("length", object.NewNumber(1))
@@ -52,8 +52,9 @@ func setupFunctionIntrinsics(env *runtime.Environment) {
 	env.Declare("Function", funcCtor, false)
 
 	// %GeneratorFunction% + %GeneratorFunction.prototype% + %GeneratorPrototype%
+	// 本身是可构造的 (CreateDynamicFunction kind="generator")。
 	genFunc := object.NewBuiltin("GeneratorFunction", func(args ...object.Value) object.Value {
-		return object.NewErrorWithName("TypeError", "GeneratorFunction construction is not supported")
+		return newDynamicFunction(env, args, dynFuncGenerator)
 	})
 	genFuncProto := object.NewObjectWithProto(funcProto) // %GeneratorFunction.prototype%
 	genProto := object.NewObjectWithProto(objProto)      // %GeneratorPrototype%
@@ -72,8 +73,9 @@ func setupFunctionIntrinsics(env *runtime.Environment) {
 	object.SetGeneratorPrototype(genProto)
 
 	// %AsyncFunction% + %AsyncFunction.prototype% (后者无 .prototype 属性)
+	// 本身是可构造的 (CreateDynamicFunction kind="async")。
 	asyncFunc := object.NewBuiltin("AsyncFunction", func(args ...object.Value) object.Value {
-		return object.NewErrorWithName("TypeError", "AsyncFunction construction is not supported")
+		return newDynamicFunction(env, args, dynFuncAsync)
 	})
 	asyncFuncProto := object.NewObjectWithProto(funcProto) // %AsyncFunction.prototype%
 	asyncFuncProto.SetProperty("constructor", asyncFunc)

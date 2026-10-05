@@ -93,7 +93,7 @@ func setupAsyncGeneratorIntrinsics(env *runtime.Environment) {
 		agFuncProto.Proto = fp
 	}
 	agFunc := object.NewBuiltin("AsyncGeneratorFunction", func(args ...object.Value) object.Value {
-		return object.NewErrorWithName("TypeError", "AsyncGeneratorFunction construction is not supported")
+		return newDynamicFunction(env, args, dynFuncAsyncGenerator)
 	})
 	// %AsyncGeneratorFunction%.[[Prototype]] = %Function% (与 GeneratorFunction 同)。
 	if fv, ok := env.Get("Function"); ok {
