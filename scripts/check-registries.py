@@ -30,8 +30,9 @@
    `version`（官网那四个页面里的版本号由 `scripts/check-site.py` 负责）。
 
 4. **npm 包清单自洽**。`package.json` 的 `bin` 指向真实存在的文件，`files`
-   覆盖 `bin/` 与 `binaries/`（历史上发过一个没有二进制的空壳包，本地 Windows
-   不复现、只有 Linux CI 上必现 —— 本地能查的只有清单自洽性）。
+   覆盖 `bin/`、`binaries/` 与 `mobile/`（历史上发过一个没有二进制的空壳包，本地
+   Windows 不复现、只有 Linux CI 上必现 —— 本地能查的只有清单自洽性；`mobile/`
+   是 M11 的移动端发布面，与 `binaries/` 同属"漏了就从包里消失"的高危项）。
 
 用法：
     python3 scripts/check-registries.py            # 跑全部检查
@@ -514,6 +515,11 @@ def check_npm_manifest():
         problems.append(
             "package.json 的 files 里没有 binaries/ —— 打出来的包里就没有二进制，"
             "用户装到的是一个空壳包（本地 Windows 不复现，Linux CI 上必现）")
+
+    if "mobile/" not in pkg.get("files", []):
+        problems.append(
+            "package.json 的 files 里没有 mobile/ —— 打出来的包里就没有移动端 libgox，"
+            "android/harmony/ios 壳工程拿不到预编译库（与 binaries/ 同一条空壳包教训，M11）")
 
     if problems:
         raise Fail("\n".join("  - " + p for p in problems))
