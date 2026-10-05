@@ -77,6 +77,11 @@ type Compiler struct {
 	// break / continue, 留在栈上的值会被那条跳转带到不相干的位置。
 	// 每个函数一份, 进出函数时保存/恢复。
 	finallyRetSlot int
+
+	// inAsyncFunction 标记正在编译 async 函数的**内层 generator** 体
+	// (await 的实际执行处, for await...of 只在此合法)。进出内层体时
+	// 保存/恢复; 普通函数/顶层恒为 false, for-await 在那里是 SyntaxError。
+	inAsyncFunction bool
 }
 
 // tryScope 是一个活跃 try 处理器条目的编译期描述 (对应运行时 vm.tryStack 的一条)。
@@ -1074,6 +1079,9 @@ func (c *Compiler) compileDoWhileStatement(stmt *ast.DoWhileStatement) error {
 }
 
 func (c *Compiler) compileForOfStatement(stmt *ast.ForOfStatement) error {
+	if stmt.Await {
+		return c.compileForAwaitOfStatement(stmt)
+	}
 	// 编译可迭代对象
 	if err := c.compileExpression(stmt.Iterable); err != nil {
 		return err
@@ -1172,6 +1180,121 @@ func (c *Compiler) compileForOfStatement(stmt *ast.ForOfStatement) error {
 		c.emitter.PatchJump(jmp)
 	}
 	c.emitter.EmitNoOperand(bytecode.OP_POP) // 弹出迭代器
+
+	c.popControl()
+	return nil
+}
+
+// compileForAwaitOfStatement 编译 for await (binding of iterable) { body }。
+//
+// 只允许出现在 async 函数体内: async 函数编译成「wrapper + 内层 generator」,
+// 函数体在内层 generator 里执行, OP_YIELD 暂停帧由 __spawn 驱动 (yield 出
+// Promise → 等 resolve → 把 resolve 值作为恢复值传回)。for-await 的每一步
+// 「取下一个」恰好就是这个形状:
+//
+//	[iter]
+//	ASYNC_ITER_NEXT      → [iter, step]     step = next() 结果 (可能 Promise)
+//	OP_YIELD             → [iter, step']    Promise 时 step' = resolve 值;
+//	                                           同步形状 __spawn 原样回传, 同一位置
+//	.step.done           → 真则跳出 (break 也汇到这里, 一路只弹 iter)
+//	.step.value          → 绑定给头部 (复用同步 for-of 的三形状绑定代码)
+//
+// 「await 检查」: parser 不跟踪 async 上下文 (见 parseForAwaitOfStatement
+// 注释), 编译期校验 —— 当前函数不是 async 时报 SyntaxError (规范上 for-await
+// 体外是早错)。
+func (c *Compiler) compileForAwaitOfStatement(stmt *ast.ForOfStatement) error {
+	if !c.inAsyncFunction {
+		return fmt.Errorf("compiler: SyntaxError: 'for await...of' is only allowed inside an async function")
+	}
+
+	// 编译可迭代表达式并取异步迭代器
+	if err := c.compileExpression(stmt.Iterable); err != nil {
+		return err
+	}
+	c.emitter.EmitNoOperand(bytecode.OP_GET_ASYNC_ITERATOR)
+
+	loopStart := c.emitter.Pos()
+	// 异步迭代一步: [iter] → [iter, step]; OP_YIELD 等待 Promise
+	// (同步形状的 step 原样穿过), 恢复值即步进结果对象。
+	c.emitter.EmitNoOperand(bytecode.OP_ASYNC_ITER_NEXT)
+	c.emitter.EmitNoOperand(bytecode.OP_YIELD) // [iter, step]
+
+	// 检查 step.done (GET_PROP 弹 obj 压结果, 故先 DUP 保住 step):
+	// [iter, step] → DUP → [iter, step, step] → GET_PROP "done" →
+	// [iter, step, done] → JUMP_IF_TRUE (不弹) → 假值 POP → [iter, step]
+	doneIdx := c.constants.AddConstant(object.NewString("done"))
+	c.emitter.EmitNoOperand(bytecode.OP_DUP)
+	c.emitter.Emit(bytecode.OP_GET_PROP, doneIdx) // [iter, step, done]
+	endJump := c.emitter.EmitJump(bytecode.OP_JUMP_IF_TRUE)
+	c.emitter.EmitNoOperand(bytecode.OP_POP) // 假值路径: 弹出 done → [iter, step]
+
+	// 块作用域 (与同步 for-of 一致: 每轮新绑定)
+	c.emitter.EmitNoOperand(bytecode.OP_PUSH_SCOPE)
+	prevScope := c.scope
+	c.scope = NewSymbolScope(prevScope)
+
+	// 取 value 并按三形状绑定 (与 compileForOfStatement 同构, 栈约定一致:
+	// 进来 [iter, step] 栈顶是 step, GET_PROP value 换成要绑定的值)
+	valueIdx := c.constants.AddConstant(object.NewString("value"))
+	c.emitter.Emit(bytecode.OP_GET_PROP, valueIdx) // [iter, value]
+
+	varKind := bytecode.OP_STORE
+	if _, ok := stmt.VarDecl.(*ast.ConstStatement); ok {
+		varKind = bytecode.OP_STORE_CONST
+	}
+	if stmt.Pattern != nil {
+		if err := c.compilePatternBind(stmt.Pattern, true); err != nil {
+			return err
+		}
+	} else if _, isVarDecl := stmt.VarDecl.(*ast.VarStatement); isVarDecl {
+		fn := c.scope.FuncLayer()
+		sym := fn.ResolveLocal(stmt.Variable.Value)
+		if sym == nil {
+			sym = fn.Define(stmt.Variable.Value, false)
+			sym.IsVarLike = true
+			sym.Declared = true
+		}
+		if fn.Parent() == nil && !c.moduleMode {
+			nameIdx := c.constants.AddConstant(object.NewString(stmt.Variable.Value))
+			c.emitter.Emit(bytecode.OP_STORE_GLOBAL, nameIdx)
+		} else {
+			c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
+		}
+	} else {
+		sym := c.scope.Define(stmt.Variable.Value, varKind == bytecode.OP_STORE_CONST)
+		c.emitter.Emit(varKind, uint16(sym.Slot))
+	}
+
+	ctx := c.pushControl(c.takePendingLabel(), true)
+
+	// 循环体
+	for _, s := range stmt.Body.Statements {
+		if err := c.compileStatement(s); err != nil {
+			return err
+		}
+	}
+
+	c.scope = prevScope
+	c.emitter.EmitNoOperand(bytecode.OP_POP_SCOPE)
+
+	// continue 跳回异步迭代头
+	c.emitter.EmitNoOperand(bytecode.OP_ITER_BOUNDARY)
+	iterPos := c.emitter.Pos()
+	for _, jmp := range ctx.continueJumps {
+		c.emitter.ReplaceJumpTarget(jmp, uint16(iterPos))
+	}
+	c.emitter.Emit(bytecode.OP_LOOP, uint16(loopStart))
+
+	// done 为真路径跳到这里: [iter, step, done] → POP×2 → [iter]
+	c.emitter.PatchJump(endJump)
+	c.emitter.EmitNoOperand(bytecode.OP_POP) // 弹出 done (JUMP_IF_TRUE 不弹)
+	c.emitter.EmitNoOperand(bytecode.OP_POP) // 弹出 step
+
+	// break 也汇到这里: 循环体内无残留, 栈上只剩 [iter]
+	for _, jmp := range ctx.breakJumps {
+		c.emitter.PatchJump(jmp)
+	}
+	c.emitter.EmitNoOperand(bytecode.OP_POP) // 弹出 iter (两条路径共用)
 
 	c.popControl()
 	return nil
@@ -4310,8 +4433,13 @@ func (c *Compiler) compileAsyncFunction(name string, params []*ast.Parameter, bo
 // 调用时的接收者。
 func (c *Compiler) compileAsyncFunctionSelf(name, selfName string, params []*ast.Parameter, body *ast.BlockStatement, isArrow bool) (*bytecode.FunctionMetadata, error) {
 	// 1. 编译内层 generator (同一参数, await 编译为 yield)
-	// 自引用绑定传播到内层: await 所在的用户代码在内层执行
+	// 自引用绑定传播到内层: await 所在的用户代码在内层执行。
+	// inAsyncFunction 标志在内层体编译期间为真: for await...of 的
+	// OP_YIELD 机制依赖 async 的 wrapper+generator 结构, 只在此合法。
+	prevInAsync := c.inAsyncFunction
+	c.inAsyncFunction = true
 	genMeta, err := c.compileFunctionSelf(name, selfName, params, body, isArrow, true, false)
+	c.inAsyncFunction = prevInAsync
 	if err != nil {
 		return nil, err
 	}

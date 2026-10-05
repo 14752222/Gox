@@ -459,8 +459,18 @@ func (p *Parser) parseVarStatement() *ast.VarStatement {
 
 func (p *Parser) parseLetStatement() *ast.LetStatement {
 	stmt := &ast.LetStatement{Token: p.curToken()}
+	letLine := p.curToken().Line
 	p.nextToken()
 
+	// ExpressionStatement 对 `let [` 有 lookahead 限制 (规范 14.5.1):
+	// 语句位置上 `let` 与 `[` 之间**有换行**时, 它不构成 let 声明, 而整体
+	// 作为 ExpressionStatement 又被该限制禁止 —— 是 SyntaxError。
+	// (test262: for-await-of/let-array-with-newline.js 等一批 negative 用例;
+	// 同行 let [a] = x 仍是正常解构声明。)
+	if p.curTokenIs(lexer.LBRACKET) && p.curToken().Line != letLine {
+		p.addError("SyntaxError: 'let' followed by '[' on a new line is not allowed as an expression statement")
+		return nil
+	}
 	if p.curTokenIs(lexer.LBRACKET) {
 		return p.parseDestructuringLet(stmt, true)
 	}
@@ -664,6 +674,14 @@ func (p *Parser) parseIfStatement() *ast.IfStatement {
 }
 
 func (p *Parser) parseForStatement() ast.Statement {
+	// for await (...of...): 异步迭代。for 之后紧跟 await 且再后面是 '(',
+	// 头部形状与 for-of 相同 (绑定 + of + 可迭代表达式), 由 parseForOfStatement
+	// 带 await 标志解析。注意 `for (await x;;)` 是合法的传统 for (init 里有
+	// await 表达式) —— 所以判定必须要求 await 后**紧跟** '(' 而不是出现在头部内。
+	if p.peekTokenIs(lexer.AWAIT) && p.peek2TokenIs(lexer.LPAREN) {
+		p.nextToken() // cur = await
+		return p.parseForAwaitOfStatement()
+	}
 	if !p.expectPeek(lexer.LPAREN) {
 		return nil
 	}
@@ -840,6 +858,25 @@ func (p *Parser) parseForOfStatement() *ast.ForOfStatement {
 	p.inLoop = true
 	stmt.Body = p.parseBody()
 	p.inLoop = prevInLoop
+	return stmt
+}
+
+// parseForAwaitOfStatement 解析 for await (binding of iterable) { body }。
+// curToken 在 AWAIT 上 (peek 是 '(')。头部与 for-of 同构, 复用
+// parseForOfStatement: 先消费 'await (', 让 cur 停在 let/const/var (或
+// 绑定 token) 上 —— 正是 parseForOfStatement 的入口约定, 解析完成后
+// 给结果补 Await 标志。// 非法的 `for await (...in...)` (for-in 无异步形态) 会在 forBindingKeyword
+// 判定后掉进 parseForOfStatement 的 expectPeek(OF) 报错, 无需特判。
+func (p *Parser) parseForAwaitOfStatement() ast.Statement {
+	p.nextToken() // cur = (
+	p.nextToken() // cur = let / const / var (头部绑定关键字)
+	stmt := p.parseForOfStatement()
+	if stmt == nil {
+		return nil
+	}
+	stmt.Await = true
+	// for await 只允许在 async 函数体内 —— 编译器在编译 for-await 时
+	// 校验 (parser 不跟踪 async 上下文, 避免两套状态源)。
 	return stmt
 }
 

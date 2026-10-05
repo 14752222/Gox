@@ -142,6 +142,16 @@ const (
 	OP_FOR_IN_INIT  Opcode = 0xA2 // for...in 初始化键迭代
 	OP_FOR_IN_NEXT  Opcode = 0xA3 // for...in 取下一个键
 	OP_FOR_IN_END   Opcode = 0xA4 // for...in 清理迭代器状态
+	// OP_GET_ASYNC_ITERATOR: 获取异步迭代器 (for await...of 头部)。
+	// 弹出可迭代对象, 推进一个「next 可调用」的迭代器:
+	// 有 Symbol.asyncIterator 方法的对象调用之; 同步可迭代对象
+	// (generator/数组/字符串/[Symbol.iterator]) 原样交给 ASYNC_ITER_NEXT。
+	OP_GET_ASYNC_ITERATOR Opcode = 0xA5
+	// OP_ASYNC_ITER_NEXT: 异步迭代一步 (for await...of 循环头)。
+	// 不弹迭代器: 读栈顶迭代器, 调其 next() (对象) 或驱动 (generator/
+	// runtime.Iterator), 把「步进结果」压栈 —— 可能是 Promise (由后续
+	// OP_YIELD 交给 __spawn 解析) 或直接的 {value, done} 对象。
+	OP_ASYNC_ITER_NEXT Opcode = 0xA6
 
 	// 0xB0-0xBF: 作用域
 	OP_PUSH_SCOPE Opcode = 0xB0 // 进入新块作用域
@@ -232,6 +242,7 @@ var opcodeNames = map[Opcode]string{
 	OP_DESTRUCTURE:  "DESTRUCTURE", OP_SPREAD: "SPREAD",
 	OP_PACK_ARRAY: "PACK_ARRAY", OP_PACK_OBJECT: "PACK_OBJECT",
 	OP_GET_ITERATOR: "GET_ITERATOR", OP_ITER_NEXT: "ITER_NEXT",
+	OP_GET_ASYNC_ITERATOR: "GET_ASYNC_ITERATOR", OP_ASYNC_ITER_NEXT: "ASYNC_ITER_NEXT",
 	OP_FOR_IN_INIT: "FOR_IN_INIT", OP_FOR_IN_NEXT: "FOR_IN_NEXT", OP_FOR_IN_END: "FOR_IN_END",
 	OP_PUSH_SCOPE: "PUSH_SCOPE", OP_POP_SCOPE: "POP_SCOPE",
 	OP_TYPEOF: "TYPEOF", OP_INSTANCEOF: "INSTANCEOF",

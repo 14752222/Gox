@@ -295,6 +295,9 @@ type ForOfStatement struct {
 	Pattern  Expression  // ArrayPattern / ObjectPattern; 简单绑定时为 nil
 	Iterable Expression
 	Body     *BlockStatement
+	// Await 表示 for await...of (异步迭代)。仅允许出现在 async 函数内
+	// (编译器校验); String() 反映该形态。
+	Await bool
 }
 
 func (fos *ForOfStatement) TokenLiteral() string { return fos.Token.Literal }
@@ -303,7 +306,11 @@ func (fos *ForOfStatement) String() string {
 	if fos.Pattern != nil {
 		head = fos.Pattern.String()
 	}
-	return "for (" + head + " of " + fos.Iterable.String() + ") " + fos.Body.String()
+	kw := "for ("
+	if fos.Await {
+		kw = "for await ("
+	}
+	return kw + head + " of " + fos.Iterable.String() + ") " + fos.Body.String()
 }
 func (fos *ForOfStatement) statementNode() {}
 

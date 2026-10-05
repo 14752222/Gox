@@ -2033,6 +2033,98 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			// 弹出迭代器 (清理栈)
 			vm.stack.Pop()
 
+		case bytecode.OP_GET_ASYNC_ITERATOR:
+			// for await...of 头部: 弹出可迭代对象, 推进「next 可调用」的迭代器。
+			// 优先级与规范一致: Symbol.asyncIterator 方法 > 同步可迭代形状
+			// (generator 本体 / runtime.Iterator / 带 next 的对象 —— 数组、
+			// 字符串等在 stdlib 转换后都是这些形状)。
+			val := vm.stack.Pop()
+			// 1) [Symbol.asyncIterator]() —— 只在 VM 层调用 (返回值可能是
+			//    generator/闭包, Go 侧适配器驱动不了)。
+			if resolved, ok, err := vm.resolveAsyncSymbolIterator(val); err != nil {
+				return err
+			} else if ok {
+				vm.stack.Push(resolved)
+				continue
+			}
+			// 2) 同步形状原样交给 ASYNC_ITER_NEXT (它统一处理 next 调用)
+			if _, isGen := val.(*object.Generator); isGen {
+				vm.stack.Push(val)
+				continue
+			}
+			if _, isIter := val.(*runtime.Iterator); isIter {
+				vm.stack.Push(val)
+				continue
+			}
+			if o, isObj := val.(*object.Object); isObj {
+				if _, hasNext := o.GetProperty("next"); hasNext {
+					vm.stack.Push(val)
+					continue
+				}
+			}
+			// 3) 同步可迭代 (数组/字符串/Map 等, 规范允许 for await 消费):
+			//    [Symbol.iterator] 解析 (generator 结果只能 VM 驱动) 或
+			//    runtime.GetIterable 适配, 转成迭代器形状。
+			if resolved, ok, err := vm.resolveSymbolIterator(val); err != nil {
+				return err
+			} else if ok {
+				vm.stack.Push(resolved)
+				continue
+			}
+			if iter, hasIter := runtime.GetIterable(val); hasIter {
+				vm.stack.Push(iter)
+				continue
+			}
+			if err := vm.throwNamedError("TypeError", "%s is not async-iterable", val.Inspect()); err != nil {
+				return err
+			}
+			continue
+		case bytecode.OP_ASYNC_ITER_NEXT:
+			// for await...of 循环头: 读栈顶迭代器, 调 next() 把「步进结果」
+			// 压栈。结果可能是 Promise (由编译器发射的 OP_YIELD 交给 __spawn
+			// 驱动: resolve 值作为 yield 的恢复值再取 .value/.done), 也可能
+			// 直接是 {value, done} 对象 (同步迭代器被 for-await 消费的形状)。
+			iter := vm.stack.Peek()
+			switch it := iter.(type) {
+			case *object.Generator:
+				// 同步 generator 被 for await 消费: 驱动一步。
+				// 结果包成 {value, done} 对象, 与 next() 调用形状统一。
+				val, done, err := vm.genResume(it, object.UndefinedSingleton)
+				if err != nil {
+					return err
+				}
+				step := object.NewObject()
+				step.SetProperty("value", val)
+				step.SetProperty("done", object.NewBoolean(done))
+				vm.stack.Push(step)
+			case *runtime.Iterator:
+				val, done := it.Next()
+				step := object.NewObject()
+				step.SetProperty("value", val)
+				step.SetProperty("done", object.NewBoolean(done))
+				vm.stack.Push(step)
+			case *object.Object:
+				// 对象迭代器: 调它的 next() 方法 (this = 迭代器本身)。
+				// 返回 Promise (async 迭代器) 或 {value, done} (同步形状)。
+				nextFn, found := it.GetProperty("next")
+				if !found || !object.IsCallable(nextFn) {
+					if err := vm.throwNamedError("TypeError", "async iterator has no callable next()"); err != nil {
+						return err
+					}
+					continue
+				}
+				res, err := vm.callFunction(nextFn, it, nil)
+				if err != nil {
+					return err
+				}
+				vm.stack.Push(res)
+			default:
+				if err := vm.throwNamedError("TypeError", "%s is not async-iterable", iter.Inspect()); err != nil {
+					return err
+				}
+				continue
+			}
+
 		// ===== 作用域 =====
 		case bytecode.OP_PUSH_SCOPE, bytecode.OP_POP_SCOPE:
 			// 局部变量使用 slot 管理，作用域操作在 VM 中是 NOP
@@ -3566,6 +3658,43 @@ func (vm *VM) resolveSymbolIterator(val object.Value) (object.Value, bool, error
 		return r, true, nil
 	case *object.JSIterator:
 		return runtime.NewCallbackIterator(r.Next), true, nil
+	}
+	return nil, false, nil
+}
+
+// resolveAsyncSymbolIterator 预解析实现了 [Symbol.asyncIterator] 的对象:
+// 在 VM 层调用该方法并适配返回值 (与 resolveSymbolIterator 同构, 只是
+// 查的 Symbol 键不同)。返回 (迭代器, true, nil) 表示已解析;
+// (nil, false, nil) 表示没有该方法 (交回同步可迭代形状分发)。
+func (vm *VM) resolveAsyncSymbolIterator(val object.Value) (object.Value, bool, error) {
+	o, ok := val.(*object.Object)
+	if !ok {
+		return nil, false, nil
+	}
+	sym := object.GetGlobalSymbol("Symbol.asyncIterator")
+	if sym == nil {
+		return nil, false, nil
+	}
+	fn, found := object.LookupSymbolProperty(o, sym)
+	if !found || !object.IsCallable(fn) {
+		return nil, false, nil
+	}
+	res, err := vm.callFunction(fn, o, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	switch r := res.(type) {
+	case *object.Generator:
+		return r, true, nil
+	case *object.JSIterator:
+		return runtime.NewCallbackIterator(r.Next), true, nil
+	}
+	// next 对象迭代器 (async 迭代器的常见实现): 原样交回,
+	// ASYNC_ITER_NEXT 的对象分支会调它的 next()。
+	if obj, isObj := res.(*object.Object); isObj {
+		if _, hasNext := obj.GetProperty("next"); hasNext {
+			return obj, true, nil
+		}
 	}
 	return nil, false, nil
 }
