@@ -4972,11 +4972,11 @@ func (c *Compiler) compileAsyncFunctionSelf(name, selfName string, params []*ast
 	if err != nil {
 		return nil, err
 	}
-	// 普通 async 函数的内层 generator: 形参绑定必须留在 __spawn 驱动路径内。
-	// 规范要求 async 函数形参求值抛错时返回 rejected Promise (而非同步抛出),
-	// 而生成器是同步抛出 —— 故此处不走"调用时冻结前导段"路径, 由 __spawn
-	// 首次驱动时执行, 错误经 step() 的回调桥转为 rejection。
 	genMeta.DeferParams = true
+	// 内层 generator 用 OP_CALL 在 wrapper 帧里被调用 (无接收者), 必须
+	// 词法继承 wrapper 帧的 this —— 否则 async 方法体里的 this 会丢成
+	// undefined/globalThis (async 方法/async-generator 方法 this 回归)。
+	genMeta.LexicalThis = true
 	genIdx := c.constants.AddConstant(genMeta)
 
 	// 2. 创建 wrapper 作用域并定义参数
@@ -5079,6 +5079,8 @@ func (c *Compiler) compileAsyncGeneratorSelf(name, selfName string, params []*as
 	if err != nil {
 		return nil, err
 	}
+	// 同 compileAsyncFunctionSelf: 内层 generator 词法继承 wrapper 帧 this。
+	genMeta.LexicalThis = true
 	genIdx := c.constants.AddConstant(genMeta)
 
 	// 2. 创建 wrapper 作用域并定义参数

@@ -3558,12 +3558,13 @@ func (vm *VM) createClosure(meta *bytecode.FunctionMetadata, frame *Frame) *obje
 		}
 	}
 
-	// this 绑定: 只有箭头函数在创建时按词法捕获所在帧的 this (含主帧的
-	// globalThis); 非箭头函数的 this 由**调用形态**决定, 不在此绑定 ——
-	// 留 nil, 由 callClosure 按 sloppy 规则归一 (裸调用 → globalThis)。
-	// 若这里给非箭头也写入外层 this, 裸调用会错误继承创建处的方法 this。
+	// this 绑定: 只有箭头函数 (以及编译器合成的 async 内层 generator —
+	// 见 LexicalThis) 在创建时按词法捕获所在帧的 this (含主帧的 globalThis);
+	// 其它非箭头函数的 this 由**调用形态**决定, 不在此绑定 —— 留 nil, 由
+	// callClosure 按 sloppy 规则归一 (裸调用 → globalThis)。若给所有非箭头
+	// 都写入外层 this, 裸调用会错误继承创建处的方法 this。
 	var thisVal object.Value
-	if meta.IsArrow {
+	if meta.IsArrow || meta.LexicalThis {
 		thisVal = vm.frameThis(frame)
 	}
 

@@ -103,6 +103,12 @@ type FunctionMetadata struct {
 	// 与普通 async 函数区分 —— 而二者的函数对象 [[Prototype]] 不同
 	// (AsyncGeneratorFunction.prototype vs AsyncFunction.prototype)，故显式记。
 	IsAsyncGenerator bool
+	// LexicalThis 标识"该函数的 this 必须按词法捕获创建帧的 this"。
+	// 仅编译器合成的 async/async-generator 内层 generator 需要: wrapper 以
+	// 方法/函数形态被调用后, 在同一帧里 OP_FUNCTION 建出内层 generator 并立刻
+	// 调用, 内层必须继承 wrapper 帧的 this (它用 OP_CALL 调用, 无接收者)。
+	// 用户手写函数不用本标记 (它们的 this 由调用形态决定)。
+	LexicalThis bool
 	BaseSlot         int             // 函数自身变量的起始槽位 (外层作用域的变量数)
 	ArgumentsSlot    int             // arguments 对象槽位 (-1 表示未使用/箭头函数)
 	SelfSlot         int             // 命名函数表达式的自引用槽位 (-1 表示无)
