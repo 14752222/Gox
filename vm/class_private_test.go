@@ -139,14 +139,18 @@ func TestPrivateSameNameAsPublic(t *testing.T) {
 	}
 }
 
-// TestPrivateOutsideClassIsCompileError 类外 #x 是编译期错误。
+// TestPrivateOutsideClassIsCompileError 类外 #x 是解析期早错。
+// 2026-10-05 (rpEXH2) 起从编译期提前到解析期: 引用未在任何包围类声明的
+// 私有名, parser 直接报 SyntaxError（与 Node 口径一致, test262 的
+// phase:parse negative 用例也因此能过）。文案从 "not allowed outside
+// class" 换成 "must be declared in an enclosing class"。
 func TestPrivateOutsideClassIsCompileError(t *testing.T) {
 	_, err := EvalVM("function f(o){ return o.#x }")
 	if err == nil {
-		t.Fatal("类外私有访问应报编译错")
+		t.Fatal("类外私有访问应报解析错")
 	}
-	if !strings.Contains(err.Error(), "not allowed outside class") {
-		t.Errorf("错误文案应指明类外非法, got: %v", err)
+	if !strings.Contains(err.Error(), "must be declared in an enclosing class") {
+		t.Errorf("错误文案应指明未在包围类中声明, got: %v", err)
 	}
 }
 

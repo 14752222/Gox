@@ -39,6 +39,12 @@ type Parser struct {
 	// stmtPos 在 parseStatement 单点收集语句起始位置 (T05 运行时错误
 	// 源码帧)。ParseProgram 把它交到 ast.Program.Positions。
 	stmtPos ast.PositionTable
+
+	// privEnvStack 是 class 私有名环境栈（class 嵌套链）。
+	// 每进一个 class 体压一层; 引用点记进最内层 pending, class 收尾时
+	// 未命中本层声明表的名字上抛外层 —— 全落空即「未在包围类中声明」早错。
+	// 见 class_early_errors.go。
+	privEnvStack []*privEnv
 }
 
 // maxNestingDepth 是语法嵌套深度上限。
@@ -2101,6 +2107,9 @@ func (p *Parser) parsePrivateMember(member *ast.ClassMethod) *ast.ClassMethod {
 func (p *Parser) parsePrivateMemberExpression(left ast.Expression) ast.Expression {
 	mexp := &ast.MemberExpression{Token: p.curToken(), Object: left}
 	mexp.Private = p.curToken().Literal // "#x" 形式, 编译器去 #
+	// 私有名引用记录到当前最内层 class 环境（栈式早错校验, 见
+	// class_early_errors.go）。顶层引用立即报早错。
+	p.notePrivateRef(mexp.Private)
 	// super.#x: 规范早错 —— super 的属性访问只接受公有名。
 	// 同 delete：不拦会在 super 方法调用分支触发 Property 断言 panic。
 	if _, isSuper := left.(*ast.SuperExpression); isSuper {
@@ -2468,7 +2477,9 @@ func (p *Parser) parseClassDeclaration() *ast.ClassDeclaration {
 		p.addError(fmt.Sprintf("expected '{' in class, got %s", p.peekToken().Type))
 		return nil
 	}
-	p.nextToken() // 进入成员区域
+	p.nextToken()   // 进入成员区域
+	p.pushPrivEnv() // 私有名环境压栈; defer 弹出保证早退路径也平衡
+	defer p.popPrivEnv()
 
 	for !p.curTokenIs(lexer.RBRACE) && !p.curTokenIs(lexer.EOF) {
 		if p.curTokenIs(lexer.SEMICOLON) {
@@ -2505,6 +2516,11 @@ func (p *Parser) parseClassDeclaration() *ast.ClassDeclaration {
 		}
 	}
 
+	// 私有名相关早错集中校验（重复私有名 / 字段初始化器含 arguments·super /
+	// 引用未声明私有名）。必须在成员循环之后: 判重与判未声明引用都需要
+	// 先看全所有成员（元素顺序上引用可以先于声明）。
+	p.checkClassEarlyErrors(cls.Methods, cls.Statics, cls.Fields)
+
 	if !p.curTokenIs(lexer.RBRACE) {
 		p.addError(fmt.Sprintf("expected '}' in class, got %s", p.curToken().Type))
 		return nil
@@ -2540,7 +2556,9 @@ func (p *Parser) parseClassExpression() ast.Expression {
 		p.addError(fmt.Sprintf("expected '{' in class, got %s", p.peekToken().Type))
 		return nil
 	}
-	p.nextToken() // 进入成员区域
+	p.nextToken()   // 进入成员区域
+	p.pushPrivEnv() // 私有名环境压栈; defer 弹出保证早退路径也平衡
+	defer p.popPrivEnv()
 
 	for !p.curTokenIs(lexer.RBRACE) && !p.curTokenIs(lexer.EOF) {
 		if p.curTokenIs(lexer.SEMICOLON) {
@@ -2571,6 +2589,9 @@ func (p *Parser) parseClassExpression() ast.Expression {
 			p.nextToken()
 		}
 	}
+
+	// 私有名早错校验（与 parseClassDeclaration 同一处挂载点, 口径一致）。
+	p.checkClassEarlyErrors(cls.Methods, cls.Statics, cls.Fields)
 
 	if !p.curTokenIs(lexer.RBRACE) {
 		p.addError(fmt.Sprintf("expected '}' in class, got %s", p.curToken().Type))
@@ -2706,6 +2727,16 @@ func (p *Parser) parseClassMember() *ast.ClassMethod {
 		member.Body = p.parseBlockStatement()
 		p.nextToken() // 前进到下一个成员/分隔符
 		return member
+	}
+	// 字段名不得为 constructor (规范 ClassElement 早错误: FieldDefinition
+	// 的 PropName 为 "constructor" 是 SyntaxError)。不拦的话它会以
+	// IsConstructor=true + Body=nil 进 Methods, 编译器读 Body.Statements
+	// 直接 panic (2026-10-05 由 test262 fields-literal-name-propname-
+	// constructor 2 例 crashed 抓出)。
+	if p.curTokenIs(lexer.IDENTIFIER) && p.curToken().Literal == "constructor" &&
+		(p.peekTokenIs(lexer.SEMICOLON) || p.peekTokenIs(lexer.RBRACE) || p.peekTokenIs(lexer.ASSIGN) || p.peekTokenIs(lexer.COMMA)) {
+		p.addError("SyntaxError: class field must not be named 'constructor'")
+		return nil
 	}
 
 	// 方法或字段 (计算属性名已在前面解析时, cur 已停在 ( 或 =)

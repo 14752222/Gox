@@ -2006,7 +2006,11 @@ func (c *Compiler) compileClassConstructor(fields []*ast.ClassField, ctor *ast.C
 	}
 
 	// constructor 体
-	if ctor != nil {
+	// 防御: ctor 理论上恒有 Body (parseClassMember 只在 '(' 形状下置
+	// IsConstructor), 但历史上有字段名 constructor 混进来的形状
+	// (IsConstructor=true + Body=nil, 2026-10-05 修于 parser 层);
+	// 这里 nil 检查保证再出现时是编译错而不是进程 panic。
+	if ctor != nil && ctor.Body != nil {
 		if err := c.compileStatements(ctor.Body.Statements); err != nil {
 			return nil, err
 		}
