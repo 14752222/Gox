@@ -111,6 +111,24 @@ type Compiler struct {
 	// 其内的 eval 不再受初始化器规则约束); 箭头函数保持外层值 (无独立
 	// arguments 作用域, 规范上继续受约束 —— 见 nested-direct-eval 用例)。
 	inClassFieldInit bool
+
+	// withScopes 是当前词法位置**仍活跃**的 with 语句上下文栈 (内层在后),
+	// 每一项记下承载 with 对象的局部槽位 slot 与进入 with 时的作用域深度 depth。
+	//
+	// with 体内自由标识符的编译据此决定: 若该标识符解析到的绑定深度 ≤ 最内层
+	// with 的 depth (或是全局/未绑定), 就不能沿用编译期槽位, 必须发射
+	// OP_WITH_LOAD/STORE/DELETE 走运行时对象查找 (见 withAffects / withChainFor)。
+	// 对象槽位是普通局部槽 —— with 体里创建的闭包按捕获前缀拿到它, 于是
+	// 「闭包捕获 with 环境」自然成立; 也无需 enter/exit 指令与异常回退。
+	withScopes []withScope
+	// withSlotSeq 为合成 with 对象槽名计数, 保证同名不冲突。
+	withSlotSeq int
+}
+
+// withScope 是一个活跃 with 上下文的编译期描述。
+type withScope struct {
+	slot  int // 承载 with 对象的局部槽位
+	depth int // 进入 with 时所在作用域深度 (该深度及更外层的绑定会被 with 遮蔽)
 }
 
 // tryScope 是一个活跃 try 处理器条目的编译期描述 (对应运行时 vm.tryStack 的一条)。
@@ -591,6 +609,14 @@ func (c *Compiler) collectVarBindingsStmt(stmt ast.Statement, out *[]varBinding,
 		if err := c.collectVarBindingsStmt(node.Body, out, depth+1); err != nil {
 			return err
 		}
+	case *ast.WithStatement:
+		// with 体的 var 仍归函数作用域 (with 不改变声明作用域)。
+		// 体可以是块 (交给 BlockStatement 分支) 或单条语句 (如 var x = 1)。
+		if node.Body != nil {
+			if err := c.collectVarBindingsStmt(node.Body, out, depth+1); err != nil {
+				return err
+			}
+		}
 	}
 	return nil
 }
@@ -625,6 +651,8 @@ func (c *Compiler) compileStatement(stmt ast.Statement) error {
 		return c.compileWhileStatement(node)
 	case *ast.DoWhileStatement:
 		return c.compileDoWhileStatement(node)
+	case *ast.WithStatement:
+		return c.compileWithStatement(node)
 	case *ast.ForOfStatement:
 		return c.compileForOfStatement(node)
 	case *ast.ForInStatement:
@@ -771,6 +799,11 @@ func (c *Compiler) compileVarStatement(stmt *ast.VarStatement) error {
 	}
 
 	emitAssign := func(name string, sym *Symbol) {
+		// with 体内: var 赋值同样先查 with 对象 (var 绑定在函数层, 属被遮蔽范围)。
+		if c.withAffects(sym) {
+			c.emitter.Emit(bytecode.OP_WITH_STORE, c.emitWithRef(c.buildWithRef(name, sym)))
+			return
+		}
 		// 全局函数层: var 是全局属性。提升初始化已 OP_DECLARE 过一次,
 		// 这里必须走 STORE_GLOBAL (存在则赋值) —— 再发 OP_DECLARE 会撞
 		// 运行时的重声明检查。
@@ -1028,7 +1061,86 @@ func (c *Compiler) compileBlockStatement(block *ast.BlockStatement) error {
 	return nil
 }
 
-// compileCatchBodyWithParam 把栈顶异常值绑定到 catch 参数并编译 catch 体。
+// ==================== with 语句 (对象环境记录) ====================
+
+// withAffects 报告: 解析到 sym 的标识符是否必须走 with 动态查找。
+//
+// 规则 (规范 13.11.7): with 的对象环境记录插在「with 语句所在环境」与
+// 「语句体声明」之间。因此深度 ≤ 最内层 with.depth 的绑定 (含全局/未绑定,
+// 视作 depth -1) 会被 with 对象遮蔽, 必须运行时查找; 深度更大的绑定
+// (语句体内 let/const/参数等) 在对象环境之内, 照常走编译期槽位。
+func (c *Compiler) withAffects(sym *Symbol) bool {
+	if len(c.withScopes) == 0 {
+		return false
+	}
+	d := -1
+	if sym != nil {
+		d = sym.Depth
+	}
+	return c.withScopes[len(c.withScopes)-1].depth >= d
+}
+
+// withChainFor 返回该标识符需要**由内向外**依次查询的 with 对象槽位。
+// 只包含「比绑定更内层」的 with 上下文 —— 一旦 binding 在某 with 之外,
+// 该 with 及其更外层都不应参与 (否则会误读到本应被内层声明遮蔽的属性)。
+func (c *Compiler) withChainFor(sym *Symbol) []int {
+	d := -1
+	if sym != nil {
+		d = sym.Depth
+	}
+	chain := make([]int, 0, len(c.withScopes))
+	for i := len(c.withScopes) - 1; i >= 0; i-- {
+		if c.withScopes[i].depth < d {
+			break
+		}
+		chain = append(chain, c.withScopes[i].slot)
+	}
+	return chain
+}
+
+// buildWithRef 为一个自由标识符构造常量池引用 (含回退目标)。
+// 回退口径与 compileIdentifier/emitLoad 保持一致: 全局符号 (或未绑定)
+// 按名回退全局, 局部符号回退槽位。
+func (c *Compiler) buildWithRef(name string, sym *Symbol) *bytecode.WithRef {
+	ref := &bytecode.WithRef{Name: name, Slots: c.withChainFor(sym)}
+	if sym == nil || (sym.Depth == 0 && !c.moduleMode) {
+		ref.LocalFallback = false
+	} else {
+		ref.LocalFallback = true
+		ref.FallbackSlot = sym.Slot
+		ref.IsConst = sym.IsConst
+	}
+	return ref
+}
+
+// emitWithRef 把 WithRef 加入常量池并返回操作数索引。
+func (c *Compiler) emitWithRef(ref *bytecode.WithRef) uint16 {
+	return c.constants.AddConstant(ref)
+}
+
+// compileWithStatement 编译 with (obj) 语句体。
+//
+// 实现: 对象表达式在进入 with 前求值**一次**, 存入一个合成局部槽
+// (compileExpression + OP_STORE)。with 体里受影响的自由标识符编译为
+// OP_WITH_LOAD/STORE/DELETE, 其 WithRef.Slots 携带该槽位链 —— 运行时按槽
+// 取对象逐个查属性。因为槽位是普通局部槽, with 体内创建的闭包天然把它
+// 捕获进 CapturedLocals, 于是「闭包引用 with 对象」也能正确解析。
+func (c *Compiler) compileWithStatement(stmt *ast.WithStatement) error {
+	// 对象表达式在外层环境求值 (不受本 with 影响)。
+	if err := c.compileExpression(stmt.Object); err != nil {
+		return err
+	}
+	// 合成槽位: 名字含空格, 用户标识符不可能与之冲突。
+	c.withSlotSeq++
+	sym := c.scope.Define(fmt.Sprintf(" with#%d", c.withSlotSeq), false)
+	c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
+
+	c.withScopes = append(c.withScopes, withScope{slot: sym.Slot, depth: c.scope.Depth()})
+	err := c.compileStatement(stmt.Body)
+	c.withScopes = c.withScopes[:len(c.withScopes)-1]
+	return err
+}
+
 //
 // 规范 13.15.7 (CatchClauseEvaluation) 要求 catch 参数绑定在一个独立的
 // declarative environment 中, catch 体嵌套其内。此前实现直接 Define 在
@@ -3354,6 +3466,11 @@ func (c *Compiler) emitStore(sym *Symbol) {
 // 已解析的局部符号写槽位，其余走全局存储 —— 与普通 x = v 一致。
 func (c *Compiler) emitIdentifierAssign(name string) {
 	sym := c.scope.Resolve(name)
+	if c.withAffects(sym) {
+		// with 体内: 先查 with 对象链, 未命中再回退 (值从栈顶弹出)。
+		c.emitter.Emit(bytecode.OP_WITH_STORE, c.emitWithRef(c.buildWithRef(name, sym)))
+		return
+	}
 	if sym == nil || (sym.Depth == 0 && !c.moduleMode) {
 		c.emitAssignmentStore(name, sym == nil)
 	} else {
@@ -3369,6 +3486,11 @@ func (c *Compiler) compileIdentifier(node *ast.Identifier) error {
 	}
 
 	sym := c.scope.Resolve(node.Value)
+	if c.withAffects(sym) {
+		// with 体内的自由标识符: 运行时先查 with 对象链 (规范 13.11.7)。
+		c.emitter.Emit(bytecode.OP_WITH_LOAD, c.emitWithRef(c.buildWithRef(node.Value, sym)))
+		return nil
+	}
 	if sym != nil {
 		c.emitLoad(sym)
 	} else {
@@ -3541,6 +3663,15 @@ func (c *Compiler) compileDelete(target ast.Expression) error {
 		c.emitter.EmitNoOperand(bytecode.OP_DELETE)
 		return nil
 	}
+	// delete 标识符: with 体内先查 with 对象链 —— 命中则删除该属性并返回 true。
+	// (普通作用域里的 delete 标识符仍是合法但无效的真值, 见下方兜底。)
+	if ident, ok := target.(*ast.Identifier); ok {
+		sym := c.scope.Resolve(ident.Value)
+		if c.withAffects(sym) {
+			c.emitter.Emit(bytecode.OP_WITH_DELETE, c.emitWithRef(c.buildWithRef(ident.Value, sym)))
+			return nil
+		}
+	}
 	// delete 普通表达式: 求值后丢弃, 返回 true (简化)
 	if err := c.compileExpression(target); err != nil {
 		return err
@@ -3571,6 +3702,26 @@ func (c *Compiler) compileAssignmentExpression(node *ast.AssignmentExpression) e
 			return fmt.Errorf("compiler: SyntaxError: assignment to '%s' is not allowed in strict mode", left.Value)
 		}
 		sym := c.scope.Resolve(left.Value)
+		if c.withAffects(sym) {
+			// with 体内自由标识符的赋值: 先查对象链, 未命中再回退。
+			ref := c.emitWithRef(c.buildWithRef(left.Value, sym))
+			if node.Operator == "=" {
+				if err := c.compileExpression(node.Right); err != nil {
+					return err
+				}
+				c.emitter.EmitNoOperand(bytecode.OP_DUP)
+				c.emitter.Emit(bytecode.OP_WITH_STORE, ref)
+			} else {
+				c.emitter.Emit(bytecode.OP_WITH_LOAD, ref)
+				if err := c.compileExpression(node.Right); err != nil {
+					return err
+				}
+				c.emitCompoundOp(node.Operator)
+				c.emitter.EmitNoOperand(bytecode.OP_DUP)
+				c.emitter.Emit(bytecode.OP_WITH_STORE, ref)
+			}
+			return nil
+		}
 		if sym == nil || (sym.Depth == 0 && !c.moduleMode) {
 			// 全局变量: 读写共享全局环境
 			unresolved := sym == nil
@@ -3773,6 +3924,25 @@ func (c *Compiler) compileLogicalAssignment(node *ast.AssignmentExpression) erro
 	switch left := node.Left.(type) {
 	case *ast.Identifier:
 		sym := c.scope.Resolve(left.Value)
+		if c.withAffects(sym) {
+			// with 体内逻辑赋值: 读当前值 (对象链) → 短路判断 → 写回 (对象链)。
+			ref := c.emitWithRef(c.buildWithRef(left.Value, sym))
+			c.emitter.Emit(bytecode.OP_WITH_LOAD, ref)
+			c.emitter.EmitNoOperand(bytecode.OP_DUP)
+			skip := c.emitLogicalSkip(op)
+			c.emitter.EmitNoOperand(bytecode.OP_POP)
+			c.emitter.EmitNoOperand(bytecode.OP_POP)
+			if err := c.compileExpression(node.Right); err != nil {
+				return err
+			}
+			c.emitter.EmitNoOperand(bytecode.OP_DUP)
+			c.emitter.Emit(bytecode.OP_WITH_STORE, ref)
+			done := c.emitter.EmitJump(bytecode.OP_JUMP)
+			c.emitter.PatchJump(skip)
+			c.emitter.EmitNoOperand(bytecode.OP_POP)
+			c.emitter.PatchJump(done)
+			return nil
+		}
 		isGlobal := sym == nil || (sym.Depth == 0 && !c.moduleMode)
 
 		// 加载当前值
@@ -4278,6 +4448,25 @@ func (c *Compiler) compileDestructureDefault(def ast.Expression) error {
 func (c *Compiler) compileIncDec(target ast.Expression, isInc, isPrefix bool) error {
 	if ident, ok := target.(*ast.Identifier); ok {
 		sym := c.scope.Resolve(ident.Value)
+		if c.withAffects(sym) {
+			// with 体内: 读改写都走对象链 (未命中回退外层)。
+			ref := c.emitWithRef(c.buildWithRef(ident.Value, sym))
+			c.emitter.Emit(bytecode.OP_WITH_LOAD, ref) // [old]
+			if isPrefix {
+				c.emitter.EmitNoOperand(bytecode.OP_TO_NUMBER)
+				c.emitter.Emit(bytecode.OP_INT, 1)
+				c.emitIncDecOp(isInc)
+				c.emitter.EmitNoOperand(bytecode.OP_DUP)
+				c.emitter.Emit(bytecode.OP_WITH_STORE, ref)
+			} else {
+				c.emitter.EmitNoOperand(bytecode.OP_DUP)
+				c.emitter.EmitNoOperand(bytecode.OP_TO_NUMBER)
+				c.emitter.Emit(bytecode.OP_INT, 1)
+				c.emitIncDecOp(isInc)
+				c.emitter.Emit(bytecode.OP_WITH_STORE, ref)
+			}
+			return nil
+		}
 		if sym == nil {
 			// 未声明名: 走**运行期**解析路径, 而不是编译期直接返回错。
 			// OP_LOAD_GLOBAL 在找不到绑定时抛 ReferenceError —— 这一步是

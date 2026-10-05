@@ -205,6 +205,17 @@ const (
 	// 0xB0-0xBF: 作用域
 	OP_PUSH_SCOPE Opcode = 0xB0 // 进入新块作用域
 	OP_POP_SCOPE  Opcode = 0xB1 // 退出块作用域
+	// OP_WITH_LOAD / OP_WITH_STORE / OP_WITH_DELETE: with 语句体内自由
+	// 标识符的动态查找。operand = 常量池索引, 指向 *WithRef —— 它带有
+	// 「要查的名字」「with 对象所在局部槽位链 (内层在前)」以及「未命中时的
+	// 回退目标 (局部槽位或全局按名)」。这些指令只在 with 体内发射。
+	//   LOAD:  查 with 链 → 命中压入其值; 未命中走回退。
+	//   STORE: 弹出值 → 查 with 链 → 命中写回该对象; 未命中走回退。
+	//   DELETE: 查 with 链 → 命中删除该属性并压 true; 未命中压 true。
+	// Symbol.unscopables 排除的属性按「未命中」处理。
+	OP_WITH_LOAD   Opcode = 0xB2
+	OP_WITH_STORE  Opcode = 0xB3
+	OP_WITH_DELETE Opcode = 0xB4
 
 	// 0xC0-0xCF: 类型操作
 	OP_TYPEOF        Opcode = 0xC0 // typeof
@@ -300,6 +311,7 @@ var opcodeNames = map[Opcode]string{
 	OP_REQUIRE_OBJECT_COERCIBLE: "REQUIRE_OBJECT_COERCIBLE", OP_OBJECT_REST: "OBJECT_REST",
 	OP_FOR_IN_INIT: "FOR_IN_INIT", OP_FOR_IN_NEXT: "FOR_IN_NEXT", OP_FOR_IN_END: "FOR_IN_END",
 	OP_PUSH_SCOPE: "PUSH_SCOPE", OP_POP_SCOPE: "POP_SCOPE",
+	OP_WITH_LOAD: "WITH_LOAD", OP_WITH_STORE: "WITH_STORE", OP_WITH_DELETE: "WITH_DELETE",
 	OP_TYPEOF: "TYPEOF", OP_INSTANCEOF: "INSTANCEOF",
 	OP_THIS: "THIS", OP_DELETE: "DELETE", OP_IN: "IN", OP_TYPEOF_GLOBAL: "TYPEOF_GLOBAL",
 	OP_BREAK: "BREAK", OP_CONTINUE: "CONTINUE",

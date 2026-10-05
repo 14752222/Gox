@@ -78,9 +78,49 @@ func constantsEqual(a, b object.Value) bool {
 	case *object.Object:
 		// 对象不去重
 		return false
+	case *WithRef:
+		bv, ok := b.(*WithRef)
+		if !ok {
+			return false
+		}
+		if av.Name != bv.Name || av.LocalFallback != bv.LocalFallback ||
+			av.FallbackSlot != bv.FallbackSlot || av.IsConst != bv.IsConst ||
+			len(av.Slots) != len(bv.Slots) {
+			return false
+		}
+		for i := range av.Slots {
+			if av.Slots[i] != bv.Slots[i] {
+				return false
+			}
+		}
+		return true
 	}
 	return false
 }
+
+// ===== with 语句的动态查找引用 =====
+
+// WithRef 是 with 语句体内**一个自由标识符**的编译期描述, 作为常量池条目
+// 由 OP_WITH_LOAD / OP_WITH_STORE / OP_WITH_DELETE 的操作数引用。
+//
+// 运行时按 Slots (内层在前) 依次取出 with 对象, 查 Name 属性; 命中即用之。
+// 全部未命中 (含被 Symbol.unscopables 排除) 时按回退语义处理:
+//   - LocalFallback 为真: 读/写当前帧的局部槽位 FallbackSlot (可能来自闭包
+//     捕获前缀);
+//   - LocalFallback 为假: 按名读写全局环境 (与 OP_LOAD_GLOBAL/STORE_GLOBAL 同口径)。
+type WithRef struct {
+	Name          string
+	Slots         []int // with 对象所在局部槽位链, 内层在前
+	LocalFallback bool  // true = 回退局部槽; false = 回退全局按名
+	FallbackSlot  int   // LocalFallback 为真时有效
+	IsConst       bool  // 回退绑定为 const (写入报 TypeError)
+}
+
+func (w *WithRef) Type() object.ObjectType                    { return object.OBJECT_OBJ }
+func (w *WithRef) Inspect() string                            { return "[WithRef " + w.Name + "]" }
+func (w *WithRef) IsTruthy() bool                             { return true }
+func (w *WithRef) GetProperty(string) (object.Value, bool)    { return nil, false }
+func (w *WithRef) SetProperty(string, object.Value)           {}
 
 // ===== 函数元数据 =====
 
@@ -261,7 +301,7 @@ func hasOperand(op Opcode) bool {
 // isConstantOp 判断操作码是否引用常量池。
 func isConstantOp(op Opcode) bool {
 	switch op {
-	case OP_CONST:
+	case OP_CONST, OP_WITH_LOAD, OP_WITH_STORE, OP_WITH_DELETE:
 		return true
 	}
 	return false

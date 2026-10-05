@@ -2399,6 +2399,99 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 		case bytecode.OP_PUSH_SCOPE, bytecode.OP_POP_SCOPE:
 			// 局部变量使用 slot 管理，作用域操作在 VM 中是 NOP
 
+		// ===== with 语句 (对象环境记录, 规范 13.11.7) =====
+		case bytecode.OP_WITH_LOAD:
+			ref := withRefOf(frame, operand)
+			if ref == nil {
+				return fmt.Errorf("VM: WITH_LOAD expects *WithRef constant at %d", operand)
+			}
+			_, val, found, werr := vm.withResolve(frame, ref)
+			if werr != nil {
+				if terr := vm.rethrowBridgeError(werr); terr != nil {
+					return terr
+				}
+				continue
+			}
+			if found {
+				vm.stack.Push(val)
+				continue
+			}
+			// 未命中: 按回退语义取值。
+			if !ref.LocalFallback {
+				if gv, ok := vm.globals.Get(ref.Name); ok {
+					vm.stack.Push(gv)
+				} else if err := vm.throwNamedError("ReferenceError", "%s is not defined", ref.Name); err != nil {
+					return err
+				}
+				continue
+			}
+			if ref.FallbackSlot < len(frame.Locals) && frame.Locals[ref.FallbackSlot] != nil {
+				vm.stack.Push(frame.Locals[ref.FallbackSlot])
+			} else if err := vm.throwNamedError("ReferenceError",
+				"Cannot access lexical declaration '%s' before initialization", ref.Name); err != nil {
+				return err
+			}
+		case bytecode.OP_WITH_STORE:
+			ref := withRefOf(frame, operand)
+			if ref == nil {
+				return fmt.Errorf("VM: WITH_STORE expects *WithRef constant at %d", operand)
+			}
+			val := vm.stack.Pop()
+			owner, _, found, werr := vm.withResolve(frame, ref)
+			if werr != nil {
+				if terr := vm.rethrowBridgeError(werr); terr != nil {
+					return terr
+				}
+				continue
+			}
+			if found {
+				if err := vm.withSet(owner, ref.Name, val); err != nil {
+					if terr := vm.rethrowBridgeError(err); terr != nil {
+						return terr
+					}
+				}
+				continue
+			}
+			// 未命中: 写回退目标。
+			if !ref.LocalFallback {
+				if vm.globals.IsConst(ref.Name) {
+					if err := vm.throwNamedError("TypeError", "Assignment to constant variable: %s", ref.Name); err != nil {
+						return err
+					}
+					continue
+				}
+				if _, exists := vm.globals.Get(ref.Name); exists {
+					vm.globals.Set(ref.Name, val)
+				} else {
+					vm.globals.Declare(ref.Name, val, false)
+				}
+				continue
+			}
+			if ref.IsConst {
+				if err := vm.throwNamedError("TypeError", "Assignment to constant variable: %s", ref.Name); err != nil {
+					return err
+				}
+				continue
+			}
+			vm.storeLocalSlot(frame, ref.FallbackSlot, val)
+		case bytecode.OP_WITH_DELETE:
+			ref := withRefOf(frame, operand)
+			if ref == nil {
+				return fmt.Errorf("VM: WITH_DELETE expects *WithRef constant at %d", operand)
+			}
+			owner, _, found, werr := vm.withResolve(frame, ref)
+			if werr != nil {
+				if terr := vm.rethrowBridgeError(werr); terr != nil {
+					return terr
+				}
+				continue
+			}
+			if found {
+				vm.withDelete(owner, ref.Name)
+			}
+			// delete 标识符统一返回 true (with 对象属性删除 / 无绑定均可删)。
+			vm.stack.Push(object.NewBoolean(true))
+
 		// ===== 类型操作 =====
 		case bytecode.OP_TO_NUMBER:
 			val := vm.stack.Pop()
@@ -3589,6 +3682,160 @@ func (vm *VM) frameThis(frame *Frame) object.Value {
 		return frame.Closure.This
 	}
 	return object.UndefinedSingleton
+}
+
+// ===== with 语句运行时支持 (对象环境记录) =====
+
+// withRefOf 从常量池取出 OP_WITH_* 的操作数所指的 *WithRef。
+func withRefOf(frame *Frame, operand uint16) *bytecode.WithRef {
+	ref, _ := frame.Constants.Get(operand).(*bytecode.WithRef)
+	return ref
+}
+
+// withResolve 沿 ref.Slots (内层在前) 逐个取 with 对象, 查 ref.Name 属性。
+//
+// 命中返回 (对象, 值, true); 属性不存在或被 Symbol.unscopables 排除返回
+// (nil, nil, false)。属性 getter / unscopables getter 抛出的用户异常以
+// error 返回 —— 调用方须走 JS 抛出流程 (rethrowBridgeError)。
+func (vm *VM) withResolve(frame *Frame, ref *bytecode.WithRef) (object.Value, object.Value, bool, error) {
+	for _, slot := range ref.Slots {
+		if slot < 0 || slot >= len(frame.Locals) {
+			continue
+		}
+		obj := frame.Locals[slot]
+		if obj == nil {
+			continue
+		}
+		val, found, err := vm.withGetBinding(obj, ref.Name)
+		if err != nil {
+			return nil, nil, false, err
+		}
+		if found {
+			return obj, val, true, nil
+		}
+	}
+	return nil, nil, false, nil
+}
+
+// withGetBinding 判断 with 对象 obj 是否绑定 name 并取其值 (HasBinding + Get)。
+// 属性不存在 → (nil, false); 存在但被 @@unscopables 排除 → 按不存在处理。
+func (vm *VM) withGetBinding(obj object.Value, name string) (object.Value, bool, error) {
+	if p, ok := obj.(*object.Proxy); ok {
+		has, err := vm.proxyHas(p, name)
+		if err != nil {
+			return nil, false, err
+		}
+		if !has {
+			return nil, false, nil
+		}
+		v, err := vm.proxyGet(p, name, p)
+		if err != nil {
+			return nil, false, err
+		}
+		return v, true, nil
+	}
+	if o, ok := obj.(*object.Object); ok {
+		val, found := o.GetProperty(name)
+		if err := vm.checkCallbackErr(); err != nil {
+			return nil, false, err
+		}
+		if !found {
+			return nil, false, nil
+		}
+		blocked, err := vm.unscopablesBlocked(o, name)
+		if err != nil {
+			return nil, false, err
+		}
+		if blocked {
+			return nil, false, nil
+		}
+		return val, true, nil
+	}
+	// 其余类型 (原始值包装 / 数组 / 函数对象等) 走通用 GetProperty 通路;
+	// 它们没有 @@unscopables 语义, 不做排除判定。
+	val, found := obj.GetProperty(name)
+	if err := vm.checkCallbackErr(); err != nil {
+		return nil, false, err
+	}
+	if !found {
+		return nil, false, nil
+	}
+	return val, true, nil
+}
+
+// unscopablesBlocked 判断对象 o 的 @@unscopables 是否把 name 排除出 with 作用域。
+// 仅在属性已确认存在后调用 (规范: HasBinding 先 HasProperty 再读 @@unscopables)。
+func (vm *VM) unscopablesBlocked(o *object.Object, name string) (bool, error) {
+	un, found := object.LookupSymbolProperty(o, object.GetGlobalSymbol("Symbol.unscopables"))
+	if !found {
+		return false, nil
+	}
+	// LookupSymbolProperty 返回原始访问器, 需显式调用其 getter (可能抛异常)。
+	if acc, isAcc := un.(*object.Accessor); isAcc {
+		if acc.Getter == nil || !object.IsCallable(acc.Getter) {
+			return false, nil
+		}
+		un = object.CallFunction(acc.Getter, o)
+		if err := vm.checkCallbackErr(); err != nil {
+			return false, err
+		}
+	}
+	uo, ok := un.(*object.Object)
+	if !ok {
+		// 非对象 (含 undefined/null/原始值) 不排除任何属性。
+		return false, nil
+	}
+	bval, bfound := uo.GetProperty(name)
+	if err := vm.checkCallbackErr(); err != nil {
+		return false, err
+	}
+	if bfound && bval != nil && bval.IsTruthy() {
+		return true, nil
+	}
+	return false, nil
+}
+
+// withSet 把 val 写入 with 对象的 name 属性 (SetMutableBinding)。
+func (vm *VM) withSet(owner object.Value, name string, val object.Value) error {
+	switch o := owner.(type) {
+	case *object.Proxy:
+		return vm.proxySet(o, name, val, o)
+	default:
+		owner.SetProperty(name, val)
+		return nil
+	}
+}
+
+// withDelete 删除 with 对象上的 name 属性 (delete 标识符语义)。
+func (vm *VM) withDelete(owner object.Value, name string) {
+	if o, ok := owner.(*object.Object); ok {
+		o.DeleteProperty(name)
+	}
+	// 其余类型 (含 Proxy) 暂无属性删除通路, 静默跳过 —— delete 结果仍为 true。
+}
+
+// storeLocalSlot 向当前帧的局部槽写入值, 并复刻 OP_STORE 的传播语义
+// (SharedCells / 闭包捕获 / 子闭包 / ModifiedSlots)。仅供 with 的局部回退路径使用。
+func (vm *VM) storeLocalSlot(frame *Frame, slot int, val object.Value) {
+	for len(frame.Locals) <= slot {
+		frame.Locals = append(frame.Locals, object.UndefinedSingleton)
+	}
+	frame.Locals[slot] = val
+	if slot < len(frame.SharedCells) {
+		frame.SharedCells[slot] = val
+	}
+	if frame.Closure != nil && slot < len(frame.Closure.CapturedLocals) {
+		frame.Closure.CapturedLocals[slot] = val
+	}
+	for _, cl := range frame.CreatedClosures {
+		if slot < len(cl.CapturedLocals) {
+			cl.CapturedLocals[slot] = val
+		}
+	}
+	if frame.ModifiedSlots == nil {
+		frame.ModifiedSlots = make(map[int]bool)
+	}
+	frame.ModifiedSlots[slot] = true
 }
 
 // createClosure 从 FunctionMetadata 创建闭包。
