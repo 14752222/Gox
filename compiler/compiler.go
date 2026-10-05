@@ -35,6 +35,12 @@ type Compiler struct {
 	// 写入共享的 globals 环境，从而支持 REPL 跨输入状态保持。
 	moduleMode bool
 
+	// strict 是当前的严格模式上下文。Compile 入口按 program.Strict||moduleMode
+	// 置初值; 每进一个函数/类体按该节点的 Strict (类体恒 true) 设/恢。
+	// 供编译期早错 (delete 标识符 / eval·arguments 作赋值目标) 与
+	// FunctionMetadata.IsStrict 盖章。
+	strict bool
+
 	// currentArgumentsSlot 记录当前函数 (非箭头) 的 arguments 槽位。
 	// 全局作用域或箭头函数为 -1 (箭头函数继承外层 arguments, 见 argumentsSlotStack)。
 	currentArgumentsSlot int
@@ -197,6 +203,8 @@ func (c *Compiler) NumLocals() int { return c.scope.NumLocals() }
 
 // Compile 编译一个 AST 程序。
 func (c *Compiler) Compile(program *ast.Program) error {
+	// 严格性: ScriptBody 含 "use strict" 指令, 或本单元是 module (恒严格)。
+	c.strict = program.Strict || c.moduleMode
 	return c.compileStatements(programStatements(program))
 }
 
@@ -2096,7 +2104,7 @@ func (c *Compiler) compileClassBody(className string, superClass ast.Expression,
 		if m.IsPrivate && m.Body != nil {
 			prevSuperP := c.currentSuperClass
 			c.currentSuperClass = superName
-			meta, err := c.compileFunction(m.Name, m.Parameters, m.Body, false, m.IsGenerator, m.IsAsync)
+			meta, err := c.compileFunctionWithStrict(true, m.Name, m.Parameters, m.Body, false, m.IsGenerator, m.IsAsync)
 			c.currentSuperClass = prevSuperP
 			if err != nil {
 				return err
@@ -2152,7 +2160,7 @@ func (c *Compiler) compileClassBody(className string, superClass ast.Expression,
 		// 编译静态方法函数
 		prevSuper2 := c.currentSuperClass
 		c.currentSuperClass = superName
-		meta, err := c.compileFunction(m.Name, m.Parameters, m.Body, false, m.IsGenerator, m.IsAsync)
+		meta, err := c.compileFunctionWithStrict(true, m.Name, m.Parameters, m.Body, false, m.IsGenerator, m.IsAsync)
 		if err != nil {
 			return err
 		}
@@ -2350,6 +2358,7 @@ func (c *Compiler) compileClassConstructor(fields []*ast.ClassField, ctor *ast.C
 	meta := bytecode.NewFunctionMetadata("constructor", fnIns, fnScope.NumLocals(), len(paramSpecs), paramSpecs, false)
 	meta.BaseSlot = baseSlot
 	meta.ArgumentsSlot = argumentsSlot
+	meta.IsStrict = c.strict
 	meta.Positions = toSrcPosList(fnSrcPositions)
 	_ = paramSlots
 	return meta, nil
@@ -2360,7 +2369,7 @@ func (c *Compiler) compileClassConstructor(fields []*ast.ClassField, ctor *ast.C
 func (c *Compiler) compileClassMethodToObject(m *ast.ClassMethod, superName string) error {
 	prevSuper := c.currentSuperClass
 	c.currentSuperClass = superName
-	meta, err := c.compileFunction(m.Name, m.Parameters, m.Body, false, m.IsGenerator, m.IsAsync)
+	meta, err := c.compileFunctionWithStrict(true, m.Name, m.Parameters, m.Body, false, m.IsGenerator, m.IsAsync)
 	if err != nil {
 		return err
 	}
@@ -2861,7 +2870,8 @@ func (c *Compiler) compileFunctionDeclaration(stmt *ast.FunctionDeclaration) err
 	}
 
 	// 编译函数体为独立的 FunctionMetadata
-	fnMeta, err := c.compileFunction(
+	fnMeta, err := c.compileFunctionWithStrict(
+		stmt.Strict,
 		stmt.Name.Value,
 		stmt.Parameters,
 		stmt.Body,
@@ -3203,6 +3213,20 @@ func (c *Compiler) emitGlobalStore(name string) {
 	c.emitter.Emit(bytecode.OP_STORE_GLOBAL, idx)
 }
 
+// emitAssignmentStore 发射对**名字**的赋值存储。
+//   - 已解析的全局符号 (unresolved=false) → OP_STORE_GLOBAL;
+//   - 未声明名 (unresolved=true) 在严格模式下 → OP_STORE_UNDECLARED
+//     (运行期无同名绑定则抛 ReferenceError); sloppy 下仍走 OP_STORE_GLOBAL
+//     (隐式建全局属性, 规范 sloppy 语义)。
+func (c *Compiler) emitAssignmentStore(name string, unresolved bool) {
+	if unresolved && c.strict {
+		idx := c.constants.AddConstant(object.NewString(name))
+		c.emitter.Emit(bytecode.OP_STORE_UNDECLARED, idx)
+		return
+	}
+	c.emitGlobalStore(name)
+}
+
 // emitGlobalDeclare 发射全局变量声明指令 (按名字写入全局环境, 弹出值)。
 // 与 emitGlobalStore 的区别: 声明语义上总是定义绑定 (已存在时更新),
 // 用于 let/const 与 import 绑定。
@@ -3236,7 +3260,7 @@ func (c *Compiler) emitStore(sym *Symbol) {
 func (c *Compiler) emitIdentifierAssign(name string) {
 	sym := c.scope.Resolve(name)
 	if sym == nil || (sym.Depth == 0 && !c.moduleMode) {
-		c.emitGlobalStore(name)
+		c.emitAssignmentStore(name, sym == nil)
 	} else {
 		c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
 	}
@@ -3391,6 +3415,11 @@ func (c *Compiler) compileUnaryExpression(node *ast.UnaryExpression) error {
 
 // compileDelete 编译 delete 运算符。
 func (c *Compiler) compileDelete(target ast.Expression) error {
+	// strict 下 `delete 标识符` 是 SyntaxError (规范 Early Error: 不能删除
+	// 词法/变量绑定)。sloppy 下合法 (返回 true, 见下)。
+	if _, ok := target.(*ast.Identifier); ok && c.strict {
+		return fmt.Errorf("compiler: SyntaxError: delete of an unqualified identifier in strict mode")
+	}
 	// delete obj.prop 或 delete obj[idx]
 	if member, ok := target.(*ast.MemberExpression); ok {
 		// delete obj.#x: 规范早错, 解析器已拦; 这里兜底只为杜绝下面
@@ -3442,15 +3471,20 @@ func (c *Compiler) compileAssignmentExpression(node *ast.AssignmentExpression) e
 
 	switch left := node.Left.(type) {
 	case *ast.Identifier:
+		// strict 下 eval / arguments 不能作赋值目标 (规范 Early Error)。
+		if c.strict && (left.Value == "eval" || left.Value == "arguments") {
+			return fmt.Errorf("compiler: SyntaxError: assignment to '%s' is not allowed in strict mode", left.Value)
+		}
 		sym := c.scope.Resolve(left.Value)
 		if sym == nil || (sym.Depth == 0 && !c.moduleMode) {
 			// 全局变量: 读写共享全局环境
+			unresolved := sym == nil
 			if node.Operator == "=" {
 				if err := c.compileExpression(node.Right); err != nil {
 					return err
 				}
 				c.emitter.EmitNoOperand(bytecode.OP_DUP)
-				c.emitGlobalStore(left.Value)
+				c.emitAssignmentStore(left.Value, unresolved)
 			} else {
 				// 复合赋值: x += val → LOAD old, 编译右值, OP, DUP, STORE_GLOBAL
 				c.emitGlobalLoad(left.Value)
@@ -3459,7 +3493,7 @@ func (c *Compiler) compileAssignmentExpression(node *ast.AssignmentExpression) e
 				}
 				c.emitCompoundOp(node.Operator)
 				c.emitter.EmitNoOperand(bytecode.OP_DUP)
-				c.emitGlobalStore(left.Value)
+				c.emitAssignmentStore(left.Value, unresolved)
 			}
 			return nil
 		}
@@ -4526,7 +4560,7 @@ func (c *Compiler) compileObjectLiteral(node *ast.ObjectLiteral) error {
 				if id, ok := prop.Key.(*ast.Identifier); ok {
 					name = id.Value
 				}
-				meta, err := c.compileFunction(name, fn.Parameters, fn.Body, false, fn.IsGenerator, fn.IsAsync)
+				meta, err := c.compileFunctionWithStrict(fn.Strict, name, fn.Parameters, fn.Body, false, fn.IsGenerator, fn.IsAsync)
 				if err != nil {
 					return err
 				}
@@ -4566,7 +4600,7 @@ func (c *Compiler) compileObjectLiteral(node *ast.ObjectLiteral) error {
 				return fmt.Errorf("compiler: getter/setter value is not a function")
 			}
 			name := prop.Key.(*ast.Identifier).Value
-			meta, err := c.compileFunction("get "+name, fn.Parameters, fn.Body, false, fn.IsGenerator, fn.IsAsync)
+			meta, err := c.compileFunctionWithStrict(fn.Strict, "get "+name, fn.Parameters, fn.Body, false, fn.IsGenerator, fn.IsAsync)
 			if err != nil {
 				return err
 			}
@@ -4671,6 +4705,17 @@ func (c *Compiler) compileDynamicImport(node *ast.DynamicImportExpression) error
 
 func (c *Compiler) compileFunction(name string, params []*ast.Parameter, body *ast.BlockStatement, isArrow, isGenerator, isAsync bool) (*bytecode.FunctionMetadata, error) {
 	return c.compileFunctionSelf(name, "", params, body, isArrow, isGenerator, isAsync)
+}
+
+// compileFunctionWithStrict 在指定的 strict 上下文中编译函数体, 收尾后恢复
+// 外层上下文。函数体的严格性由**节点**携带 (parser 已按继承 + 指令算好);
+// 这里只负责把它落成 c.strict, 供编译期早错与 meta.IsStrict 盖章使用。
+func (c *Compiler) compileFunctionWithStrict(strict bool, name string, params []*ast.Parameter, body *ast.BlockStatement, isArrow, isGenerator, isAsync bool) (*bytecode.FunctionMetadata, error) {
+	prev := c.strict
+	c.strict = strict
+	meta, err := c.compileFunction(name, params, body, isArrow, isGenerator, isAsync)
+	c.strict = prev
+	return meta, err
 }
 
 // compileFunctionSelf 编译函数，可选绑定命名函数表达式的自引用。
@@ -4853,6 +4898,7 @@ func (c *Compiler) compileFunctionSelf(name, selfName string, params []*ast.Para
 	meta.IsGenerator = isGenerator
 	meta.IsAsync = false
 	meta.ParamPrologueEnd = paramPrologueEnd
+	meta.IsStrict = c.strict
 	meta.Positions = toSrcPosList(fnSrcPositions)
 	return meta, nil
 }
@@ -4977,6 +5023,7 @@ func (c *Compiler) compileAsyncFunctionSelf(name, selfName string, params []*ast
 	meta.BaseSlot = baseSlot
 	meta.ArgumentsSlot = argumentsSlot
 	meta.IsAsync = true
+	meta.IsStrict = c.strict
 	return meta, nil
 }
 
@@ -5081,6 +5128,7 @@ func (c *Compiler) compileAsyncGeneratorSelf(name, selfName string, params []*as
 	// 单靠 IsAsync/IsGenerator 无法与普通 async 函数区分 (内层体才 IsGenerator)，
 	// 故显式标记种类供 vm.createClosure 选择函数对象原型 (见 object.FuncPrototypeOf)。
 	meta.IsAsyncGenerator = true
+	meta.IsStrict = c.strict
 	return meta, nil
 }
 
@@ -5092,7 +5140,10 @@ func (c *Compiler) compileFunctionExpression(node *ast.FunctionExpression) error
 		// 命名函数表达式: 函数体内名字可见且指向自身 (递归入口)
 		selfName = name
 	}
+	prevStrict := c.strict
+	c.strict = node.Strict
 	meta, err := c.compileFunctionSelf(name, selfName, node.Parameters, node.Body, false, node.IsGenerator, node.IsAsync)
+	c.strict = prevStrict
 	if err != nil {
 		return err
 	}
@@ -5105,7 +5156,7 @@ func (c *Compiler) compileArrowFunctionExpression(node *ast.ArrowFunctionExpress
 	name := "arrow"
 	// isAsync 走 compileAsyncFunctionSelf (wrapper + 内层 generator), 但 isArrow
 	// 一路传下去 —— 否则 `async () => this.x` 的 this 会被调用时的接收者覆盖。
-	meta, err := c.compileFunction(name, node.Parameters, getBlockFromBody(node.Body), true, false, node.IsAsync)
+	meta, err := c.compileFunctionWithStrict(node.Strict, name, node.Parameters, getBlockFromBody(node.Body), true, false, node.IsAsync)
 	if err != nil {
 		return err
 	}

@@ -95,6 +95,9 @@ type FunctionMetadata struct {
 	IsArrow       bool            // 是否箭头函数
 	IsGenerator   bool            // 是否生成器函数 (function*)
 	IsAsync       bool            // 是否 async 函数
+	// IsStrict 报告该函数体是否处于严格模式 (继承外层, 或自身含 "use strict"
+	// 指令; 类方法/模块恒严格)。VM 据此决定 this 归一、未声明赋值等运行期语义。
+	IsStrict bool
 	// IsAsyncGenerator 标识 async generator 的 wrapper。注意: 该 wrapper 的
 	// IsAsync=true 但 IsGenerator=false (内层体才是 generator)，单靠两者无法
 	// 与普通 async 函数区分 —— 而二者的函数对象 [[Prototype]] 不同

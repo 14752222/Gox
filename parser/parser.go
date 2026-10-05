@@ -32,6 +32,14 @@ type Parser struct {
 	depth         int  // 当前语法嵌套深度 (表达式/语句递归层数)
 	depthExceeded bool // 已触发嵌套深度上限 (后续解析短路，防错误洪水)
 
+	// strict 是当前的严格模式上下文 (script 顶层默认 sloppy; 命中 "use strict"
+	// 指令、进入 class 体、或 module 顶层时置 true，函数体按继承值向下传播)。
+	// 解析期早错据此判定 (重复形参 / eval·arguments 作绑定名与赋值目标 /
+	// legacy 八进制 / delete 标识符)。
+	strict bool
+	// module 标记本编译单元素是 ES module: 模块顶层恒严格 (无需指令)。
+	module bool
+
 	// usedJSXFactory 记录"本文件出现过需要 h 的 JSX"(小写标签被降级成
 	// h(...) 调用)。ParseProgram 把它交到 ast.Program.UsesJSX 上，由 compiler
 	// 决定要不要补 `import { h } from "gx/gfx"` —— 见 parser/jsx.go 的约定说明。
@@ -85,6 +93,18 @@ func (p *Parser) setAllowAwait(isAsync bool) func() {
 	prev := p.allowAwait
 	p.allowAwait = isAsync
 	return func() { p.allowAwait = prev }
+}
+
+// SetModule 标记本编译单元是 ES module (模块顶层恒严格, 无需 "use strict")。
+// 必须在 ParseProgram 之前调用。
+func (p *Parser) SetModule(v bool) { p.module = v }
+
+// setStrict 进入一个 (函数/类) 体前设置严格上下文, 返回恢复函数。
+// 与 setAllowAwait 同一范式: 保存/恢复, 保证嵌套函数退出后回到外层上下文。
+func (p *Parser) setStrict(v bool) func() {
+	prev := p.strict
+	p.strict = v
+	return func() { p.strict = prev }
 }
 
 // isBindingName 报告当前 token 能否作绑定名 (var/let/const 的名字、参数名、
@@ -333,10 +353,25 @@ func (p *Parser) ParseProgram() *ast.Program {
 	program := &ast.Program{}
 	program.Statements = []ast.Statement{}
 
+	// 模块顶层恒严格; script 顶层默认 sloppy, 除非 Directive Prologue 命中
+	// 精确 "use strict"。
+	p.strict = p.module
+	inPrologue := true
 	for !p.curTokenIs(lexer.EOF) {
+		startIsString := p.curTokenIs(lexer.STRING_LITERAL)
 		stmt := p.parseStatement()
 		if stmt != nil {
 			program.Statements = append(program.Statements, stmt)
+			if inPrologue {
+				if sl, ok := directiveString(stmt, startIsString); ok {
+					if isUseStrictDirective(sl) {
+						program.Strict = true
+						p.strict = true
+					}
+				} else {
+					inPrologue = false
+				}
+			}
 		}
 		p.nextToken()
 	}
@@ -344,6 +379,32 @@ func (p *Parser) ParseProgram() *ast.Program {
 	program.UsesJSX = p.usedJSXFactory
 	program.Positions = p.stmtPos
 	return program
+}
+
+// directiveString 报告 stmt 是否是一条**指令** (整个表达式语句就是单个字符串
+// 字面量), 是则返回该字面量。startIsString 表示语句首 token 就是字符串字面量
+// (用来排除 `("use strict")` 这种括号包裹 —— 括号改变了语法形状, 不再是
+// 规范的 Directive)。非指令返回 false, 表示 Directive Prologue 到此结束。
+func directiveString(stmt ast.Statement, startIsString bool) (*ast.StringLiteral, bool) {
+	if !startIsString {
+		return nil, false
+	}
+	es, ok := stmt.(*ast.ExpressionStatement)
+	if !ok {
+		return nil, false
+	}
+	sl, ok := es.Expression.(*ast.StringLiteral)
+	if !ok {
+		return nil, false
+	}
+	return sl, true
+}
+
+// isUseStrictDirective 报告字符串字面量是否为精确 "use strict" 指令。
+// 含转义的 `"use\u0020strict"` 解码后虽等于 "use strict", 但按规范**不是**
+// 指令 (Directive 要求源码里就是精确字符序列), 故必须看 HadEscape。
+func isUseStrictDirective(sl *ast.StringLiteral) bool {
+	return !sl.Token.HadEscape && sl.Value == "use strict"
 }
 
 // parseStatement 包装语句解析入口: 记录语句首 token 的行列位置到
@@ -1262,6 +1323,61 @@ func (p *Parser) parseBlockStatement() *ast.BlockStatement {
 	return block
 }
 
+// parseBlockWithDirectives 解析函数体块 { ... }, 并在开头识别 Directive
+// Prologue: 命中精确 "use strict" 时**立即**把 p.strict 置 true, 使体内
+// 其后语句按严格模式解析 (早错生效); 返回该体是否含指令。只用于
+// FunctionBody/ClassBody —— 普通块 (if/while/try 体) 里的 "use strict"
+// **不是**指令, 必须走 parseBlockStatement, 绝不能共用本函数。
+func (p *Parser) parseBlockWithDirectives() (*ast.BlockStatement, bool) {
+	if !p.enterNesting("block") {
+		return nil, false
+	}
+	defer p.leaveNesting()
+
+	block := &ast.BlockStatement{Token: p.curToken()}
+	block.Statements = []ast.Statement{}
+	if !p.curTokenIs(lexer.LBRACE) {
+		p.addError(fmt.Sprintf("expected '{', got %s", p.curToken().Type))
+		return nil, false
+	}
+	p.nextToken()
+
+	inPrologue := true
+	bodyStrict := false
+	for !p.curTokenIs(lexer.RBRACE) && !p.curTokenIs(lexer.EOF) {
+		startIsString := p.curTokenIs(lexer.STRING_LITERAL)
+		stmt := p.parseStatement()
+		if stmt != nil {
+			block.Statements = append(block.Statements, stmt)
+			if inPrologue {
+				if sl, ok := directiveString(stmt, startIsString); ok {
+					if isUseStrictDirective(sl) {
+						bodyStrict = true
+						p.strict = true
+					}
+				} else {
+					inPrologue = false
+				}
+			}
+		}
+		p.nextToken()
+	}
+	return block, bodyStrict
+}
+
+// parseFunctionBodyWithStrict 解析函数体块 (function/箭头/方法体), 处理
+// async 上下文与 Directive Prologue。返回值: 体本身, 以及该函数**生效**的
+// strict (继承值 || 体自身含 "use strict" 指令)。退出后 p.strict 恢复为
+// 进入时的继承值 —— 指令只作用于本函数体, 不泄漏给后续兄弟语句。
+func (p *Parser) parseFunctionBodyWithStrict(isAsync bool) (*ast.BlockStatement, bool) {
+	inherited := p.strict
+	restoreAwait := p.setAllowAwait(isAsync)
+	body, bodyStrict := p.parseBlockWithDirectives()
+	restoreAwait()
+	p.strict = inherited
+	return body, inherited || bodyStrict
+}
+
 // parseBody 解析语句体: 若当前是 { 则解析代码块, 否则解析单条语句并包装为块。
 // 用于支持 if (x) y++; 这类不带花括号的单语句体。
 func (p *Parser) parseBody() *ast.BlockStatement {
@@ -1300,9 +1416,10 @@ func (p *Parser) parseFunctionDeclaration(isAsync bool) *ast.FunctionDeclaration
 		return nil
 	}
 	p.nextToken()
-	restore := p.setAllowAwait(isAsync)
-	fn.Body = p.parseBlockStatement()
-	restore()
+	fn.Body, fn.Strict = p.parseFunctionBodyWithStrict(isAsync)
+	if fn.Strict {
+		p.checkStrictFunctionParams(fn.Parameters)
+	}
 	return fn
 }
 
@@ -1451,6 +1568,15 @@ func (p *Parser) parseIntegerLiteral() ast.Expression {
 		value, err = strconv.ParseInt(literal[2:], 2, 64)
 	} else if strings.HasPrefix(literal, "0o") || strings.HasPrefix(literal, "0O") {
 		value, err = strconv.ParseInt(literal[2:], 8, 64)
+	} else if legacyOctalValue(literal) != "" {
+		// legacy 八进制字面量: `0777` / `08` / `09` (后者是 NonOctalDecimal)。
+		// 严格模式下是 SyntaxError; 非严格下按规范求值 (0 开头 → 八进制,
+		// 但含 8/9 时是十进制 —— 例如 08 → 8, 0777 → 511)。
+		if p.strict {
+			p.addError("SyntaxError: legacy octal literals are not allowed in strict mode")
+			return nil
+		}
+		value, err = strconv.ParseInt(legacyOctalValue(literal), legacyOctalBase(literal), 64)
 	} else {
 		value, err = strconv.ParseInt(literal, 10, 64)
 	}
@@ -1461,6 +1587,32 @@ func (p *Parser) parseIntegerLiteral() ast.Expression {
 	}
 	lit.Value = value
 	return lit
+}
+
+// legacyOctalValue 报告 literal 是否为 legacy 八进制字面量 (以 0 开头且
+// 长度 >1 的纯十进制数字串, 排除 0x/0o/0b 前缀与浮点)。是则返回去掉前导 0
+// 的数字串 (供 strconv 解析), 否则返回 ""。
+func legacyOctalValue(literal string) string {
+	if len(literal) < 2 || literal[0] != '0' {
+		return ""
+	}
+	for _, c := range literal {
+		if c < '0' || c > '9' {
+			return ""
+		}
+	}
+	return literal[1:]
+}
+
+// legacyOctalBase 返回 legacy 八进制字面量的解析进制: 只含 0-7 时按八进制
+// (0777 → 511), 含 8/9 时按十进制 (08 → 8)。
+func legacyOctalBase(literal string) int {
+	for _, c := range literal {
+		if c == '8' || c == '9' {
+			return 10
+		}
+	}
+	return 8
 }
 
 func (p *Parser) parseFloatLiteral() ast.Expression {
@@ -1675,14 +1827,16 @@ func (p *Parser) parseArrowFunctionBody(params []*ast.Parameter, isAsync bool) *
 
 	if p.peekTokenIs(lexer.LBRACE) {
 		p.nextToken()
-		restore := p.setAllowAwait(isAsync)
-		af.Body = p.parseBlockStatement()
-		restore()
+		af.Body, af.Strict = p.parseFunctionBodyWithStrict(isAsync)
 	} else {
 		p.nextToken()
+		af.Strict = p.strict // 表达式体无指令, 严格性继承自外层
 		restore := p.setAllowAwait(isAsync)
 		af.Body = p.parseExpression(LOWEST)
 		restore()
+	}
+	if af.Strict {
+		p.checkStrictFunctionParams(af.Parameters)
 	}
 	return af
 }
@@ -1707,9 +1861,10 @@ func (p *Parser) parseFunctionExpression() ast.Expression {
 	}
 	p.nextToken()
 	// function 表达式永远是同步上下文 (async function 表达式走 parseAsyncExpression)
-	restore := p.setAllowAwait(false)
-	fn.Body = p.parseBlockStatement()
-	restore()
+	fn.Body, fn.Strict = p.parseFunctionBodyWithStrict(false)
+	if fn.Strict {
+		p.checkStrictFunctionParams(fn.Parameters)
+	}
 	return fn
 }
 
@@ -1742,9 +1897,10 @@ func (p *Parser) parseAsyncExpression() ast.Expression {
 			return nil
 		}
 		p.nextToken()
-		restore := p.setAllowAwait(true)
-		fn.Body = p.parseBlockStatement()
-		restore()
+		fn.Body, fn.Strict = p.parseFunctionBodyWithStrict(true)
+		if fn.Strict {
+			p.checkStrictFunctionParams(fn.Parameters)
+		}
 		return fn
 	}
 
@@ -2015,8 +2171,11 @@ func (p *Parser) parseProperty() *ast.Property {
 			return nil
 		}
 		p.nextToken() // 到 {
-		fn.Body = p.parseBlockStatement()
+		fn.Body, fn.Strict = p.parseFunctionBodyWithStrict(false)
 		restore()
+		if fn.Strict {
+			p.checkStrictFunctionParams(fn.Parameters)
+		}
 		prop.Value = fn
 		return prop
 	}
@@ -2066,8 +2225,11 @@ func (p *Parser) parseProperty() *ast.Property {
 			return nil
 		}
 		p.nextToken()
-		fn.Body = p.parseBlockStatement()
+		fn.Body, fn.Strict = p.parseFunctionBodyWithStrict(isAsync)
 		restore()
+		if fn.Strict {
+			p.checkStrictFunctionParams(fn.Parameters)
+		}
 		prop.Value = fn
 		return prop
 	}
@@ -2863,6 +3025,10 @@ func (p *Parser) parseClassDeclaration() *ast.ClassDeclaration {
 		return nil
 	}
 	p.nextToken()   // 进入成员区域
+	// 类体恒严格 (ClassBody 内的方法/字段初始化器按 strict 解析, 与是否
+	// 含指令无关) —— extends 表达式在外层上下文里求值, 故包裹从成员区域开始。
+	restoreStrict := p.setStrict(true)
+	defer restoreStrict()
 	p.pushPrivEnv() // 私有名环境压栈; defer 弹出保证早退路径也平衡
 	defer p.popPrivEnv()
 
@@ -2904,6 +3070,8 @@ func (p *Parser) parseClassDeclaration() *ast.ClassDeclaration {
 	// 私有名相关早错集中校验（重复私有名 / 字段初始化器含 arguments·super /
 	// 引用未声明私有名）。必须在成员循环之后: 判重与判未声明引用都需要
 	// 先看全所有成员（元素顺序上引用可以先于声明）。
+	// 类方法恒严格: 形参名 strict 早错 (重复名 / eval·arguments 作形参名)。
+	p.checkClassMethodsStrictParams(cls.Methods, cls.Statics)
 	p.checkClassEarlyErrors(cls.Methods, cls.Statics, cls.Fields)
 	// 语法级早错（static prototype / 特殊方法名 constructor / 重复构造器 /
 	// HasDirectSuper 的 super() 误用）。同类集中校验, 见 class_grammar_early_errors.go。
@@ -2946,6 +3114,10 @@ func (p *Parser) parseClassExpression() ast.Expression {
 		return nil
 	}
 	p.nextToken()   // 进入成员区域
+	// 类体恒严格 (ClassBody 内的方法/字段初始化器按 strict 解析, 与是否
+	// 含指令无关) —— extends 表达式在外层上下文里求值, 故包裹从成员区域开始。
+	restoreStrict := p.setStrict(true)
+	defer restoreStrict()
 	p.pushPrivEnv() // 私有名环境压栈; defer 弹出保证早退路径也平衡
 	defer p.popPrivEnv()
 
@@ -2980,6 +3152,8 @@ func (p *Parser) parseClassExpression() ast.Expression {
 	}
 
 	// 私有名早错校验（与 parseClassDeclaration 同一处挂载点, 口径一致）。
+	// 类方法恒严格: 形参名 strict 早错 (重复名 / eval·arguments 作形参名)。
+	p.checkClassMethodsStrictParams(cls.Methods, cls.Statics)
 	p.checkClassEarlyErrors(cls.Methods, cls.Statics, cls.Fields)
 	// 语法级早错（与 parseClassDeclaration 同一处挂载点, 口径一致）。
 	p.checkClassGrammarEarlyErrors(cls.SuperClass, cls.Methods, cls.Statics, cls.Fields)

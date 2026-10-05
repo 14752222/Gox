@@ -1097,6 +1097,29 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 					vm.globals.Declare(s.Value, val, false)
 				}
 			}
+		case bytecode.OP_STORE_UNDECLARED:
+			// 严格模式下对**未声明名字**的赋值 (编译器在 sym==nil 且 strict 时发射)。
+			// 与 OP_STORE_GLOBAL 相反: 运行期环境里没有同名绑定就抛 ReferenceError,
+			// 而不是隐式建全局属性。宿主注入名 (self/console/$DONE/内建) 都在全局
+			// 环境里, 故 `console = ...` 之类照常写入; 只拦真正未声明的名字。
+			name := frame.Constants.Get(operand)
+			if s, ok := name.(*object.String); ok {
+				val := vm.stack.Pop()
+				if vm.globals.IsConst(s.Value) {
+					if err := vm.throwNamedError("TypeError", "Assignment to constant variable: %s", s.Value); err != nil {
+						return err
+					}
+					continue
+				}
+				if _, exists := vm.globals.Get(s.Value); exists {
+					vm.globals.Set(s.Value, val)
+				} else {
+					if err := vm.throwNamedError("ReferenceError", "%s is not defined", s.Value); err != nil {
+						return err
+					}
+					continue
+				}
+			}
 		case bytecode.OP_DECLARE:
 			// 顶层 let/class/import 声明: 弹出值写入全局环境。
 			// 与持久化的全局词法绑定冲突时报 SyntaxError (不可被 try/catch 捕获，
@@ -3478,12 +3501,16 @@ func (vm *VM) normalizedThis(t object.Value) object.Value {
 
 // resolveFrameThis 由被调闭包算出该帧生效的 this:
 //   - 箭头函数: 词法绑定, 取闭包携带的 This (创建时从所在帧捕获);
-//   - 非箭头函数: 按 sloppy 归一 (undefined/null → globalThis)。
+//   - 严格函数: 原样保留 (undefined/null 不归一 —— 规范 strict 语义);
+//   - 非箭头 sloppy 函数: 按 sloppy 归一 (undefined/null → globalThis)。
 func (vm *VM) resolveFrameThis(closure *object.Closure) object.Value {
 	if closure == nil {
 		return nil
 	}
 	if closure.IsArrow {
+		return closure.This
+	}
+	if closure.Fn != nil && closure.Fn.IsStrict {
 		return closure.This
 	}
 	return vm.normalizedThis(closure.This)

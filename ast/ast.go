@@ -53,6 +53,11 @@ type Program struct {
 	// 没有它的话，"用了 JSX 却没导入 h"的脚本能编译通过，却在挂载那一刻炸
 	// ReferenceError: h is not defined。
 	UsesJSX bool
+
+	// Strict 报告本 ScriptBody 是否处于严格模式 (含 "use strict" 指令, 或
+	// 为 module 顶层 —— 模块恒严格)。由 parser 的指令序言识别填写, 供
+	// compiler 决定编译期早错与运行期语义 (未声明赋值 / this 归一)。
+	Strict bool
 }
 
 func (p *Program) TokenLiteral() string {
@@ -415,6 +420,9 @@ type FunctionDeclaration struct {
 	Body        *BlockStatement
 	IsGenerator bool // function* 生成器函数
 	IsAsync     bool // async function 异步函数
+	// Strict 报告该函数体是否严格: 继承外层 strict, 或自身函数体含
+	// "use strict" 指令。供 compiler 盖 FunctionMetadata.IsStrict。
+	Strict bool
 }
 
 func (fd *FunctionDeclaration) TokenLiteral() string { return fd.Token.Literal }
@@ -449,6 +457,8 @@ type FunctionExpression struct {
 	Body        *BlockStatement
 	IsGenerator bool // function* 生成器函数
 	IsAsync     bool // async function 异步函数
+	// Strict 见 FunctionDeclaration.Strict。
+	Strict bool
 }
 
 func (fe *FunctionExpression) TokenLiteral() string { return fe.Token.Literal }
@@ -486,6 +496,9 @@ type ArrowFunctionExpression struct {
 	IsAsync    bool        // async 箭头函数 (IsAsync 与普通箭头共用同一份编译路径)
 	Parameters []*Parameter
 	Body       Node // *BlockStatement 或 Expression (隐式返回)
+	// Strict 见 FunctionDeclaration.Strict。箭头函数体若为块体且含
+	// "use strict" 指令, 或继承外层 strict, 则为 true。
+	Strict bool
 }
 
 func (af *ArrowFunctionExpression) TokenLiteral() string { return af.Token.Literal }

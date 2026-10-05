@@ -36,6 +36,9 @@ type CompiledFunction struct {
 	// IsGenerator=false，需要显式区分于普通 async 函数)。决定函数对象
 	// [[Prototype]] 与 .prototype 实例原型的种类。
 	IsAsyncGenerator bool
+	// IsStrict 报告函数体是否严格模式 (继承 + 指令 + 类/模块强制)。
+	// VM 据此决定 this 归一与未声明赋值语义。
+	IsStrict bool
 	// BaseSlot 是函数自身变量的起始槽位 (= 外层作用域的变量数)
 	// 参数和局部变量从 BaseSlot 开始排列
 	BaseSlot int

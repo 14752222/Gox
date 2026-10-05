@@ -645,6 +645,7 @@ func (l *Lexer) readString(quote rune, line, col int) Token {
 	l.readChar() // 消费开始引号
 
 	var sb strings.Builder
+	hadEscape := false
 	for l.ch != quote {
 		if l.ch == 0 {
 			// 未终止的字符串
@@ -652,6 +653,7 @@ func (l *Lexer) readString(quote rune, line, col int) Token {
 		}
 		if l.ch == '\\' {
 			// 转义序列
+			hadEscape = true
 			l.readChar()
 			switch l.ch {
 			case 'n':
@@ -698,7 +700,7 @@ func (l *Lexer) readString(quote rune, line, col int) Token {
 		l.readChar()
 	}
 
-	return Token{Type: STRING_LITERAL, Literal: sb.String(), Line: line, Column: col}
+	return Token{Type: STRING_LITERAL, Literal: sb.String(), Line: line, Column: col, HadEscape: hadEscape}
 }
 
 // readTemplateLiteral 开始读取模板字面量。

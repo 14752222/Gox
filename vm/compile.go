@@ -32,6 +32,7 @@ func init() {
 // 顶层变量不写入共享全局环境 (见 loadModule)。
 func compileSource(src string, moduleMode bool) (*compiler.Compiler, error) {
 	p := parser.New(lexer.New(src))
+	p.SetModule(moduleMode) // 模块顶层恒严格, 供解析期早错判定
 	program := p.ParseProgram()
 	if p.Errors().HasErrors() {
 		return nil, &sourceError{parse: true, msg: p.Errors().String()}
@@ -84,6 +85,7 @@ func metaToCompiledFunction(meta *bytecode.FunctionMetadata, consts []object.Val
 		IsGenerator:    meta.IsGenerator,
 		IsAsync:        meta.IsAsync,
 		IsAsyncGenerator: meta.IsAsyncGenerator,
+		IsStrict:         meta.IsStrict,
 		BaseSlot:       meta.BaseSlot,
 		ArgumentsSlot:  meta.ArgumentsSlot,
 		SelfSlot:       meta.SelfSlot,
