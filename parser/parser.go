@@ -1526,6 +1526,14 @@ func (p *Parser) parseExpression(precedence Precedence) ast.Expression {
 		!p.peekTokenIs(lexer.RPAREN) && !p.peekTokenIs(lexer.RBRACKET) && !p.peekTokenIs(lexer.COMMA) &&
 		!p.peekTokenIs(lexer.COLON) && !p.peekTokenIs(lexer.ARROW) &&
 		(precedence < getPrecedence(p.peekToken().Literal) || p.peekTokenIs(lexer.BACKTICK)) {
+		// 后缀 ++/-- 的规范限制 (ES2023 §13.4 PostfixExpression): 操作数与运算符
+		// 之间**不得有行终止符**。`x\n++y` 必须是 `x; ++y;`, 而不是 `(x++); y`。
+		// 这里在把 ++/-- 当中缀前拦一道: 跨行就收尾本表达式, 交给语句层把
+		// ++/-- 当作下一条语句的前缀运算符 (缺少操作数时自然报 SyntaxError)。
+		if (p.peekTokenIs(lexer.INC) || p.peekTokenIs(lexer.DEC)) &&
+			p.peekToken().Line != p.curToken().Line {
+			break
+		}
 		// tagged template: 表达式后紧跟模板 (BACKTICK 类型, 优先级同函数调用)
 		if p.peekTokenIs(lexer.BACKTICK) {
 			p.nextToken()
