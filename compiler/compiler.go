@@ -2056,6 +2056,14 @@ func (c *Compiler) emitPrivateKey(name string) error {
 }
 
 func (c *Compiler) compileClassBody(className string, superClass ast.Expression, methods, statics []*ast.ClassMethod, fields []*ast.ClassField) error {
+	// 类体恒严格: 类方法 (含**隐式**构造器)、字段初始化器都按 strict 编译。
+	// 显式方法走 compileFunctionWithStrict(true,...); 这里整体置 true 是为了
+	// 让 compileClassConstructor 的 meta.IsStrict (c.strict) 也拿到 true ——
+	// 隐式构造器没有 AST 节点, 只能靠上下文盖章 (设计风险 #8)。
+	prevStrict := c.strict
+	c.strict = true
+	defer func() { c.strict = prevStrict }()
+
 	// 父类名 (super 引用目标; 仅支持 Identifier 形式的 extends)
 	superName := ""
 	if superClass != nil {
