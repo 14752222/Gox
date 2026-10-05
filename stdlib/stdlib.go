@@ -55,6 +55,9 @@ func SetupGlobals() *runtime.Environment {
 	// 在此之前 Object 构造器没有 prototype 属性 —— Object.prototype.toString.call
 	// 这类反射写法全部失效。
 	setupObjectPrototype(objectObj)
+	if p, ok := objectObj.GetProperty("prototype"); ok {
+		SetObjectPrototypeRef(p)
+	}
 	env.Declare("Object", objectObj, false)
 
 	// ===== Array =====

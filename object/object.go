@@ -66,7 +66,8 @@ const (
 	ACCESSOR_OBJ ObjectType = "ACCESSOR" // getter/setter 访问器属性
 
 	// 生成器
-	GENERATOR_OBJ ObjectType = "GENERATOR" // 生成器对象 (function* 的实例)
+	GENERATOR_OBJ       ObjectType = "GENERATOR"       // 生成器对象 (function* 的实例)
+	ASYNC_GENERATOR_OBJ ObjectType = "ASYNC_GENERATOR" // 异步生成器对象 (async function* 的实例)
 
 	// ES2021/全局
 	WEAKREF_OBJ ObjectType = "WEAKREF" // WeakRef 弱引用对象
@@ -150,7 +151,7 @@ func TypeOf(v Value) string {
 		return "object" // JavaScript 历史遗留: typeof null === "object"
 	case UNDEFINED_OBJ:
 		return "undefined"
-	case ARRAY_OBJ, OBJECT_OBJ, ERROR_OBJ, ITERATOR_OBJ, MAP_OBJ, SET_OBJ, PROMISE_OBJ, REGEXP_OBJ, PROXY_OBJ, GENERATOR_OBJ:
+	case ARRAY_OBJ, OBJECT_OBJ, ERROR_OBJ, ITERATOR_OBJ, MAP_OBJ, SET_OBJ, PROMISE_OBJ, REGEXP_OBJ, PROXY_OBJ, GENERATOR_OBJ, ASYNC_GENERATOR_OBJ:
 		return "object"
 	case SYMBOL_OBJ:
 		return "symbol"

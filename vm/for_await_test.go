@@ -201,3 +201,57 @@ func TestForAwaitOfOutsideAsyncIsError(t *testing.T) {
 		t.Errorf("传统 for 头部的 await 不应报错, got: %v", err)
 	}
 }
+
+// TestForAwaitOfRealAsyncGenerator: for await 的迭代源是**真正的 async generator**
+// (而非手写的 [Symbol.asyncIterator] 对象), 走 OP_GET_ASYNC_ITERATOR 的
+// AsyncGenerator 直通分支 + OP_ASYNC_ITER_NEXT 的 AsyncGenerator 分支。
+func TestForAwaitOfRealAsyncGenerator(t *testing.T) {
+	got := evalForAwait(t, `
+		async function* g() {
+			yield 1;
+			yield 2;
+			yield 3;
+		}
+		async function main() {
+			let sum = 0;
+			for await (const v of g()) { sum = sum + v; }
+			__out.push("agsum:" + sum);
+		}
+		main();
+	`)
+	want := "agsum:6\n"
+	if got != want {
+		t.Errorf("for await 消费异步生成器\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// TestForAwaitOfRealAsyncGeneratorTryFinally 覆盖 async generator 体内 try/finally
+// 与「挂起期操作数栈中间值」的组合: `100 + (yield 1)` 挂起时栈上留有 100
+// (恢复要经 rebuildGenFrame 的 SavedStack 还原), finally 在生成器正常完成时
+// 展开。这个组合正是 rebuildGenFrame 帧基修复 (帧基须取在压入 SavedStack 之前)
+// 针对的形状 —— 帧基取错会让 SavedStack 落到帧基之下, try 条目绝对 stackBase
+// 错位。
+func TestForAwaitOfRealAsyncGeneratorTryFinally(t *testing.T) {
+	got := evalForAwait(t, `
+		async function* k() {
+			try {
+				const x = 100 + (yield 1);  // 挂起时生成器操作数栈上有 100
+				yield x;
+			} finally {
+				__out.push("fin");
+			}
+		}
+		async function main() {
+			const it = k();
+			const r1 = await it.next();               // {value:1}
+			const r2 = await it.next(r1.value + 4);   // 100 + 5 = 105
+			await it.next();                          // 驱动到完成 → 展开 finally
+			__out.push("r2:" + r2.value);
+		}
+		main();
+	`)
+	want := "fin\nr2:105\n"
+	if got != want {
+		t.Errorf("带 try/finally 的异步生成器 + 挂起期中间值\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}

@@ -15,6 +15,27 @@ import (
 // 把结果传回 generator (作为 await 表达式的值), 直到 generator 完成,
 // 最终 resolve 返回的 Promise。
 func setupAsync(env *runtime.Environment) {
+	// async generator 的 next/return/throw 驱动 (object → stdlib 回调桥)。
+	object.SetAsyncGeneratorMethod(asyncGeneratorMethod)
+
+	// __async_generator: 把内层 Generator 包装成 AsyncGenerator 对象。
+	// async generator 的 wrapper 收尾调用它 (见 compiler.compileAsyncGeneratorSelf)。
+	env.Declare("__async_generator", object.NewBuiltin("__async_generator",
+		func(args ...object.Value) object.Value {
+			if len(args) == 0 {
+				return object.UndefinedSingleton
+			}
+			gen, ok := args[0].(*object.Generator)
+			if !ok {
+				return object.UndefinedSingleton
+			}
+			ag := object.NewAsyncGenerator(gen)
+			if proto := object.GetAsyncGeneratorProto(); proto != nil {
+				ag.Proto = proto
+			}
+			return ag
+		}), false)
+
 	spawn := object.NewBuiltin("__spawn", func(args ...object.Value) object.Value {
 		result := object.NewPromise()
 		if len(args) == 0 {
@@ -83,4 +104,157 @@ func step(gen *object.Generator, arg object.Value, result *object.Promise, throw
 
 	// 非 Promise 值: 直接继续
 	step(gen, value, result, nil)
+}
+
+// objectPrototype 是全局 Object.prototype 引用 (SetupGlobals 时填充)。
+// 迭代结果对象需要它的原型是 Object.prototype (规范 CreateIterResultObject)。
+var objectPrototype object.Value
+
+// SetObjectPrototypeRef 由 SetupGlobals 记录 Object.prototype。
+func SetObjectPrototypeRef(p object.Value) { objectPrototype = p }
+
+// newAsyncIterResult 构造 {value, done}, 原型为 Object.prototype。
+func newAsyncIterResult(value object.Value, done bool) object.Value {
+	res := object.NewAsyncGeneratorIterResult(value, done)
+	if objectPrototype != nil {
+		res.Proto = objectPrototype
+	}
+	return res
+}
+
+// ===== async generator 驱动 =====
+//
+// 与 step() 的关键差异: async generator 的 next/return/throw 各自返回一个
+// Promise, 且体内有两种挂起点 —— await (内部, 等待后自动恢复) 与
+// yield (消费者可见, 结算 next() 的 Promise)。挂起类型由 VM 写入
+// Generator.LastYieldIsAwait (OP_AWAIT 置真, OP_YIELD 置假)。
+//
+// 多个并发请求按 FIFO 排队: 一个请求未结算前, 后续请求只入队不驱动。
+
+// asyncGeneratorMethod 是 object.AsyncGenerator 的方法驱动入口。
+func asyncGeneratorMethod(g *object.AsyncGenerator, kind int, arg object.Value) *object.Promise {
+	p := object.NewPromise()
+	g.Requests = append(g.Requests, &object.AsyncGenRequest{Kind: kind, Arg: arg, Promise: p})
+	if !g.Running {
+		agResumeNext(g)
+	}
+	return p
+}
+
+// agResumeNext 处理队首请求。已完成的生成器直接按请求种类结算。
+func agResumeNext(g *object.AsyncGenerator) {
+	if g.Running || len(g.Requests) == 0 {
+		return
+	}
+	req := g.Requests[0]
+	if g.Done {
+		g.Requests = g.Requests[1:]
+		agSettleCompleted(req)
+		agResumeNext(g)
+		return
+	}
+	g.Running = true
+	agStep(g, req, req.Kind, req.Arg)
+}
+
+// agSettleCompleted 结算一个针对"已完成生成器"的请求。
+func agSettleCompleted(req *object.AsyncGenRequest) {
+	switch req.Kind {
+	case object.AGReturnKind:
+		req.Promise.Resolve(newAsyncIterResult(req.Arg, true))
+	case object.AGThrowKind:
+		req.Promise.Reject(req.Arg)
+	default:
+		req.Promise.Resolve(newAsyncIterResult(object.UndefinedSingleton, true))
+	}
+}
+
+// agStep 用 (kind, arg) 驱动内层 generator 一步, 并按挂起类型决定后续。
+func agStep(g *object.AsyncGenerator, req *object.AsyncGenRequest, kind int, arg object.Value) {
+	var value object.Value
+	var done bool
+	switch kind {
+	case object.AGNextKind:
+		value, done = object.GeneratorNext(g.Gen, arg)
+	case object.AGReturnKind:
+		value, done = object.GeneratorReturn(g.Gen, arg)
+	default:
+		value, done = object.GeneratorThrow(g.Gen, arg)
+	}
+
+	// 体内未捕获的异常: 回调桥记为 callbackError。必须优先用原始抛出值
+	// 作为 rejection reason —— 否则 catch 侧拿到 "Error: Error: x" 双前缀
+	// 且与抛出值不严格相等。(与 step() 同款错误桥纪律。)
+	if cbErr := object.TakeCallbackError(); cbErr != nil {
+		g.Done = true
+		agRejectBridge(req, cbErr)
+		agFinish(g, req)
+		return
+	}
+
+	if done {
+		g.Done = true
+		req.Promise.Resolve(newAsyncIterResult(value, true))
+		agFinish(g, req)
+		return
+	}
+
+	if g.Gen.LastYieldIsAwait {
+		// await: 等待值后自动恢复 (不结算对外 Promise)。
+		agAwait(value,
+			func(resolved object.Value) { agStep(g, req, object.AGNextKind, resolved) },
+			func(reason object.Value) { agStep(g, req, object.AGThrowKind, reason) })
+		return
+	}
+
+	// yield: 先按 AsyncGeneratorYield 语义 await 值, 再对消费者结算。
+	// 值 reject 时把 reason 抛回 yield 点 (体内 try/catch 可捕获), 继续驱动。
+	agAwait(value,
+		func(resolved object.Value) {
+			req.Promise.Resolve(newAsyncIterResult(resolved, false))
+			agFinish(g, req)
+		},
+		func(reason object.Value) { agStep(g, req, object.AGThrowKind, reason) })
+}
+
+// agRejectBridge 用原始抛出值 (优先) 结算 rejection。
+func agRejectBridge(req *object.AsyncGenRequest, cbErr error) {
+	if thrown := object.TakeCallbackErrorValue(); thrown != object.UndefinedSingleton {
+		req.Promise.Reject(thrown)
+		return
+	}
+	req.Promise.Reject(object.NewErrorWithName("Error", cbErr.Error()))
+}
+
+// agFinish 把一个已结算的请求移出队列, 让出 executing 状态并继续处理后续请求。
+func agFinish(g *object.AsyncGenerator, req *object.AsyncGenRequest) {
+	if len(g.Requests) > 0 && g.Requests[0] == req {
+		g.Requests = g.Requests[1:]
+	} else {
+		for i, r := range g.Requests {
+			if r == req {
+				g.Requests = append(g.Requests[:i], g.Requests[i+1:]...)
+				break
+			}
+		}
+	}
+	g.Running = false
+	agResumeNext(g)
+}
+
+// agAwait 按 await 语义处理一个值: Promise 等待其结算, 非 Promise 立即透传。
+// 回调按 Gox 现有的同步 Promise 模型执行 (结算即回调)。
+func agAwait(value object.Value, onResolve, onReject func(object.Value)) {
+	if p, ok := value.(*object.Promise); ok {
+		p.Then(object.NewBuiltin("__ag_step", func(args ...object.Value) object.Value {
+			onResolve(argAt(args, 0))
+			return object.UndefinedSingleton
+		}))
+		p.Catch(object.NewBuiltin("__ag_step_err", func(args ...object.Value) object.Value {
+			onReject(argAt(args, 0))
+			return object.UndefinedSingleton
+		}))
+		return
+	}
+	onResolve(value)
 }

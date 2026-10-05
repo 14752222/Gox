@@ -15,6 +15,12 @@ type Generator struct {
 	Done    bool  // 是否已完成
 	Value   Value // 最近一次 yield 的值 / 最终返回值
 
+	// LastYieldIsAwait 记录最近一次挂起是 await 还是 yield。
+	// async generator 的驱动必须区分二者: await 是内部挂起点 (自动恢复),
+	// yield 是消费者可见的挂起点 (结算 next() 的 Promise)。
+	// 普通同步 generator 与 async 函数的驱动都忽略它。
+	LastYieldIsAwait bool
+
 	// 暂停状态 (Started 后有效):
 	PC           int     // 恢复点 (yield 指令之后的下一条指令)
 	Locals       []Value // 暂停时的局部变量
@@ -43,6 +49,10 @@ type GenTryEntry struct {
 	// 否则恢复后 OP_END_FINALLY 找不到挂起值, 原异常会被静默吞掉。
 	InFinally  bool
 	PendingVal Value
+
+	// PendingReturn 标记 PendingVal 是一个 return 完成而非 throw 完成
+	// (async generator 的 return() 触发的 finally 展开)。
+	PendingReturn bool
 }
 
 // NewGenerator 创建生成器对象。
@@ -92,11 +102,19 @@ type GeneratorNextFunc func(gen *Generator, arg Value) (Value, bool)
 // try/catch 能捕获该异常。
 type GeneratorThrowFunc func(gen *Generator, throwVal Value) (Value, bool)
 
+// GeneratorReturnFunc 是把 return 完成注入生成器 (从 yield 点恢复) 的回调类型。
+// 用于 async generator 的 return()：等价于在挂起点执行 `return v`,
+// 会展开体内的 finally 块。返回值语义同 GeneratorNext (返回值/是否完成)。
+type GeneratorReturnFunc func(gen *Generator, returnVal Value) (Value, bool)
+
 // generatorNext 是 VM 注册的回调。
 var generatorNext GeneratorNextFunc
 
 // generatorThrow 是 VM 注册的异常恢复回调。
 var generatorThrow GeneratorThrowFunc
+
+// generatorReturn 是 VM 注册的 return 完成恢复回调。
+var generatorReturn GeneratorReturnFunc
 
 // SetGeneratorNext 注册生成器驱动回调 (由 vm 包初始化时调用)。
 func SetGeneratorNext(f GeneratorNextFunc) {
@@ -106,6 +124,11 @@ func SetGeneratorNext(f GeneratorNextFunc) {
 // SetGeneratorThrow 注册异常恢复回调 (由 vm 包初始化时调用)。
 func SetGeneratorThrow(f GeneratorThrowFunc) {
 	generatorThrow = f
+}
+
+// SetGeneratorReturn 注册 return 完成恢复回调 (由 vm 包初始化时调用)。
+func SetGeneratorReturn(f GeneratorReturnFunc) {
+	generatorReturn = f
 }
 
 // GeneratorNext 驱动生成器前进一步。
@@ -124,4 +147,13 @@ func GeneratorThrow(gen *Generator, throwVal Value) (Value, bool) {
 		return UndefinedSingleton, true
 	}
 	return generatorThrow(gen, throwVal)
+}
+
+// GeneratorReturn 把 returnVal 作为 return 完成注入生成器，从 yield 点恢复。
+// 未注册回调时视为已完成。
+func GeneratorReturn(gen *Generator, returnVal Value) (Value, bool) {
+	if generatorReturn == nil {
+		return returnVal, true
+	}
+	return generatorReturn(gen, returnVal)
 }

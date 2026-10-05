@@ -130,6 +130,14 @@ const (
 	OP_TEMPLATE_PART  Opcode = 0x81 // 添加一个部分到模板
 	OP_TEMPLATE_END   Opcode = 0x82 // 完成模板拼接，结果入栈
 
+	// OP_AWAIT 是 async generator 体内的 await 挂起点。
+	// 帧语义与 OP_YIELD 完全相同 (暂停帧, 恢复时压入传入值), 唯一区别是
+	// VM 会把 Generator.LastYieldIsAwait 置真, 让异步生成器驱动知道这是
+	// 内部挂起点 (等待值后自动恢复) 而非消费者可见的 yield。
+	// 仅在 async generator 体内发射; 普通 async 函数/同步 generator/for-await
+	// 在非生成器 async 体里仍用 OP_YIELD。
+	OP_AWAIT Opcode = 0x8F
+
 	// 0x90-0x9F: 解构和展开
 	OP_DESTRUCTURE Opcode = 0x90 // 解构赋值 (operand = 解构模式索引)
 	OP_SPREAD      Opcode = 0x91 // 展开可迭代对象
@@ -239,6 +247,7 @@ var opcodeNames = map[Opcode]string{
 	OP_YIELD:           "YIELD",
 	OP_TEMPLATE_START:  "TEMPLATE_START", OP_TEMPLATE_PART: "TEMPLATE_PART",
 	OP_TEMPLATE_END: "TEMPLATE_END",
+	OP_AWAIT:        "AWAIT",
 	OP_DESTRUCTURE:  "DESTRUCTURE", OP_SPREAD: "SPREAD",
 	OP_PACK_ARRAY: "PACK_ARRAY", OP_PACK_OBJECT: "PACK_OBJECT",
 	OP_GET_ITERATOR: "GET_ITERATOR", OP_ITER_NEXT: "ITER_NEXT",

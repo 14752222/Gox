@@ -82,6 +82,12 @@ type Compiler struct {
 	// (await 的实际执行处, for await...of 只在此合法)。进出内层体时
 	// 保存/恢复; 普通函数/顶层恒为 false, for-await 在那里是 SyntaxError。
 	inAsyncFunction bool
+
+	// asyncGeneratorBody 标记正在编译的正是 **async generator** 的内层体。
+	// 为真时 await 编为 OP_AWAIT (与 yield 的 OP_YIELD 区分, 供异步生成器
+	// 驱动识别内部挂起点); for-await 的异步步进也同样编 OP_AWAIT。
+	// 普通 async 函数的内层体为 false (await 仍 OP_YIELD)。
+	asyncGeneratorBody bool
 }
 
 // tryScope 是一个活跃 try 处理器条目的编译期描述 (对应运行时 vm.tryStack 的一条)。
@@ -1217,7 +1223,13 @@ func (c *Compiler) compileForAwaitOfStatement(stmt *ast.ForOfStatement) error {
 	// 异步迭代一步: [iter] → [iter, step]; OP_YIELD 等待 Promise
 	// (同步形状的 step 原样穿过), 恢复值即步进结果对象。
 	c.emitter.EmitNoOperand(bytecode.OP_ASYNC_ITER_NEXT)
-	c.emitter.EmitNoOperand(bytecode.OP_YIELD) // [iter, step]
+	// async generator 体内这是内部挂起点 (OP_AWAIT), 普通 async 函数体内是
+	// OP_YIELD —— 二者帧语义相同, 区别只在驱动如何识别挂起点 (消费者可见性)。
+	if c.asyncGeneratorBody {
+		c.emitter.EmitNoOperand(bytecode.OP_AWAIT) // [iter, step]
+	} else {
+		c.emitter.EmitNoOperand(bytecode.OP_YIELD) // [iter, step]
+	}
 
 	// 检查 step.done (GET_PROP 弹 obj 压结果, 故先 DUP 保住 step):
 	// [iter, step] → DUP → [iter, step, step] → GET_PROP "done" →
@@ -2799,12 +2811,20 @@ func (c *Compiler) compileExpression(expr ast.Expression) error {
 		c.emitter.EmitNoOperand(bytecode.OP_YIELD)
 		return nil
 	case *ast.AwaitExpression:
-		// await expr: 在 async 的内层 generator 中编译为 yield expr
-		// (恢复时压入 Promise 的 resolved 值作为表达式结果)
+		// await expr: 在 async 函数/generator 的内层 generator 中编译为挂起点
+		// (恢复时压入 Promise 的 resolved 值作为表达式结果)。
+		//
+		// async generator 体内用 OP_AWAIT: 它与 OP_YIELD 的帧语义完全相同,
+		// 但会让异步生成器驱动识别为内部挂起点 (等待后自动恢复), 与消费者
+		// 可见的 yield (OP_YIELD) 区分开。普通 async 函数体内仍是 OP_YIELD。
 		if err := c.compileExpression(node.Argument); err != nil {
 			return err
 		}
-		c.emitter.EmitNoOperand(bytecode.OP_YIELD)
+		if c.asyncGeneratorBody {
+			c.emitter.EmitNoOperand(bytecode.OP_AWAIT)
+		} else {
+			c.emitter.EmitNoOperand(bytecode.OP_YIELD)
+		}
 		return nil
 	case *ast.NewExpression:
 		return c.compileNewExpression(node)
@@ -4244,6 +4264,11 @@ func (c *Compiler) compileFunction(name string, params []*ast.Parameter, body *a
 // 函数自身 (ES 规范 NamedFunctionExpression 作用域)，VM 调用时把闭包
 // 写入对应槽位。参数与 selfName 同名时参数优先 (规范行为)。
 func (c *Compiler) compileFunctionSelf(name, selfName string, params []*ast.Parameter, body *ast.BlockStatement, isArrow, isGenerator, isAsync bool) (*bytecode.FunctionMetadata, error) {
+	// async generator: wrapper 创建并返回 AsyncGenerator 对象,
+	// 内层 generator 的 await 编为 OP_AWAIT、yield 编为 OP_YIELD。
+	if isAsync && isGenerator {
+		return c.compileAsyncGeneratorSelf(name, selfName, params, body, isArrow)
+	}
 	// async 函数: 编译为 wrapper (返回 __spawn(generator)), 内层 generator 处理 await→yield
 	if isAsync {
 		return c.compileAsyncFunctionSelf(name, selfName, params, body, isArrow)
@@ -4438,7 +4463,12 @@ func (c *Compiler) compileAsyncFunctionSelf(name, selfName string, params []*ast
 	// OP_YIELD 机制依赖 async 的 wrapper+generator 结构, 只在此合法。
 	prevInAsync := c.inAsyncFunction
 	c.inAsyncFunction = true
+	// 强制 asyncGeneratorBody=false: 若本 async 函数嵌套在 async generator
+	// 体内, 继承下来的标志会让 await 误编为 OP_AWAIT。
+	prevAGBody := c.asyncGeneratorBody
+	c.asyncGeneratorBody = false
 	genMeta, err := c.compileFunctionSelf(name, selfName, params, body, isArrow, true, false)
+	c.asyncGeneratorBody = prevAGBody
 	c.inAsyncFunction = prevInAsync
 	if err != nil {
 		return nil, err
@@ -4502,6 +4532,106 @@ func (c *Compiler) compileAsyncFunctionSelf(name, selfName string, params []*ast
 	c.emitter.Emit(bytecode.OP_CALL, uint16(len(paramSlots))) // [genObj]
 	c.emitter.Emit(bytecode.OP_LOAD_GLOBAL, spawnIdx)         // [genObj, spawn]
 	c.emitter.Emit(bytecode.OP_CALL, 1)                       // [promise]
+	c.emitter.EmitNoOperand(bytecode.OP_RETURN)
+
+	wrapperIns := c.emitter.Bytes()
+	c.emitter = prevEmitter
+	c.scope = prevScope
+	c.controlStack = prevControlStack
+	c.pendingLabel = prevPendingLabel
+	c.tryScopes = prevTryScopes
+	c.finallyRetSlot = prevFinallyRetSlot
+
+	meta := bytecode.NewFunctionMetadata(name, wrapperIns, wrapperScope.NumLocals(), len(params), paramSpecs, isArrow)
+	meta.BaseSlot = baseSlot
+	meta.ArgumentsSlot = argumentsSlot
+	meta.IsAsync = true
+	return meta, nil
+}
+
+// compileAsyncGeneratorSelf 把 async generator 编译成两段: wrapper + 内层 generator。
+//
+// async function* f(a) { body } 等价于:
+//
+//	function f(a) { return __async_generator((function* (a) { body' }) (a)); }
+//
+// 其中 body' 把 yield X 编为 OP_YIELD、await X 编为 OP_AWAIT (见 compileExpression)。
+// wrapper 调用内层 generator 函数得到 Generator 对象 (IsGenerator=true 时调用
+// 不执行体, 只创建对象), 再交给 __async_generator 包装成带异步迭代协议的
+// AsyncGenerator 对象并返回 —— 因此 f() 的结果不是 Promise, 而是 AsyncGenerator。
+//
+// 复用 compileAsyncFunctionSelf 的参数作用域与 wrapper 结构, 仅替换收尾调用。
+func (c *Compiler) compileAsyncGeneratorSelf(name, selfName string, params []*ast.Parameter, body *ast.BlockStatement, isArrow bool) (*bytecode.FunctionMetadata, error) {
+	// 1. 编译内层 generator。asyncGeneratorBody=true 让 await 编为 OP_AWAIT;
+	//    inAsyncFunction=true 让 for await...of 在主路径内合法。
+	prevAGBody := c.asyncGeneratorBody
+	c.asyncGeneratorBody = true
+	prevInAsync := c.inAsyncFunction
+	c.inAsyncFunction = true
+	genMeta, err := c.compileFunctionSelf(name, selfName, params, body, isArrow, true, false)
+	c.inAsyncFunction = prevInAsync
+	c.asyncGeneratorBody = prevAGBody
+	if err != nil {
+		return nil, err
+	}
+	genIdx := c.constants.AddConstant(genMeta)
+
+	// 2. 创建 wrapper 作用域并定义参数
+	prevScope := c.scope
+	baseSlot := prevScope.NumLocals()
+	wrapperScope := NewFunctionScope(prevScope)
+	c.scope = wrapperScope
+
+	paramSpecs := make([]bytecode.ParameterSpec, len(params))
+	paramSlots := make([]int, len(params))
+	for i, param := range params {
+		if param.Pattern != nil {
+			paramSpecs[i] = bytecode.ParameterSpec{
+				Name:       fmt.Sprintf("__param_%d", i),
+				HasDefault: false,
+				IsRest:     false,
+			}
+		} else {
+			paramSpecs[i] = bytecode.ParameterSpec{
+				Name:       param.Name,
+				HasDefault: param.Default != nil,
+				IsRest:     param.Rest,
+			}
+		}
+		sym := wrapperScope.Define(paramSpecs[i].Name, false)
+		sym.Declared = true
+		paramSlots[i] = sym.Slot
+	}
+	argSym := wrapperScope.Define("__arguments__", false)
+	argSym.Declared = true
+	argumentsSlot := argSym.Slot
+
+	// 3. 编译 wrapper 体
+	prevEmitter := c.emitter
+	c.emitter = NewEmitter()
+	prevControlStack := c.controlStack
+	c.controlStack = nil
+	prevPendingLabel := c.pendingLabel
+	c.pendingLabel = ""
+	prevTryScopes := c.tryScopes
+	c.tryScopes = nil
+	prevFinallyRetSlot := c.finallyRetSlot
+	c.finallyRetSlot = -1
+	defer func() {
+		c.tryScopes = prevTryScopes
+		c.finallyRetSlot = prevFinallyRetSlot
+	}()
+
+	helperIdx := c.constants.AddConstant(object.NewString("__async_generator"))
+	// 调用约定: fn 必须在栈顶。先压参数, 再 FUNCTION 创建 gen closure,
+	// CALL n 弹出 fn=genClosure + 参数 → 创建 Generator。
+	for _, slot := range paramSlots {
+		c.emitter.Emit(bytecode.OP_LOAD, uint16(slot)) // [param...]
+	}
+	c.emitter.Emit(bytecode.OP_FUNCTION, uint16(genIdx))      // [param..., genClosure]
+	c.emitter.Emit(bytecode.OP_CALL, uint16(len(paramSlots))) // [genObj]
+	c.emitter.Emit(bytecode.OP_LOAD_GLOBAL, helperIdx)        // [genObj, __async_generator]
+	c.emitter.Emit(bytecode.OP_CALL, 1)                       // [asyncGenerator]
 	c.emitter.EmitNoOperand(bytecode.OP_RETURN)
 
 	wrapperIns := c.emitter.Bytes()

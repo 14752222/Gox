@@ -68,6 +68,12 @@ type tryEntry struct {
 	inFinally bool
 	// pendingVal 是进入 finally 时挂起的异常值 (inFinally 为真时有效)。
 	pendingVal object.Value
+
+	// pendingReturn 标记挂起值是一个 **return 完成** 而非 throw 完成
+	// (inFinally 为真时有效)。async generator 的 return() 从挂起点注入
+	// `return v` 时需要展开体内 finally: 进入 finally 时置位, OP_END_FINALLY
+	// 结束时据此把完成向外传播而不是重新抛出。
+	pendingReturn bool
 }
 
 // ModuleExports 存储模块的导出。
@@ -369,6 +375,19 @@ func init() {
 			return object.UndefinedSingleton, true
 		}
 		val, done, err := currentVM.genThrow(gen, throwVal)
+		if err != nil {
+			object.SetCallbackError(err)
+			setCallbackErrorValueFromThrow(err)
+			return object.UndefinedSingleton, true
+		}
+		return val, done
+	})
+	// 注册 generator return 完成回调: object.GeneratorReturn → vm.genReturn
+	object.SetGeneratorReturn(func(gen *object.Generator, returnVal object.Value) (object.Value, bool) {
+		if currentVM == nil {
+			return returnVal, true
+		}
+		val, done, err := currentVM.genReturn(gen, returnVal)
 		if err != nil {
 			object.SetCallbackError(err)
 			setCallbackErrorValueFromThrow(err)
@@ -1321,14 +1340,18 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				vm.stack.Truncate(base)
 			}
 			vm.stack.Push(object.UndefinedSingleton)
-		case bytecode.OP_YIELD:
-			// generator 的 yield: 弹出表达式值, 保存帧状态, 暂停执行。
-			// 恢复时 (genResume) 压入传入的 arg 作为 yield 表达式的值。
+		case bytecode.OP_YIELD, bytecode.OP_AWAIT:
+			// generator 的 yield / async generator 体内的 await:
+			// 弹出表达式值, 保存帧状态, 暂停执行。
+			// 恢复时 (genResume) 压入传入的 arg 作为 yield/await 表达式的值。
 			val := vm.stack.Pop()
 			gen := vm.currentGenerator
 			if gen == nil {
 				return fmt.Errorf("TypeError: yield outside generator")
 			}
+			// OP_AWAIT 标记为内部挂起点 (async generator 驱动据此自动恢复);
+			// OP_YIELD 是消费者可见的 yield 挂起点。
+			gen.LastYieldIsAwait = op == bytecode.OP_AWAIT
 			curFrame := vm.currentFrame()
 			gen.PC = curFrame.PC // 恢复点: yield 之后的下一条指令
 			gen.Locals = curFrame.Locals
@@ -1342,12 +1365,13 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				te := vm.tryStack[len(vm.tryStack)-1]
 				vm.tryStack = vm.tryStack[:len(vm.tryStack)-1]
 				gen.PendingTries = append([]object.GenTryEntry{{
-					CatchPC:      te.catchPC,
-					FinallyPC:    te.finallyPC,
-					RelStackBase: te.stackBase - curFrame.StackBase,
-					RelFrameIdx:  te.frameIdx - vm.frameIdx,
-					InFinally:    te.inFinally,
-					PendingVal:   te.pendingVal,
+					CatchPC:       te.catchPC,
+					FinallyPC:     te.finallyPC,
+					RelStackBase:  te.stackBase - curFrame.StackBase,
+					RelFrameIdx:   te.frameIdx - vm.frameIdx,
+					InFinally:     te.inFinally,
+					PendingVal:    te.pendingVal,
+					PendingReturn: te.pendingReturn,
 				}}, gen.PendingTries...)
 			}
 			// 保存帧栈残留的中间值 (如 2 + (yield 3) 中的 2)
@@ -2039,6 +2063,12 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			// (generator 本体 / runtime.Iterator / 带 next 的对象 —— 数组、
 			// 字符串等在 stdlib 转换后都是这些形状)。
 			val := vm.stack.Pop()
+			// 0) 本身就是异步生成器: 它即自己的 [Symbol.asyncIterator]()
+			//    (返回自身), 无需再解析, 直接作为迭代器交给 ASYNC_ITER_NEXT。
+			if _, isAG := val.(*object.AsyncGenerator); isAG {
+				vm.stack.Push(val)
+				continue
+			}
 			// 1) [Symbol.asyncIterator]() —— 只在 VM 层调用 (返回值可能是
 			//    generator/闭包, Go 侧适配器驱动不了)。
 			if resolved, ok, err := vm.resolveAsyncSymbolIterator(val); err != nil {
@@ -2106,6 +2136,21 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			case *object.Object:
 				// 对象迭代器: 调它的 next() 方法 (this = 迭代器本身)。
 				// 返回 Promise (async 迭代器) 或 {value, done} (同步形状)。
+				nextFn, found := it.GetProperty("next")
+				if !found || !object.IsCallable(nextFn) {
+					if err := vm.throwNamedError("TypeError", "async iterator has no callable next()"); err != nil {
+						return err
+					}
+					continue
+				}
+				res, err := vm.callFunction(nextFn, it, nil)
+				if err != nil {
+					return err
+				}
+				vm.stack.Push(res)
+			case *object.AsyncGenerator:
+				// 异步生成器: 调它的 next() 方法 (this = 生成器本身), 得到
+				// Promise<{value, done}>。编译器随后的 OP_YIELD/OP_AWAIT 等待它。
 				nextFn, found := it.GetProperty("next")
 				if !found || !object.IsCallable(nextFn) {
 					if err := vm.throwNamedError("TypeError", "async iterator has no callable next()"); err != nil {
@@ -2245,7 +2290,20 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				top := vm.tryStack[n-1]
 				if top.inFinally && top.frameIdx == vm.frameIdx {
 					vm.tryStack = vm.tryStack[:n-1]
-					if !vm.handleThrow(top.pendingVal) {
+					if top.pendingReturn {
+						// return 完成: 继续向外传播 (展开外层 finally),
+						// 无更多 finally 时完成 return —— 等价 OP_RETURN。
+						if !vm.handleReturn(top.pendingVal) {
+							val := top.pendingVal
+							base := vm.currentFrame().StackBase
+							vm.popFrame()
+							if vm.stack.Len() > base {
+								vm.stack.Truncate(base)
+							}
+							vm.stack.Push(val)
+							continue
+						}
+					} else if !vm.handleThrow(top.pendingVal) {
 						return &ThrowError{Value: top.pendingVal}
 					}
 				}
@@ -2971,6 +3029,63 @@ func (vm *VM) handleThrowInner(val object.Value) bool {
 	return false
 }
 
+// handleReturn 把 return 完成沿 try 处理器栈向外传播。
+//
+// 与 handleThrow 的关键区别: catch 块**不**拦截 return 完成 (规范:
+// Completion 为 return 时只展开 finally)。因此这里跳过 catch-only 条目,
+// 只对有 finally 的条目进入其 finally 体。返回 true 表示已找到 finally
+// 并把 PC 劫持到 finallyPC。
+func (vm *VM) handleReturn(val object.Value) bool {
+	return vm.handleReturnInner(val)
+}
+
+func (vm *VM) handleReturnInner(val object.Value) bool {
+	for len(vm.tryStack) > 0 {
+		entry := vm.tryStack[len(vm.tryStack)-1]
+
+		// 与 handleThrowInner 同款边界/死条目防御 (见其注释)。
+		if entry.frameIdx < vm.throwBoundary {
+			return false
+		}
+		if entry.frameIdx > vm.frameIdx {
+			vm.tryStack = vm.tryStack[:len(vm.tryStack)-1]
+			continue
+		}
+		// 已在自身 finally 体内: return 从 finally 里穿出 ⇒ 丢弃挂起完成, 继续向外。
+		if entry.inFinally {
+			vm.tryStack = vm.tryStack[:len(vm.tryStack)-1]
+			continue
+		}
+
+		if vm.frameIdx > entry.frameIdx {
+			for vm.frameIdx > entry.frameIdx {
+				base := vm.frames[vm.frameIdx].StackBase
+				vm.popFrame()
+				if vm.stack.Len() > base {
+					vm.stack.Truncate(base)
+				}
+			}
+		}
+
+		vm.tryStack = vm.tryStack[:len(vm.tryStack)-1]
+
+		for vm.stack.Len() > entry.stackBase {
+			vm.stack.Pop()
+		}
+
+		if entry.finallyPC > 0 {
+			entry.inFinally = true
+			entry.pendingReturn = true
+			entry.pendingVal = val
+			vm.tryStack = append(vm.tryStack, entry)
+			vm.currentFrame().PC = entry.finallyPC
+			return true
+		}
+		// 无 finally: return 完成不被 catch 捕获, 继续向外展开。
+	}
+	return false
+}
+
 // ensureCurrentExports 返回当前模块的导出表, 必要时惰性创建。
 // 导出指令 (OP_EXPORT 系列) 统一走它, 避免各处重复判空。
 func (vm *VM) ensureCurrentExports() *ModuleExports {
@@ -3351,9 +3466,60 @@ func (vm *VM) genThrow(gen *object.Generator, throwVal object.Value) (object.Val
 	return vm.runSuspendedGen(gen)
 }
 
+// genReturn 把 returnVal 作为 return 完成注入暂停在 yield 点的 generator。
+// async generator 的 return() 走这里: 展开体内 finally 后返回 (returnVal, true)。
+// 尚未启动或体内无 finally 时直接关闭, 等价规范中 suspendedStart/completed
+// 状态下 return 立即结算 {value: returnVal, done: true}。
+func (vm *VM) genReturn(gen *object.Generator, returnVal object.Value) (object.Value, bool, error) {
+	if gen.Done {
+		return returnVal, true, nil
+	}
+	if !gen.Started {
+		gen.Done = true
+		return returnVal, true, nil
+	}
+	if gen.PC >= len(gen.Instructions) {
+		gen.Done = true
+		return returnVal, true, nil
+	}
+	// 只有体内挂有 finally 时才需要重建帧执行收尾; 否则直接关闭。
+	hasFinally := false
+	for _, te := range gen.PendingTries {
+		if te.FinallyPC > 0 {
+			hasFinally = true
+			break
+		}
+	}
+	if !hasFinally {
+		gen.Done = true
+		return returnVal, true, nil
+	}
+	genFrame := vm.rebuildGenFrame(gen)
+	genFrameIdx := vm.frameIdx
+	if !vm.handleReturn(returnVal) {
+		gen.Done = true
+		vm.unwindGenFrame(genFrame, genFrameIdx)
+		return returnVal, true, nil
+	}
+	return vm.runSuspendedGen(gen)
+}
+
 // rebuildGenFrame 重建 generator 暂停时保存的帧 (含恢复 try 处理器条目)。
+//
+// 帧基必须在压入 SavedStack **之前**取当前栈高: SavedStack 是挂起时
+// 「帧基之上」的中间值 (如 2 + (yield 3) 中的 2), 恢复时它们仍应位于
+// 帧基之上。若像早期实现那样在压入之后再取栈高 (帧基被抬到 SavedStack
+// 之上), 则 SavedStack 落到帧基之下, 一旦上层表达式把残留值消费掉、栈
+// 降回帧基之下, try 条目的绝对 stackBase 就会小于帧基 —— async generator
+// 在求值外层表达式时恢复生成器 (操作数栈带中间值) 的场景会因此越界崩溃。
 func (vm *VM) rebuildGenFrame(gen *object.Generator) *Frame {
-	// 压入保存的帧栈残留值 (顺序与保存时一致)
+	// 帧基 = 当前栈高 (SavedStack 之前的顶端)。必须先取再压 SavedStack:
+	// SavedStack 是挂起时「帧基之上」的中间值 (如 2 + (yield 3) 中的 2),
+	// 恢复后仍应位于帧基之上; 若压入后再取栈高, 帧基被抬到 SavedStack 之上,
+	// 这些值就落到帧基之下 —— 生成器 return/catch 时按帧基截断会把它们
+	// 留给调用方 (栈残留), 且其绝对 stackBase 与 try 条目错位可致下溢。
+	stackBase := vm.stack.Len()
+	// 压入保存的帧栈残留值 (顺序与保存时一致), 位于帧基之上
 	for _, v := range gen.SavedStack {
 		vm.stack.Push(v)
 	}
@@ -3365,18 +3531,19 @@ func (vm *VM) rebuildGenFrame(gen *object.Generator) *Frame {
 		Locals:       locals,
 		Closure:      gen.Closure,
 		Constants:    &bytecode.ConstantPool{Constants: gen.Constants},
-		StackBase:    vm.stack.Len(),
+		StackBase:    stackBase,
 	}
 	vm.pushFrame(frame)
 	// 把 yield 时保存的 try 处理器条目按相对值换算后重新挂回
 	for _, te := range gen.PendingTries {
 		vm.tryStack = append(vm.tryStack, tryEntry{
-			catchPC:    te.CatchPC,
-			finallyPC:  te.FinallyPC,
-			stackBase:  frame.StackBase + te.RelStackBase,
-			frameIdx:   vm.frameIdx + te.RelFrameIdx,
-			inFinally:  te.InFinally,
-			pendingVal: te.PendingVal,
+			catchPC:       te.CatchPC,
+			finallyPC:     te.FinallyPC,
+			stackBase:     frame.StackBase + te.RelStackBase,
+			frameIdx:      vm.frameIdx + te.RelFrameIdx,
+			inFinally:     te.InFinally,
+			pendingVal:    te.PendingVal,
+			pendingReturn: te.PendingReturn,
 		})
 	}
 	gen.PendingTries = nil
@@ -3593,8 +3760,16 @@ func (vm *VM) getIndex(obj, index object.Value) object.Value {
 			}
 			return val
 		}
-		// Symbol 键维持原有行为: 这些类型不在本函数内做符号查找。
-		if _, ok := index.(*object.Symbol); ok {
+		// Symbol 键: 实现了 GetSymbolProperty 的类型 (如 AsyncGenerator 的
+		// [Symbol.asyncIterator]) 在此响应; 其余维持原有行为返回 undefined。
+		if sym, ok := index.(*object.Symbol); ok {
+			if sp, ok := obj.(interface {
+				GetSymbolProperty(*object.Symbol) (object.Value, bool)
+			}); ok {
+				if val, found := sp.GetSymbolProperty(sym); found {
+					return val
+				}
+			}
 			return object.UndefinedSingleton
 		}
 		// 数字等键型按 ToPropertyKey 语义转字符串 (o[2] === o["2"])

@@ -222,7 +222,7 @@ func hasOperand(op Opcode) bool {
 		OP_TEMPLATE_END,
 		OP_PUSH_SCOPE, OP_POP_SCOPE,
 		OP_THIS,
-		OP_YIELD,
+		OP_YIELD, OP_AWAIT,
 		OP_TO_NUMBER:
 		return false
 	}
