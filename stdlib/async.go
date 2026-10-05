@@ -111,7 +111,12 @@ func setupAsyncGeneratorIntrinsics(env *runtime.Environment) {
 	}
 	agFunc.SetProperty("prototype", agFuncProto)
 
-	env.Declare("AsyncGeneratorFunction", agFunc, false)
+	// 注: %AsyncGeneratorFunction% 是**内建 intrinsic**，不是全局对象属性 ——
+	// 与 %GeneratorFunction% / %AsyncFunction% 口径一致 (Node: typeof
+	// AsyncGeneratorFunction === "undefined")。此前这里 env.Declare 把它注册成
+	// 全局，导致读未声明标识符 `AsyncGeneratorFunction` 不抛 ReferenceError
+	// (rYVgne)。该对象只应经 agFuncProto.constructor 这条原型链暴露:
+	// Object.getPrototypeOf(async function*(){}).constructor。
 	// 让 AsyncGenerator 实例的 [[Prototype]] 指向 AGP (此前为 nil)。
 	object.SetAsyncGeneratorProto(agProto)
 	// 供 vm.createClosure 给 async generator 函数对象选 [[Prototype]]。

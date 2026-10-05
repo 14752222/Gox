@@ -82,9 +82,21 @@ func runGlobalEval(env *runtime.Environment, src string) object.Value {
 		}
 		closure := &object.Closure{Fn: fn, Env: env}
 		result := object.CallFunction(closure, object.UndefinedSingleton)
-		if err := object.TakeCallbackError(); err != nil {
-			// 回调桥报告了 JS 异常: 返回异常值让 VM 抛出
-			return result
+		if cbErr := object.TakeCallbackError(); cbErr != nil {
+			// 回调桥报告了 eval 代码里的 JS 异常。必须把异常重新交给 VM 的
+			// throw 流程 —— 直接 return result 会把它静默吞成 undefined
+			// (调用方拿到 undefined 而非抛出)。典型症状: eval("未声明名")
+			// 本应抛 ReferenceError 却返回 undefined (rYVgne)。
+			//
+			// 优先取原始抛出值还原错误对象: 保住错误类型与 catch 侧 === 语义；
+			// 取不到才按 Go 侧错误字符串兜底包一层 (非 Error 抛出值无法经内建
+			// 返回值原样抛出，这里与 callbackThrown/solidCallbackError 同口径)。
+			if thrown := object.TakeCallbackErrorValue(); thrown != object.UndefinedSingleton {
+				if e, ok := thrown.(*object.Error); ok {
+					return e
+				}
+			}
+			return object.NewErrorWithName("Error", cbErr.Error())
 		}
 		return result
 	}
