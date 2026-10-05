@@ -388,3 +388,56 @@ func TestForOfLHSDoesNotSwallowTraditionalFor(t *testing.T) {
 		t.Fatalf("期望 ForStatement (传统三段式), got %T", program.Statements[0])
 	}
 }
+
+// TestAsyncIdentifierFallback 钉住 async 非保留字的另一面 (node 22 实测):
+// async 后面不跟操作数/函数形状时是普通标识符引用 —— let async 绑定、
+// async 标识符引用、async = 5 赋值都合法; async 42 仍报错。
+// (test262 for-await-of/head-lhs-async.js 的前置: let async; … console.log(async))
+func TestAsyncIdentifierFallback(t *testing.T) {
+	for _, src := range []string{
+		"let async = 1;",
+		"let async; async = 5;",
+		"function f(x){ return x + async; }",
+		"var async; console.log(async);",
+	} {
+		p := New(lexer.New(src))
+		p.ParseProgram()
+		if p.Errors().HasErrors() {
+			t.Fatalf("%q: 不应报错: %s", src, p.Errors().String())
+		}
+	}
+	p := New(lexer.New("let f = async 42;"))
+	p.ParseProgram()
+	if !p.Errors().HasErrors() {
+		t.Fatal(`"let f = async 42;" 应报错`)
+	}
+}
+
+// TestForAwaitHeadAsyncBinding 钉住 for await 头部 async 作赋值目标
+// (test262 head-lhs-async.js): let async; for await (async of [7]) 合法,
+// 每轮把值赋给外部绑定 —— Target 应是 Identifier{async} 而非 async 表达式。
+func TestForAwaitHeadAsyncBinding(t *testing.T) {
+	src := "let async; async function fn(){ for await (async of [7]); }"
+	p := New(lexer.New(src))
+	program := p.ParseProgram()
+	checkParserErrors(t, p)
+	fn := program.Statements[1].(*ast.FunctionDeclaration)
+	loop := fn.Body.Statements[0].(*ast.ForOfStatement)
+	if !loop.Await {
+		t.Fatal("应为 for await 循环")
+	}
+	ident, ok := loop.Target.(*ast.Identifier)
+	if !ok || ident.Value != "async" {
+		t.Fatalf("Target = %T %+v, want Identifier{async}", loop.Target, loop.Target)
+	}
+}
+
+// TestLetBlockWithNewlineASI 钉住 `let` + 换行 + `{` 的 ASI 形态
+// (test262 let-block-with-newline.js): let 声明要求绑定与 let 同行,
+// 换行后 `let` 是标识符表达式语句, `{}` 是后续独立块语句。
+func TestLetBlockWithNewlineASI(t *testing.T) {
+	src := "async function* f(){ for await (var x of []) let \n {} }"
+	p := New(lexer.New(src))
+	p.ParseProgram()
+	checkParserErrors(t, p)
+}

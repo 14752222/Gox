@@ -421,6 +421,8 @@ func TestAsyncArrowFunction(t *testing.T) {
 // 三件事都要钉住: (1) 括号组后面没有 => 要**点名**, 别让人对着
 // "unsupported async expression" 猜; (2) 括号不闭合时扫描有上限, 必须报错返回
 // 而不是一路扫到 EOF 卡在那里; (3) 其余非法形状仍给通用文案。
+// 注: `let f = async;` 不在这里 —— async 不是保留字, 后面不跟操作数时按
+// 普通标识符引用回退 (head-lhs-async.js), 见 TestAsyncIdentifierFallback。
 func TestAsyncArrowFunctionRejected(t *testing.T) {
 	const generic = "unsupported async expression after 'async' (only 'async function' " +
 		"and async arrow functions are supported)"
@@ -431,7 +433,6 @@ func TestAsyncArrowFunctionRejected(t *testing.T) {
 		{`let f = async () ;`, "expected '=>' after async parameter list"},
 		{`let f = async (a, b => 1;`, "expected '=>' after async parameter list"},
 		{`let f = async 42;`, generic},
-		{`let f = async;`, generic},
 	}
 	for _, tt := range tests {
 		l := lexer.New(tt.input)

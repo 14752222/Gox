@@ -92,8 +92,11 @@ func (p *Parser) setAllowAwait(isAsync bool) func() {
 // sloppy script 里 await 不是保留字 (node 实测: var await = 1 / let await /
 // function f(await) 都合法), 所以 AWAIT 也能作绑定名 —— 否则裸 await 早错
 // 会把 `var await = 1` 这种合法写法一起拦掉。
+// async 同理不是保留字 (node 22 实测: let async = 1 合法; test262
+// for-await-of/head-lhs-async.js), ASYNC token 在绑定位置按标识符接受。
 func (p *Parser) isBindingName() bool {
-	return p.curTokenIs(lexer.IDENTIFIER) || p.curTokenIs(lexer.AWAIT)
+	return p.curTokenIs(lexer.IDENTIFIER) || p.curTokenIs(lexer.AWAIT) ||
+		p.curTokenIs(lexer.ASYNC)
 }
 
 // peekStartsAwaitOperand 报告 await 之后的 token 是否「必为操作数」——
@@ -367,6 +370,17 @@ func (p *Parser) parseStatement() ast.Statement {
 func (p *Parser) parseStatementBody() ast.Statement {
 	switch p.curToken().Type {
 	case lexer.LET:
+		// `let` 与 `{` 之间有换行: 声明要求绑定与 let 同行 ⇒ 不构成 let 声明;
+		// ExpressionStatement 的 lookahead 限制只含 `let [`, 不含 `let {` ⇒
+		// `let` 按标识符表达式语句处理 (ASI 补分号), `{}` 是后续独立语句, 交还
+		// 语句循环按块/对象字面量重新分发。
+		// (test262 for-await-of/let-block-with-newline.js: for await (...) let \n {})
+		if p.peekTokenIs(lexer.LBRACE) && p.peekToken().Line != p.curToken().Line {
+			return &ast.ExpressionStatement{
+				Token:      p.curToken(),
+				Expression: &ast.Identifier{Token: p.curToken(), Value: "let"},
+			}
+		}
 		return p.parseLetStatement()
 	case lexer.CONST:
 		return p.parseConstStatement()
@@ -1758,6 +1772,13 @@ func (p *Parser) parseAsyncExpression() ast.Expression {
 		}}, true))
 	}
 
+	// 其余形状: async 回退为普通标识符引用 (test262 head-lhs-async.js:
+	// console.log("async=", async) —— async 不是保留字)。但后面紧跟「必为
+	// 操作数」的 token (async 42 / async x) 不构成任何合法形状, 仍报错。
+	if !p.peekStartsAwaitOperand() {
+		return &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
+	}
+
 	p.addError("unsupported async expression after 'async' (only 'async function' " +
 		"and async arrow functions are supported)")
 	return nil
@@ -1936,12 +1957,14 @@ func (p *Parser) parseProperty() *ast.Property {
 	}
 
 	// getter/setter: get name() {} / set name(v) {} / get [expr]() / set [expr](v)
-	// 仅在 "get"/"set" 后紧跟 标识符+( 或 [ 时识别为访问器,
+	// 名字可以是关键字 (get return() {} —— test262 for-await-of 的 close 用例)。
+	// 仅在 "get"/"set" 后紧跟 名字+( 或 [ 时识别为访问器,
 	// 避免与 { get: 1 }, { get() {} }, { get } 混淆。
 	if !isGenerator && !isAsync &&
 		(p.curTokenIs(lexer.IDENTIFIER) &&
 			(p.curToken().Literal == "get" || p.curToken().Literal == "set")) &&
-		((p.peekTokenIs(lexer.IDENTIFIER) && p.peek2TokenIs(lexer.LPAREN)) ||
+		((p.peekTokenIs(lexer.IDENTIFIER) || isKeywordProperty(p.peekToken().Type)) &&
+			p.peek2TokenIs(lexer.LPAREN) ||
 			p.peekTokenIs(lexer.LBRACKET)) {
 		if p.curToken().Literal == "get" {
 			prop.Kind = ast.PROP_GETTER
