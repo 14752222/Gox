@@ -41,7 +41,7 @@ func NewObjectKeysIterator(o *object.Object) *Iterator {
 	return &Iterator{
 		target: o,
 		index:  0,
-		keys:   o.Keys(),
+		keys:   o.EnumerableKeys(),
 		kind:   "object",
 	}
 }

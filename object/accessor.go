@@ -36,7 +36,13 @@ func (o *Object) DefineAccessor(name string, getter, setter Value) {
 			return
 		}
 	}
-	o.Properties[name] = PropertyDescriptor{Value: NewAccessor(getter, setter), Writable: false}
+	// 字面量访问器 (get x(){}) 默认 enumerable/configurable 均为 true。
+	o.Properties[name] = PropertyDescriptor{
+		Value:        NewAccessor(getter, setter),
+		Writable:     false,
+		Enumerable:   true,
+		Configurable: true,
+	}
 }
 
 // findAccessorInChain 沿原型链查找指定属性的访问器。

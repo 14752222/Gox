@@ -47,12 +47,12 @@ func setupObjectPrototype(o *object.BuiltinFunction) {
 		return object.NewBoolean(hasOwnPropertyImpl(this, args[0]))
 	}))
 
-	// propertyIsEnumerable(): 自有且可枚举 (本运行时属性均视为可枚举)。
+	// propertyIsEnumerable(): 自有且 Enumerable=true 的属性。
 	proto.SetProperty("propertyIsEnumerable", object.NewBuiltinMethod("propertyIsEnumerable", func(this object.Value, args ...object.Value) object.Value {
 		if len(args) == 0 {
 			return object.NewBoolean(false)
 		}
-		return object.NewBoolean(hasOwnPropertyImpl(this, args[0]))
+		return object.NewBoolean(propertyIsEnumerableImpl(this, args[0]))
 	}))
 
 	// isPrototypeOf(): 检查 this 是否出现在参数的原型链上。
@@ -199,6 +199,24 @@ func hasOwnPropertyImpl(this object.Value, key object.Value) bool {
 			return true
 		}
 		return false
+	}
+	return false
+}
+
+// propertyIsEnumerableImpl 实现 propertyIsEnumerable: 自有且 Enumerable=true。
+// 调用方已按 ToObject/ToPropertyKey 处理 this 与 key (经 propertyKeyString)。
+func propertyIsEnumerableImpl(this object.Value, key object.Value) bool {
+	if this == nil {
+		return false
+	}
+	name := propertyKeyString(key)
+	switch t := this.(type) {
+	case *object.Object:
+		desc, ok := t.Properties[name]
+		return ok && desc.Enumerable
+	case *object.Array, *object.String:
+		// 索引元素 / length 均为可枚举自有属性 (简化模型)。
+		return hasOwnPropertyImpl(this, key)
 	}
 	return false
 }

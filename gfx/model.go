@@ -88,7 +88,7 @@ func modelProp(props *object.Object, name string) object.Value {
 // modelSetProp 覆盖/补一个属性, 显式 Writable=true: 这些键后面还有别的层要读
 // (select 的展开逻辑会读 onClick, 事件分发读 onInput), 不能变成只读属性。
 func modelSetProp(props *object.Object, name string, v object.Value) {
-	props.Properties[name] = object.PropertyDescriptor{Value: v, Writable: true}
+	props.Properties[name] = object.DataProperty(v)
 }
 
 // modelHasProp 报告脚本自己有没有写这个键 (用于"两个值来源"的冲突警告)。

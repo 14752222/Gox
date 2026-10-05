@@ -111,11 +111,11 @@ func applyReviver(reviver object.Value, holder *object.Object, key string) objec
 
 	// 如果是对象，递归处理每个属性
 	if obj, ok := val.(*object.Object); ok {
-		for _, k := range obj.Keys() {
+		for _, k := range obj.EnumerableKeys() {
 			childVal := applyReviver(reviver, obj, k)
 			if childVal == object.UndefinedSingleton {
-				obj.Properties[k] = object.PropertyDescriptor{Value: object.UndefinedSingleton}
-				delete(obj.Properties, k)
+				// reviver 返回 undefined ⇒ 删除该属性 (含 InsertOrder 维护)。
+				obj.DeleteProperty(k)
 			} else {
 				obj.SetProperty(k, childVal)
 			}
@@ -276,7 +276,7 @@ func jsValueToJSONIndent(v object.Value, currentIndent, indent string, replacerA
 				}
 			}
 		} else {
-			keys = val.Keys()
+			keys = val.EnumerableKeys()
 		}
 		for _, k := range keys {
 			propDesc, ok := val.Properties[k]
@@ -340,7 +340,7 @@ func jsValueToJSON(v object.Value) string {
 		}
 		return "[" + strings.Join(parts, ",") + "]"
 	case *object.Object:
-		keys := val.Keys()
+		keys := val.EnumerableKeys()
 		var parts []string
 		for _, k := range keys {
 			propDesc, ok := val.Properties[k]

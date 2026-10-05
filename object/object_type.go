@@ -6,10 +6,20 @@ import (
 )
 
 // PropertyDescriptor 描述对象属性的元数据。
-// 对于学习项目，简化为仅存储值和可写标志。
+// 与 ECMAScript 的属性描述符对齐 (数据属性: Value/Writable/Enumerable/
+// Configurable; 访问器属性: Value 存 *Accessor)。插入顺序由 Object.InsertOrder
+// 单独维护。
 type PropertyDescriptor struct {
-	Value    Value
-	Writable bool // 是否可写 (const 属性为 false)
+	Value        Value
+	Writable     bool // 是否可写 (const 属性为 false)
+	Enumerable   bool // 是否参与 for-in / Object.keys / JSON 枚举
+	Configurable bool // 是否可删除 / 可改描述符
+}
+
+// DataProperty 创建一个普通的"赋值语义"数据属性描述符: 全 true。
+// 这是 `o.x = v` / 内建注册 (SetProperty) 的默认形态。
+func DataProperty(val Value) PropertyDescriptor {
+	return PropertyDescriptor{Value: val, Writable: true, Enumerable: true, Configurable: true}
 }
 
 // Object 表示 JavaScript 的对象类型。
@@ -157,7 +167,9 @@ func (o *Object) SetProperty(name string, val Value) {
 			return
 		}
 		if desc.Writable {
-			o.Properties[name] = PropertyDescriptor{Value: val, Writable: true}
+			// 赋值只改值, 不动 enumerable/configurable (规范 Set 语义)。
+			desc.Value = val
+			o.Properties[name] = desc
 		}
 		// 不可写属性，静默失败 (非严格模式)
 		return
@@ -173,7 +185,7 @@ func (o *Object) SetProperty(name string, val Value) {
 
 	// 新属性
 	if o.Extensible {
-		o.Properties[name] = PropertyDescriptor{Value: val, Writable: true}
+		o.Properties[name] = DataProperty(val)
 		o.appendKey(name)
 	}
 }
@@ -209,9 +221,13 @@ func (o *Object) removeKey(name string) {
 	}
 }
 
-// DeleteProperty 删除自有属性。返回是否删除成功 (属性存在则 true)。
+// DeleteProperty 删除自有属性。
+// 返回是否删除成功: 属性不存在或不可配置 (Configurable=false) 时返回 false。
 func (o *Object) DeleteProperty(name string) bool {
-	if _, ok := o.Properties[name]; ok {
+	if desc, ok := o.Properties[name]; ok {
+		if !desc.Configurable {
+			return false
+		}
 		delete(o.Properties, name)
 		o.removeKey(name)
 		return true
@@ -282,7 +298,7 @@ func (o *Object) SetSymbolProperty(sym *Symbol, val Value) {
 		if _, exists := o.SymbolProperties[sym.ID]; !exists {
 			o.SymbolKeyList = append(o.SymbolKeyList, sym)
 		}
-		o.SymbolProperties[sym.ID] = PropertyDescriptor{Value: val, Writable: true}
+		o.SymbolProperties[sym.ID] = DataProperty(val)
 	}
 }
 
@@ -385,6 +401,21 @@ func (o *Object) Keys() []string {
 	keys = append(keys, indexKeys...)
 	keys = append(keys, strKeys...)
 	return visibleKeys(keys)
+}
+
+// EnumerableKeys 返回自有且 Enumerable=true 的字符串键, 顺序同 Keys。
+// 供 for-in / Object.keys/values/entries / JSON.stringify / Object.assign
+// 等"只枚举可枚举属性"的 API 使用 (getOwnPropertyNames / Reflect.ownKeys
+// 仍用 Keys 取全部自有键)。
+func (o *Object) EnumerableKeys() []string {
+	all := o.Keys()
+	out := make([]string, 0, len(all))
+	for _, k := range all {
+		if desc, ok := o.Properties[k]; ok && desc.Enumerable {
+			out = append(out, k)
+		}
+	}
+	return out
 }
 
 // IsPrivateHiddenKey 判定 key 是否为类私有成员的混编码存储键

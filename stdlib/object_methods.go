@@ -99,7 +99,8 @@ func setupObjectGlobal() *object.BuiltinFunction {
 		}
 		for i := 1; i < len(args); i++ {
 			if src, ok := args[i].(*object.Object); ok {
-				for _, k := range src.Keys() {
+				// 规范: 只复制可枚举自有属性。
+				for _, k := range src.EnumerableKeys() {
 					val, _ := src.GetProperty(k)
 					target.SetProperty(k, val)
 				}
@@ -108,8 +109,8 @@ func setupObjectGlobal() *object.BuiltinFunction {
 		return target
 	}))
 
-	// Object.freeze(obj): 不可扩展，且所有自有数据属性变为不可写。
-	// 旧实现只设置 Extensible，已存在的属性仍可修改。
+	// Object.freeze(obj): 不可扩展，且所有自有数据属性变为不可写、不可配置。
+	// 旧实现只设置 Extensible 与 Writable，漏了 Configurable。
 	o.SetProperty("freeze", object.NewBuiltin("freeze", func(args ...object.Value) object.Value {
 		if len(args) == 0 {
 			return object.UndefinedSingleton
@@ -121,12 +122,13 @@ func setupObjectGlobal() *object.BuiltinFunction {
 		obj.Extensible = false
 		for k, desc := range obj.Properties {
 			desc.Writable = false
+			desc.Configurable = false
 			obj.Properties[k] = desc
 		}
 		return args[0]
 	}))
 
-	// Object.isFrozen(obj): 不可扩展且所有自有属性均不可写
+	// Object.isFrozen(obj): 不可扩展且所有自有属性均不可写、不可配置
 	o.SetProperty("isFrozen", object.NewBuiltin("isFrozen", func(args ...object.Value) object.Value {
 		if len(args) == 0 {
 			return object.NewBoolean(true)
@@ -139,31 +141,42 @@ func setupObjectGlobal() *object.BuiltinFunction {
 			return object.NewBoolean(false)
 		}
 		for _, desc := range obj.Properties {
-			if desc.Writable {
+			if desc.Writable || desc.Configurable {
 				return object.NewBoolean(false)
 			}
 		}
 		return object.NewBoolean(true)
 	}))
 
-	// Object.seal(obj): 不可扩展，但已有属性保持可写
+	// Object.seal(obj): 不可扩展，所有自有属性不可配置 (但保持可写)。
 	o.SetProperty("seal", object.NewBuiltin("seal", func(args ...object.Value) object.Value {
 		if len(args) == 0 {
 			return object.UndefinedSingleton
 		}
 		if obj, ok := args[0].(*object.Object); ok {
 			obj.Extensible = false
+			for k, desc := range obj.Properties {
+				desc.Configurable = false
+				obj.Properties[k] = desc
+			}
 		}
 		return args[0]
 	}))
 
-	// Object.isSealed(obj)
+	// Object.isSealed(obj): 不可扩展且所有自有属性均不可配置
 	o.SetProperty("isSealed", object.NewBuiltin("isSealed", func(args ...object.Value) object.Value {
 		if len(args) == 0 {
 			return object.NewBoolean(true)
 		}
 		if obj, ok := args[0].(*object.Object); ok {
-			return object.NewBoolean(!obj.Extensible)
+			if obj.Extensible {
+				return object.NewBoolean(false)
+			}
+			for _, desc := range obj.Properties {
+				if desc.Configurable {
+					return object.NewBoolean(false)
+				}
+			}
 		}
 		return object.NewBoolean(true)
 	}))
@@ -258,10 +271,16 @@ func setupObjectGlobal() *object.BuiltinFunction {
 		}
 		obj, ok := args[0].(*object.Object)
 		if !ok {
+			// 函数/数组/顶层 this 等非 *Object 对象: 本期内建属性槽尚不支持, 保持 no-op。
+			// (Gox 顶层 this 目前是 undefined —— 既有建模缺口, 见 vm 顶层 this 绑定。
+			//  因此这里不能对"非对象 target"抛 TypeError, 否则会打断大量
+			//  Object.defineProperty(this, ...) 类 test262 用例。)
 			return args[0]
 		}
 		key := toStr(args[1])
-		defineOneProperty(obj, key, args[2])
+		if errVal := defineOneProperty(obj, key, args[2]); errVal != nil {
+			return errVal
+		}
 		return args[0]
 	}))
 
@@ -279,8 +298,9 @@ func setupObjectGlobal() *object.BuiltinFunction {
 			return object.UndefinedSingleton
 		}
 		result := object.NewObject()
-		result.SetProperty("configurable", object.NewBoolean(false))
-		result.SetProperty("enumerable", object.NewBoolean(true))
+		// 反映真实描述符属性 (此前硬编码 configurable=false / enumerable=true)。
+		result.SetProperty("configurable", object.NewBoolean(desc.Configurable))
+		result.SetProperty("enumerable", object.NewBoolean(desc.Enumerable))
 		if acc, isAcc := desc.Value.(*object.Accessor); isAcc {
 			if acc.Getter != nil {
 				result.SetProperty("get", acc.Getter)
@@ -370,8 +390,8 @@ func setupObjectGlobal() *object.BuiltinFunction {
 					desc.SetProperty("value", propDesc.Value)
 					desc.SetProperty("writable", object.NewBoolean(propDesc.Writable))
 				}
-				desc.SetProperty("enumerable", object.NewBoolean(true))
-				desc.SetProperty("configurable", object.NewBoolean(false))
+				desc.SetProperty("enumerable", object.NewBoolean(propDesc.Enumerable))
+				desc.SetProperty("configurable", object.NewBoolean(propDesc.Configurable))
 				result.SetProperty(k, desc)
 			}
 			return result
@@ -412,18 +432,23 @@ func setupObjectGlobal() *object.BuiltinFunction {
 		}
 		obj, ok := args[0].(*object.Object)
 		if !ok {
+			// 保持既有行为: 非 *Object 目标抛 TypeError (数组 / 基本值 / 函数
+			// 等内建属性槽本期内尚不支持)。与 defineProperty 的 no-op 不同 ——
+			// 那是历史行为, 且顶层 this===undefined 依赖它。
 			return object.NewTypeError("Object.defineProperties: target must be an object")
 		}
 		props, ok := args[1].(*object.Object)
 		if !ok {
 			return args[0] // 非对象描述符: 规范按 ToObject 处理，简化为无属性
 		}
-		for _, key := range props.Keys() {
+		for _, key := range props.EnumerableKeys() {
 			descVal, found := props.GetProperty(key)
 			if !found {
 				continue
 			}
-			defineOneProperty(obj, key, descVal)
+			if errVal := defineOneProperty(obj, key, descVal); errVal != nil {
+				return errVal
+			}
 		}
 		return obj
 	}))
@@ -494,7 +519,7 @@ func ownKeysArg(args []object.Value, api string) ([]string, object.Value) {
 func ownKeys(v object.Value) ([]string, object.Value) {
 	switch val := v.(type) {
 	case *object.Object:
-		return val.Keys(), nil
+		return val.EnumerableKeys(), nil
 	case *object.Array:
 		keys := make([]string, len(val.Elements))
 		for i := range val.Elements {
@@ -880,43 +905,125 @@ func newDynamicFunction(env *runtime.Environment, args []object.Value, kind dyna
 // defineOneProperty 按 property descriptor 定义一个属性。
 // 访问器描述符 (get/set) 注册为访问器；数据描述符 (value/writable)
 // 注册为数据属性。供 defineProperty / defineProperties 共用。
-func defineOneProperty(obj *object.Object, key string, descVal object.Value) {
-	desc, ok := descVal.(*object.Object)
-	if !ok {
-		obj.SetProperty(key, descVal)
-		return
+func defineOneProperty(obj *object.Object, key string, descVal object.Value) object.Value {
+	if !object.IsObjectValue(descVal) {
+		// 规范: ToPropertyDescriptor 对非对象 (原始值) 抛 TypeError。
+		return object.NewTypeError("Property description must be an object")
 	}
-	// 访问器描述符: get / set —— 注册为访问器属性，而不是立即求值
-	getter, hasGet := desc.GetProperty("get")
-	setter, hasSet := desc.GetProperty("set")
-	if hasGet || hasSet {
-		var g, s object.Value
-		if hasGet && !isUndefinedValue(getter) {
-			if !object.IsCallable(getter) {
-				return
-			}
-			g = getter
+	// ToPropertyDescriptor 读写描述符字段用 HasProperty + Get 语义:
+	// 沿原型链查找并调用访问器。描述符可以是普通对象，也可以是函数
+	// (函数对象可在 Function.prototype 上挂 get/enumerable 等字段)。
+	get := func(n string) (object.Value, bool) {
+		return descVal.GetProperty(n)
+	}
+	_, hasGet := get("get")
+	_, hasSet := get("set")
+	isAccessorDesc := hasGet || hasSet
+
+	// accField 归一化访问器字段: 缺失/undefined 统一为 undefined。
+	accField := func(v object.Value) object.Value {
+		if v == nil || isUndefinedValue(v) {
+			return object.UndefinedSingleton
 		}
-		if hasSet && !isUndefinedValue(setter) {
-			if !object.IsCallable(setter) {
-				return
-			}
-			s = setter
-		}
-		obj.DefineAccessor(key, g, s)
-		return
+		return v
 	}
 
-	// 数据描述符: value + writable
-	writable := false
-	if w, found := desc.GetProperty("writable"); found {
-		writable = toBool(w)
+	existing, exists := obj.Properties[key]
+	// 已存在属性: 缺省字段保持原值 (从 existing 起步)。
+	nd := existing
+	if !exists {
+		nd = object.PropertyDescriptor{}
 	}
-	var val object.Value = object.UndefinedSingleton
-	if v, found := desc.GetProperty("value"); found {
-		val = v
+
+	// 非可配置属性的兼容性校验 (规范 ValidateAndApplyPropertyDescriptor 的核心)。
+	if exists && !existing.Configurable {
+		if v, found := get("configurable"); found && toBool(v) {
+			return object.NewTypeError("Cannot redefine property: %s", key)
+		}
+		if v, found := get("enumerable"); found && toBool(v) != existing.Enumerable {
+			return object.NewTypeError("Cannot redefine property: %s", key)
+		}
+		oldAcc, wasAcc := existing.Value.(*object.Accessor)
+		if wasAcc != isAccessorDesc {
+			return object.NewTypeError("Cannot redefine property: %s", key)
+		}
+		if !wasAcc {
+			if v, found := get("writable"); found && toBool(v) && !existing.Writable {
+				return object.NewTypeError("Cannot redefine property: %s", key)
+			}
+			// 不可写的数据属性: 只允许写成同值。
+			if !existing.Writable {
+				if v, found := get("value"); found && !objectIs(v, existing.Value) {
+					return object.NewTypeError("Cannot redefine property: %s", key)
+				}
+			}
+		} else {
+			// 不可配置的访问器属性: get/set 只允许写成相同函数 (同值)。
+			if v, found := get("get"); found && !objectIs(accField(v), accField(oldAcc.Getter)) {
+				return object.NewTypeError("Cannot redefine property: %s", key)
+			}
+			if v, found := get("set"); found && !objectIs(accField(v), accField(oldAcc.Setter)) {
+				return object.NewTypeError("Cannot redefine property: %s", key)
+			}
+		}
 	}
-	obj.DefineOwnProperty(key, object.PropertyDescriptor{Value: val, Writable: writable})
+
+	if isAccessorDesc {
+		// 数据 → 访问器切换需可配置。
+		if exists {
+			if _, wasAcc := existing.Value.(*object.Accessor); !wasAcc && !existing.Configurable {
+				return object.NewTypeError("Cannot redefine property: %s", key)
+			}
+		}
+		var g, s object.Value
+		if v, found := get("get"); found && !isUndefinedValue(v) {
+			if !object.IsCallable(v) {
+				return object.NewTypeError("Getter must be a function")
+			}
+			g = v
+		}
+		if v, found := get("set"); found && !isUndefinedValue(v) {
+			if !object.IsCallable(v) {
+				return object.NewTypeError("Setter must be a function")
+			}
+			s = v
+		}
+		nd.Value = object.NewAccessor(g, s)
+		nd.Writable = false
+		if v, found := get("enumerable"); found {
+			nd.Enumerable = toBool(v)
+		}
+		if v, found := get("configurable"); found {
+			nd.Configurable = toBool(v)
+		}
+		obj.DefineOwnProperty(key, nd)
+		return nil
+	}
+
+	// 访问器 → 数据切换需可配置。
+	if exists {
+		if _, wasAcc := existing.Value.(*object.Accessor); wasAcc && !existing.Configurable {
+			return object.NewTypeError("Cannot redefine property: %s", key)
+		}
+	}
+	if v, found := get("value"); found {
+		nd.Value = v
+	} else if !exists {
+		nd.Value = object.UndefinedSingleton
+	}
+	if v, found := get("writable"); found {
+		nd.Writable = toBool(v)
+	} else if !exists {
+		nd.Writable = false
+	}
+	if v, found := get("enumerable"); found {
+		nd.Enumerable = toBool(v)
+	}
+	if v, found := get("configurable"); found {
+		nd.Configurable = toBool(v)
+	}
+	obj.DefineOwnProperty(key, nd)
+	return nil
 }
 
 // groupByImpl 实现 Object.groupBy / Map.groupBy 的共同逻辑。
