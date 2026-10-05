@@ -2074,10 +2074,12 @@ func (p *Parser) parseObjectLiteral() ast.Expression {
 		return obj
 	}
 	for !p.curTokenIs(lexer.RBRACE) && !p.curTokenIs(lexer.EOF) {
+		lastWasSpread := false
 		if p.curTokenIs(lexer.SPREAD_REST) {
 			// 对象展开 {...a}
 			p.nextToken()
 			obj.Spread = append(obj.Spread, p.parseExpression(LOWEST))
+			lastWasSpread = true
 		} else {
 			prop := p.parseProperty()
 			if prop != nil {
@@ -2089,6 +2091,9 @@ func (p *Parser) parseObjectLiteral() ast.Expression {
 			p.nextToken()
 		} else if p.peekTokenIs(lexer.RBRACE) {
 			p.nextToken()
+			if lastWasSpread {
+				obj.SpreadIsLast = true
+			}
 			break
 		} else {
 			p.addError(fmt.Sprintf("expected ',' or '}', got %s", p.peekToken().Type))
@@ -2350,7 +2355,7 @@ func (p *Parser) literalToPattern(expr ast.Expression) ast.Expression {
 				pattern.Elements = append(pattern.Elements, &ast.PatternElement{Token: e.Token, Target: e})
 			case *ast.MemberExpression: // [x.y] / [x[k]] 赋值目标
 				pattern.Elements = append(pattern.Elements, &ast.PatternElement{Token: e.Token, Target: e})
-			case *ast.SpreadElement: // [a, ...rest]
+			case *ast.SpreadElement: // [a, ...rest] / [...[a,b]] / [...obj.k]
 				// Early error: 赋值模式的 rest 同样必须是最后一项
 				// ([a, ...b, c] = x / [...b,] = x 都是 SyntaxError)。
 				// 数组**字面量**里的 spread 位置随意, 这里只在转模式时拦。
@@ -2358,12 +2363,23 @@ func (p *Parser) literalToPattern(expr ast.Expression) ast.Expression {
 					p.addError("SyntaxError: rest element must be the last element in array pattern")
 					return expr
 				}
-				if id, ok := e.Argument.(*ast.Identifier); ok {
-					pattern.Elements = append(pattern.Elements, &ast.PatternElement{Token: e.Token, Target: id, Rest: true})
-					continue
+				switch r := e.Argument.(type) {
+				case *ast.Identifier:
+					pattern.Elements = append(pattern.Elements, &ast.PatternElement{Token: e.Token, Target: r, Rest: true})
+				case *ast.MemberExpression:
+					pattern.Elements = append(pattern.Elements, &ast.PatternElement{Token: e.Token, Target: r, Rest: true})
+				case *ast.ArrayLiteral, *ast.ObjectLiteral:
+					nested := p.literalToPattern(r)
+					switch nested.(type) {
+					case *ast.ArrayPattern, *ast.ObjectPattern:
+						pattern.Elements = append(pattern.Elements, &ast.PatternElement{Token: e.Token, Target: nested, Rest: true})
+					default:
+						return expr // 错误已由递归记录
+					}
+				default:
+					p.addError("invalid rest target in destructuring assignment")
+					return expr
 				}
-				p.addError("invalid rest target in destructuring assignment")
-				return expr
 			case *ast.AssignmentExpression: // [a = 默认值] / [x.y = 默认值]
 				if id, ok := e.Left.(*ast.Identifier); ok {
 					pattern.Elements = append(pattern.Elements, &ast.PatternElement{Token: e.Token, Target: id, Default: e.Right})
@@ -2388,24 +2404,46 @@ func (p *Parser) literalToPattern(expr ast.Expression) ast.Expression {
 		}
 		return pattern
 	case *ast.ObjectLiteral:
-		if len(lit.Spread) > 0 {
-			p.addError("object rest in destructuring assignment is not supported")
-			return expr
-		}
 		pattern := &ast.ObjectPattern{Token: lit.Token, Properties: []*ast.PatternProperty{}}
+		// 对象 rest (赋值模式): {...target} —— 必须唯一且最后; 赋值语境的
+		// rest 目标还允许成员表达式 ({...src.y} = x)。
+		if len(lit.Spread) > 0 {
+			if len(lit.Spread) > 1 || !lit.SpreadIsLast {
+				p.addError("SyntaxError: object rest must be the last property")
+				return expr
+			}
+			switch r := lit.Spread[0].(type) {
+			case *ast.Identifier:
+				pattern.RestTarget = r
+			case *ast.MemberExpression:
+				pattern.RestTarget = r
+			default:
+				p.addError("invalid rest target in destructuring assignment")
+				return expr
+			}
+		}
 		for _, prop := range lit.Properties {
-			pp := &ast.PatternProperty{Token: prop.Token, Key: prop.Key, Shorthand: prop.Shorthand}
+			pp := &ast.PatternProperty{Token: prop.Token, Key: prop.Key, Shorthand: prop.Shorthand, Computed: prop.Computed}
 			switch v := prop.Value.(type) {
 			case *ast.Identifier:
 				pp.Value = v
 			case *ast.MemberExpression: // { a: obj.k }
 				pp.Value = v
-			case *ast.AssignmentExpression: // { x = 默认值 } / { a: obj.k = 默认值 }
+			case *ast.AssignmentExpression: // { x = 默认 } / { a: obj.k = 默认 } / { a: [b] = [] }
 				switch lhs := v.Left.(type) {
 				case *ast.Identifier:
 					pp.Value, pp.Default = lhs, v.Right
 				case *ast.MemberExpression:
 					pp.Value, pp.Default = lhs, v.Right
+				case *ast.ArrayLiteral, *ast.ObjectLiteral:
+					nested := p.literalToPattern(lhs)
+					switch nested.(type) {
+					case *ast.ArrayPattern, *ast.ObjectPattern:
+						pp.Value, pp.Default = nested, v.Right
+					default:
+						p.addError("invalid destructuring assignment target")
+						return expr
+					}
 				default:
 					p.addError("invalid destructuring assignment target")
 					return expr
@@ -2557,11 +2595,11 @@ func (p *Parser) parsePrivateMember(member *ast.ClassMethod) *ast.ClassMethod {
 		return nil
 	}
 
-	// #name(...) {} 私有方法
+	// #name(...) {} 私有方法 (可为 async / 生成器 —— IsAsync/IsGenerator 已
+	// 由 parseClassMember 解析 * / async 前缀时置好)。
 	if p.peekTokenIs(lexer.LPAREN) {
 		p.nextToken() // cur = (
-		// 私有方法 (async #m(){} 未支持) —— 同步上下文
-		restore := p.setAllowAwait(false)
+		restore := p.setAllowAwait(member.IsAsync)
 		member.Parameters = p.parseParameters(lexer.RPAREN)
 		if !p.curTokenIs(lexer.RPAREN) {
 			restore()
@@ -2831,53 +2869,77 @@ func (p *Parser) parseObjectPattern() *ast.ObjectPattern {
 	p.nextToken()
 	// 空模式 `{}` 同样不提前越过闭合符 —— 见 parseArrayPattern 的同款说明。
 	for !p.curTokenIs(lexer.RBRACE) && !p.curTokenIs(lexer.EOF) {
+		// 对象 rest: {...rest} —— 必须是最后一项, 绑定位置只接受标识符
+		// (声明语境; 赋值语境的成员目标在 literalToPattern 里处理)。
+		if p.curTokenIs(lexer.SPREAD_REST) {
+			p.nextToken()
+			if !p.curTokenIs(lexer.IDENTIFIER) {
+				p.addError(fmt.Sprintf("unexpected token: %s", p.curToken().Type))
+				return nil
+			}
+			pattern.RestTarget = &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
+			p.nextToken()
+			if !p.curTokenIs(lexer.RBRACE) {
+				p.addError("SyntaxError: object rest must be the last property")
+				return nil
+			}
+			break
+		}
 		prop := &ast.PatternProperty{Token: p.curToken()}
-		// 键与对象字面量同理: 标识符、字符串、或可作属性名的关键字 (如 { var: x })
-		if p.curTokenIs(lexer.IDENTIFIER) || p.curTokenIs(lexer.STRING_LITERAL) || isKeywordProperty(p.curToken().Type) {
+		// 键与对象字面量同理: 标识符、字符串、数字字面量、可作属性名的关键字、
+		// 或 [计算表达式]。
+		switch {
+		case p.curTokenIs(lexer.LBRACKET):
+			prop.Computed = true
+			p.nextToken()
+			prop.Key = p.parseExpression(LOWEST)
+			if prop.Key == nil {
+				return nil
+			}
+			if !p.peekTokenIs(lexer.RBRACKET) {
+				p.addError(fmt.Sprintf("expected ']' in computed property, got %s", p.peekToken().Type))
+				return nil
+			}
+			p.nextToken() // consume ]
+			p.nextToken() // cur = ':' / '(' ...
+		case p.curTokenIs(lexer.IDENTIFIER) || p.curTokenIs(lexer.STRING_LITERAL) ||
+			p.curTokenIs(lexer.INT_LITERAL) || p.curTokenIs(lexer.FLOAT_LITERAL) ||
+			isKeywordProperty(p.curToken().Type):
 			prop.Key = &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
 			p.nextToken()
-		} else {
+		default:
 			p.addError(fmt.Sprintf("unexpected token: %s", p.curToken().Type))
 			return nil
 		}
-		if p.curTokenIs(lexer.COMMA) || p.curTokenIs(lexer.RBRACE) {
+		switch {
+		case p.curTokenIs(lexer.COMMA) || p.curTokenIs(lexer.RBRACE):
+			if prop.Computed {
+				p.addError("computed property name must be followed by ':'")
+				return nil
+			}
 			prop.Shorthand = true
 			id, _ := prop.Key.(*ast.Identifier)
 			prop.Value = id
-		} else if p.curTokenIs(lexer.COLON) {
-			p.nextToken()
-			if p.curTokenIs(lexer.IDENTIFIER) {
-				var val ast.Expression = &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
-				p.nextToken()
-				// 成员目标 ({ key: obj.k }): 赋值解构里合法, 声明位置由编译器报早错。
-				if p.curTokenIs(lexer.DOT) || p.curTokenIs(lexer.LBRACKET) {
-					member, ok := p.parseMemberSuffix(val)
-					if !ok {
-						return nil
-					}
-					val = member
-				}
-				prop.Value = val
-				// 别名 + 默认值: { key: val = default }
-				if p.curTokenIs(lexer.ASSIGN) {
-					p.nextToken()
-					prop.Default = p.parseExpression(LOWEST)
-					p.nextToken() // 前进到分隔符
-				}
-			} else if p.curTokenIs(lexer.LBRACKET) {
-				prop.Value = p.parseArrayPattern()
-				p.nextToken() // 越过内层 ']' (见 parseArrayPattern 里的同一说明)
-			} else if p.curTokenIs(lexer.LBRACE) {
-				prop.Value = p.parseObjectPattern()
-				p.nextToken() // 越过内层 '}'
+		case p.curTokenIs(lexer.ASSIGN):
+			// 简写 + 默认值: { a = 默认 }
+			if prop.Computed {
+				p.addError("computed property name must be followed by ':'")
+				return nil
 			}
-		} else if p.curTokenIs(lexer.ASSIGN) {
 			prop.Shorthand = true
 			id, _ := prop.Key.(*ast.Identifier)
 			prop.Value = id
 			p.nextToken()
 			prop.Default = p.parseExpression(LOWEST)
 			p.nextToken() // 前进到分隔符 (逗号或右花括号)
+		case p.curTokenIs(lexer.COLON):
+			p.nextToken()
+			if !p.parseObjectPatternTarget(prop) {
+				return nil
+			}
+		default:
+			p.addError(fmt.Sprintf("expected ':' after property, got %s", p.curToken().Type))
+			return nil
 		}
 		pattern.Properties = append(pattern.Properties, prop)
 		if p.curTokenIs(lexer.COMMA) {
@@ -2889,6 +2951,46 @@ func (p *Parser) parseObjectPattern() *ast.ObjectPattern {
 		return nil
 	}
 	return pattern
+}
+
+// parseObjectPatternTarget 解析对象模式 `key:` 之后的绑定目标与可选默认值。
+// 进入时 cur 停在目标首 token; 返回时 cur 停在目标(及其默认值)之后的
+// 分隔符上 (逗号/右花括号), 与 parseObjectPattern 循环体约定一致。
+func (p *Parser) parseObjectPatternTarget(prop *ast.PatternProperty) bool {
+	nested := false
+	switch {
+	case p.curTokenIs(lexer.IDENTIFIER):
+		var val ast.Expression = &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
+		p.nextToken()
+		// 成员目标 ({ key: obj.k }): 赋值解构里合法, 声明位置由编译器报早错。
+		if p.curTokenIs(lexer.DOT) || p.curTokenIs(lexer.LBRACKET) {
+			member, ok := p.parseMemberSuffix(val)
+			if !ok {
+				return false
+			}
+			val = member
+		}
+		prop.Value = val
+	case p.curTokenIs(lexer.LBRACKET):
+		prop.Value = p.parseArrayPattern()
+		p.nextToken() // 越过内层 ']'
+		nested = true
+	case p.curTokenIs(lexer.LBRACE):
+		prop.Value = p.parseObjectPattern()
+		p.nextToken() // 越过内层 '}'
+		nested = true
+	default:
+		p.addError(fmt.Sprintf("unexpected token: %s", p.curToken().Type))
+		return false
+	}
+	// 嵌套模式/别名都可带默认值: { a: [b] = [] } / { a: obj.k = 1 }
+	if p.curTokenIs(lexer.ASSIGN) {
+		_ = nested
+		p.nextToken()
+		prop.Default = p.parseExpression(LOWEST)
+		p.nextToken() // 前进到分隔符
+	}
+	return true
 }
 
 // ==================== throw / try-catch / switch / import-export 解析 ====================
@@ -2912,12 +3014,27 @@ func (p *Parser) parseTryStatement() *ast.TryStatement {
 		// 可选 catch binding: catch { ... } (无参数)
 		if p.peekTokenIs(lexer.LPAREN) {
 			p.nextToken() // skip (
-			if !p.peekTokenIs(lexer.IDENTIFIER) {
+			switch {
+			case p.peekTokenIs(lexer.IDENTIFIER):
+				p.nextToken()
+				stmt.CatchParam = &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
+			case p.peekTokenIs(lexer.LBRACKET):
+				// catch 解构绑定: catch ([a, b]) / catch ({x})
+				p.nextToken()
+				stmt.CatchParam = p.parseArrayPattern()
+				if stmt.CatchParam == nil {
+					return nil
+				}
+			case p.peekTokenIs(lexer.LBRACE):
+				p.nextToken()
+				stmt.CatchParam = p.parseObjectPattern()
+				if stmt.CatchParam == nil {
+					return nil
+				}
+			default:
 				p.addError("expected identifier in catch clause")
 				return nil
 			}
-			p.nextToken()
-			stmt.CatchParam = &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
 			if !p.expectPeek(lexer.RPAREN) {
 				return nil
 			}
@@ -3217,6 +3334,12 @@ func (p *Parser) parseClassMember() *ast.ClassMethod {
 	if p.curTokenIs(lexer.ASTERISK) {
 		member.IsGenerator = true
 		p.nextToken() // cur = 方法名 / [
+	}
+
+	// 私有生成器方法: *#name() {} / async *#name() {} —— IsGenerator/IsAsync
+	// 已带上, 名字是 PRIVATE_NAME, 交 parsePrivateMember 收尾。
+	if p.curTokenIs(lexer.PRIVATE_NAME) {
+		return p.parsePrivateMember(member)
 	}
 
 	// 计算属性名: [expr] —— 方法名/字段名以表达式求值结果为准

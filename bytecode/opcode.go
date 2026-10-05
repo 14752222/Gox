@@ -182,6 +182,17 @@ const (
 	// 非可调用 → TypeError; 否则以迭代器为 this 调用之, 丢弃返回值并传播
 	// 其异常。栈: [iter] → []
 	OP_ITER_CLOSE Opcode = 0xA9
+	// OP_REQUIRE_OBJECT_COERCIBLE: 对象解构的 RequireObjectCoercible。
+	// 读栈顶 (不弹出): null/undefined → TypeError; 其余原样保留。
+	// 空对象模式 `{} = null` 也必须在取属性前抛, 故不能靠 GET_INDEX 兜。
+	// 栈: [v] → [v]
+	OP_REQUIRE_OBJECT_COERCIBLE Opcode = 0xAA
+	// OP_OBJECT_REST: 对象解构的 rest 收集 (CopyDataProperties 语义)。
+	// 弹出栈顶排除键数组, 读其下方的源值, 新建对象复制源的自有**可枚举**
+	// 属性 (字符串键 + Symbol 键, 按 OrdinaryOwnPropertyKeys 顺序, 触发
+	// getter), 跳过排除键; 非对象源 (Number/Boolean/Symbol) 得空对象,
+	// 字符串按索引字符复制。栈: [src, excluded] → [src, restObj]
+	OP_OBJECT_REST Opcode = 0xAB
 
 	// 0xB0-0xBF: 作用域
 	OP_PUSH_SCOPE Opcode = 0xB0 // 进入新块作用域
@@ -277,6 +288,7 @@ var opcodeNames = map[Opcode]string{
 	OP_GET_ASYNC_ITERATOR: "GET_ASYNC_ITERATOR", OP_ASYNC_ITER_NEXT: "ASYNC_ITER_NEXT",
 	OP_ASYNC_ITER_NEXT_ARG: "ASYNC_ITER_NEXT_ARG",
 	OP_ITER_STEP:           "ITER_STEP", OP_ITER_CLOSE: "ITER_CLOSE",
+	OP_REQUIRE_OBJECT_COERCIBLE: "REQUIRE_OBJECT_COERCIBLE", OP_OBJECT_REST: "OBJECT_REST",
 	OP_FOR_IN_INIT: "FOR_IN_INIT", OP_FOR_IN_NEXT: "FOR_IN_NEXT", OP_FOR_IN_END: "FOR_IN_END",
 	OP_PUSH_SCOPE: "PUSH_SCOPE", OP_POP_SCOPE: "POP_SCOPE",
 	OP_TYPEOF: "TYPEOF", OP_INSTANCEOF: "INSTANCEOF",

@@ -866,6 +866,10 @@ type ObjectLiteral struct {
 	Token      lexer.Token // {
 	Properties []*Property
 	Spread     []Expression // 展开对象 ({ ...a, y: 2 } 中的 a)
+	// SpreadIsLast 表示唯一的展开项是否直接收尾 (后面紧跟 '}')。
+	// 字面量里 `{...a, b}` 合法, 但转成解构模式时 rest 必须最后 ⇒
+	// literalToPattern 靠它区分 `{a, ...r}` 与 `{...r, a}`。
+	SpreadIsLast bool
 }
 
 func (ol *ObjectLiteral) TokenLiteral() string { return ol.Token.Literal }
@@ -1126,13 +1130,21 @@ func (ap *ArrayPattern) expressionNode() {}
 // PatternProperty 表示对象解构中的一个属性绑定。
 type PatternProperty struct {
 	Token     lexer.Token
-	Key       Expression // 属性名 (Identifier 或 StringLiteral)
+	Key       Expression // 属性名 (Identifier, StringLiteral, 数字字面量, 或计算表达式)
 	Value     Expression // 绑定目标 (Identifier 或嵌套 Pattern)
 	Default   Expression // 默认值 (nil = 无)
 	Shorthand bool       // { name } 等价于 { name: name }
+	Computed  bool       // [表达式] 形式的计算属性名
 }
 
 func (pp *PatternProperty) String() string {
+	if pp.Computed {
+		result := "[" + pp.Key.String() + "]: " + pp.Value.String()
+		if pp.Default != nil {
+			result += " = " + pp.Default.String()
+		}
+		return result
+	}
 	if pp.Shorthand {
 		result := pp.Value.String()
 		if pp.Default != nil {
@@ -1148,10 +1160,11 @@ func (pp *PatternProperty) String() string {
 }
 
 // ObjectPattern 表示对象解构模式。
-// 例如: { a, b: c, d = default_val }
+// 例如: { a, b: c, d = default_val, ...rest }
 type ObjectPattern struct {
 	Token      lexer.Token // {
 	Properties []*PatternProperty
+	RestTarget Expression // ...rest 的绑定目标 (nil = 无 rest)
 }
 
 func (op *ObjectPattern) TokenLiteral() string { return op.Token.Literal }
@@ -1162,6 +1175,12 @@ func (op *ObjectPattern) String() string {
 			props += ", "
 		}
 		props += p.String()
+	}
+	if op.RestTarget != nil {
+		if props != "" {
+			props += ", "
+		}
+		props += "..." + op.RestTarget.String()
 	}
 	return "{" + props + "}"
 }
@@ -1223,7 +1242,7 @@ func (ts *ThrowStatement) statementNode() {}
 type TryStatement struct {
 	Token       lexer.Token     // TRY
 	Body        *BlockStatement // try 块
-	CatchParam  *Identifier     // catch 参数名 (可为 nil 表示可选 catch binding)
+	CatchParam  Expression      // catch 绑定 (Identifier 或 ArrayPattern/ObjectPattern; nil = 可选 catch binding)
 	CatchBody   *BlockStatement // catch 块 (可为 nil)
 	FinallyBody *BlockStatement // finally 块 (可为 nil)
 }

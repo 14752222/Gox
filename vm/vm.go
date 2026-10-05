@@ -2163,6 +2163,27 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				}
 				continue
 			}
+		case bytecode.OP_REQUIRE_OBJECT_COERCIBLE:
+			// RequireObjectCoercible: 栈顶 null/undefined → TypeError (不弹出)。
+			v := vm.stack.Peek()
+			if isNullish(v) {
+				if err := vm.throwNamedError("TypeError",
+					"Cannot destructure '%s' as it is %s.", v.Inspect(), v.Inspect()); err != nil {
+					return err
+				}
+			}
+		case bytecode.OP_OBJECT_REST:
+			// 对象 rest: [src, excluded] → [src, restObj]
+			excluded := vm.stack.Pop()
+			src := vm.stack.Peek()
+			rest, err := vm.objectRest(src, excluded)
+			if err != nil {
+				if terr := vm.rethrowBridgeError(err); terr != nil {
+					return terr
+				}
+				continue
+			}
+			vm.stack.Push(rest)
 		case bytecode.OP_FOR_IN_INIT:
 			// 弹出对象, 推入对象键迭代器
 			val := vm.stack.Pop()
@@ -4068,6 +4089,22 @@ func (vm *VM) getIndex(obj, index object.Value) object.Value {
 			if idx >= 0 && idx < len(o.Value) {
 				return object.NewString(string(o.Value[idx]))
 			}
+			return object.UndefinedSingleton
+		}
+		// 字符串键: "0"/"1" 这类索引先按码元取字符, 其余 (length /
+		// 原型方法, 如 s["length"] === 5) 走属性查找 —— 必须与 s.length
+		// 同口径, 否则 `let {length} = str` 解构拿到 undefined。
+		if s, ok := index.(*object.String); ok {
+			if idx, err := strconv.Atoi(s.Value); err == nil && idx >= 0 {
+				if idx < len(o.Value) {
+					return object.NewString(string(o.Value[idx]))
+				}
+				return object.UndefinedSingleton
+			}
+			if val, found := o.GetProperty(s.Value); found {
+				return val
+			}
+			return object.UndefinedSingleton
 		}
 		return object.UndefinedSingleton
 
@@ -4273,6 +4310,83 @@ func (vm *VM) iteratorClose(iter object.Value) error {
 	}
 	// runtime.Iterator / Array / String 等其它形状没有 return 方法: 跳过。
 	return nil
+}
+
+// objectRest 实现对象解构 rest 的 CopyDataProperties(restObj, source, excluded)
+// 语义 (规范 7.3.25): 新建对象, 复制 source 的自有可枚举属性 (字符串键 + Symbol
+// 键, 按 OrdinaryOwnPropertyKeys 顺序, 触发 getter), 跳过 excluded 中的键。
+// 非对象源 (Number/Boolean/Symbol/BigInt) 得空对象; 字符串按 UTF-16 索引字符复制。
+func (vm *VM) objectRest(src, excluded object.Value) (object.Value, error) {
+	rest := object.NewObject()
+	excludedStr := map[string]bool{}
+	excludedSym := map[uint64]bool{}
+	if arr, ok := excluded.(*object.Array); ok {
+		for _, k := range arr.Elements {
+			if sym, isSym := k.(*object.Symbol); isSym {
+				excludedSym[sym.ID] = true
+			} else {
+				excludedStr[object.ToString(k)] = true
+			}
+		}
+	}
+	switch s := src.(type) {
+	case *object.Object:
+		for _, k := range s.EnumerableKeys() {
+			if excludedStr[k] {
+				continue
+			}
+			v, _ := s.GetProperty(k) // 触发 getter (访问器 this = s)
+			if err := vm.checkCallbackErr(); err != nil {
+				return nil, err
+			}
+			rest.SetProperty(k, v)
+		}
+		for _, sym := range s.SymbolKeys() {
+			desc, ok := s.SymbolProperties[sym.ID]
+			if !ok || !desc.Enumerable || excludedSym[sym.ID] {
+				continue
+			}
+			var v object.Value = desc.Value
+			if acc, isAcc := desc.Value.(*object.Accessor); isAcc {
+				if acc.Getter != nil && object.IsCallable(acc.Getter) {
+					var err error
+					v, err = vm.callFunction(acc.Getter, s, nil)
+					if err != nil {
+						return nil, err
+					}
+					if err := vm.checkCallbackErr(); err != nil {
+						return nil, err
+					}
+				} else {
+					v = object.UndefinedSingleton
+				}
+			}
+			if v == nil {
+				v = object.UndefinedSingleton
+			}
+			rest.SetSymbolProperty(sym, v)
+		}
+	case *object.Array:
+		for i, v := range s.Elements {
+			k := strconv.Itoa(i)
+			if excludedStr[k] {
+				continue
+			}
+			if v == nil {
+				v = object.UndefinedSingleton
+			}
+			rest.SetProperty(k, v)
+		}
+	case *object.String:
+		for i, ch := range object.SplitCharsUTF16(s.Value) {
+			k := strconv.Itoa(i)
+			if excludedStr[k] {
+				continue
+			}
+			rest.SetProperty(k, object.NewString(ch))
+		}
+	}
+	return rest, nil
 }
 
 func (vm *VM) resolveSymbolIterator(val object.Value) (object.Value, bool, error) {

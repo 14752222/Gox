@@ -94,6 +94,14 @@ type Compiler struct {
 	// 驱动识别内部挂起点); for-await 的异步步进也同样编 OP_AWAIT。
 	// 普通 async 函数的内层体为 false (await 仍 OP_YIELD)。
 	asyncGeneratorBody bool
+
+	// innerGenRestPreCollected 标记「即将编译的函数是 async / async-generator
+	// 的**内层 generator**」。这类函数的 wrapper 已经把末尾 rest 实参收成数组,
+	// 再作为**单个实参**传给内层 —— 所以内层末位参数 (含解构模式) 不能再按
+	// rest 收集, 否则会双重包裹 (async function f(...a){} 旧返回 [[1,2,3]])。
+	// 由 compileAsyncFunctionSelf / compileAsyncGeneratorSelf 置位,
+	// compileFunctionSelf 入口立即消费, 绝不泄漏到体内嵌套函数。
+	innerGenRestPreCollected bool
 }
 
 // tryScope 是一个活跃 try 处理器条目的编译期描述 (对应运行时 vm.tryStack 的一条)。
@@ -1023,13 +1031,23 @@ func (c *Compiler) compileBlockStatement(block *ast.BlockStatement) error {
 //
 // 修复: catch 参数放进独立子 scope; 其槽位并入 parent 的 nextSlot ——
 // 保证帧 numLocals 覆盖 catch 参数槽, 且后续声明不复用该槽。
-func (c *Compiler) compileCatchBodyWithParam(param *ast.Identifier, body *ast.BlockStatement) error {
+func (c *Compiler) compileCatchBodyWithParam(param ast.Expression, body *ast.BlockStatement) error {
 	c.emitter.EmitNoOperand(bytecode.OP_PUSH_SCOPE)
 	prevScope := c.scope
 	c.scope = NewSymbolScope(prevScope)
-	sym := c.scope.Define(param.Value, false)
-	c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
-	prevScope.nextSlot = c.scope.nextSlot
+	// catch 绑定可以是解构模式 (catch ([a, b]) / catch ({x}));
+	// 被抛值已在栈顶, compilePatternBind 消费它并声明各绑定。
+	if id, ok := param.(*ast.Identifier); ok {
+		sym := c.scope.Define(id.Value, false)
+		c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
+	} else if err := c.compilePatternBind(param, true); err != nil {
+		return err
+	}
+	// catch 作用域内新分配的槽 (含解构隐藏槽抬高的函数层 nextSlot) 要回灌,
+	// 取 max 避免把 allocHiddenSlot 抬高过的 nextSlot 又降回去 (槽复用)。
+	if c.scope.nextSlot > prevScope.nextSlot {
+		prevScope.nextSlot = c.scope.nextSlot
+	}
 
 	if err := c.compileBlockStatement(body); err != nil {
 		return err
@@ -3946,21 +3964,43 @@ func (c *Compiler) compileArrayRestCollect(iterSlot int, target ast.Expression, 
 
 // compileObjectPatternBind 对栈顶对象执行对象解构绑定 (属性遍历, 不走迭代器)。
 // 结束时栈顶对象**仍保留** (调用方负责弹出), 与数组模式不同。
+//
+// 规范要点:
+//   - 入口先 RequireObjectCoercible (null/undefined → TypeError), 空模式也要;
+//   - 每个属性: 求键 (计算键求值) → 记入 excludedNames → GetV → 默认值 → 绑定;
+//   - rest: 新建对象复制源的自有可枚举属性, 跳过 excludedNames。
 func (c *Compiler) compileObjectPatternBind(pattern *ast.ObjectPattern, isDecl bool) error {
+	c.emitter.EmitNoOperand(bytecode.OP_REQUIRE_OBJECT_COERCIBLE)
+
+	hasRest := pattern.RestTarget != nil
+	exclSlot := -1
+	if hasRest {
+		exclSlot = c.allocHiddenSlot()
+		c.emitter.Emit(bytecode.OP_NEW_ARRAY, 0)
+		c.emitter.Emit(bytecode.OP_STORE, uint16(exclSlot))
+	}
+
 	for _, prop := range pattern.Properties {
 		// DUP 对象 → [obj, obj]
 		c.emitter.EmitNoOperand(bytecode.OP_DUP)
 		// 压入属性名 → [obj, obj, name]
-		var keyName string
-		if prop.Shorthand {
-			if ident, ok := prop.Value.(*ast.Identifier); ok {
-				keyName = ident.Value
+		if prop.Computed {
+			if err := c.compileExpression(prop.Key); err != nil {
+				return err
 			}
-		} else if ident, ok := prop.Key.(*ast.Identifier); ok {
-			keyName = ident.Value
+		} else {
+			idx := c.constants.AddConstant(object.NewString(patternStaticKey(prop)))
+			c.emitter.Emit(bytecode.OP_CONST, idx)
 		}
-		idx := c.constants.AddConstant(object.NewString(keyName))
-		c.emitter.Emit(bytecode.OP_CONST, idx)
+		if hasRest {
+			// 键记入 excludedNames: [obj,obj,key] → DUP → LOAD acc → SWAP → ARRAY_PUSH
+			// (ARRAY_PUSH 追加后把 acc 留在栈顶 ⇒ 再 POP 掉)。
+			c.emitter.EmitNoOperand(bytecode.OP_DUP)
+			c.emitter.Emit(bytecode.OP_LOAD, uint16(exclSlot))
+			c.emitter.EmitNoOperand(bytecode.OP_SWAP)
+			c.emitter.EmitNoOperand(bytecode.OP_ARRAY_PUSH)
+			c.emitter.EmitNoOperand(bytecode.OP_POP)
+		}
 		// 获取属性 → [obj, val]
 		c.emitter.EmitNoOperand(bytecode.OP_GET_INDEX)
 
@@ -3976,8 +4016,26 @@ func (c *Compiler) compileObjectPatternBind(pattern *ast.ObjectPattern, isDecl b
 			return err
 		}
 	}
+
+	if hasRest {
+		// [obj] → [obj, excluded] → OBJECT_REST → [obj, restObj] → 绑定 rest 目标 → [obj]
+		c.emitter.Emit(bytecode.OP_LOAD, uint16(exclSlot))
+		c.emitter.EmitNoOperand(bytecode.OP_OBJECT_REST)
+		if err := c.bindPatternTarget(pattern.RestTarget, isDecl); err != nil {
+			return err
+		}
+	}
 	return nil
 }
+
+// patternStaticKey 取非计算属性键的字符串形式 (标识符 / 字符串 / 数字字面量)。
+func patternStaticKey(prop *ast.PatternProperty) string {
+	if id, ok := prop.Key.(*ast.Identifier); ok {
+		return id.Value
+	}
+	return ""
+}
+
 
 // bindPatternTarget 把栈顶的值绑定到解构目标 (消费该值, 栈平衡)。
 // target == nil 表示数组模式里的空洞 (elision): 直接丢弃值。
@@ -4760,6 +4818,10 @@ func (c *Compiler) compileFunctionSelf(name, selfName string, params []*ast.Para
 		return c.compileAsyncFunctionSelf(name, selfName, params, body, isArrow)
 	}
 
+	// 内层 generator 标记只影响本层参数放置, 入口立即消费 (见字段注释)。
+	restPreCollected := c.innerGenRestPreCollected
+	c.innerGenRestPreCollected = false
+
 	// 创建新的作用域
 	prevScope := c.scope
 	baseSlot := prevScope.NumLocals() // 函数自身变量的起始槽位
@@ -4772,11 +4834,13 @@ func (c *Compiler) compileFunctionSelf(name, selfName string, params []*ast.Para
 	for i, param := range params {
 		if param.Pattern != nil {
 			// 解构模式参数: 分配隐藏槽位存原始参数值,
-			// 函数入口处解构到各局部变量
+			// 函数入口处解构到各局部变量。
+			// rest 解构参数 (...[a, b] / ...{a}): 槽位存 VM 收集好的剩余实参数组,
+			// 再按模式拆开 (内层 generator 场景 wrapper 已收好, restPreCollected)。
 			paramSpecs[i] = bytecode.ParameterSpec{
 				Name:       fmt.Sprintf("__param_%d", i),
 				HasDefault: false,
-				IsRest:     false,
+				IsRest:     param.Rest && !restPreCollected,
 			}
 			sym := fnScope.Define(paramSpecs[i].Name, false)
 			paramSlots[i] = sym.Slot
@@ -4785,7 +4849,7 @@ func (c *Compiler) compileFunctionSelf(name, selfName string, params []*ast.Para
 		paramSpecs[i] = bytecode.ParameterSpec{
 			Name:       param.Name,
 			HasDefault: param.Default != nil,
-			IsRest:     param.Rest,
+			IsRest:     param.Rest && !restPreCollected,
 		}
 		sym := fnScope.Define(param.Name, false)
 		sym.Declared = true  // 参数是真实声明: 函数体内 let 同名 → SyntaxError
@@ -4966,7 +5030,10 @@ func (c *Compiler) compileAsyncFunctionSelf(name, selfName string, params []*ast
 	// 体内, 继承下来的标志会让 await 误编为 OP_AWAIT。
 	prevAGBody := c.asyncGeneratorBody
 	c.asyncGeneratorBody = false
+	// wrapper 已把 rest 实参收成数组传入, 内层不再重复收集 (见字段注释)。
+	c.innerGenRestPreCollected = true
 	genMeta, err := c.compileFunctionSelf(name, selfName, params, body, isArrow, true, false)
+	c.innerGenRestPreCollected = false
 	c.asyncGeneratorBody = prevAGBody
 	c.inAsyncFunction = prevInAsync
 	if err != nil {
@@ -4989,10 +5056,12 @@ func (c *Compiler) compileAsyncFunctionSelf(name, selfName string, params []*ast
 	paramSlots := make([]int, len(params))
 	for i, param := range params {
 		if param.Pattern != nil {
+			// 解构模式参数: wrapper 只负责把原始实参放进隐藏槽再转交内层
+			// generator (内层做解构); rest 模式参数在此收集剩余实参。
 			paramSpecs[i] = bytecode.ParameterSpec{
 				Name:       fmt.Sprintf("__param_%d", i),
 				HasDefault: false,
-				IsRest:     false,
+				IsRest:     param.Rest,
 			}
 		} else {
 			paramSpecs[i] = bytecode.ParameterSpec{
@@ -5073,7 +5142,9 @@ func (c *Compiler) compileAsyncGeneratorSelf(name, selfName string, params []*as
 	c.asyncGeneratorBody = true
 	prevInAsync := c.inAsyncFunction
 	c.inAsyncFunction = true
+	c.innerGenRestPreCollected = true
 	genMeta, err := c.compileFunctionSelf(name, selfName, params, body, isArrow, true, false)
+	c.innerGenRestPreCollected = false
 	c.inAsyncFunction = prevInAsync
 	c.asyncGeneratorBody = prevAGBody
 	if err != nil {
@@ -5096,7 +5167,7 @@ func (c *Compiler) compileAsyncGeneratorSelf(name, selfName string, params []*as
 			paramSpecs[i] = bytecode.ParameterSpec{
 				Name:       fmt.Sprintf("__param_%d", i),
 				HasDefault: false,
-				IsRest:     false,
+				IsRest:     param.Rest,
 			}
 		} else {
 			paramSpecs[i] = bytecode.ParameterSpec{
