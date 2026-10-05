@@ -454,6 +454,12 @@ func Pump(maxWait time.Duration) bool {
 	// 且定时器已清空就是这种场景), 任务永远轮不到执行 —— 真机实测表现为
 	// 进程挂死、窗口留在屏上 (win32 的 MsgWait(INFINITE) 同样中招)。
 	// 所以有排队任务时给等待封一个小上限, 让本轮 DrainTasks 尽快跑。
+	//
+	// rl65eE: 这只是**纯 Go 侧的最后防线**。真正解决 check-then-sleep 竞态
+	// 的是 Post 的显式唤醒 (wakeCh) + 后端的 waker 可选能力 —— 上面这次
+	// 检查与下面睡进 WaitEvents 之间有窗口, 检查补不上 Post 恰好落在这个
+	// 窗口里的情况; 而 wakeCh 的信号能把已经睡进 WaitEvents 的泵叫醒。假
+	// Surface / 未实现 waker 的后端仍然只靠这个上限兜底。
 	if hasPendingPost() && (wait <= 0 || wait > postDrainCap) {
 		wait = postDrainCap
 	}
@@ -468,7 +474,7 @@ func Pump(maxWait time.Duration) bool {
 		if !a.surfaceAlive() {
 			continue
 		}
-		if !a.surface.WaitEvents(wait) {
+		if !a.waitEvents(wait) {
 			a.markSurfaceClosed()
 		}
 	}
@@ -523,11 +529,24 @@ func sliceWait(maxWait time.Duration, n int) time.Duration {
 
 // pump 是单窗口泵 (测试与"只跑一个窗口"的内部调用点用)。
 func (a *app) pump(maxWait time.Duration) bool {
-	if !a.surface.WaitEvents(maxWait) {
+	if !a.waitEvents(maxWait) {
 		a.markSurfaceClosed()
 	}
 	DrainTasks()
 	return a.processEvents()
+}
+
+// waitEvents 等待本窗口的事件。优先走后端的 waker 可选能力 (把跨线程 Post
+// 的唤醒信号并进平台等待集合, 见 gfx.go 的 wakeCh), 未实现该能力的后端退回
+// 普通 WaitEvents。返回 false 表示事件源已结束。
+//
+// 单独抽出来是为了让多窗口 Pump 与单窗口 pump 共用同一套"优先 waker"的选择
+// 逻辑 —— 两处各写一遍迟早会在某条路径上漏掉 waker (那边就退回无界睡死)。
+func (a *app) waitEvents(maxWait time.Duration) bool {
+	if w, ok := a.surface.(waker); ok {
+		return w.WaitEventsWake(maxWait, WakeChan())
+	}
+	return a.surface.WaitEvents(maxWait)
 }
 
 // surfaceAlive 报告窗口是否还没被标记关闭。

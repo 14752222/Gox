@@ -88,6 +88,12 @@ var (
 
 	procGetModuleHandleW = kernel32.NewProc("GetModuleHandleW")
 
+	// rl65eE 跨线程唤醒: 一个进程级 auto-reset 事件, 由常驻 relay goroutine
+	// 从 gfx.WakeChan() 收到 gfx.Post 的唤醒后 SetEvent, 被 WaitEventsWake
+	// 并进 MsgWaitForMultipleObjectsEx 的等待集合。
+	procCreateEventW = kernel32.NewProc("CreateEventW")
+	procSetEvent    = kernel32.NewProc("SetEvent")
+
 	// P3-4 原生对话框
 	procMessageBoxW = user32.NewProc("MessageBoxW")
 	// comdlg32 在极老的 Windows 上也可能缺席, 懒加载即可 (调用返回 0 会走降级)
@@ -1243,16 +1249,83 @@ func (s *surface) ShowRegions(img *image.RGBA, rects []image.Rectangle) {
 	}
 }
 
+// ===== rl65eE 跨线程唤醒 (waker 可选接口) =====
+//
+// gfx.Post 的任务队列是跨线程入口, 但 Win32 的 MsgWaitForMultipleObjectsEx
+// 只等平台消息 —— 另一线程 Post 一个任务并不会产生任何消息, 于是单窗口
+// 空闲时泵会带着无限期预算睡死, 直到恰好来了鼠标/键盘消息才醒 (症状:
+// 跨线程动作"点了没反应, 动一下鼠标才好")。修法是把 gfx 的唤醒通道并进
+// 等待集合:
+//
+//   - 一个进程级 auto-reset 事件 (wakeEventH): SetEvent 后被等待者吃掉即
+//     自动复位, 与 gfx 唤醒通道"至少一次"的 token 语义正好对齐;
+//   - 常驻 relay goroutine: 消费 gfx.WakeChan(), 每收到一个 token 就
+//     SetEvent。它是唯一的桥梁 (Go channel ↔ 原生句柄), 进程生命周期内
+//     只起一次; 窗口数量再多也共用一个事件句柄 (唤醒是全局事实, 见 gfx.go)。
+//
+// 为什么用 relay 而不是把消息 PostMessage 给自己的 hwnd: Post 是无目标
+// 广播, 而这里的事件是**进程级**共享的 —— 谁在等都能被这一个句柄叫醒,
+// 不必维护"哪个 hwnd 该收这条 Post"的映射。
+var (
+	wakeEventOnce sync.Once
+	wakeEventH    syscall.Handle
+)
+
+// ensureWakeEvent 惰性创建唤醒事件并启动 relay (幂等)。
+func ensureWakeEvent() syscall.Handle {
+	wakeEventOnce.Do(func() {
+		// CreateEventW(lpEventAttributes=nil, bManualReset=false,
+		//              bInitialState=false, lpName=nil)
+		h, _, _ := procCreateEventW.Call(0, 0, 0, 0)
+		if h == 0 {
+			return
+		}
+		wakeEventH = syscall.Handle(h)
+		go func() {
+			for range gfx.WakeChan() {
+				procSetEvent.Call(uintptr(wakeEventH))
+			}
+		}()
+	})
+	return wakeEventH
+}
+
 // WaitEvents 等待消息至多 maxWait (<=0 无限期), 排空并分发。
 // 窗口销毁后返回 false。
 func (s *surface) WaitEvents(maxWait time.Duration) bool {
+	return s.waitEvents(maxWait, false)
+}
+
+// WaitEventsWake 实现 gfx 的 waker 可选接口: 与 WaitEvents 同义, 但额外
+// 把 gfx.Post 的唤醒事件 (wakeEventH) 并进 MsgWaitForMultipleObjectsEx 的
+// 等待集合, 于是跨线程 Post 能立刻打断阻塞的等待。
+func (s *surface) WaitEventsWake(maxWait time.Duration, _ <-chan struct{}) bool {
+	return s.waitEvents(maxWait, true)
+}
+
+// waitEvents 是 WaitEvents / WaitEventsWake 的公共实现; withWake 为真时把
+// 唤醒事件句柄并进等待集合 (句柄取不到——极老的系统——时静默退回纯消息等待)。
+func (s *surface) waitEvents(maxWait time.Duration, withWake bool) bool {
 	timeout := uint32(INFINITE_MS)
 	if maxWait > 0 {
 		if ms := maxWait.Milliseconds(); ms > 0 {
 			timeout = uint32(ms)
 		}
 	}
-	procMsgWaitForMultipleObjectsEx.Call(0, 0, uintptr(timeout), QS_ALLINPUT, MWMO_INPUTAVAILABLE)
+	// MsgWaitForMultipleObjectsEx 的 pHandles 指向一个 HANDLE 数组; 这里只
+	// 等这一个 (auto-reset) 唤醒事件。返回 WAIT_OBJECT_0.. 表示事件或消息
+	// 到达, 两种情形后面的排空逻辑都适用, 故无需区分返回值。
+	nCount := uintptr(0)
+	var hbuf [1]syscall.Handle
+	var handles uintptr
+	if withWake {
+		if h := ensureWakeEvent(); h != 0 {
+			hbuf[0] = h
+			nCount = 1
+			handles = uintptr(unsafe.Pointer(&hbuf[0]))
+		}
+	}
+	procMsgWaitForMultipleObjectsEx.Call(nCount, handles, uintptr(timeout), QS_ALLINPUT, MWMO_INPUTAVAILABLE)
 
 	// 排空消息队列 (DispatchMessage → WndProc → 事件投递)
 	var m msg
@@ -1273,6 +1346,12 @@ func (s *surface) WaitEvents(maxWait time.Duration) bool {
 	s.mu.Unlock()
 	return !closed
 }
+
+// 编译期断言: surface 满足 gfx 的 waker 可选能力 (方法签名一变, 这里先报错,
+// 而不是静默退回"靠 postDrainCap 轮询"的降级路径)。
+var _ interface {
+	WaitEventsWake(time.Duration, <-chan struct{}) bool
+} = (*surface)(nil)
 
 func min2(a, b int) int {
 	if a < b {

@@ -199,6 +199,62 @@ func SetDefaultFactory(f WindowFactory) {
 	}
 }
 
+// ===== 跨线程唤醒原语 (rl65eE) =====
+//
+// 问题: Post 的 check-then-sleep 竞态 —— Pump 在睡进 WaitEvents **之前**
+// 检查 hasPendingPost(), 另一线程在这之后 Post 的任务看不到 ⇒ 单窗口空闲时
+// 会以无界预算睡下去, 直到恰好来了平台输入事件才醒。真机症状: 跨线程 Post
+// 的动作 (文件对话框结果、网络回调转 JS、跨线程 Window.Close) 点了没反应,
+// 动一下鼠标才好。
+//
+// 解法: 显式唤醒, 而不是继续给等待预算加各种"上限"。Post 在入队后向一个
+// **进程级**通道写一次 token; 实现 waker 可选接口的后端把这个通道并进自己
+// 的平台等待集合, 于是"睡在 WaitEvents 里"的泵会被立刻打断, 本轮的
+// DrainTasks 就能执行任务。
+//
+// 为什么是进程级: Post 的队列本就是全局的、且没有目标窗口 (v1 广播语义),
+// 所以唤醒信号也只描述"有跨线程任务"这一件全局事实 —— 哪个窗口的
+// WaitEvents 先醒都行, Pump 随后统一 DrainTasks。
+var wakeCh = make(chan struct{}, 1)
+
+// signalWake 尝试投递一个唤醒 token。缓冲 1 + 非阻塞发送 = 天然去重:
+// 已有未消费 token 时不重复投 (唤醒只需"至少一次", 后端也不必区分次数)。
+func signalWake() {
+	select {
+	case wakeCh <- struct{}{}:
+	default:
+	}
+}
+
+// WakeChan 返回唤醒通道的接收端 —— 实现 waker 的后端把它并入等待集合。
+// 语义: 读到值 = "刚有跨线程任务投递, 别睡了"。
+func WakeChan() <-chan struct{} { return wakeCh }
+
+// waker 是 Surface 的**可选能力**: 把 gfx.Post 的跨线程唤醒 (见 WakeChan)
+// 并进后端自己的等待集合。
+//
+// 为什么做成可选接口而不是给 Surface 加方法 (内核纪律: 可选能力一律走
+// "可选接口", Surface 不扩): Surface 有三个真后端 (win32/x11/cocoa) 与
+// 测试用假 Surface —— 扩接口要同步改所有实现, 而假 Surface 的 WaitEvents
+// 本来就 select 在 Go channel 上 (测试里直接推事件即可), 根本没有"平台
+// 等待集合"可并入。类型断言后, 未实现的后端自动退化为
+// "WaitEvents + postDrainCap 上限" (行为不坏, 只是空闲期多几次空转)。
+//
+// 方法名必须**导出** (与 capturer / clipboardHost 同理): win32/x11/cocoa
+// 都是另一个包, Go 不允许跨包实现未导出方法。
+type waker interface {
+	// WaitEventsWake 与 Surface.WaitEvents 同义, 但额外等待 wake:
+	// 从 wake 读到值 (gfx.Post 的信号) 时立即返回 true, 让 Pump 本轮立刻
+	// DrainTasks。maxWait<=0 仍表示无限期 —— 此时只有 wake / 平台事件 /
+	// 窗口关闭能唤醒它。
+	//
+	// 实现要点: 平台的阻塞等待必须**真正**把 wake 并进同一个等待集合
+	// (win32 走 MsgWaitForMultipleObjectsEx 的手柄数组; x11 走 select;
+	// cocoa 走 post 一个空事件), 而不是把 maxWait 切成小片轮询 —— 后者
+	// 只是把"无限期睡死"换成"有界轮询", 与本次修复的意图相反。
+	WaitEventsWake(maxWait time.Duration, wake <-chan struct{}) bool
+}
+
 // ===== PostTask 队列 =====
 // WndProc 等平台回调绝不直接执行 JS, 一律投递任务由 Pump 在 VM 线程执行。
 
@@ -220,6 +276,11 @@ func Post(task func()) {
 	postMu.Lock()
 	postQueue = append(postQueue, task)
 	postMu.Unlock()
+	// 入队后立刻给后端一个唤醒信号 (见 wakeCh): 若此刻泵正睡在
+	// WaitEvents 里, 这一下会把它叫醒, 于是本轮 DrainTasks 就能执行任务。
+	// 这是修复 "check-then-sleep" 竞态的关键 —— hasPendingPost 的检查与
+	// 睡进 WaitEvents 之间有一个窗口, 只靠 Pump 侧检查补不上。
+	signalWake()
 }
 
 // hasPendingPost 报告是否有已投递、尚未执行的 Post 任务 (Pump 用)。

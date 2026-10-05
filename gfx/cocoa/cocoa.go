@@ -677,6 +677,19 @@ func (s *surface) Events() <-chan gfx.Event { return s.events }
 // WaitEvents 有界泵 AppKit 事件 (见文件头决策 4)。
 // 返回 false 表示事件源已关闭 (窗口销毁)。
 func (s *surface) WaitEvents(maxWait time.Duration) bool {
+	return s.waitEvents(maxWait, nil)
+}
+
+// WaitEventsWake 实现 gfx 的 waker 可选接口 (rl65eE): 与 WaitEvents 同义,
+// 但额外把 gfx.Post 的跨线程唤醒落成一个真实事件 (见文件下方 wake relay),
+// 于是跨线程 Post 能立刻打断 nextEventMatchingMask 的阻塞等待。
+func (s *surface) WaitEventsWake(maxWait time.Duration, wake <-chan struct{}) bool {
+	ensureCocoaWakeRelay(wake)
+	return s.waitEvents(maxWait, wake)
+}
+
+// waitEvents 是 WaitEvents / WaitEventsWake 的公共实现。
+func (s *surface) waitEvents(maxWait time.Duration, wake <-chan struct{}) bool {
 	if s.isClosed() {
 		return false
 	}
@@ -700,9 +713,75 @@ func (s *surface) WaitEvents(maxWait time.Duration) bool {
 		if ev == 0 {
 			return true // 超时/无事件: 交回 Pump (定时器可能到期)
 		}
+		// 唤醒空事件不是给响应链的, 命中即丢弃并交回 Pump 去 DrainTasks。
+		if wake != nil && isCocoaWakeEvent(ev) {
+			return true
+		}
 		app.Send(selSendEvent, ev) // 正常响应链 → 我们的 view 方法被调用
 	}
 }
+
+// ===== rl65eE 跨线程唤醒 (waker 可选接口) =====
+//
+// cocoa 的等待跑在 nextEventMatchingMask:untilDate:inMode:dequeue: 里 ——
+// 它只认"下一个匹配事件 / 到点"两个返回条件, 因此跨线程唤醒必须落成一个
+// **真实事件**。做法与 GLFW 的 glfwPostEmptyEvent 同源: relay goroutine
+// 消费 gfx.WakeChan(), 每收到一个 token 就 post 一个 ApplicationDefined 的
+// 空事件 (atStart:YES) 到事件队列, nextEventMatchingMask 立刻返回它,
+// waitEvents 认出并丢弃, 交回 Pump 去 DrainTasks。
+//
+// 用 ApplicationDefined + windowNumber==0 作为识别 (脚本路径不会产生这一类)。
+// 全程零 cgo, 走 objc.Send; 本机无 macOS ⇒ 只能编译验证 (见任务报告)。
+var (
+	cocoaWakeOnce sync.Once
+
+	selOtherEvent      = objc.RegisterName("otherEventWithType:location:modifierFlags:timestamp:windowNumber:context:subtype:data1:data2:")
+	selPostEventAt     = objc.RegisterName("postEvent:atStart:")
+	selWakeEventType   = objc.RegisterName("type")
+	selWakeEventWinNum = objc.RegisterName("windowNumber")
+)
+
+// nsEventAppDefined = NSEventTypeApplicationDefined (空事件用的自定义类型)。
+const nsEventAppDefined = 15
+
+// ensureCocoaWakeRelay 惰性启动唤醒 relay (幂等)。wake 为 nil (普通
+// WaitEvents 路径) 时不起。
+func ensureCocoaWakeRelay(wake <-chan struct{}) {
+	if wake == nil {
+		return
+	}
+	cocoaWakeOnce.Do(func() {
+		go func() {
+			for range wake {
+				postCocoaWakeEvent()
+			}
+		}()
+	})
+}
+
+// postCocoaWakeEvent 从任意线程 post 一个空的 ApplicationDefined 事件。
+// 自带 autorelease pool: relay goroutine 不在主 run loop 上, otherEvent
+// 返回的对象是 autoreleased 的, 没有池会泄漏 (并打出运行时警告)。
+func postCocoaWakeEvent() {
+	pool := objc.ID(objc.GetClass("NSAutoreleasePool")).Send(selNew)
+	defer pool.Send(selDrain)
+	ev := objc.ID(objc.GetClass("NSEvent")).Send(selOtherEvent,
+		uintptr(nsEventAppDefined), nsPoint{}, uintptr(0), float64(0),
+		uintptr(0), objc.ID(0), uintptr(0), uintptr(0), uintptr(0))
+	app := objc.ID(objc.GetClass("NSApplication")).Send(selSharedApplication)
+	app.Send(selPostEventAt, ev, true)
+}
+
+// isCocoaWakeEvent 报告事件是不是 relay post 的唤醒空事件。
+func isCocoaWakeEvent(ev objc.ID) bool {
+	return objc.Send[uintptr](ev, selWakeEventType) == nsEventAppDefined &&
+		objc.Send[uintptr](ev, selWakeEventWinNum) == 0
+}
+
+// 编译期断言: surface 满足 gfx 的 waker 可选能力 (签名一变先在这里报错)。
+var _ interface {
+	WaitEventsWake(time.Duration, <-chan struct{}) bool
+} = (*surface)(nil)
 
 // Show 整帧上屏。
 func (s *surface) Show(img *image.RGBA) { s.ShowRegions(img, nil) }

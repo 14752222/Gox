@@ -348,6 +348,20 @@ func RGBAToXZPixmap(img *image.RGBA, r image.Rectangle) []byte {
 // WaitEvents 等待 X 事件至多 maxWait (<=0 无限期), 翻译为 gfx.Event 投递。
 // 连接断开/关闭返回 false。
 func (s *surface) WaitEvents(maxWait time.Duration) bool {
+	return s.waitEvents(maxWait, nil)
+}
+
+// WaitEventsWake 实现 gfx 的 waker 可选接口: 与 WaitEvents 同义, 但额外
+// 监听 wake (gfx.Post 的跨线程唤醒信号), 读到值时立即返回 —— 否则单窗口
+// 空闲时泵会带着无限期预算睡死, 跨线程 Post 的任务要等到恰好有 X 事件才
+// 被执行。X11 这边直接把它作为一个 select 分支即可 (wake 为 nil 时该分支
+// 自动禁用, 正是普通 WaitEvents 的语义)。
+func (s *surface) WaitEventsWake(maxWait time.Duration, wake <-chan struct{}) bool {
+	return s.waitEvents(maxWait, wake)
+}
+
+// waitEvents 是 WaitEvents / WaitEventsWake 的公共实现。
+func (s *surface) waitEvents(maxWait time.Duration, wake <-chan struct{}) bool {
 	deadline := time.Time{}
 	if maxWait > 0 {
 		deadline = time.Now().Add(maxWait)
@@ -369,11 +383,19 @@ func (s *surface) WaitEvents(maxWait time.Duration) bool {
 			if !s.translate(ev) {
 				return false
 			}
+		case <-wake:
+			// 跨线程 Post 唤醒: 立即交回 Pump, 本轮 DrainTasks 执行任务。
+			return true
 		case <-timer:
 			return true
 		}
 	}
 }
+
+// 编译期断言: surface 满足 gfx 的 waker 可选能力 (签名一变先在这里报错)。
+var _ interface {
+	WaitEventsWake(time.Duration, <-chan struct{}) bool
+} = (*surface)(nil)
 
 // markClosed 关闭标记 (连接已不可用)。
 func (s *surface) markClosed() {
