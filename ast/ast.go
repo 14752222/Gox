@@ -776,6 +776,11 @@ func (rl *RegexLiteral) expressionNode()      {}
 type ArrayLiteral struct {
 	Token    lexer.Token // [
 	Elements []Expression
+
+	// TrailingComma 记录「最后一个元素之后还有逗号」(如 [1, 2, , 或 [a, b,])。
+	// 数组字面量本身合法, 但转成解构赋值模式时, rest 之后带尾逗号是早错
+	// ([...b,] = x ⇒ SyntaxError), 需要这一个比特才能判出来。
+	TrailingComma bool
 }
 
 func (al *ArrayLiteral) TokenLiteral() string { return al.Token.Literal }

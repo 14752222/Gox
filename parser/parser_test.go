@@ -1352,13 +1352,15 @@ func TestTrailingCommaInArgumentAndParameterLists(t *testing.T) {
 		}
 	}
 
-	// 形参列表: 声明式 / 函数表达式 / 箭头 / 方法简写 四处都要能过
+	// 形参列表: 声明式 / 函数表达式 / 箭头 / 方法简写 四处都要能过。
+	// 注意尾逗号放宽**不覆盖 rest 参数之后** —— 规范的 FormalParameterList
+	// 只有 `FormalsList ,` 这一条尾逗号产生式, 没有 `FormalsList , FunctionRestParameter ,`;
+	// Node 实测 `function r(a, ...rest,) {}` 是 SyntaxError (rpEXH2, 2026-10-05)。
 	for _, src := range []string{
 		`function g(a, b,) { return a; }`,
 		`const h = function (a, b,) { return a; };`,
 		`const k = (a, b,) => a;`,
 		`const o = { m(a, b,) { return a; } };`,
-		`function r(a, ...rest,) { return a; }`,
 	} {
 		p := New(lexer.New(src))
 		p.ParseProgram()
@@ -1373,6 +1375,7 @@ func TestTrailingCommaInArgumentAndParameterLists(t *testing.T) {
 		`function g(,) {}`,
 		`function g(a, , b) {}`,
 		`const k = (, ) => 1;`,
+		`function r(a, ...rest,) { return a; }`,
 	} {
 		p := New(lexer.New(src))
 		p.ParseProgram()

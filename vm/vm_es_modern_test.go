@@ -185,7 +185,10 @@ func TestTrailingCommaInLists(t *testing.T) {
 	assertNumber(t, evalJS(t, `let h = function (a, b,) { return a - b }; h(9, 4)`), 5)
 	assertNumber(t, evalJS(t, `let k = (a, b,) => a + b; k(1, 2)`), 3)
 	assertNumber(t, evalJS(t, `let o = { m(a, b,) { return a + b } }; o.m(2, 3)`), 5)
-	assertNumber(t, evalJS(t, `(function (a, ...r,) { return a + r.length })(1, 2, 3,)`), 3)
+	// 剩余参数: 形参表里的尾逗号放宽**不含 rest 之后** (规范没有
+	// `FormalsList , FunctionRestParameter ,` 产生式, Node 实测是 SyntaxError),
+	// 所以这里 rest 后不带逗号; 调用侧实参的尾逗号仍然合法。
+	assertNumber(t, evalJS(t, `(function (a, ...r) { return a + r.length })(1, 2, 3,)`), 3)
 	// 个数不能被尾逗号带偏
 	assertNumber(t, evalJS(t, `function n(a, b,) { return arguments.length } n(1, 2,)`), 2)
 	assertNumber(t, evalJS(t, `(function (a, b,) { }).length`), 2)

@@ -1079,6 +1079,16 @@ func (p *Parser) parseParameters(close lexer.TokenType) []*ast.Parameter {
 		if param != nil {
 			params = append(params, param)
 		}
+		// Early error (规范 15.1 FormalsList / 14.1.2): rest 参数之后不得再有任何
+		// 参数, 连尾逗号也不行 —— function f(...a, b){} 与 f(...a,) 都是 SyntaxError
+		// (Node 实测一致)。注意内层解构模式里的 rest 不受影响 (f([x, ...y], z) 合法)。
+		if param != nil && param.Rest {
+			if p.peekTokenIs(lexer.COMMA) {
+				p.addError("SyntaxError: rest parameter must be the last formal parameter")
+				return nil
+			}
+			break
+		}
 		if !p.peekTokenIs(lexer.COMMA) {
 			break
 		}
@@ -1587,8 +1597,11 @@ func (p *Parser) parseArrayLiteral() ast.Expression {
 			}
 		}
 		if p.peekTokenIs(lexer.COMMA) {
-			p.nextToken()
-			p.nextToken()
+			p.nextToken() // 指向逗号
+			p.nextToken() // 指向下一个元素 (或 ']' ⇒ 这是尾逗号)
+			if p.curTokenIs(lexer.RBRACKET) {
+				arr.TrailingComma = true
+			}
 		} else if p.peekTokenIs(lexer.RBRACKET) {
 			p.nextToken()
 			break
@@ -1854,11 +1867,18 @@ func (p *Parser) literalToPattern(expr ast.Expression) ast.Expression {
 	switch lit := expr.(type) {
 	case *ast.ArrayLiteral:
 		pattern := &ast.ArrayPattern{Token: lit.Token, Elements: []*ast.PatternElement{}}
-		for _, el := range lit.Elements {
+		for i, el := range lit.Elements {
 			switch e := el.(type) {
 			case *ast.Identifier:
 				pattern.Elements = append(pattern.Elements, &ast.PatternElement{Token: e.Token, Target: e})
 			case *ast.SpreadElement: // [a, ...rest]
+				// Early error: 赋值模式的 rest 同样必须是最后一项
+				// ([a, ...b, c] = x / [...b,] = x 都是 SyntaxError)。
+				// 数组**字面量**里的 spread 位置随意, 这里只在转模式时拦。
+				if i != len(lit.Elements)-1 || lit.TrailingComma {
+					p.addError("SyntaxError: rest element must be the last element in array pattern")
+					return expr
+				}
 				if id, ok := e.Argument.(*ast.Identifier); ok {
 					pattern.Elements = append(pattern.Elements, &ast.PatternElement{Token: e.Token, Target: id, Rest: true})
 					continue
@@ -2226,6 +2246,13 @@ func (p *Parser) parseArrayPattern() *ast.ArrayPattern {
 			p.nextToken() // 前进到分隔符 (逗号或右括号)
 		}
 		pattern.Elements = append(pattern.Elements, elem)
+		// Early error (规范 13.3.3 ArrayBindingPattern): rest 元素之后不得再有任何
+		// 元素, 连尾逗号也不行 —— [...a, b] / [...a,] 都是 SyntaxError (Node 实测一致)。
+		// rest 带初始化器已在上面单独拦截。
+		if elem.Rest && p.curTokenIs(lexer.COMMA) {
+			p.addError("SyntaxError: rest element must be the last element in array pattern")
+			return nil
+		}
 		if p.curTokenIs(lexer.COMMA) {
 			p.nextToken()
 		}
