@@ -347,7 +347,7 @@ func setupPromise(env *runtime.Environment) {
 	}))
 
 	promiseFn.SetProperty("prototype", promiseProto)
-	promiseProto.SetProperty("constructor", promiseFn)
+	promiseProto.SetBuiltinProperty("constructor", promiseFn)
 
 	env.Declare("Promise", promiseFn, false)
 }
@@ -385,7 +385,7 @@ func setupPromiseProto() *object.Object {
 	p := object.NewObject()
 
 	// then(onFulfilled, onRejected)
-	p.SetProperty("then", object.NewBuiltinMethod("then", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("then", object.NewBuiltinMethod("then", func(this object.Value, args ...object.Value) object.Value {
 		promise, ok := this.(*object.Promise)
 		if !ok {
 			return thisTypeError("Promise", "then", this)
@@ -452,7 +452,7 @@ func setupPromiseProto() *object.Object {
 	}))
 
 	// catch(onRejected)
-	p.SetProperty("catch", object.NewBuiltinMethod("catch", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("catch", object.NewBuiltinMethod("catch", func(this object.Value, args ...object.Value) object.Value {
 		promise, ok := this.(*object.Promise)
 		if !ok {
 			return thisTypeError("Promise", "catch", this)
@@ -465,7 +465,7 @@ func setupPromiseProto() *object.Object {
 	}))
 
 	// finally(onFinally)
-	p.SetProperty("finally", object.NewBuiltinMethod("finally", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("finally", object.NewBuiltinMethod("finally", func(this object.Value, args ...object.Value) object.Value {
 		promise, ok := this.(*object.Promise)
 		if !ok {
 			return thisTypeError("Promise", "finally", this)

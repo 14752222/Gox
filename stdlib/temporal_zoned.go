@@ -340,7 +340,7 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 	})
 	ctor.SetProperty("name", object.NewString("ZonedDateTime"))
 	ctor.SetProperty("prototype", proto)
-	proto.SetProperty("constructor", ctor)
+	proto.SetBuiltinProperty("constructor", ctor)
 
 	tgStatic(ctor, "from", func(args ...object.Value) object.Value {
 		if len(args) == 0 {
@@ -399,7 +399,7 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 	})
 
 	setToStringTag(proto, "Temporal.ZonedDateTime")
-	temporal.SetProperty("ZonedDateTime", ctor)
+	temporal.SetBuiltinProperty("ZonedDateTime", ctor)
 }
 
 // ===== 内部辅助 =====

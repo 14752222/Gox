@@ -211,7 +211,7 @@ func setupTemporalPlainDate(temporal *object.Object) {
 	})
 	ctor.SetProperty("name", object.NewString("PlainDate"))
 	ctor.SetProperty("prototype", proto)
-	proto.SetProperty("constructor", ctor)
+	proto.SetBuiltinProperty("constructor", ctor)
 
 	tgStatic(ctor, "from", func(args ...object.Value) object.Value {
 		if len(args) == 0 {
@@ -260,7 +260,7 @@ func setupTemporalPlainDate(temporal *object.Object) {
 	})
 
 	setToStringTag(proto, "Temporal.PlainDate")
-	temporal.SetProperty("PlainDate", ctor)
+	temporal.SetBuiltinProperty("PlainDate", ctor)
 }
 
 // plainDateShift 实现 PlainDate.add/subtract。
@@ -533,7 +533,7 @@ func setupTemporalPlainTime(temporal *object.Object) {
 	})
 	ctor.SetProperty("name", object.NewString("PlainTime"))
 	ctor.SetProperty("prototype", proto)
-	proto.SetProperty("constructor", ctor)
+	proto.SetBuiltinProperty("constructor", ctor)
 
 	tgStatic(ctor, "from", func(args ...object.Value) object.Value {
 		if len(args) == 0 {
@@ -579,7 +579,7 @@ func setupTemporalPlainTime(temporal *object.Object) {
 	})
 
 	setToStringTag(proto, "Temporal.PlainTime")
-	temporal.SetProperty("PlainTime", ctor)
+	temporal.SetBuiltinProperty("PlainTime", ctor)
 }
 
 // plainTimeShift 实现 PlainTime.add/subtract，结果环绕一天。

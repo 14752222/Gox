@@ -16,6 +16,7 @@ import (
 // 这类形式访问。
 func setupTemporal(env *runtime.Environment) {
 	temporal := object.NewObject()
+	setNamespaceProto(temporal)
 
 	setupTemporalInstant(temporal)
 	setupTemporalDuration(temporal)
@@ -40,6 +41,7 @@ func setupTemporal(env *runtime.Environment) {
 // (plainDateISO 等) 都固定使用 iso8601 日历，因此不需要 options.calendar。
 func setupTemporalNow(temporal *object.Object) {
 	now := object.NewObject()
+	setNamespaceProto(now)
 
 	// hostTimeZone 返回宿主系统时区标识符，缺失时退化为 UTC。
 	hostTimeZone := func() string {
@@ -115,5 +117,5 @@ func setupTemporalNow(temporal *object.Object) {
 	})
 
 	setToStringTag(now, "Temporal.Now")
-	temporal.SetProperty("Now", now)
+	temporal.SetBuiltinProperty("Now", now)
 }

@@ -159,7 +159,7 @@ func (c *Closure) GetProperty(name string) (Value, bool) {
 		}
 		// 惰性创建默认 prototype (含 constructor 自引用)
 		p := NewObject()
-		p.SetProperty("constructor", c)
+		p.SetBuiltinProperty("constructor", c)
 		// 实例原型 (fn.prototype) 的 [[Prototype]]:
 		//   普通/async 函数 → %Object.prototype%; function* → %GeneratorPrototype%;
 		//   async function* → %AsyncGeneratorPrototype%。(async 函数无 prototype,

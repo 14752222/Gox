@@ -194,7 +194,7 @@ func setupTemporalInstant(env *object.Object) {
 	})
 	ctor.SetProperty("name", object.NewString("Instant"))
 	ctor.SetProperty("prototype", proto)
-	proto.SetProperty("constructor", ctor)
+	proto.SetBuiltinProperty("constructor", ctor)
 
 	tgStatic(ctor, "from", func(args ...object.Value) object.Value {
 		if len(args) == 0 {
@@ -271,7 +271,7 @@ func setupTemporalInstant(env *object.Object) {
 	})
 
 	setToStringTag(proto, "Temporal.Instant")
-	env.SetProperty("Instant", ctor)
+	env.SetBuiltinProperty("Instant", ctor)
 }
 
 // instantDiffFrom 计算 Instant 之间 (或两个 Instant) 的差值 Duration。

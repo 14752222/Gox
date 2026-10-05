@@ -15,7 +15,7 @@ import (
 func setupJSON() *object.Object {
 	j := object.NewObject()
 
-	j.SetProperty("stringify", object.NewBuiltin("stringify", func(args ...object.Value) object.Value {
+	j.SetBuiltinProperty("stringify", object.NewBuiltin("stringify", func(args ...object.Value) object.Value {
 		if len(args) == 0 {
 			return object.UndefinedSingleton
 		}
@@ -75,7 +75,7 @@ func setupJSON() *object.Object {
 		return object.NewString(result)
 	}))
 
-	j.SetProperty("parse", object.NewBuiltin("parse", func(args ...object.Value) object.Value {
+	j.SetBuiltinProperty("parse", object.NewBuiltin("parse", func(args ...object.Value) object.Value {
 		if len(args) == 0 {
 			return object.NewErrorWithName("SyntaxError", "Unexpected end of JSON input")
 		}

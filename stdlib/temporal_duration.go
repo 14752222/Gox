@@ -262,7 +262,7 @@ func setupTemporalDuration(temporal *object.Object) {
 	})
 	ctor.SetProperty("name", object.NewString("Duration"))
 	ctor.SetProperty("prototype", proto)
-	proto.SetProperty("constructor", ctor)
+	proto.SetBuiltinProperty("constructor", ctor)
 
 	tgStatic(ctor, "from", func(args ...object.Value) object.Value {
 		if len(args) == 0 {
@@ -299,7 +299,7 @@ func setupTemporalDuration(temporal *object.Object) {
 	})
 
 	setToStringTag(proto, "Temporal.Duration")
-	temporal.SetProperty("Duration", ctor)
+	temporal.SetBuiltinProperty("Duration", ctor)
 }
 
 // compareDurations 比较两个 Duration。

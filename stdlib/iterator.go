@@ -114,14 +114,14 @@ func setupIteratorGlobal() *object.BuiltinFunction {
 
 	proto := object.NewObject()
 	fn.SetProperty("prototype", proto)
-	proto.SetProperty("constructor", fn)
+	proto.SetBuiltinProperty("constructor", fn)
 
 	// Iterator.prototype 上的 ES2025 helper 方法 (作用于 this 迭代器)。
 	// 实际逻辑在 object.ApplyIteratorHelper / JSIterator.esIteratorHelper。
 	for _, name := range []string{"map", "filter", "take", "drop", "flatMap",
 		"reduce", "toArray", "forEach", "some", "every", "find"} {
 		helperName := name
-		proto.SetProperty(helperName, object.NewBuiltinMethod(helperName, func(this object.Value, args ...object.Value) object.Value {
+		proto.SetBuiltinProperty(helperName, object.NewBuiltinMethod(helperName, func(this object.Value, args ...object.Value) object.Value {
 			if v, ok := object.ApplyIteratorHelper(this, helperName, args); ok {
 				return v
 			}

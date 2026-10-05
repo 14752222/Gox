@@ -34,14 +34,14 @@ func tgTypeBadThis(typeName string) object.Value {
 // 用 DefineAccessor 而非 SetProperty: Temporal 的字段
 // (year/month/day/hours/...) 是访问器属性，读取时以实例为 this 调用。
 func tgGetter(proto *object.Object, name string, fn func(this object.Value) object.Value) {
-	proto.DefineAccessor(name, object.NewBuiltinMethod(name, func(this object.Value, _ ...object.Value) object.Value {
+	proto.DefineBuiltinAccessor(name, object.NewBuiltinMethod(name, func(this object.Value, _ ...object.Value) object.Value {
 		return fn(this)
 	}), nil)
 }
 
 // tgMethod 在原型上定义方法。
 func tgMethod(proto *object.Object, name string, fn func(this object.Value, args ...object.Value) object.Value) {
-	proto.SetProperty(name, object.NewBuiltinMethod(name, fn))
+	proto.SetBuiltinProperty(name, object.NewBuiltinMethod(name, fn))
 }
 
 // tgStatic 在构造器上定义静态方法。构造器是 BuiltinFunction 而非 Object。
@@ -51,7 +51,7 @@ func tgStatic(ctor *object.BuiltinFunction, name string, fn func(args ...object.
 
 // tgFn 在命名空间对象 (如 Temporal.Now) 上定义普通函数属性。
 func tgFn(ns *object.Object, name string, fn func(args ...object.Value) object.Value) {
-	ns.SetProperty(name, object.NewBuiltin(name, fn))
+	ns.SetBuiltinProperty(name, object.NewBuiltin(name, fn))
 }
 
 // tgIntGetter 定义一个返回整数的 getter。

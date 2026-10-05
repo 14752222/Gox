@@ -62,9 +62,10 @@ func setupReflectProxy(env *runtime.Environment) {
 
 	// ===== Reflect =====
 	reflectObj := object.NewObject()
+	setNamespaceProto(reflectObj)
 
 	// Reflect.get(target, key, receiver?) — 读取目标属性
-	reflectObj.SetProperty("get", object.NewBuiltin("Reflect.get", func(args ...object.Value) object.Value {
+	reflectObj.SetBuiltinProperty("get", object.NewBuiltin("Reflect.get", func(args ...object.Value) object.Value {
 		target, errVal := reflectTargetArg(args, "Reflect.get")
 		if errVal != nil {
 			return errVal
@@ -85,7 +86,7 @@ func setupReflectProxy(env *runtime.Environment) {
 	}))
 
 	// Reflect.set(target, key, value, receiver?) — 写入目标属性
-	reflectObj.SetProperty("set", object.NewBuiltin("Reflect.set", func(args ...object.Value) object.Value {
+	reflectObj.SetBuiltinProperty("set", object.NewBuiltin("Reflect.set", func(args ...object.Value) object.Value {
 		target, errVal := reflectTargetArg(args, "Reflect.set")
 		if errVal != nil {
 			return errVal
@@ -113,7 +114,7 @@ func setupReflectProxy(env *runtime.Environment) {
 	}))
 
 	// Reflect.has(target, key) — 检查属性是否存在 (含原型链)
-	reflectObj.SetProperty("has", object.NewBuiltin("Reflect.has", func(args ...object.Value) object.Value {
+	reflectObj.SetBuiltinProperty("has", object.NewBuiltin("Reflect.has", func(args ...object.Value) object.Value {
 		target, errVal := reflectTargetArg(args, "Reflect.has")
 		if errVal != nil {
 			return errVal
@@ -139,7 +140,7 @@ func setupReflectProxy(env *runtime.Environment) {
 	}))
 
 	// Reflect.deleteProperty(target, key) — 删除自有属性
-	reflectObj.SetProperty("deleteProperty", object.NewBuiltin("Reflect.deleteProperty", func(args ...object.Value) object.Value {
+	reflectObj.SetBuiltinProperty("deleteProperty", object.NewBuiltin("Reflect.deleteProperty", func(args ...object.Value) object.Value {
 		target, errVal := reflectTargetArg(args, "Reflect.deleteProperty")
 		if errVal != nil {
 			return errVal
@@ -167,7 +168,7 @@ func setupReflectProxy(env *runtime.Environment) {
 	}))
 
 	// Reflect.getPrototypeOf(target) — 获取原型
-	reflectObj.SetProperty("getPrototypeOf", object.NewBuiltin("Reflect.getPrototypeOf", func(args ...object.Value) object.Value {
+	reflectObj.SetBuiltinProperty("getPrototypeOf", object.NewBuiltin("Reflect.getPrototypeOf", func(args ...object.Value) object.Value {
 		if len(args) < 1 {
 			return object.NullSingleton
 		}
@@ -189,7 +190,7 @@ func setupReflectProxy(env *runtime.Environment) {
 	}))
 
 	// Reflect.setPrototypeOf(target, proto) — 设置原型
-	reflectObj.SetProperty("setPrototypeOf", object.NewBuiltin("Reflect.setPrototypeOf", func(args ...object.Value) object.Value {
+	reflectObj.SetBuiltinProperty("setPrototypeOf", object.NewBuiltin("Reflect.setPrototypeOf", func(args ...object.Value) object.Value {
 		if len(args) < 2 {
 			return object.NewBoolean(false)
 		}
@@ -210,7 +211,7 @@ func setupReflectProxy(env *runtime.Environment) {
 	}))
 
 	// Reflect.ownKeys(target) — 返回自有属性键数组
-	reflectObj.SetProperty("ownKeys", object.NewBuiltin("Reflect.ownKeys", func(args ...object.Value) object.Value {
+	reflectObj.SetBuiltinProperty("ownKeys", object.NewBuiltin("Reflect.ownKeys", func(args ...object.Value) object.Value {
 		if len(args) < 1 {
 			return object.NewArray(nil)
 		}
@@ -236,7 +237,7 @@ func setupReflectProxy(env *runtime.Environment) {
 	}))
 
 	// Reflect.isExtensible(target) — 检查是否可扩展
-	reflectObj.SetProperty("isExtensible", object.NewBuiltin("Reflect.isExtensible", func(args ...object.Value) object.Value {
+	reflectObj.SetBuiltinProperty("isExtensible", object.NewBuiltin("Reflect.isExtensible", func(args ...object.Value) object.Value {
 		if len(args) < 1 {
 			return object.NewBoolean(false)
 		}
@@ -251,7 +252,7 @@ func setupReflectProxy(env *runtime.Environment) {
 	}))
 
 	// Reflect.apply(fn, thisArg, argsArray) — 以 thisArg 调用 fn
-	reflectObj.SetProperty("apply", object.NewBuiltin("Reflect.apply", func(args ...object.Value) object.Value {
+	reflectObj.SetBuiltinProperty("apply", object.NewBuiltin("Reflect.apply", func(args ...object.Value) object.Value {
 		if len(args) < 1 {
 			return object.UndefinedSingleton
 		}
@@ -270,7 +271,7 @@ func setupReflectProxy(env *runtime.Environment) {
 	}))
 
 	// Reflect.construct(target, argsArray[, newTarget]) — 以构造方式调用
-	reflectObj.SetProperty("construct", object.NewBuiltin("Reflect.construct", func(args ...object.Value) object.Value {
+	reflectObj.SetBuiltinProperty("construct", object.NewBuiltin("Reflect.construct", func(args ...object.Value) object.Value {
 		if len(args) < 1 || !object.IsCallable(args[0]) {
 			return object.NewTypeError("Reflect.construct: target is not a constructor")
 		}

@@ -16,7 +16,7 @@ func setupBigInt(env *runtime.Environment) {
 	proto := object.NewObject()
 
 	// ===== BigInt.prototype =====
-	proto.SetProperty("toString", object.NewBuiltinMethod("toString", func(this object.Value, args ...object.Value) object.Value {
+	proto.SetBuiltinProperty("toString", object.NewBuiltinMethod("toString", func(this object.Value, args ...object.Value) object.Value {
 		bi, ok := this.(*object.BigInt)
 		if !ok {
 			return object.NewErrorWithName("TypeError", "BigInt.prototype.toString requires that 'this' be a BigInt")
@@ -33,7 +33,7 @@ func setupBigInt(env *runtime.Environment) {
 	}))
 
 	// 本运行时没有 Intl，toLocaleString 退化为 toString。
-	proto.SetProperty("toLocaleString", object.NewBuiltinMethod("toLocaleString", func(this object.Value, args ...object.Value) object.Value {
+	proto.SetBuiltinProperty("toLocaleString", object.NewBuiltinMethod("toLocaleString", func(this object.Value, args ...object.Value) object.Value {
 		bi, ok := this.(*object.BigInt)
 		if !ok {
 			return object.NewErrorWithName("TypeError", "BigInt.prototype.toLocaleString requires that 'this' be a BigInt")
@@ -41,7 +41,7 @@ func setupBigInt(env *runtime.Environment) {
 		return object.NewString(bi.ToStringRadix(10))
 	}))
 
-	proto.SetProperty("valueOf", object.NewBuiltinMethod("valueOf", func(this object.Value, args ...object.Value) object.Value {
+	proto.SetBuiltinProperty("valueOf", object.NewBuiltinMethod("valueOf", func(this object.Value, args ...object.Value) object.Value {
 		bi, ok := this.(*object.BigInt)
 		if !ok {
 			return object.NewErrorWithName("TypeError", "BigInt.prototype.valueOf requires that 'this' be a BigInt")
@@ -65,7 +65,7 @@ func setupBigInt(env *runtime.Environment) {
 	fn.SetProperty("name", object.NewString("BigInt"))
 	fn.SetProperty("length", object.NewInt(1))
 	fn.SetProperty("prototype", proto)
-	proto.SetProperty("constructor", fn)
+	proto.SetBuiltinProperty("constructor", fn)
 
 	// ===== 静态方法 =====
 	fn.SetProperty("asIntN", object.NewBuiltin("asIntN", func(args ...object.Value) object.Value {

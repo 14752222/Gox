@@ -84,7 +84,7 @@ func setupTypedArrays(env *runtime.Environment) {
 		for _, m := range []string{"set", "subarray", "slice", "join",
 			"indexOf", "includes", "forEach", "toBase64"} {
 			mName := m
-			proto.SetProperty(mName, object.NewBuiltinMethod(mName, func(this object.Value, margs ...object.Value) object.Value {
+			proto.SetBuiltinProperty(mName, object.NewBuiltinMethod(mName, func(this object.Value, margs ...object.Value) object.Value {
 				ta, ok := this.(*object.TypedArray)
 				if !ok {
 					return object.NewTypeError("%s.prototype.%s: receiver must be a TypedArray", kind.Name, mName)

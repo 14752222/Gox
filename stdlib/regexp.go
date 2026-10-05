@@ -61,7 +61,7 @@ func setupRegExpProto() *object.Object {
 	p := object.NewObject()
 
 	// exec(string): 执行匹配
-	p.SetProperty("exec", object.NewBuiltinMethod("exec", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("exec", object.NewBuiltinMethod("exec", func(this object.Value, args ...object.Value) object.Value {
 		re, ok := this.(*object.RegExp)
 		if !ok {
 			return object.NullSingleton
@@ -121,7 +121,7 @@ func setupRegExpProto() *object.Object {
 	// 成功后推进 lastIndex，失败则重置为 0。
 	// 旧实现用 MatchString 全串匹配，完全忽略 lastIndex，导致
 	// /a/g.test("abc") 连续调用永远返回 true (无法遍历所有匹配)。
-	p.SetProperty("test", object.NewBuiltinMethod("test", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("test", object.NewBuiltinMethod("test", func(this object.Value, args ...object.Value) object.Value {
 		re, ok := this.(*object.RegExp)
 		if !ok {
 			return thisTypeError("RegExp", "test", this)
@@ -159,7 +159,7 @@ func setupRegExpProto() *object.Object {
 	}))
 
 	// toString(): 返回正则的字符串表示
-	p.SetProperty("toString", object.NewBuiltinMethod("toString", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("toString", object.NewBuiltinMethod("toString", func(this object.Value, args ...object.Value) object.Value {
 		if re, ok := this.(*object.RegExp); ok {
 			return object.NewString(re.Inspect())
 		}
@@ -167,7 +167,7 @@ func setupRegExpProto() *object.Object {
 	}))
 
 	// [Symbol.match](string): 用于 String.prototype.match
-	p.SetProperty(object.NewSymbol("Symbol.match").Inspect(), object.NewBuiltinMethod("[Symbol.match]", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty(object.NewSymbol("Symbol.match").Inspect(), object.NewBuiltinMethod("[Symbol.match]", func(this object.Value, args ...object.Value) object.Value {
 		re, ok := this.(*object.RegExp)
 		if !ok {
 			return object.NullSingleton
@@ -213,7 +213,7 @@ func setupRegExpProto() *object.Object {
 	}))
 
 	// [Symbol.replace](string, replacement): 用于 String.prototype.replace
-	p.SetProperty(object.NewSymbol("Symbol.replace").Inspect(), object.NewBuiltinMethod("[Symbol.replace]", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty(object.NewSymbol("Symbol.replace").Inspect(), object.NewBuiltinMethod("[Symbol.replace]", func(this object.Value, args ...object.Value) object.Value {
 		re, ok := this.(*object.RegExp)
 		if !ok {
 			return object.UndefinedSingleton
@@ -264,7 +264,7 @@ func setupRegExpProto() *object.Object {
 	}))
 
 	// [Symbol.split](string, limit): 用于 String.prototype.split
-	p.SetProperty(object.NewSymbol("Symbol.split").Inspect(), object.NewBuiltinMethod("[Symbol.split]", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty(object.NewSymbol("Symbol.split").Inspect(), object.NewBuiltinMethod("[Symbol.split]", func(this object.Value, args ...object.Value) object.Value {
 		re, ok := this.(*object.RegExp)
 		if !ok {
 			return object.NewArray([]object.Value{})

@@ -315,7 +315,7 @@ func setupTemporalPlainDateTime(temporal *object.Object) {
 	})
 	ctor.SetProperty("name", object.NewString("PlainDateTime"))
 	ctor.SetProperty("prototype", proto)
-	proto.SetProperty("constructor", ctor)
+	proto.SetBuiltinProperty("constructor", ctor)
 
 	tgStatic(ctor, "from", func(args ...object.Value) object.Value {
 		if len(args) == 0 {
@@ -357,7 +357,7 @@ func setupTemporalPlainDateTime(temporal *object.Object) {
 	})
 
 	setToStringTag(proto, "Temporal.PlainDateTime")
-	temporal.SetProperty("PlainDateTime", ctor)
+	temporal.SetBuiltinProperty("PlainDateTime", ctor)
 }
 
 // ===== 内部辅助 =====

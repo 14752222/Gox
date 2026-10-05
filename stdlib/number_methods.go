@@ -12,7 +12,7 @@ func setupNumberProto() *object.Object {
 	p := object.NewObject()
 
 	// toFixed(digits): 返回固定小数位数的字符串表示
-	p.SetProperty("toFixed", object.NewBuiltinMethod("toFixed", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("toFixed", object.NewBuiltinMethod("toFixed", func(this object.Value, args ...object.Value) object.Value {
 		num, ok := this.(*object.Number)
 		if !ok {
 			return thisTypeError("Number", "toFixed", this)
@@ -37,7 +37,7 @@ func setupNumberProto() *object.Object {
 	}))
 
 	// toPrecision(precision): 返回指定精度的字符串表示
-	p.SetProperty("toPrecision", object.NewBuiltinMethod("toPrecision", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("toPrecision", object.NewBuiltinMethod("toPrecision", func(this object.Value, args ...object.Value) object.Value {
 		num, ok := this.(*object.Number)
 		if !ok {
 			return thisTypeError("Number", "toPrecision", this)
@@ -62,7 +62,7 @@ func setupNumberProto() *object.Object {
 	}))
 
 	// toString(radix): 将数字转换为指定进制的字符串
-	p.SetProperty("toString", object.NewBuiltinMethod("toString", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("toString", object.NewBuiltinMethod("toString", func(this object.Value, args ...object.Value) object.Value {
 		num, ok := this.(*object.Number)
 		if !ok {
 			return thisTypeError("Number", "toString", this)
@@ -119,7 +119,7 @@ func setupNumberProto() *object.Object {
 	}))
 
 	// toExponential(fractionDigits): 返回指数表示法字符串
-	p.SetProperty("toExponential", object.NewBuiltinMethod("toExponential", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("toExponential", object.NewBuiltinMethod("toExponential", func(this object.Value, args ...object.Value) object.Value {
 		num, ok := this.(*object.Number)
 		if !ok {
 			return thisTypeError("Number", "toExponential", this)
@@ -145,7 +145,7 @@ func setupNumberProto() *object.Object {
 	}))
 
 	// valueOf(): 返回原始数字值
-	p.SetProperty("valueOf", object.NewBuiltinMethod("valueOf", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("valueOf", object.NewBuiltinMethod("valueOf", func(this object.Value, args ...object.Value) object.Value {
 		if num, ok := this.(*object.Number); ok {
 			return num
 		}

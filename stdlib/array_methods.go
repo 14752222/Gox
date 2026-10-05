@@ -15,7 +15,7 @@ func setupArrayProto() *object.Object {
 	p := object.NewObject()
 
 	// push(...items): 向数组末尾添加元素，返回新长度
-	p.SetProperty("push", object.NewBuiltinMethod("push", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("push", object.NewBuiltinMethod("push", func(this object.Value, args ...object.Value) object.Value {
 		arr, ok := this.(*object.Array)
 		if !ok {
 			return thisTypeError("Array", "push", this)
@@ -25,7 +25,7 @@ func setupArrayProto() *object.Object {
 	}))
 
 	// pop(): 移除并返回数组最后一个元素
-	p.SetProperty("pop", object.NewBuiltinMethod("pop", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("pop", object.NewBuiltinMethod("pop", func(this object.Value, args ...object.Value) object.Value {
 		arr, ok := this.(*object.Array)
 		if !ok {
 			return thisTypeError("Array", "pop", this)
@@ -40,7 +40,7 @@ func setupArrayProto() *object.Object {
 	}))
 
 	// shift(): 移除并返回数组第一个元素
-	p.SetProperty("shift", object.NewBuiltinMethod("shift", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("shift", object.NewBuiltinMethod("shift", func(this object.Value, args ...object.Value) object.Value {
 		arr, ok := this.(*object.Array)
 		if !ok {
 			return thisTypeError("Array", "shift", this)
@@ -55,7 +55,7 @@ func setupArrayProto() *object.Object {
 	}))
 
 	// unshift(...items): 向数组开头添加元素，返回新长度
-	p.SetProperty("unshift", object.NewBuiltinMethod("unshift", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("unshift", object.NewBuiltinMethod("unshift", func(this object.Value, args ...object.Value) object.Value {
 		arr, ok := this.(*object.Array)
 		if !ok {
 			return thisTypeError("Array", "unshift", this)
@@ -71,7 +71,7 @@ func setupArrayProto() *object.Object {
 
 	// join(separator): 用分隔符连接所有元素
 	// undefined / null 元素输出为空串；separator 省略或为 null/undefined 时用 ","
-	p.SetProperty("join", object.NewBuiltinMethod("join", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("join", object.NewBuiltinMethod("join", func(this object.Value, args ...object.Value) object.Value {
 		arr, ok := this.(*object.Array)
 		if !ok {
 			return thisTypeError("Array", "join", this)
@@ -92,7 +92,7 @@ func setupArrayProto() *object.Object {
 	}))
 
 	// slice(start, end): 返回数组的一部分 (浅拷贝，不修改原数组)
-	p.SetProperty("slice", object.NewBuiltinMethod("slice", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("slice", object.NewBuiltinMethod("slice", func(this object.Value, args ...object.Value) object.Value {
 		arr, ok := this.(*object.Array)
 		if !ok {
 			return thisTypeError("Array", "slice", this)
@@ -115,7 +115,7 @@ func setupArrayProto() *object.Object {
 	}))
 
 	// splice(start, deleteCount, ...items): 修改数组内容
-	p.SetProperty("splice", object.NewBuiltinMethod("splice", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("splice", object.NewBuiltinMethod("splice", func(this object.Value, args ...object.Value) object.Value {
 		arr, ok := this.(*object.Array)
 		if !ok {
 			return thisTypeError("Array", "splice", this)
@@ -152,7 +152,7 @@ func setupArrayProto() *object.Object {
 	}))
 
 	// concat(...arrays): 连接多个数组
-	p.SetProperty("concat", object.NewBuiltinMethod("concat", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("concat", object.NewBuiltinMethod("concat", func(this object.Value, args ...object.Value) object.Value {
 		var result []object.Value
 		if arr, ok := this.(*object.Array); ok {
 			result = append(result, arr.Elements...)
@@ -169,7 +169,7 @@ func setupArrayProto() *object.Object {
 
 	// indexOf(item, fromIndex): 查找元素的索引
 	// 采用 SameValueZero 比较，因此 [NaN].indexOf(NaN) === 0
-	p.SetProperty("indexOf", object.NewBuiltinMethod("indexOf", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("indexOf", object.NewBuiltinMethod("indexOf", func(this object.Value, args ...object.Value) object.Value {
 		arr, ok := this.(*object.Array)
 		if !ok {
 			return thisTypeError("Array", "indexOf", this)
@@ -193,7 +193,7 @@ func setupArrayProto() *object.Object {
 
 	// includes(item, fromIndex): 检查数组是否包含某元素
 	// 同样采用 SameValueZero，因此 [NaN].includes(NaN) === true
-	p.SetProperty("includes", object.NewBuiltinMethod("includes", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("includes", object.NewBuiltinMethod("includes", func(this object.Value, args ...object.Value) object.Value {
 		arr, ok := this.(*object.Array)
 		if !ok {
 			return thisTypeError("Array", "includes", this)
@@ -216,7 +216,7 @@ func setupArrayProto() *object.Object {
 	}))
 
 	// find(callback, thisArg): 返回第一个满足条件的元素
-	p.SetProperty("find", object.NewBuiltinMethod("find", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("find", object.NewBuiltinMethod("find", func(this object.Value, args ...object.Value) object.Value {
 		arr, callback, thisArg, errVal := arrayCallbackArgs("find", this, args)
 		if errVal != nil {
 			return errVal
@@ -238,7 +238,7 @@ func setupArrayProto() *object.Object {
 	}))
 
 	// findIndex(callback, thisArg): 返回第一个满足条件的元素的索引
-	p.SetProperty("findIndex", object.NewBuiltinMethod("findIndex", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("findIndex", object.NewBuiltinMethod("findIndex", func(this object.Value, args ...object.Value) object.Value {
 		arr, callback, thisArg, errVal := arrayCallbackArgs("findIndex", this, args)
 		if errVal != nil {
 			return errVal
@@ -260,7 +260,7 @@ func setupArrayProto() *object.Object {
 	}))
 
 	// forEach(callback, thisArg): 遍历数组，对每个元素调用回调
-	p.SetProperty("forEach", object.NewBuiltinMethod("forEach", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("forEach", object.NewBuiltinMethod("forEach", func(this object.Value, args ...object.Value) object.Value {
 		arr, callback, thisArg, errVal := arrayCallbackArgs("forEach", this, args)
 		if errVal != nil {
 			return errVal
@@ -279,7 +279,7 @@ func setupArrayProto() *object.Object {
 	}))
 
 	// map(callback, thisArg): 对每个元素调用回调，返回结果数组
-	p.SetProperty("map", object.NewBuiltinMethod("map", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("map", object.NewBuiltinMethod("map", func(this object.Value, args ...object.Value) object.Value {
 		arr, callback, thisArg, errVal := arrayCallbackArgs("map", this, args)
 		if errVal != nil {
 			return errVal
@@ -303,7 +303,7 @@ func setupArrayProto() *object.Object {
 	}))
 
 	// filter(callback, thisArg): 过滤数组，返回满足条件的元素
-	p.SetProperty("filter", object.NewBuiltinMethod("filter", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("filter", object.NewBuiltinMethod("filter", func(this object.Value, args ...object.Value) object.Value {
 		arr, callback, thisArg, errVal := arrayCallbackArgs("filter", this, args)
 		if errVal != nil {
 			return errVal
@@ -328,7 +328,7 @@ func setupArrayProto() *object.Object {
 	// reduce(callback, initialValue): 归约数组为单个值
 	// 规范: reduce 不接受 thisArg，回调的 this 是 undefined；
 	// 空数组且未提供 initialValue 时抛 TypeError。
-	p.SetProperty("reduce", object.NewBuiltinMethod("reduce", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("reduce", object.NewBuiltinMethod("reduce", func(this object.Value, args ...object.Value) object.Value {
 		arr, callback, _, errVal := arrayCallbackArgs("reduce", this, args)
 		if errVal != nil {
 			return errVal
@@ -359,7 +359,7 @@ func setupArrayProto() *object.Object {
 	}))
 
 	// reduceRight(callback, initialValue): 从右向左归约
-	p.SetProperty("reduceRight", object.NewBuiltinMethod("reduceRight", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("reduceRight", object.NewBuiltinMethod("reduceRight", func(this object.Value, args ...object.Value) object.Value {
 		arr, callback, _, errVal := arrayCallbackArgs("reduceRight", this, args)
 		if errVal != nil {
 			return errVal
@@ -391,7 +391,7 @@ func setupArrayProto() *object.Object {
 	}))
 
 	// some(callback, thisArg): 如果有元素满足条件则返回 true
-	p.SetProperty("some", object.NewBuiltinMethod("some", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("some", object.NewBuiltinMethod("some", func(this object.Value, args ...object.Value) object.Value {
 		arr, callback, thisArg, errVal := arrayCallbackArgs("some", this, args)
 		if errVal != nil {
 			return errVal
@@ -413,7 +413,7 @@ func setupArrayProto() *object.Object {
 	}))
 
 	// every(callback, thisArg): 如果所有元素都满足条件则返回 true
-	p.SetProperty("every", object.NewBuiltinMethod("every", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("every", object.NewBuiltinMethod("every", func(this object.Value, args ...object.Value) object.Value {
 		arr, callback, thisArg, errVal := arrayCallbackArgs("every", this, args)
 		if errVal != nil {
 			return errVal
@@ -435,7 +435,7 @@ func setupArrayProto() *object.Object {
 	}))
 
 	// flatMap(callback, thisArg): 先 map 再 flat(1)
-	p.SetProperty("flatMap", object.NewBuiltinMethod("flatMap", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("flatMap", object.NewBuiltinMethod("flatMap", func(this object.Value, args ...object.Value) object.Value {
 		arr, callback, thisArg, errVal := arrayCallbackArgs("flatMap", this, args)
 		if errVal != nil {
 			return errVal
@@ -465,7 +465,7 @@ func setupArrayProto() *object.Object {
 	// ===== 迭代器方法 (ES6): 返回真正的迭代器对象 =====
 
 	// keys(): 迭代索引
-	p.SetProperty("keys", object.NewBuiltinMethod("keys", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("keys", object.NewBuiltinMethod("keys", func(this object.Value, args ...object.Value) object.Value {
 		arr, ok := this.(*object.Array)
 		if !ok {
 			return thisTypeError("Array", "keys", this)
@@ -474,7 +474,7 @@ func setupArrayProto() *object.Object {
 	}))
 
 	// values(): 迭代元素
-	p.SetProperty("values", object.NewBuiltinMethod("values", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("values", object.NewBuiltinMethod("values", func(this object.Value, args ...object.Value) object.Value {
 		arr, ok := this.(*object.Array)
 		if !ok {
 			return thisTypeError("Array", "values", this)
@@ -483,7 +483,7 @@ func setupArrayProto() *object.Object {
 	}))
 
 	// entries(): 迭代 [index, element] 对
-	p.SetProperty("entries", object.NewBuiltinMethod("entries", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("entries", object.NewBuiltinMethod("entries", func(this object.Value, args ...object.Value) object.Value {
 		arr, ok := this.(*object.Array)
 		if !ok {
 			return thisTypeError("Array", "entries", this)
@@ -494,7 +494,7 @@ func setupArrayProto() *object.Object {
 	// ===== ES2023 findLast 系列 =====
 
 	// findLast(callback, thisArg): 从后向前找第一个满足条件的元素
-	p.SetProperty("findLast", object.NewBuiltinMethod("findLast", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("findLast", object.NewBuiltinMethod("findLast", func(this object.Value, args ...object.Value) object.Value {
 		arr, callback, thisArg, errVal := arrayCallbackArgs("findLast", this, args)
 		if errVal != nil {
 			return errVal
@@ -513,7 +513,7 @@ func setupArrayProto() *object.Object {
 	}))
 
 	// findLastIndex(callback, thisArg): 从后向前找第一个满足条件的索引
-	p.SetProperty("findLastIndex", object.NewBuiltinMethod("findLastIndex", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("findLastIndex", object.NewBuiltinMethod("findLastIndex", func(this object.Value, args ...object.Value) object.Value {
 		arr, callback, thisArg, errVal := arrayCallbackArgs("findLastIndex", this, args)
 		if errVal != nil {
 			return errVal
@@ -534,7 +534,7 @@ func setupArrayProto() *object.Object {
 	// ===== ES2023 变更即拷贝 (change-by-copy) 方法 =====
 
 	// toSorted(compareFn): sorted() 的新副本
-	p.SetProperty("toSorted", object.NewBuiltinMethod("toSorted", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("toSorted", object.NewBuiltinMethod("toSorted", func(this object.Value, args ...object.Value) object.Value {
 		arr, ok := this.(*object.Array)
 		if !ok {
 			return thisTypeError("Array", "toSorted", this)
@@ -545,7 +545,7 @@ func setupArrayProto() *object.Object {
 	}))
 
 	// toReversed(): reversed() 的新副本
-	p.SetProperty("toReversed", object.NewBuiltinMethod("toReversed", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("toReversed", object.NewBuiltinMethod("toReversed", func(this object.Value, args ...object.Value) object.Value {
 		arr, ok := this.(*object.Array)
 		if !ok {
 			return thisTypeError("Array", "toReversed", this)
@@ -559,7 +559,7 @@ func setupArrayProto() *object.Object {
 	}))
 
 	// toSpliced(start, deleteCount, ...items): spliced() 的新副本
-	p.SetProperty("toSpliced", object.NewBuiltinMethod("toSpliced", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("toSpliced", object.NewBuiltinMethod("toSpliced", func(this object.Value, args ...object.Value) object.Value {
 		arr, ok := this.(*object.Array)
 		if !ok {
 			return thisTypeError("Array", "toSpliced", this)
@@ -573,7 +573,7 @@ func setupArrayProto() *object.Object {
 	}))
 
 	// with(index, value): 替换单个元素的新副本
-	p.SetProperty("with", object.NewBuiltinMethod("with", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("with", object.NewBuiltinMethod("with", func(this object.Value, args ...object.Value) object.Value {
 		arr, ok := this.(*object.Array)
 		if !ok {
 			return thisTypeError("Array", "with", this)
@@ -599,7 +599,7 @@ func setupArrayProto() *object.Object {
 	}))
 
 	// reverse(): 反转数组 (原地修改并返回自身)
-	p.SetProperty("reverse", object.NewBuiltinMethod("reverse", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("reverse", object.NewBuiltinMethod("reverse", func(this object.Value, args ...object.Value) object.Value {
 		arr, ok := this.(*object.Array)
 		if !ok {
 			return thisTypeError("Array", "reverse", this)
@@ -612,7 +612,7 @@ func setupArrayProto() *object.Object {
 	}))
 
 	// sort(compareFn): 排序数组 (原地修改并返回自身)
-	p.SetProperty("sort", object.NewBuiltinMethod("sort", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("sort", object.NewBuiltinMethod("sort", func(this object.Value, args ...object.Value) object.Value {
 		arr, ok := this.(*object.Array)
 		if !ok {
 			return thisTypeError("Array", "sort", this)
@@ -652,7 +652,7 @@ func setupArrayProto() *object.Object {
 	}))
 
 	// toString(): 数组转字符串 (等价于无参 join)
-	p.SetProperty("toString", object.NewBuiltinMethod("toString", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("toString", object.NewBuiltinMethod("toString", func(this object.Value, args ...object.Value) object.Value {
 		arr, ok := this.(*object.Array)
 		if !ok {
 			return thisTypeError("Array", "toString", this)
@@ -669,7 +669,7 @@ func setupArrayProto() *object.Object {
 	}))
 
 	// at(index): 返回指定索引处的元素，支持负索引 (-1 表示最后一个)
-	p.SetProperty("at", object.NewBuiltinMethod("at", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("at", object.NewBuiltinMethod("at", func(this object.Value, args ...object.Value) object.Value {
 		arr, ok := this.(*object.Array)
 		if !ok {
 			return thisTypeError("Array", "at", this)
@@ -689,7 +689,7 @@ func setupArrayProto() *object.Object {
 	}))
 
 	// fill(value, start, end): 用固定值填充数组的一部分
-	p.SetProperty("fill", object.NewBuiltinMethod("fill", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("fill", object.NewBuiltinMethod("fill", func(this object.Value, args ...object.Value) object.Value {
 		arr, ok := this.(*object.Array)
 		if !ok {
 			return thisTypeError("Array", "fill", this)
@@ -714,7 +714,7 @@ func setupArrayProto() *object.Object {
 	}))
 
 	// copyWithin(target, start, end): 数组内部复制
-	p.SetProperty("copyWithin", object.NewBuiltinMethod("copyWithin", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("copyWithin", object.NewBuiltinMethod("copyWithin", func(this object.Value, args ...object.Value) object.Value {
 		arr, ok := this.(*object.Array)
 		if !ok {
 			return thisTypeError("Array", "copyWithin", this)
@@ -746,7 +746,7 @@ func setupArrayProto() *object.Object {
 	}))
 
 	// lastIndexOf(item, fromIndex): 从后向前查找 (SameValueZero，支持 NaN)
-	p.SetProperty("lastIndexOf", object.NewBuiltinMethod("lastIndexOf", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("lastIndexOf", object.NewBuiltinMethod("lastIndexOf", func(this object.Value, args ...object.Value) object.Value {
 		arr, ok := this.(*object.Array)
 		if !ok {
 			return thisTypeError("Array", "lastIndexOf", this)
@@ -781,7 +781,7 @@ func setupArrayProto() *object.Object {
 	}))
 
 	// flat(depth): 扁平化数组。depth 默认 1，Infinity 表示完全展开
-	p.SetProperty("flat", object.NewBuiltinMethod("flat", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("flat", object.NewBuiltinMethod("flat", func(this object.Value, args ...object.Value) object.Value {
 		arr, ok := this.(*object.Array)
 		if !ok {
 			return thisTypeError("Array", "flat", this)

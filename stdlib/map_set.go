@@ -101,7 +101,7 @@ func setupMapSet(env *runtime.Environment) {
 // setupWeakMapProto 创建 WeakMap.prototype (不可枚举，仅四个方法)。
 func setupWeakMapProto() *object.Object {
 	p := object.NewObject()
-	p.SetProperty("get", object.NewBuiltinMethod("get", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("get", object.NewBuiltinMethod("get", func(this object.Value, args ...object.Value) object.Value {
 		m, ok := this.(*object.Map)
 		if !ok || len(args) == 0 {
 			return object.UndefinedSingleton
@@ -111,7 +111,7 @@ func setupWeakMapProto() *object.Object {
 		}
 		return object.UndefinedSingleton
 	}))
-	p.SetProperty("set", object.NewBuiltinMethod("set", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("set", object.NewBuiltinMethod("set", func(this object.Value, args ...object.Value) object.Value {
 		m, ok := this.(*object.Map)
 		if !ok {
 			return thisTypeError("WeakMap", "set", this)
@@ -127,14 +127,14 @@ func setupWeakMapProto() *object.Object {
 		m.Set(key, val)
 		return this
 	}))
-	p.SetProperty("has", object.NewBuiltinMethod("has", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("has", object.NewBuiltinMethod("has", func(this object.Value, args ...object.Value) object.Value {
 		m, ok := this.(*object.Map)
 		if !ok || len(args) == 0 {
 			return object.NewBoolean(false)
 		}
 		return object.NewBoolean(m.Has(args[0]))
 	}))
-	p.SetProperty("delete", object.NewBuiltinMethod("delete", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("delete", object.NewBuiltinMethod("delete", func(this object.Value, args ...object.Value) object.Value {
 		m, ok := this.(*object.Map)
 		if !ok || len(args) == 0 {
 			return object.NewBoolean(false)
@@ -147,7 +147,7 @@ func setupWeakMapProto() *object.Object {
 // setupWeakSetProto 创建 WeakSet.prototype (不可枚举，仅三个方法)。
 func setupWeakSetProto() *object.Object {
 	p := object.NewObject()
-	p.SetProperty("add", object.NewBuiltinMethod("add", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("add", object.NewBuiltinMethod("add", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.Set)
 		if !ok {
 			return thisTypeError("WeakSet", "add", this)
@@ -157,14 +157,14 @@ func setupWeakSetProto() *object.Object {
 		}
 		return this
 	}))
-	p.SetProperty("has", object.NewBuiltinMethod("has", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("has", object.NewBuiltinMethod("has", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.Set)
 		if !ok || len(args) == 0 {
 			return object.NewBoolean(false)
 		}
 		return object.NewBoolean(s.Has(args[0]))
 	}))
-	p.SetProperty("delete", object.NewBuiltinMethod("delete", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("delete", object.NewBuiltinMethod("delete", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.Set)
 		if !ok || len(args) == 0 {
 			return object.NewBoolean(false)
@@ -178,7 +178,7 @@ func setupMapProto() *object.Object {
 	p := object.NewObject()
 
 	// set(key, value): 设置键值对，返回 Map 本身
-	p.SetProperty("set", object.NewBuiltinMethod("set", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("set", object.NewBuiltinMethod("set", func(this object.Value, args ...object.Value) object.Value {
 		m, ok := this.(*object.Map)
 		if !ok {
 			return this
@@ -196,7 +196,7 @@ func setupMapProto() *object.Object {
 	}))
 
 	// get(key): 获取键对应的值
-	p.SetProperty("get", object.NewBuiltinMethod("get", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("get", object.NewBuiltinMethod("get", func(this object.Value, args ...object.Value) object.Value {
 		m, ok := this.(*object.Map)
 		if !ok {
 			return object.UndefinedSingleton
@@ -211,7 +211,7 @@ func setupMapProto() *object.Object {
 	}))
 
 	// has(key): 检查键是否存在
-	p.SetProperty("has", object.NewBuiltinMethod("has", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("has", object.NewBuiltinMethod("has", func(this object.Value, args ...object.Value) object.Value {
 		m, ok := this.(*object.Map)
 		if !ok {
 			return object.NewBoolean(false)
@@ -223,7 +223,7 @@ func setupMapProto() *object.Object {
 	}))
 
 	// delete(key): 删除键值对
-	p.SetProperty("delete", object.NewBuiltinMethod("delete", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("delete", object.NewBuiltinMethod("delete", func(this object.Value, args ...object.Value) object.Value {
 		m, ok := this.(*object.Map)
 		if !ok {
 			return object.NewBoolean(false)
@@ -235,7 +235,7 @@ func setupMapProto() *object.Object {
 	}))
 
 	// clear(): 清空 Map
-	p.SetProperty("clear", object.NewBuiltinMethod("clear", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("clear", object.NewBuiltinMethod("clear", func(this object.Value, args ...object.Value) object.Value {
 		if m, ok := this.(*object.Map); ok {
 			m.Clear()
 		}
@@ -243,7 +243,7 @@ func setupMapProto() *object.Object {
 	}))
 
 	// forEach(callback): 遍历 Map
-	p.SetProperty("forEach", object.NewBuiltinMethod("forEach", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("forEach", object.NewBuiltinMethod("forEach", func(this object.Value, args ...object.Value) object.Value {
 		m, ok := this.(*object.Map)
 		if !ok || len(args) < 1 {
 			return object.UndefinedSingleton
@@ -256,7 +256,7 @@ func setupMapProto() *object.Object {
 	}))
 
 	// keys(): 返回键的迭代器（简化为数组）
-	p.SetProperty("keys", object.NewBuiltinMethod("keys", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("keys", object.NewBuiltinMethod("keys", func(this object.Value, args ...object.Value) object.Value {
 		m, ok := this.(*object.Map)
 		if !ok {
 			return object.NewArray([]object.Value{})
@@ -269,7 +269,7 @@ func setupMapProto() *object.Object {
 	}))
 
 	// values(): 返回值的迭代器（简化为数组）
-	p.SetProperty("values", object.NewBuiltinMethod("values", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("values", object.NewBuiltinMethod("values", func(this object.Value, args ...object.Value) object.Value {
 		m, ok := this.(*object.Map)
 		if !ok {
 			return object.NewArray([]object.Value{})
@@ -282,7 +282,7 @@ func setupMapProto() *object.Object {
 	}))
 
 	// entries(): 返回键值对数组
-	p.SetProperty("entries", object.NewBuiltinMethod("entries", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("entries", object.NewBuiltinMethod("entries", func(this object.Value, args ...object.Value) object.Value {
 		m, ok := this.(*object.Map)
 		if !ok {
 			return object.NewArray([]object.Value{})
@@ -301,7 +301,7 @@ func setupSetProto() *object.Object {
 	p := object.NewObject()
 
 	// add(value): 添加值，返回 Set 本身
-	p.SetProperty("add", object.NewBuiltinMethod("add", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("add", object.NewBuiltinMethod("add", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.Set)
 		if !ok {
 			return this
@@ -313,7 +313,7 @@ func setupSetProto() *object.Object {
 	}))
 
 	// has(value): 检查值是否存在
-	p.SetProperty("has", object.NewBuiltinMethod("has", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("has", object.NewBuiltinMethod("has", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.Set)
 		if !ok {
 			return object.NewBoolean(false)
@@ -325,7 +325,7 @@ func setupSetProto() *object.Object {
 	}))
 
 	// delete(value): 删除值
-	p.SetProperty("delete", object.NewBuiltinMethod("delete", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("delete", object.NewBuiltinMethod("delete", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.Set)
 		if !ok {
 			return object.NewBoolean(false)
@@ -337,7 +337,7 @@ func setupSetProto() *object.Object {
 	}))
 
 	// clear(): 清空 Set
-	p.SetProperty("clear", object.NewBuiltinMethod("clear", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("clear", object.NewBuiltinMethod("clear", func(this object.Value, args ...object.Value) object.Value {
 		if s, ok := this.(*object.Set); ok {
 			s.Clear()
 		}
@@ -345,7 +345,7 @@ func setupSetProto() *object.Object {
 	}))
 
 	// forEach(callback): 遍历 Set
-	p.SetProperty("forEach", object.NewBuiltinMethod("forEach", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("forEach", object.NewBuiltinMethod("forEach", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.Set)
 		if !ok || len(args) < 1 {
 			return object.UndefinedSingleton
@@ -358,7 +358,7 @@ func setupSetProto() *object.Object {
 	}))
 
 	// entries(): 返回 [value, value] 对数组
-	p.SetProperty("entries", object.NewBuiltinMethod("entries", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("entries", object.NewBuiltinMethod("entries", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.Set)
 		if !ok {
 			return object.NewArray([]object.Value{})
@@ -371,7 +371,7 @@ func setupSetProto() *object.Object {
 	}))
 
 	// values(): 返回值的数组
-	p.SetProperty("values", object.NewBuiltinMethod("values", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("values", object.NewBuiltinMethod("values", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.Set)
 		if !ok {
 			return object.NewArray([]object.Value{})
@@ -382,7 +382,7 @@ func setupSetProto() *object.Object {
 	}))
 
 	// keys(): Set 的 keys 与 values 相同
-	p.SetProperty("keys", object.NewBuiltinMethod("keys", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("keys", object.NewBuiltinMethod("keys", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.Set)
 		if !ok {
 			return object.NewArray([]object.Value{})
@@ -428,7 +428,7 @@ func setupSetCombinators(p *object.Object) {
 	}
 
 	// union(other): 两个集合的所有唯一元素
-	p.SetProperty("union", object.NewBuiltinMethod("union", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("union", object.NewBuiltinMethod("union", func(this object.Value, args ...object.Value) object.Value {
 		s, arg := parseSetArg(this, args, "union")
 		if s == nil {
 			return arg
@@ -448,7 +448,7 @@ func setupSetCombinators(p *object.Object) {
 	}))
 
 	// intersection(other): 同时存在于两个集合的元素
-	p.SetProperty("intersection", object.NewBuiltinMethod("intersection", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("intersection", object.NewBuiltinMethod("intersection", func(this object.Value, args ...object.Value) object.Value {
 		s, arg := parseSetArg(this, args, "intersection")
 		if s == nil {
 			return arg
@@ -467,7 +467,7 @@ func setupSetCombinators(p *object.Object) {
 	}))
 
 	// difference(other): 在 this 中但不在 other 中的元素
-	p.SetProperty("difference", object.NewBuiltinMethod("difference", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("difference", object.NewBuiltinMethod("difference", func(this object.Value, args ...object.Value) object.Value {
 		s, arg := parseSetArg(this, args, "difference")
 		if s == nil {
 			return arg
@@ -486,7 +486,7 @@ func setupSetCombinators(p *object.Object) {
 	}))
 
 	// symmetricDifference(other): 只在一个集合中出现的元素
-	p.SetProperty("symmetricDifference", object.NewBuiltinMethod("symmetricDifference", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("symmetricDifference", object.NewBuiltinMethod("symmetricDifference", func(this object.Value, args ...object.Value) object.Value {
 		s, arg := parseSetArg(this, args, "symmetricDifference")
 		if s == nil {
 			return arg
@@ -510,7 +510,7 @@ func setupSetCombinators(p *object.Object) {
 	}))
 
 	// isSubsetOf(other): this 的每个元素都在 other 中
-	p.SetProperty("isSubsetOf", object.NewBuiltinMethod("isSubsetOf", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("isSubsetOf", object.NewBuiltinMethod("isSubsetOf", func(this object.Value, args ...object.Value) object.Value {
 		s, arg := parseSetArg(this, args, "isSubsetOf")
 		if s == nil {
 			return arg
@@ -528,7 +528,7 @@ func setupSetCombinators(p *object.Object) {
 	}))
 
 	// isSupersetOf(other): other 的每个元素都在 this 中
-	p.SetProperty("isSupersetOf", object.NewBuiltinMethod("isSupersetOf", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("isSupersetOf", object.NewBuiltinMethod("isSupersetOf", func(this object.Value, args ...object.Value) object.Value {
 		s, arg := parseSetArg(this, args, "isSupersetOf")
 		if s == nil {
 			return arg
@@ -546,7 +546,7 @@ func setupSetCombinators(p *object.Object) {
 	}))
 
 	// isDisjointFrom(other): 无共同元素
-	p.SetProperty("isDisjointFrom", object.NewBuiltinMethod("isDisjointFrom", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("isDisjointFrom", object.NewBuiltinMethod("isDisjointFrom", func(this object.Value, args ...object.Value) object.Value {
 		s, arg := parseSetArg(this, args, "isDisjointFrom")
 		if s == nil {
 			return arg

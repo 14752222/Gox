@@ -21,7 +21,7 @@ func setupStringProto() *object.Object {
 	p := object.NewObject()
 
 	// toUpperCase()
-	p.SetProperty("toUpperCase", object.NewBuiltinMethod("toUpperCase", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("toUpperCase", object.NewBuiltinMethod("toUpperCase", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.String)
 		if !ok {
 			return thisTypeError("String", "toUpperCase", this)
@@ -30,7 +30,7 @@ func setupStringProto() *object.Object {
 	}))
 
 	// toLowerCase()
-	p.SetProperty("toLowerCase", object.NewBuiltinMethod("toLowerCase", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("toLowerCase", object.NewBuiltinMethod("toLowerCase", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.String)
 		if !ok {
 			return thisTypeError("String", "toLowerCase", this)
@@ -39,7 +39,7 @@ func setupStringProto() *object.Object {
 	}))
 
 	// charAt(index): 按 UTF-16 码元索引，越界返回空串
-	p.SetProperty("charAt", object.NewBuiltinMethod("charAt", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("charAt", object.NewBuiltinMethod("charAt", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.String)
 		if !ok {
 			return thisTypeError("String", "charAt", this)
@@ -56,7 +56,7 @@ func setupStringProto() *object.Object {
 	}))
 
 	// charCodeAt(index): 按 UTF-16 码元索引，越界返回 NaN
-	p.SetProperty("charCodeAt", object.NewBuiltinMethod("charCodeAt", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("charCodeAt", object.NewBuiltinMethod("charCodeAt", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.String)
 		if !ok {
 			return thisTypeError("String", "charCodeAt", this)
@@ -74,7 +74,7 @@ func setupStringProto() *object.Object {
 	}))
 
 	// codePointAt(index): 返回完整的 Unicode 码点 (代理对会合并)
-	p.SetProperty("codePointAt", object.NewBuiltinMethod("codePointAt", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("codePointAt", object.NewBuiltinMethod("codePointAt", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.String)
 		if !ok {
 			return thisTypeError("String", "codePointAt", this)
@@ -99,7 +99,7 @@ func setupStringProto() *object.Object {
 	}))
 
 	// split(separator, limit)
-	p.SetProperty("split", object.NewBuiltinMethod("split", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("split", object.NewBuiltinMethod("split", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.String)
 		if !ok {
 			return thisTypeError("String", "split", this)
@@ -157,7 +157,7 @@ func setupStringProto() *object.Object {
 	}))
 
 	// substring(start, end): 负数按 0 处理，start > end 时自动交换
-	p.SetProperty("substring", object.NewBuiltinMethod("substring", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("substring", object.NewBuiltinMethod("substring", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.String)
 		if !ok {
 			return thisTypeError("String", "substring", this)
@@ -178,7 +178,7 @@ func setupStringProto() *object.Object {
 	}))
 
 	// slice(start, end): 支持负索引 (从末尾倒数)
-	p.SetProperty("slice", object.NewBuiltinMethod("slice", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("slice", object.NewBuiltinMethod("slice", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.String)
 		if !ok {
 			return thisTypeError("String", "slice", this)
@@ -199,7 +199,7 @@ func setupStringProto() *object.Object {
 	}))
 
 	// indexOf(searchString, fromIndex): 返回码元索引，未找到返回 -1
-	p.SetProperty("indexOf", object.NewBuiltinMethod("indexOf", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("indexOf", object.NewBuiltinMethod("indexOf", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.String)
 		if !ok {
 			return thisTypeError("String", "indexOf", this)
@@ -218,7 +218,7 @@ func setupStringProto() *object.Object {
 	}))
 
 	// lastIndexOf(searchString, fromIndex): 从后向前查找
-	p.SetProperty("lastIndexOf", object.NewBuiltinMethod("lastIndexOf", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("lastIndexOf", object.NewBuiltinMethod("lastIndexOf", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.String)
 		if !ok {
 			return thisTypeError("String", "lastIndexOf", this)
@@ -244,7 +244,7 @@ func setupStringProto() *object.Object {
 	}))
 
 	// includes(searchString, fromIndex)
-	p.SetProperty("includes", object.NewBuiltinMethod("includes", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("includes", object.NewBuiltinMethod("includes", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.String)
 		if !ok {
 			return thisTypeError("String", "includes", this)
@@ -261,7 +261,7 @@ func setupStringProto() *object.Object {
 	}))
 
 	// startsWith(searchString, position)
-	p.SetProperty("startsWith", object.NewBuiltinMethod("startsWith", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("startsWith", object.NewBuiltinMethod("startsWith", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.String)
 		if !ok {
 			return thisTypeError("String", "startsWith", this)
@@ -279,7 +279,7 @@ func setupStringProto() *object.Object {
 	}))
 
 	// endsWith(searchString, endPosition)
-	p.SetProperty("endsWith", object.NewBuiltinMethod("endsWith", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("endsWith", object.NewBuiltinMethod("endsWith", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.String)
 		if !ok {
 			return thisTypeError("String", "endsWith", this)
@@ -297,7 +297,7 @@ func setupStringProto() *object.Object {
 	}))
 
 	// trim()
-	p.SetProperty("trim", object.NewBuiltinMethod("trim", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("trim", object.NewBuiltinMethod("trim", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.String)
 		if !ok {
 			return thisTypeError("String", "trim", this)
@@ -313,13 +313,13 @@ func setupStringProto() *object.Object {
 		}
 		return object.NewString(strings.TrimLeft(s.Value, jsWhitespace))
 	})
-	p.SetProperty("trimStart", trimStartFn)
-	p.SetProperty("trimLeft", trimStartFn)
+	p.SetBuiltinProperty("trimStart", trimStartFn)
+	p.SetBuiltinProperty("trimLeft", trimStartFn)
 
 	// normalize([form]) (ES6): Unicode 归一化。
 	// 运行时不引入 ICU 依赖，NFC/NFD/NFKC/NFKD 统一近似为原样返回
 	// (对已归一化的源文本行为正确)。
-	p.SetProperty("normalize", object.NewBuiltinMethod("normalize", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("normalize", object.NewBuiltinMethod("normalize", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.String)
 		if !ok {
 			return thisTypeError("String", "normalize", this)
@@ -336,7 +336,7 @@ func setupStringProto() *object.Object {
 	}))
 
 	// isWellFormed() (ES2024): 不含孤立代理项时为 true
-	p.SetProperty("isWellFormed", object.NewBuiltinMethod("isWellFormed", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("isWellFormed", object.NewBuiltinMethod("isWellFormed", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.String)
 		if !ok {
 			return thisTypeError("String", "isWellFormed", this)
@@ -345,7 +345,7 @@ func setupStringProto() *object.Object {
 	}))
 
 	// toWellFormed() (ES2024): 孤立代理项替换为 U+FFFD
-	p.SetProperty("toWellFormed", object.NewBuiltinMethod("toWellFormed", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("toWellFormed", object.NewBuiltinMethod("toWellFormed", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.String)
 		if !ok {
 			return thisTypeError("String", "toWellFormed", this)
@@ -361,11 +361,11 @@ func setupStringProto() *object.Object {
 		}
 		return object.NewString(strings.TrimRight(s.Value, jsWhitespace))
 	})
-	p.SetProperty("trimEnd", trimEndFn)
-	p.SetProperty("trimRight", trimEndFn)
+	p.SetBuiltinProperty("trimEnd", trimEndFn)
+	p.SetBuiltinProperty("trimRight", trimEndFn)
 
 	// replace(searchValue, replaceValue | replaceFn)
-	p.SetProperty("replace", object.NewBuiltinMethod("replace", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("replace", object.NewBuiltinMethod("replace", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.String)
 		if !ok {
 			return thisTypeError("String", "replace", this)
@@ -437,7 +437,7 @@ func setupStringProto() *object.Object {
 	}))
 
 	// replaceAll(searchValue, replaceValue | replaceFn)
-	p.SetProperty("replaceAll", object.NewBuiltinMethod("replaceAll", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("replaceAll", object.NewBuiltinMethod("replaceAll", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.String)
 		if !ok {
 			return thisTypeError("String", "replaceAll", this)
@@ -491,7 +491,7 @@ func setupStringProto() *object.Object {
 	}))
 
 	// repeat(count): 负数抛 RangeError，Infinity 亦为非法长度
-	p.SetProperty("repeat", object.NewBuiltinMethod("repeat", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("repeat", object.NewBuiltinMethod("repeat", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.String)
 		if !ok {
 			return thisTypeError("String", "repeat", this)
@@ -517,7 +517,7 @@ func setupStringProto() *object.Object {
 	}))
 
 	// padStart(targetLength, padString)
-	p.SetProperty("padStart", object.NewBuiltinMethod("padStart", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("padStart", object.NewBuiltinMethod("padStart", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.String)
 		if !ok {
 			return thisTypeError("String", "padStart", this)
@@ -546,7 +546,7 @@ func setupStringProto() *object.Object {
 	}))
 
 	// padEnd(targetLength, padString)
-	p.SetProperty("padEnd", object.NewBuiltinMethod("padEnd", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("padEnd", object.NewBuiltinMethod("padEnd", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.String)
 		if !ok {
 			return thisTypeError("String", "padEnd", this)
@@ -574,7 +574,7 @@ func setupStringProto() *object.Object {
 	}))
 
 	// concat(...strings)
-	p.SetProperty("concat", object.NewBuiltinMethod("concat", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("concat", object.NewBuiltinMethod("concat", func(this object.Value, args ...object.Value) object.Value {
 		result := toStr(this)
 		for _, arg := range args {
 			result += toStr(arg)
@@ -583,7 +583,7 @@ func setupStringProto() *object.Object {
 	}))
 
 	// toString()
-	p.SetProperty("toString", object.NewBuiltinMethod("toString", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("toString", object.NewBuiltinMethod("toString", func(this object.Value, args ...object.Value) object.Value {
 		if s, ok := this.(*object.String); ok {
 			return s
 		}
@@ -591,7 +591,7 @@ func setupStringProto() *object.Object {
 	}))
 
 	// valueOf()
-	p.SetProperty("valueOf", object.NewBuiltinMethod("valueOf", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("valueOf", object.NewBuiltinMethod("valueOf", func(this object.Value, args ...object.Value) object.Value {
 		if s, ok := this.(*object.String); ok {
 			return s
 		}
@@ -599,7 +599,7 @@ func setupStringProto() *object.Object {
 	}))
 
 	// at(index): 支持负索引 (-1 表示最后一个码元)
-	p.SetProperty("at", object.NewBuiltinMethod("at", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("at", object.NewBuiltinMethod("at", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.String)
 		if !ok {
 			return thisTypeError("String", "at", this)
@@ -623,7 +623,7 @@ func setupStringProto() *object.Object {
 	}))
 
 	// match(regexp): 匹配正则表达式，无匹配返回 null
-	p.SetProperty("match", object.NewBuiltinMethod("match", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("match", object.NewBuiltinMethod("match", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.String)
 		if !ok {
 			return thisTypeError("String", "match", this)
@@ -663,7 +663,7 @@ func setupStringProto() *object.Object {
 	}))
 
 	// matchAll(regexp): 返回所有匹配（规范为迭代器，这里简化为数组）
-	p.SetProperty("matchAll", object.NewBuiltinMethod("matchAll", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("matchAll", object.NewBuiltinMethod("matchAll", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.String)
 		if !ok {
 			return thisTypeError("String", "matchAll", this)
@@ -700,7 +700,7 @@ func setupStringProto() *object.Object {
 	}))
 
 	// search(regexp): 返回第一个匹配的码元索引，未找到返回 -1
-	p.SetProperty("search", object.NewBuiltinMethod("search", func(this object.Value, args ...object.Value) object.Value {
+	p.SetBuiltinProperty("search", object.NewBuiltinMethod("search", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.String)
 		if !ok {
 			return thisTypeError("String", "search", this)

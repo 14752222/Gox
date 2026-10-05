@@ -176,7 +176,7 @@ func setupTemporalTimeZone(temporal *object.Object) {
 	})
 	ctor.SetProperty("name", object.NewString("TimeZone"))
 	ctor.SetProperty("prototype", proto)
-	proto.SetProperty("constructor", ctor)
+	proto.SetBuiltinProperty("constructor", ctor)
 
 	tgStatic(ctor, "from", func(args ...object.Value) object.Value {
 		if len(args) == 0 {
@@ -193,7 +193,7 @@ func setupTemporalTimeZone(temporal *object.Object) {
 	})
 
 	setToStringTag(proto, "Temporal.TimeZone")
-	temporal.SetProperty("TimeZone", ctor)
+	temporal.SetBuiltinProperty("TimeZone", ctor)
 }
 
 // ==================== Calendar ====================
@@ -420,7 +420,7 @@ func setupTemporalCalendar(temporal *object.Object) {
 	})
 	ctor.SetProperty("name", object.NewString("Calendar"))
 	ctor.SetProperty("prototype", proto)
-	proto.SetProperty("constructor", ctor)
+	proto.SetBuiltinProperty("constructor", ctor)
 
 	tgStatic(ctor, "from", func(args ...object.Value) object.Value {
 		if len(args) == 0 {
@@ -440,7 +440,7 @@ func setupTemporalCalendar(temporal *object.Object) {
 	})
 
 	setToStringTag(proto, "Temporal.Calendar")
-	temporal.SetProperty("Calendar", ctor)
+	temporal.SetBuiltinProperty("Calendar", ctor)
 }
 
 // calendarArgToISODateTime 把 Calendar 方法的日期参数转成 ISO 字段。
@@ -687,7 +687,7 @@ func setupTemporalPlainYearMonth(temporal *object.Object) {
 	})
 	ctor.SetProperty("name", object.NewString("PlainYearMonth"))
 	ctor.SetProperty("prototype", proto)
-	proto.SetProperty("constructor", ctor)
+	proto.SetBuiltinProperty("constructor", ctor)
 
 	tgStatic(ctor, "from", func(args ...object.Value) object.Value {
 		if len(args) == 0 {
@@ -733,7 +733,7 @@ func setupTemporalPlainYearMonth(temporal *object.Object) {
 	})
 
 	setToStringTag(proto, "Temporal.PlainYearMonth")
-	temporal.SetProperty("PlainYearMonth", ctor)
+	temporal.SetBuiltinProperty("PlainYearMonth", ctor)
 }
 
 // yearMonthFieldsFromWith 处理 PlainYearMonth.with: 未指定字段沿用原值。
@@ -929,7 +929,7 @@ func setupTemporalPlainMonthDay(temporal *object.Object) {
 	})
 	ctor.SetProperty("name", object.NewString("PlainMonthDay"))
 	ctor.SetProperty("prototype", proto)
-	proto.SetProperty("constructor", ctor)
+	proto.SetBuiltinProperty("constructor", ctor)
 
 	tgStatic(ctor, "from", func(args ...object.Value) object.Value {
 		if len(args) == 0 {
@@ -958,5 +958,5 @@ func setupTemporalPlainMonthDay(temporal *object.Object) {
 	})
 
 	setToStringTag(proto, "Temporal.PlainMonthDay")
-	temporal.SetProperty("PlainMonthDay", ctor)
+	temporal.SetBuiltinProperty("PlainMonthDay", ctor)
 }

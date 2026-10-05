@@ -58,12 +58,12 @@ func setupFunctionIntrinsics(env *runtime.Environment) {
 	})
 	genFuncProto := object.NewObjectWithProto(funcProto) // %GeneratorFunction.prototype%
 	genProto := object.NewObjectWithProto(objProto)      // %GeneratorPrototype%
-	genFuncProto.SetProperty("prototype", genProto)
-	genFuncProto.SetProperty("constructor", genFunc)
+	genFuncProto.SetBuiltinProperty("prototype", genProto)
+	genFuncProto.SetBuiltinProperty("constructor", genFunc)
 	if tagSym != nil {
 		genFuncProto.SetSymbolProperty(tagSym, object.NewString("GeneratorFunction"))
 	}
-	genProto.SetProperty("constructor", genFuncProto)
+	genProto.SetBuiltinProperty("constructor", genFuncProto)
 	if tagSym != nil {
 		genProto.SetSymbolProperty(tagSym, object.NewString("Generator"))
 	}
@@ -78,7 +78,7 @@ func setupFunctionIntrinsics(env *runtime.Environment) {
 		return newDynamicFunction(env, args, dynFuncAsync)
 	})
 	asyncFuncProto := object.NewObjectWithProto(funcProto) // %AsyncFunction.prototype%
-	asyncFuncProto.SetProperty("constructor", asyncFunc)
+	asyncFuncProto.SetBuiltinProperty("constructor", asyncFunc)
 	asyncFunc.SetProperty("prototype", asyncFuncProto)
 	asyncFunc.FuncPrototype = funcCtor // %AsyncFunction%.[[Prototype]] = %Function%
 	object.SetAsyncFunctionPrototype(asyncFuncProto)

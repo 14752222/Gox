@@ -62,6 +62,11 @@ func SetupGlobals() *runtime.Environment {
 	}
 	env.Declare("Object", objectObj, false)
 
+	// Math / JSON 在此前创建 (Object.prototype 尚未就绪), 此处回填其
+	// [[Prototype]] = %Object.prototype%。
+	setNamespaceProto(mathObj)
+	setNamespaceProto(jsonObj)
+
 	// ===== 函数对象原型链 (Function / GeneratorFunction / AsyncFunction) =====
 	// 必须在 setupAsync 之前: 后者要把 %AsyncGeneratorFunction.prototype% 链接到
 	// %Function.prototype%。本函数同时注册全局 Function 构造器 (原先在
@@ -71,7 +76,7 @@ func SetupGlobals() *runtime.Environment {
 	// ===== Array =====
 	arrayObj := setupArrayGlobal()
 	arrayObj.SetProperty("prototype", arrayProto)
-	arrayProto.SetProperty("constructor", arrayObj)
+	arrayProto.SetBuiltinProperty("constructor", arrayObj)
 	env.Declare("Array", arrayObj, false)
 
 	// 注意: String / Number / Boolean 三个构造器统一由 setupGlobalFunctions 注册。
@@ -171,5 +176,21 @@ func attachPrototype(env *runtime.Environment, name string, proto *object.Object
 		return
 	}
 	v.SetProperty("prototype", proto)
-	proto.SetProperty("constructor", v)
+	proto.SetBuiltinProperty("constructor", v)
+}
+
+// setNamespaceProto 把内建命名空间对象 (Math / JSON / Reflect / Temporal ...)
+// 的 [[Prototype]] 指向 %Object.prototype%。
+//
+// 规范里这些是"普通对象": 原型链必须含 Object.prototype —— 于是
+// Object.getPrototypeOf(Math) === Object.prototype 成立, 且 Object.prototype
+// 上的可枚举属性会经由 for-in (Math) 被枚举到。
+//
+// object.NewObject() 把 [[Prototype]] 默认置为 null (为宿主侧纯数据对象保留),
+// 命名空间必须显式回填。调用时机: Object.prototype 装配之后 (GetObjectPrototype
+// 已就绪)。
+func setNamespaceProto(obj *object.Object) {
+	if p := object.GetObjectPrototype(); p != nil {
+		obj.Proto = p
+	}
 }

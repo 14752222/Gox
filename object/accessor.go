@@ -45,6 +45,33 @@ func (o *Object) DefineAccessor(name string, getter, setter Value) {
 	}
 }
 
+// DefineBuiltinAccessor 在内建原型/命名空间上定义 getter/setter 属性。
+// 描述符为 {enumerable: false, configurable: true} (规范内建访问器形态),
+// 与 DefineAccessor (对象字面量语义, enumerable: true) 相对。
+// 典型用法: Temporal 原型的 year/month/... 等只读字段。
+func (o *Object) DefineBuiltinAccessor(name string, getter, setter Value) {
+	if o.Properties == nil {
+		o.Properties = make(map[string]PropertyDescriptor)
+	}
+	if existing, ok := o.Properties[name]; ok {
+		if acc, isAcc := existing.Value.(*Accessor); isAcc {
+			if getter != nil {
+				acc.Getter = getter
+			}
+			if setter != nil {
+				acc.Setter = setter
+			}
+			return
+		}
+	}
+	o.Properties[name] = PropertyDescriptor{
+		Value:        NewAccessor(getter, setter),
+		Writable:     false,
+		Enumerable:   false,
+		Configurable: true,
+	}
+}
+
 // findAccessorInChain 沿原型链查找指定属性的访问器。
 // 返回找到的 Accessor (nil = 原型链上无该访问器)。
 func findAccessorInChain(start Value, name string) *Accessor {

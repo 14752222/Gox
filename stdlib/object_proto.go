@@ -17,22 +17,22 @@ func setupObjectPrototype(o *object.BuiltinFunction) {
 	proto := object.NewObject()
 
 	// constructor: 反向引用 (与 Array/String 的 proto 结构保持一致)
-	proto.SetProperty("constructor", o)
+	proto.SetBuiltinProperty("constructor", o)
 
 	// toString(): 输出 "[object Tag]"。
 	// 它接收任意 this —— 通过 .call/.apply 反射时可以作用于任何值，
 	// 因此实现必须对所有内置类型有标签，而不能假设 this 是 *object.Object。
-	proto.SetProperty("toString", object.NewBuiltinMethod("toString", func(this object.Value, args ...object.Value) object.Value {
+	proto.SetBuiltinProperty("toString", object.NewBuiltinMethod("toString", func(this object.Value, args ...object.Value) object.Value {
 		return object.NewString("[" + objectPrototypeTagFor(this) + "]")
 	}))
 
 	// toLocaleString: 本运行时无 Intl，语义与 toString 相同。
-	proto.SetProperty("toLocaleString", object.NewBuiltinMethod("toLocaleString", func(this object.Value, args ...object.Value) object.Value {
+	proto.SetBuiltinProperty("toLocaleString", object.NewBuiltinMethod("toLocaleString", func(this object.Value, args ...object.Value) object.Value {
 		return object.NewString("[" + objectPrototypeTagFor(this) + "]")
 	}))
 
 	// valueOf(): 返回对象本身。
-	proto.SetProperty("valueOf", object.NewBuiltinMethod("valueOf", func(this object.Value, args ...object.Value) object.Value {
+	proto.SetBuiltinProperty("valueOf", object.NewBuiltinMethod("valueOf", func(this object.Value, args ...object.Value) object.Value {
 		if this == nil {
 			return object.UndefinedSingleton
 		}
@@ -40,7 +40,7 @@ func setupObjectPrototype(o *object.BuiltinFunction) {
 	}))
 
 	// hasOwnProperty(): 只查自有属性，不沿原型链。
-	proto.SetProperty("hasOwnProperty", object.NewBuiltinMethod("hasOwnProperty", func(this object.Value, args ...object.Value) object.Value {
+	proto.SetBuiltinProperty("hasOwnProperty", object.NewBuiltinMethod("hasOwnProperty", func(this object.Value, args ...object.Value) object.Value {
 		if len(args) == 0 {
 			return object.NewBoolean(false)
 		}
@@ -48,7 +48,7 @@ func setupObjectPrototype(o *object.BuiltinFunction) {
 	}))
 
 	// propertyIsEnumerable(): 自有且 Enumerable=true 的属性。
-	proto.SetProperty("propertyIsEnumerable", object.NewBuiltinMethod("propertyIsEnumerable", func(this object.Value, args ...object.Value) object.Value {
+	proto.SetBuiltinProperty("propertyIsEnumerable", object.NewBuiltinMethod("propertyIsEnumerable", func(this object.Value, args ...object.Value) object.Value {
 		if len(args) == 0 {
 			return object.NewBoolean(false)
 		}
@@ -56,7 +56,7 @@ func setupObjectPrototype(o *object.BuiltinFunction) {
 	}))
 
 	// isPrototypeOf(): 检查 this 是否出现在参数的原型链上。
-	proto.SetProperty("isPrototypeOf", object.NewBuiltinMethod("isPrototypeOf", func(this object.Value, args ...object.Value) object.Value {
+	proto.SetBuiltinProperty("isPrototypeOf", object.NewBuiltinMethod("isPrototypeOf", func(this object.Value, args ...object.Value) object.Value {
 		if len(args) == 0 {
 			return object.NewBoolean(false)
 		}

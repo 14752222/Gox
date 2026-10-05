@@ -17,9 +17,24 @@ type PropertyDescriptor struct {
 }
 
 // DataProperty 创建一个普通的"赋值语义"数据属性描述符: 全 true。
-// 这是 `o.x = v` / 内建注册 (SetProperty) 的默认形态。
+// 这是 `o.x = v` 的默认形态。
 func DataProperty(val Value) PropertyDescriptor {
 	return PropertyDescriptor{Value: val, Writable: true, Enumerable: true, Configurable: true}
+}
+
+// BuiltinProperty 创建内建属性的描述符: writable:true, enumerable:false,
+// configurable:true。这是规范中绝大多数内建属性 (原型方法 / 构造器静态方法 /
+// 命名空间成员, 如 Math.abs、Object.prototype.toString、Array.prototype.push)
+// 的形态。与 DataProperty (用户赋值语义, 全 true) 相对。
+func BuiltinProperty(val Value) PropertyDescriptor {
+	return PropertyDescriptor{Value: val, Writable: true, Enumerable: false, Configurable: true}
+}
+
+// BuiltinConstProperty 创建内建常量的描述符: writable:false, enumerable:false,
+// configurable:false。对应 Math.PI / Number.MAX_VALUE / Symbol.iterator 这类
+// 规范里"不可写不可删"的常量属性。
+func BuiltinConstProperty(val Value) PropertyDescriptor {
+	return PropertyDescriptor{Value: val, Writable: false, Enumerable: false, Configurable: false}
 }
 
 // Object 表示 JavaScript 的对象类型。
@@ -199,6 +214,28 @@ func (o *Object) DefineOwnProperty(name string, desc PropertyDescriptor) {
 	}
 	o.Properties[name] = desc
 	o.appendKey(name)
+}
+
+// SetBuiltinProperty 以内建属性语义 (writable:true, enumerable:false,
+// configurable:true) 注册属性。
+//
+// 内建注册 (各 setup* / 原型方法装配 / 构造器静态成员) 必须走此通道: 若与
+// 用户赋值 `o.x = v` 共用 SetProperty, 内建属性会被错误地标为可枚举 ——
+// 于是 Object.keys(Math) 返回 44 个成员 (规范应为 []), JSON.stringify(Math)
+// 不再返回 "{}", for-in 也会枚举出原型方法与命名空间成员。
+//
+// 用户赋值路径仍走 SetProperty (enumerable:true), 因此 setup 之后用户对
+// Object.prototype 等对象的新增属性 (Object.prototype.foo = 1) 依旧可枚举,
+// 语义正确。
+func (o *Object) SetBuiltinProperty(name string, val Value) {
+	o.DefineOwnProperty(name, BuiltinProperty(val))
+}
+
+// SetBuiltinConstProperty 以内建常量语义 (writable:false, enumerable:false,
+// configurable:false) 注册属性, 用于 Math.PI / Number.MAX_VALUE /
+// Symbol.iterator 这类规范常量。
+func (o *Object) SetBuiltinConstProperty(name string, val Value) {
+	o.DefineOwnProperty(name, BuiltinConstProperty(val))
 }
 
 // appendKey 记录属性的插入顺序 (已存在则忽略)。
