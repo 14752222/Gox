@@ -2850,6 +2850,7 @@ func (p *Parser) parseClassDeclaration() *ast.ClassDeclaration {
 	if p.peekTokenIs(lexer.IDENTIFIER) && p.peekToken().Literal == "extends" {
 		p.nextToken()
 		p.nextToken()
+		p.checkClassHeritageEarlyError() // 裸箭头 heritage 早错（带括号的合法形式放行）
 		cls.SuperClass = p.parseExpression(LOWEST)
 		if cls.SuperClass == nil {
 			return nil
@@ -2932,6 +2933,7 @@ func (p *Parser) parseClassExpression() ast.Expression {
 	if p.peekTokenIs(lexer.IDENTIFIER) && p.peekToken().Literal == "extends" {
 		p.nextToken() // cur = extends
 		p.nextToken() // cur = 父类首 token
+		p.checkClassHeritageEarlyError() // 裸箭头 heritage 早错（带括号的合法形式放行）
 		cls.SuperClass = p.parseExpression(LOWEST)
 		if cls.SuperClass == nil {
 			return nil
@@ -3164,14 +3166,12 @@ func (p *Parser) parseClassMember() *ast.ClassMethod {
 			p.checkClassFieldTermination()
 			return member
 		}
-		if member.ComputedKey != nil {
-			// 裸计算字段无意义且语法非法 ([expr];) —— 明确报错
-			p.addError("computed property name must be followed by '(' or '='")
-			return nil
-		}
-		// 裸字段: name（无初始化）。名字已在上面 nextToken 越过, 此时 cur
-		// 即字段后的终止 token —— 不能再前进一次, 否则会吞掉下一个成员
-		// (历史缺陷: class C { x } / 多裸字段换行都因此被破坏)。
+		// 裸字段（命名或计算，无初始化器）: name / [expr]。
+		// 命名裸字段: 名字已在上面 nextToken 越过，此时 cur 即字段后的终止
+		// token —— 不能再前进一次，否则会吞掉下一个成员（历史缺陷:
+		// class C { x } / 多裸字段换行都因此被破坏）。
+		// 计算裸字段: [expr] 之后 cur 停在 ';' / '}' / 下一成员，与命名裸字段
+		// 共用同一套 ASI/终止校验（class C { static ["prototype"]; } 合法）。
 		p.checkClassFieldTermination()
 		return member
 	}

@@ -90,6 +90,52 @@ func (p *Parser) checkClassGrammarEarlyErrors(superClass ast.Expression, methods
 	}
 }
 
+// classHeritageStartsBareArrow 报告 heritage 起始处是否为「未被括号包裹的箭头
+// 函数」（含 async 变体）。
+//
+// 规范 ClassHeritage : extends LeftHandSideExpression。箭头函数是
+// AssignmentExpression 而非 LeftHandSideExpression，所以裸箭头是解析期
+// SyntaxError；但整体被括号包裹的 (() => {}) 是合法的 LeftHandSideExpression
+// （括号组），必须放行。AST 丢弃括号 ⇒ 只能靠起始 token 上的箭头探测区分
+// 「这个 ( 是箭头形参表」还是「这个 ( 是括号组」。
+//
+// Node 22 实测口径:
+//
+//	class X extends () => {} {}          // SyntaxError
+//	class X extends async () => {} {}    // SyntaxError
+//	class X extends a => {} {}           // SyntaxError
+//	class X extends (() => {}) {}        // 合法（带括号）
+//	class X extends (async () => {}) {}  // 合法（带括号）
+//
+// 判定必须在 parseExpression 之前、cur 停在 heritage 首 token 时调用。
+func (p *Parser) classHeritageStartsBareArrow() bool {
+	switch {
+	case p.curTokenIs(lexer.LPAREN):
+		// () => … / (a) => … / (a, b) => …：cur 的 ( 直接就是箭头形参表。
+		// 「(() => {})」里 cur 的 ( 是括号组（配对 ) 之后不是 =>）⇒ false。
+		return p.isArrowFunction()
+	case p.curTokenIs(lexer.ASYNC):
+		if p.peekTokenIs(lexer.LPAREN) {
+			// async () => …： ( 落在 peek 上，扫描起点 1。
+			return p.parenGroupFollowedByArrow(1)
+		}
+		// async x => …
+		return p.peekTokenIs(lexer.IDENTIFIER) && p.peek2TokenIs(lexer.ARROW)
+	case p.curTokenIs(lexer.IDENTIFIER):
+		// x => …
+		return p.peekTokenIs(lexer.ARROW)
+	}
+	return false
+}
+
+// checkClassHeritageEarlyError 对 heritage 起始处做解析期早错检查（当前覆盖
+// 「裸箭头函数」。带括号的合法形式被 classHeritageStartsBareArrow 正确放行）。
+func (p *Parser) checkClassHeritageEarlyError() {
+	if p.classHeritageStartsBareArrow() {
+		p.addError("SyntaxError: class heritage must be a LeftHandSideExpression (arrow function is not allowed)")
+	}
+}
+
 // checkClassFieldTermination 校验 ClassElement : FieldDefinition 的 ASI 约束。
 //
 // 规范里字段定义无逗号/无分号时的结束只允许两种: 显式 ';'，或受限产生式的
