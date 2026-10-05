@@ -320,6 +320,15 @@ func harnessOrderFor(c *test262Case) []string {
 // buildScript 把 harness + 用例拼成最终执行源码（非 module 用例）。
 func buildScript(c *test262Case, harnessRoot string) (string, error) {
 	var b strings.Builder
+	// onlyStrict: 官方约定整文件进严格模式。"use strict" 是一条**指令**
+	// (Directive), 只有落在 ScriptBody 的 Directive Prologue 最前位置才生效
+	// —— 一旦它前面出现任何非指令语句（哪怕是换行, 或 sta.js 里的函数声明）,
+	// 它就退化成普通字符串表达式语句, 不再切换严格模式。harness 含函数声明,
+	// 所以严格指令必须排在**所有 harness 之前**（async shim 同理, 排在指令
+	// 之后、用例之前）。
+	if hasFlag(c, "onlyStrict") {
+		b.WriteString("\"use strict\";\n")
+	}
 	for _, inc := range harnessOrderFor(c) {
 		if !harnessLibs[inc] {
 			return "", fmt.Errorf("runner 未登记的 harness 依赖: %s", inc)
@@ -330,14 +339,6 @@ func buildScript(c *test262Case, harnessRoot string) (string, error) {
 		}
 		b.Write(data)
 		b.WriteString("\n")
-	}
-	// onlyStrict: 官方约定整文件进严格模式 —— 指令必须放文件最前才有用,
-	// 所以它排在 harness 之前? 不: sta/assert 必须与用例同一严格性上下文,
-	// 官方 runner 拼装时严格指令放 harness 之后、用例之前照样对 (harness
-	// 自身是非严格代码, 指令只影响其后的用例体 —— 与官方 node runner 的
-	// 逐文件 eval 行为对齐, 宽松处理对第一轮足够)。
-	if hasFlag(c, "onlyStrict") {
-		b.WriteString("\"use strict\";\n")
 	}
 	if hasFlag(c, "async") {
 		b.WriteString(test262AsyncShim)
