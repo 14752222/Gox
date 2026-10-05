@@ -102,6 +102,15 @@ type Compiler struct {
 	// 由 compileAsyncFunctionSelf / compileAsyncGeneratorSelf 置位,
 	// compileFunctionSelf 入口立即消费, 绝不泄漏到体内嵌套函数。
 	innerGenRestPreCollected bool
+
+	// inClassFieldInit 标记正在编译某个 class **字段初始化器表达式**。
+	// 为真时, 该表达式里出现的直接 eval 调用 (`eval(...)`) 会额外发射
+	// OP_EVAL_MARK —— 规范 sec-performeval-rules-in-initializer: 字段初始化
+	// 器内的直接 eval 源码含 arguments 是早错 (间接 eval 不受限)。
+	// 进入非箭头函数体时清空 (嵌套普通函数有自己的 arguments 作用域,
+	// 其内的 eval 不再受初始化器规则约束); 箭头函数保持外层值 (无独立
+	// arguments 作用域, 规范上继续受约束 —— 见 nested-direct-eval 用例)。
+	inClassFieldInit bool
 }
 
 // tryScope 是一个活跃 try 处理器条目的编译期描述 (对应运行时 vm.tryStack 的一条)。
@@ -2175,7 +2184,7 @@ func (c *Compiler) compileClassBody(className string, superClass ast.Expression,
 		if m.Body == nil {
 			// 静态私有字段 (static #x = v): 挂到 ctor, 键混编码。
 			if m.IsPrivate {
-				if err := c.compileExpression(m.FieldValue); err != nil {
+				if err := c.compileFieldInitValue(m.FieldValue); err != nil {
 					return err
 				}
 				keyIdx := c.constants.AddConstant(object.NewString(c.privateKey(m.Name)))
@@ -2239,6 +2248,16 @@ func (c *Compiler) compileClassExpression(node *ast.ClassExpression) error {
 		className = node.Name.Value
 	}
 	return c.compileClassBody(className, node.SuperClass, node.Methods, node.Statics, node.Fields)
+}
+
+// compileFieldInitValue 在「类字段初始化器」上下文中编译字段值表达式:
+// 编译期间置 inClassFieldInit, 使其中的直接 eval 调用发射 OP_EVAL_MARK。
+// 用 defer 保证任何返回路径都恢复, 避免标志泄漏到后续兄弟字段/方法。
+func (c *Compiler) compileFieldInitValue(v ast.Expression) error {
+	prev := c.inClassFieldInit
+	c.inClassFieldInit = true
+	defer func() { c.inClassFieldInit = prev }()
+	return c.compileExpression(v)
 }
 
 // compileClassConstructor 编译 class 的 constructor 函数。
@@ -2330,7 +2349,7 @@ func (c *Compiler) compileClassConstructor(fields []*ast.ClassField, ctor *ast.C
 			// 私有字段: this[#name] = value —— 键是混编码字符串常量
 			// (\x00<prefix>:<name>), 外部任何常规访问都摸不到。
 			if field.Value != nil {
-				if err := c.compileExpression(field.Value); err != nil {
+				if err := c.compileFieldInitValue(field.Value); err != nil {
 					return nil, err
 				}
 			} else {
@@ -2352,7 +2371,7 @@ func (c *Compiler) compileClassConstructor(fields []*ast.ClassField, ctor *ast.C
 			// → SET_INDEX(弹3压1) → [this, val] → POP → [this]
 			c.emitter.EmitNoOperand(bytecode.OP_DUP)
 			if field.Value != nil {
-				if err := c.compileExpression(field.Value); err != nil {
+				if err := c.compileFieldInitValue(field.Value); err != nil {
 					return nil, err
 				}
 			} else {
@@ -2367,7 +2386,7 @@ func (c *Compiler) compileClassConstructor(fields []*ast.ClassField, ctor *ast.C
 			continue
 		}
 		if field.Value != nil {
-			if err := c.compileExpression(field.Value); err != nil {
+			if err := c.compileFieldInitValue(field.Value); err != nil {
 				return nil, err
 			}
 		} else {
@@ -4542,10 +4561,20 @@ func (c *Compiler) compileCallExpression(node *ast.CallExpression) error {
 	// 检查是否有 spread 参数
 	hasSpread := hasSpreadArgs(node.Arguments)
 
+	// 类字段初始化器内的直接 eval: 发射 OP_EVAL_MARK, 让运行期 eval 内建
+	// 进入受限模式 (PerformEval 补充早错)。必须是「直接」调用 —— 被调表达
+	// 式是标识符 `eval`(而非 (0, eval) / eval.call 这类间接形式), 且当前
+	// 正编译字段初始化器表达式。标记紧贴被调函数加载之后、OP_CALL 之前发射,
+	// 保证只被本次调用消费。
+	restrictedEval := c.inClassFieldInit && isDirectEvalCallee(node.Function)
+
 	if hasSpread {
 		// 有 spread: 收集参数到数组，再用 OP_CALL_SPREAD 调用
 		if err := c.compileArgumentsArray(node.Arguments); err != nil {
 			return err
+		}
+		if restrictedEval {
+			c.emitter.EmitNoOperand(bytecode.OP_EVAL_MARK)
 		}
 		// 编译函数
 		if err := c.compileExpression(node.Function); err != nil {
@@ -4560,6 +4589,9 @@ func (c *Compiler) compileCallExpression(node *ast.CallExpression) error {
 				return err
 			}
 		}
+		if restrictedEval {
+			c.emitter.EmitNoOperand(bytecode.OP_EVAL_MARK)
+		}
 		// 编译函数
 		if err := c.compileExpression(node.Function); err != nil {
 			return err
@@ -4568,6 +4600,15 @@ func (c *Compiler) compileCallExpression(node *ast.CallExpression) error {
 		c.emitter.Emit(bytecode.OP_CALL, uint16(len(node.Arguments)))
 	}
 	return nil
+}
+
+// isDirectEvalCallee 报告被调表达式是否形如直接 eval 调用 —— 即解析为
+// 标识符 `eval` 的引用。规范上直接 eval 还要求该引用的值恰为 %eval%
+// 内建 (运行期判定); 这里只做语法侧识别, 与主流引擎的静态识别一致。
+// 间接形式 (成员访问 `eval.call`、序列 `(0, eval)` 等) 返回 false。
+func isDirectEvalCallee(fn ast.Expression) bool {
+	id, ok := fn.(*ast.Identifier)
+	return ok && id.Value == "eval"
 }
 
 // hasSpreadArgs 检查参数列表中是否有 spread 元素
@@ -4944,6 +4985,17 @@ func (c *Compiler) compileFunctionWithStrict(strict bool, name string, params []
 // 函数自身 (ES 规范 NamedFunctionExpression 作用域)，VM 调用时把闭包
 // 写入对应槽位。参数与 selfName 同名时参数优先 (规范行为)。
 func (c *Compiler) compileFunctionSelf(name, selfName string, params []*ast.Parameter, body *ast.BlockStatement, isArrow, isGenerator, isAsync bool) (*bytecode.FunctionMetadata, error) {
+	// 非箭头函数开辟独立的 arguments 作用域, 其内的 eval 不再受「类字段
+	// 初始化器」规则约束 (规范: 该规则按直接 eval 的运行上下文判定, 嵌套
+	// 普通函数的上下文不是初始化器)。箭头函数无独立 arguments 作用域,
+	// 保持外层标记 —— 于是初始化器里箭头体内的直接 eval 仍受限。
+	// defer 覆盖下方所有返回路径 (含 async/generator 的早退)。
+	prevFieldInit := c.inClassFieldInit
+	if !isArrow {
+		c.inClassFieldInit = false
+	}
+	defer func() { c.inClassFieldInit = prevFieldInit }()
+
 	// async generator: wrapper 创建并返回 AsyncGenerator 对象,
 	// 内层 generator 的 await 编为 OP_AWAIT、yield 编为 OP_YIELD。
 	if isAsync && isGenerator {

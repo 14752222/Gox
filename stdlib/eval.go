@@ -12,8 +12,40 @@ import (
 // 处的局部作用域，而本运行时函数局部变量由 VM 栈槽承载、不进环境链，
 // 因此 eval 中只能访问全局绑定 —— 这与大多数脚本化用途 (解析表达式/
 // JSON 片段/动态构建对象) 兼容。
+// pendingDirectEvalInit 是「本次 eval 调用发生在类字段初始化器内、且是
+// 直接 eval」的一次性标志。vm 执行 OP_EVAL_MARK 时经 MarkDirectEvalInit
+// 置位; eval 内建被调用时立即消费。标记指令与被标记的调用在字节码里紧邻
+// (编译器只在字段初始化表达式里的 `eval(...)` 前发射), 因此一一对应。
+var pendingDirectEvalInit bool
+
+// MarkDirectEvalInit 由 vm 包在执行 bytecode.OP_EVAL_MARK 时调用
+// (VM 依赖 stdlib, 故标志放这里; stdlib 不反向依赖 vm)。
+func MarkDirectEvalInit() { pendingDirectEvalInit = true }
+
+// evalInitRejectsArguments 报告「类字段初始化器内直接 eval」的源码是否
+// 触发补充早错 (sec-performeval-rules-in-initializer): 直接 eval 的
+// StatementList 含 arguments 引用时是 SyntaxError。
+//
+// 实现复用解析器已有的「字段初始化器内 arguments / super(...) 早错」判定:
+// 把源码原样嵌进一个合成 class 的字段初始化器 (立即调用的箭头函数体) 编译
+// 一遍 —— 编译失败即判为早错。之所以用箭头体而非普通函数体, 是要与规范
+// 的 ContainsArguments 保持一致: 递归进箭头函数、止于普通函数 (普通函数
+// 有自己的 arguments, 其内的 arguments 不算)。super(...) 调用同样是该
+// 上下文早错, 也一并由这条路径拦下 (与 Node 一致)。
+//
+// 该检查只在初始化器内直接 eval 这一罕见路径上多编译一次, 普通脚本/模块
+// 与间接 eval 零开销。
+func evalInitRejectsArguments(src string) bool {
+	synthetic := "(class { x = (() => {\n" + src + "\n})() })"
+	_, err := object.CompileSource(synthetic)
+	return err != nil
+}
+
 func setupEvalAndMisc(env *runtime.Environment) {
 	evalFn := object.NewBuiltin("eval", func(args ...object.Value) object.Value {
+		// 立即消费一次性标志 (无论本参数是否为字符串, 标记都只属于本次调用)。
+		restrictedInit := pendingDirectEvalInit
+		pendingDirectEvalInit = false
 		if len(args) == 0 {
 			return object.UndefinedSingleton
 		}
@@ -21,6 +53,12 @@ func setupEvalAndMisc(env *runtime.Environment) {
 		if !ok {
 			// 规范: 非字符串参数原样返回
 			return args[0]
+		}
+		if restrictedInit && evalInitRejectsArguments(src.Value) {
+			// 返回 *object.Error → VM 作为异常抛出 (与 runGlobalEval 同口径)。
+			// 在编译/执行 eval 体之前抛出, 故体副作用 (如 executed=true) 不会发生。
+			return object.NewErrorWithName("SyntaxError",
+				"SyntaxError: 'arguments' is not allowed in class field initializer")
 		}
 		return runGlobalEval(env, src.Value)
 	})

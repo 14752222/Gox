@@ -1505,6 +1505,12 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			if err := vm.invokeWithThis(fn, thisVal, args); err != nil {
 				return err
 			}
+		case bytecode.OP_EVAL_MARK:
+			// 编译器在「类字段初始化器内的直接 eval」调用前发射此指令。
+			// 置位 stdlib 的一次性标志; 紧随其后的 OP_CALL 调用 eval 内建时
+			// 消费该标志进入受限模式 (PerformEval: 源码含 arguments 抛早错)。
+			// 无栈效果。
+			stdlib.MarkDirectEvalInit()
 		case bytecode.OP_NEW:
 			// new Constructor(args...) — 简化实现
 			numArgs := int(operand)

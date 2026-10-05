@@ -112,6 +112,13 @@ const (
 	// 与用户手写的 super(...args): argc 是编译期常量, 表达不了运行期实参个数。
 	OP_CALL_METHOD_SPREAD Opcode = 0x69
 
+	// OP_EVAL_MARK: 无操作数。标记紧随其后的 OP_CALL 是一次「类字段初始化器
+	// 内的直接 eval」调用 (编译器在字段初始化表达式里遇到 `eval(...)` 时发射)。
+	// VM 执行时置位 stdlib 的一次性标志, eval 内建据此进入受限模式 —— 按
+	// PerformEval 对初始化器内直接 eval 的补充早错规则, 源码含 arguments 时
+	// 抛 SyntaxError。间接 eval (0, eval) 不发射此标记, 不受限。
+	OP_EVAL_MARK Opcode = 0x6A
+
 	// 0x70-0x7F: 对象和数组
 	OP_NEW_ARRAY       Opcode = 0x70 // 创建数组 (operand = 元素个数)
 	OP_NEW_OBJECT      Opcode = 0x71 // 创建空对象
@@ -269,6 +276,7 @@ var opcodeNames = map[Opcode]string{
 	OP_FUNCTION: "FUNCTION", OP_ARROW_FUNC: "ARROW_FUNC", OP_CLOSURE: "CLOSURE",
 	OP_NEW: "NEW", OP_CALL_SPREAD: "CALL_SPREAD", OP_CALL_METHOD: "CALL_METHOD",
 	OP_CALL_METHOD_SPREAD: "CALL_METHOD_SPREAD",
+	OP_EVAL_MARK:          "EVAL_MARK",
 	OP_NEW_ARRAY: "NEW_ARRAY", OP_NEW_OBJECT: "NEW_OBJECT",
 	OP_GET_PROP: "GET_PROP", OP_SET_PROP: "SET_PROP",
 	OP_GET_INDEX: "GET_INDEX", OP_SET_INDEX: "SET_INDEX",
