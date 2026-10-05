@@ -185,9 +185,11 @@ func exprContainsArguments(expr ast.Expression) bool {
 	return found
 }
 
-// exprContainsSuperCall 报告表达式树里是否出现 super(...) 调用。
+// exprContainsSuperCall 报告语法树里是否出现 super(...) 调用。
 // super.x 属性访问在字段初始化器里是合法的（可读父原型），不拦。
-func exprContainsSuperCall(expr ast.Expression) bool {
+// 参数放宽为 ast.Node，便于对方法体（*ast.BlockStatement）与字段初始化器
+// （ast.Expression）共用同一遍历。
+func exprContainsSuperCall(node ast.Node) bool {
 	found := false
 	var walk func(ast.Node)
 	walk = func(n ast.Node) {
@@ -204,7 +206,7 @@ func exprContainsSuperCall(expr ast.Expression) bool {
 			walk(child)
 		}
 	}
-	walk(expr)
+	walk(node)
 	return found
 }
 
@@ -333,6 +335,9 @@ func childNodes(n ast.Node) []ast.Node {
 	case *ast.ObjectLiteral:
 		// *ast.Property 未实现 Node 接口, 内联展开子节点
 		for _, pair := range node.Properties {
+			if pair == nil {
+				continue // 解析恢复期可能残留 nil 属性, 防御
+			}
 			out = append(out, pair.Key)
 			if pair.Value != nil {
 				out = append(out, pair.Value)

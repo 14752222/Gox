@@ -1935,6 +1935,14 @@ func (p *Parser) parseProperty() *ast.Property {
 	isGenerator := false
 	isAsync := false
 
+	// 非法 token 不能作属性键 (如裸 `#`/`#!`: 词法判 ILLEGAL)。下方通用分支
+	// 会把任意 token 的 Literal 直接当标识符键, 不拦会让 `{ #! }` 蒙混成
+	// 对象字面量并落到运行期 (test262 hashbang/statement-block 期望 parse 早错)。
+	if p.curTokenIs(lexer.ILLEGAL) {
+		p.addError(fmt.Sprintf("unexpected token %s in object literal", p.curToken().Literal))
+		return nil
+	}
+
 	// 生成器方法简写: *m() {} / *[expr]() {}
 	if p.curTokenIs(lexer.ASTERISK) {
 		isGenerator = true
@@ -2381,11 +2389,13 @@ func (p *Parser) parsePrivateMember(member *ast.ClassMethod) *ast.ClassMethod {
 		p.nextToken() // cur = 表达式首
 		member.FieldValue = p.parseExpression(LOWEST)
 		p.nextToken() // 前进到分隔符/下一个成员
+		p.checkClassFieldTermination()
 		return member
 	}
 
 	// 裸私有字段 #name;
 	p.nextToken() // 前进到分隔符/下一个成员
+	p.checkClassFieldTermination()
 	return member
 }
 
@@ -2809,6 +2819,9 @@ func (p *Parser) parseClassDeclaration() *ast.ClassDeclaration {
 	// 引用未声明私有名）。必须在成员循环之后: 判重与判未声明引用都需要
 	// 先看全所有成员（元素顺序上引用可以先于声明）。
 	p.checkClassEarlyErrors(cls.Methods, cls.Statics, cls.Fields)
+	// 语法级早错（static prototype / 特殊方法名 constructor / 重复构造器 /
+	// HasDirectSuper 的 super() 误用）。同类集中校验, 见 class_grammar_early_errors.go。
+	p.checkClassGrammarEarlyErrors(cls.SuperClass, cls.Methods, cls.Statics, cls.Fields)
 
 	if !p.curTokenIs(lexer.RBRACE) {
 		p.addError(fmt.Sprintf("expected '}' in class, got %s", p.curToken().Type))
@@ -2881,6 +2894,8 @@ func (p *Parser) parseClassExpression() ast.Expression {
 
 	// 私有名早错校验（与 parseClassDeclaration 同一处挂载点, 口径一致）。
 	p.checkClassEarlyErrors(cls.Methods, cls.Statics, cls.Fields)
+	// 语法级早错（与 parseClassDeclaration 同一处挂载点, 口径一致）。
+	p.checkClassGrammarEarlyErrors(cls.SuperClass, cls.Methods, cls.Statics, cls.Fields)
 
 	if !p.curTokenIs(lexer.RBRACE) {
 		p.addError(fmt.Sprintf("expected '}' in class, got %s", p.curToken().Type))
@@ -3061,6 +3076,7 @@ func (p *Parser) parseClassMember() *ast.ClassMethod {
 			p.nextToken()
 			member.FieldValue = p.parseExpression(LOWEST)
 			p.nextToken() // 前进到分隔符/下一个成员
+			p.checkClassFieldTermination()
 			return member
 		}
 		if member.ComputedKey != nil {
@@ -3068,8 +3084,10 @@ func (p *Parser) parseClassMember() *ast.ClassMethod {
 			p.addError("computed property name must be followed by '(' or '='")
 			return nil
 		}
-		// 裸字段: name; (无初始化)
-		p.nextToken() // 前进到分隔符/下一个成员
+		// 裸字段: name（无初始化）。名字已在上面 nextToken 越过, 此时 cur
+		// 即字段后的终止 token —— 不能再前进一次, 否则会吞掉下一个成员
+		// (历史缺陷: class C { x } / 多裸字段换行都因此被破坏)。
+		p.checkClassFieldTermination()
 		return member
 	}
 
