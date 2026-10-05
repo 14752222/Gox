@@ -28,6 +28,7 @@ type Parser struct {
 	infixParseFns  map[lexer.TokenType]infixParseFn
 
 	inLoop        bool // 是否在循环体内 (用于 break/continue)
+	allowAwait    bool // 是否处于 async 上下文 (用于裸 await 早错; 每进一个函数体按该函数自身的 async 与否重置)
 	depth         int  // 当前语法嵌套深度 (表达式/语句递归层数)
 	depthExceeded bool // 已触发嵌套深度上限 (后续解析短路，防错误洪水)
 
@@ -74,6 +75,50 @@ func (p *Parser) enterNesting(where string) bool {
 // leaveNesting 离开一层语法嵌套。
 func (p *Parser) leaveNesting() {
 	p.depth--
+}
+
+// setAllowAwait 进入一个函数体前设置 async 上下文, 返回恢复函数。
+// 任何函数体 (含同步函数、同步 generator) 都必须经过这里把 allowAwait
+// 重置为「该函数自身的 async 与否」—— 否则 async 函数里嵌套的同步函数
+// 会错误继承 async 上下文 (裸 await / for await 的上下文判定失效)。
+func (p *Parser) setAllowAwait(isAsync bool) func() {
+	prev := p.allowAwait
+	p.allowAwait = isAsync
+	return func() { p.allowAwait = prev }
+}
+
+// isBindingName 报告当前 token 能否作绑定名 (var/let/const 的名字、参数名、
+// for-in/for-of 的迭代变量)。
+// sloppy script 里 await 不是保留字 (node 实测: var await = 1 / let await /
+// function f(await) 都合法), 所以 AWAIT 也能作绑定名 —— 否则裸 await 早错
+// 会把 `var await = 1` 这种合法写法一起拦掉。
+func (p *Parser) isBindingName() bool {
+	return p.curTokenIs(lexer.IDENTIFIER) || p.curTokenIs(lexer.AWAIT)
+}
+
+// peekStartsAwaitOperand 报告 await 之后的 token 是否「必为操作数」——
+// 即在非 async 上下文里构成裸 await 早错的形态。
+//
+// 口径 (node 22 sloppy script 实测): await 是普通标识符, await(1) 调用、
+// await[0] 索引、await`x` 带标签模板、await++ / await-- 后缀、await - 1
+// 二元、await in obj 都是合法的**标识符用法**; 而 await x / await 1 /
+// await {} / await function(){} 这些「后面直接跟操作数」的才是 await
+// 表达式 → SyntaxError。所以 MINUS/PLUS (兼作二元)、LPAREN (调用)、
+// LBRACKET (索引)、BACKTICK (模板)、INC/DEC (后缀) 都**不算**操作数。
+func (p *Parser) peekStartsAwaitOperand() bool {
+	switch p.peekToken().Type {
+	case lexer.IDENTIFIER,
+		lexer.INT_LITERAL, lexer.FLOAT_LITERAL, lexer.BIGINT_LITERAL,
+		lexer.STRING_LITERAL, lexer.REGEX_LITERAL,
+		lexer.TRUE, lexer.FALSE, lexer.NULL, lexer.UNDEFINED,
+		lexer.LBRACE, lexer.BANG, lexer.BIT_NOT,
+		lexer.TYPEOF, lexer.DELETE, lexer.VOID,
+		lexer.NEW, lexer.FUNCTION, lexer.CLASS, lexer.THIS, lexer.SUPER,
+		lexer.IMPORT, lexer.ASYNC, lexer.YIELD, lexer.AWAIT,
+		lexer.JSX_LT, lexer.PRIVATE_NAME:
+		return true
+	}
+	return false
 }
 
 // New 创建一个新的 Parser 实例，预分词整个输入。
@@ -348,7 +393,7 @@ func (p *Parser) parseStatementBody() ast.Statement {
 	case lexer.FUNCTION:
 		// function name / function* name → 函数声明
 		if p.peekTokenIs(lexer.IDENTIFIER) || p.peekTokenIs(lexer.ASTERISK) {
-			return p.parseFunctionDeclaration()
+			return p.parseFunctionDeclaration(false)
 		}
 		stmt := &ast.ExpressionStatement{Token: p.curToken()}
 		stmt.Expression = p.parseExpression(LOWEST)
@@ -358,11 +403,7 @@ func (p *Parser) parseStatementBody() ast.Statement {
 		// async function 声明 / async function 表达式
 		if p.peekTokenIs(lexer.FUNCTION) {
 			p.nextToken() // 移到 function
-			fn := p.parseFunctionDeclaration()
-			if fn != nil {
-				fn.IsAsync = true
-			}
-			return fn
+			return p.parseFunctionDeclaration(true)
 		}
 		return p.parseExpressionStatement()
 	case lexer.THROW:
@@ -425,7 +466,7 @@ func (p *Parser) parseVarStatement() *ast.VarStatement {
 		return stmt
 	}
 
-	if !p.curTokenIs(lexer.IDENTIFIER) {
+	if !p.isBindingName() {
 		p.addError(fmt.Sprintf("expected identifier, got %s", p.curToken().Type))
 		return nil
 	}
@@ -441,7 +482,7 @@ func (p *Parser) parseVarStatement() *ast.VarStatement {
 	for p.peekTokenIs(lexer.COMMA) {
 		p.nextToken() // 移到 ,
 		p.nextToken() // 移到下一个名字
-		if !p.curTokenIs(lexer.IDENTIFIER) {
+		if !p.isBindingName() {
 			p.addError(fmt.Sprintf("expected identifier, got %s", p.curToken().Type))
 			return nil
 		}
@@ -478,7 +519,7 @@ func (p *Parser) parseLetStatement() *ast.LetStatement {
 		return p.parseDestructuringLet(stmt, false)
 	}
 
-	if !p.curTokenIs(lexer.IDENTIFIER) {
+	if !p.isBindingName() {
 		p.addError(fmt.Sprintf("expected identifier, got %s", p.curToken().Type))
 		return nil
 	}
@@ -494,7 +535,7 @@ func (p *Parser) parseLetStatement() *ast.LetStatement {
 	for p.peekTokenIs(lexer.COMMA) {
 		p.nextToken() // 移到 ,
 		p.nextToken() // 移到下一个名字
-		if !p.curTokenIs(lexer.IDENTIFIER) {
+		if !p.isBindingName() {
 			p.addError(fmt.Sprintf("expected identifier, got %s", p.curToken().Type))
 			return nil
 		}
@@ -552,7 +593,7 @@ func (p *Parser) parseConstStatement() *ast.ConstStatement {
 		return stmt
 	}
 
-	if !p.curTokenIs(lexer.IDENTIFIER) {
+	if !p.isBindingName() {
 		p.addError(fmt.Sprintf("expected identifier, got %s", p.curToken().Type))
 		return nil
 	}
@@ -570,7 +611,7 @@ func (p *Parser) parseConstStatement() *ast.ConstStatement {
 	for p.peekTokenIs(lexer.COMMA) {
 		p.nextToken() // 移到 ,
 		p.nextToken() // 移到下一个名字
-		if !p.curTokenIs(lexer.IDENTIFIER) {
+		if !p.isBindingName() {
 			p.addError(fmt.Sprintf("expected identifier, got %s", p.curToken().Type))
 			return nil
 		}
@@ -674,13 +715,14 @@ func (p *Parser) parseIfStatement() *ast.IfStatement {
 }
 
 func (p *Parser) parseForStatement() ast.Statement {
+	forToken := p.curToken() // FOR
 	// for await (...of...): 异步迭代。for 之后紧跟 await 且再后面是 '(',
-	// 头部形状与 for-of 相同 (绑定 + of + 可迭代表达式), 由 parseForOfStatement
-	// 带 await 标志解析。注意 `for (await x;;)` 是合法的传统 for (init 里有
-	// await 表达式) —— 所以判定必须要求 await 后**紧跟** '(' 而不是出现在头部内。
+	// 头部形状与 for-of 相同 (绑定/赋值目标 + of + 可迭代表达式)。注意
+	// `for (await x;;)` 是合法的传统 for (init 里有 await 表达式) —— 所以
+	// 判定必须要求 await 后**紧跟** '(' 而不是出现在头部内。
 	if p.peekTokenIs(lexer.AWAIT) && p.peek2TokenIs(lexer.LPAREN) {
 		p.nextToken() // cur = await
-		return p.parseForAwaitOfStatement()
+		return p.parseForAwaitOfStatement(forToken)
 	}
 	if !p.expectPeek(lexer.LPAREN) {
 		return nil
@@ -708,7 +750,44 @@ func (p *Parser) parseForStatement() ast.Statement {
 			return p.parseForInStatement()
 		}
 	}
+	// 无声明关键字头部: `for (x of xs)` / `for (obj.k of xs)` /
+	// `for ([a, b] of xs)` 这类赋值目标形态, 或传统 for 三段式。
+	if p.isForOfLHS() {
+		return p.parseForOfLHS(forToken, false)
+	}
 	return p.parseTraditionalFor()
+}
+
+// isForOfLHS 判定当前无声明关键字的 for 头部是不是「LHSExpression of ...」形态。
+// 从 cur 扫描到 for 头部收口的 ')' (深度 0 的 RPAREN): 途中在深度 0 处出现 OF
+// 即为 for-of (先扫后判, 因为 parseExpression 一旦吃掉头部就无法回退到传统
+// for 三段式)。
+//
+// 两个排除项: OF 前一个是 DOT / OPTIONAL_CHAIN 时它是属性名 (for (i = a.of; ...));
+// 深度 > 0 的 OF (for (m['of'] of xs)) 不算。
+func (p *Parser) isForOfLHS() bool {
+	depth := 0
+	prev := lexer.ILLEGAL
+	for i := 0; i <= maxArrowScanLimit; i++ {
+		tok := p.peekTokenAt(i)
+		switch tok.Type {
+		case lexer.EOF:
+			return false
+		case lexer.LPAREN, lexer.LBRACE, lexer.LBRACKET:
+			depth++
+		case lexer.RPAREN, lexer.RBRACE, lexer.RBRACKET:
+			if depth == 0 {
+				return false // for 头部收口 ')'
+			}
+			depth--
+		case lexer.OF:
+			if depth == 0 && prev != lexer.DOT && prev != lexer.OPTIONAL_CHAIN {
+				return true
+			}
+		}
+		prev = tok.Type
+	}
+	return false
 }
 
 // forBindingKeyword 报告 `for (` 之后的 let/const 头部到底是 for...of / for...in
@@ -766,7 +845,7 @@ func (p *Parser) parseForInStatement() *ast.ForInStatement {
 	isVar := p.curTokenIs(lexer.VAR)
 	p.nextToken() // skip let/const/var
 
-	if !p.curTokenIs(lexer.IDENTIFIER) {
+	if !p.isBindingName() {
 		p.addError("expected variable name in for...in")
 		return nil
 	}
@@ -824,7 +903,7 @@ func (p *Parser) parseForOfStatement() *ast.ForOfStatement {
 			stmt.VarDecl = &ast.ConstStatement{Token: stmt.Token, Name: name}
 		}
 	} else {
-		if !p.curTokenIs(lexer.IDENTIFIER) {
+		if !p.isBindingName() {
 			p.addError(fmt.Sprintf(
 				"expected variable name or destructuring pattern in for...of, got %s",
 				p.curToken().Type))
@@ -862,21 +941,123 @@ func (p *Parser) parseForOfStatement() *ast.ForOfStatement {
 }
 
 // parseForAwaitOfStatement 解析 for await (binding of iterable) { body }。
-// curToken 在 AWAIT 上 (peek 是 '(')。头部与 for-of 同构, 复用
-// parseForOfStatement: 先消费 'await (', 让 cur 停在 let/const/var (或
-// 绑定 token) 上 —— 正是 parseForOfStatement 的入口约定, 解析完成后
-// 给结果补 Await 标志。// 非法的 `for await (...in...)` (for-in 无异步形态) 会在 forBindingKeyword
-// 判定后掉进 parseForOfStatement 的 expectPeek(OF) 报错, 无需特判。
-func (p *Parser) parseForAwaitOfStatement() ast.Statement {
+// curToken 在 AWAIT 上 (peek 是 '(')。头部与 for-of 同构: 声明绑定复用
+// parseForOfStatement, 无声明赋值目标 (for await (x of xs) / for await
+// (async of xs), node 实测合法 —— for-await 头部没有 async-of 前瞻限制)
+// 复用 parseForOfLHS。解析完成后给结果补 Await 标志。
+//
+// for await 只接受 of 形态: (…in…) 与带初始化器的声明头部都是早错。
+// for await 只允许在 async 函数体内 —— 编译器在编译 for-await 时校验
+// (parser 不跟踪 async 上下文, 避免两套状态源)。
+func (p *Parser) parseForAwaitOfStatement(forToken lexer.Token) ast.Statement {
 	p.nextToken() // cur = (
-	p.nextToken() // cur = let / const / var (头部绑定关键字)
-	stmt := p.parseForOfStatement()
+	p.nextToken() // cur = 头部第一 token
+
+	var stmt *ast.ForOfStatement
+	if p.curTokenIs(lexer.LET) || p.curTokenIs(lexer.CONST) || p.curTokenIs(lexer.VAR) {
+		switch p.forBindingKeyword() {
+		case lexer.OF:
+			stmt = p.parseForOfStatement()
+		case lexer.IN:
+			// for-in 无异步形态 (node: Unexpected token 'in')
+			p.addError("SyntaxError: for await loops must iterate with 'of', not 'in'")
+			return nil
+		default:
+			// 含 for await (var x = 1 of y) 与传统三段式 (node: for-await-of
+			// loop variable declaration may not have an initializer)
+			p.addError("SyntaxError: for-await-of loop variable declaration may not have an initializer")
+			return nil
+		}
+	} else if p.isForOfLHS() {
+		stmt = p.parseForOfLHS(forToken, true)
+	} else {
+		p.addError("SyntaxError: for await loops must iterate with 'of'")
+		return nil
+	}
 	if stmt == nil {
 		return nil
 	}
 	stmt.Await = true
-	// for await 只允许在 async 函数体内 —— 编译器在编译 for-await 时
-	// 校验 (parser 不跟踪 async 上下文, 避免两套状态源)。
+	return stmt
+}
+
+// parseForOfLHS 解析无声明关键字的 for-of 头部 (cur 是头部第一个 token):
+//
+//	for (x of xs)            标识符赋值目标
+//	for (obj.k of xs)        成员访问赋值目标
+//	for ([a, b] of xs)       数组解构目标 (每轮是**赋值**, 写入外部已有绑定)
+//	for ({a} of xs)          对象解构目标
+//
+// isAwait 表示这是 for await 头部。node 22 实测口径:
+//   - for (async of y):   同步 for-of 明确报 "left-hand side may not be 'async'";
+//   - for await (async of y): for-await 头部没有该前瞻限制, async 作绑定名合法。
+//
+// await 开头的头部 (for (await of xs) / for await (await x of xs)) 不在这里
+// 特判: parseExpression 会进 parseAwaitExpression, 非 async 上下文按标识符
+// 处理 (node: for (await of xs) 合法)、await 操作数形态报早错, 而 awaited
+// 目标会被下面的赋值目标白名单拒绝 (node: Invalid left-hand side)。
+func (p *Parser) parseForOfLHS(forToken lexer.Token, isAwait bool) *ast.ForOfStatement {
+	stmt := &ast.ForOfStatement{Token: forToken, Await: isAwait}
+
+	if p.curTokenIs(lexer.ASYNC) && p.peekTokenIs(lexer.OF) {
+		if !isAwait {
+			p.addError("SyntaxError: The left-hand side of a for-of loop may not be 'async'")
+			return nil
+		}
+		stmt.Target = &ast.Identifier{Token: p.curToken(), Value: "async"}
+		p.nextToken() // cur = of
+		stmt.Keyword = p.curToken()
+		return p.finishForOf(stmt)
+	}
+	if p.curTokenIs(lexer.LBRACKET) || p.curTokenIs(lexer.LBRACE) {
+		// 解构赋值目标: for ([a, b] of xs) —— 与声明绑定共用 Pattern 字段,
+		// 由 VarDecl 是否为 nil 区分 (nil = 赋值解构, 每轮写外部绑定)
+		pattern := p.parseDestructuringPattern(p.curTokenIs(lexer.LBRACKET))
+		if pattern == nil {
+			return nil
+		}
+		stmt.Pattern = pattern
+		if !p.expectPeek(lexer.OF) {
+			return nil
+		}
+		stmt.Keyword = p.curToken()
+		return p.finishForOf(stmt)
+	}
+
+	target := p.parseExpression(LOWEST)
+	if target == nil {
+		return nil
+	}
+	switch target.(type) {
+	case *ast.Identifier, *ast.MemberExpression:
+		// 可作 for-of 赋值目标: 标识符 / 成员访问
+	default:
+		p.addError("SyntaxError: invalid left-hand side in for...of loop")
+		return nil
+	}
+	stmt.Target = target
+
+	if !p.expectPeek(lexer.OF) {
+		return nil
+	}
+	stmt.Keyword = p.curToken()
+	return p.finishForOf(stmt)
+}
+
+// finishForOf 从 OF 上继续: 解析可迭代对象、循环体。parseForOfStatement 与
+// parseForOfLHS 的公共收尾。
+func (p *Parser) finishForOf(stmt *ast.ForOfStatement) *ast.ForOfStatement {
+	p.nextToken()
+	stmt.Iterable = p.parseExpression(LOWEST)
+
+	if !p.expectPeek(lexer.RPAREN) {
+		return nil
+	}
+	p.nextToken()
+	prevInLoop := p.inLoop
+	p.inLoop = true
+	stmt.Body = p.parseBody()
+	p.inLoop = prevInLoop
 	return stmt
 }
 
@@ -1083,9 +1264,12 @@ func (p *Parser) parseBody() *ast.BlockStatement {
 	return block
 }
 
-func (p *Parser) parseFunctionDeclaration() *ast.FunctionDeclaration {
+// parseFunctionDeclaration 解析 function / async function 声明。
+// isAsync 由调用方给出 (async function 的 ASYNC 前缀在调用前已消费):
+// 它同时决定函数体内是否允许 await。
+func (p *Parser) parseFunctionDeclaration(isAsync bool) *ast.FunctionDeclaration {
 	// 进入时 curToken 是 FUNCTION (async 分支已把 curToken 移到 FUNCTION)
-	fn := &ast.FunctionDeclaration{Token: p.curToken()}
+	fn := &ast.FunctionDeclaration{Token: p.curToken(), IsAsync: isAsync}
 	if p.peekTokenIs(lexer.ASTERISK) {
 		fn.IsGenerator = true
 		p.nextToken() // 移到 *
@@ -1102,7 +1286,9 @@ func (p *Parser) parseFunctionDeclaration() *ast.FunctionDeclaration {
 		return nil
 	}
 	p.nextToken()
+	restore := p.setAllowAwait(isAsync)
 	fn.Body = p.parseBlockStatement()
+	restore()
 	return fn
 }
 
@@ -1175,7 +1361,7 @@ func (p *Parser) parseParameter() *ast.Parameter {
 		return param
 	}
 
-	if !p.curTokenIs(lexer.IDENTIFIER) {
+	if !p.isBindingName() {
 		p.addError(fmt.Sprintf("expected parameter name, got %s", p.curToken().Type))
 		return nil
 	}
@@ -1234,7 +1420,7 @@ func (p *Parser) parseIdentifier() ast.Expression {
 		p.nextToken() // consume =>
 		return p.parseArrowFunctionBody([]*ast.Parameter{{
 			Token: ident.Token, Name: ident.Value,
-		}})
+		}}, false)
 	}
 	return &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
 }
@@ -1395,7 +1581,7 @@ func (p *Parser) parseUnaryExpression() ast.Expression {
 // 通过扫描到匹配的 ) 后检查是否跟 => 来区分。
 func (p *Parser) parseGroupedOrArrow() ast.Expression {
 	if p.isArrowFunction() {
-		return p.parseArrowFunction()
+		return p.parseArrowFunction(false)
 	}
 	p.nextToken() // consume (
 	expr := p.parseCommaSequence()
@@ -1411,7 +1597,7 @@ func (p *Parser) parseGroupedOrArrow() ast.Expression {
 			p.nextToken() // consume =>
 			return p.parseArrowFunctionBody([]*ast.Parameter{{
 				Token: ident.Token, Name: ident.Value,
-			}})
+			}}, false)
 		}
 	}
 	return expr
@@ -1450,7 +1636,9 @@ func (p *Parser) parenGroupFollowedByArrow(start int) bool {
 	return false
 }
 
-func (p *Parser) parseArrowFunction() ast.Expression {
+// parseArrowFunction 解析括号参数列表形式的箭头函数 (cur = '(')。
+// isAsync 供 async 箭头传入, 决定函数体内是否允许 await。
+func (p *Parser) parseArrowFunction(isAsync bool) ast.Expression {
 	// curToken = LPAREN, parseParameters will advance past it
 	params := p.parseParameters(lexer.RPAREN)
 	if !p.curTokenIs(lexer.RPAREN) {
@@ -1462,18 +1650,25 @@ func (p *Parser) parseArrowFunction() ast.Expression {
 		return nil
 	}
 	p.nextToken() // consume =>
-	return p.parseArrowFunctionBody(params)
+	return p.parseArrowFunctionBody(params, isAsync)
 }
 
-func (p *Parser) parseArrowFunctionBody(params []*ast.Parameter) *ast.ArrowFunctionExpression {
-	af := &ast.ArrowFunctionExpression{Token: p.curToken(), Parameters: params}
+// parseArrowFunctionBody 解析箭头函数体 (cur 已越过 =>)。
+// isAsync 决定体内的 async 上下文: async 箭头允许 await, 同步箭头体内
+// 裸 await 是早错。
+func (p *Parser) parseArrowFunctionBody(params []*ast.Parameter, isAsync bool) *ast.ArrowFunctionExpression {
+	af := &ast.ArrowFunctionExpression{Token: p.curToken(), Parameters: params, IsAsync: isAsync}
 
 	if p.peekTokenIs(lexer.LBRACE) {
 		p.nextToken()
+		restore := p.setAllowAwait(isAsync)
 		af.Body = p.parseBlockStatement()
+		restore()
 	} else {
 		p.nextToken()
+		restore := p.setAllowAwait(isAsync)
 		af.Body = p.parseExpression(LOWEST)
+		restore()
 	}
 	return af
 }
@@ -1497,7 +1692,10 @@ func (p *Parser) parseFunctionExpression() ast.Expression {
 		return nil
 	}
 	p.nextToken()
+	// function 表达式永远是同步上下文 (async function 表达式走 parseAsyncExpression)
+	restore := p.setAllowAwait(false)
 	fn.Body = p.parseBlockStatement()
+	restore()
 	return fn
 }
 
@@ -1530,7 +1728,9 @@ func (p *Parser) parseAsyncExpression() ast.Expression {
 			return nil
 		}
 		p.nextToken()
+		restore := p.setAllowAwait(true)
 		fn.Body = p.parseBlockStatement()
+		restore()
 		return fn
 	}
 
@@ -1545,7 +1745,7 @@ func (p *Parser) parseAsyncExpression() ast.Expression {
 			return nil
 		}
 		p.nextToken() // cur = (
-		return p.finishAsyncArrow(p.parseArrowFunction())
+		return p.finishAsyncArrow(p.parseArrowFunction(true))
 	}
 
 	// async x => … (单参数不带括号)
@@ -1555,7 +1755,7 @@ func (p *Parser) parseAsyncExpression() ast.Expression {
 		p.nextToken() // cur = =>
 		return p.finishAsyncArrow(p.parseArrowFunctionBody([]*ast.Parameter{{
 			Token: ident.Token, Name: ident.Value,
-		}}))
+		}}, true))
 	}
 
 	p.addError("unsupported async expression after 'async' (only 'async function' " +
@@ -1595,7 +1795,21 @@ func (p *Parser) parseYieldExpression() ast.Expression {
 }
 
 // parseAwaitExpression 解析 await 表达式。
+//
+// 裸 await 早错 (node 22 实测口径): 非 async 上下文里 await 是普通标识符
+// (sloppy script 的 var await = 1 / await(1) / await - 1 都合法), 只有
+// 「await 后直接跟操作数」才是 await 表达式, 此时按 node 报 SyntaxError
+// ("await is only valid in async functions ...")。此前该形态会被解析成
+// AwaitExpression, 编译成 OP_YIELD 后运行时才报 "yield outside generator"。
 func (p *Parser) parseAwaitExpression() ast.Expression {
+	if !p.allowAwait {
+		if !p.peekStartsAwaitOperand() {
+			// 标识符用法: 交给中缀循环继续 (调用/索引/二元/后缀……)
+			return &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
+		}
+		p.addError("SyntaxError: await is only valid in async functions and async generators")
+		return nil
+	}
 	ae := &ast.AwaitExpression{Token: p.curToken()}
 	p.nextToken()
 	ae.Argument = p.parseExpression(LOWEST)
@@ -1755,12 +1969,16 @@ func (p *Parser) parseProperty() *ast.Property {
 			p.nextToken() // 到 (
 		}
 		fn := &ast.FunctionExpression{Token: prop.Token}
+		// 访问器不能是 async —— 同步上下文
+		restore := p.setAllowAwait(false)
 		fn.Parameters = p.parseParameters(lexer.RPAREN)
 		if !p.curTokenIs(lexer.RPAREN) {
+			restore()
 			return nil
 		}
 		p.nextToken() // 到 {
 		fn.Body = p.parseBlockStatement()
+		restore()
 		prop.Value = fn
 		return prop
 	}
@@ -1803,12 +2021,15 @@ func (p *Parser) parseProperty() *ast.Property {
 		fn := &ast.FunctionExpression{Token: prop.Token}
 		fn.IsGenerator = isGenerator
 		fn.IsAsync = isAsync
+		restore := p.setAllowAwait(isAsync)
 		fn.Parameters = p.parseParameters(lexer.RPAREN)
 		if !p.curTokenIs(lexer.RPAREN) {
+			restore()
 			return nil
 		}
 		p.nextToken()
 		fn.Body = p.parseBlockStatement()
+		restore()
 		prop.Value = fn
 		return prop
 	}
@@ -2082,12 +2303,16 @@ func (p *Parser) parsePrivateAccessor(member *ast.ClassMethod) *ast.ClassMethod 
 	member.Name = p.curToken().Literal
 	if p.peekTokenIs(lexer.LPAREN) {
 		p.nextToken() // cur = (
+		// 私有访问器不能是 async —— 同步上下文
+		restore := p.setAllowAwait(false)
 		member.Parameters = p.parseParameters(lexer.RPAREN)
 		if !p.curTokenIs(lexer.RPAREN) {
+			restore()
 			return nil
 		}
 		p.nextToken() // cur = {
 		member.Body = p.parseBlockStatement()
+		restore()
 		p.nextToken() // 前进到下一成员/分隔符
 		return member
 	}
@@ -2111,12 +2336,16 @@ func (p *Parser) parsePrivateMember(member *ast.ClassMethod) *ast.ClassMethod {
 	// #name(...) {} 私有方法
 	if p.peekTokenIs(lexer.LPAREN) {
 		p.nextToken() // cur = (
+		// 私有方法 (async #m(){} 未支持) —— 同步上下文
+		restore := p.setAllowAwait(false)
 		member.Parameters = p.parseParameters(lexer.RPAREN)
 		if !p.curTokenIs(lexer.RPAREN) {
+			restore()
 			return nil
 		}
 		p.nextToken() // cur = {
 		member.Body = p.parseBlockStatement()
+		restore()
 		// parseBlockStatement 返回时 cur 停在 } 上 (与 ctor/getter 路径一致),
 		// 再前进一格到下一成员/分隔符。
 		p.nextToken()
@@ -2742,12 +2971,16 @@ func (p *Parser) parseClassMember() *ast.ClassMethod {
 			member.Name = p.curToken().Literal
 			p.nextToken()
 		}
+		// 访问器不能是 async —— 同步上下文
+		restore := p.setAllowAwait(false)
 		member.Parameters = p.parseParameters(lexer.RPAREN)
 		if !p.curTokenIs(lexer.RPAREN) {
+			restore()
 			return nil
 		}
 		p.nextToken()
 		member.Body = p.parseBlockStatement()
+		restore()
 		p.nextToken() // 前进到下一个成员/分隔符
 		return member
 	}
@@ -2756,12 +2989,16 @@ func (p *Parser) parseClassMember() *ast.ClassMethod {
 	if p.curTokenIs(lexer.IDENTIFIER) && p.curToken().Literal == "constructor" && p.peekTokenIs(lexer.LPAREN) {
 		member.Name = "constructor"
 		p.nextToken()
+		// constructor 不能是 async —— 同步上下文
+		restore := p.setAllowAwait(false)
 		member.Parameters = p.parseParameters(lexer.RPAREN)
 		if !p.curTokenIs(lexer.RPAREN) {
+			restore()
 			return nil
 		}
 		p.nextToken()
 		member.Body = p.parseBlockStatement()
+		restore()
 		p.nextToken() // 前进到下一个成员/分隔符
 		return member
 	}
@@ -2784,12 +3021,15 @@ func (p *Parser) parseClassMember() *ast.ClassMethod {
 		}
 		if p.curTokenIs(lexer.LPAREN) {
 			// 方法定义: name(params) { body } / [expr](params) { body }
+			restore := p.setAllowAwait(member.IsAsync)
 			member.Parameters = p.parseParameters(lexer.RPAREN)
 			if !p.curTokenIs(lexer.RPAREN) {
+				restore()
 				return nil
 			}
 			p.nextToken()
 			member.Body = p.parseBlockStatement()
+			restore()
 			p.nextToken() // 前进到下一个成员/分隔符
 			return member
 		}
@@ -2994,7 +3234,7 @@ func (p *Parser) parseExportDeclInto(out *ast.Statement) bool {
 			return true
 		}
 	case lexer.FUNCTION:
-		if s := p.parseFunctionDeclaration(); s != nil {
+		if s := p.parseFunctionDeclaration(false); s != nil {
 			*out = s
 			return true
 		}
@@ -3005,8 +3245,7 @@ func (p *Parser) parseExportDeclInto(out *ast.Statement) bool {
 		}
 	case lexer.ASYNC:
 		p.nextToken() // cur = function
-		if fn := p.parseFunctionDeclaration(); fn != nil {
-			fn.IsAsync = true
+		if fn := p.parseFunctionDeclaration(true); fn != nil {
 			*out = fn
 			return true
 		}
@@ -3027,14 +3266,14 @@ func (p *Parser) parseExportDefault(stmt *ast.ExportDeclaration) *ast.ExportDecl
 	switch p.curToken().Type {
 	case lexer.FUNCTION:
 		if p.defaultFunctionIsNamed() {
-			fn := p.parseFunctionDeclaration()
+			fn := p.parseFunctionDeclaration(false)
 			if fn == nil {
 				return nil
 			}
 			stmt.Declaration = fn
 			return stmt
 		}
-		fn := p.parseAnonymousFunctionExpression()
+		fn := p.parseAnonymousFunctionExpression(false)
 		if fn == nil {
 			return nil
 		}
@@ -3045,19 +3284,17 @@ func (p *Parser) parseExportDefault(stmt *ast.ExportDeclaration) *ast.ExportDecl
 	case lexer.ASYNC:
 		p.nextToken() // cur = function
 		if p.defaultFunctionIsNamed() {
-			fn := p.parseFunctionDeclaration()
+			fn := p.parseFunctionDeclaration(true)
 			if fn == nil {
 				return nil
 			}
-			fn.IsAsync = true
 			stmt.Declaration = fn
 			return stmt
 		}
-		fn := p.parseAnonymousFunctionExpression()
+		fn := p.parseAnonymousFunctionExpression(true)
 		if fn == nil {
 			return nil
 		}
-		fn.IsAsync = true
 		stmt.Declaration = &ast.ExpressionStatement{Token: fn.Token, Expression: fn}
 		p.consumeSemicolon()
 		return stmt
@@ -3104,8 +3341,10 @@ func (p *Parser) defaultFunctionIsNamed() bool {
 
 // parseAnonymousFunctionExpression 从 FUNCTION 起始解析一个匿名(或可选具名)
 // 函数表达式, 供 export default 的匿名默认函数使用。cur 位于 FUNCTION。
-func (p *Parser) parseAnonymousFunctionExpression() *ast.FunctionExpression {
-	fn := &ast.FunctionExpression{Token: p.curToken()}
+// parseAnonymousFunctionExpression 解析 export default 后的匿名函数表达式。
+// isAsync 决定函数体内的 async 上下文 (export default async function(){})。
+func (p *Parser) parseAnonymousFunctionExpression(isAsync bool) *ast.FunctionExpression {
+	fn := &ast.FunctionExpression{Token: p.curToken(), IsAsync: isAsync}
 	if p.peekTokenIs(lexer.ASTERISK) {
 		fn.IsGenerator = true
 		p.nextToken() // cur = *
@@ -3122,7 +3361,9 @@ func (p *Parser) parseAnonymousFunctionExpression() *ast.FunctionExpression {
 		return nil
 	}
 	p.nextToken()
+	restore := p.setAllowAwait(isAsync)
 	fn.Body = p.parseBlockStatement()
+	restore()
 	return fn
 }
 

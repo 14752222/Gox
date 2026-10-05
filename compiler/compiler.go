@@ -1121,9 +1121,14 @@ func (c *Compiler) compileForOfStatement(stmt *ast.ForOfStatement) error {
 		varKind = bytecode.OP_STORE_CONST
 	}
 	if stmt.Pattern != nil {
-		// isDecl=true: 每轮迭代是新的块作用域 (上面已 PUSH_SCOPE), 解构出来的
-		// 名字声明进这个作用域, 所以各轮的绑定互不影响 —— 闭包捕获到的是各自
-		// 的槽位。
+		// 解构绑定 vs 解构赋值目标, 靠 VarDecl 是否为 nil 区分:
+		//   声明绑定 for (const [a, b] of pairs) → VarDecl 是 __destructure__
+		//     空壳, isDecl=true: 每轮迭代是新的块作用域 (上面已 PUSH_SCOPE),
+		//     解构出来的名字声明进这个作用域, 所以各轮的绑定互不影响 ——
+		//     闭包捕获到的是各自的槽位。
+		//   赋值目标 for ([a, b] of xs) → VarDecl 为 nil, isDecl=false:
+		//     每轮是**赋值**, 写入外部已声明的绑定 (node 实测: for ([a,b] of …)
+		//     修改的就是外层 a/b)。
 		//
 		// 注: 解构出来的名字按 let 语义登记 (compilePatternBind 内部是
 		// declareOnce(…, false, …)), 与 const [a, b] = … 的现有口径一致。本运行时
@@ -1131,7 +1136,13 @@ func (c *Compiler) compileForOfStatement(stmt *ast.ForOfStatement) error {
 		// 局部槽位根本不查 (compiler.Symbol.IsConst 目前无人读取), 所以
 		// for (const [a, b] of …) 的 a/b 可被重新赋值 —— 这是既有边界, 不是本次
 		// 解构支持引入的。
-		if err := c.compilePatternBind(stmt.Pattern, true); err != nil {
+		if err := c.compilePatternBind(stmt.Pattern, stmt.VarDecl != nil); err != nil {
+			return err
+		}
+	} else if stmt.Target != nil {
+		// 无声明赋值目标 for (x of xs) / for (obj.k of xs): 每轮迭代是
+		// 赋值, 与 var 形态一样写**外部**绑定 (不是每轮新声明)
+		if err := c.compileForOfTargetAssign(stmt.Target); err != nil {
 			return err
 		}
 	} else if _, isVarDecl := stmt.VarDecl.(*ast.VarStatement); isVarDecl {
@@ -1255,7 +1266,13 @@ func (c *Compiler) compileForAwaitOfStatement(stmt *ast.ForOfStatement) error {
 		varKind = bytecode.OP_STORE_CONST
 	}
 	if stmt.Pattern != nil {
-		if err := c.compilePatternBind(stmt.Pattern, true); err != nil {
+		// 与同步 for-of 同口径: VarDecl 为 nil 的解构是**赋值**目标
+		if err := c.compilePatternBind(stmt.Pattern, stmt.VarDecl != nil); err != nil {
+			return err
+		}
+	} else if stmt.Target != nil {
+		// for await (x of xs) / for await (obj.k of xs): 每轮赋值给外部绑定
+		if err := c.compileForOfTargetAssign(stmt.Target); err != nil {
 			return err
 		}
 	} else if _, isVarDecl := stmt.VarDecl.(*ast.VarStatement); isVarDecl {
@@ -1310,6 +1327,35 @@ func (c *Compiler) compileForAwaitOfStatement(stmt *ast.ForOfStatement) error {
 
 	c.popControl()
 	return nil
+}
+
+// compileForOfTargetAssign 把栈顶的本轮迭代值赋给 for-of 的无声明赋值目标。
+// 进来 [.., value], 离开 [..] (值被消耗, 与 OP_STORE 的语义对齐)。
+// 每轮迭代是**赋值**而非声明: 写外部已有绑定, 未声明时隐式全局 (与 x = v
+// 的 sloppy 口径一致)。
+func (c *Compiler) compileForOfTargetAssign(target ast.Expression) error {
+	switch t := target.(type) {
+	case *ast.Identifier:
+		// for (x of xs): 与 x = v 的写入路径完全一致
+		c.emitIdentifierAssign(t.Value)
+		return nil
+	case *ast.MemberExpression:
+		// for (obj.k of xs) / for (obj.#p of xs):
+		// compileMemberRef 约定栈上是 [obj, key], 但值已在栈顶 ——
+		// [val, obj, key] → DUP_BELOW2+POP ×2 → [obj, key, val]
+		// → SET_INDEX (推回写入值) → [val] → POP → []
+		if err := c.compileMemberRef(t); err != nil {
+			return err
+		}
+		c.emitter.EmitNoOperand(bytecode.OP_DUP_BELOW2)
+		c.emitter.EmitNoOperand(bytecode.OP_POP)
+		c.emitter.EmitNoOperand(bytecode.OP_DUP_BELOW2)
+		c.emitter.EmitNoOperand(bytecode.OP_POP)
+		c.emitter.EmitNoOperand(bytecode.OP_SET_INDEX)
+		c.emitter.EmitNoOperand(bytecode.OP_POP)
+		return nil
+	}
+	return fmt.Errorf("compiler: unsupported for...of assignment target: %T", target)
 }
 
 func (c *Compiler) compileForInStatement(stmt *ast.ForInStatement) error {

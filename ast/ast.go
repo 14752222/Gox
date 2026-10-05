@@ -293,6 +293,7 @@ type ForOfStatement struct {
 	VarDecl  Statement   // let x / const x（解构绑定见上）
 	Variable *Identifier // 迭代变量名; 解构绑定时为 nil
 	Pattern  Expression  // ArrayPattern / ObjectPattern; 简单绑定时为 nil
+	Target   Expression  // 无声明形态的赋值目标 (标识符/成员访问); 声明形态为 nil
 	Iterable Expression
 	Body     *BlockStatement
 	// Await 表示 for await...of (异步迭代)。仅允许出现在 async 函数内
@@ -302,9 +303,13 @@ type ForOfStatement struct {
 
 func (fos *ForOfStatement) TokenLiteral() string { return fos.Token.Literal }
 func (fos *ForOfStatement) String() string {
-	head := fos.VarDecl.String()
-	if fos.Pattern != nil {
+	head := ""
+	if fos.VarDecl != nil {
+		head = fos.VarDecl.String()
+	} else if fos.Pattern != nil {
 		head = fos.Pattern.String()
+	} else if fos.Target != nil {
+		head = fos.Target.String()
 	}
 	kw := "for ("
 	if fos.Await {
