@@ -4811,6 +4811,17 @@ func (c *Compiler) compileFunctionSelf(name, selfName string, params []*ast.Para
 		}
 	}
 
+	// 形参前导段到此结束 (下一字节即函数体首指令)。生成器函数调用时
+	// VM 会先同步执行 [0, paramPrologueEnd) 完成形参绑定, 再冻结为
+	// Generator; 函数体仍推迟到首次 next()。无默认值/解构模式则无前导段。
+	paramPrologueEnd := 0
+	for _, param := range params {
+		if param.Default != nil || param.Pattern != nil {
+			paramPrologueEnd = c.emitter.Pos()
+			break
+		}
+	}
+
 	// 在函数体内不自动添加 PUSH_SCOPE/POP_SCOPE (函数本身已有作用域)
 	if err := c.compileStatements(body.Statements); err != nil {
 		return nil, err
@@ -4841,6 +4852,7 @@ func (c *Compiler) compileFunctionSelf(name, selfName string, params []*ast.Para
 	meta.SelfSlot = selfSlot
 	meta.IsGenerator = isGenerator
 	meta.IsAsync = false
+	meta.ParamPrologueEnd = paramPrologueEnd
 	meta.Positions = toSrcPosList(fnSrcPositions)
 	return meta, nil
 }
@@ -4887,6 +4899,11 @@ func (c *Compiler) compileAsyncFunctionSelf(name, selfName string, params []*ast
 	if err != nil {
 		return nil, err
 	}
+	// 普通 async 函数的内层 generator: 形参绑定必须留在 __spawn 驱动路径内。
+	// 规范要求 async 函数形参求值抛错时返回 rejected Promise (而非同步抛出),
+	// 而生成器是同步抛出 —— 故此处不走"调用时冻结前导段"路径, 由 __spawn
+	// 首次驱动时执行, 错误经 step() 的回调桥转为 rejection。
+	genMeta.DeferParams = true
 	genIdx := c.constants.AddConstant(genMeta)
 
 	// 2. 创建 wrapper 作用域并定义参数

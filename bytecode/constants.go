@@ -106,6 +106,19 @@ type FunctionMetadata struct {
 	// Positions 是函数体语句的源码位置表 (offset 升序, 可为 nil)。
 	// 运行时错误渲染源码帧用 (T05)。
 	Positions []SrcPos
+
+	// ParamPrologueEnd 是形参绑定前导段在 Instructions 中的结束偏移
+	// (0 表示无前导段)。规范要求生成器函数在**调用时**同步完成形参绑定
+	// (默认值求值 / 解构 / 形参作用域建立), 只有函数体推迟到首次 next()。
+	// VM 据此在调用时先运行 [0, ParamPrologueEnd) 再冻结为 Generator。
+	// 有默认值或解构模式的形参才产生前导段 (纯名字/rest 形参无副作用)。
+	ParamPrologueEnd int
+
+	// DeferParams 为真表示形参绑定由内层驱动 (__spawn) 在首次驱动时执行,
+	// 而非在调用时冻结。仅用于普通 async 函数的内层 generator: 规范要求
+	// async 函数形参求值抛错时返回 **rejected Promise**, 而不像生成器那样
+	// 同步抛出 —— 故其形参绑定必须留在 __spawn 驱动路径内以便错误转 rejection。
+	DeferParams bool
 }
 
 // SrcPos 是语句的源码位置。Offset 是语句首条指令在**所属编译单元**

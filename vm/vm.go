@@ -884,6 +884,13 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 	for vm.frameIdx >= startFrameIdx {
 		frame := vm.currentFrame()
 
+		// 形参前导帧: 前导段执行完毕 (PC 到达 StopPC) 即冻结为 Generator,
+		// 函数体留待首次 next()。冻结时把 Generator 放到调用点的结果槽位。
+		if frame.PendingGen != nil && frame.PC >= frame.StopPC {
+			vm.freezeGenPrologue(frame)
+			continue
+		}
+
 		// 检查是否到达字节码末尾
 		if frame.PC >= len(frame.Instructions) {
 			if vm.frameIdx == 0 {
@@ -1290,9 +1297,20 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 					continue
 				}
 			case *object.Closure:
-				// generator 函数调用: 不执行函数体, 返回 Generator 对象
+				// generator 函数调用: 不执行函数体, 返回 Generator 对象。
+				// 有形参前导段 (默认值/解构) 时, 先建立前导帧 —— 由主循环
+				// 同步执行前导段后冻结为 Generator (规范: 形参绑定在调用时完成)。
 				if callee.Fn != nil && callee.Fn.IsGenerator {
-					vm.stack.Push(object.NewGenerator(callee, args))
+					if genHasPrologue(callee.Fn) {
+						if err := vm.setupGenPrologueFrame(callee, args); err != nil {
+							if terr := vm.throwJSError(err); terr != nil {
+								return terr
+							}
+							continue
+						}
+					} else {
+						vm.stack.Push(object.NewGenerator(callee, args))
+					}
 				} else {
 					if err := vm.callClosure(callee, args); err != nil {
 						if terr := vm.throwJSError(err); terr != nil {
@@ -2575,8 +2593,21 @@ func (vm *VM) callFunction(fn object.Value, this object.Value, args []object.Val
 			}
 		}
 		// generator 函数: 不执行函数体, 返回 Generator 对象 (对齐 OP_CALL;
-		// 否则生成器体被同步执行, 首个 yield 触发 "yield outside generator")
+		// 否则生成器体被同步执行, 首个 yield 触发 "yield outside generator")。
+		// 有形参前导段时先跑前导帧同步绑定形参, 再取出冻结好的 Generator。
 		if bound.Fn != nil && bound.Fn.IsGenerator {
+			if genHasPrologue(bound.Fn) {
+				startIdx := vm.frameIdx + 1
+				if err := vm.setupGenPrologueFrame(bound, args); err != nil {
+					vm.unwindFramesTo(startIdx)
+					return nil, err
+				}
+				if err := vm.runFrom(startIdx); err != nil {
+					vm.unwindFramesTo(startIdx)
+					return nil, err
+				}
+				return vm.stack.Pop(), nil
+			}
 			return object.NewGenerator(bound, args), nil
 		}
 		// 记录当前帧索引，新帧从这里 +1
@@ -2996,9 +3027,16 @@ func (vm *VM) invokeWithThis(fn, thisVal object.Value, args []object.Value) erro
 			IsArrow:        callee.IsArrow,
 			CapturedLocals: callee.CapturedLocals,
 		}
-		// generator 方法调用: 创建 Generator (this 绑定保留在闭包中)
+		// generator 方法调用: 创建 Generator (this 绑定保留在闭包中)。
+		// 有形参前导段时同样先建立前导帧, 由主循环同步绑定形参后冻结。
 		if methodClosure.Fn != nil && methodClosure.Fn.IsGenerator {
-			vm.stack.Push(object.NewGenerator(methodClosure, args))
+			if genHasPrologue(methodClosure.Fn) {
+				if err := vm.setupGenPrologueFrame(methodClosure, args); err != nil {
+					return vm.throwJSError(err)
+				}
+			} else {
+				vm.stack.Push(object.NewGenerator(methodClosure, args))
+			}
 		} else {
 			if err := vm.callClosure(methodClosure, args); err != nil {
 				return vm.throwJSError(err)
@@ -3554,6 +3592,48 @@ func (vm *VM) callClosure(closure *object.Closure, args []object.Value) error {
 	return nil
 }
 
+// genHasPrologue 报告该生成器函数是否需要在调用时同步执行形参前导段
+// (默认值/解构)。DeferParams 的例外是普通 async 函数的内层 generator:
+// 它的形参绑定必须留在 __spawn 驱动路径内 (错误转 rejected Promise)。
+func genHasPrologue(fn *object.CompiledFunction) bool {
+	return fn != nil && fn.IsGenerator && !fn.DeferParams && fn.ParamPrologueEnd > 0
+}
+
+// setupGenPrologueFrame 为需要同步绑定形参的生成器建立前导帧。
+// callClosure 先把实参放入形参槽位, 前导段 (默认值/解构) 由主循环执行;
+// 执行到 StopPC 时 runFrom 会调用 freezeGenPrologue 冻结为 Generator。
+// 前导段抛出的异常沿正常抛出流程传播 (生成器形参错误是**同步抛出**)。
+func (vm *VM) setupGenPrologueFrame(closure *object.Closure, args []object.Value) error {
+	if err := vm.callClosure(closure, args); err != nil {
+		return err
+	}
+	frame := vm.currentFrame()
+	frame.PendingGen = object.NewGenerator(closure, args)
+	frame.StopPC = closure.Fn.ParamPrologueEnd
+	return nil
+}
+
+// freezeGenPrologue 把形参前导帧冻结为 Generator:
+// 保存帧状态 (PC/Locals/Instructions/Constants) 到 Generator, 弹出前导帧,
+// 并把 Generator 放到调用点的结果槽位 (帧基处)。
+func (vm *VM) freezeGenPrologue(frame *Frame) {
+	gen := frame.PendingGen
+	gen.PC = frame.PC
+	gen.Locals = frame.Locals
+	gen.Instructions = frame.Instructions
+	gen.Constants = frame.Constants.Constants
+	gen.SavedStack = nil
+	gen.PendingTries = nil
+	gen.PrologueBound = true
+
+	base := frame.StackBase
+	vm.popFrame()
+	if vm.stack.Len() > base {
+		vm.stack.Truncate(base)
+	}
+	vm.stack.Push(gen)
+}
+
 // genResume 驱动生成器前进:
 // - 首次: 以 gen.Args 调用闭包创建帧
 // - 恢复: 重建保存的帧, 压入 arg 作为 yield 表达式的结果
@@ -3565,6 +3645,18 @@ func (vm *VM) genResume(gen *object.Generator, arg object.Value) (object.Value, 
 	}
 
 	if !gen.Started {
+		// 形参前导段已在调用时执行完毕: 直接重建帧从函数体起始处恢复,
+		// 不压入 arg (首次 next 的实参被忽略)。
+		if gen.PrologueBound {
+			gen.Started = true
+			gen.PrologueBound = false
+			if gen.PC >= len(gen.Instructions) {
+				gen.Done = true
+				return object.UndefinedSingleton, true, nil
+			}
+			vm.rebuildGenFrame(gen, true)
+			return vm.runSuspendedGen(gen)
+		}
 		// 首次启动: 正常调用闭包 (参数来自创建时的 Args)
 		if err := vm.callClosure(gen.Closure, gen.Args); err != nil {
 			gen.Done = true
@@ -3578,7 +3670,7 @@ func (vm *VM) genResume(gen *object.Generator, arg object.Value) (object.Value, 
 		return object.UndefinedSingleton, true, nil
 	}
 	// 重建帧，压入 arg 作为 yield 表达式的值 (栈顶)
-	vm.rebuildGenFrame(gen)
+	vm.rebuildGenFrame(gen, false)
 	vm.stack.Push(arg)
 	return vm.runSuspendedGen(gen)
 }
@@ -3599,7 +3691,7 @@ func (vm *VM) genThrow(gen *object.Generator, throwVal object.Value) (object.Val
 		gen.Done = true
 		return object.UndefinedSingleton, true, nil
 	}
-	genFrame := vm.rebuildGenFrame(gen)
+	genFrame := vm.rebuildGenFrame(gen, false)
 	genFrameIdx := vm.frameIdx
 
 	// 仅当 generator 帧自身挂有 try 处理器时才查找处理器:
@@ -3654,7 +3746,7 @@ func (vm *VM) genReturn(gen *object.Generator, returnVal object.Value) (object.V
 		gen.Done = true
 		return returnVal, true, nil
 	}
-	genFrame := vm.rebuildGenFrame(gen)
+	genFrame := vm.rebuildGenFrame(gen, false)
 	genFrameIdx := vm.frameIdx
 	if !vm.handleReturn(returnVal) {
 		gen.Done = true
@@ -3672,7 +3764,14 @@ func (vm *VM) genReturn(gen *object.Generator, returnVal object.Value) (object.V
 // 之上), 则 SavedStack 落到帧基之下, 一旦上层表达式把残留值消费掉、栈
 // 降回帧基之下, try 条目的绝对 stackBase 就会小于帧基 —— async generator
 // 在求值外层表达式时恢复生成器 (操作数栈带中间值) 的场景会因此越界崩溃。
-func (vm *VM) rebuildGenFrame(gen *object.Generator) *Frame {
+//
+// reuseLocals 为真时直接复用 gen.Locals (不拷贝): 形参前导段在**调用时**
+// 由独立的"前导帧"执行, 该帧里默认值表达式创建的闭包捕获的是前导帧
+// Locals 的切片 (= gen.Locals)。若此处拷贝成新数组, 函数体对形参的 STORE
+// 只会写进副本, 前导段闭包仍读到旧数组 —— `function* g(a, f = () => a)
+// { a = 6; yield f() }` 会错读到形参初值。复用同一数组使这些闭包与函数体
+// 共享绑定, 与"前导段与函数体同一帧"的语义一致。
+func (vm *VM) rebuildGenFrame(gen *object.Generator, reuseLocals bool) *Frame {
 	// 帧基 = 当前栈高 (SavedStack 之前的顶端)。必须先取再压 SavedStack:
 	// SavedStack 是挂起时「帧基之上」的中间值 (如 2 + (yield 3) 中的 2),
 	// 恢复后仍应位于帧基之上; 若压入后再取栈高, 帧基被抬到 SavedStack 之上,
@@ -3683,8 +3782,11 @@ func (vm *VM) rebuildGenFrame(gen *object.Generator) *Frame {
 	for _, v := range gen.SavedStack {
 		vm.stack.Push(v)
 	}
-	locals := make([]object.Value, len(gen.Locals))
-	copy(locals, gen.Locals)
+	locals := gen.Locals
+	if !reuseLocals {
+		locals = make([]object.Value, len(gen.Locals))
+		copy(locals, gen.Locals)
+	}
 	frame := &Frame{
 		Instructions: gen.Instructions,
 		PC:           gen.PC,
@@ -3692,6 +3794,11 @@ func (vm *VM) rebuildGenFrame(gen *object.Generator) *Frame {
 		Closure:      gen.Closure,
 		Constants:    &bytecode.ConstantPool{Constants: gen.Constants},
 		StackBase:    stackBase,
+	}
+	if reuseLocals {
+		// 复用同一数组 ⇒ 把它同时作为 binding cell, 使前导段闭包与
+		// 函数体的 STORE 走同一份存储 (见函数头注释)。
+		frame.SharedCells = gen.Locals
 	}
 	vm.pushFrame(frame)
 	// 把 yield 时保存的 try 处理器条目按相对值换算后重新挂回

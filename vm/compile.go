@@ -87,6 +87,8 @@ func metaToCompiledFunction(meta *bytecode.FunctionMetadata, consts []object.Val
 		BaseSlot:       meta.BaseSlot,
 		ArgumentsSlot:  meta.ArgumentsSlot,
 		SelfSlot:       meta.SelfSlot,
+		ParamPrologueEnd: meta.ParamPrologueEnd,
+		DeferParams:    meta.DeferParams,
 		Constants:      consts,
 		Positions:      srcPosList(meta.Positions), // T05: 函数体语句位置表
 	}

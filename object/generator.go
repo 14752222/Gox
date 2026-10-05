@@ -15,6 +15,12 @@ type Generator struct {
 	Done    bool  // 是否已完成
 	Value   Value // 最近一次 yield 的值 / 最终返回值
 
+	// PrologueBound 为真表示形参绑定前导段已在**调用时**同步执行完毕
+	// (帧状态已存于 PC/Locals/Instructions/Constants), 首次 next() 直接从
+	// 函数体起始处恢复, 不再执行形参绑定。用于生成器/异步生成器 ——
+	// 规范要求形参默认值与解构在调用时同步求值。
+	PrologueBound bool
+
 	// LastYieldIsAwait 记录最近一次挂起是 await 还是 yield。
 	// async generator 的驱动必须区分二者: await 是内部挂起点 (自动恢复),
 	// yield 是消费者可见的挂起点 (结算 next() 的 Promise)。

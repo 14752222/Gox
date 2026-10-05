@@ -26,6 +26,13 @@ type Frame struct {
 	CreatedClosures []*object.Closure // 本帧创建的闭包 (用于 STORE 传播)
 	SharedCells     []object.Value    // 外层 binding cell (== 创建它的帧的 Locals 数组)
 	StackBase       int               // 进入本帧时栈高度 (返回时截断到此处)
+
+	// PendingGen 非 nil 表示本帧是生成器/异步生成器的"形参前导帧":
+	// 帧内指令只覆盖形参绑定前导段 [0, StopPC)。执行到 PC >= StopPC 时
+	// 冻结为 Generator (见 runFrom/freezeGenPrologue), 函数体随后才在
+	// 首次 next() 时运行。规范要求形参绑定在调用时同步完成。
+	PendingGen *object.Generator
+	StopPC     int
 }
 
 // NewFrame 创建新的调用帧。

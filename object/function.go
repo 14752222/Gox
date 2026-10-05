@@ -48,6 +48,14 @@ type CompiledFunction struct {
 	// Positions 是函数体语句的源码位置表 (offset 升序, 可为 nil)。
 	// 运行时错误渲染源码帧用 (T05)。
 	Positions []SrcPos
+	// ParamPrologueEnd 是形参绑定前导段 (默认值/解构) 在 Instructions 中的
+	// 结束偏移 (0 表示无前导段)。生成器函数在调用时先同步执行 [0, 该偏移)
+	// 完成形参绑定, 函数体留待首次 next()。见 bytecode.FunctionMetadata。
+	ParamPrologueEnd int
+	// DeferParams 为真表示形参绑定不由调用时的前导段完成, 而留给内层驱动
+	// (__spawn) 在首次驱动时执行。仅用于普通 async 函数的内层 generator:
+	// 其形参求值抛错须返回 rejected Promise (而非生成器那样的同步抛出)。
+	DeferParams bool
 	// Constants 是函数字节码引用的常量池 (用于跨模块调用)
 	// 为 nil 时使用 VM 的全局常量池
 	Constants []Value
