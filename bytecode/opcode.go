@@ -165,6 +165,18 @@ const (
 	// 消费者 next(v) 的值必须转发给被委托迭代器的 next(v)。
 	// 栈: [iter, arg] → [step] (弹出两者, 压入步进结果/其 Promise)。
 	OP_ASYNC_ITER_NEXT_ARG Opcode = 0xA7
+	// OP_ITER_STEP: 同步迭代一步 (数组解构绑定/赋值用)。
+	// 与 OP_ASYNC_ITER_NEXT 同款栈语义 (读栈顶迭代器, 不弹出), 但只产出
+	// 同步的 {value, done} 对象 —— 不会出现 Promise 分支 (async 迭代器
+	// 不是同步可迭代对象)。覆盖 Generator / runtime.Iterator /
+	// 普通对象 (调其 next()) 三种形状。
+	// 栈: [iter] → [iter, step]
+	OP_ITER_STEP Opcode = 0xA8
+	// OP_ITER_CLOSE: IteratorClose (规范 7.4.6)。弹出栈顶迭代器:
+	// 取其 return 方法 (Generator 走内建 return), 为 null/undefined 则跳过;
+	// 非可调用 → TypeError; 否则以迭代器为 this 调用之, 丢弃返回值并传播
+	// 其异常。栈: [iter] → []
+	OP_ITER_CLOSE Opcode = 0xA9
 
 	// 0xB0-0xBF: 作用域
 	OP_PUSH_SCOPE Opcode = 0xB0 // 进入新块作用域
@@ -258,6 +270,7 @@ var opcodeNames = map[Opcode]string{
 	OP_GET_ITERATOR: "GET_ITERATOR", OP_ITER_NEXT: "ITER_NEXT",
 	OP_GET_ASYNC_ITERATOR: "GET_ASYNC_ITERATOR", OP_ASYNC_ITER_NEXT: "ASYNC_ITER_NEXT",
 	OP_ASYNC_ITER_NEXT_ARG: "ASYNC_ITER_NEXT_ARG",
+	OP_ITER_STEP:           "ITER_STEP", OP_ITER_CLOSE: "ITER_CLOSE",
 	OP_FOR_IN_INIT: "FOR_IN_INIT", OP_FOR_IN_NEXT: "FOR_IN_NEXT", OP_FOR_IN_END: "FOR_IN_END",
 	OP_PUSH_SCOPE: "PUSH_SCOPE", OP_POP_SCOPE: "POP_SCOPE",
 	OP_TYPEOF: "TYPEOF", OP_INSTANCEOF: "INSTANCEOF",

@@ -1859,6 +1859,31 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				}
 				vm.stack.Pop() // 弹出 generator，留下数组
 				continue
+			} else if objIter, isObj := resolved.(*object.Object); ok && isObj {
+				// 用户自建迭代器对象: 同步调 next() 逐步收集。
+				for {
+					step, err := vm.syncIterStep(objIter)
+					if err != nil {
+						if terr := vm.rethrowBridgeError(err); terr != nil {
+							return terr
+						}
+						break
+					}
+					stepObj, isStep := step.(*object.Object)
+					if !isStep {
+						break
+					}
+					doneVal, _ := stepObj.GetProperty("done")
+					if doneVal != nil && doneVal.IsTruthy() {
+						break
+					}
+					val, _ := stepObj.GetProperty("value")
+					if val == nil {
+						val = object.UndefinedSingleton
+					}
+					a.Elements = append(a.Elements, val)
+				}
+				continue
 			} else if ok {
 				iterable = resolved
 			}
@@ -1988,7 +2013,12 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			// 生成器方法的返回值 (*object.Generator) 只能由 VM 帧驱动,
 			// runtime.GetIterable 的 Go 层适配器接管不了。
 			if resolved, ok, err := vm.resolveSymbolIterator(val); err != nil {
-				return err
+				// Symbol.iterator 方法自身抛错: 必须走抛出流程, 否则外层
+				// try/catch 抓不到 (解构/for-of 的 iter-get-err 用例)。
+				if terr := vm.rethrowBridgeError(err); terr != nil {
+					return terr
+				}
+				continue
 			} else if ok {
 				vm.stack.Push(resolved)
 				continue
@@ -2024,8 +2054,70 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				} else {
 					vm.stack.Push(val)
 				}
+			} else if it, ok := iter.(*object.Object); ok {
+				// 用户自建迭代器 ({ next }): 调 next(), 读 {value, done}。
+				// 只做同步调用 —— 返回 Promise 的 async 迭代器不该出现在
+				// 同步 for-of / 解构路径上。
+				nextFn, found := it.GetProperty("next")
+				if !found || !object.IsCallable(nextFn) {
+					if err := vm.throwNamedError("TypeError", "iterator has no callable next()"); err != nil {
+						return err
+					}
+					continue
+				}
+				res, err := vm.callFunction(nextFn, it, nil)
+				if err != nil {
+					if terr := vm.rethrowBridgeError(err); terr != nil {
+						return terr
+					}
+					continue
+				}
+				// 规范 7.4.2 step 2: next() 返回值必须是 Object, 否则 TypeError
+				// (yield* / for-of 的 star-rhs-iter-nrml-next-call-non-obj)。
+				if res == nil || !object.IsObjectLike(res) {
+					if err := vm.throwNamedError("TypeError", "iterator next() must return an object"); err != nil {
+						return err
+					}
+					continue
+				}
+				if step, ok := res.(*object.Object); ok {
+					doneVal, _ := step.GetProperty("done")
+					if doneVal != nil && doneVal.IsTruthy() {
+						vm.stack.Push(object.UndefinedSingleton)
+					} else {
+						val, _ := step.GetProperty("value")
+						if val == nil {
+							val = object.UndefinedSingleton
+						}
+						vm.stack.Push(val)
+					}
+					continue
+				}
+				vm.stack.Push(object.UndefinedSingleton)
 			} else {
 				vm.stack.Push(object.UndefinedSingleton)
+			}
+		case bytecode.OP_ITER_STEP:
+			// 同步迭代一步: 读栈顶迭代器 (不弹出), 压入 {value, done} 步进对象。
+			iter := vm.stack.Peek()
+			step, err := vm.syncIterStep(iter)
+			if err != nil {
+				if terr := vm.rethrowBridgeError(err); terr != nil {
+					return terr
+				}
+				continue
+			}
+			vm.stack.Push(step)
+		case bytecode.OP_ITER_CLOSE:
+			// IteratorClose: 弹出迭代器, 有 return 方法就调它 (Generator 走
+			// 内建 return), 丢弃返回值。无 return → 跳过; 非可调用 → TypeError。
+			// return 自身抛错照常传播 (是否吞掉由调用点的 try 决定)。
+			iter := vm.stack.Pop()
+			if err := vm.iteratorClose(iter); err != nil {
+				if terr := vm.rethrowBridgeError(err); terr != nil {
+					return terr
+				}
+				continue
 			}
 		case bytecode.OP_FOR_IN_INIT:
 			// 弹出对象, 推入对象键迭代器
@@ -3879,6 +3971,94 @@ func (vm *VM) defineClosureAccessor(obj object.Value, propName string, fn object
 // (nil, false, nil) 表示没有该方法 (交回 GetIterable 的具体类型分发)。
 // 生成器方法的返回值是 *object.Generator, 只有 VM 能驱动其字节码帧,
 // 因此这一步必须在 VM 层做而不能依赖 runtime.GetIterable。
+// makeIterStep 把 (value, done) 包成 next() 结果的形状 {value, done}。
+func makeIterStep(val object.Value, done bool) *object.Object {
+	if val == nil {
+		val = object.UndefinedSingleton
+	}
+	step := object.NewObject()
+	step.SetProperty("value", val)
+	step.SetProperty("done", object.NewBoolean(done))
+	return step
+}
+
+// syncIterStep 同步驱动迭代器一步, 返回 {value, done} 步进对象 (数组解构用)。
+// 覆盖三种形状: 生成器 (VM 帧驱动)、runtime.Iterator (数组/字符串/Map/Set
+// 等的 Go 适配器)、用户自建 { next } 对象 (调其 next())。
+// 返回的 error 交给 rethrowBridgeError / throwJSError 走抛出流程。
+func (vm *VM) syncIterStep(iter object.Value) (object.Value, error) {
+	switch it := iter.(type) {
+	case *object.Generator:
+		val, done, err := vm.genResume(it, object.UndefinedSingleton)
+		if err != nil {
+			return nil, err
+		}
+		return makeIterStep(val, done), nil
+	case *runtime.Iterator:
+		val, done := it.Next()
+		return makeIterStep(val, done), nil
+	case *object.Object:
+		nextFn, found := it.GetProperty("next")
+		if !found || !object.IsCallable(nextFn) {
+			return nil, &jsThrow{Name: "TypeError", Message: "iterator has no callable next()"}
+		}
+		res, err := vm.callFunction(nextFn, it, nil)
+		if err != nil {
+			return nil, err
+		}
+		if err := vm.checkCallbackErr(); err != nil {
+			return nil, err
+		}
+		// 规范 7.4.2 step 2: next() 的返回值必须是 Object, 否则 TypeError。
+		if res == nil || !object.IsObjectLike(res) {
+			return nil, &jsThrow{Name: "TypeError", Message: "iterator next() must return an object"}
+		}
+		return res, nil
+	}
+	return nil, &jsThrow{Name: "TypeError", Message: "value is not an iterator"}
+}
+
+// iteratorClose 实现规范 7.4.6 IteratorClose: 取迭代器的 return 方法,
+// null/undefined 直接跳过; 非可调用 → TypeError; 否则以迭代器为 this 调用,
+// 丢弃返回值。生成器没有暴露 return 属性 (object.Generator.GetProperty 只
+// 认 next), 这里直接用内建 return 语义注入 return 完成并展开 finally。
+// 返回的 error 交给调用点决定 rethrow (异常是否被 try 吞掉)。
+func (vm *VM) iteratorClose(iter object.Value) error {
+	if iter == nil || isNullish(iter) {
+		return nil
+	}
+	switch it := iter.(type) {
+	case *object.Generator:
+		if _, _, err := vm.genReturn(it, object.UndefinedSingleton); err != nil {
+			return err
+		}
+		return vm.checkCallbackErr()
+	case *object.Object:
+		ret, found := it.GetProperty("return")
+		if !found || ret == nil || isNullish(ret) {
+			return nil
+		}
+		if !object.IsCallable(ret) {
+			return &jsThrow{Name: "TypeError", Message: "iterator return method is not callable"}
+		}
+		res, err := vm.callFunction(ret, it, nil)
+		if err != nil {
+			return err
+		}
+		if err := vm.checkCallbackErr(); err != nil {
+			return err
+		}
+		// 规范 7.4.6 step 9: return() 的返回值必须是 Object, 否则 TypeError
+		// (return null / undefined / 数字都算; 数组/函数等对象类通过)。
+		if res == nil || !object.IsObjectLike(res) {
+			return &jsThrow{Name: "TypeError", Message: "iterator return method must return an object"}
+		}
+		return nil
+	}
+	// runtime.Iterator / Array / String 等其它形状没有 return 方法: 跳过。
+	return nil
+}
+
 func (vm *VM) resolveSymbolIterator(val object.Value) (object.Value, bool, error) {
 	o, ok := val.(*object.Object)
 	if !ok {
@@ -3901,6 +4081,12 @@ func (vm *VM) resolveSymbolIterator(val object.Value) (object.Value, bool, error
 		return r, true, nil
 	case *object.JSIterator:
 		return runtime.NewCallbackIterator(r.Next), true, nil
+	case *object.Object:
+		// 用户自建迭代器对象 ({ next, return }): 只要 next 可调用就认。
+		// 由 OP_ITER_STEP / OP_ITER_NEXT 的对象分支驱动 (调 next())。
+		if nextFn, has := r.GetProperty("next"); has && object.IsCallable(nextFn) {
+			return r, true, nil
+		}
 	}
 	return nil, false, nil
 }

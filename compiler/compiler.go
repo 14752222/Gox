@@ -3756,147 +3756,261 @@ func (c *Compiler) compileDestructureAssignment(node *ast.AssignmentExpression, 
 }
 
 // compilePatternBind 对栈顶的值执行解构绑定。
-// 解构后栈顶的被解构值被弹出。
-// 支持 ArrayPattern / ObjectPattern / 嵌套模式。
+// 解构后栈顶的被解构值被消费, 栈回到进入前的高度。
+// 支持 ArrayPattern (迭代器驱动 + IteratorClose) / ObjectPattern / 嵌套模式。
 func (c *Compiler) compilePatternBind(pattern ast.Expression, isDecl bool) error {
 	switch pattern := pattern.(type) {
 	case *ast.ArrayPattern:
-		// 数组解构按迭代协议取值: 先把栈顶的被解构值物化为数组，
-		// 使 generator/字符串/Set 等可迭代对象也能解构，
-		// 非可迭代值 (如 null) 在此抛 TypeError —— 与 ECMAScript 一致。
-		// [val] → [val, []] → [arr, val] → [materialized]
-		c.emitter.Emit(bytecode.OP_PACK_ARRAY, 0)
-		c.emitter.EmitNoOperand(bytecode.OP_SWAP)
-		c.emitter.EmitNoOperand(bytecode.OP_ARRAY_SPREAD)
-
-		for i, elem := range pattern.Elements {
-			// DUP 数组 → [arr, arr]
-			c.emitter.EmitNoOperand(bytecode.OP_DUP)
-
-			if elem.Rest {
-				// ...rest: 收集剩余元素到新数组
-				// [arr, arr] → push start → [arr, arr, i] → SLICE → [arr, restArr]
-				c.emitter.Emit(bytecode.OP_INT, uint16(i))
-				c.emitter.EmitNoOperand(bytecode.OP_ARRAY_SLICE)
-			} else {
-				// 压入索引 → [arr, arr, i]
-				c.emitter.Emit(bytecode.OP_INT, uint16(i))
-				// 获取元素 → [arr, val]
-				c.emitter.EmitNoOperand(bytecode.OP_GET_INDEX)
-			}
-
-			// 处理默认值 (仅非 rest 元素支持默认值)
-			if elem.Default != nil && !elem.Rest {
-				if err := c.compileDestructureDefault(elem.Default); err != nil {
-					return err
-				}
-			}
-
-			// 存储到目标 (标识符 / 嵌套模式)
-			if ident, ok := elem.Target.(*ast.Identifier); ok {
-				if isDecl {
-					sym, err := c.declareOnce(ident.Value, false, false)
-					if err != nil {
-						return err
-					}
-					if c.isGlobalScope() {
-						nameIdx := c.constants.AddConstant(object.NewString(ident.Value))
-						c.emitter.Emit(bytecode.OP_DECLARE, nameIdx)
-					} else {
-						c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
-					}
-				} else {
-					// 赋值解构: 写入已有绑定 (与 x = v 语义一致)
-					c.emitIdentifierAssign(ident.Value)
-				}
-			} else if elem.Target != nil {
-				// 嵌套解构: [ [a, b], c ] = arr
-				if err := c.compilePatternBind(elem.Target, isDecl); err != nil {
-					return err
-				}
-			}
-
-			// rest 必须是最后一个元素
-			if elem.Rest {
-				break
-			}
-		}
-
+		return c.compileArrayPatternBind(pattern, isDecl)
 	case *ast.ObjectPattern:
-		for _, prop := range pattern.Properties {
-			// DUP 对象 → [obj, obj]
-			c.emitter.EmitNoOperand(bytecode.OP_DUP)
-			// 压入属性名 → [obj, obj, name]
-			var keyName string
-			if prop.Shorthand {
-				keyName = prop.Value.(*ast.Identifier).Value
-			} else {
-				if ident, ok := prop.Key.(*ast.Identifier); ok {
-					keyName = ident.Value
-				}
-			}
-			idx := c.constants.AddConstant(object.NewString(keyName))
-			c.emitter.Emit(bytecode.OP_CONST, idx)
-			// 获取属性 → [obj, val]
-			c.emitter.EmitNoOperand(bytecode.OP_GET_INDEX)
-
-			// 处理默认值
-			if prop.Default != nil {
-				if err := c.compileDestructureDefault(prop.Default); err != nil {
-					return err
-				}
-			}
-
-			// 存储到目标 (标识符 / 嵌套模式)
-			if ident, ok := prop.Value.(*ast.Identifier); ok {
-				if isDecl {
-					sym, err := c.declareOnce(ident.Value, false, false)
-					if err != nil {
-						return err
-					}
-					if c.isGlobalScope() {
-						nameIdx := c.constants.AddConstant(object.NewString(ident.Value))
-						c.emitter.Emit(bytecode.OP_DECLARE, nameIdx)
-					} else {
-						c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
-					}
-				} else {
-					// 赋值解构: 写入已有绑定 (与 x = v 语义一致)
-					c.emitIdentifierAssign(ident.Value)
-				}
-			} else if prop.Value != nil {
-				if err := c.compilePatternBind(prop.Value, isDecl); err != nil {
-					return err
-				}
-			}
+		if err := c.compileObjectPatternBind(pattern, isDecl); err != nil {
+			return err
 		}
-
+		c.emitter.EmitNoOperand(bytecode.OP_POP) // 弹出被解构的值
+		return nil
 	default:
 		return fmt.Errorf("compiler: unsupported destructure pattern %T", pattern)
 	}
+}
 
-	// 弹出被解构的值
+// compileArrayPatternBind 以迭代器协议 (GetIterator → next → IteratorClose)
+// 驱动数组解构绑定/赋值, 与规范 ArrayBindingPattern / ArrayAssignmentPattern 对齐。
+// 栈顶是被解构值, 结束时被消费。
+//
+// 两条规范要点:
+//   - 目标数少于迭代器产出、或绑定中途抛异常时, 只要迭代器**未耗尽**就必须
+//     调 return() (IteratorClose); 耗尽 (收到 done) 则不调。
+//   - 判据用「槽内迭代器是否已清空」表达: 收到 done 时把隐藏槽写成 undefined,
+//     收尾序列 LOAD 到 undefined 自然跳过 —— 无需单独的 done 标志位。
+//
+// 异常路径复用 try/finally 基础设施: PUSH_TRY 0 + PUSH_FINALLY closePC 包住
+// 绑定段, 异常落到 closePC 后套一层 swallow-try 跑 close (close 自身异常丢弃,
+// 原异常经 END_FINALLY 重抛)。
+func (c *Compiler) compileArrayPatternBind(pattern *ast.ArrayPattern, isDecl bool) error {
+	iterSlot := c.allocHiddenSlot()
+	c.emitter.EmitNoOperand(bytecode.OP_GET_ITERATOR)   // [iter]; 非可迭代 → TypeError
+	c.emitter.Emit(bytecode.OP_STORE, uint16(iterSlot)) // []
+
+	c.emitter.Emit(bytecode.OP_PUSH_TRY, 0)
+	closeFin := c.emitter.EmitJump(bytecode.OP_PUSH_FINALLY)
+
+	doneIdx := c.constants.AddConstant(object.NewString("done"))
+	valueIdx := c.constants.AddConstant(object.NewString("value"))
+
+	for _, elem := range pattern.Elements {
+		if elem.Rest {
+			if err := c.compileArrayRestCollect(iterSlot, elem.Target, isDecl, doneIdx, valueIdx); err != nil {
+				return err
+			}
+			break
+		}
+		if err := c.emitArrayElementBind(iterSlot, elem, isDecl, doneIdx, valueIdx); err != nil {
+			return err
+		}
+	}
+
+	// 正常完成: 摘掉 close handler, 再按需 close (迭代器未耗尽才算)。
+	c.emitter.EmitNoOperand(bytecode.OP_POP_TRY)
+	c.emitSyncIterClose(iterSlot)
+	exit := c.emitter.EmitJump(bytecode.OP_JUMP)
+
+	// 异常路径落点: close 自身异常丢弃, 原异常经 END_FINALLY 重抛。
+	c.emitter.PatchJump(closeFin)
+	swallowTry := c.emitter.EmitJump(bytecode.OP_PUSH_TRY)
+	c.emitSyncIterClose(iterSlot)
+	c.emitter.EmitNoOperand(bytecode.OP_POP_TRY)
+	overSwallow := c.emitter.EmitJump(bytecode.OP_JUMP)
+	c.emitter.PatchJump(swallowTry)
 	c.emitter.EmitNoOperand(bytecode.OP_POP)
+	c.emitter.PatchJump(overSwallow)
+	c.emitter.EmitNoOperand(bytecode.OP_END_FINALLY)
+
+	c.emitter.PatchJump(exit)
 	return nil
 }
 
-// compileDestructureDefault 实现解构默认值: 栈顶为值 [val],
-// 若 val 为 null/undefined 则用默认表达式替换 (短路)。
-// 结束后栈顶为最终值 [val 或 default]。
-func (c *Compiler) compileDestructureDefault(def ast.Expression) error {
-	// [val] → [val, val]
+// emitArrayElementBind 取一个数组元素 (elision 也取一次), 解默认值并绑定目标。
+func (c *Compiler) emitArrayElementBind(iterSlot int, elem *ast.PatternElement, isDecl bool, doneIdx, valueIdx uint16) error {
+	c.emitter.Emit(bytecode.OP_LOAD, uint16(iterSlot)) // [it]
+	// 迭代器已耗尽 (槽被清空): 不再调 next(), 直接给 undefined (规范:
+	// iteratorRecord.[[done]] 为 true 时后续绑定不再步进)。
+	slotEmpty := c.emitter.EmitJump(bytecode.OP_JUMP_IF_NULL)
+	c.emitter.EmitNoOperand(bytecode.OP_ITER_STEP) // [it, step]
 	c.emitter.EmitNoOperand(bytecode.OP_DUP)
-	// 非 nullish → 保留 val, 跳到末尾
-	notNull := c.emitter.EmitJump(bytecode.OP_JUMP_IF_NOT_NULL)
-	// nullish 路径: 弹出副本与原始值, 用默认值替换
+	c.emitter.Emit(bytecode.OP_GET_PROP, doneIdx) // [it, step, done]
+	notDone := c.emitter.EmitJump(bytecode.OP_JUMP_IF_FALSE)
+	// done 路径: [it, step, done] → [] → 清槽 → [undefined]
+	c.emitter.EmitNoOperand(bytecode.OP_POP)
+	c.emitter.EmitNoOperand(bytecode.OP_POP)
+	c.emitter.EmitNoOperand(bytecode.OP_POP)
+	c.emitter.EmitNoOperand(bytecode.OP_UNDEFINED)
+	c.emitter.Emit(bytecode.OP_STORE, uint16(iterSlot)) // 迭代器耗尽: 清空槽
+	c.emitter.EmitNoOperand(bytecode.OP_UNDEFINED)
+	doBind := c.emitter.EmitJump(bytecode.OP_JUMP)
+	// 槽已空路径: [it(undefined)] → [undefined]
+	c.emitter.PatchJump(slotEmpty)
+	c.emitter.EmitNoOperand(bytecode.OP_POP)
+	c.emitter.EmitNoOperand(bytecode.OP_UNDEFINED)
+	slotEmptyDone := c.emitter.EmitJump(bytecode.OP_JUMP)
+	// 未 done 路径: [it, step, done] → [value]
+	c.emitter.PatchJump(notDone)
+	c.emitter.EmitNoOperand(bytecode.OP_POP)       // 弹出 done
+	c.emitter.Emit(bytecode.OP_GET_PROP, valueIdx) // [it, value]
+	c.emitter.EmitNoOperand(bytecode.OP_SWAP)      // [value, it]
+	c.emitter.EmitNoOperand(bytecode.OP_POP)       // [value]
+	c.emitter.PatchJump(doBind)
+	c.emitter.PatchJump(slotEmptyDone)
+	// [value]
+	if elem.Default != nil {
+		if err := c.compileDestructureDefault(elem.Default); err != nil {
+			return err
+		}
+	}
+	return c.bindPatternTarget(elem.Target, isDecl)
+}
+
+// compileArrayRestCollect 把迭代器剩余值收集成新数组, 绑定到 rest 目标。
+// 收集到 done 为止 (耗尽), 故 rest 之后迭代器已全部消费、无需再 close。
+func (c *Compiler) compileArrayRestCollect(iterSlot int, target ast.Expression, isDecl bool, doneIdx, valueIdx uint16) error {
+	c.emitter.Emit(bytecode.OP_NEW_ARRAY, 0) // [arr]
+	loopStart := c.emitter.Pos()
+	c.emitter.Emit(bytecode.OP_LOAD, uint16(iterSlot)) // [arr, it]
+	restDone := c.emitter.EmitJump(bytecode.OP_JUMP_IF_NULL) // 槽已空 → rest 为空数组
+	c.emitter.EmitNoOperand(bytecode.OP_ITER_STEP)           // [arr, it, step]
+	c.emitter.EmitNoOperand(bytecode.OP_DUP)
+	c.emitter.Emit(bytecode.OP_GET_PROP, doneIdx) // [arr, it, step, done]
+	restEnd := c.emitter.EmitJump(bytecode.OP_JUMP_IF_TRUE)
+	c.emitter.EmitNoOperand(bytecode.OP_POP)       // 弹出 done
+	c.emitter.Emit(bytecode.OP_GET_PROP, valueIdx) // [arr, it, value]
+	c.emitter.EmitNoOperand(bytecode.OP_SWAP)      // [arr, value, it]
+	c.emitter.EmitNoOperand(bytecode.OP_POP)       // [arr, value]
+	c.emitter.EmitNoOperand(bytecode.OP_ARRAY_PUSH)
+	c.emitter.Emit(bytecode.OP_LOOP, uint16(loopStart))
+	// 迭代器耗尽: [arr, it, step, done] → 清槽 → [arr]
+	c.emitter.PatchJump(restEnd)
+	c.emitter.EmitNoOperand(bytecode.OP_POP) // done
+	c.emitter.EmitNoOperand(bytecode.OP_POP) // step
+	c.emitter.EmitNoOperand(bytecode.OP_POP) // it
+	c.emitter.EmitNoOperand(bytecode.OP_UNDEFINED)
+	c.emitter.Emit(bytecode.OP_STORE, uint16(iterSlot)) // 迭代器耗尽: 清空槽
+	afterRest := c.emitter.EmitJump(bytecode.OP_JUMP)
+	// 槽已空 (绑定前面的元素时已耗尽): [arr, it] → [arr]
+	c.emitter.PatchJump(restDone)
+	c.emitter.EmitNoOperand(bytecode.OP_POP)
+	c.emitter.PatchJump(afterRest)
+	// [arr] → 绑定 rest 目标 → []
+	return c.bindPatternTarget(target, isDecl)
+}
+
+// compileObjectPatternBind 对栈顶对象执行对象解构绑定 (属性遍历, 不走迭代器)。
+// 结束时栈顶对象**仍保留** (调用方负责弹出), 与数组模式不同。
+func (c *Compiler) compileObjectPatternBind(pattern *ast.ObjectPattern, isDecl bool) error {
+	for _, prop := range pattern.Properties {
+		// DUP 对象 → [obj, obj]
+		c.emitter.EmitNoOperand(bytecode.OP_DUP)
+		// 压入属性名 → [obj, obj, name]
+		var keyName string
+		if prop.Shorthand {
+			if ident, ok := prop.Value.(*ast.Identifier); ok {
+				keyName = ident.Value
+			}
+		} else if ident, ok := prop.Key.(*ast.Identifier); ok {
+			keyName = ident.Value
+		}
+		idx := c.constants.AddConstant(object.NewString(keyName))
+		c.emitter.Emit(bytecode.OP_CONST, idx)
+		// 获取属性 → [obj, val]
+		c.emitter.EmitNoOperand(bytecode.OP_GET_INDEX)
+
+		// 处理默认值
+		if prop.Default != nil {
+			if err := c.compileDestructureDefault(prop.Default); err != nil {
+				return err
+			}
+		}
+
+		// 存储到目标 (标识符 / 成员 / 嵌套模式; nil 表示无)
+		if err := c.bindPatternTarget(prop.Value, isDecl); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// bindPatternTarget 把栈顶的值绑定到解构目标 (消费该值, 栈平衡)。
+// target == nil 表示数组模式里的空洞 (elision): 直接丢弃值。
+func (c *Compiler) bindPatternTarget(target ast.Expression, isDecl bool) error {
+	if target == nil {
+		c.emitter.EmitNoOperand(bytecode.OP_POP)
+		return nil
+	}
+	switch t := target.(type) {
+	case *ast.Identifier:
+		if isDecl {
+			sym, err := c.declareOnce(t.Value, false, false)
+			if err != nil {
+				return err
+			}
+			if c.isGlobalScope() {
+				nameIdx := c.constants.AddConstant(object.NewString(t.Value))
+				c.emitter.Emit(bytecode.OP_DECLARE, nameIdx)
+			} else {
+				c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
+			}
+		} else {
+			// 赋值解构: 写入已有绑定 (与 x = v 语义一致)
+			c.emitIdentifierAssign(t.Value)
+		}
+		return nil
+	case *ast.MemberExpression:
+		// 声明模式不允许成员目标 (parser 为 for-of 赋值 LHS 放行, 这里兜早错)。
+		if isDecl {
+			return fmt.Errorf("SyntaxError: invalid destructuring binding target")
+		}
+		// 赋值模式的成员目标 (x.y / x[k]): 值已在栈顶 [val]。
+		// compileMemberRef 压 [val, obj, key] → 两次 DUP_BELOW2 旋转成
+		// [obj, key, val] → SET_INDEX 写回并推回 val → [val] → POP。
+		if err := c.compileMemberRef(t); err != nil {
+			return err
+		}
+		c.emitter.EmitNoOperand(bytecode.OP_DUP_BELOW2)
+		c.emitter.EmitNoOperand(bytecode.OP_POP)
+		c.emitter.EmitNoOperand(bytecode.OP_DUP_BELOW2)
+		c.emitter.EmitNoOperand(bytecode.OP_POP)
+		c.emitter.EmitNoOperand(bytecode.OP_SET_INDEX)
+		c.emitter.EmitNoOperand(bytecode.OP_POP)
+		return nil
+	case *ast.ArrayPattern, *ast.ObjectPattern:
+		return c.compilePatternBind(target, isDecl)
+	}
+	return fmt.Errorf("compiler: unsupported destructuring target %T", target)
+}
+
+// emitSyncIterClose 生成同步 IteratorClose: LOAD 槽内迭代器 → ITER_CLOSE。
+// 槽内是 undefined (迭代器已耗尽) 时 ITER_CLOSE 直接跳过。
+func (c *Compiler) emitSyncIterClose(iterSlot int) {
+	c.emitter.Emit(bytecode.OP_LOAD, uint16(iterSlot))
+	c.emitter.EmitNoOperand(bytecode.OP_ITER_CLOSE)
+}
+
+// compileDestructureDefault 实现解构默认值: 栈顶为值 [val],
+// 仅当 val **恰为 undefined** 时用默认表达式替换 (规范: Initializer 只对
+// undefined 生效, null 保留)。结束后栈顶为最终值 [val 或 default]。
+func (c *Compiler) compileDestructureDefault(def ast.Expression) error {
+	// [val] → [val, isUndefined]
+	c.emitter.EmitNoOperand(bytecode.OP_DUP)
+	c.emitter.EmitNoOperand(bytecode.OP_UNDEFINED)
+	c.emitter.EmitNoOperand(bytecode.OP_STRICT_EQ)
+	notUndefined := c.emitter.EmitJump(bytecode.OP_JUMP_IF_FALSE)
+	// undefined 路径: 弹出判定位与原始值, 用默认值替换
 	c.emitter.EmitNoOperand(bytecode.OP_POP)
 	c.emitter.EmitNoOperand(bytecode.OP_POP)
 	if err := c.compileExpression(def); err != nil {
 		return err
 	}
 	done := c.emitter.EmitJump(bytecode.OP_JUMP)
-	// 非 nullish 路径: 弹出副本, 保留原始值
-	c.emitter.PatchJump(notNull)
+	// 非 undefined 路径: 弹出判定位, 保留原始值
+	c.emitter.PatchJump(notUndefined)
 	c.emitter.EmitNoOperand(bytecode.OP_POP)
 	c.emitter.PatchJump(done)
 	return nil
@@ -4351,6 +4465,11 @@ func (c *Compiler) compileArrayLiteral(node *ast.ArrayLiteral) error {
 	if !hasSpread {
 		// 无 spread: 使用 OP_NEW_ARRAY
 		for _, elem := range node.Elements {
+			// 空洞 ([1, , 2]): 元素为 nil, 占一位 undefined。
+			if elem == nil {
+				c.emitter.EmitNoOperand(bytecode.OP_UNDEFINED)
+				continue
+			}
 			if err := c.compileExpression(elem); err != nil {
 				return err
 			}
@@ -4360,6 +4479,12 @@ func (c *Compiler) compileArrayLiteral(node *ast.ArrayLiteral) error {
 		// 有 spread: 逐步构建数组
 		c.emitter.Emit(bytecode.OP_NEW_ARRAY, 0) // 空数组
 		for _, elem := range node.Elements {
+			if elem == nil {
+				// 空洞 ([...a, , b]): 推入 undefined 占位。
+				c.emitter.EmitNoOperand(bytecode.OP_UNDEFINED)
+				c.emitter.EmitNoOperand(bytecode.OP_ARRAY_PUSH)
+				continue
+			}
 			if spread, ok := elem.(*ast.SpreadElement); ok {
 				// spread: [...arr] → 展开所有元素
 				if err := c.compileExpression(spread.Argument); err != nil {

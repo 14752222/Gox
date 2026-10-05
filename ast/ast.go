@@ -1079,7 +1079,11 @@ func (pe *PatternElement) String() string {
 	if pe.Rest {
 		result += "..."
 	}
-	result += pe.Target.String()
+	// Target 为 nil 表示数组模式里的空洞 (elision): `[, a]` / `[a, , b]`。
+	// 输出空串, 使 ArrayPattern.String() 拼出的 `[, a]` 与源码形状一致。
+	if pe.Target != nil {
+		result += pe.Target.String()
+	}
 	if pe.Default != nil {
 		result += " = " + pe.Default.String()
 	}
