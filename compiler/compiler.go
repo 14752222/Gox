@@ -4066,7 +4066,26 @@ func (c *Compiler) compileIncDec(target ast.Expression, isInc, isPrefix bool) er
 	if ident, ok := target.(*ast.Identifier); ok {
 		sym := c.scope.Resolve(ident.Value)
 		if sym == nil {
-			return fmt.Errorf("ReferenceError: %s is not defined", ident.Value)
+			// 未声明名: 走**运行期**解析路径, 而不是编译期直接返回错。
+			// OP_LOAD_GLOBAL 在找不到绑定时抛 ReferenceError —— 这一步是
+			// 可被 try/catch 捕获的 (规范: GetValue 未解析引用 ⇒ 运行期
+			// ReferenceError); 反之若名字确实存在 (如宿主注入的全局),
+			// 读-改-写照常工作。sloppy 与 strict 都适用 (未声明读属于运行期错)。
+			c.emitGlobalLoad(ident.Value) // [old] (缺失时运行时抛错)
+			if isPrefix {
+				c.emitter.EmitNoOperand(bytecode.OP_TO_NUMBER)
+				c.emitter.Emit(bytecode.OP_INT, 1)
+				c.emitIncDecOp(isInc)
+				c.emitter.EmitNoOperand(bytecode.OP_DUP)
+				c.emitAssignmentStore(ident.Value, true)
+			} else {
+				c.emitter.EmitNoOperand(bytecode.OP_DUP)
+				c.emitter.EmitNoOperand(bytecode.OP_TO_NUMBER)
+				c.emitter.Emit(bytecode.OP_INT, 1)
+				c.emitIncDecOp(isInc)
+				c.emitAssignmentStore(ident.Value, true)
+			}
+			return nil
 		}
 
 		// 加载旧值
