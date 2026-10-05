@@ -368,6 +368,29 @@ func (dws *DoWhileStatement) String() string {
 }
 func (dws *DoWhileStatement) statementNode() {}
 
+// ==================== with 语句 ====================
+
+// WithStatement 表示 sloppy 模式下的 with 语句: with (对象) 语句体。
+//
+// 语义 (规范 13.11.7): 先求值 Object 得到对象, 再在对象环境记录中求值
+// Body —— Body 内对自由标识符的解析先查对象的同名属性 (Symbol.unscopables
+// 排除的属性除外), 未命中再沿外层作用域解析。Body 可以是一个块或单条语句。
+type WithStatement struct {
+	Token  lexer.Token // WITH
+	Object Expression  // 被引入作用域的对象表达式 (进入 with 前求值一次)
+	Body   Statement   // 语句体 (BlockStatement 或单条语句)
+}
+
+func (ws *WithStatement) TokenLiteral() string { return ws.Token.Literal }
+func (ws *WithStatement) String() string {
+	body := ""
+	if ws.Body != nil {
+		body = ws.Body.String()
+	}
+	return "with (" + ws.Object.String() + ") " + body
+}
+func (ws *WithStatement) statementNode() {}
+
 // ==================== break / continue 语句 ====================
 
 type BreakStatement struct {

@@ -461,6 +461,8 @@ func (p *Parser) parseStatementBody() ast.Statement {
 		return p.parseWhileStatement()
 	case lexer.DO:
 		return p.parseDoWhileStatement()
+	case lexer.WITH:
+		return p.parseWithStatement()
 	case lexer.BREAK:
 		return p.parseBreakStatement()
 	case lexer.CONTINUE:
@@ -1253,6 +1255,42 @@ func (p *Parser) parseDoWhileStatement() *ast.DoWhileStatement {
 	// 由 ParseProgram / parseBlockStatement 循环统一 nextToken 前进。
 	// 若在此处提前 nextToken 会越过下一条语句的首个 token,
 	// 导致 do {...} while (c); \n console.log(...) 这类无分号写法解析错乱。
+	return stmt
+}
+
+// withStrictForbidden 报告当前解析上下文是否应因严格模式禁止 with 语句。
+//
+// 本仓库尚无严格模式基础设施 (另一路 agent 正在实现)。这里刻意做成一个
+// **单一挂载点** 且当前恒为 false —— 即暂不判定 strict。合流时只需把下面
+// 这一行替换为「读取当前解析单元/函数的 strict 状态」的实现即可, 其余
+// 代码 (parseWithStatement 的调用点) 无需改动。
+var withStrictForbidden = func() bool { return false }
+
+// parseWithStatement 解析 with ( 表达式 ) 语句。
+//
+// 语法: WithStatement : `with` `(` Expression `)` Statement。
+// 早期错误: 严格模式下 with 语句是 SyntaxError (见 withStrictForbidden)。
+func (p *Parser) parseWithStatement() *ast.WithStatement {
+	if withStrictForbidden() {
+		p.addError("SyntaxError: 'with' statements are not allowed in strict mode")
+		return nil
+	}
+	stmt := &ast.WithStatement{Token: p.curToken()}
+	if !p.expectPeek(lexer.LPAREN) {
+		return nil
+	}
+	p.nextToken()
+	stmt.Object = p.parseExpression(LOWEST)
+	if stmt.Object == nil {
+		return nil
+	}
+	if !p.expectPeek(lexer.RPAREN) {
+		return nil
+	}
+	p.nextToken()
+	// 语句体: 块或单条语句。parseStatement 返回时 curToken 停在该语句的
+	// 末 token 上 (与 if/while 的 parseBody 一致), 由调用循环统一前进。
+	stmt.Body = p.parseStatement()
 	return stmt
 }
 
@@ -2702,7 +2740,7 @@ func isKeywordProperty(t lexer.TokenType) bool {
 		lexer.UNDEFINED, lexer.TYPEOF, lexer.INSTANCEOF, lexer.NEW, lexer.THIS,
 		lexer.DELETE, lexer.IN, lexer.TRY, lexer.CATCH, lexer.FINALLY, lexer.THROW,
 		lexer.SWITCH, lexer.CASE, lexer.DEFAULT, lexer.CLASS, lexer.SUPER,
-		lexer.IMPORT, lexer.EXPORT, lexer.YIELD, lexer.AWAIT,
+		lexer.IMPORT, lexer.EXPORT, lexer.YIELD, lexer.AWAIT, lexer.WITH,
 		lexer.TRUE, lexer.FALSE, lexer.NULL:
 		return true
 	}

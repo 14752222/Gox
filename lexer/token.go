@@ -127,6 +127,10 @@ const (
 	YIELD      // yield (预留扩展)
 	ASYNC      // async (预留扩展)
 	AWAIT      // await (预留扩展)
+	// WITH 是 sloppy 模式 with 语句的关键字。关键字化后它不能再当标识符
+	// 使用 (符合规范: with 是保留字); 但作为属性名仍合法 (obj.with /
+	// { with: 1 }), 由 parser.isKeywordProperty 放行。
+	WITH // with
 
 	// ==================== JSX 令牌 ====================
 	// 注意: 必须追加在枚举末尾, 不得插入中间 —— 已有常量的数值编号
@@ -194,6 +198,7 @@ var keywords = map[string]TokenType{
 	"yield":      YIELD,
 	"async":      ASYNC,
 	"await":      AWAIT,
+	"with":       WITH,
 }
 
 // LookupIdentifier 查找标识符是否为关键字。
@@ -432,6 +437,8 @@ func (t TokenType) String() string {
 		return "ASYNC"
 	case AWAIT:
 		return "AWAIT"
+	case WITH:
+		return "WITH"
 	default:
 		return "UNKNOWN"
 	}
