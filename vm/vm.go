@@ -429,10 +429,15 @@ type VM struct {
 	// 边界外的处理器留给错误传播回外层后、由外层的抛出路径匹配。
 	throwBoundary int
 
-	// pendingEvalInit 标记「紧接着的这次调用是类字段初始化器内的直接 eval
-	// 候选」(OP_EVAL_MARK 置位)。OP_CALL / OP_CALL_SPREAD 取出后立即清零,
-	// 仅当被调恰为全局 %eval% 内建时才置 stdlib 的一次性受限标志。按调用
+	// pendingDirectEval 标记「紧接着的这次调用是直接 eval 候选」(OP_EVAL_MARK /
+	// OP_EVAL_MARK_INIT 置位)。OP_CALL / OP_CALL_SPREAD 取出后立即清零, 仅当
+	// 被调恰为全局 %eval% 内建时才把调用者帧的 this 传给 eval 内建。按调用
 	// 取用 (而非 stdlib 包级全局常驻) 可避免多 VM 并发互相干扰与遮蔽泄漏。
+	pendingDirectEval bool
+
+	// pendingEvalInit 是 pendingDirectEval 的细化: 本次直接 eval 发生在类
+	// 字段初始化器内 (OP_EVAL_MARK_INIT 置位)。命中时额外让 eval 内建进入
+	// 受限早错模式。随 pendingDirectEval 一同清零。
 	pendingEvalInit bool
 
 	// 模板字面量分段收集器 (支持嵌套): 每层对应一个 OP_TEMPLATE_START，
@@ -1516,11 +1521,16 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				return err
 			}
 		case bytecode.OP_EVAL_MARK:
-			// 编译器在「类字段初始化器内的直接 eval」调用前发射此指令。
-			// 只在本 VM 上置「下一次调用是直接 eval 候选」标记, 无栈效果。
-			// 真正进入受限模式由紧随其后的 OP_CALL / OP_CALL_SPREAD 判定:
-			// 仅当被调恰为全局 %eval% 内建时才置 stdlib 的一次性标志, 否则
-			// 丢弃 —— eval 被局部变量遮蔽时既不会误限, 也不会泄漏给后续调用。
+			// 编译器在「直接 eval」调用前发射此指令。只在本 VM 上置
+			// 「下一次调用是直接 eval 候选」标记, 无栈效果。真正生效由紧随
+			// 其后的 OP_CALL / OP_CALL_SPREAD 判定: 仅当被调恰为全局 %eval%
+			// 内建时才把调用者帧的 this 传给 eval, 否则丢弃 —— eval 被局部
+			// 变量遮蔽时既不继承 this 也不会泄漏给后续调用。
+			vm.pendingDirectEval = true
+		case bytecode.OP_EVAL_MARK_INIT:
+			// 同 OP_EVAL_MARK, 但额外标记「类字段初始化器内」—— 让 eval 内建
+			// 进入受限早错模式 (PerformEval 补充早错)。
+			vm.pendingDirectEval = true
 			vm.pendingEvalInit = true
 		case bytecode.OP_NEW:
 			// new Constructor(args...) — 简化实现
@@ -3256,23 +3266,67 @@ func describeCallee(v object.Value) string {
 	return s
 }
 
-// consumeEvalMark 消费一次 OP_EVAL_MARK: 弹出被调值后调用。
+// consumeEvalMark 消费一次 OP_EVAL_MARK / OP_EVAL_MARK_INIT: 弹出被调值后调用。
 // 只有当被调恰为全局 %eval% 内建 (直接 eval 规范要求引用的值即内建本身)
-// 时, 才置位 stdlib 的一次性受限标志, 让 eval 内建进入「类字段初始化器内
-// 直接 eval」的补充早错模式; 否则直接丢弃标记 —— 被局部变量遮蔽的 eval
-// 不是直接 eval, 既不应受限, 标记也不能泄漏给后续无关的 eval 调用。
-// 无论是否命中都把 vm.pendingEvalInit 清零 (标记只对紧邻的这一次调用有效)。
+// 时:
+//   - 把**调用者帧生效的 this** 经 object 层桥传给 eval 内建 (direct eval
+//     的 this 绑定与调用者一致 —— 规范 sec-performeval);
+//   - 若标记是 OP_EVAL_MARK_INIT (类字段初始化器内), 再置位 stdlib 的一次性
+//     受限标志, 让 eval 内建进入补充早错模式。
+//
+// 否则直接丢弃标记 —— 被局部变量遮蔽的 eval 不是直接 eval, 既不应继承 this
+// 也不应受限, 标记也不能泄漏给后续无关的 eval 调用。
+// 无论是否命中都把 vm.pendingDirectEval / pendingEvalInit 清零 (标记只对紧邻
+// 的这一次调用有效)。
 func (vm *VM) consumeEvalMark(fn object.Value) {
-	if !vm.pendingEvalInit {
+	if !vm.pendingDirectEval {
 		return
 	}
+	vm.pendingDirectEval = false
+	// init 受限标志与 this 桥都是一次性的: 无论本次是否命中 eval 都清零。
+	initRestricted := vm.pendingEvalInit
 	vm.pendingEvalInit = false
 	if vm.globals == nil {
 		return
 	}
 	if v, ok := vm.globals.Get("eval"); ok && v == fn {
-		stdlib.MarkDirectEvalInit()
+		thisVal, callerStrict := vm.callerEvalContext()
+		object.SetDirectEvalThis(thisVal, callerStrict)
+		if initRestricted {
+			stdlib.MarkDirectEvalInit()
+		}
 	}
+}
+
+// callerEvalContext 求"当前帧生效的 this"与"当前帧是否严格" —— 供直接 eval
+// 继承。主帧按 script(globalThis, 非严格)/module(undefined, 严格) 区分
+// (与 OP_THIS 同口径); 函数帧直接用 callClosure 已归一的 frame.This 与
+// 闭包 Fn.IsStrict。
+//
+// 严格性影响 eval 代码的 thisValue: 调用者严格时 eval 代码恒严格, thisValue
+// 原样保留 (undefined 不归一为 globalThis, 规范 PerformEval: strictCaller)。
+func (vm *VM) callerEvalContext() (object.Value, bool) {
+	frame := vm.currentFrame()
+	if frame == nil {
+		return object.UndefinedSingleton, false
+	}
+	if frame.This != nil {
+		strict := frame.Closure != nil && frame.Closure.Fn != nil && frame.Closure.Fn.IsStrict
+		return frame.This, strict
+	}
+	if frame.Closure == nil {
+		// 主帧: script 顶层 this = globalThis (非严格); module 顶层 = undefined
+		// (模块恒严格)。
+		if vm.moduleMode {
+			return object.UndefinedSingleton, true
+		}
+		return vm.globalThisValue(), false
+	}
+	strict := frame.Closure.Fn != nil && frame.Closure.Fn.IsStrict
+	if frame.Closure.This != nil {
+		return frame.Closure.This, strict
+	}
+	return object.UndefinedSingleton, strict
 }
 
 // propKey 将值转换为属性键字符串 (与 stdlib.toPropKey 一致)。

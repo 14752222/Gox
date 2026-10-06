@@ -4754,21 +4754,36 @@ func (c *Compiler) compileCallExpression(node *ast.CallExpression) error {
 	// 检查是否有 spread 参数
 	hasSpread := hasSpreadArgs(node.Arguments)
 
-	// 类字段初始化器内的直接 eval: 发射 OP_EVAL_MARK, 让运行期的 eval 内建
-	// 进入受限模式 (PerformEval 补充早错)。必须是「直接」调用 —— 被调表达
-	// 式是标识符 `eval`(而非 (0, eval) / eval.call 这类间接形式), 且当前
-	// 正编译字段初始化器表达式。标记在 OP_CALL/OP_CALL_SPREAD 之前发射,
-	// VM 消费时还会再核对被调确为全局 %eval% (遮蔽场景不受限)。
-	restrictedEval := c.inClassFieldInit && isDirectEvalCallee(node.Function)
+	// 直接 eval 调用: 发射 OP_EVAL_MARK。被调表达式必须是标识符 `eval`
+	// (而非 (0, eval) / eval.call 这类间接形式)。标记在 OP_CALL/CALL_SPREAD
+	// 之前发射, VM 消费时会再核对被调确为全局 %eval% (遮蔽场景不误判)。
+	//
+	// 两个用途, 用两条无操作数标记区分:
+	//   - OP_EVAL_MARK: 所有直接 eval。让 VM 把**调用者帧的 this** 传给 eval,
+	//     实现规范要求的 "direct eval 的 this 绑定与调用者一致"。
+	//   - OP_EVAL_MARK_INIT: 仅类字段初始化器内的直接 eval。在上一标记基础上
+	//     额外让 eval 内建进入受限模式 (PerformEval 补充早错: 源码含
+	//     arguments/super 调用 → SyntaxError)。
+	directEval := isDirectEvalCallee(node.Function)
+	restrictedEval := c.inClassFieldInit && directEval
+
+	emitEvalMarks := func() {
+		if !directEval {
+			return
+		}
+		if restrictedEval {
+			c.emitter.EmitNoOperand(bytecode.OP_EVAL_MARK_INIT)
+		} else {
+			c.emitter.EmitNoOperand(bytecode.OP_EVAL_MARK)
+		}
+	}
 
 	if hasSpread {
 		// 有 spread: 收集参数到数组，再用 OP_CALL_SPREAD 调用
 		if err := c.compileArgumentsArray(node.Arguments); err != nil {
 			return err
 		}
-		if restrictedEval {
-			c.emitter.EmitNoOperand(bytecode.OP_EVAL_MARK)
-		}
+		emitEvalMarks()
 		// 编译函数
 		if err := c.compileExpression(node.Function); err != nil {
 			return err
@@ -4782,9 +4797,7 @@ func (c *Compiler) compileCallExpression(node *ast.CallExpression) error {
 				return err
 			}
 		}
-		if restrictedEval {
-			c.emitter.EmitNoOperand(bytecode.OP_EVAL_MARK)
-		}
+		emitEvalMarks()
 		// 编译函数
 		if err := c.compileExpression(node.Function); err != nil {
 			return err

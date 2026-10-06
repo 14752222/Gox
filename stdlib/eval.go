@@ -52,6 +52,17 @@ func setupEvalAndMisc(env *runtime.Environment) {
 		// 立即消费一次性标志 (无论本参数是否为字符串, 标记都只属于本次调用)。
 		restrictedInit := pendingDirectEvalInit
 		pendingDirectEvalInit = false
+		// 直接 eval 的上下文: 由 VM 在确认「本次调用是直接 eval」后写入调用者
+		// 帧的 this 与严格性。取不到 (间接 eval / Go 侧调用) 时按**全局 eval**
+		// 处理: this = globalThis (间接 eval 恒在全局 this 下执行, 与 node
+		// 一致 —— 即便源码含 "use strict" 指令也如此), 严格性只看源码指令。
+		evalThis, callerStrict, isDirect := object.TakeDirectEvalThis()
+		if !isDirect {
+			evalThis = object.UndefinedSingleton
+			if g, ok := env.Get("globalThis"); ok {
+				evalThis = g
+			}
+		}
 		if len(args) == 0 {
 			return object.UndefinedSingleton
 		}
@@ -66,7 +77,7 @@ func setupEvalAndMisc(env *runtime.Environment) {
 			return object.NewErrorWithName("SyntaxError",
 				"SyntaxError: 'arguments' or 'super' call is not allowed in class field initializer")
 		}
-		return runGlobalEval(env, src.Value)
+		return runGlobalEval(env, src.Value, evalThis, callerStrict)
 	})
 	evalFn.SetProperty("name", object.NewString("eval"))
 	evalFn.SetProperty("length", object.NewNumber(1))
@@ -105,16 +116,74 @@ func setupEvalAndMisc(env *runtime.Environment) {
 	// 此处不再替换该对象 —— 否则会与函数对象 [[Prototype]] 链上的同一对象失配。
 }
 
+// trimTrailingSemicolons 去掉源码首尾空白与末尾分号, 让单个表达式能进
+// `return (<expr>)` 包装。规范里 eval 的完成值取最后一条语句的值, 而
+// `eval("this;")` 与 `eval("this")` 等价 —— 末尾分号不应改变结果。
+//
+// 只处理后缀分号 (可多个, 容忍中间空白); 不试图处理多语句 (那由多语句
+// 包装兜底)。全部是分号/空白时返回空串。
+func trimTrailingSemicolons(src string) string {
+	s := strings.TrimSpace(src)
+	for strings.HasSuffix(s, ";") {
+		s = strings.TrimSpace(s[:len(s)-1])
+	}
+	return s
+}
+
+// splitStrictDirective 从源码里剥出前导的 "use strict" 指令 (若存在)。
+// 返回 (strict, rest): strict 表示源码带严格指令; rest 是剥掉指令与紧随其
+// 分号后的剩余源码。
+//
+// 只认**最前**位置、无转义的精确 `use strict` 字符串字面量 (与解析器
+// isUseStrictDirective 同口径); 且只剥一条 —— 规范里严格指令必须落在
+// Directive Prologue 首部, 这里够用。用途: 表达式包装要把指令放在包装
+// **函数体首部**再 return 表达式, 而不是塞进括号变序列表达式 —— Gox 解析
+// 器不支持 `(a; b)` 序列, 塞进去会整段编译失败退回多语句包装、丢掉完成值。
+func splitStrictDirective(src string) (bool, string) {
+	s := strings.TrimLeft(src, " \t\r\n")
+	if len(s) == 0 {
+		return false, src
+	}
+	q := s[0]
+	if q != '"' && q != '\'' {
+		return false, src
+	}
+	end := strings.IndexByte(s[1:], q)
+	if end < 0 {
+		return false, src
+	}
+	body := s[1 : 1+end]
+	if body != "use strict" {
+		return false, src
+	}
+	rest := strings.TrimLeft(s[end+2:], " \t\r\n")
+	// 指令后可有 (也可没有) 分号; 有则连同它一起剥掉。
+	if strings.HasPrefix(rest, ";") {
+		rest = rest[1:]
+	}
+	return true, rest
+}
+
 // runGlobalEval 编译并同步执行源码，返回最后一个语句的值。
 // 源码在全局环境中执行 (eval 内声明的 var/let 进入全局)。
 //
 // 编译经 object.CompileSource 桥完成 (由 vm 包注册实现), stdlib 不直接
 // 依赖 lexer/parser/compiler 前端包。
 //
+// this 语义 (规范 sec-performeval): eval 代码的 thisValue 由调用方传入:
+//   - 直接 eval (evalThis = 调用者帧的 this): this 绑定与调用者一致;
+//   - 间接 eval / Go 侧调用 (evalThis = undefined): 全局 eval, this = globalThis。
+//
+// 包装函数自身是 sloppy 函数, 会把 undefined/null 接收者按 sloppy 归一为
+// globalThis —— 这正好覆盖「间接 eval / 全局直接 eval」的全局 this 口径。
+// 当 eval 源码自带 "use strict" 指令时, 包装函数 (因函数体首个指令即严格
+// 指令) 编译出的 Fn.IsStrict 为 true, callClosure 遂**原样保留** thisValue
+// (undefined 不被归一) —— 与规范「严格 eval 代码的 thisValue 原样」一致。
+//
 // 完成值策略: 若源码是单个表达式，包装为 `return (<expr>)` 捕获其值
 // (覆盖 eval 的绝大多数用途)；多语句源码退回普通函数包装，完成值为
 // undefined (函数体结尾是隐式 return void，编译器不保留语句完成值)。
-func runGlobalEval(env *runtime.Environment, src string) object.Value {
+func runGlobalEval(env *runtime.Environment, src string, evalThis object.Value, callerStrict bool) object.Value {
 	// parseErr 记录最后一次解析/编译失败的原因, 用于拼进 SyntaxError 帮助定位
 	var parseErr string
 	buildAndRun := func(body string) object.Value {
@@ -125,7 +194,7 @@ func runGlobalEval(env *runtime.Environment, src string) object.Value {
 			return nil // 由外层换包装重试
 		}
 		closure := &object.Closure{Fn: fn, Env: env}
-		result := object.CallFunction(closure, object.UndefinedSingleton)
+		result := object.CallFunction(closure, evalThis)
 		if cbErr := object.TakeCallbackError(); cbErr != nil {
 			// 回调桥报告了 eval 代码里的 JS 异常。必须把异常重新交给 VM 的
 			// throw 流程 —— 直接 return result 会把它静默吞成 undefined
@@ -145,12 +214,30 @@ func runGlobalEval(env *runtime.Environment, src string) object.Value {
 		return result
 	}
 
-	// 1) 表达式包装: return (<src>)
-	if r := buildAndRun("(function(){ return (" + src + ") })"); r != nil {
-		return r
+	// 前导 "use strict" 指令: 剥出来放进包装体首部 —— 这样包装函数本身成为
+	// 严格函数, callClosure 会原样保留 thisValue (不把 undefined 归一为
+	// globalThis), 与规范「严格 eval 代码的 thisValue 原样」一致。剩下的是
+	// 不含该指令的源码 (通常只剩一个表达式)。
+	//
+	// eval 代码的严格性 = 源码含指令 OR 调用者严格 (规范 PerformEval:
+	// strictCaller 为真时 eval 代码恒严格)。两条来源任一成立就要让包装函数
+	// 严格, 否则 thisValue 会被错误地 sloppy 归一。
+	strictSource, body := splitStrictDirective(src)
+	directive := ""
+	if strictSource || callerStrict {
+		directive = "\"use strict\";\n"
 	}
-	// 2) 多语句包装: 函数体
-	if r := buildAndRun("(function(){\n" + src + "\n})"); r != nil {
+
+	// 1) 表达式包装: <directive> return (<expr>) —— 去掉末尾分号, 否则
+	// `return (expr;)` 是语法错误, 会错误地退回多语句包装并丢掉完成值
+	// (典型症状: eval("this;") 本应返回 this 却得 undefined)。
+	if expr := trimTrailingSemicolons(body); expr != "" {
+		if r := buildAndRun("(function(){\n" + directive + " return (" + expr + ") })"); r != nil {
+			return r
+		}
+	}
+	// 2) 多语句包装: 函数体 (指令仍置于体首, 保证严格语义)
+	if r := buildAndRun("(function(){\n" + directive + src + "\n})"); r != nil {
 		return r
 	}
 	if parseErr != "" {

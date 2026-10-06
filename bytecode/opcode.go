@@ -113,12 +113,18 @@ const (
 	OP_CALL_METHOD_SPREAD Opcode = 0x69
 
 	// OP_EVAL_MARK: 无操作数。标记紧随其后的 OP_CALL / OP_CALL_SPREAD 是一次
-	// 「类字段初始化器内的直接 eval」调用 (编译器在字段初始化表达式里遇到
-	// `eval(...)` 时发射)。VM 据此在本实例上暂存标记, 待被调值弹出后仅当
-	// 恰为全局 %eval% 内建时才让 eval 内建进入受限模式 —— 按 PerformEval
-	// 对初始化器内直接 eval 的补充早错规则, 源码含 arguments 时抛 SyntaxError。
-	// 间接 eval (0, eval) 不发射此标记, 不受限。
+	// 「直接 eval」调用 (编译器在被调表达式是标识符 `eval` 时发射)。VM 据此
+	// 在本实例上暂存标记, 待被调值弹出后仅当恰为全局 %eval% 内建时, 把
+	// **调用者帧生效的 this** 传给 eval 内建 —— 规范 sec-performeval: direct
+	// eval 的 this 绑定与调用者一致 (间接 eval (0, eval) 不发射此标记, 按全局
+	// eval 处理, this = globalThis)。
 	OP_EVAL_MARK Opcode = 0x6A
+
+	// OP_EVAL_MARK_INIT: 无操作数。语义同 OP_EVAL_MARK, 但额外标记本次直接
+	// eval 发生在「类字段初始化器」内 —— 除继承调用者 this 外, 还让 eval
+	// 内建进入受限模式 (PerformEval 补充早错: 源码含 arguments 引用或 super
+	// 调用 → SyntaxError)。间接 eval 不发射此标记, 不受限。
+	OP_EVAL_MARK_INIT Opcode = 0x6B
 
 	// 0x70-0x7F: 对象和数组
 	OP_NEW_ARRAY       Opcode = 0x70 // 创建数组 (operand = 元素个数)
@@ -294,6 +300,7 @@ var opcodeNames = map[Opcode]string{
 	OP_NEW: "NEW", OP_CALL_SPREAD: "CALL_SPREAD", OP_CALL_METHOD: "CALL_METHOD",
 	OP_CALL_METHOD_SPREAD: "CALL_METHOD_SPREAD",
 	OP_EVAL_MARK:          "EVAL_MARK",
+	OP_EVAL_MARK_INIT:     "EVAL_MARK_INIT",
 	OP_NEW_ARRAY: "NEW_ARRAY", OP_NEW_OBJECT: "NEW_OBJECT",
 	OP_GET_PROP: "GET_PROP", OP_SET_PROP: "SET_PROP",
 	OP_GET_INDEX: "GET_INDEX", OP_SET_INDEX: "SET_INDEX",
