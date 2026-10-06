@@ -3345,7 +3345,7 @@ func declaratorExportNames(name *ast.Identifier, value ast.Expression, more []as
 			return
 		}
 		if n.Value == destructureSyntheticName {
-			collectPatternExportNames(v, &out)
+			out = append(out, ast.PatternBoundNames(v)...)
 			return
 		}
 		out = append(out, n.Value)
@@ -3355,41 +3355,6 @@ func declaratorExportNames(name *ast.Identifier, value ast.Expression, more []as
 		collect(d.Name, d.Value)
 	}
 	return out
-}
-
-// collectPatternExportNames 从解构声明 (Name="__destructure__", Value 是
-// AssignmentExpression{Left: 模式}) 里收集绑定名。
-func collectPatternExportNames(value ast.Expression, out *[]string) {
-	assign, ok := value.(*ast.AssignmentExpression)
-	if !ok {
-		return
-	}
-	collectPatternNames(assign.Left, out)
-}
-
-// collectPatternNames 递归走解构模式收集绑定名。
-func collectPatternNames(pattern ast.Expression, out *[]string) {
-	switch p := pattern.(type) {
-	case *ast.Identifier:
-		if p.Value != destructureSyntheticName {
-			*out = append(*out, p.Value)
-		}
-	case *ast.ArrayPattern:
-		for _, el := range p.Elements {
-			if el != nil {
-				collectPatternNames(el.Target, out)
-			}
-		}
-	case *ast.ObjectPattern:
-		for _, prop := range p.Properties {
-			if prop != nil {
-				collectPatternNames(prop.Value, out)
-			}
-		}
-	case *ast.AssignmentExpression:
-		// 带默认值的元素: {a = 1} / [a = 1]
-		collectPatternNames(p.Left, out)
-	}
 }
 
 func (c *Compiler) compileFunctionDeclaration(stmt *ast.FunctionDeclaration) error {

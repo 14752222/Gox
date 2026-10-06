@@ -106,6 +106,26 @@ func (p *Parser) checkModuleEarlyErrors(program *ast.Program) {
 		}
 	}
 
+	// ── 解构声明的真实绑定名 (只供规则 4: 导出绑定的存在性) ──
+	//
+	// 解构声明 (const [todos, setTodos] = …) 在 AST 里只留下合成名
+	// __destructure__ + 赋值形态, 真实名字要到运行时才展开 —— 上面的
+	// declNames 因此一律跳过合成名 (那是块级重复检查"宁漏不误杀"的取舍)。
+	// 但规则 4 判的是「导出的绑定存在吗」, 这里不能把"列不出来"当成
+	// "不存在": 否则
+	//
+	//	const [a, b] = f();  export { a };
+	//
+	// 会被误判成 "export 'a' is not defined in module"。真实案例见
+	// scaffold/template/src/store.js (createSignal 解构后 export {}) ——
+	// 它让脚手架默认工程直接挂不上窗, 且三平台 ci 一起红。
+	// 只补进 declared: lexical 保持原样, 规则 1 / 2 / 5 的口径不动。
+	for _, s := range stmts {
+		for _, n := range destructuredDeclNames(s) {
+			declared[n] = true
+		}
+	}
+
 	// ── 规则 3 / 4: 导出名唯一 + 导出绑定已声明 ──
 	seenExp := make(map[string]bool)
 	for _, s := range stmts {
@@ -278,6 +298,43 @@ func namedBindings(tok lexer.Token, names []string) []moduleBinding {
 	out := make([]moduleBinding, 0, len(names))
 	for _, n := range names {
 		out = append(out, moduleBinding{name: n, tok: tok})
+	}
+	return out
+}
+
+// destructuredDeclNames 收一条**顶层声明语句**里解构绑定的真实名字。
+// `export <解构声明>` 也算 (与顶层 lexical 收集同口径)。
+func destructuredDeclNames(s ast.Statement) []string {
+	if ed, ok := s.(*ast.ExportDeclaration); ok {
+		if ed.Declaration == nil {
+			return nil
+		}
+		s = ed.Declaration
+	}
+	switch v := s.(type) {
+	case *ast.LetStatement:
+		return destructuredNamesIn(v.Name, v.Value, v.More)
+	case *ast.ConstStatement:
+		return destructuredNamesIn(v.Name, v.Value, v.More)
+	case *ast.VarStatement:
+		return destructuredNamesIn(v.Name, v.Value, v.More)
+	}
+	return nil
+}
+
+// destructuredNamesIn 从一条声明语句的声明项里收解构绑定的名字
+// (名字不是合成名的声明项 —— 即非解构 —— 一律跳过)。
+func destructuredNamesIn(name *ast.Identifier, value ast.Expression, more []ast.Declarator) []string {
+	var out []string
+	collect := func(n *ast.Identifier, v ast.Expression) {
+		if n == nil || n.Value != ast.DestructureSyntheticName {
+			return
+		}
+		out = append(out, ast.PatternBoundNames(v)...)
+	}
+	collect(name, value)
+	for _, d := range more {
+		collect(d.Name, d.Value)
 	}
 	return out
 }

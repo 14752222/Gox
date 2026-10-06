@@ -89,6 +89,13 @@ func TestModuleEarlyErrorsAllowsValidForms(t *testing.T) {
 		"function f() { return; }",   // 函数体内 return 合法
 		"function* g() { yield 1; }", // generator 内 yield 合法
 		"var obj = { await: 1 };",
+		// 解构声明的绑定必须能被 export 引用 (回归: scaffold/template/src/store.js
+		// 的 createSignal 解构导出 —— 曾让默认工程挂不上窗、三平台 ci 一起红)
+		"const [a, b] = pair(); export { a, b };",
+		"let { c, d = 1 } = obj(); export { c, d };",
+		"var [e] = list(); export { e };",
+		"const { f: g } = obj(); export { g };",
+		"const [[h], { i: j }] = nested(); export { h, j };",
 	}
 	for _, src := range cases {
 		p := parseModuleEE(src)
