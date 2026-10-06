@@ -2791,6 +2791,7 @@ func (c *Compiler) compileStaticInitFn(className, superName string, statics []*a
 	}
 	meta := bytecode.NewFunctionMetadata("__static_init__", fnIns, fnScope.NumLocals(), numParams, initParams, false)
 	meta.BaseSlot = baseSlot
+	meta.CapturePrefixLen = computeCapturePrefixLen(fnIns, baseSlot)
 	meta.ArgumentsSlot = argumentsSlot
 	meta.IsStrict = true
 	meta.Positions = toSrcPosList(fnSrcPositions)
@@ -3165,6 +3166,7 @@ func (c *Compiler) compileClassConstructor(fields []*ast.ClassField, ctor *ast.C
 	}
 	meta := bytecode.NewFunctionMetadata(ctorName, fnIns, fnScope.NumLocals(), len(paramSpecs), paramSpecs, false)
 	meta.BaseSlot = baseSlot
+	meta.CapturePrefixLen = computeCapturePrefixLen(fnIns, baseSlot)
 	meta.ArgumentsSlot = argumentsSlot
 	meta.IsStrict = c.strict
 	meta.Positions = toSrcPosList(fnSrcPositions)
@@ -4155,6 +4157,34 @@ func (c *Compiler) emitGlobalDeclare(name string) {
 
 // emitLoad 根据符号作用域发射加载指令。
 // 全局符号 → OP_LOAD_GLOBAL (按名字); 局部符号 → OP_LOAD (按 slot)。
+// computeCapturePrefixLen 扫描已编译函数体的指令流, 得出它实际引用的
+// 外层局部槽的精确上界 (= max referenced outer slot + 1)。
+//
+// 为什么不用 BaseSlot (外层作用域槽总数): BaseSlot 会把「创建帧自身的
+// 局部」也捎带进本函数的捕获前缀。VM 创建闭包时若按 BaseSlot 从创建帧
+// 的拷贝数组 (帧 Locals) 取捕获, 内层闭包读到的是创建帧私有快照, 与
+// 外层 binding cell 失联; 若按精确上界, 引用只落在外层 cell 数组时,
+// 捕获就能直接共享那颗 cell (即 frame.SharedCells 底层) ——
+// test262 async-generator yield* 委托系列的 get-next/nextCount 记序
+// 模式依赖此语义 (r6e5qp)。
+//
+// 只统计「槽位语义」的指令 (LOAD/STORE/STORE_CONST), 且仅取 operand <
+// baseSlot 的 (本函数自身的槽位不属外层引用)。上界偏大只会保守回退帧
+// 数组 (旧行为), 不会错。
+func computeCapturePrefixLen(ins bytecode.Instructions, baseSlot int) int {
+	maxRef := 0
+	for off := 0; off+bytecode.InstructionSize <= len(ins); off += bytecode.InstructionSize {
+		op, operand := bytecode.ReadInstruction(ins, off)
+		switch op {
+		case bytecode.OP_LOAD, bytecode.OP_STORE, bytecode.OP_STORE_CONST, bytecode.OP_DECLARE_VAR:
+			if int(operand) < baseSlot && int(operand)+1 > maxRef {
+				maxRef = int(operand) + 1
+			}
+		}
+	}
+	return maxRef
+}
+
 func (c *Compiler) emitLoad(sym *Symbol) {
 	if sym.Depth == 0 && !c.moduleMode {
 		c.emitGlobalLoad(sym.Name)
@@ -6275,6 +6305,7 @@ func (c *Compiler) compileFunctionSelf(name, selfName string, params []*ast.Para
 		isArrow,
 	)
 	meta.BaseSlot = baseSlot
+	meta.CapturePrefixLen = computeCapturePrefixLen(fnIns, baseSlot)
 	meta.ArgumentsSlot = argumentsSlot
 	meta.SelfSlot = selfSlot
 	meta.IsGenerator = isGenerator
@@ -6415,6 +6446,7 @@ func (c *Compiler) compileAsyncFunctionSelf(name, selfName string, params []*ast
 
 	meta := bytecode.NewFunctionMetadata(name, wrapperIns, wrapperScope.NumLocals(), len(params), paramSpecs, isArrow)
 	meta.BaseSlot = baseSlot
+	meta.CapturePrefixLen = computeCapturePrefixLen(wrapperIns, baseSlot)
 	meta.ArgumentsSlot = argumentsSlot
 	meta.IsAsync = true
 	meta.IsMethod = isMethod
@@ -6521,6 +6553,7 @@ func (c *Compiler) compileAsyncGeneratorSelf(name, selfName string, params []*as
 
 	meta := bytecode.NewFunctionMetadata(name, wrapperIns, wrapperScope.NumLocals(), len(params), paramSpecs, isArrow)
 	meta.BaseSlot = baseSlot
+	meta.CapturePrefixLen = computeCapturePrefixLen(wrapperIns, baseSlot)
 	meta.ArgumentsSlot = argumentsSlot
 	meta.IsAsync = true
 	// wrapper 的 [[Prototype]] 是 %AsyncGeneratorFunction.prototype%，

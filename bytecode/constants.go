@@ -191,6 +191,14 @@ type FunctionMetadata struct {
 	// 用户手写函数不用本标记 (它们的 this 由调用形态决定)。
 	LexicalThis bool
 	BaseSlot         int             // 函数自身变量的起始槽位 (外层作用域的变量数)
+	// CapturePrefixLen 是「本函数实际引用的外层槽位」的精确上界
+	// (编译期扫描 LOAD/STORE 指令流得出, = max referenced outer slot + 1)。
+	// 比 BaseSlot 小: BaseSlot 是外层作用域槽总数的粗粒度上界, 会把创建帧
+	// 自身的局部也捎带进前缀。VM 的 createClosure 据此决定捕获来源:
+	// 前缀整体落在外层 binding cell 数组 (frame.SharedCells) 内时共享它,
+	// 否则整段用帧数组 (见 vm/vm.go createClosure, r6e5qp)。
+	// 0 表示未计算 (老码路径), 回退 BaseSlot。
+	CapturePrefixLen int
 	ArgumentsSlot    int             // arguments 对象槽位 (-1 表示未使用/箭头函数)
 	SelfSlot         int             // 命名函数表达式的自引用槽位 (-1 表示无)
 	// Positions 是函数体语句的源码位置表 (offset 升序, 可为 nil)。

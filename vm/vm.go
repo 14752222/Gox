@@ -2616,30 +2616,35 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				vm.stack.Push(resolved)
 				continue
 			}
-			// 2) 同步形状原样交给 ASYNC_ITER_NEXT (它统一处理 next 调用)
-			if _, isGen := val.(*object.Generator); isGen {
-				vm.stack.Push(val)
-				continue
-			}
-			if _, isIter := val.(*runtime.Iterator); isIter {
-				vm.stack.Push(val)
-				continue
-			}
-			if o, isObj := val.(*object.Object); isObj {
-				if _, hasNext := o.GetProperty("next"); hasNext {
-					vm.stack.Push(val)
-					continue
-				}
-			}
-			// 3) 同步可迭代 (数组/字符串/Map 等, 规范允许 for await 消费):
-			//    [Symbol.iterator] 解析 (generator 结果只能 VM 驱动) 或
-			//    runtime.GetIterable 适配, 转成迭代器形状。
-			if resolved, ok, err := vm.resolveSymbolIterator(val); err != nil {
-				return err
-			} else if ok {
-				vm.stack.Push(resolved)
-				continue
-			}
+		// 2) 同步形状原样交给 ASYNC_ITER_NEXT (它统一处理 next 调用)。
+		// 「裸 next 对象」是 Gox 的非规范扩展 (for-await 自建迭代器),
+		// 判定用 hasNextKey (非触发式) —— GetProperty 会多触发一次
+		// getter, 破坏属性访问顺序 (r6e5qp)。
+		if _, isGen := val.(*object.Generator); isGen {
+			vm.stack.Push(val)
+			continue
+		}
+		if _, isIter := val.(*runtime.Iterator); isIter {
+			vm.stack.Push(val)
+			continue
+		}
+		if o, isObj := val.(*object.Object); isObj && hasNextKey(o) {
+			// 包 Async-from-Sync wrapper: next method 懒缓存 (V8 实测行为),
+			// throw/return 每次 GetMethod —— 见 wrapSyncIterForAsync。
+			vm.stack.Push(vm.wrapSyncIterForAsync(o))
+			continue
+		}
+		// 3) 同步可迭代 (数组/字符串/Map 等, 规范允许 for-await 与 yield*
+		// 委托消费): [Symbol.iterator] 解析 (generator 结果只能 VM 驱动)
+		// 或 runtime.GetIterable 适配, 转成迭代器形状。JS 迭代器对象再包
+		// Async-from-Sync wrapper (next method 懒缓存 —— V8 实测第二次
+		// next 不再触发 get next; r6e5qp test262 yield-star-sync-next)。
+		if resolved, ok, err := vm.resolveSymbolIterator(val); err != nil {
+			return err
+		} else if ok {
+			vm.stack.Push(vm.wrapSyncIterForAsync(resolved))
+			continue
+		}
 			if iter, hasIter := runtime.GetIterable(val); hasIter {
 				vm.stack.Push(iter)
 				continue
@@ -2674,15 +2679,20 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				vm.stack.Push(step)
 			case *object.Object:
 				// 对象迭代器: 调它的 next() 方法 (this = 迭代器本身)。
-				// 返回 Promise (async 迭代器) 或 {value, done} (同步形状)。
+				// Async-from-Sync wrapper (有 wrapperSrcKey): next method 懒
+				// 取一次并缓存, this = 源同步迭代器 (V8 语义)。
 				nextFn, found := it.GetProperty("next")
+				recv := iter
+				if nf, src, ok := vm.syncWrapperNext(it); ok {
+					nextFn, found, recv = nf, true, src
+				}
 				if !found || !object.IsCallable(nextFn) {
 					if err := vm.throwNamedError("TypeError", "async iterator has no callable next()"); err != nil {
 						return err
 					}
 					continue
 				}
-				res, err := vm.callFunction(nextFn, it, nil)
+				res, err := vm.callFunction(nextFn, recv, nil)
 				if err != nil {
 					return err
 				}
@@ -2733,10 +2743,17 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			case *object.Object, *object.AsyncGenerator:
 				var nextFn object.Value
 				var found bool
+				recv := iter // this: 默认迭代器本身; wrapper 场景用源对象
 				if ag, isAG := it.(*object.AsyncGenerator); isAG {
 					nextFn, found = ag.GetProperty("next")
 				} else {
-					nextFn, found = it.(*object.Object).GetProperty("next")
+					o := it.(*object.Object)
+					nextFn, found = o.GetProperty("next")
+					// Async-from-Sync wrapper: next method 懒取缓存, this =
+					// 源同步迭代器 (V8 语义)。
+					if nf, src, ok := vm.syncWrapperNext(o); ok {
+						nextFn, found, recv = nf, true, src
+					}
 				}
 				if !found || !object.IsCallable(nextFn) {
 					if err := vm.throwNamedError("TypeError", "async iterator has no callable next()"); err != nil {
@@ -2744,7 +2761,7 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 					}
 					continue
 				}
-				res, err := vm.callFunction(nextFn, iter, []object.Value{arg})
+				res, err := vm.callFunction(nextFn, recv, []object.Value{arg})
 				if err != nil {
 					return err
 				}
@@ -4718,15 +4735,44 @@ func (vm *VM) createClosure(meta *bytecode.FunctionMetadata, frame *Frame) *obje
 	// `const [inc, get] = mk(); inc(); get()` 读不到彼此的修改。
 	// 共享同一个数组后，写操作 (OP_STORE → SharedCells) 对所有捕获者同时可见；
 	// 该数组随闭包存活 (GC 保活)，等价于 ECMAScript 的 binding cell 逃逸到堆。
+	//
+	// ⚠ 帧从闭包装配而来时 (callClosure 用 CapturedLocals 拷出新 Locals,
+	// 原始 binding cell 在 frame.SharedCells), 必须取 SharedCells 作捕获数组:
+	// 取帧 Locals 会让「在 getter/method 体内创建的闭包」捕获 getter 帧的
+	// 私有拷贝 —— getter 每次属性访问都被重新调用, 内层闭包每次读到创建时
+	// 的快照, 与外层 cell 失联 (r6e5qp: `make().foo()` 恒 1, 本应累加;
+	// test262 async-generator yield* 委托的 nextCount 记序模式全被它挡下)。
 	var captured []object.Value
 	if meta.BaseSlot > 0 {
-		// 必须裁剪到 BaseSlot: 闭包只会访问 slot < BaseSlot，
-		// 若不裁剪，整帧 Locals 会在调用时被拷进内层slot 区，
-		// 把尚未初始化的绑定"填上"外层残留值，TDZ 检测随之失效。
-		if meta.BaseSlot <= len(frame.Locals) {
-			captured = frame.Locals[:meta.BaseSlot]
+		// 捕获前缀的精确上界 (编译期扫描指令流得出, 见 compiler.computeCapturePrefixLen)。
+		// BaseSlot 是外层作用域槽总数的粗粒度上界, 会把创建帧自身的局部也
+		// 捎带进前缀; CapturePrefixLen 只覆盖本函数真正引用的外层 slot。
+		prefixLen := meta.CapturePrefixLen
+		if prefixLen <= 0 {
+			prefixLen = meta.BaseSlot
+		}
+		// frame.SharedCells 是本帧外层的原始 binding cell 数组 (callClosure
+		// 装配闭包帧时 frame.Locals 只是它的拷贝)。捕获前缀整体落在 cell
+		// 数组内时直接共享它: 内层闭包与共享链不断。否则 (前缀需要本帧
+		// 自身的局部) 整段取帧数组 —— 自身段本就随每次调用新建, 帧数组
+		// 作宿主是安全的 (被闭包保活)。
+		//
+		// 反例 (r6e5qp): getter 体内再定义的闭包若按帧数组捕获, getter 每次
+		// 属性访问都重新调用, 内层闭包读到的是本次帧的私有快照, 与外层
+		// cell 失联 —— make().foo() 恒返回 1; test262 async-generator yield*
+		// 委托的 get-next/nextCount 记序模式全被它挡下。
+		src := frame.Locals
+		if len(frame.SharedCells) > 0 && prefixLen <= len(frame.SharedCells) {
+			src = frame.SharedCells
+		}
+		// 裁剪到 prefixLen: 闭包只会访问 slot < prefixLen, 不裁剪会让整帧
+		// Locals 在调用时被拷进内层 slot 区, 把尚未初始化的绑定"填上"外层
+		// 残留值, TDZ 检测随之失效; 且前缀必须覆盖 prefixLen, 否则内层
+		// LOAD 读到 NewFrame 的 nil 误报 TDZ。
+		if prefixLen <= len(src) {
+			captured = src[:prefixLen]
 		} else {
-			captured = frame.Locals
+			captured = src
 		}
 	}
 
@@ -5826,8 +5872,26 @@ func (vm *VM) objectRest(src, excluded object.Value) (object.Value, error) {
 	return rest, nil
 }
 
-func (vm *VM) resolveSymbolIterator(val object.Value) (object.Value, bool, error) {
-	o, ok := val.(*object.Object)
+// hasNextKey 沿原型链检查对象的 "next" 键是否存在, 不触发 getter。
+// Gox 的非规范扩展: 「裸 next 对象」本身可作迭代器 (for-await/for-of 的
+// 自建迭代器形状)。用描述符查找而非 GetProperty: 提前访问 next getter
+// 会多产生一次属性访问, 破坏 yield* 委托的属性访问顺序
+// (r6e5qp, test262 yield-star-*-next 系列记的就是这个序)。
+func hasNextKey(o *object.Object) bool {
+	for cur := o; cur != nil; {
+		if _, found := cur.Properties["next"]; found {
+			return true
+		}
+		next, ok := cur.Proto.(*object.Object)
+		if !ok || next == nil {
+			return false
+		}
+		cur = next
+	}
+	return false
+}
+
+func (vm *VM) resolveSymbolIterator(val object.Value) (object.Value, bool, error) {	o, ok := val.(*object.Object)
 	if !ok {
 		return nil, false, nil
 	}
@@ -5852,9 +5916,11 @@ func (vm *VM) resolveSymbolIterator(val object.Value) (object.Value, bool, error
 	case *object.JSIterator:
 		return runtime.NewCallbackIterator(r.Next), true, nil
 	case *object.Object:
-		// 用户自建迭代器对象 ({ next, return }): 只要 next 可调用就认。
+		// 用户自建迭代器对象 ({ next, return }): 只要 next 键存在就认。
 		// 由 OP_ITER_STEP / OP_ITER_NEXT 的对象分支驱动 (调 next())。
-		if nextFn, has := r.GetProperty("next"); has && object.IsCallable(nextFn) {
+		// 用 hasNextKey (非触发式) 判定, 不能再 GetProperty——提前访问
+		// next getter 会多一次属性访问 (r6e5qp 属性访问顺序)。
+		if hasNextKey(r) {
 			return r, true, nil
 		}
 	}
@@ -5903,12 +5969,14 @@ func (vm *VM) resolveAsyncSymbolIterator(val object.Value) (object.Value, bool, 
 	case *object.JSIterator:
 		return runtime.NewCallbackIterator(r.Next), true, nil
 	}
-	// next 对象迭代器 (async 迭代器的常见实现): 原样交回,
-	// ASYNC_ITER_NEXT 的对象分支会调它的 next()。
-	if obj, isObj := res.(*object.Object); isObj {
-		if _, hasNext := obj.GetProperty("next"); hasNext {
-			return obj, true, nil
-		}
+	// Object 即迭代器 (async 迭代器的常见实现): 包 Async-from-Sync 语义
+	// wrapper (own next 懒缓存 —— V8 实测原生 @@asyncIterator 的 next
+	// method 也是首取后缓存; throw/return 每次 GetMethod, 见
+	// wrapSyncIterForAsync)。用 hasNextKey (非触发式) 判定: GetProperty
+	// 会多触发一次 getter, 破坏 yield* 异步委托的属性访问顺序
+	// (r6e5qp, test262 yield-star-async-next 等)。
+	if obj, isObj := res.(*object.Object); isObj && hasNextKey(obj) {
+		return vm.wrapSyncIterForAsync(obj), true, nil
 	}
 	// 调用结果不是对象: GetIterator 要求抛 TypeError。
 	return nil, false, vm.throwNamedError("TypeError",
