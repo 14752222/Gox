@@ -1665,11 +1665,14 @@ func (p *Parser) parseWithStatement() *ast.WithStatement {
 	// 会落进 isBlockStart 的启发式判定, 把 `{ x; }` 误当对象字面量。
 	// parseBlockStatement / parseStatement 返回时 curToken 停在该语句的末
 	// token 上 (与 if/while 的 parseBody 一致), 由调用循环统一前进。
+	prevUsingAllowed := p.usingAllowed
+	p.usingAllowed = false // with 体单语句位置不是 Block ⇒ using 非法
 	if p.curTokenIs(lexer.LBRACE) {
 		stmt.Body = p.parseBlockStatement()
 	} else {
 		stmt.Body = p.parseStatement()
 	}
+	p.usingAllowed = prevUsingAllowed
 	return stmt
 }
 
@@ -1714,11 +1717,14 @@ func (p *Parser) parseLabeledStatement() *ast.LabeledStatement {
 	p.moduleTopLevel = false
 	defer func() { p.moduleTopLevel = prevTop }()
 	// 标签后的 '{' 一定是块 (语句位置), 而非对象字面量
+	prevUsingAllowed := p.usingAllowed
+	p.usingAllowed = false // label: Statement 的语句位置不是 Block ⇒ using 非法
 	if p.curTokenIs(lexer.LBRACE) {
 		stmt.Body = p.parseBlockStatement()
 	} else {
 		stmt.Body = p.parseStatement()
 	}
+	p.usingAllowed = prevUsingAllowed
 	return stmt
 }
 
@@ -1767,7 +1773,12 @@ func (p *Parser) parseBlockImpl(asFunctionBody bool) *ast.BlockStatement {
 
 	// 块/函数体内的 `using` 声明合法 (规范允许 Block / FunctionBody)。
 	p.blockOrFnDepth++
-	defer func() { p.blockOrFnDepth-- }()
+	prevUsingAllowed := p.usingAllowed
+	p.usingAllowed = true
+	defer func() {
+		p.blockOrFnDepth--
+		p.usingAllowed = prevUsingAllowed
+	}()
 
 	for !p.curTokenIs(lexer.RBRACE) && !p.curTokenIs(lexer.EOF) {
 		stmt := p.parseStatement()
@@ -1813,7 +1824,12 @@ func (p *Parser) parseBlockWithDirectives() (*ast.BlockStatement, bool) {
 
 	// 函数体内 `using` 声明合法。
 	p.blockOrFnDepth++
-	defer func() { p.blockOrFnDepth-- }()
+	prevUsingAllowed := p.usingAllowed
+	p.usingAllowed = true
+	defer func() {
+		p.blockOrFnDepth--
+		p.usingAllowed = prevUsingAllowed
+	}()
 
 	inPrologue := true
 	bodyStrict := false
@@ -1894,9 +1910,15 @@ func (p *Parser) parseBody() *ast.BlockStatement {
 	// 单条语句: 包装为 BlockStatement。
 	// 这里同样不是模块顶层 —— `if (x) { } else export default null;` 非法
 	// (test262 module-code/parse-err-decl-pos-export-if-else.js)。
+	// 单语句体不是 Block ⇒ using 声明在此非法 (`if (x) using y = null;`)。
 	prevTop := p.moduleTopLevel
 	p.moduleTopLevel = false
-	defer func() { p.moduleTopLevel = prevTop }()
+	prevUsingAllowed := p.usingAllowed
+	p.usingAllowed = false
+	defer func() {
+		p.moduleTopLevel = prevTop
+		p.usingAllowed = prevUsingAllowed
+	}()
 	block := &ast.BlockStatement{Token: p.curToken(), Statements: []ast.Statement{}}
 	stmt := p.parseStatement()
 	if !isNilStmt(stmt) {
@@ -3800,6 +3822,11 @@ func (p *Parser) parseSwitchStatement() *ast.SwitchStatement {
 		p.nextToken()
 
 		// 解析 case 体直到遇到 case/default/}
+		// CaseClause/DefaultClause 的 StatementList **直接**包含 using 声明是早错
+		// (sec-let-const-using-and-await-using-declarations-static-semantics-
+		// early-errors 第 2 条)。嵌套块内的 using 仍合法 (parseBlockImpl 置 true)。
+		prevUsingAllowed := p.usingAllowed
+		p.usingAllowed = false
 		for !p.curTokenIs(lexer.CASE) && !p.curTokenIs(lexer.DEFAULT) && !p.curTokenIs(lexer.RBRACE) && !p.curTokenIs(lexer.EOF) {
 			s := p.parseStatement()
 			if s != nil {
@@ -3807,6 +3834,7 @@ func (p *Parser) parseSwitchStatement() *ast.SwitchStatement {
 			}
 			p.nextToken()
 		}
+		p.usingAllowed = prevUsingAllowed
 		stmt.Cases = append(stmt.Cases, sc)
 	}
 
