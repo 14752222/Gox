@@ -2,6 +2,7 @@ package parser
 
 import (
 	"github.com/14752222/Gox/ast"
+	"github.com/14752222/Gox/lexer"
 )
 
 // ==================== 块级早错 (rUZN3k 第 1 块) ====================
@@ -261,4 +262,104 @@ func (p *Parser) checkBlockRedeclaration(block *ast.BlockStatement) {
 		}
 		nonExempt[e.name] = true
 	}
+}
+
+// ==================== for 头部声明 vs 语句体 var 重声明早错 (路线 E) ====================
+//
+// 规范:
+//   sec-for-in-and-for-of-statements-static-semantics-early-errors
+//     IterationStatement : for ( ForDeclaration in/of Expression ) Statement
+//     - It is a Syntax Error if any element of the BoundNames of ForDeclaration
+//       also occurs in the VarDeclaredNames of Statement.
+//   sec-for-statement-static-semantics-early-errors
+//     ForStatement : for ( LexicalDeclaration Expression? ; Expression? ) Statement
+//     - It is a Syntax Error if any element of the BoundNames of LexicalDeclaration
+//       also occurs in the VarDeclaredNames of Statement.
+//
+// ForDeclaration / LexicalDeclaration 只含 let / const / using (含 await using);
+// **var 头部**是 VariableDeclaration, 不参与本检查 (for (var x of []) { var x; } 合法)。
+//
+// 语句体的 VarDeclaredNames 递归进嵌套块 / 控制流 / 嵌套 for 头部, 但**不进函数体**
+// (blockVarDeclaredNames / stmtVarNames 在函数边界即停), 与规范一致。
+//
+// 与 checkBlockRedeclaration 是**两条不同的规则** (那条是「块内 lexical ∩ var」,
+// 这条是「for 头部 lexical ∩ 循环体 var」), 不会重复报同一对名字:
+//   for (let x of []) { var x; }  ← 循环体块自身没有 lexical 声明, 块检查不触发。
+func (p *Parser) checkForHeadRedeclaration(stmt ast.Statement) {
+	var headNames []string
+	var body *ast.BlockStatement
+	var tok lexer.Token
+	switch v := stmt.(type) {
+	case *ast.ForOfStatement:
+		if v == nil {
+			return
+		}
+		headNames = forOfHeadLexicalNames(v)
+		body, tok = v.Body, v.Token
+	case *ast.ForInStatement:
+		if v == nil {
+			return
+		}
+		headNames = forDeclHeadNames(v.VarDecl)
+		body, tok = v.Body, v.Token
+	case *ast.ForStatement:
+		if v == nil {
+			return
+		}
+		headNames = forDeclHeadNames(v.Init)
+		body, tok = v.Body, v.Token
+	default:
+		return
+	}
+	if len(headNames) == 0 || body == nil {
+		return
+	}
+	varSet := make(map[string]bool)
+	for _, n := range blockVarDeclaredNames(body.Statements) {
+		varSet[n] = true
+	}
+	for _, n := range headNames {
+		if varSet[n] {
+			p.errors.Add("Identifier '"+n+"' has already been declared", tok.Line, tok.Column)
+			return // 一条足够, 避免同一 for 里重复报
+		}
+	}
+}
+
+// forDeclHeadNames 取一条 for 头部**词法声明** (ForDeclaration / LexicalDeclaration)
+// 的 BoundNames; var 头部 (VariableDeclaration) 或非声明头部返回 nil。
+func forDeclHeadNames(head ast.Statement) []string {
+	switch v := head.(type) {
+	case *ast.LetStatement:
+		if v == nil {
+			return nil
+		}
+		return append(declNames(v.Name, v.More), destructuredNamesIn(v.Name, v.Value, v.More)...)
+	case *ast.ConstStatement:
+		if v == nil {
+			return nil
+		}
+		return append(declNames(v.Name, v.More), destructuredNamesIn(v.Name, v.Value, v.More)...)
+	case *ast.UsingStatement:
+		if v == nil {
+			return nil
+		}
+		return append(declNames(v.Name, v.More), destructuredNamesIn(v.Name, v.Value, v.More)...)
+	}
+	return nil
+}
+
+// forOfHeadLexicalNames 取 for-of 头部的词法绑定名。
+//
+// 与 for-in / 传统 for 不同: for-of 的**解构绑定**不走声明项的 Value, 而是把真实
+// 名字放在 ForOfStatement.Pattern 里, VarDecl 只留一个合成名空壳 (见 ast 注释)。
+// 这里补上 Pattern 的绑定名 (与赋值解构无关: VarDecl==nil 的赋值形态无词法声明)。
+func forOfHeadLexicalNames(v *ast.ForOfStatement) []string {
+	names := forDeclHeadNames(v.VarDecl)
+	if v.Pattern != nil {
+		// 复用共享的模式遍历 (ast.PatternBoundNames 期望初始值形如
+		// AssignmentExpression{Left: 模式}, 这里包一层同一形状)。
+		names = append(names, ast.PatternBoundNames(&ast.AssignmentExpression{Left: v.Pattern})...)
+	}
+	return names
 }

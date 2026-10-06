@@ -562,7 +562,12 @@ func (p *Parser) parseStatementBody() ast.Statement {
 	case lexer.IF:
 		return p.parseIfStatement()
 	case lexer.FOR:
-		return p.parseForStatement()
+		stmt := p.parseForStatement()
+		// for / for-in / for-of 头部词法声明 (let/const/using) 的 BoundNames
+		// 与循环体 VarDeclaredNames 相交给早错 (sec-for-*-static-semantics-early-errors)。
+		// 在唯一的 FOR 分派点统一收口, 覆盖全部头部形态 (含 for await / using)。
+		p.checkForHeadRedeclaration(stmt)
+		return stmt
 	case lexer.WHILE:
 		return p.parseWhileStatement()
 	case lexer.DO:
