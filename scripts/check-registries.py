@@ -29,10 +29,14 @@
 3. **版本号一致**。`cmd/gox/main.go` 的 `const version` 必须等于 `npm/package.json` 的
    `version`（官网那四个页面里的版本号由 `scripts/check-site.py` 负责）。
 
-4. **npm 包清单自洽**。`package.json` 的 `bin` 指向真实存在的文件，`files`
-   覆盖 `bin/`、`binaries/` 与 `mobile/`（历史上发过一个没有二进制的空壳包，本地
-   Windows 不复现、只有 Linux CI 上必现 —— 本地能查的只有清单自洽性；`mobile/`
-   是 M11 的移动端发布面，与 `binaries/` 同属"漏了就从包里消失"的高危项）。
+4. **npm 包清单自洽**。主包 `package.json` 的 `bin` 指向真实存在的文件，`files`
+   覆盖 `bin/`、`binaries/`，且**不含 `mobile/`**（历史教训：发过一个没有二进制的
+   空壳包，本地 Windows 不复现、只有 Linux CI 上必现 —— 本地能查的只有清单自洽性）。
+
+5. **移动端子包自洽**（M11）。`npm/packages/<dirname>/package.json` 是「平台 × ABI」
+   子包的定义：命名、版本（须与主包同号）、`files` 清单必须自洽；若本机已跑过
+   `build-npm-mobile.sh`（`dist/npm-mobile-pkgs/<dirname>/` 存在），再逐产物比对
+   `manifest.json` 里的 sha256/size —— 这是"发出去的库是不是这次编的"唯一硬证据。
 
 用法：
     python3 scripts/check-registries.py            # 跑全部检查
@@ -516,14 +520,155 @@ def check_npm_manifest():
             "package.json 的 files 里没有 binaries/ —— 打出来的包里就没有二进制，"
             "用户装到的是一个空壳包（本地 Windows 不复现，Linux CI 上必现）")
 
-    if "mobile/" not in pkg.get("files", []):
+    if "mobile/" in pkg.get("files", []):
         problems.append(
-            "package.json 的 files 里没有 mobile/ —— 打出来的包里就没有移动端 libgox，"
-            "android/harmony/ios 壳工程拿不到预编译库（与 binaries/ 同一条空壳包教训，M11）")
+            "主包 package.json 的 files 里出现了 mobile/ —— 移动端按「平台 × ABI」走独立"
+            "子包（npm/packages/goxjs-mobile-*，M11 决策）；塞回主包会把每个桌面用户从"
+            "~20MB 顶到 ~72MB。移动端产物请放进对应子包，不要放主包。")
 
     if problems:
         raise Fail("\n".join("  - " + p for p in problems))
     return pkg
+
+
+# ── 检查 5：移动端子包自洽（M11）─────────────────────────────────────────────
+# 平台 → 该子包应有的产物文件（除 manifest.json 外）
+MOBILE_PLATFORM_FILES = {
+    "android": ["libgox.so"],
+    "harmony": ["libgox.so"],
+    "ios": ["libgox.a", "libgox.h"],
+}
+
+# 本工作流只校验已知平台；出现新平台说明表要跟着改，所以未知平台也报错。
+MOBILE_PLATFORMS = ("android", "harmony", "ios")
+
+
+def _subpkg_platform(dirname):
+    # dirname 形如 goxjs-mobile-<platform>-<abi>；platform 取第一段，其余是 abi。
+    if not dirname.startswith("goxjs-mobile-"):
+        return None, None
+    rest = dirname[len("goxjs-mobile-"):]
+    if "-" not in rest:
+        return None, None
+    platform, abi = rest.split("-", 1)
+    return platform, abi
+
+
+def check_mobile_subpackages():
+    pkg = load_pkg()
+    pkg_ver = pkg.get("version")
+    base = os.path.join(ROOT, "npm", "packages")
+    if not os.path.isdir(base):
+        raise Fail("npm/packages/ 不存在 —— 移动端平台子包的定义目录（M11）不见了吗？")
+
+    dirs = sorted(d for d in os.listdir(base)
+                  if os.path.isdir(os.path.join(base, d)))
+    if not dirs:
+        raise Fail("npm/packages/ 下没有任何子包目录 —— M11 的平台子包定义丢了？")
+
+    problems = []
+    staged_root = os.path.join(ROOT, "dist", "npm-mobile-pkgs")
+    checked_staged = 0
+
+    for dirname in dirs:
+        platform, abi = _subpkg_platform(dirname)
+        if platform is None:
+            problems.append("子包目录 %s 命名不符 goxjs-mobile-<platform>-<abi>" % dirname)
+            continue
+        if platform not in MOBILE_PLATFORMS:
+            problems.append(
+                "子包 %s 的平台 %r 不在已知表内（%s）—— 加了新平台要同步本脚本"
+                % (dirname, platform, "/".join(MOBILE_PLATFORMS)))
+            continue
+
+        # 1) package.json 自洽
+        pj = os.path.join(base, dirname, "package.json")
+        if not os.path.isfile(pj):
+            problems.append("子包 %s 缺 package.json" % dirname)
+            continue
+        try:
+            with open(pj, encoding="utf-8") as f:
+                sub = json.load(f)
+        except (OSError, ValueError) as e:
+            problems.append("子包 %s 的 package.json 读不了：%s" % (dirname, e))
+            continue
+
+        want_name = "@goxjs/" + dirname
+        if sub.get("name") != want_name:
+            problems.append("子包 %s 的 name=%r，应为 %r" % (dirname, sub.get("name"), want_name))
+        if sub.get("version") != pkg_ver:
+            problems.append(
+                "子包 %s 的 version=%r 与主包 %r 不一致（壳工程↔引擎须成对发布）"
+                % (dirname, sub.get("version"), pkg_ver))
+        if (sub.get("publishConfig") or {}).get("access") != "public":
+            problems.append("子包 %s 的 publishConfig.access 应为 public" % dirname)
+
+        want_files = set(MOBILE_PLATFORM_FILES[platform]) | {"manifest.json"}
+        got_files = set(sub.get("files") or [])
+        if got_files != want_files:
+            problems.append(
+                "子包 %s 的 files=%s，应为 %s（平台 %s 的产物清单）"
+                % (dirname, sorted(got_files), sorted(want_files), platform))
+
+        # 2) 若本机有 staging 产物，逐产物比对 manifest 的 sha256/size
+        stage = os.path.join(staged_root, dirname)
+        mf = os.path.join(stage, "manifest.json")
+        if not os.path.isfile(mf):
+            continue
+        try:
+            with open(mf, encoding="utf-8") as f:
+                man = json.load(f)
+        except (OSError, ValueError) as e:
+            problems.append("子包 %s 的 manifest.json 读不了：%s" % (dirname, e))
+            continue
+
+        if man.get("goxVersion") != pkg_ver:
+            problems.append(
+                "子包 %s 的 manifest.goxVersion=%r 与主包 %r 不一致"
+                % (dirname, man.get("goxVersion"), pkg_ver))
+        if man.get("platform") != platform or man.get("abi") != abi:
+            problems.append(
+                "子包 %s 的 manifest platform/abi=%r/%r 与目录名不符"
+                % (dirname, man.get("platform"), man.get("abi")))
+
+        listed = sorted(a.get("path") for a in man.get("artifacts", []))
+        if listed != sorted(want_files - {"manifest.json"}):
+            problems.append(
+                "子包 %s 的 manifest 列了 %s，应为 %s"
+                % (dirname, listed, sorted(want_files - {"manifest.json"})))
+
+        for a in man.get("artifacts", []):
+            rel = a.get("path")
+            full = os.path.join(stage, rel)
+            if not os.path.isfile(full):
+                problems.append("子包 %s 的 manifest 列了 %s，但 staging 里没有" % (dirname, rel))
+                continue
+            want = a.get("sha256")
+            got = _sha256(full)
+            if got != want:
+                problems.append(
+                    "子包 %s/%s 的 sha256 不符（manifest=%s 实际=%s）"
+                    % (dirname, rel, want, got))
+            size = os.path.getsize(full)
+            if a.get("size") != size:
+                problems.append(
+                    "子包 %s/%s 的 size 不符（manifest=%s 实际=%d）"
+                    % (dirname, rel, a.get("size"), size))
+        checked_staged += 1
+
+    if problems:
+        raise Fail("\n".join("  - " + p for p in problems))
+    return "子包 %d 个（含 staging 校验 %d 个）" % (len(dirs), checked_staged)
+
+
+def _sha256(path):
+    import hashlib
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
 
 
 def cmd_list():
@@ -551,6 +696,7 @@ def main():
         ("内置模块三处同步", check_modules),
         ("版本号一致 (cmd/gox/main.go ↔ npm/package.json)", check_version),
         ("npm 包清单自洽", check_npm_manifest),
+        ("移动端子包自洽 (M11)", check_mobile_subpackages),
     ]
 
     failed = 0

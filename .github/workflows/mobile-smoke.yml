@@ -179,7 +179,7 @@ jobs:
           if-no-files-found: error
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # npm 包内容核对（M11）：移动端产物有没有真的进 @goxjs/goxjs 的发布面。
+  # npm 包内容核对（M11）：移动端产物走「平台子包」，主包必须**不含** mobile/。
   #
   # 为什么单独一条「查包内容」的作业：上一轮发空壳包（0.2.0 丢了全部二进制）的
   # 教训是——CI 全绿 ≠ 包内容对。忽略规则、files 白名单、staging 目录三者任一
@@ -187,11 +187,17 @@ jobs:
   # 所以这里跟 release.yml 的「打包校验」用同一份判据，但跑在每次 main 推送，
   # 不必等到发版才发现。
   #
-  # 只验 android：ios 要 macos 专属作业（见 release.yml 的 mobile-ios），
-  # harmony 要 DevEco SDK（托管 runner 没有）—— 这两条各自在别处覆盖/说明。
+  # M11 的两条断言（缺一不可）：
+  #   1. 主包 @goxjs/goxjs 的 tarball **不含 mobile/**，且没有大文件回归
+  #      —— 移动端 .so/.a 一旦混进主包，就是"又给桌面用户塞 50MB"的回归；
+  #   2. 每个平台子包 @goxjs/goxjs-mobile-* 的 tarball 含自己的产物，且解包后
+  #      逐产物 sha256 与 manifest.json 一致 —— 子包才是移动端的发布面。
+  #
+  # 只验 android（本 runner 能编）：ios 要 macos 专属作业（见 release.yml 的
+  # mobile-ios），harmony 要 DevEco SDK（托管 runner 没有）—— 各自在别处覆盖/说明。
   # ─────────────────────────────────────────────────────────────────────────────
   npm-package:
-    name: npm 包内容核对（mobile/ 进包）
+    name: npm 包内容核对（主包无 mobile/ + 子包含产物）
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
@@ -208,7 +214,7 @@ jobs:
         with:
           node-version: '22'
 
-      - name: 交叉编译 android libgox.so 并 staging 进包目录
+      - name: 交叉编译 android 平台子包
         run: |
           set -euo pipefail
           if [ -z "${ANDROID_NDK_HOME:-}" ]; then
@@ -218,40 +224,80 @@ jobs:
             echo "::error::找不到 Android NDK（ANDROID_HOME=$ANDROID_HOME）"
             exit 1
           fi
-          bash scripts/build-npm-mobile.sh --into-package --platform android --abi arm64-v8a
+          bash scripts/build-npm-mobile.sh --platform android --abi arm64-v8a
 
       # tarball 名由包名 + 版本推导，不去解析 npm 的 stdout（各版本输出格式不同）。
-      # pack 目标用相对路径：Windows 的 Git Bash 里 /tmp 不会被转换（本机踩到过）。
-      - name: npm pack + tar -tzf 逐条核对包内容
+      - name: 主包 pack —— 断言不含 mobile/ 且无大文件回归
         run: |
           set -euo pipefail
-          cd npm
-          NAME=$(node -p "require('./package.json').name.replace(/^@/, '').replace('/', '-')")
-          VERSION=$(node -p "require('./package.json').version")
-          DEST="../dist/npm-pack"
-          mkdir -p "$DEST"
-          rm -f "$DEST/$NAME-$VERSION.tgz"
-          npm pack --pack-destination "$DEST"
+          NAME=$(node -p "require('./npm/package.json').name.replace(/^@/, '').replace('/', '-')")
+          VERSION=$(node -p "require('./npm/package.json').version")
+          DEST="$(pwd)/dist/npm-main-pack"
+          mkdir -p "$DEST"; rm -f "$DEST"/*.tgz
+          ( cd npm && npm pack --pack-destination "$DEST" >/dev/null )
           TARBALL="$DEST/$NAME-$VERSION.tgz"
           [ -f "$TARBALL" ] || { echo "::error::npm pack 没有产出 $TARBALL"; exit 1; }
 
           CONTENT=$(tar -tzf "$TARBALL" | sort)
-          echo "包内容："
-          echo "$CONTENT"
+          echo "主包内容："; echo "$CONTENT"
 
-          missing=""
-          for want in package/package.json package/bin/gox.js \
-                      package/mobile/manifest.json \
-                      package/mobile/android/arm64-v8a/libgox.so; do
-            printf '%s\n' "$CONTENT" | grep -qx "$want" || missing="$missing ${want#package/}"
+          for want in package/package.json package/bin/gox.js; do
+            printf '%s\n' "$CONTENT" | grep -qx "$want" || { echo "::error::主包缺少 $want"; exit 1; }
           done
-          if [ -n "$missing" ]; then
-            echo "::error::包里缺少：$missing ；若 mobile/ 整目录缺失，检查 npm/.npmignore 与根 .gitignore 是否把手伸进了包内容"
+          if printf '%s\n' "$CONTENT" | grep -q '^package/mobile/'; then
+            echo "::error::主包 tarball 里出现了 mobile/ —— 移动端应走平台子包（npm/packages/goxjs-mobile-*），不能塞回主包"
             exit 1
           fi
-          echo "::notice::mobile/ 已进包，共 $(printf '%s\n' "$CONTENT" | wc -l) 个条目"
+          # 体积回归兜底：本作业不编桌面 binaries/，主包只该有 bin/gox.js + package.json。
+          # 出现任何 >5MB 的条目都说明有二进制（移动端/桌面）混进来了。
+          BIG=$(tar -tvzf "$TARBALL" | awk '$3 > 5000000 {print $3" "$NF}')
+          if [ -n "$BIG" ]; then
+            echo "::error::主包里出现大文件（>5MB），疑似二进制回归：$BIG"
+            exit 1
+          fi
+          echo "::notice::主包不含 mobile/，tarball $(wc -c < "$TARBALL") 字节，共 $(printf '%s\n' "$CONTENT" | wc -l) 个条目"
 
-      # 包目录里的 mobile/ 只是打包用的过客（与 release.yml 同理）
-      - name: 清理包目录
-        if: always()
-        run: rm -rf npm/mobile
+      - name: 逐个子包 pack —— 断言含产物且 sha256 与 manifest 一致
+        run: |
+          set -euo pipefail
+          DEST="$(pwd)/dist/npm-subpacks"
+          mkdir -p "$DEST"; rm -f "$DEST"/*.tgz
+          status=0
+          for d in dist/npm-mobile-pkgs/*/; do
+            [ -d "$d" ] || continue
+            pj="$(cd "$d" && pwd)/package.json"
+            pkgname=$(node -p "require(process.argv[1]).name" "$pj")
+            ver=$(node -p "require(process.argv[1]).version" "$pj")
+            base=$(printf '%s' "$pkgname" | sed 's#^@##; s#/#-#')
+            tgz="$DEST/$base-$ver.tgz"
+            ( cd "$d" && npm pack --pack-destination "$DEST" >/dev/null )
+            [ -f "$tgz" ] || { echo "::error::$d npm pack 没产出 $tgz"; status=1; continue; }
+
+            CONTENT=$(tar -tzf "$tgz" | sort)
+            echo "── $base-$ver.tgz ──"; echo "$CONTENT"
+
+            # 断言 1：files 白名单里的每个文件都在包里
+            missing=""
+            for f in $(node -p "require(process.argv[1]).files.join(' ')" "$pj"); do
+              printf '%s\n' "$CONTENT" | grep -qx "package/$f" || missing="$missing $f"
+            done
+            if [ -n "$missing" ]; then echo "::error::$base 缺少:$missing"; status=1; fi
+
+            # 断言 2：解包后逐产物 sha256 与 manifest.json 一致
+            tmp=$(mktemp -d)
+            tar -xzf "$tgz" -C "$tmp"
+            mf="$tmp/package/manifest.json"
+            [ -f "$mf" ] || { echo "::error::$base 包里没有 manifest.json"; status=1; rm -rf "$tmp"; continue; }
+            for rel in $(node -p "require(process.argv[1]).artifacts.map(a=>a.path).join(' ')" "$mf"); do
+              want=$(node -p "require(process.argv[1]).artifacts.find(a=>a.path===process.argv[2]).sha256" "$mf" "$rel")
+              got=$(sha256sum "$tmp/package/$rel" | awk '{print $1}')
+              if [ "$want" != "$got" ]; then
+                echo "::error::$base/$rel sha256 不符: manifest=$want 实际=$got"; status=1
+              else
+                echo "  [ok] $base/$rel sha256 $got"
+              fi
+            done
+            rm -rf "$tmp"
+          done
+          [ "$status" = 0 ] || exit 1
+          echo "::notice::全部平台子包内容与 sha256 核对通过"

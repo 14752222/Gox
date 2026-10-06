@@ -31,13 +31,17 @@
 #   包 —— 会发出一个没有二进制的空壳包（本地 Windows 不复现、Linux CI 上必现）。
 #   所以：产物不进包目录、包目录里放占位 .npmignore、.gitignore 里不写 npm/ 下路径。
 #
-# 移动端（M11）：同一套 staging 思路，产物落在 npm/mobile/（scripts/build-npm-mobile.sh
-#   --into-package），发完即删。desktop 的 binaries/ 与 mobile/ 都在 files 白名单里。
+# 移动端（M11）：走**独立的平台子包** @goxjs/goxjs-mobile-<platform>-<abi>，
+#   不塞进主包（那会把每个桌面用户从 ~20MB 顶到 ~72MB）。子包定义在
+#   npm/packages/<dirname>/package.json（committed），产物由
+#   scripts/build-npm-mobile.sh staging 到 dist/npm-mobile-pkgs/<dirname>/，
+#   每个子包在各自 runner 上整包生成（含 manifest.json），publish 阶段逐个发布。
 #   三个移动平台里只有 android（NDK，ubuntu 可编）与 ios（Xcode，macos 专属作业）
-#   进 CI；harmony 需要 DevEco SDK，托管 runner 装不了 —— 见 mobile-ios 作业尾部注释。
+#   进 CI；harmony 需要 DevEco SDK，托管 runner 装不了 —— 见 mobile-ios 作业注释。
+#   ⚠️ 每个子包都要在 npmjs.com 上单独配 Trusted Publishing（同一组 org/repo/workflow）。
 #
-# 发版动作：改 npm/package.json 的 version → 提交 → push 到 main（或打 tag），
-#           registry 上出现带 provenance 证明的新版本即成功。
+# 发版动作：改 npm/package.json 的 version（子包版本须同号）→ 提交 → push 到 main
+#           （或打 tag），registry 上出现带 provenance 证明的新版本即成功。
 # ─────────────────────────────────────────────────────────────────────────────
 name: release
 
@@ -154,8 +158,8 @@ jobs:
 
   publish:
     name: 构建并发布
-    # mobile-ios 先生成 iOS 侧 libgox.a（macOS 专属工具链），本作业下载后
-    # 与 android 一起合并进包目录 —— 单一 runner 编不出全部移动端目标。
+    # mobile-ios 先生成 iOS 平台子包（macOS 专属工具链），本作业下载后与 android
+    # 子包一起发布 —— 单一 runner 编不出全部移动端目标。
     needs: [decide, mobile-ios]
     if: needs.decide.outputs.publish == 'true'
     runs-on: ubuntu-latest
@@ -205,14 +209,16 @@ jobs:
       - name: 交叉编译五平台二进制并放进包目录
         run: bash ./scripts/build-npm.sh --into-package
 
-      # ── 移动端产物（mobile/）─────────────────────────────────────────────
-      # android 在本 runner 编（镜像自带 NDK，与 mobile-smoke.yml 同一姿势）：
-      #   scripts/build-npm-mobile.sh 内部调 build-android.sh，产物带 ELF 校验。
-      # ios 由上面的 mobile-ios 作业产出（c-archive 只能在 macOS 上编），
-      #   下载后落到 npm/mobile/ios/，再重扫一次清单把两边条目合并。
-      # harmony 不在 CI：鸿蒙要 DevEco SDK 的 clang+sysroot，托管 runner 装不了
-      #   （需华为账号/许可）；它只随本地或自建 runner 的 build-npm-mobile.sh 产出。
-      - name: 交叉编译 android libgox.so 并放进包目录
+      # ── 移动端「平台子包」（M11）───────────────────────────────────────────
+      # 移动端按「平台 × ABI」拆成独立子包 @goxjs/goxjs-mobile-<platform>-<abi>，
+      # 不再塞进主包（那会把每个桌面用户从 ~20MB 顶到 ~72MB）。产物落在
+      # dist/npm-mobile-pkgs/<dirname>/，每个子包在该 runner 上**整包生成**
+      # （package.json + 产物 + manifest.json），无需跨 runner 重扫清单。
+      #   android 在本 runner 编（镜像自带 NDK，与 mobile-smoke.yml 同一姿势）；
+      #   ios 由上面的 mobile-ios 作业产出（c-archive 只能在 macOS 上编），下载后
+      #       原样落到 dist/npm-mobile-pkgs/（目录名不冲突）；
+      #   harmony 不在 CI：要 DevEco SDK 的 clang+sysroot，托管 runner 装不了。
+      - name: 交叉编译 android 平台子包
         run: |
           set -euo pipefail
           if [ -z "${ANDROID_NDK_HOME:-}" ]; then
@@ -223,16 +229,22 @@ jobs:
             exit 1
           fi
           echo "==> NDK: $ANDROID_NDK_HOME"
-          bash ./scripts/build-npm-mobile.sh --into-package --platform android --abi arm64-v8a
+          bash ./scripts/build-npm-mobile.sh --platform android --abi arm64-v8a
 
-      - name: 下载 iOS libgox.a 并入包目录
+      - name: 下载 iOS 平台子包
         uses: actions/download-artifact@v4
         with:
-          name: gox-mobile-ios
-          path: npm/mobile/ios
+          name: gox-mobile-ios-pkgs
+          path: dist/npm-mobile-pkgs
 
-      - name: 重扫 mobile 清单（合并 android + ios 条目）
-        run: bash ./scripts/build-npm-mobile.sh --into-package --manifest-only
+      - name: 校验移动端子包（结构 + manifest sha256）
+        run: |
+          set -euo pipefail
+          if ! python3 scripts/check-registries.py; then
+            echo "::error::移动端子包自洽检查未通过（命名 / 版本 / manifest sha256）"
+            exit 1
+          fi
+          ls -lhR dist/npm-mobile-pkgs
 
       - name: 校验二进制齐全
         run: |
@@ -246,16 +258,15 @@ jobs:
             fi
             ls -lh "$BIN"
           done
-          echo "── 移动端 ──"
-          for f in mobile/android/arm64-v8a/libgox.so \
-                   mobile/ios/iphonesimulator-arm64/libgox.a \
-                   mobile/ios/iphoneos-arm64/libgox.a \
-                   mobile/manifest.json; do
-            if [ ! -f "npm/$f" ]; then
-              echo "::error::缺少 npm/$f"
+          echo "── 移动端子包 ──"
+          for d in goxjs-mobile-android-arm64-v8a \
+                   goxjs-mobile-ios-iphoneos-arm64 \
+                   goxjs-mobile-ios-iphonesimulator-arm64; do
+            if [ ! -f "dist/npm-mobile-pkgs/$d/manifest.json" ]; then
+              echo "::error::缺少 dist/npm-mobile-pkgs/$d/manifest.json"
               exit 1
             fi
-            ls -lh "npm/$f"
+            ls -lh "dist/npm-mobile-pkgs/$d/"
           done
 
       - name: 冒烟测试（跑打包后的入口，而不是裸二进制）
@@ -298,31 +309,87 @@ jobs:
           for want in package/package.json package/bin/gox.js package/README.md \
                       package/binaries/linux-x64/gox package/binaries/linux-arm64/gox \
                       package/binaries/darwin-x64/gox package/binaries/darwin-arm64/gox \
-                      package/binaries/windows-x64/gox.exe \
-                      package/mobile/manifest.json \
-                      package/mobile/android/arm64-v8a/libgox.so \
-                      package/mobile/ios/iphonesimulator-arm64/libgox.a \
-                      package/mobile/ios/iphoneos-arm64/libgox.a; do
+                      package/binaries/windows-x64/gox.exe; do
             if ! printf '%s\n' "$CONTENT" | grep -qx "$want"; then
               missing="$missing ${want#package/}"
             fi
           done
           if [ -n "$missing" ]; then
-            echo "::error::包里缺少：$missing ；实际内容：$(printf '%s' "$CONTENT" | tr '\n' ' ') ；若 binaries/ 整目录缺失，检查 .gitignore / npm/.npmignore 是否把手伸进了包内容"
+            echo "::error::主包缺少：$missing ；实际内容：$(printf '%s' "$CONTENT" | tr '\n' ' ') ；若 binaries/ 整目录缺失，检查 .gitignore / npm/.npmignore 是否把手伸进了包内容"
             exit 1
           fi
-          echo "::notice::$NAME@$VERSION 内容校验通过，共 $(printf '%s\n' "$CONTENT" | wc -l) 个文件"
+          if printf '%s\n' "$CONTENT" | grep -q '^package/mobile/'; then
+            echo "::error::主包 tarball 里出现了 mobile/ —— 移动端走平台子包（npm/packages/goxjs-mobile-*），不能塞回主包"
+            exit 1
+          fi
+          echo "::notice::主包 $NAME@$VERSION 内容校验通过（无 mobile/），共 $(printf '%s\n' "$CONTENT" | wc -l) 个文件"
 
-      - name: 发布到 npm（OIDC）
+      - name: 子包打包校验（每个子包含产物且 sha256 与 manifest 一致）
+        run: |
+          set -euo pipefail
+          DEST="$(pwd)/dist/npm-subpacks"
+          mkdir -p "$DEST"; rm -f "$DEST"/*.tgz
+          status=0
+          for d in dist/npm-mobile-pkgs/*/; do
+            [ -d "$d" ] || continue
+            pj="$(cd "$d" && pwd)/package.json"
+            pkgname=$(node -p "require(process.argv[1]).name" "$pj")
+            ver=$(node -p "require(process.argv[1]).version" "$pj")
+            base=$(printf '%s' "$pkgname" | sed 's#^@##; s#/#-#')
+            tgz="$DEST/$base-$ver.tgz"
+            ( cd "$d" && npm pack --pack-destination "$DEST" >/dev/null )
+            [ -f "$tgz" ] || { echo "::error::$d npm pack 没产出 $tgz"; status=1; continue; }
+
+            CONTENT=$(tar -tzf "$tgz" | sort)
+            echo "── $base-$ver.tgz ──"; echo "$CONTENT"
+
+            missing=""
+            for f in $(node -p "require(process.argv[1]).files.join(' ')" "$pj"); do
+              printf '%s\n' "$CONTENT" | grep -qx "package/$f" || missing="$missing $f"
+            done
+            if [ -n "$missing" ]; then echo "::error::子包 $base 缺少:$missing"; status=1; fi
+
+            tmp=$(mktemp -d); tar -xzf "$tgz" -C "$tmp"
+            mf="$tmp/package/manifest.json"
+            if [ ! -f "$mf" ]; then
+              echo "::error::子包 $base 包里没有 manifest.json"; status=1; rm -rf "$tmp"; continue
+            fi
+            for rel in $(node -p "require(process.argv[1]).artifacts.map(a=>a.path).join(' ')" "$mf"); do
+              want=$(node -p "require(process.argv[1]).artifacts.find(a=>a.path===process.argv[2]).sha256" "$mf" "$rel")
+              got=$(sha256sum "$tmp/package/$rel" | awk '{print $1}')
+              if [ "$want" != "$got" ]; then
+                echo "::error::子包 $base/$rel sha256 不符: manifest=$want 实际=$got"; status=1
+              else
+                echo "  [ok] $base/$rel sha256 $got"
+              fi
+            done
+            rm -rf "$tmp"
+          done
+          [ "$status" = 0 ] || exit 1
+          echo "::notice::全部平台子包内容与 sha256 核对通过"
+
+      - name: 发布到 npm（OIDC：主包 + 各平台子包）
         if: ${{ !inputs.dry_run }}
         run: |
           set -euo pipefail
-          # 这三行是排障口：不看它们，OIDC 失败和"trusted publisher 没配对"是同一个 404
+          # 这几行是排障口：不看它们，OIDC 失败和"trusted publisher 没配对"是同一个 404
           echo "npm：$(npm --version)"
           echo "NODE_AUTH_TOKEN 为空：$([ -z "${NODE_AUTH_TOKEN:-}" ] && echo yes || echo no)"
           echo "OIDC 端点可用：$([ -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] && echo yes || echo no)"
-          cd npm
-          npm publish --access public --provenance
+
+          # 主包（桌面五平台二进制）
+          ( cd npm && npm publish --access public --provenance )
+
+          # 平台子包：每个是独立 package.json + 产物，各自发。
+          # ⚠️ 每个子包都要在 npmjs.com 上单独配 Trusted Publishing（同一组
+          #    org/repo/workflow 字段），否则会以误导性的 404 收场。
+          for d in dist/npm-mobile-pkgs/*/; do
+            [ -d "$d" ] || continue
+            pj="$(cd "$d" && pwd)/package.json"
+            pkgname=$(node -p "require(process.argv[1]).name" "$pj")
+            echo "==> 发布平台子包 $pkgname"
+            ( cd "$d" && npm publish --access public --provenance )
+          done
 
       - name: 打 tag + 建 Release（仅 push 到 main 且真发布时）
         if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && !inputs.dry_run }}
@@ -340,10 +407,11 @@ jobs:
             gh release create "$TAG" --title "$TAG" --generate-notes --target "$GITHUB_SHA"
           fi
 
-      # 包目录里的 binaries/ 与 mobile/ 只是打包用的过客，别留在工作区（失败时也清）
+      # 包目录里的 binaries/ 只是打包用的过客，别留在工作区（失败时也清）。
+      # 移动端子包产物在 dist/npm-mobile-pkgs/（dist/ 已 gitignore），无需特殊清理。
       - name: 清理包目录里的二进制
         if: always()
-        run: rm -rf npm/binaries npm/mobile
+        run: rm -rf npm/binaries
 
   # ─────────────────────────────────────────────────────────────────────────────
   # macOS universal（fat 二进制）合并产物 → Release Assets（r3uF0e / RELEASE_NOTES
@@ -424,23 +492,24 @@ jobs:
             -q '.assets[].name' | sed 's/^/已上传: /'
 
   # ─────────────────────────────────────────────────────────────────────────────
-  # iOS 移动端静态库 → npm 包 mobile/ios/（M11 移动端发布面）
+  # iOS 移动端静态库 → 平台子包（M11 移动端发布面）
   #
   # 为什么单独一个 macos 作业：libgox.a 是 c-archive，链接要 Xcode 的 clang +
-  #   iOS SDK；ubuntu 上的 publish 作业编不出来。所以这里先产出、以 artifact 交给
-  #   publish 合并 —— 与 desktop 五平台（任意主机）、android（NDK，ubuntu 亦可）
-  #   天然分成两组不同。
+  #   iOS SDK；ubuntu 上的 publish 作业编不出来。所以这里先产出（整包子包，
+  #   含 package.json + manifest.json）、以 artifact 交给 publish 一起发布 ——
+  #   与 desktop 五平台（任意主机）、android（NDK，ubuntu 亦可）天然分成两组不同。
   #
   # 复用现成脚本：build-npm-mobile.sh --platform ios 内部调
-  #   scripts/build-ios.sh --lib-only（同一份 CGO_CFLAGS/LDFLAGS，避免两处漂移）。
+  #   scripts/build-ios.sh --lib-only（同一份 CGO_CFLAGS/LDFLAGS，避免两处漂移），
+  #   产出 goxjs-mobile-ios-{iphoneos,iphonesimulator}-arm64 两个子包目录。
   #
   # harmony 为什么不在 CI：鸿蒙侧要 DevEco SDK 的 OHOS clang + musl sysroot，
   #   GitHub 托管 runner 上装不了（需华为账号/许可，体积也大）。所以
-  #   mobile/harmony/ 只随本地 / 自建 runner 产出 —— 见
-  #   scripts/build-npm-mobile.sh 头部说明与 M11 边的未完成边界。
+  #   goxjs-mobile-harmony-* 只随本地 / 自建 runner 产出 —— 见
+  #   scripts/build-npm-mobile.sh 头部说明与 app/MOBILE-DISTRIBUTION.md 的未完成边界。
   # ─────────────────────────────────────────────────────────────────────────────
   mobile-ios:
-    name: iOS libgox.a（npm mobile/ios）
+    name: iOS 平台子包（goxjs-mobile-ios-*）
     needs: decide
     if: needs.decide.outputs.publish == 'true'
     runs-on: macos-latest
@@ -455,14 +524,15 @@ jobs:
           go-version-file: go.mod
           check-latest: true
 
-      - name: 交叉编译 libgox.a（模拟器 + 真机）
-        run: bash ./scripts/build-npm-mobile.sh --platform ios --out dist/npm-mobile
+      - name: 交叉编译 iOS 平台子包（模拟器 + 真机）
+        run: bash ./scripts/build-npm-mobile.sh --platform ios --out dist/npm-mobile-pkgs
 
-      # 只传 ios/ 子树：publish 用 download-artifact 的 path 落成 npm/mobile/ios/，
-      # 于是 artifact 内部相对路径（<sdk>-arm64/libgox.a）正好接上。
-      - name: 归档 iOS 移动端产物
+      # 传整个子包目录树：publish 用 download-artifact 的 path 落成
+      # dist/npm-mobile-pkgs/，于是 artifact 内部相对路径（goxjs-mobile-ios-*/…）
+      # 正好接上 android 那边的同一目录，互不冲突。
+      - name: 归档 iOS 平台子包
         uses: actions/upload-artifact@v4
         with:
-          name: gox-mobile-ios
-          path: dist/npm-mobile/ios/**
+          name: gox-mobile-ios-pkgs
+          path: dist/npm-mobile-pkgs/**
           if-no-files-found: error
