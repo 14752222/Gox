@@ -27,6 +27,7 @@ package gfx
 // 但断言照跑 —— 每个截图脚本都是"这个组件能画出来"的活体回归用例。
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 	"image/png"
@@ -38,6 +39,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/image/font/sfnt"
 
 	"github.com/14752222/Gox/object"
 	"github.com/14752222/Gox/vm"
@@ -96,6 +99,12 @@ func TestGalleryShotScripts(t *testing.T) {
 	for _, name := range names {
 		t.Run(strings.TrimSuffix(name, ".js"), func(t *testing.T) {
 			img := renderGalleryShot(t, name)
+			// 先记字体再断言: 跨平台"中文整体不渲染"的根因只有一条 —— 选中的
+			// 基础字体没有 CJK 字形 (Gox 单字体、无逐字形回退, 见 font.go 文件头),
+			// 而断言能看到的症状只是"颜色数塌了"。失败子测试的日志 go test 会
+			// 打出来, CI 的证据注入再把它带进注解 —— 省掉"为取一条诊断信息
+			// 推一次 CI"。
+			t.Logf("字体: %s", galleryFontProbe())
 			galleryAssertNotBlank(t, name, img)
 			if statsOn() {
 				t.Logf("%s: %dx%d, %s", name, img.Bounds().Dx(), img.Bounds().Dy(), galleryInkStats(img).String())
@@ -260,3 +269,57 @@ func galleryWritePNG(t *testing.T, outDir, name string, img *image.RGBA) {
 
 // statsOn 报告是否要打印每张图的统计 (调阈值时用)。
 func statsOn() bool { return os.Getenv("GOX_SHOTS_STATS") != "" }
+
+// galleryFontProbe 报告"这一帧用的是哪个字体、它到底有没有 CJK 字形、候选表
+// 里还有没有别的选择"。
+//
+// 为什么要有它: 跨平台"中文整体不渲染"的根因只有一条 —— 选中的基础字体没有
+// CJK 字形, 而 Gox 是**单字体、无逐字形回退**(见 font.go 文件头), 于是整屏
+// 中文静默消失。画廊断言能看到的只是"颜色数塌了", 光看那个数字分不清是组件
+// 被画成空盒子还是字体选错了。把族名 / 字形覆盖 / 候选表头写出来, 一眼定位。
+func galleryFontProbe() string {
+	initFontCandidates()
+	fam := baseFamilyKey()
+	if fam == "" {
+		fam = "(取不到)"
+	}
+	covered := "未知"
+	if f, err := loadBaseFont(); err == nil {
+		if fontCoversCJK(f) { // opentype.Font 是 sfnt.Font 的别名, 直接传
+			covered = "是"
+		} else {
+			covered = "否"
+		}
+	}
+	const headN = 5
+	n := len(fontCandidates)
+	if n > headN {
+		n = headN
+	}
+	names := make([]string, 0, n)
+	for _, p := range fontCandidates[:n] {
+		name := filepath.Base(p)
+		if looksCJK(name) {
+			name += "[名像CJK]"
+		}
+		names = append(names, name)
+	}
+	return fmt.Sprintf("族=%q 有CJK字形=%s｜候选共 %d 条, 前 %d 条: %s",
+		fam, covered, len(fontCandidates), n, strings.Join(names, ", "))
+}
+
+// cjkProbeRunes 是"这个字体到底能不能画中文"的探针码位 (挑常用字)。
+// 缺字形时 sfnt.GlyphIndex 返回 ErrNotFound —— 注意这与"豆腐块"是两回事:
+// 豆腐块出现在 cmap 里有映射、但字形为空的情况, 那反而会画出一堆方框。
+var cjkProbeRunes = []rune("中文你好的")
+
+// fontCoversCJK 报告字体是否对全部探针码位都有字形。
+func fontCoversCJK(f *sfnt.Font) bool {
+	var buf sfnt.Buffer
+	for _, r := range cjkProbeRunes {
+		if _, err := f.GlyphIndex(&buf, r); err != nil {
+			return false
+		}
+	}
+	return true
+}
