@@ -235,6 +235,32 @@ func TestStringEscapes(t *testing.T) {
 	}
 }
 
+// TestStringLineContinuation 覆盖 ES 的 LineContinuation: 字符串字面量里
+// 反斜杠 + 行终止符不产生任何字符 (test262 language/statements/with/12.10.*
+// 用 `"\<newline>..."` 把多行 eval/Function 源码拼成一行)。
+func TestStringLineContinuation(t *testing.T) {
+	cases := []struct {
+		name, input, want string
+	}{
+		{"lf", "\"ab\\\ncd\"", "abcd"},
+		{"crlf", "\"ab\\\r\ncd\"", "abcd"},
+		{"single-quote", "'x\\\ny'", "xy"},
+		{"only-continuation", "\"\\\n\"", ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			l := New(c.input)
+			tok := l.NextToken()
+			if tok.Type != STRING_LITERAL {
+				t.Fatalf("expected STRING_LITERAL, got %s (%q)", tok.Type, tok.Literal)
+			}
+			if tok.Literal != c.want {
+				t.Fatalf("expected %q, got %q", c.want, tok.Literal)
+			}
+		})
+	}
+}
+
 func TestTemplateLiteral(t *testing.T) {
 	input := "`Hello, ${name}! You are ${age} years old.`"
 

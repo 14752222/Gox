@@ -687,6 +687,13 @@ func (l *Lexer) readString(quote rune, line, col int) Token {
 					sb.WriteRune('u')
 					sb.WriteString(hex)
 				}
+			case '\n', '\r':
+				// LineContinuation: 反斜杠 + 行终止符 —— 不产生任何字符。
+				// \r\n 视为单个行终止符, 故吃掉紧随的 \n。
+				if l.ch == '\r' && l.peekChar() == '\n' {
+					l.readChar()
+				}
+				// 不写任何内容 (空串)。
 			default:
 				sb.WriteRune('\\')
 				sb.WriteRune(l.ch)
