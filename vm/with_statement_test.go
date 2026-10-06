@@ -234,6 +234,18 @@ func TestWithCompoundAndIncDec(t *testing.T) {
 	assertNumber(t, res, 17)
 }
 
+// TestWithUndeclaredAssignCreatesGlobal: 看板 r63RpV 子项 3 验收探针。
+// sloppy 下 with 体内赋值**未声明名** (对象无该属性、外层无任何绑定):
+// 按 sloppy 赋值语义隐式创建全局属性 (Node 同口径), 而不是抛错。
+func TestWithUndeclaredAssignCreatesGlobal(t *testing.T) {
+	res := evalJS(t, `
+		var o = {};
+		with (o) { x = 9; }
+		x + ":" + o.x + ":" + ("x" in globalThis);
+	`)
+	assertString(t, res, "9:undefined:true")
+}
+
 // TestWithUndefinedThrowsTypeError: with 对象表达式求值为 undefined 时,
 // ToObject 抛 TypeError (规范 14.11.2), 且 with 体不执行。
 func TestWithUndefinedThrowsTypeError(t *testing.T) {
