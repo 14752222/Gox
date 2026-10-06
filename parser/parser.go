@@ -2522,14 +2522,27 @@ func (p *Parser) parseYieldExpression() ast.Expression {
 		p.addError("SyntaxError: yield expression not allowed in module body")
 	}
 	p.nextToken()
+	// `yield` 与操作数之间禁止换行 ([no LineTerminator here]): 一旦换行即为空
+	// yield (ASI), 后续 token 另起一条语句。
+	// ⚠ 必须在消费 `*` **之前**判定 —— `yield *` 与其右操作数之间**允许**换行
+	// (规范 YieldExpression : yield * AssignmentExpression 没有该限制), 否则
+	// `yield *\ng()` 会被误判成空 yield, 丢掉委托目标
+	// (test262: async-generator/expression-yield-star-before-newline.js)。
+	if p.curToken().Line > ye.Token.Line {
+		return ye
+	}
 	// yield* iterable: 委托给另一个生成器/可迭代对象
 	if p.curTokenIs(lexer.ASTERISK) {
 		ye.Delegate = true
 		p.nextToken()
 	}
-	// 空 yield (后跟分号/换行): 值为 undefined
+	// 空 yield: 后跟分号/闭合符/逗号/冒号/EOF。
+	// 规范: YieldExpression : yield [no LineTerminator here] AssignmentExpression。
+	// 少了 RBRACKET/COMMA/COLON 会让 `[yield]` / `f(yield, 1)` / `a ? yield : b` 报错。
 	if p.curTokenIs(lexer.SEMICOLON) || p.curTokenIs(lexer.RPAREN) ||
-		p.curTokenIs(lexer.RBRACE) || p.curTokenIs(lexer.EOF) {
+		p.curTokenIs(lexer.RBRACKET) || p.curTokenIs(lexer.RBRACE) ||
+		p.curTokenIs(lexer.COMMA) || p.curTokenIs(lexer.COLON) ||
+		p.curTokenIs(lexer.EOF) {
 		return ye
 	}
 	ye.Value = p.parseExpression(LOWEST)

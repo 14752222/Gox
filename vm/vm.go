@@ -5636,6 +5636,11 @@ func (vm *VM) resolveSymbolIterator(val object.Value) (object.Value, bool, error
 // 在 VM 层调用该方法并适配返回值 (与 resolveSymbolIterator 同构, 只是
 // 查的 Symbol 键不同)。返回 (迭代器, true, nil) 表示已解析;
 // (nil, false, nil) 表示没有该方法 (交回同步可迭代形状分发)。
+//
+// 规范 GetMethod/GetIterator(hint=async): @@asyncIterator 一旦存在, 就
+// 必须按其值处理 —— 值为 nullish 才回退同步可迭代; 值不可调用, 或调用
+// 结果不是对象, 一律 TypeError (不得再退回 [Symbol.iterator]，否则
+// Symbol.iterator 的 getter 会被意外触发)。
 func (vm *VM) resolveAsyncSymbolIterator(val object.Value) (object.Value, bool, error) {
 	o, ok := val.(*object.Object)
 	if !ok {
@@ -5645,12 +5650,19 @@ func (vm *VM) resolveAsyncSymbolIterator(val object.Value) (object.Value, bool, 
 	if sym == nil {
 		return nil, false, nil
 	}
+	if _, present := object.LookupSymbolPropertyDescriptor(o, sym); !present {
+		return nil, false, nil // 未实现 @@asyncIterator: 交回同步可迭代分发
+	}
 	fn, err := vm.getSymbolMember(o, sym)
 	if err != nil {
 		return nil, false, err
 	}
+	if fn == object.UndefinedSingleton || fn == object.NullSingleton {
+		return nil, false, nil // nullish: 回退同步可迭代 (Gox for-await 设计)
+	}
 	if !object.IsCallable(fn) {
-		return nil, false, nil
+		return nil, false, vm.throwNamedError("TypeError",
+			"%s[Symbol.asyncIterator] is not a function", o.Inspect())
 	}
 	res, err := vm.callFunction(fn, o, nil)
 	if err != nil {
@@ -5669,7 +5681,9 @@ func (vm *VM) resolveAsyncSymbolIterator(val object.Value) (object.Value, bool, 
 			return obj, true, nil
 		}
 	}
-	return nil, false, nil
+	// 调用结果不是对象: GetIterator 要求抛 TypeError。
+	return nil, false, vm.throwNamedError("TypeError",
+		"%s is not an object (async iterator result)", res.Inspect())
 }
 
 // lookupSymbolProperty 已迁至 object.LookupSymbolProperty (原型链 Symbol 键查找)。
