@@ -256,6 +256,29 @@ base 上这些负例「通过」是因为 `static {` **整段解析失败**（�
 - `r5T1AR` —— 类静态块内 `await` 早错缺失（上条 7 例的正面修复；**不能靠 strict 判定**：`await` 在 sloppy 下是普通标识符，必须按「类静态块上下文」单独标记，且不跨 function / 嵌套静态块边界）。
 - `rNAtZs` —— `new.target` 收尾 5 例（箭头函数**运行时**词法继承需 `object.Closure` 槽 / `Reflect.construct(Target, args, newTarget)` 的 newTarget 桥 / 派生构造器里 `new.target` 应为最初被 `new` 的那个构造器）。
 - `r81aQt` —— `parser`：名为 `async` 的 async 方法解析失败（`({async async(){}})` / `class C { async async(){} }`）。
+## 十五、已完成（2026-10-06 合流批次四：using 声明 / parser 收尾 / new.target 收尾 / async 模块图 / 解构求值时机）
+
+由 5 条并行工作流（每流一个 worktree + 分支 + agent，基线 `365c8a4` = 批次三的合流树）各自 `cherry-pick` 进 `merge/batch4`；
+`go build ./...` + `go vet` 干净，`go test`（parser / compiler / object / stdlib / bytecode / vm / runtime / config）全绿，**5 个 cherry-pick 零冲突**；随后**串行全量 A/B**：
+`language` **16809 / 23726 = 70.85%**（同批实测基线 `365c8a4` = **16640**；**GAIN 185 / LOST 16**，净 **+169**）。
+
+| 项 | 结果 |
+|---|---|
+| ES2023 `using` / `await using`（`rmFazR`） | ✅ 已落地（此前**零实现**，靠静默误解析侥幸通过）：lexer/parser 上下文关键字消歧 + AST/编译期「作用域退出逆序释放」+ `Symbol.dispose` / `Symbol.asyncDispose` well-known symbol。定向 `statements/(await-)?using` **55/178 → 60/178（GAIN 5 / LOST 0）**；`await using` 的异步释放仍是该套件主要缺口（整体 33.7%） |
+| parser 收尾三件（`r5T1AR` / `r81aQt` / `r9HBA8`） | ✅ **类静态块内 `await` 早错**（正是批次三那 7 条 LOST 的正面修复）+ `({async async(){}})` / `class C { async async(){} }` 命名方法 + eval 前导块。定向 `-filter static-init` **52/69 → 60/69（GAIN 8 / LOST 0）** |
+| `new.target` 收尾（`rNAtZs`） | ✅ `object.Closure` 新增 `NewTarget` 字段（**三个闭包重建点全部结转**，与方法调用只改 `invokeWithThis` 同一纪律）+ `Reflect.construct` 的 newTarget 桥 + 直接 eval 继承（`SetDirectEvalNewTarget` + `CompileSourceAllowingNewTarget`，**仅**「非箭头函数体内的直接 eval」放行）。定向 `-filter new\.target` **17/22 → 21/22（GAIN 4 / LOST 0）** |
+| async 模块图求值顺序（`rEMAhe`） | ✅ 根因是 `OP_IMPORT` **同步内联**求值 + TLA 后 promise 回调中途重入 ⇒ 依赖求值顺序错。新增 `moduleRecord` 状态机：静态依赖 leaf-to-root 门控、TLA 挂起-恢复、rejection 沿依赖边传播且依赖方本体不运行、dynamic import 等模块完成；循环判定用说明符可达性区分真环与回调重入的假父子。**批次二 TLA 的 3 条 LOST 全部转正**；定向 `top-level-await|module-code` **259/622 → 262/622** |
+| 解构成员目标求值时机（`rvdPPH`） | ✅ `OP_GET_INDEX`/`OP_SET_INDEX` 触发 getter/setter 抛错时**立即** `checkCallbackErr + rethrowBridgeError`（原先错误残留到后续无关内建调用才被消费，那时外层 `POP_TRY` 已出栈 ⇒ 不被 catch）；`OP_ITER_STEP` 带迭代器隐藏槽号，`next()` abrupt 时先清槽（等价 `iteratorRecord.[[done]]=true`，规范 7.4.6）⇒ 异常路径的 `IteratorClose` 跳过 `return()`。定向 `dstr` **8243/8783 → 8366/8783（GAIN 123 / LOST 0）** |
+
+**LOST 16 全部归因（两族，都是遮羞布被揭，非回归）**：
+1. **15 条 —— 复合赋值 / `++`·`--` 的成员左值把 `ToPropertyKey` 调了两次**（`compound-assignment/S11.13.2_A7.{1..11}_T4`、`pre/postfix-increment/decrement` 的 `_A6_T3`）。实测**基线同样调两次**（探针：`var c=0; var prop={toString(){c++;return "k";}}; var base={}; base[prop] *= 2;` → 两个二进制都得 `c===2`），只是基线把错误**残留到测试判定之后**才浮现 ⇒ 侥幸判过；路线 E 的「立即重抛」纠正了错误浮现时机，于是暴露。⇒ 另立 **`r8TaL3`** 做正面修复（成员引用只求值一次）。
+2. **1 条 —— `for (using x of []) { var x; }`**：规范要求 `ForDeclaration` 的 BoundNames ∩ `Statement` 的 VarDeclaredNames ⇒ SyntaxError；**Gox 连 `let` / `const` 版本都没做**（lead 探针实测三条全无报错），基线是靠 `using` 整段解析失败侥幸判过。⇒ 另立 **`rrFSyI`**（整个 for 头部重声明早错族）。
+
+**本轮流程教训（写进纪律）**：5 条路线里有 2 条的 agent 进程**在 `git commit` 之前结束**，代码留在工作区未提交。
+lead 按既有恢复套路从 worktree 的 `git status` / `git diff` 捞回，**先独立复核**（`go build` + 各包测试 + 定向 A/B 复现它声称的数字）再**代为提交**（提交消息里写明「由路线 agent 完成、lead 代为提交」及复核结论）。
+⇒ 派工单里「干完 `git commit`」这一条必须写死，且 lead 收工前必须逐 worktree 检查 `git log` **与** `git status`（只看 log 会漏掉未提交的整条路线）。
+
+**并行会话的动向**：本批推送时远端 main 已被另一会话推进 5 个提交（`f5642b2` / `2a17dd4` / `09c2f64` / `4a5f939` / `c5665b0`，均围绕 `rXrGfu` 的 CI 红归因，含 `fix(gfx): 测试清空了字体扫描结果, 害 Linux 整屏中文不渲染`）⇒ `merge/batch4` 已 `rebase` 到其上再推（`c5665b0..7a426b9`）。
 ## 待确认（信息缺口）
 
 - `agent_doc/undecided-and-unimplemented.md` 是 **2026-09-18 快照**，其 §四 缺口清单中已有多项（cocoa 后端、iOS 后端、X11 修正、M2 IME、滚动条拖拽、tabs、table/tree、tooltip）在 09-18 后落地。本路线图已按 git 历史更正，但**建议回填该台账**，否则后续排期会继续基于过期口径。
