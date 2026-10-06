@@ -3825,7 +3825,6 @@ func (p *Parser) parseExportDefault(stmt *ast.ExportDeclaration) *ast.ExportDecl
 			return nil
 		}
 		stmt.Declaration = &ast.ExpressionStatement{Token: fn.Token, Expression: fn}
-		p.checkSameLineASI()
 		p.consumeSemicolon()
 		return stmt
 
@@ -3844,7 +3843,6 @@ func (p *Parser) parseExportDefault(stmt *ast.ExportDeclaration) *ast.ExportDecl
 			return nil
 		}
 		stmt.Declaration = &ast.ExpressionStatement{Token: fn.Token, Expression: fn}
-		p.checkSameLineASI()
 		p.consumeSemicolon()
 		return stmt
 
@@ -3865,7 +3863,6 @@ func (p *Parser) parseExportDefault(stmt *ast.ExportDeclaration) *ast.ExportDecl
 			return nil
 		}
 		stmt.Declaration = &ast.ExpressionStatement{Token: p.curToken(), Expression: cls}
-		p.checkSameLineASI()
 		p.consumeSemicolon()
 		return stmt
 
