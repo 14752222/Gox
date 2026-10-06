@@ -47,6 +47,16 @@ type Compiler struct {
 	// argumentsSlotStack 保存嵌套函数的 arguments 槽位, 用于箭头函数继承外层。
 	argumentsSlotStack []int
 
+	// paramTDZNames / paramTDZScope 表达「形参默认值求值时的 TDZ 集合」。
+	// 规范 9.2.12 FunctionDeclarationInstantiation: 非简单形参列表的形参绑定
+	// 逐个按序初始化; 求值第 i 个形参的默认值时, 第 i..n-1 个形参名仍处于
+	// TDZ (未初始化), 引用它们必须抛 ReferenceError (形参 in 自身/后位形参)。
+	// 只在编译形参默认值期间非空, 且仅当引用点仍位于同一函数层
+	// (c.scope.FuncLayer() == paramTDZScope) 时生效 —— 嵌套函数内不拦截
+	// (那里读的是已捕获的绑定, 交给正常路径)。
+	paramTDZNames map[string]bool
+	paramTDZScope *SymbolScope
+
 	// stmtPosTable 是 parser 侧收集的语句→源码位置 side-table (T05)。
 	// SetStmtPos 注入; compileStatements 据此生成 srcPositions。
 	stmtPosTable ast.PositionTable
@@ -2744,6 +2754,13 @@ func (c *Compiler) compileClassConstructor(fields []*ast.ClassField, ctor *ast.C
 //     null 不触发默认, 会原样进入解构并触发 RequireObjectCoercible)。
 //   - 解构模式: LOAD 隐藏槽 → 解构到各绑定 (默认值已在此之前填入隐藏槽)。
 func (c *Compiler) compileParamBinding(params []*ast.Parameter, paramSlots []int) error {
+	// 预收集每个形参的绑定名, 供默认值求值时的 TDZ 判定 (见 paramTDZNames)。
+	paramNames := make([][]string, len(params))
+	for i, param := range params {
+		paramNames[i] = parameterBoundNames(param)
+	}
+	fnScope := c.scope.FuncLayer()
+
 	for i, param := range params {
 		if param.Default == nil {
 			continue
@@ -2756,7 +2773,14 @@ func (c *Compiler) compileParamBinding(params []*ast.Parameter, paramSlots []int
 		if param.Pattern == nil {
 			defName = param.Name
 		}
-		if err := c.compileDestructureDefaultNamed(param.Default, defName); err != nil {
+		// TDZ: 求值第 i 个形参的默认值时, 本形参及之后 (i..n-1) 的所有绑定名
+		// 仍未初始化, 引用即 ReferenceError (规范 9.2.12)。
+		prevNames, prevScope := c.paramTDZNames, c.paramTDZScope
+		c.paramTDZNames = collectNamesFrom(paramNames, i)
+		c.paramTDZScope = fnScope
+		err := c.compileDestructureDefaultNamed(param.Default, defName)
+		c.paramTDZNames, c.paramTDZScope = prevNames, prevScope
+		if err != nil {
 			return err
 		}
 		c.emitter.Emit(bytecode.OP_STORE, uint16(slot))
@@ -2772,6 +2796,60 @@ func (c *Compiler) compileParamBinding(params []*ast.Parameter, paramSlots []int
 		}
 	}
 	return nil
+}
+
+// parameterBoundNames 返回单个形参引入的所有绑定名 (简单参数即其名;
+// 解构模式递归收集嵌套目标名; rest 同样按目标收集)。仅用于 TDZ 判定。
+func parameterBoundNames(param *ast.Parameter) []string {
+	if param == nil {
+		return nil
+	}
+	if param.Pattern != nil {
+		var out []string
+		collectBindingNames(param.Pattern, &out)
+		return out
+	}
+	if param.Name != "" {
+		return []string{param.Name}
+	}
+	return nil
+}
+
+// collectBindingNames 递归收集解构模式里的所有绑定名 (数组/对象可嵌套)。
+// 空洞 (Target==nil) 与默认值表达式跳过 —— 与 parser.collectPatternNames 同口径。
+func collectBindingNames(expr ast.Expression, out *[]string) {
+	switch n := expr.(type) {
+	case *ast.Identifier:
+		*out = append(*out, n.Value)
+	case *ast.ArrayPattern:
+		for _, e := range n.Elements {
+			if e == nil || e.Target == nil {
+				continue
+			}
+			collectBindingNames(e.Target, out)
+		}
+	case *ast.ObjectPattern:
+		for _, pr := range n.Properties {
+			if pr == nil || pr.Value == nil {
+				continue
+			}
+			collectBindingNames(pr.Value, out)
+		}
+		if n.RestTarget != nil {
+			collectBindingNames(n.RestTarget, out)
+		}
+	}
+}
+
+// collectNamesFrom 把 paramNames[start:] 里的名字并成一个集合, 供 TDZ 查询。
+func collectNamesFrom(paramNames [][]string, start int) map[string]bool {
+	set := map[string]bool{}
+	for i := start; i < len(paramNames); i++ {
+		for _, n := range paramNames[i] {
+			set[n] = true
+		}
+	}
+	return set
 }
 
 // compileClassMethodToObject 将 class 实例方法编译为函数并挂到栈顶下方的对象上。
@@ -3602,6 +3680,26 @@ func (c *Compiler) emitGlobalLoad(name string) {
 	c.emitter.Emit(bytecode.OP_LOAD_GLOBAL, idx)
 }
 
+// emitThrowReferenceError 发射「无条件抛出 ReferenceError」的指令序列。
+// OP_CALL 约定实参在栈上、callee 在栈顶 (见 compileCallExpression), 故:
+//
+//	CONST "<msg>"                  ; [msg]
+//	LOAD_GLOBAL "ReferenceError"   ; [msg, ctor]
+//	CALL 1                         ; [errObj]  (Error 可作函数调用, 返回新实例)
+//	THROW                          ; 抛出
+//
+// 用于形参默认值的 TDZ 违例 (引用自身/后位形参) —— 该处按规范必须是
+// ReferenceError, 且**不得**回退去读外层/全局同名绑定 (形参环境已将该名
+// 绑进 TDZ, 查找到此为止)。编译期无法直接构造 Error 实例, 故走运行时构造。
+func (c *Compiler) emitThrowReferenceError(name string) {
+	idx := c.constants.AddConstant(object.NewString(
+		fmt.Sprintf("Cannot access '%s' before initialization", name)))
+	c.emitter.Emit(bytecode.OP_CONST, idx)
+	c.emitGlobalLoad("ReferenceError")
+	c.emitter.Emit(bytecode.OP_CALL, 1)
+	c.emitter.EmitNoOperand(bytecode.OP_THROW)
+}
+
 // emitSuperLoad 加载 extends 的父类构造器。
 //
 // 为什么不能直接 emitGlobalLoad: 模块模式 (被 import 的模块) 里父类名是模块
@@ -3692,6 +3790,14 @@ func (c *Compiler) compileIdentifier(node *ast.Identifier) error {
 	// arguments: 解析到当前函数的 arguments 槽位
 	if node.Value == "arguments" && c.currentArgumentsSlot >= 0 {
 		c.emitter.Emit(bytecode.OP_LOAD, uint16(c.currentArgumentsSlot))
+		return nil
+	}
+
+	// 形参默认值求值中的 TDZ: 引用自身或后位形参必须抛 ReferenceError,
+	// 而不是读到尚未初始化的槽位/外层同名绑定 (规范 9.2.12)。
+	if c.paramTDZNames != nil && c.paramTDZNames[node.Value] &&
+		c.scope.FuncLayer() == c.paramTDZScope {
+		c.emitThrowReferenceError(node.Value)
 		return nil
 	}
 

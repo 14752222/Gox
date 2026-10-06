@@ -1610,6 +1610,10 @@ func (p *Parser) parseParameters(close lexer.TokenType) []*ast.Parameter {
 	if !p.expectPeek(close) {
 		return nil
 	}
+	// Early error (规范 14.1.2): 非简单形参列表里出现重复绑定名 ⇒ SyntaxError,
+	// 与 strict 无关。在 parseParameters 收尾处统一校验, 覆盖普通函数/箭头/
+	// async/生成器/对象方法/类方法全部入参点 (此检查纯语法, 不依赖函数体)。
+	p.checkNonSimpleDuplicateParams(params)
 	return params
 }
 
@@ -1633,6 +1637,7 @@ func (p *Parser) parseParameter() *ast.Parameter {
 			p.nextToken()
 			param.Default = p.parseExpression(LOWEST)
 		}
+		p.checkRestParamInitializer(param)
 		return param
 	}
 
@@ -1647,7 +1652,20 @@ func (p *Parser) parseParameter() *ast.Parameter {
 		p.nextToken()
 		param.Default = p.parseExpression(LOWEST)
 	}
+	p.checkRestParamInitializer(param)
 	return param
+}
+
+// checkRestParamInitializer 报告 rest 形参带初始化器这一早错。
+// 规范 (ES2023 §14.1 FunctionRestParameter / §13.3.3 BindingRestElement):
+// BindingRestElement 只允许 `...BindingIdentifier` / `...BindingPattern`,
+// **不带** Initializer —— function f(...x = []) {} 是 SyntaxError (Node 实测一致)。
+// 注意 rest 后接**解构模式** (function f(...[a]) {}) 本身合法, 只有再接 `= 默认值`
+// 才是早错, 故判据是 Rest && Default != nil 而非 Rest && Pattern != nil。
+func (p *Parser) checkRestParamInitializer(param *ast.Parameter) {
+	if param != nil && param.Rest && param.Default != nil {
+		p.addError("SyntaxError: rest parameter may not have a default initializer")
+	}
 }
 
 // ==================== 表达式解析 (Pratt Parsing) ====================
@@ -2568,6 +2586,11 @@ func (p *Parser) literalToPattern(expr ast.Expression) ast.Expression {
 		}
 		for _, prop := range lit.Properties {
 			pp := &ast.PatternProperty{Token: prop.Token, Key: prop.Key, Shorthand: prop.Shorthand, Computed: prop.Computed}
+			// 赋值模式的 shorthand 键同样是绑定/引用名, 不得是保留字
+			// ({ default } = x / ({ extends } = x) 都是 SyntaxError)。
+			if pp.Shorthand && !p.checkShorthandKey(pp) {
+				return expr
+			}
 			switch v := prop.Value.(type) {
 			case *ast.Identifier:
 				pp.Value = v
@@ -2876,10 +2899,20 @@ func (p *Parser) parseConditionalExpression(left ast.Expression) ast.Expression 
 // ==================== 解构模式解析 ====================
 
 func (p *Parser) parseDestructuringPattern(isArray bool) ast.Expression {
+	// 必须显式判空后再包成接口: 直接把 nil 的 *ast.ArrayPattern / *ast.ObjectPattern
+	// 作为 ast.Expression 返回会得到**非 nil 的 typed nil**, 于是调用方的
+	// `if param.Pattern == nil` 判空失效, 后续 collectPatternNames 在 nil 上取
+	// 字段直接 panic。解析失败时统一返回真 nil 接口。
 	if isArray {
-		return p.parseArrayPattern()
+		if pat := p.parseArrayPattern(); pat != nil {
+			return pat
+		}
+		return nil
 	}
-	return p.parseObjectPattern()
+	if pat := p.parseObjectPattern(); pat != nil {
+		return pat
+	}
+	return nil
 }
 
 // parseMemberSuffix 解析已拿到对象表达式后的成员后缀链 (cur 停在 '.' 或 '[')。
@@ -2920,6 +2953,44 @@ func (p *Parser) parseMemberSuffix(left ast.Expression) (ast.Expression, bool) {
 		break
 	}
 	return expr, true
+}
+
+// shorthandKeyIsReserved 报告对象模式里 shorthand 属性 (如 `{ default }` / `{ extends }`)
+// 的键是否为 ReservedWord。规范 (§12.6.2 + BindingIdentifier/IdentifierReference):
+// shorthand 的键同时充当绑定名/引用名, 必须是 Identifier, 而 Identifier 不允许
+// ReservedWord —— 故 `{ default }` / `{ extends }` / `{ if }` 都是 SyntaxError,
+// 而 `{ default: x }` (带冒号) 的键只是 PropertyName, 合法。
+//
+// 只拦「总是保留」的词: let / yield / await / async / of / undefined 是上下文
+// 关键字或普通标识符, 在对应 sloppy 语境里可作标识符, 不在此列。extends / enum /
+// debugger 在词法层是 IDENTIFIER (未关键字化), 需按文本判。
+func shorthandKeyIsReserved(tok lexer.Token) bool {
+	switch tok.Type {
+	case lexer.BREAK, lexer.CASE, lexer.CATCH, lexer.CLASS, lexer.CONST,
+		lexer.CONTINUE, lexer.DEFAULT, lexer.DELETE, lexer.DO, lexer.ELSE,
+		lexer.EXPORT, lexer.FINALLY, lexer.FOR, lexer.FUNCTION, lexer.IF,
+		lexer.IMPORT, lexer.IN, lexer.INSTANCEOF, lexer.NEW, lexer.NULL,
+		lexer.RETURN, lexer.SUPER, lexer.SWITCH, lexer.THIS, lexer.THROW,
+		lexer.TRUE, lexer.FALSE, lexer.TRY, lexer.TYPEOF, lexer.VAR,
+		lexer.VOID, lexer.WHILE, lexer.WITH:
+		return true
+	case lexer.IDENTIFIER:
+		switch tok.Literal {
+		case "enum", "extends", "debugger":
+			return true
+		}
+	}
+	return false
+}
+
+// checkShorthandKey 在对象模式的 shorthand 分支校验键不是保留字。
+// 合法返回 true; 非法记错并返回 false (调用方应中止解析)。
+func (p *Parser) checkShorthandKey(prop *ast.PatternProperty) bool {
+	if id, ok := prop.Key.(*ast.Identifier); ok && shorthandKeyIsReserved(id.Token) {
+		p.addError(fmt.Sprintf("SyntaxError: '%s' cannot be used as a shorthand binding name", id.Value))
+		return false
+	}
+	return true
 }
 
 func (p *Parser) parseArrayPattern() *ast.ArrayPattern {
@@ -3061,6 +3132,9 @@ func (p *Parser) parseObjectPattern() *ast.ObjectPattern {
 				p.addError("computed property name must be followed by ':'")
 				return nil
 			}
+			if !p.checkShorthandKey(prop) {
+				return nil
+			}
 			prop.Shorthand = true
 			id, _ := prop.Key.(*ast.Identifier)
 			prop.Value = id
@@ -3068,6 +3142,9 @@ func (p *Parser) parseObjectPattern() *ast.ObjectPattern {
 			// 简写 + 默认值: { a = 默认 }
 			if prop.Computed {
 				p.addError("computed property name must be followed by ':'")
+				return nil
+			}
+			if !p.checkShorthandKey(prop) {
 				return nil
 			}
 			prop.Shorthand = true
