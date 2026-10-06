@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/14752222/Gox/object"
 )
@@ -145,22 +146,31 @@ func TestTopLevelAwaitScriptStillRejected(t *testing.T) {
 	}
 }
 
-// TestTopLevelAwaitPendingPromiseUnsupported 依赖定时器/宏任务才能结算的
-// pending Promise 在本版同步驱动下**明确报错** (而不是在模块加载期重入事件
-// 循环)。这是刻意的边界: 真正支持它需要异步模块图求值 (见 RunCompiledAsync
-// 说明)。
-func TestTopLevelAwaitPendingPromiseUnsupported(t *testing.T) {
+// TestTopLevelAwaitPendingPromiseSuspends 依赖定时器/宏任务才能结算的
+// pending Promise: 顶层 await 挂起, 模块求值暂停但不报错; 事件循环里 promise
+// 结算后再恢复并完成 (异步模块图求值, 不再"明确报错")。
+func TestTopLevelAwaitPendingPromiseSuspends(t *testing.T) {
 	dir := writeModuleDir(t, map[string]string{
-		"m.js":     `export const v = await new Promise(r => setTimeout(() => r("tick"), 0));`,
-		"entry.js": `import { v } from "./m.js"; v`,
+		"m.js":     `globalThis.__tla_v = await new Promise(r => setTimeout(() => r("tick"), 0));`,
+		"entry.js": `import "./m.js"; 0`,
 	})
-	_, err := EvalFileVM(filepath.Join(dir, "entry.js"))
-	if err == nil {
-		t.Fatal("pending Promise 的顶层 await 应报错 (本版不支持)")
+	vm, err := EvalFileVM(filepath.Join(dir, "entry.js"))
+	if err != nil {
+		t.Fatalf("pending TLA 不该报错 (应挂起): %v", err)
 	}
-	if !strings.Contains(err.Error(), "did not settle synchronously") {
-		t.Fatalf("错误消息不符: %v", err)
+	if v, ok := vm.Globals().Get("__tla_v"); ok {
+		if s, isStr := v.(*object.String); isStr && s.Value == "tick" {
+			t.Fatal("pending TLA 不应在定时器结算前完成")
+		}
 	}
+	if err := vm.RunTimersUntil(time.Now().Add(500 * time.Millisecond)); err != nil {
+		t.Fatalf("RunTimers: %v", err)
+	}
+	v, ok := vm.Globals().Get("__tla_v")
+	if !ok {
+		t.Fatal("__tla_v 未设置")
+	}
+	assertString(t, v, "tick")
 }
 
 // TestTopLevelAwaitGlobalSideEffect 顶层 await 期间的副作用 (写 globalThis)

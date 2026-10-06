@@ -120,6 +120,14 @@ type Compiler struct {
 	// 驱动; VM 由 HasTopLevelAwait 读取该标志决定驱动方式。
 	topLevelAwait bool
 
+	// staticImports 记录模块顶层静态 import / 再导出 (export ... from) 的
+	// 模块说明符, 按出现顺序、去重。模块加载器据此在运行模块本体的**之前**
+	// 先求值全部依赖 (规范 InnerModuleEvaluation): 只要图里有模块含顶层
+	// await, 整图就按异步路径 leaf-to-root 求值。函数体内的 import() 是
+	// 动态导入 (OP_DYNAMIC_IMPORT), 不进这里。
+	staticImports []string
+	staticSeen    map[string]bool
+
 	// innerGenRestPreCollected 标记「即将编译的函数是 async / async-generator
 	// 的**内层 generator**」。这类函数的 wrapper 已经把末尾 rest 实参收成数组,
 	// 再作为**单个实参**传给内层 —— 所以内层末位参数 (含解构模式) 不能再按
@@ -268,6 +276,24 @@ func (c *Compiler) SetModuleMode(v bool) { c.moduleMode = v }
 // 为真时主单元字节码含 OP_YIELD 挂起点, 模块求值必须由 VM 异步驱动
 // (vm.RunCompiledAsync) —— 直接 RunCompiled 会得到 "yield outside generator"。
 func (c *Compiler) HasTopLevelAwait() bool { return c.topLevelAwait }
+
+// StaticImports 返回模块顶层静态依赖的模块说明符 (去重、保序)。
+func (c *Compiler) StaticImports() []string { return c.staticImports }
+
+// noteStaticImport 登记一条顶层静态依赖说明符 (去重)。
+func (c *Compiler) noteStaticImport(spec string) {
+	if spec == "" {
+		return
+	}
+	if c.staticSeen == nil {
+		c.staticSeen = map[string]bool{}
+	}
+	if c.staticSeen[spec] {
+		return
+	}
+	c.staticSeen[spec] = true
+	c.staticImports = append(c.staticImports, spec)
+}
 
 // Bytes 返回编译后的字节码。
 func (c *Compiler) Bytes() bytecode.Instructions { return c.emitter.Bytes() }
@@ -3127,6 +3153,8 @@ func (c *Compiler) compileImportDeclaration(stmt *ast.ImportDeclaration) error {
 	if err := checkBuiltinImportNames(stmt); err != nil {
 		return err
 	}
+	// 登记为静态依赖: 模块加载器在运行本体前先求值全部静态依赖。
+	c.noteStaticImport(stmt.Source)
 	// 编译模块导入: 加载模块并绑定导出
 	// OP_IMPORT 操作数 = 模块路径常量索引
 	sourceIdx := c.constants.AddConstant(object.NewString(stmt.Source))
@@ -3376,6 +3404,7 @@ func exportNameList(exports map[string]object.Value) string {
 func (c *Compiler) compileExportDeclaration(stmt *ast.ExportDeclaration) error {
 	// 1) export * from "m": 记录源模块, 读时转发其自有可枚举导出 (不含 default)
 	if stmt.IsStar {
+		c.noteStaticImport(stmt.Source)
 		specIdx := c.constants.AddConstant(object.NewString(stmt.Source))
 		c.emitter.Emit(bytecode.OP_EXPORT_STAR, specIdx)
 		return nil
@@ -3384,6 +3413,7 @@ func (c *Compiler) compileExportDeclaration(stmt *ast.ExportDeclaration) error {
 	// 2) export ... from "m": 具名再导出 / export * as ns
 	//    常量 = [模块路径, 源导出名, 目标导出名]; 源导出名 "*" 表示命名空间对象。
 	if stmt.Source != "" {
+		c.noteStaticImport(stmt.Source)
 		for _, sp := range stmt.Specifiers {
 			composite := object.NewArray([]object.Value{
 				object.NewString(stmt.Source),

@@ -104,6 +104,10 @@ type ModuleExports struct {
 	stars []*ModuleExports
 	// order: 导出名登记顺序 (Named/bindings/forwards 共享)。
 	order []string
+
+	// rec 是异步模块图求值的状态 (规范 ExecuteAsyncModule 一族)。内置模块与
+	// 早期实现直接塞进 Named 的模块为 nil (视作已求值)。见 moduleRecord。
+	rec *moduleRecord
 }
 
 // forwardRef 是一次再导出转发。
@@ -1937,7 +1941,6 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			specVal := vm.stack.Pop()
 			spec := toJSString(specVal)
 			modExports, err := vm.loadModule(spec)
-			p := object.NewPromise()
 			if err != nil {
 				// 加载失败: reject Promise。模块**语法错误** (解析/编译失败)
 				// 的 reject 名是 SyntaxError, 其余 (解析不到模块等) 为 Error。
@@ -1945,10 +1948,22 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				if _, ok := err.(*moduleSyntaxError); ok {
 					name = "SyntaxError"
 				}
+				p := object.NewPromise()
 				p.Reject(object.NewErrorWithName(name, err.Error()))
-			} else {
-				p.Resolve(modExports.buildNamespace(nil))
+				vm.stack.Push(p)
+				continue
 			}
+			if r := modExports.rec; r != nil && r.status != moduleEvaluated {
+				// 模块仍在异步求值中 (含 TLA 挂起 / 依赖未就绪): 动态 import 的
+				// Promise 等它完成后才 resolve 命名空间 (ContinueDynamicImport)。
+				ns := r.completion.Then(object.NewBuiltin("__dyn_import_ns", func(args ...object.Value) object.Value {
+					return modExports.buildNamespace(nil)
+				}))
+				vm.stack.Push(ns)
+				continue
+			}
+			p := object.NewPromise()
+			p.Resolve(modExports.buildNamespace(nil))
 			vm.stack.Push(p)
 		case bytecode.OP_GET_INDEX:
 			index := vm.stack.Pop()
@@ -3803,6 +3818,9 @@ func (e *moduleSyntaxError) Error() string { return e.msg }
 func (vm *VM) loadModuleFile(spec, absPath string) (*ModuleExports, error) {
 	// 检查缓存
 	if mod, ok := vm.modules[absPath]; ok {
+		if r := mod.rec; r != nil && r.status == moduleRejected {
+			return nil, fmt.Errorf("%s", r.errText)
+		}
 		return mod, nil
 	}
 
@@ -3842,23 +3860,23 @@ func (vm *VM) loadModuleFile(spec, absPath string) (*ModuleExports, error) {
 		return nil, fmt.Errorf("Module compile error: %v", err)
 	}
 
-	// 执行模块
-	savedExports := vm.currentExports
-	vm.currentExports = newModuleExports()
-
-	// 保存当前模块路径并设置新基准
-	savedBase := vm.moduleBase
-	vm.moduleBase = dirOf(absPath)
-
-	// 循环导入防线: 先注册导出对象再执行 —— 执行期间模块再 import 自己/形成
-	// 环时, 命中缓存拿到这份(填充中的)导出对象, 而不是无限重新编译执行
-	// (此前缓存写在执行后, 循环导入会一路递归到栈溢出)。
-	vm.modules[absPath] = vm.currentExports
+	// 异步模块图求值: 先注册模块记录 (含循环导入防线), 再按 leaf-to-root 求值
+	// 静态依赖, 最后运行本体。只要依赖里有模块含顶层 await 且尚未完成, 本体
+	// 就延后到依赖全部完成后再跑 (规范 InnerModuleEvaluation 的 async 分支)。
+	mod := newModuleExports()
+	rec := &moduleRecord{
+		absPath:     absPath,
+		status:      moduleEvaluating,
+		completion:  object.NewPromise(),
+		staticSpecs: c.StaticImports(),
+	}
+	mod.rec = rec
+	vm.modules[absPath] = mod
 
 	modVM := NewWithGlobals(c.Bytes(), c.Constants(), c.NumLocals(), vm.globals)
 	modVM.modules = vm.modules
-	modVM.moduleBase = vm.moduleBase
-	modVM.currentExports = vm.currentExports
+	modVM.moduleBase = dirOf(absPath)
+	modVM.currentExports = mod
 	// 模块顶层 this 必须是 undefined (与 script 顶层 this = globalThis 相对)。
 	modVM.moduleMode = true
 	// 源码单元注册表跨 VM 共享: 模块里定义的函数之后可能在入口 VM 上被调用,
@@ -3872,28 +3890,308 @@ func (vm *VM) loadModuleFile(spec, absPath string) (*ModuleExports, error) {
 	}
 	modVM.mainUnit.isModule = true // 标记为模块单元: 其函数登记进 units 注册表
 	modVM.SetStmtPositions(c.StmtPositions())
-	// 顶层 await (TLA): 主单元含 OP_YIELD 挂起点, 必须走异步生成器驱动;
-	// 普通模块仍走同步 RunCompiled。
-	var runErr error
-	if c.HasTopLevelAwait() {
-		runErr = modVM.RunCompiledAsync(c)
-	} else {
-		runErr = modVM.RunCompiled(c)
-	}
-	if runErr != nil {
-		// 执行失败不缓存半成品, 便于上层重试时报出同样错误
-		delete(vm.modules, absPath)
-		vm.currentExports = savedExports
-		vm.moduleBase = savedBase
-		// 附加源码帧 (此前直接 %v, 模块内异常只有一行消息没有帧)。
-		return nil, fmt.Errorf("Module execution error: %v", modVM.AttachFrame(runErr))
-	}
 
-	// 恢复状态
-	vm.currentExports = savedExports
+	// 依赖先求值。求值在加载方 VM 上进行, 但相对说明符必须按**本模块**目录
+	// 解析 (与本体执行同基准), 故临时切换 moduleBase。
+	savedBase := vm.moduleBase
+	vm.moduleBase = dirOf(absPath)
+	vm.evalModuleDeps(rec)
 	vm.moduleBase = savedBase
+	if rec.status == moduleRejected {
+		// 依赖求值失败 (编译错误 / 依赖被拒): 本体不运行。
+		return nil, fmt.Errorf("Module execution error: %v", rec.errText)
+	}
+	if rec.pendingDeps == 0 {
+		vm.runModuleBody(mod, rec, modVM, c)
+	} else {
+		// 依赖未就绪: 记录本体闭包, 依赖完成时由 startDeferred 触发。
+		rec.status = modulePending
+		rec.runBody = func() { vm.runModuleBody(mod, rec, modVM, c) }
+	}
+	if rec.status == moduleRejected {
+		return nil, fmt.Errorf("Module execution error: %v", rec.errText)
+	}
+	return mod, nil
+}
 
-	return vm.modules[absPath], nil
+// ── 异步模块图求值 (规范 16.2.1.5.2 ExecuteAsyncModule /
+// AsyncModuleExecutionFulfilled / AsyncModuleExecutionRejected 的 Gox 实现) ──
+//
+// Gox 的同步 Promise 模型下, 模块求值必须能在"顶层 await 挂起"时把控制权交回,
+// 待 promise 结算后再恢复 (见 modulePendingEval)。同时, 依赖了未完成异步模块的
+// 模块, 其本体要等到依赖完成才运行 (record.pendingDeps/dependents), 从而得到
+// 规范的 leaf-to-root 求值/完成顺序, 并让 rejection 沿依赖边传播而不继续执行。
+type moduleEvalStatus int
+
+const (
+	moduleEvaluating moduleEvalStatus = iota // 正在加载/求值
+	modulePending                            // 依赖未就绪, 或自身 TLA 挂起
+	moduleEvaluated                          // 已完成
+	moduleRejected                           // 已拒绝
+)
+
+// moduleRecord 是一个模块的求值状态 (按 ModuleExports.rec 挂靠)。
+type moduleRecord struct {
+	absPath     string
+	staticSpecs []string // 顶层静态依赖说明符 (来自 compiler.StaticImports)
+
+	status  moduleEvalStatus
+	errVal  object.Value // 拒绝原因 (JS 值)
+	errText string       // 拒绝消息 (Go 侧, 供 OP_IMPORT/dynamic import 取用)
+
+	completion *object.Promise // 求值结算: fulfilled(undefined) / rejected(原因)
+
+	pendingDeps int             // 尚未完成的直接依赖数
+	dependents  []*moduleRecord // 等待本模块完成的依赖方
+
+	runBody     func()             // 依赖就绪后运行本体的闭包 (延后时非 nil)
+	pendingEval *modulePendingEval // 自身 TLA 挂起时的待恢复执行状态
+}
+
+// modulePendingEval 保存一个被顶层 await 挂起的模块求值 (gen 可在结算后恢复)。
+type modulePendingEval struct {
+	modVM *VM
+	gen   *object.Generator
+	rec   *moduleRecord
+}
+
+// evalModuleDeps 先求值 rec 的全部静态依赖。未完成的依赖计入 pendingDeps 并
+// 登记为 dependents; 依赖被拒则本模块直接拒绝。循环 (同 SCC, 依赖可达本模块)
+// 不等待, 保持既有的"部分导出"语义。
+func (vm *VM) evalModuleDeps(rec *moduleRecord) {
+	for _, spec := range rec.staticSpecs {
+		dep, err := vm.loadModule(spec)
+		if err != nil {
+			vm.rejectRecord(rec, errorToJSValue(err), err.Error())
+			return
+		}
+		depRec := dep.rec
+		if depRec == nil || depRec.status == moduleEvaluated {
+			continue
+		}
+		if depRec.status == moduleRejected {
+			vm.rejectRecord(rec, depRec.errVal, depRec.errText)
+			return
+		}
+		// 循环检测: 依赖能沿 import 边到达本模块 ⇒ 同 SCC, 不等待。
+		if vm.specReaches(depRec, rec) {
+			continue
+		}
+		rec.pendingDeps++
+		depRec.dependents = append(depRec.dependents, rec)
+	}
+}
+
+// specReaches 报告 from 是否沿**静态依赖说明符**到达 to (含 from==to)。
+//
+// 用说明符而非"已解析依赖"来判环: 依赖边是在 loadModule 返回后才登记的, 环上
+// 的那条边 (正在求值的依赖) 尚未登记; 而说明符在模块注册时就已知, 且按模块
+// 自身目录解析后可达目标 ⇒ 是真环 (同 SCC)。这样也能把"promise 回调重入"
+// 引发的假父子关系 (模块 A 由 B 求值期间的副作用回调触发, 但 A 并不在 B 的
+// import 边上) 与真环区分开 —— 前者 A 必须等待 B。
+func (vm *VM) specReaches(from, to *moduleRecord) bool {
+	seen := map[string]bool{}
+	var dfs func(r *moduleRecord) bool
+	dfs = func(r *moduleRecord) bool {
+		if r == to {
+			return true
+		}
+		if r == nil || seen[r.absPath] {
+			return false
+		}
+		seen[r.absPath] = true
+		saved := vm.moduleBase
+		vm.moduleBase = dirOf(r.absPath)
+		var found bool
+		for _, spec := range r.staticSpecs {
+			abs, err := vm.resolveModule(spec)
+			if err != nil {
+				continue
+			}
+			dep := vm.modules[abs]
+			if dep == nil || dep.rec == nil {
+				continue
+			}
+			if dfs(dep.rec) {
+				found = true
+				break
+			}
+		}
+		vm.moduleBase = saved
+		return found
+	}
+	return dfs(from)
+}
+
+// runModuleBody 运行模块本体。含 TLA 走可挂起的生成器驱动; 其余同步执行。
+func (vm *VM) runModuleBody(mod *ModuleExports, rec *moduleRecord, modVM *VM, c *compiler.Compiler) {
+	modVM.currentExports = mod
+	modVM.moduleBase = dirOf(rec.absPath)
+	if c.HasTopLevelAwait() {
+		gen := &object.Generator{
+			PC:            0,
+			Started:       false,
+			PrologueBound: true,
+			Locals:        make([]object.Value, c.NumLocals()),
+			Constants:     c.Constants().Constants,
+			Instructions:  c.Bytes(),
+		}
+		pe := &modulePendingEval{modVM: modVM, gen: gen, rec: rec}
+		rec.pendingEval = pe
+		// 必须在模块自己的 VM 上驱动: 主单元字节码的帧/currentExports 都属于
+		// modVM, 用加载方 VM 驱动会把导出登记到加载方 (namespace 变空)。
+		modVM.driveModule(pe, object.UndefinedSingleton, false)
+		return
+	}
+	runErr := modVM.RunCompiled(c)
+	if runErr != nil {
+		vm.rejectRecord(rec, errorToJSValue(runErr), modVM.AttachFrame(runErr).Error())
+		return
+	}
+	vm.fulfillRecord(rec)
+}
+
+// driveModule 恢复一个模块顶层生成器, 直到完成或挂在 pending Promise 上。
+func (vm *VM) driveModule(pe *modulePendingEval, arg object.Value, isThrow bool) {
+	val, done, genErr, panicErr := vm.stepGen(pe, arg, isThrow)
+	for {
+		if panicErr != nil {
+			vm.rejectRecord(pe.rec, errorToJSValue(panicErr), panicErr.Error())
+			return
+		}
+		if done {
+			if genErr != nil {
+				vm.rejectRecord(pe.rec, errorToJSValue(genErr), pe.modVM.AttachFrame(genErr).Error())
+			} else {
+				vm.fulfillRecord(pe.rec)
+			}
+			return
+		}
+		// 挂在 await: val 是操作数。非 Promise 立即恢复 (Gox 同步 Promise 模型)。
+		p, ok := val.(*object.Promise)
+		if !ok {
+			val, done, genErr, panicErr = vm.stepGen(pe, val, false)
+			continue
+		}
+		vm.armPromiseResume(pe, p)
+		return
+	}
+}
+
+// stepGen 在 panic 保护下对模块生成器做一次 resume/throw。
+func (vm *VM) stepGen(pe *modulePendingEval, arg object.Value, isThrow bool) (object.Value, bool, error, error) {
+	saved := currentVM
+	currentVM = vm
+	defer func() { currentVM = saved }()
+	var val object.Value
+	var done bool
+	var genErr error
+	panicErr := vm.runProtected(func() error {
+		if isThrow {
+			val, done, genErr = vm.genThrow(pe.gen, arg)
+		} else {
+			val, done, genErr = vm.genResume(pe.gen, arg)
+		}
+		return nil
+	})
+	return val, done, genErr, panicErr
+}
+
+// armPromiseResume 在 await 的 Promise 上注册恢复回调。已结算的 Promise 会
+// 同步触发回调 (继续驱动模块); pending 的等结算后 (通常由定时器/后续代码)
+// 触发。settled 标志防止 then/catch 双触发。
+func (vm *VM) armPromiseResume(pe *modulePendingEval, p *object.Promise) {
+	settled := false
+	p.Then(object.NewBuiltin("__module_tla_fulfilled", func(args ...object.Value) object.Value {
+		if settled {
+			return object.UndefinedSingleton
+		}
+		settled = true
+		var res object.Value = object.UndefinedSingleton
+		if len(args) > 0 {
+			res = args[0]
+		}
+		vm.driveModule(pe, res, false)
+		return object.UndefinedSingleton
+	}))
+	p.Catch(object.NewBuiltin("__module_tla_rejected", func(args ...object.Value) object.Value {
+		if settled {
+			return object.UndefinedSingleton
+		}
+		settled = true
+		var reason object.Value = object.UndefinedSingleton
+		if len(args) > 0 {
+			reason = args[0]
+		}
+		vm.driveModule(pe, reason, true)
+		return object.UndefinedSingleton
+	}))
+}
+
+// fulfillRecord 标记模块完成: 结算 completion, 并唤醒依赖就绪的依赖方。
+func (vm *VM) fulfillRecord(rec *moduleRecord) {
+	if rec.status == moduleEvaluated || rec.status == moduleRejected {
+		return
+	}
+	rec.status = moduleEvaluated
+	rec.pendingEval = nil
+	rec.completion.Resolve(object.UndefinedSingleton)
+	dependents := rec.dependents
+	rec.dependents = nil
+	for _, d := range dependents {
+		if d.status == moduleRejected {
+			continue
+		}
+		d.pendingDeps--
+		if d.pendingDeps <= 0 {
+			d.pendingDeps = 0
+			vm.startDeferred(d)
+		}
+	}
+}
+
+// rejectRecord 标记模块拒绝: 本体不运行, 原因沿依赖边传播到全部依赖方。
+func (vm *VM) rejectRecord(rec *moduleRecord, val object.Value, text string) {
+	if rec.status == moduleEvaluated || rec.status == moduleRejected {
+		return
+	}
+	rec.status = moduleRejected
+	rec.pendingEval = nil
+	if text == "" {
+		text = "module evaluation failed"
+	}
+	rec.errVal = val
+	rec.errText = text
+	rec.completion.Reject(val)
+	dependents := rec.dependents
+	rec.dependents = nil
+	for _, d := range dependents {
+		vm.rejectRecord(d, val, text)
+	}
+}
+
+// startDeferred 在依赖全部完成后运行被延后的模块本体。
+func (vm *VM) startDeferred(rec *moduleRecord) {
+	if rec.status != modulePending || rec.runBody == nil {
+		return
+	}
+	rb := rec.runBody
+	rec.runBody = nil
+	rb()
+}
+
+// errorToJSValue 把 Go 侧错误还原成 JS 抛出值 (供 rejection reason 使用)。
+func errorToJSValue(err error) object.Value {
+	if te, ok := err.(*ThrowError); ok {
+		return te.Value
+	}
+	if jt, ok := err.(*jsThrow); ok {
+		return object.NewErrorWithName(jt.Name, jt.Message)
+	}
+	if err == nil {
+		return object.UndefinedSingleton
+	}
+	return object.NewErrorWithName("Error", err.Error())
 }
 
 // SetModuleBase 设置模块基准路径。
