@@ -1209,7 +1209,8 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				if _, exists := vm.globals.Get(s.Value); exists {
 					vm.globals.Set(s.Value, val)
 				} else {
-					vm.globals.Declare(s.Value, val, false)
+					// 隐式赋值创建的全局: globalThis 的自有可配置属性。
+					vm.globals.DeclareImplicit(s.Value, val)
 				}
 			}
 		case bytecode.OP_STORE_UNDECLARED:
@@ -1261,6 +1262,16 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			if s, ok := name.(*object.String); ok {
 				val := vm.stack.Pop()
 				if err := vm.globals.DeclareGlobal(s.Value, val, false, true); err != nil {
+					return err
+				}
+			}
+		case bytecode.OP_DECLARE_VAR:
+			// 顶层 var 提升期绑定创建: var 是 globalThis 的自有属性 (不可配置)。
+			// 与 let 的 OP_DECLARE 区分 —— 后者只进全局词法环境，不是自有属性。
+			name := frame.Constants.Get(operand)
+			if s, ok := name.(*object.String); ok {
+				val := vm.stack.Pop()
+				if err := vm.globals.DeclareGlobalVar(s.Value, val); err != nil {
 					return err
 				}
 			}
@@ -2682,7 +2693,8 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				if _, exists := vm.globals.Get(ref.Name); exists {
 					vm.globals.Set(ref.Name, val)
 				} else {
-					vm.globals.Declare(ref.Name, val, false)
+					// 隐式赋值创建的全局: globalThis 的自有可配置属性。
+					vm.globals.DeclareImplicit(ref.Name, val)
 				}
 				continue
 			}

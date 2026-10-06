@@ -186,6 +186,11 @@ func setupWeakRefGlobals(env *runtime.Environment) {
 
 // setupGlobalThis 注册 globalThis —— 由全局环境背书的对象。
 // 读写 globalThis.x 即读写全局绑定。
+//
+// [[Prototype]] 指向 %Object.prototype%: 使 globalThis.hasOwnProperty /
+// toString / valueOf 等方法可达 (规范里全局对象的原型链含 Object.prototype)。
 func setupGlobalThis(env *runtime.Environment) {
-	env.Declare("globalThis", object.NewGlobalObject(env), false)
+	g := object.NewGlobalObject(env)
+	g.Proto = object.GetObjectPrototype()
+	env.Declare("globalThis", g, false)
 }

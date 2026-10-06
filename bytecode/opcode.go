@@ -59,6 +59,11 @@ const (
 	// (无条件建全局属性) 相对。编译期由 compiler 在 sym==nil 且 strict 时发射。
 	OP_STORE_UNDECLARED Opcode = 0x28
 
+	// OP_DECLARE_VAR: 顶层 var 的绑定创建 (仅提升期 undefined 初始化用)
+	// [name_idx]。语义同 OP_DECLARE，但标记为 var 绑定 —— var 是 globalThis
+	// 的自有属性 (不可配置)，与 let/const/class 的词法绑定区分开。
+	OP_DECLARE_VAR Opcode = 0x29
+
 	// 0x30-0x3F: 算术运算
 	OP_ADD     Opcode = 0x30 // 栈顶两值相加 (弹出 a, b, 推入 a+b)
 	OP_SUB     Opcode = 0x31
@@ -313,7 +318,8 @@ var opcodeNames = map[Opcode]string{
 	OP_LOAD: "LOAD", OP_STORE: "STORE", OP_STORE_CONST: "STORE_CONST",
 	OP_LOAD_GLOBAL: "LOAD_GLOBAL", OP_STORE_GLOBAL: "STORE_GLOBAL", OP_DECLARE: "DECLARE", OP_DECLARE_CONST: "DECLARE_CONST",
 	OP_STORE_UNDECLARED: "STORE_UNDECLARED",
-	OP_DECLARE_FUNC: "DECLARE_FUNC",
+	OP_DECLARE_VAR:      "DECLARE_VAR",
+	OP_DECLARE_FUNC:     "DECLARE_FUNC",
 	OP_ADD:          "ADD", OP_SUB: "SUB", OP_MUL: "MUL", OP_DIV: "DIV",
 	OP_MOD: "MOD", OP_POW: "POW", OP_NEG: "NEG",
 	OP_BIT_AND: "BIT_AND", OP_BIT_OR: "BIT_OR", OP_BIT_XOR: "BIT_XOR",

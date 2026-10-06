@@ -335,6 +335,9 @@ func hasOwnPropertyImpl(this object.Value, key object.Value) bool {
 	switch t := this.(type) {
 	case *object.Object:
 		return t.HasOwnProperty(name)
+	case *object.GlobalObject:
+		// globalThis 把所有 (非词法) 全局绑定都当作自有属性。
+		return t.HasOwn(name)
 	case *object.Array:
 		if name == "length" {
 			return true
@@ -385,6 +388,9 @@ func propertyIsEnumerableImpl(this object.Value, key object.Value) bool {
 	switch t := this.(type) {
 	case *object.Object:
 		desc, ok := t.Properties[name]
+		return ok && desc.Enumerable
+	case *object.GlobalObject:
+		desc, ok := t.OwnDescriptor(name)
 		return ok && desc.Enumerable
 	case *object.Array, *object.String:
 		// 索引元素 / length 均为可枚举自有属性 (简化模型)。

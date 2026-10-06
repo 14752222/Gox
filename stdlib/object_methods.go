@@ -204,6 +204,12 @@ func setupObjectGlobal() *object.BuiltinFunction {
 		if len(args) == 0 {
 			return object.NullSingleton
 		}
+		if g, ok := args[0].(*object.GlobalObject); ok {
+			if g.Proto != nil {
+				return g.Proto
+			}
+			return object.NullSingleton
+		}
 		if obj, ok := args[0].(*object.Object); ok {
 			if obj.Proto != nil {
 				return obj.Proto
@@ -258,11 +264,14 @@ func setupObjectGlobal() *object.BuiltinFunction {
 		if len(args) < 2 {
 			return object.NewBoolean(false)
 		}
+		key := toStr(args[1])
+		if g, ok := args[0].(*object.GlobalObject); ok {
+			return object.NewBoolean(g.HasOwn(key))
+		}
 		obj, ok := args[0].(*object.Object)
 		if !ok {
 			return object.NewBoolean(false)
 		}
-		key := toStr(args[1])
 		_, exists := obj.Properties[key]
 		return object.NewBoolean(exists)
 	}))
@@ -271,6 +280,18 @@ func setupObjectGlobal() *object.BuiltinFunction {
 	o.SetProperty("defineProperty", object.NewBuiltin("defineProperty", func(args ...object.Value) object.Value {
 		if len(args) < 3 {
 			return object.UndefinedSingleton
+		}
+		// globalThis: 在全局环境上定义自有属性 (var/函数声明之外的新绑定)。
+		if g, ok := args[0].(*object.GlobalObject); ok {
+			if _, isSym := args[1].(*object.Symbol); isSym {
+				return args[0] // 全局环境无符号键绑定，静默忽略
+			}
+			desc, errVal := descriptorFromJS(args[2])
+			if errVal != nil {
+				return errVal
+			}
+			g.DefineGlobal(toStr(args[1]), desc)
+			return args[0]
 		}
 		obj, ok := args[0].(*object.Object)
 		if !ok {
@@ -300,6 +321,18 @@ func setupObjectGlobal() *object.BuiltinFunction {
 	o.SetProperty("getOwnPropertyDescriptor", object.NewBuiltin("getOwnPropertyDescriptor", func(args ...object.Value) object.Value {
 		if len(args) < 2 {
 			return object.UndefinedSingleton
+		}
+		// globalThis: 自有属性来自全局环境记录 (顶层 var/函数声明/隐式赋值/
+		// 内建全局); 顶层 let/const/class 只存在于词法环境，不是自有属性。
+		if g, ok := args[0].(*object.GlobalObject); ok {
+			if _, isSym := args[1].(*object.Symbol); isSym {
+				return object.UndefinedSingleton // 全局环境无符号键绑定
+			}
+			desc, exists := g.OwnDescriptor(toStr(args[1]))
+			if !exists {
+				return object.UndefinedSingleton
+			}
+			return describeProperty(desc)
 		}
 		// Symbol 键: 查 SymbolProperties。
 		if sym, isSym := args[1].(*object.Symbol); isSym {
@@ -378,6 +411,14 @@ func setupObjectGlobal() *object.BuiltinFunction {
 		if len(args) == 0 {
 			return object.NewArray([]object.Value{})
 		}
+		if g, ok := args[0].(*object.GlobalObject); ok {
+			ks := g.OwnKeys()
+			result := make([]object.Value, len(ks))
+			for i, k := range ks {
+				result[i] = object.NewString(k)
+			}
+			return object.NewArray(result)
+		}
 		if obj, ok := args[0].(*object.Object); ok {
 			keys := obj.Keys()
 			result := make([]object.Value, len(keys))
@@ -402,6 +443,15 @@ func setupObjectGlobal() *object.BuiltinFunction {
 	o.SetProperty("getOwnPropertyDescriptors", object.NewBuiltin("getOwnPropertyDescriptors", func(args ...object.Value) object.Value {
 		if len(args) == 0 {
 			return object.NewObject()
+		}
+		if g, ok := args[0].(*object.GlobalObject); ok {
+			result := object.NewObject()
+			for _, k := range g.OwnKeys() {
+				if d, ok := g.OwnDescriptor(k); ok {
+					result.SetProperty(k, describeProperty(d))
+				}
+			}
+			return result
 		}
 		if obj, ok := args[0].(*object.Object); ok {
 			result := object.NewObject()
@@ -555,6 +605,9 @@ func ownKeysArg(args []object.Value, api string) ([]string, object.Value) {
 // 支持普通对象、数组与字符串 (字符串按 UTF-16 码元索引展开)。
 func ownKeys(v object.Value) ([]string, object.Value) {
 	switch val := v.(type) {
+	case *object.GlobalObject:
+		// globalThis: 可枚举的自有绑定 (顶层 var/函数声明/隐式赋值全局)。
+		return val.EnumerableOwnKeys(), nil
 	case *object.Object:
 		return val.EnumerableKeys(), nil
 	case *object.Array:
@@ -580,6 +633,15 @@ func ownKeys(v object.Value) ([]string, object.Value) {
 // getOwnProperty 取值的自有属性，未找到时返回 undefined。
 func getOwnProperty(v object.Value, key string) (object.Value, bool) {
 	switch val := v.(type) {
+	case *object.GlobalObject:
+		if _, ok := val.OwnDescriptor(key); !ok {
+			return object.UndefinedSingleton, false
+		}
+		got, found := val.GetProperty(key)
+		if !found || got == nil {
+			return object.UndefinedSingleton, true
+		}
+		return got, true
 	case *object.Object:
 		if desc, ok := val.Properties[key]; ok {
 			if desc.Value == nil {
@@ -1067,6 +1129,59 @@ func defineOneSymbolProperty(obj *object.Object, sym *object.Symbol, descVal obj
 // defineOneProperty 按 property descriptor 定义一个属性。
 // 访问器描述符 (get/set) 注册为访问器；数据描述符 (value/writable)
 // 注册为数据属性。供 defineProperty / defineProperties 共用。
+// descriptorFromJS 把 JS 描述符对象解析为内部 PropertyDescriptor
+// (Object.defineProperty(globalThis, ...) 用)。非对象描述符抛 TypeError。
+// 缺省字段的默认值与规范 ToPropertyDescriptor 一致 (均为 false/undefined)。
+func descriptorFromJS(descVal object.Value) (object.PropertyDescriptor, object.Value) {
+	if !object.IsObjectValue(descVal) {
+		return object.PropertyDescriptor{}, object.NewTypeError("Property description must be an object")
+	}
+	get := func(n string) (object.Value, bool) { return descVal.GetProperty(n) }
+	nd := object.PropertyDescriptor{}
+	_, hasGet := get("get")
+	_, hasSet := get("set")
+	if hasGet || hasSet {
+		var g, s object.Value
+		if v, found := get("get"); found && !isUndefinedValue(v) {
+			if !object.IsCallable(v) {
+				return nd, object.NewTypeError("Getter must be a function")
+			}
+			g = v
+		}
+		if v, found := get("set"); found && !isUndefinedValue(v) {
+			if !object.IsCallable(v) {
+				return nd, object.NewTypeError("Setter must be a function")
+			}
+			s = v
+		}
+		nd.Value = object.NewAccessor(g, s)
+		nd.Writable = false
+		if v, found := get("enumerable"); found {
+			nd.Enumerable = toBool(v)
+		}
+		if v, found := get("configurable"); found {
+			nd.Configurable = toBool(v)
+		}
+		return nd, nil
+	}
+	if v, found := get("value"); found {
+		nd.Value = v
+	}
+	if v, found := get("writable"); found {
+		nd.Writable = toBool(v)
+	}
+	if v, found := get("enumerable"); found {
+		nd.Enumerable = toBool(v)
+	}
+	if v, found := get("configurable"); found {
+		nd.Configurable = toBool(v)
+	}
+	if nd.Value == nil {
+		nd.Value = object.UndefinedSingleton
+	}
+	return nd, nil
+}
+
 func defineOneProperty(obj *object.Object, key string, descVal object.Value) object.Value {
 	if !object.IsObjectValue(descVal) {
 		// 规范: ToPropertyDescriptor 对非对象 (原始值) 抛 TypeError。

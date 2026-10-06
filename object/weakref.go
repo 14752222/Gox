@@ -140,10 +140,38 @@ func IsObjectValue(v Value) bool {
 
 // ===== GlobalObject =====
 
+// GlobalBindingInfo 描述全局环境里一个绑定的元信息 (供 globalThis 的自有
+// 属性查询)。由 runtime.Environment 构造。
+type GlobalBindingInfo struct {
+	Exists     bool
+	Value      Value
+	IsConst    bool
+	IsLexical  bool // let/const/class: 词法绑定，不是 globalThis 的自有属性
+	IsVar      bool // 顶层 var: 自有属性，不可配置
+	IsFnDecl   bool // 顶层函数声明: 自有属性，不可配置
+	IsImplicit bool // 隐式赋值全局: 自有属性，可配置
+	HasDesc    bool // 是否带显式描述符覆盖 (defineProperty)
+	Desc       PropertyDescriptor
+}
+
+// GlobalBindingProvider 由全局环境 (runtime.Environment) 实现，供
+// GlobalObject 枚举绑定名与查询绑定元信息。
+type GlobalBindingProvider interface {
+	BindingNames() []string
+	BindingInfoOf(name string) GlobalBindingInfo
+}
+
 // GlobalObject 是由全局环境背书的对象，作为 globalThis 暴露。
-// 读属性 = 在全局环境查找绑定；写属性 = 更新或创建全局绑定。
+// 读属性 = 在全局环境查找绑定 (未命中回退 [[Prototype]])；
+// 写属性 = 更新或创建全局绑定。
+//
+// 自有属性 (own property) 语义: 全局环境对象记录里的绑定 —— 顶层 var /
+// 函数声明 / 隐式赋值全局 / 内建全局 —— 都是 globalThis 的自有属性；
+// 顶层 let/const/class 只存在于全局词法环境，不是 globalThis 的属性
+// (见 runtime.Environment 的 IsLexical 标记)。
 type GlobalObject struct {
-	Env Environment
+	Env   Environment
+	Proto Value // [[Prototype]]，装配期指向 %Object.prototype%
 }
 
 func (g *GlobalObject) Type() ObjectType { return GLOBAL_OBJ }
@@ -151,14 +179,150 @@ func (g *GlobalObject) Inspect() string  { return "[object globalThis]" }
 func (g *GlobalObject) IsTruthy() bool   { return true }
 
 func (g *GlobalObject) GetProperty(name string) (Value, bool) {
-	return g.Env.Get(name)
+	if v, ok := g.Env.Get(name); ok {
+		// 访问器绑定 (Object.defineProperty(globalThis, k, {get}))。
+		if acc, isAcc := v.(*Accessor); isAcc {
+			if acc.Getter != nil && IsCallable(acc.Getter) {
+				return CallFunction(acc.Getter, g), true
+			}
+			return UndefinedSingleton, true
+		}
+		return v, true
+	}
+	// 未命中全局绑定: 回退 [[Prototype]] (Object.prototype），使
+	// globalThis.hasOwnProperty / toString / valueOf 等方法可达。
+	if g.Proto != nil {
+		return g.Proto.GetProperty(name)
+	}
+	return nil, false
 }
 
 func (g *GlobalObject) SetProperty(name string, val Value) {
+	// 已存在的全局绑定遵循其描述符: 访问器调用 setter；不可写数据属性静默失败。
+	if d, ok := g.OwnDescriptor(name); ok {
+		if acc, isAcc := d.Value.(*Accessor); isAcc {
+			if acc.Setter != nil && IsCallable(acc.Setter) {
+				CallFunction(acc.Setter, g, val)
+			}
+			return
+		}
+		if !d.Writable {
+			return
+		}
+	}
 	if err := g.Env.Set(name, val); err != nil {
-		// 未声明的名字: 非严格模式下隐式创建全局变量
+		// 未声明的名字: 非严格模式下隐式创建全局变量。
+		if imp, ok := g.Env.(interface {
+			DeclareImplicit(string, Value)
+		}); ok {
+			imp.DeclareImplicit(name, val)
+			return
+		}
 		g.Env.Declare(name, val, false)
 	}
+}
+
+// bindingProvider 取全局环境的绑定枚举能力。
+func (g *GlobalObject) bindingProvider() (GlobalBindingProvider, bool) {
+	p, ok := g.Env.(GlobalBindingProvider)
+	return p, ok
+}
+
+// OwnKeys 返回 globalThis 的自有属性名 (不含词法绑定 let/const/class)。
+func (g *GlobalObject) OwnKeys() []string {
+	p, ok := g.bindingProvider()
+	if !ok {
+		return nil
+	}
+	all := p.BindingNames()
+	out := make([]string, 0, len(all))
+	for _, n := range all {
+		if !p.BindingInfoOf(n).IsLexical {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// HasOwn 检查 name 是否为 globalThis 的自有属性。
+func (g *GlobalObject) HasOwn(name string) bool {
+	_, ok := g.OwnDescriptor(name)
+	return ok
+}
+
+// OwnDescriptor 返回 globalThis 上 name 的自有属性描述符。词法绑定
+// (let/const/class) 不是自有属性，返回 false。
+func (g *GlobalObject) OwnDescriptor(name string) (PropertyDescriptor, bool) {
+	p, ok := g.bindingProvider()
+	if !ok {
+		return PropertyDescriptor{}, false
+	}
+	info := p.BindingInfoOf(name)
+	if !info.Exists || info.IsLexical {
+		return PropertyDescriptor{}, false
+	}
+	return g.descriptorFor(name, info), true
+}
+
+// descriptorFor 由绑定元信息计算自有属性描述符。
+func (g *GlobalObject) descriptorFor(name string, info GlobalBindingInfo) PropertyDescriptor {
+	if info.HasDesc {
+		return info.Desc
+	}
+	// 访问器绑定: Value 存 *Accessor。
+	if acc, isAcc := info.Value.(*Accessor); isAcc {
+		_ = acc
+		return PropertyDescriptor{Value: info.Value, Writable: false, Enumerable: true, Configurable: true}
+	}
+	switch {
+	case info.IsVar, info.IsFnDecl:
+		return PropertyDescriptor{Value: info.Value, Writable: true, Enumerable: true, Configurable: false}
+	case info.IsImplicit:
+		return PropertyDescriptor{Value: info.Value, Writable: true, Enumerable: true, Configurable: true}
+	default:
+		if info.IsConst {
+			return PropertyDescriptor{Value: info.Value, Writable: false, Enumerable: false, Configurable: false}
+		}
+		return PropertyDescriptor{Value: info.Value, Writable: true, Enumerable: false, Configurable: true}
+	}
+}
+
+// EnumerableOwnKeys 返回 globalThis 上可枚举的自有属性名。
+func (g *GlobalObject) EnumerableOwnKeys() []string {
+	p, ok := g.bindingProvider()
+	if !ok {
+		return nil
+	}
+	all := p.BindingNames()
+	out := make([]string, 0, len(all))
+	for _, n := range all {
+		d, ok := g.OwnDescriptor(n)
+		if ok && d.Enumerable {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// DeleteOwn 删除 globalThis 的自有可配置属性。
+func (g *GlobalObject) DeleteOwn(name string) bool {
+	if m, ok := g.Env.(interface {
+		DeleteGlobalBinding(string) bool
+	}); ok {
+		return m.DeleteGlobalBinding(name)
+	}
+	return true
+}
+
+// DefineGlobal 以描述符在 globalThis 上定义/新建自有属性。
+func (g *GlobalObject) DefineGlobal(name string, desc PropertyDescriptor) bool {
+	if m, ok := g.Env.(interface {
+		DefineGlobalBinding(string, PropertyDescriptor) error
+	}); ok {
+		_ = m.DefineGlobalBinding(name, desc)
+		return true
+	}
+	return false
 }
 
 func NewGlobalObject(env Environment) *GlobalObject { return &GlobalObject{Env: env} }

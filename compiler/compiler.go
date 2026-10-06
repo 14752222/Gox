@@ -542,7 +542,7 @@ func (c *Compiler) emitVarHoistInits(stmts []ast.Statement) error {
 		c.emitter.EmitNoOperand(bytecode.OP_UNDEFINED)
 		if isGlobal {
 			nameIdx := c.constants.AddConstant(object.NewString(b.name))
-			c.emitter.Emit(bytecode.OP_DECLARE, nameIdx)
+			c.emitter.Emit(bytecode.OP_DECLARE_VAR, nameIdx)
 		} else {
 			c.emitter.Emit(bytecode.OP_STORE, uint16(b.slot))
 		}
