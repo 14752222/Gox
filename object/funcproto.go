@@ -13,24 +13,39 @@ import (
 // 实现依赖 CallFunc 回调桥 (SetCallFunction 注册)，因此可以调用任意
 // 可调用对象且不引入 object → vm 的依赖。
 
-// funcProtoLookup 在可调用类型的 GetProperty 中调用:
-// recv 是持有该方法的函数值 (调用时的 this)。
-func funcProtoLookup(recv Value, name string) (Value, bool) {
+// funcProtoLookup 在可调用类型的 GetProperty 中调用，返回 Function.prototype
+// 的共享方法 (call/apply/bind/toString)。
+//
+// 这些方法**必须**是可感知运行时 this 的 BuiltinMethod，而不能是把查找接收者
+// 词法捕获进闭包的无 this BuiltinFunction。原因: GetProperty 只保证普通方法调用
+// `f.call(x)` 的 this 恰好等于查找接收者 f，一旦方法被"间接"使用就会错位:
+//
+//	Function.prototype.call.bind(Object.prototype.hasOwnProperty)
+//	f.call.call(other, ...)   /   var c = f.call; c(x)
+//
+// 词法捕获版本会把 `call` 的目标错认成查找时那个对象 (如上例中的
+// Function.prototype)，导致 harness/verifyProperty.js 捕获的
+// `__hasOwnProperty` / `__propertyIsEnumerable` 恒返回 undefined，进而令
+// language/expressions/*/dstr 下大量 verifyProperty 用例失败。
+//
+// 参数 recv 保留仅为调用点签名稳定 (Closure/BuiltinFunction/BuiltinMethod 的
+// GetProperty 都传自身)，此处不再使用 —— 目标由运行时 this 决定。
+func funcProtoLookup(_ Value, name string) (Value, bool) {
 	switch name {
 	case "call":
-		return NewBuiltin("call", func(args ...Value) Value {
-			thisArg := args[0]
+		return NewBuiltinMethod("call", func(this Value, args ...Value) Value {
+			thisArg := args0OrUndefined(args)
 			var rest []Value
 			if len(args) > 1 {
 				rest = args[1:]
 			} else {
 				rest = []Value{}
 			}
-			return CallFunction(recv, thisArg, rest...)
+			return CallFunction(this, thisArg, rest...)
 		}), true
 	case "apply":
-		return NewBuiltin("apply", func(args ...Value) Value {
-			thisArg := args[0]
+		return NewBuiltinMethod("apply", func(this Value, args ...Value) Value {
+			thisArg := args0OrUndefined(args)
 			callArgs := []Value{}
 			if len(args) > 1 {
 				if arr, ok := args[1].(*Array); ok {
@@ -41,49 +56,64 @@ func funcProtoLookup(recv Value, name string) (Value, bool) {
 					callArgs = arrayLikeArgs(args[1])
 				}
 			}
-			return CallFunction(recv, thisArg, callArgs...)
+			return CallFunction(this, thisArg, callArgs...)
 		}), true
 	case "bind":
-		return NewBuiltin("bind", func(args ...Value) Value {
-			thisArg := args[0]
+		return NewBuiltinMethod("bind", func(this Value, args ...Value) Value {
+			thisArg := args0OrUndefined(args)
 			var pre []Value
 			if len(args) > 1 {
 				pre = args[1:]
 			} else {
 				pre = []Value{}
 			}
+			target := this
+			// 规范: 绑定函数的 name = "bound " + target.name。
 			boundName := "bound "
-			if s, ok := recv.GetProperty("name"); ok {
-				if str, ok := s.(*String); ok {
-					boundName += str.Value
+			if target != nil {
+				if s, ok := target.GetProperty("name"); ok {
+					if str, ok := s.(*String); ok {
+						boundName += str.Value
+					}
 				}
-			} else {
-				boundName += ""
 			}
 			bound := NewBuiltin(boundName, func(callArgs ...Value) Value {
 				full := make([]Value, 0, len(pre)+len(callArgs))
 				full = append(full, pre...)
 				full = append(full, callArgs...)
-				return CallFunction(recv, thisArg, full...)
+				return CallFunction(target, thisArg, full...)
 			})
 			// 绑定函数的 length = 原函数 length - 前置参数个数 (下限 0)
-			if l, ok := recv.GetProperty("length"); ok {
-				if n, ok := l.(*Number); ok {
-					ln := n.Value - float64(len(pre))
-					if ln < 0 {
-						ln = 0
+			if target != nil {
+				if l, ok := target.GetProperty("length"); ok {
+					if n, ok := l.(*Number); ok {
+						ln := n.Value - float64(len(pre))
+						if ln < 0 {
+							ln = 0
+						}
+						bound.SetProperty("length", NewNumber(ln))
 					}
-					bound.SetProperty("length", NewNumber(ln))
 				}
 			}
 			return bound
 		}), true
 	case "toString":
-		return NewBuiltin("toString", func(args ...Value) Value {
-			return NewString(recv.Inspect())
+		return NewBuiltinMethod("toString", func(this Value, args ...Value) Value {
+			if this == nil {
+				return NewString("undefined")
+			}
+			return NewString(this.Inspect())
 		}), true
 	}
 	return nil, false
+}
+
+// args0OrUndefined 返回 args[0]，args 为空时返回 undefined (thisArg 位置)。
+func args0OrUndefined(args []Value) Value {
+	if len(args) == 0 {
+		return UndefinedSingleton
+	}
+	return args[0]
 }
 
 // arrayLikeArgs 从类数组对象 (有 length 和数字键) 提取参数列表。
