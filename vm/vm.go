@@ -6326,7 +6326,7 @@ func EvalModuleFileVMWithGlobals(path string, globals *runtime.Environment) (*VM
 	// 顶层 this=undefined / 顶层声明进模块命名空间), 也要按模块早错规则拦截
 	// (重复导出名 / 未声明导出 / 顶层 return·yield 等) —— 二者互补, 缺一则
 	// test262 的 module 负例漏拦 (rTI1PN) 或模块语义不落地 (rNR2Zk)。
-	c, err := compileSourceOpts(string(code), true, true, false)
+	c, err := compileSourceOpts(string(code), true, true, false, false, nil)
 	if err != nil {
 		if isTS {
 			err = remapSourceError(err, lineMap)

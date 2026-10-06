@@ -1767,8 +1767,15 @@ func (p *Parser) parseLabeledStatement() *ast.LabeledStatement {
 	// language/statements}/async-generator/[named-]yield-as-label-identifier.js)。
 	// sloppy 非生成器代码里 yield 是普通 IdentifierName, `yield: ;` 仍是
 	// 合法标签语句; `var yield = 1` / `yield = 2` 不受影响。
-	if p.allowYield && p.curTokenIs(lexer.YIELD) {
-		p.addError("SyntaxError: yield is not allowed as a label identifier in a generator function")
+	if p.curTokenIs(lexer.YIELD) {
+		if p.allowYield {
+			p.addError("SyntaxError: yield is not allowed as a label identifier in a generator function")
+		} else if p.strict {
+			// 严格模式代码里 yield 是保留字, 同样不得作标签名
+			// (规范 12.1.1; test262 language/statements/labeled/value-yield-strict.js,
+			// flags: onlyStrict —— sloppy 的 `yield: 1;` 仍合法, 见 -non-strict 一条)。
+			p.addError("SyntaxError: yield is a reserved word and may not be used as a label in strict mode code")
+		}
 	}
 	stmt := &ast.LabeledStatement{
 		Token: p.curToken(),

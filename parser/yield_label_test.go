@@ -43,8 +43,14 @@ func TestYieldAsLabelIdentifierInGenerator(t *testing.T) {
 		{"async 函数体内", `async function f(){ yield: ; }`, false},
 		{"生成器内嵌普通函数", `function* g(){ function f(){ yield: ; } }`, false},
 		{"生成器内嵌箭头以外层 yield 表达式", `function* g(){ var x = yield; }`, false},
-		{"生成器方法返回普通函数", `class C { *m(){ return function(){ yield: ; }; } }`, false},
+		{"生成器内返回普通函数(sloppy)", `function* g(){ return function(){ yield: ; }; }`, false},
+		{"生成器方法返回普通函数(类体严格)", `class C { *m(){ return function(){ yield: ; }; } }`, true},
 		{"普通标签名", `function* g(){ outer: 1; }`, false},
+		// 严格模式: yield 是保留字, 同样不得作标签名 (规范 12.1.1 /
+		// test262 language/statements/labeled/value-yield-strict.js, onlyStrict)。
+		{"strict 顶层标签", `"use strict"; yield: 1;`, true},
+		{"strict 函数体内标签", `function f(){ "use strict"; yield: ; }`, true},
+		{"模块顶层标签(恒严格)", `yield: 1;`, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
