@@ -40,6 +40,17 @@ func (s *Symbol) SetProperty(name string, val Value) {
 	// Symbol 是不可变的
 }
 
+// SymbolProto 是 Symbol 原始值的原型对象 (Symbol.prototype)。
+// 由 stdlib 包初始化时设置 —— Symbol 原始值没有自有属性，
+// 属性访问 (含 @@toStringTag) 一律沿它查找。
+var SymbolProto Value
+
+// SetSymbolProto 设置全局 Symbol 原型 (由 stdlib 调用)。
+func SetSymbolProto(p Value) { SymbolProto = p }
+
+// GetSymbolProto 返回全局 Symbol 原型。
+func GetSymbolProto() Value { return SymbolProto }
+
 // ===== 全局 Symbol 注册表 =====
 
 var (

@@ -378,8 +378,10 @@ func nanosToDurationForInstant(ns *big.Int, largestUnit string) *object.Temporal
 	}
 }
 
-// setToStringTag 在原型上设置 Symbol.toStringTag，使 Object.prototype.toString
-// 输出 "[object Temporal.XXX]"。
+// setToStringTag 在内建原型/命名空间对象上设置 Symbol.toStringTag，使
+// Object.prototype.toString 输出 "[object <tag>]"。描述符为规范的
+// { writable:false, enumerable:false, configurable:true } —— 可被
+// `delete X.prototype[Symbol.toStringTag]` 删除并回落 builtinTag。
 func setToStringTag(proto *object.Object, tag string) {
-	proto.SetSymbolProperty(object.GetGlobalSymbol("Symbol.toStringTag"), object.NewString(tag))
+	proto.SetBuiltinSymbolProperty(object.GetGlobalSymbol("Symbol.toStringTag"), object.NewString(tag))
 }

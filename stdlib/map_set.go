@@ -10,6 +10,8 @@ func setupMapSet(env *runtime.Environment) {
 	// ===== Map =====
 	mapProto := setupMapProto()
 	object.SetMapProto(mapProto)
+	// %Map.prototype%[@@toStringTag] = "Map" —— 实例的标签来自原型链。
+	setToStringTag(mapProto, "Map")
 
 	mapFn := object.NewBuiltin("Map", func(args ...object.Value) object.Value {
 		m := object.NewMap()
@@ -36,6 +38,7 @@ func setupMapSet(env *runtime.Environment) {
 	// ===== Set =====
 	setProto := setupSetProto()
 	object.SetSetProto(setProto)
+	setToStringTag(setProto, "Set")
 
 	setFn := object.NewBuiltin("Set", func(args ...object.Value) object.Value {
 		s := object.NewSet()
@@ -62,6 +65,7 @@ func setupMapSet(env *runtime.Environment) {
 	// 过去这里既没设置 prototype 属性也没绑定实例原型，导致
 	// new WeakMap().set(k, v) 找不到方法而失败。
 	weakMapProto := setupWeakMapProto()
+	setToStringTag(weakMapProto, "WeakMap")
 	weakMapFn := object.NewBuiltin("WeakMap", func(args ...object.Value) object.Value {
 		m := object.NewMap()
 		m.SetProto(weakMapProto)
@@ -82,6 +86,7 @@ func setupMapSet(env *runtime.Environment) {
 	// ===== WeakSet =====
 	// 同理，WeakSet 只暴露 add/has/delete。
 	weakSetProto := setupWeakSetProto()
+	setToStringTag(weakSetProto, "WeakSet")
 	weakSetFn := object.NewBuiltin("WeakSet", func(args ...object.Value) object.Value {
 		s := object.NewSet()
 		s.SetProto(weakSetProto)

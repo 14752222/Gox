@@ -22,13 +22,24 @@ func setupObjectPrototype(o *object.BuiltinFunction) {
 	// toString(): 输出 "[object Tag]"。
 	// 它接收任意 this —— 通过 .call/.apply 反射时可以作用于任何值，
 	// 因此实现必须对所有内置类型有标签，而不能假设 this 是 *object.Object。
+	//
+	// 格式为规范的 "[object " + tag + "]" (小写 object + 空格)。此前实现输出
+	// "[" + tag + "]" —— 丢掉 "object " 前缀，导致
+	// Object.prototype.toString.call({}) === "[Object]"，与规范要求的
+	// "[object Object]" 不符 (built-ins/Object/prototype/toString/* 全族失败)。
 	proto.SetBuiltinProperty("toString", object.NewBuiltinMethod("toString", func(this object.Value, args ...object.Value) object.Value {
-		return object.NewString("[" + objectPrototypeTagFor(this) + "]")
+		if revokedProxyIn(this) {
+			return object.NewTypeError("Cannot perform 'IsArray' on a proxy that has been revoked")
+		}
+		return object.NewString(objectPrototypeStringOf(this))
 	}))
 
 	// toLocaleString: 本运行时无 Intl，语义与 toString 相同。
 	proto.SetBuiltinProperty("toLocaleString", object.NewBuiltinMethod("toLocaleString", func(this object.Value, args ...object.Value) object.Value {
-		return object.NewString("[" + objectPrototypeTagFor(this) + "]")
+		if revokedProxyIn(this) {
+			return object.NewTypeError("Cannot perform 'IsArray' on a proxy that has been revoked")
+		}
+		return object.NewString(objectPrototypeStringOf(this))
 	}))
 
 	// valueOf(): 返回对象本身。
@@ -66,60 +77,202 @@ func setupObjectPrototype(o *object.BuiltinFunction) {
 	o.SetProperty("prototype", proto)
 }
 
-// objectPrototypeTagFor 返回 Object.prototype.toString 所用的内置标签
-// (不含方括号)。与规范内部标签表一致。
+// objectPrototypeStringOf 返回 Object.prototype.toString 的完整结果:
+// 规范的 "[object " + tag + "]"。所有走 toString/toLocaleString 的路径
+// 统一经此，避免前缀格式在多处漂移。
+func objectPrototypeStringOf(v object.Value) string {
+	return "[object " + objectPrototypeTagFor(v) + "]"
+}
+
+// toStringTagSymbol 是 Symbol.toStringTag 全局符号 (与 JS 侧 Symbol.toStringTag 同一实例)。
+func toStringTagSymbol() *object.Symbol {
+	return object.GetGlobalSymbol("Symbol.toStringTag")
+}
+
+// revokedProxyIn 判断值是否为"已撤销代理"(可嵌套)。规范中 IsArray /
+// Get(@@toStringTag) 遇到已撤销代理一律抛 TypeError，必须先于标签解析检查。
+func revokedProxyIn(v object.Value) bool {
+	for i := 0; i < 64; i++ {
+		p, ok := v.(*object.Proxy)
+		if !ok {
+			return false
+		}
+		if p.IsRevoked {
+			return true
+		}
+		v = p.Target
+	}
+	return false
+}
+
+// objectPrototypeTagFor 返回 Object.prototype.toString 所用的标签
+// (不含 "[object " 前缀与 "]" 后缀)。
+//
+// 规范 Object.prototype.toString (ES2024 20.1.3.6) 的顺序:
+//  1. this 是 undefined / null → 直接返回 "Undefined" / "Null";
+//  2. tag = Get(O, @@toStringTag); 若为字符串则用它 (优先级最高);
+//  3. 否则用 builtinTag (Array / Function / Error / Number / ... / Object)。
+//
+// 注意 @@toStringTag 是**沿原型链**查找的: Map 实例的 "Map" 标签其实来自
+// %Map.prototype%[@@toStringTag]，因此 `delete Map.prototype[Symbol.toStringTag]`
+// 之后同一实例回落成 "Object" —— 这条语义是 symbol-tag-*-builtin 用例的核心。
 func objectPrototypeTagFor(v object.Value) string {
 	if v == nil {
 		return "Undefined"
 	}
-	switch t := v.(type) {
+	switch v.(type) {
 	case *object.Undefined:
 		return "Undefined"
 	case *object.Null:
 		return "Null"
+	}
+	// @@toStringTag 优先 (字符串才生效，非字符串回落 builtinTag)。
+	if tag, ok := lookupToStringTag(v); ok {
+		return tag
+	}
+	return builtinTagFor(v)
+}
+
+// lookupToStringTag 沿原型链读取 v 的 @@toStringTag，仅当它是**原始字符串**
+// 时返回 (规范: Type(tag) is not String → 忽略)。
+func lookupToStringTag(v object.Value) (string, bool) {
+	sym := toStringTagSymbol()
+	if sym == nil {
+		return "", false
+	}
+	// 代理: @@toStringTag 是一次普通 Get，会转发到目标 (可嵌套)。
+	// 已撤销代理不再可用 —— 交由调用方在 IsArray 阶段抛 TypeError。
+	for i := 0; i < 64; i++ {
+		p, ok := v.(*object.Proxy)
+		if !ok {
+			break
+		}
+		if p.IsRevoked || p.Target == nil {
+			return "", false
+		}
+		v = p.Target
+	}
+	// 普通对象 (含命名空间 / 各 *Object 原型 / 用户对象): 完整原型链查找。
+	if o, ok := v.(*object.Object); ok {
+		return stringTagOf(object.LookupSymbolProperty(o, sym))
+	}
+	// 独立 struct 类型: 各自的原型对象 (无则视为未定义)。
+	if p := protoObjectOf(v); p != nil {
+		return stringTagOf(p.GetSymbolProperty(sym))
+	}
+	return "", false
+}
+
+// stringTagOf 把 Get 的结果按 "是否为字符串" 解释: 只有原始 String 才算命中。
+func stringTagOf(tv object.Value, found bool) (string, bool) {
+	if !found {
+		return "", false
+	}
+	if s, ok := tv.(*object.String); ok {
+		return s.Value, true
+	}
+	return "", false
+}
+
+// protoObjectOf 返回值的原型对象 (仅当原型本身是 *Object 时) —— 独立 struct
+// 类型没有通用的 Symbol 键查找入口，@@toStringTag 只能落在原型对象上。
+func protoObjectOf(v object.Value) *object.Object {
+	asObj := func(p object.Value) *object.Object {
+		if o, ok := p.(*object.Object); ok {
+			return o
+		}
+		return nil
+	}
+	switch t := v.(type) {
+	case *object.Array:
+		if o := asObj(t.GetProto()); o != nil {
+			return o
+		}
+		return asObj(object.ArrayProto)
+	case *object.Map:
+		if o := asObj(t.GetProto()); o != nil {
+			return o
+		}
+		return asObj(object.MapProto)
+	case *object.Set:
+		if o := asObj(t.GetProto()); o != nil {
+			return o
+		}
+		return asObj(object.SetProto)
+	case *object.Promise:
+		return asObj(object.PromiseProto)
+	case *object.RegExp:
+		return asObj(object.RegExpProto)
+	case *object.String:
+		return asObj(object.StringProto)
+	case *object.Number:
+		return asObj(object.NumberProto)
+	case *object.Boolean:
+		return asObj(object.GetBooleanProto())
+	case *object.BigInt:
+		return asObj(object.GetBigIntProto())
+	case *object.Symbol:
+		return asObj(object.GetSymbolProto())
+	case *object.Generator:
+		return asObj(object.GetGeneratorPrototype())
+	case *object.AsyncGenerator:
+		if t.Proto != nil {
+			return asObj(t.Proto)
+		}
+		return asObj(object.GetAsyncGeneratorProto())
+	case *object.Closure, *object.CompiledFunction, *object.BuiltinFunction, *object.BuiltinMethod:
+		// 函数对象的 @@toStringTag 来自 %GeneratorFunction.prototype% /
+		// %AsyncFunction.prototype% / %AsyncGeneratorFunction.prototype%
+		// ("GeneratorFunction" / "AsyncFunction" / "AsyncGeneratorFunction")。
+		// 普通函数落在 %Function.prototype% 上，后者没有 @@toStringTag，
+		// 于是回落 builtinTag "Function"。
+		return asObj(object.FuncPrototypeOf(v))
+	}
+	return nil
+}
+
+// builtinTagFor 返回规范内部标签 (builtinTag)。
+//
+// 规范里 builtinTag 只会是 Array / Arguments / Function / Error / Boolean /
+// Number / String / Date / RegExp / Object —— **没有** "Map"/"Set"/"BigInt" 等:
+// 那些对象的标签一律来自原型上的 @@toStringTag。此处的 default 即 "Object"。
+func builtinTagFor(v object.Value) string {
+	switch t := v.(type) {
+	case *object.Array:
+		return "Array"
+	case *object.Error:
+		return "Error"
+	case *object.Boolean:
+		return "Boolean"
 	case *object.Number:
 		return "Number"
 	case *object.String:
 		return "String"
-	case *object.Boolean:
-		return "Boolean"
-	case *object.BigInt:
-		return "BigInt"
-	case *object.Symbol:
-		return "Symbol"
-	case *object.Array:
-		return "Array"
-	case *object.Map:
-		return "Map"
-	case *object.Set:
-		return "Set"
-	case *object.WeakRef:
-		return "WeakRef"
-	case *object.FinalizationRegistry:
-		return "FinalizationRegistry"
 	case *object.RegExp:
 		return "RegExp"
-	case *object.Promise:
-		return "Promise"
-	case *object.Error:
-		return "Error"
-	case *object.Generator:
-		return "Generator"
 	case *object.Proxy:
-		return "Object"
-	case *object.ArrayBuffer:
-		return "ArrayBuffer"
-	case *object.DataView:
-		return "DataView"
+		// 代理: IsArray/[[Call]]/[[ErrorData]] 均转发到目标。
+		return proxyBuiltinTagFor(t)
+	case *object.Closure, *object.CompiledFunction, *object.BuiltinFunction, *object.BuiltinMethod:
+		return "Function"
 	case *object.TypedArray:
 		if t.Kind.Name != "" {
 			return t.Kind.Name
 		}
 		return "TypedArray"
+	case *object.ArrayBuffer:
+		return "ArrayBuffer"
+	case *object.DataView:
+		return "DataView"
 	case *object.JSIterator:
+		if t.Name != "" {
+			return t.Name + " Iterator"
+		}
 		return "Iterator"
-	case *object.Closure, *object.CompiledFunction, *object.BuiltinFunction, *object.BuiltinMethod:
-		return "Function"
+	case *object.WeakRef:
+		return "WeakRef"
+	case *object.FinalizationRegistry:
+		return "FinalizationRegistry"
 	case *object.TemporalInstant:
 		return "Temporal.Instant"
 	case *object.TemporalPlainDateTime:
@@ -140,30 +293,28 @@ func objectPrototypeTagFor(v object.Value) string {
 		return "Temporal.TimeZone"
 	case *object.TemporalCalendar:
 		return "Temporal.Calendar"
-	case *object.Object:
-		// 普通对象: Symbol.toStringTag 优先。
-		// 对象字面量的 [Symbol.toStringTag] 存进 SymbolProperties，但同一
-		// 全局符号可能因注册时机不同而有多个实例 (ID 不同)，故第一遍按
-		// 全局符号精确查，第二遍按键的 Description 兜底扫描。
-		tagSym := object.GetGlobalSymbol("Symbol.toStringTag")
-		if tagSym != nil {
-			if sv, ok := t.GetSymbolProperty(tagSym); ok {
-				if s, ok := sv.(*object.String); ok && s.Value != "" {
-					return s.Value
-				}
-			}
-		}
-		for _, sym := range t.SymbolKeyList {
-			if sym.Description != "Symbol.toStringTag" {
-				continue
-			}
-			if sv, ok := t.GetSymbolProperty(sym); ok {
-				if s, ok := sv.(*object.String); ok && s.Value != "" {
-					return s.Value
-				}
-			}
-		}
+	}
+	return "Object"
+}
+
+// proxyBuiltinTagFor 按代理目标的种类返回 builtinTag。目标不可达 (已撤销)
+// 时回落 "Object" —— 真实的撤销异常由 Get 路径负责抛出。
+//
+// 代理可嵌套 (new Proxy(new Proxy([], {}), {})): IsArray 沿 [[ProxyTarget]]
+// 链递归，因此这里同样递归解析。
+func proxyBuiltinTagFor(p *object.Proxy) string {
+	if p.IsRevoked || p.Target == nil {
 		return "Object"
+	}
+	switch t := p.Target.(type) {
+	case *object.Array:
+		return "Array"
+	case *object.Error:
+		return "Error"
+	case *object.Proxy:
+		return proxyBuiltinTagFor(t)
+	case *object.Closure, *object.CompiledFunction, *object.BuiltinFunction, *object.BuiltinMethod:
+		return "Function"
 	}
 	return "Object"
 }
@@ -171,6 +322,13 @@ func objectPrototypeTagFor(v object.Value) string {
 // hasOwnPropertyImpl 实现 hasOwnProperty 的"自有属性"查询。
 func hasOwnPropertyImpl(this object.Value, key object.Value) bool {
 	if this == nil {
+		return false
+	}
+	// Symbol 键: 查 SymbolProperties (与字符串键空间隔离)。
+	if sym, ok := key.(*object.Symbol); ok {
+		if o, ok := this.(*object.Object); ok {
+			return o.HasOwnSymbolProperty(sym)
+		}
 		return false
 	}
 	name := propertyKeyString(key)
@@ -213,6 +371,14 @@ func hasOwnPropertyImpl(this object.Value, key object.Value) bool {
 // 调用方已按 ToObject/ToPropertyKey 处理 this 与 key (经 propertyKeyString)。
 func propertyIsEnumerableImpl(this object.Value, key object.Value) bool {
 	if this == nil {
+		return false
+	}
+	// Symbol 键: 自有且 Enumerable=true。
+	if sym, ok := key.(*object.Symbol); ok {
+		if o, ok := this.(*object.Object); ok {
+			d, found := o.GetSymbolPropertyDescriptor(sym)
+			return found && d.Enumerable
+		}
 		return false
 	}
 	name := propertyKeyString(key)

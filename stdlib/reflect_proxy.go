@@ -63,6 +63,8 @@ func setupReflectProxy(env *runtime.Environment) {
 	// ===== Reflect =====
 	reflectObj := object.NewObject()
 	setNamespaceProto(reflectObj)
+	// %Reflect%[@@toStringTag] = "Reflect" —— 命名空间对象的品牌标签。
+	setToStringTag(reflectObj, "Reflect")
 
 	// Reflect.get(target, key, receiver?) — 读取目标属性
 	reflectObj.SetBuiltinProperty("get", object.NewBuiltin("Reflect.get", func(args ...object.Value) object.Value {

@@ -25,6 +25,17 @@ func (b *Boolean) SetProperty(name string, val Value) {
 	// 原始类型不能设置属性
 }
 
+// BooleanProto 是 Boolean 原始值的原型对象 (Boolean.prototype)。
+// 由 stdlib 包初始化时设置 —— Boolean 原始值没有自有属性，
+// 属性访问 (含 @@toStringTag) 一律沿它查找。
+var BooleanProto Value
+
+// SetBooleanProto 设置全局布尔原型 (由 stdlib 调用)。
+func SetBooleanProto(p Value) { BooleanProto = p }
+
+// GetBooleanProto 返回全局布尔原型。
+func GetBooleanProto() Value { return BooleanProto }
+
 // NewBoolean 创建布尔值的便捷函数
 func NewBoolean(v bool) *Boolean {
 	return &Boolean{Value: v}

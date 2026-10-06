@@ -37,6 +37,16 @@ func BuiltinConstProperty(val Value) PropertyDescriptor {
 	return PropertyDescriptor{Value: val, Writable: false, Enumerable: false, Configurable: false}
 }
 
+// BuiltinSymbolProperty 创建 Symbol 键内建属性的描述符: writable:false,
+// enumerable:false, configurable:true。
+//
+// 这是规范中 @@toStringTag 这类 well-known symbol 属性的标准形态 —— 它既
+// 不可写也不可枚举，但可配置 (因此 `delete X.prototype[Symbol.toStringTag]`
+// 能成功)。用户赋值 `o[Symbol.toStringTag] = v` 仍走 DataProperty (全 true)。
+func BuiltinSymbolProperty(val Value) PropertyDescriptor {
+	return PropertyDescriptor{Value: val, Writable: false, Enumerable: false, Configurable: true}
+}
+
 // Object 表示 JavaScript 的对象类型。
 // 对象是一组键值对的集合，通过 Proto 字段实现原型链。
 type Object struct {
@@ -323,21 +333,65 @@ func (o *Object) GetSymbolProperty(sym *Symbol) (Value, bool) {
 	return desc.Value, true
 }
 
-// SetSymbolProperty 通过 Symbol 键设置属性值。
+// SetSymbolProperty 通过 Symbol 键设置属性值 (用户赋值路径, 对应
+// OrdinarySetWithOwnDescriptor 的简化形态)。
+//
+// 已存在的属性遵循其描述符: 不可写 (writable:false) 时赋值静默失败 ——
+// 这一点是内建 @@toStringTag (writable:false) 的语义要求，否则
+// `X.prototype[Symbol.toStringTag] = v` 会绕过不可写性。
 func (o *Object) SetSymbolProperty(sym *Symbol, val Value) {
 	if o.SymbolProperties == nil {
 		o.SymbolProperties = make(map[uint64]PropertyDescriptor)
 	}
-	if o.SymbolProperties == nil {
+	if d, exists := o.SymbolProperties[sym.ID]; exists {
+		if d.Writable {
+			d.Value = val
+			o.SymbolProperties[sym.ID] = d
+		}
 		return
 	}
-	if o.Extensible {
-		if _, exists := o.SymbolProperties[sym.ID]; !exists {
-			o.SymbolKeyList = append(o.SymbolKeyList, sym)
-		}
-		o.SymbolProperties[sym.ID] = DataProperty(val)
+	if !o.Extensible {
+		return
 	}
+	o.SymbolKeyList = append(o.SymbolKeyList, sym)
+	o.SymbolProperties[sym.ID] = DataProperty(val)
 }
+
+// SetBuiltinSymbolProperty 以 Symbol 键内建属性语义 (writable:false,
+// enumerable:false, configurable:true) 注册属性。内建原型上的
+// Symbol.toStringTag 一律经此 —— 与用户赋值 SetSymbolProperty 区分开。
+func (o *Object) SetBuiltinSymbolProperty(sym *Symbol, val Value) {
+	if o.SymbolProperties == nil {
+		o.SymbolProperties = make(map[uint64]PropertyDescriptor)
+	}
+	if _, exists := o.SymbolProperties[sym.ID]; !exists {
+		o.SymbolKeyList = append(o.SymbolKeyList, sym)
+	}
+	o.SymbolProperties[sym.ID] = BuiltinSymbolProperty(val)
+}
+
+// GetSymbolPropertyDescriptor 返回 Symbol 键自有属性的描述符 (供
+// Object.getOwnPropertyDescriptor 处理 Symbol 键)。
+func (o *Object) GetSymbolPropertyDescriptor(sym *Symbol) (PropertyDescriptor, bool) {
+	if o.SymbolProperties == nil {
+		return PropertyDescriptor{}, false
+	}
+	d, ok := o.SymbolProperties[sym.ID]
+	return d, ok
+}
+
+// DefineOwnSymbolProperty 以完整描述符定义 Symbol 键自有属性
+// (Object.defineProperty 的 Symbol 键形态)。
+func (o *Object) DefineOwnSymbolProperty(sym *Symbol, desc PropertyDescriptor) {
+	if o.SymbolProperties == nil {
+		o.SymbolProperties = make(map[uint64]PropertyDescriptor)
+	}
+	if _, exists := o.SymbolProperties[sym.ID]; !exists {
+		o.SymbolKeyList = append(o.SymbolKeyList, sym)
+	}
+	o.SymbolProperties[sym.ID] = desc
+}
+
 
 // SymbolKeys 按插入顺序返回对象的 Symbol 自有键。
 func (o *Object) SymbolKeys() []*Symbol {

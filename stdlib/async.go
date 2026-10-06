@@ -102,12 +102,12 @@ func setupAsyncGeneratorIntrinsics(env *runtime.Environment) {
 
 	agProto.SetProperty("constructor", agFuncProto)
 	if tagSym != nil {
-		agProto.SetSymbolProperty(tagSym, object.NewString("AsyncGenerator"))
+		agProto.SetBuiltinSymbolProperty(tagSym, object.NewString("AsyncGenerator"))
 	}
 	agFuncProto.SetProperty("prototype", agProto)
 	agFuncProto.SetProperty("constructor", agFunc)
 	if tagSym != nil {
-		agFuncProto.SetSymbolProperty(tagSym, object.NewString("AsyncGeneratorFunction"))
+		agFuncProto.SetBuiltinSymbolProperty(tagSym, object.NewString("AsyncGeneratorFunction"))
 	}
 	agFunc.SetProperty("prototype", agFuncProto)
 

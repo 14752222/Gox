@@ -61,11 +61,11 @@ func setupFunctionIntrinsics(env *runtime.Environment) {
 	genFuncProto.SetBuiltinProperty("prototype", genProto)
 	genFuncProto.SetBuiltinProperty("constructor", genFunc)
 	if tagSym != nil {
-		genFuncProto.SetSymbolProperty(tagSym, object.NewString("GeneratorFunction"))
+		genFuncProto.SetBuiltinSymbolProperty(tagSym, object.NewString("GeneratorFunction"))
 	}
 	genProto.SetBuiltinProperty("constructor", genFuncProto)
 	if tagSym != nil {
-		genProto.SetSymbolProperty(tagSym, object.NewString("Generator"))
+		genProto.SetBuiltinSymbolProperty(tagSym, object.NewString("Generator"))
 	}
 	genFunc.SetProperty("prototype", genFuncProto)
 	genFunc.FuncPrototype = funcCtor // %GeneratorFunction%.[[Prototype]] = %Function%
@@ -79,6 +79,12 @@ func setupFunctionIntrinsics(env *runtime.Environment) {
 	})
 	asyncFuncProto := object.NewObjectWithProto(funcProto) // %AsyncFunction.prototype%
 	asyncFuncProto.SetBuiltinProperty("constructor", asyncFunc)
+	// %AsyncFunction.prototype%[@@toStringTag] = "AsyncFunction":
+	// async 函数对象的 "[object AsyncFunction]" 品牌来自这里
+	// (普通函数无此标签，回落 builtinTag "Function")。
+	if tagSym != nil {
+		asyncFuncProto.SetBuiltinSymbolProperty(tagSym, object.NewString("AsyncFunction"))
+	}
 	asyncFunc.SetProperty("prototype", asyncFuncProto)
 	asyncFunc.FuncPrototype = funcCtor // %AsyncFunction%.[[Prototype]] = %Function%
 	object.SetAsyncFunctionPrototype(asyncFuncProto)

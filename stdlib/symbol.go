@@ -105,5 +105,16 @@ func setupSymbolFunction(env *runtime.Environment) {
 		symbolFn.SetProperty(k, val)
 	}
 
+	// ===== %Symbol.prototype% =====
+	// Symbol 原始值没有自有属性: 属性访问 (含 @@toStringTag) 一律沿这个
+	// 原型对象查找。规范里它携带 @@toStringTag = "Symbol"，因此
+	// Object.prototype.toString.call(Symbol('x')) === "[object Symbol]"，
+	// 而 `delete Symbol.prototype[Symbol.toStringTag]` 之后回落 "[object Object]"。
+	symbolProto := object.NewObjectWithProto(object.GetObjectPrototype())
+	symbolProto.SetBuiltinProperty("constructor", symbolFn)
+	setToStringTag(symbolProto, "Symbol")
+	symbolFn.SetProperty("prototype", symbolProto)
+	object.SetSymbolProto(symbolProto)
+
 	env.Declare("Symbol", symbolFn, false)
 }

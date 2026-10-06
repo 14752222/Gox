@@ -9,6 +9,7 @@ import (
 func setupPromise(env *runtime.Environment) {
 	promiseProto := setupPromiseProto()
 	object.SetPromiseProto(promiseProto)
+	setToStringTag(promiseProto, "Promise")
 
 	promiseFn := object.NewBuiltin("Promise", func(args ...object.Value) object.Value {
 		if len(args) < 1 {

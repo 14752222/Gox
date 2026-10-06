@@ -35,6 +35,9 @@ func setupObjectGlobal() *object.BuiltinFunction {
 		// (new Number(5) 得到的也是 number)，因此此处原样返回原始值。
 		return v
 	})
+	// Object(x) 从不抛异常: 传入 Error 对象时它是"值"而非异常
+	// (否则 Object(Error()) 会被 VM 当成 throw，call-error 用例失败)。
+	o.ReturnIsValue = true
 	o.SetProperty("name", object.NewString("Object"))
 
 	// Object.keys(obj): 自有可枚举属性的键
@@ -277,6 +280,15 @@ func setupObjectGlobal() *object.BuiltinFunction {
 			//  Object.defineProperty(this, ...) 类 test262 用例。)
 			return args[0]
 		}
+		// Symbol 键: 必须写入 SymbolProperties (按 Symbol.ID), 不能经
+		// toStr 落成 "Symbol(...)" 字符串键 —— 否则符号键属性读不到,
+		// 且 Object.defineProperty(X, Symbol.toStringTag, ...) 全部失效。
+		if sym, isSym := args[1].(*object.Symbol); isSym {
+			if errVal := defineOneSymbolProperty(obj, sym, args[2]); errVal != nil {
+				return errVal
+			}
+			return args[0]
+		}
 		key := toStr(args[1])
 		if errVal := defineOneProperty(obj, key, args[2]); errVal != nil {
 			return errVal
@@ -288,6 +300,18 @@ func setupObjectGlobal() *object.BuiltinFunction {
 	o.SetProperty("getOwnPropertyDescriptor", object.NewBuiltin("getOwnPropertyDescriptor", func(args ...object.Value) object.Value {
 		if len(args) < 2 {
 			return object.UndefinedSingleton
+		}
+		// Symbol 键: 查 SymbolProperties。
+		if sym, isSym := args[1].(*object.Symbol); isSym {
+			sobj, ok := args[0].(*object.Object)
+			if !ok {
+				return object.NewTypeError("Object.getOwnPropertyDescriptor called on non-object")
+			}
+			sdesc, found := sobj.GetSymbolPropertyDescriptor(sym)
+			if !found {
+				return object.UndefinedSingleton
+			}
+			return describeProperty(sdesc)
 		}
 		key := toStr(args[1])
 		var desc object.PropertyDescriptor
@@ -842,6 +866,13 @@ func setupGlobalFunctions(env *runtime.Environment) {
 		return object.NewBoolean(toBool(args[0]))
 	})
 	boolFn.SetProperty("name", object.NewString("Boolean"))
+	// Boolean.prototype: Boolean 原始值没有自有属性，属性访问 (含
+	// @@toStringTag) 一律沿它查找。规范里它**没有** @@toStringTag，
+	// 因此 toString.call(true) 的 "Boolean" 标签来自 builtinTag。
+	boolProto := object.NewObjectWithProto(objectPrototype)
+	boolProto.SetBuiltinProperty("constructor", boolFn)
+	boolFn.SetProperty("prototype", boolProto)
+	object.SetBooleanProto(boolProto)
 	env.Declare("Boolean", boolFn, false)
 
 	// Function() 构造器已移至 setupFunctionIntrinsics (stdlib/function_proto.go)，
@@ -913,6 +944,80 @@ func newDynamicFunction(env *runtime.Environment, args []object.Value, kind dyna
 		Env:           env,
 		FuncPrototype: object.FuncPrototypeForCompiled(fn),
 	}
+}
+
+// describeProperty 把内部 PropertyDescriptor 转成 JS 描述符对象
+// (Object.getOwnPropertyDescriptor 的返回形态)。
+func describeProperty(desc object.PropertyDescriptor) object.Value {
+	result := object.NewObject()
+	result.SetProperty("configurable", object.NewBoolean(desc.Configurable))
+	result.SetProperty("enumerable", object.NewBoolean(desc.Enumerable))
+	if acc, isAcc := desc.Value.(*object.Accessor); isAcc {
+		if acc.Getter != nil {
+			result.SetProperty("get", acc.Getter)
+		} else {
+			result.SetProperty("get", object.UndefinedSingleton)
+		}
+		if acc.Setter != nil {
+			result.SetProperty("set", acc.Setter)
+		} else {
+			result.SetProperty("set", object.UndefinedSingleton)
+		}
+		return result
+	}
+	result.SetProperty("value", desc.Value)
+	result.SetProperty("writable", object.NewBoolean(desc.Writable))
+	return result
+}
+
+// defineOneSymbolProperty 按 property descriptor 定义一个 Symbol 键自有属性。
+// 与 defineOneProperty 同一套 ToPropertyDescriptor 语义, 但落点在
+// Object.SymbolProperties (按 Symbol.ID), 与字符串键空间隔离。
+func defineOneSymbolProperty(obj *object.Object, sym *object.Symbol, descVal object.Value) object.Value {
+	if !object.IsObjectValue(descVal) {
+		return object.NewTypeError("Property description must be an object")
+	}
+	get := func(n string) (object.Value, bool) {
+		return descVal.GetProperty(n)
+	}
+	accField := func(v object.Value) object.Value {
+		if v == nil || isUndefinedValue(v) {
+			return object.UndefinedSingleton
+		}
+		return v
+	}
+
+	existing, exists := obj.GetSymbolPropertyDescriptor(sym)
+	nd := existing
+	if !exists {
+		nd = object.PropertyDescriptor{}
+	}
+
+	_, hasGet := get("get")
+	_, hasSet := get("set")
+	if hasGet || hasSet {
+		g, _ := get("get")
+		s, _ := get("set")
+		nd.Value = &object.Accessor{Getter: accField(g), Setter: accField(s)}
+	} else {
+		if v, found := get("value"); found {
+			nd.Value = v
+		} else if !exists {
+			nd.Value = object.UndefinedSingleton
+		}
+		if v, found := get("writable"); found {
+			nd.Writable = toBool(v)
+		}
+	}
+	if v, found := get("enumerable"); found {
+		nd.Enumerable = toBool(v)
+	}
+	if v, found := get("configurable"); found {
+		nd.Configurable = toBool(v)
+	}
+
+	obj.DefineOwnSymbolProperty(sym, nd)
+	return nil
 }
 
 // defineOneProperty 按 property descriptor 定义一个属性。

@@ -49,7 +49,7 @@ func setupBigInt(env *runtime.Environment) {
 		return bi
 	}))
 
-	proto.SetSymbolProperty(object.GetGlobalSymbol("Symbol.toStringTag"), object.NewString("BigInt"))
+	proto.SetBuiltinSymbolProperty(object.GetGlobalSymbol("Symbol.toStringTag"), object.NewString("BigInt"))
 	object.SetBigIntProto(proto)
 
 	// ===== BigInt() 构造器 =====

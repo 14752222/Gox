@@ -43,10 +43,14 @@ func SetupGlobals() *runtime.Environment {
 
 	// ===== Math =====
 	mathObj := setupMath()
+	// %Math%[@@toStringTag] = "Math" —— Math 是普通对象 (builtinTag "Object")，
+	// 其 "[object Math]" 品牌完全来自这个自身符号属性。
+	setToStringTag(mathObj, "Math")
 	env.Declare("Math", mathObj, false)
 
 	// ===== JSON =====
 	jsonObj := setupJSON()
+	setToStringTag(jsonObj, "JSON")
 	env.Declare("JSON", jsonObj, false)
 
 	// ===== Object =====
