@@ -101,6 +101,18 @@ type Compiler struct {
 	// (super.x) 合法并按 home 解析; SuperCall (super()) 恒 SyntaxError
 	// (currentSuperClass 在 eval 单元恒为 "", 两条 super 调用分支原样拦下)。
 	evalSuperHome *evalSuperHomeCtx
+	// staticKeysSlot / staticKeysUsed: 静态成员 ComputedPropertyName 的
+	// 预求值键数组槽位与消费计数 (r4hv9u)。
+	//
+	// 规范 ClassElementList Evaluation: 静态成员的 ComputedPropertyName 在
+	// **外层函数上下文**求值 (外层是生成器时 `get [yield 9](){}` 合法), 而
+	// 合成静态初始化函数 __static_init__ 是非生成器帧 —— 把计算键编进去会
+	// 让 yield 在运行时撞 "yield outside generator"。故 compileClassBody 把
+	// 全部静态计算键按定义顺序在外层求值收进数组, 作唯一实参传进合成函数;
+	// 合成函数内 staticKeysSlot >= 0 时各计算键从该数组按序取
+	// (staticKeysUsed 计数), 不再原地编译表达式。
+	staticKeysSlot int
+	staticKeysUsed int
 
 	// tryScopes 是当前函数内「仍活跃」的 try 处理器条目的编译期镜像 ——
 	// 对应运行时 vm.tryStack 里属于当前帧的那一段。长度即 try 嵌套深度。
@@ -2636,7 +2648,18 @@ func (c *Compiler) compileClassBody(className string, superClass ast.Expression,
 		if className != "" && className != "<anonymous>" {
 			c.evalHome = evalHomeCtx{Name: className, Static: true, SuperName: superName}
 		}
-		initMeta, err := c.compileStaticInitFn(className, superName, statics)
+		// 静态计算键预求值 (r4hv9u): 静态成员的 ComputedPropertyName 在外层函数
+		// 上下文求值 (外层是生成器时 `static get [yield 9](){}` 合法), 而
+		// __static_init__ 合成函数是非生成器帧 —— 故在外层按定义顺序求值收进数组
+		// 作唯一实参传入, 合成函数内按序取用。
+		passStaticKeys := false
+		for _, m := range statics {
+			if m.ComputedKey != nil {
+				passStaticKeys = true
+				break
+			}
+		}
+		initMeta, err := c.compileStaticInitFn(className, superName, statics, passStaticKeys)
 		c.evalHome = prevStaticHome
 		if err != nil {
 			return err
@@ -2647,7 +2670,24 @@ func (c *Compiler) compileClassBody(className string, superClass ast.Expression,
 		c.emitter.EmitNoOperand(bytecode.OP_DUP)
 		c.emitter.Emit(bytecode.OP_FUNCTION, initIdx)
 		c.emitter.EmitNoOperand(bytecode.OP_SWAP)
-		c.emitter.Emit(bytecode.OP_CALL_METHOD, 0)
+		if passStaticKeys {
+			// [ctor, fn, ctor] → key1..keyN → NEW_ARRAY N → [ctor, fn, ctor, keys]
+			// → CALL_METHOD(1) → [ctor, result]
+			keyCount := 0
+			for _, m := range statics {
+				if m.ComputedKey == nil {
+					continue
+				}
+				if err := c.compileExpression(m.ComputedKey); err != nil {
+					return err
+				}
+				keyCount++
+			}
+			c.emitter.Emit(bytecode.OP_NEW_ARRAY, uint16(keyCount))
+			c.emitter.Emit(bytecode.OP_CALL_METHOD, 1)
+		} else {
+			c.emitter.Emit(bytecode.OP_CALL_METHOD, 0)
+		}
 		c.emitter.EmitNoOperand(bytecode.OP_POP)
 	}
 	c.currentPrivatePrefix = prevPrefix
@@ -2659,11 +2699,33 @@ func (c *Compiler) compileClassBody(className string, superClass ast.Expression,
 // 额外把类名绑定到一个局部槽 (= this), 满足 `static b = C.a + 1` 这类
 // 「静态初始化器里引用类名」的规范语义。返回时类名的槽位由 VM 在入口按
 // 下面的 STORE 序列写入。
-func (c *Compiler) compileStaticInitFn(className, superName string, statics []*ast.ClassMethod) (*bytecode.FunctionMetadata, error) {
+//
+// passStaticKeys: 调用方已在外层作用域按定义顺序求值全部静态 ComputedPropertyName
+// 并收进数组作唯一实参 (r4hv9u)。此时合成函数多一个 __static_keys__ 形参槽
+// (slot 0), 静态计算键一律从该数组按序取 (见 emitStaticKey), 不在本函数内
+// 编译 ——本函数是非生成器帧, yield 等外层上下文构造在此无法执行。
+func (c *Compiler) compileStaticInitFn(className, superName string, statics []*ast.ClassMethod, passStaticKeys bool) (*bytecode.FunctionMetadata, error) {
 	prevScope := c.scope
 	baseSlot := prevScope.NumLocals()
 	fnScope := NewFunctionScope(prevScope)
 	c.scope = fnScope
+
+	// __static_keys__ 形参槽 (r4hv9u): 预求值的静态计算键数组, 必须是 slot 0
+	// (VM 按 baseSlot+i 放置实参)。无静态计算键时不声明, 合成函数签名不变。
+	keysSlot := -1
+	if passStaticKeys {
+		sym := fnScope.Define("__static_keys__", false)
+		sym.Declared = true
+		keysSlot = sym.Slot
+	}
+	prevKeysSlot := c.staticKeysSlot
+	prevKeysUsed := c.staticKeysUsed
+	c.staticKeysSlot = keysSlot
+	c.staticKeysUsed = 0
+	defer func() {
+		c.staticKeysSlot = prevKeysSlot
+		c.staticKeysUsed = prevKeysUsed
+	}()
 
 	// arguments 槽位 (静态初始化器内引用 arguments 是 parser 层早错, 但函数帧
 	// 需要一个槽; 与 compileFunctionSelf 同口径)。
@@ -2721,12 +2783,34 @@ func (c *Compiler) compileStaticInitFn(className, superName string, statics []*a
 	c.tryScopes = prevTryScopes
 	c.finallyRetSlot = prevFinallyRetSlot
 
-	meta := bytecode.NewFunctionMetadata("__static_init__", fnIns, fnScope.NumLocals(), 0, nil, false)
+	var initParams []bytecode.ParameterSpec
+	numParams := 0
+	if passStaticKeys {
+		initParams = []bytecode.ParameterSpec{{Name: "__static_keys__"}}
+		numParams = 1
+	}
+	meta := bytecode.NewFunctionMetadata("__static_init__", fnIns, fnScope.NumLocals(), numParams, initParams, false)
 	meta.BaseSlot = baseSlot
 	meta.ArgumentsSlot = argumentsSlot
 	meta.IsStrict = true
 	meta.Positions = toSrcPosList(fnSrcPositions)
 	return meta, nil
+}
+
+// emitStaticKey 发射「静态成员计算键的取值」: 把 __static_keys__ 数组的第
+// staticKeysUsed 个元素压栈 (与 compileClassBody 预求值的顺序一致), 消费计数 +1。
+// staticKeysSlot < 0 (无预求值通道) 时退化为原地编译表达式 ——正常路径不会
+// 走到 (compileClassBody 只在存在静态计算键时才传数组)。
+func (c *Compiler) emitStaticKey(key ast.Expression) error {
+	if c.staticKeysSlot < 0 {
+		return c.compileExpression(key)
+	}
+	c.emitter.Emit(bytecode.OP_LOAD, uint16(c.staticKeysSlot))
+	idx := c.constants.AddConstant(object.NewInt(int64(c.staticKeysUsed)))
+	c.emitter.Emit(bytecode.OP_CONST, idx)
+	c.emitter.EmitNoOperand(bytecode.OP_GET_INDEX)
+	c.staticKeysUsed++
+	return nil
 }
 
 // compileStaticElements 发射静态方法/字段的挂载序列。
@@ -2776,18 +2860,18 @@ func (c *Compiler) compileStaticElements(superName string, statics []*ast.ClassM
 				continue
 			}
 			if m.ComputedKey != nil {
-				// 计算键静态字段: static [expr] = value
-				c.emitter.EmitNoOperand(bytecode.OP_DUP)
-				if m.FieldValue != nil {
-					if err := c.compileFieldInitValue(m.FieldValue); err != nil {
-						return err
-					}
-				} else {
-					c.emitter.EmitNoOperand(bytecode.OP_UNDEFINED)
-				}
-				if err := c.compileExpression(m.ComputedKey); err != nil {
+			// 计算键静态字段: static [expr] = value
+			c.emitter.EmitNoOperand(bytecode.OP_DUP)
+			if m.FieldValue != nil {
+				if err := c.compileFieldInitValue(m.FieldValue); err != nil {
 					return err
 				}
+			} else {
+				c.emitter.EmitNoOperand(bytecode.OP_UNDEFINED)
+			}
+			if err := c.emitStaticKey(m.ComputedKey); err != nil {
+				return err
+			}
 				c.emitter.EmitNoOperand(bytecode.OP_SWAP)
 				c.emitter.EmitNoOperand(bytecode.OP_SET_INDEX)
 				c.emitter.EmitNoOperand(bytecode.OP_POP)
@@ -2847,7 +2931,7 @@ func (c *Compiler) compileStaticElements(superName string, statics []*ast.ClassM
 		c.emitter.Emit(bytecode.OP_FUNCTION, midx) // [obj, fn]
 		if m.ComputedKey != nil {
 			// 动态键静态方法: [obj(, obj), fn] → key → DYN 访问器/SET_INDEX
-			if err := c.compileExpression(m.ComputedKey); err != nil {
+			if err := c.emitStaticKey(m.ComputedKey); err != nil {
 				return err
 			}
 			switch {
