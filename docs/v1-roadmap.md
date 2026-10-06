@@ -279,6 +279,35 @@ lead 按既有恢复套路从 worktree 的 `git status` / `git diff` 捞回，**
 ⇒ 派工单里「干完 `git commit`」这一条必须写死，且 lead 收工前必须逐 worktree 检查 `git log` **与** `git status`（只看 log 会漏掉未提交的整条路线）。
 
 **并行会话的动向**：本批推送时远端 main 已被另一会话推进 5 个提交（`f5642b2` / `2a17dd4` / `09c2f64` / `4a5f939` / `c5665b0`，均围绕 `rXrGfu` 的 CI 红归因，含 `fix(gfx): 测试清空了字体扫描结果, 害 Linux 整屏中文不渲染`）⇒ `merge/batch4` 已 `rebase` 到其上再推（`c5665b0..7a426b9`）。
+
+## 十六、已完成（2026-10-06 合流批次五：globalThis 自有属性 / for 头部早错 / ToPropertyKey 一次 / yield 终结符 / using 位置 / 符号键访问器）
+
+由并行工作流各自 `cherry-pick` 进 `merge/batch5`，基线 `7a426b9` = 批次四合流树，合流尖 `f1a46fb`。全量 A/B 数字**待 lead 回填**（徽章 `docs/test262-compliance.json` 截至本台账仍为批次四口径 70.8%）。逐路线台账（一特性一行：提交 sha / 定向 test262 数字 / LOST 归因字母）：
+
+| 项 | 结果 |
+|---|---|
+| globalThis 自有属性查询（global-obj 路线，`f1a46fb`） | ✅ 已落地：`object.GlobalBindingInfo/GlobalBindingProvider` 接口暴露全局环境绑定元信息；GlobalObject 补 [[Prototype]] + OwnKeys/HasOwn/OwnDescriptor/EnumerableOwnKeys/DeleteOwn/DefineGlobal；`OP_DECLARE_VAR` 供顶层 var 提升期建自有属性绑定。定向 A/B（filter `dynamic-import\|await-using\|async-generator\|async-function\|optional-chaining\|import-defer\|global-code\|unary-expr\|new\.target\|top-level-await\|for-await-of\|source-phase-import\|async-arrow`，4200 例）base 2905 → 2939，**GAIN 34 / LOST 0**（归因 A） |
+| for/for-in/for-of 头部词法声明与循环体 var 重声明早错（for-head 路线，`88c70e5`） | ✅ 已落地：`checkForHeadRedeclaration` 唯一 FOR 分派点收口，覆盖 for/for-in/for-of/for await-of/using 头部；循环体 var 名经 `blockVarDeclaredNames` 收集（函数边界自然切断）。定向 A/B：`for-of\|for-in` **GAIN 5 / LOST 0**、`statements/for/` **GAIN 2 / LOST 0**（归因 A） |
+| 成员左值键只求值一次 ToPropertyKey + delete 键归一（tpk 路线，`d97e8dc`） | ✅ 已落地：新增 `OP_TO_PROPERTY_KEY`，复合赋值/++/-- 的 GET/SET_INDEX 共用同一份已转换键（正面修复批次四那 15 条 LOST 的 `r8TaL3`）；`OP_DELETE` 键按 ToPropertyKey 归一。定向 A/B（`compound-assignment\|increment\|decrement`）base 383 → 398，**GAIN 15 / LOST 0**（归因 A） |
+| yield 空表达式终结符补全 + async GetIterator 抛错传播（asyncgen-tail 路线，`5adc99d`） | ✅ 已落地：`parseYieldExpression` 空 yield 补 RBRACKET/COMMA/COLA/COLON 终结符 + ASI 换行判定（换行判定位置由 lead 修正到消费 `*` 之前）；`resolveAsyncSymbolIterator` 按 GetIterator(hint=async) 语义三处 nullish/不可调用/非对象 TypeError。定向 A/B（`async-generator` 1040 例）base 837 → 848，**GAIN 14 / LOST 3** ⇒ 3 条 LOST 归因 **B**（`yield` 作标签标识符早错缺失、基线靠解析意外报错侥幸判过，遮羞布被揭）⇒ 转批次六 `rDc5ui` 修复 |
+| using 绑定名/初始化器纳入静态块早错下钻（using 路线之一，`d6d735b`） | ✅ 已落地：static 块内 `using x = ...` 绑定名/初始化器纳入 childNodes 下钻。定向 A/B（`using` 190 例）base 68 → 93，**GAIN 26 / LOST 1** ⇒ LOST 1 归因 **B**（`using` 顶层 eval 早错缺失，靠"using 被全局误拒"侥幸判过）⇒ 转批次六 `rabcWh` 修复 |
+| 接通 using/await using 的位置跟踪 usingDeclAllowed（using 路线之二，`a410fb1`） | ✅ 已落地：`parseBlockImpl/parseBlockWithDirectives` 进块置 true（Block/FunctionBody/GeneratorBody/AsyncFunctionBody/ClassStaticBlockBody）；单语句体/标签非块体/switch CaseClause 语句列表置 false（规范第 2 条）；Module 顶层由 ParseProgram 置 true。定向 A/B（`using`，language）base 68/190 → 92/190，**GAIN 26 / LOST 2** ⇒ LOST 2 归因 **B**（static-init await 绑定早错 / eval 顶层 using 早错，同为遮羞布被揭）⇒ 转批次六 `rabcWh` 修复 |
+| 符号键访问器存取（propdesc 路线，`39388d0`） | ✅ 已落地：`DefineSymbolAccessor`（落 SymbolProperties 键空间）+ `LookupSymbolPropertyDescriptor`；`OP_SET_GETTER_DYN/SET_SETTER_DYN` 遇 Symbol 键改走符号空间；`GET_INDEX` Symbol 分支展开 getter。修复对象字面量 `get [Symbol.x](){}` 被 toJSString 成字符串键导致 `obj[Symbol.x]`/`getOwnPropertySymbols`/迭代协议全查不到。定向 A/B 数字待 lead 回填（提交信息未附）；LOST 归因 **A**（无记录 LOST） |
+
+## 十七、合流批次六（生成器 yield 标签早错 / eval 顶层 using 早错 / 抛值 ToString / 直接 eval super home / defineProperty 自有属性接口）
+
+进行中/待 lead 合流确认：由 5 条路线 cherry-pick 进 `merge/batch6`（基线 `f1a46fb`，尖 `c6e6ae6`）。**全量 A/B 数字待 lead 回填**。逐路线台账（一特性一行：提交 sha / 定向 test262 数字 / 归因字母）：
+
+| 项 | 结果 |
+|---|---|
+| 生成器体内 yield 作标签标识符早错（`rDc5ui`，`4fa96f7`） | ✅ 已落地：LabelIdentifier 的 [Yield] 参数约束 —— 生成器体内 `yield: ;` 作标签为 SyntaxError（正是批次五 asyncgen 路线那 3 条 LOST 的正面修复）。定向 A/B（`async-generator\|generator`，1780 例）base 1395 → 1401，**GAIN 6 / LOST 0**（归因 A） |
+| 直接 eval 顶层 using/await using 早错（`rabcWh`，`771987b`） | ✅ 已落地：直接 eval 的顶层 `using` / `await using` 早错（批次五 using 路线 LOST 族的正面修复）。定向 A/B 数字待 lead 回填（提交信息未附）；LOST 归因 **A**（无记录 LOST） |
+| 未捕获抛值按 ToString 渲染（`r9ttI7`，`2f4eaf2`） | ✅ 已落地：未捕获 non-Error 抛值按 ToString 渲染，不再退化成 Inspect 形式。定向 A/B（`line-terminators\|module-code`）297 → 302，**GAIN 5 / LOST 0**（归因 A） |
+| 直接 eval 内 super.x 不再误报 SyntaxError（`roiE5Z`，`b6ea5e3`） | ✅ 已落地：函数/箭头/间接 eval 保持 SyntaxError 的前提下，直接 eval 内 `super.x` 合法。定向 A/B：`eval-code` **GAIN 1 / LOST 0**、`expressions/class/elements` **GAIN 4 / LOST 0**、`statements/class/elements` **GAIN 4 / LOST 0**、`expressions/super` **GAIN 2 / LOST 0**（归因 A） |
+| defineProperty/getOwnPropertyDescriptor/hasOwnProperty 统一走自有属性接口（`rlGCky`，`c6e6ae6`） | ✅ 已落地：三族 API 统一走自有属性接口。定向 A/B：`object\|Object` 1143/1707 → 1173/1707（**GAIN 30 / LOST 0**）；更广 `class\|method\|generator\|async\|prototype\|ownKeys\|property` 9476/13153 → 9573/13153（**GAIN 97 / LOST 0**）；`Reflect\|Proxy\|JSON\|arguments` 364/718 → 380/718（**GAIN 16 / LOST 0**）。`go test ./...` 全绿（归因 A） |
+
+**批次二 8 条 LOST 的收尾**：其中 #1–#4（class 内 yield 计算键 / async 形参 await 早错）由 wt/ledger2 工作流（看板 `r4hv9u`）在两个提交 `23a7aa3` / `864a1e3` 修复转正；#5–#7 由批次四 `d62aaf5` 转正；#8 系批次二全量跑判定抖动、引擎无缺口。详见 `docs/batch2-lost-r4hv9u-triage.md`。
+
 ## 待确认（信息缺口）
 
 - `agent_doc/undecided-and-unimplemented.md` 是 **2026-09-18 快照**，其 §四 缺口清单中已有多项（cocoa 后端、iOS 后端、X11 修正、M2 IME、滚动条拖拽、tabs、table/tree、tooltip）在 09-18 后落地。本路线图已按 git 历史更正，但**建议回填该台账**，否则后续排期会继续基于过期口径。
