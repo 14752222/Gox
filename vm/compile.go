@@ -26,6 +26,7 @@ func (e *sourceError) Error() string { return e.msg }
 
 func init() {
 	object.SetCompileSource(compileForBridge)
+	object.SetCompileSourceAllowingNewTarget(compileForBridgeAllowingNewTarget)
 }
 
 // compileSource 编译 JS 源码。moduleMode 为 true 时模块有自己的命名空间,
@@ -77,6 +78,23 @@ func compileSourceOpts(src string, moduleMode, moduleEE, forbidNewTarget bool) (
 // 见看板边界说明)。
 func compileForBridge(src string) (*object.CompiledFunction, error) {
 	c, err := compileSourceOpts(src, false, false, true)
+	if err != nil {
+		return nil, err
+	}
+	meta := lastFunctionMeta(c)
+	if meta == nil {
+		return nil, fmt.Errorf("compile: no function metadata in output")
+	}
+	return metaToCompiledFunction(meta, c.Constants().Constants), nil
+}
+
+// compileForBridgeAllowingNewTarget 与 compileForBridge 同, 但**放行** new.target。
+// 仅「非箭头函数体内的直接 eval」这一语境由 stdlib 经 object.CompileSource-
+// AllowingNewTarget 使用 —— 该语境下 eval 源码 (含其内箭头) 出现 new.target 合法,
+// 值由 VM 写入的调用者 new.target 决定 (见 runGlobalEval / SetDirectEvalNewTarget)。
+// 其余语境 (global/indirect/箭头 eval、Function 构造器) 仍走 compileForBridge 禁止。
+func compileForBridgeAllowingNewTarget(src string) (*object.CompiledFunction, error) {
+	c, err := compileSourceOpts(src, false, false, false)
 	if err != nil {
 		return nil, err
 	}

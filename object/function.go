@@ -111,6 +111,13 @@ type Closure struct {
 	Fn             *CompiledFunction // 被闭包的函数
 	Env            Environment       // 捕获的词法环境 (全局环境)
 	This           Value             // this 绑定 (箭头函数复用外层 this)
+	// NewTarget 是词法捕获的 new.target。仅两类闭包会设置:
+	//   - 箭头函数: 创建时捕获所在帧生效的 new.target (与 This 同型);
+	//   - 直接 eval 的包装闭包: VM 把调用者帧的 new.target 经桥传入, 由 eval
+	//     内建写在闭包上 (stdlib 无法直接触达 VM 帧)。
+	// 其余 (普通函数/方法/构造器) 恒为 nil —— 其 new.target 由调用形态决定
+	// (OP_NEW / super() 经 pendingNewTarget 写入), 见 vm.callClosure。
+	NewTarget      Value
 	IsArrow        bool              // 是否为箭头函数
 	CapturedLocals []Value           // 捕获的外层局部变量
 	CreatedAtFrame int               // 创建时的帧索引 (用于递归自引用检测)

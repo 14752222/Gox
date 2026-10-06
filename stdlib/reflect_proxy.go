@@ -300,7 +300,17 @@ func setupReflectProxy(env *runtime.Environment) {
 		}
 
 		// 2) 以新对象为 this 调用构造器
-		result := object.CallFunction(fn, obj, ctorArgs...)
+		// new.target 经闭包携带传入: VM 的 callClosure 在无 pending 构造目标时
+		// 取闭包自带的 NewTarget 写入帧, 于是构造器内的 `new.target` 即规范要求的
+		// newTarget 参数 (sec-reflect.construct, 缺省为 target)。闭包按值复制一份,
+		// 避免污染原函数对象 (原闭包 NewTarget 恒 nil)。
+		callTarget := fn
+		if c, ok := fn.(*object.Closure); ok {
+			c2 := *c
+			c2.NewTarget = newTarget
+			callTarget = &c2
+		}
+		result := object.CallFunction(callTarget, obj, ctorArgs...)
 		if cbErr := object.TakeCallbackError(); cbErr != nil {
 			return object.NewErrorWithName("Error", cbErr.Error())
 		}

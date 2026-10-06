@@ -1680,6 +1680,7 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 					Fn:             closure.Fn,
 					Env:            closure.Env,
 					This:           newObj,
+					NewTarget:      closure.NewTarget,
 					IsArrow:        closure.IsArrow,
 					CapturedLocals: closure.CapturedLocals,
 					CreatedAtFrame: closure.CreatedAtFrame,
@@ -2910,6 +2911,7 @@ func (vm *VM) callFunction(fn object.Value, this object.Value, args []object.Val
 				Fn:             callee.Fn,
 				Env:            callee.Env,
 				This:           this,
+				NewTarget:      callee.NewTarget,
 				IsArrow:        callee.IsArrow,
 				CapturedLocals: callee.CapturedLocals,
 				CreatedAtFrame: callee.CreatedAtFrame,
@@ -3358,6 +3360,7 @@ func (vm *VM) invokeWithThis(fn, thisVal object.Value, args []object.Value) erro
 				Fn:             callee.Fn,
 				Env:            callee.Env,
 				This:           thisVal,
+				NewTarget:      callee.NewTarget,
 				IsArrow:        callee.IsArrow,
 				CapturedLocals: callee.CapturedLocals,
 			}
@@ -3430,6 +3433,10 @@ func (vm *VM) consumeEvalMark(fn object.Value) {
 	if v, ok := vm.globals.Get("eval"); ok && v == fn {
 		thisVal, callerStrict := vm.callerEvalContext()
 		object.SetDirectEvalThis(thisVal, callerStrict)
+		// 直接 eval 的 new.target 上下文: 调用者帧的 new.target 与「该语境是否
+		// 允许 new.target」。规范只允许「非箭头函数体内的直接 eval」含 new.target。
+		nt, ntAllowed := vm.callerEvalNewTarget()
+		object.SetDirectEvalNewTarget(nt, ntAllowed)
 		if initRestricted {
 			stdlib.MarkDirectEvalInit()
 		}
@@ -3465,6 +3472,24 @@ func (vm *VM) callerEvalContext() (object.Value, bool) {
 		return frame.Closure.This, strict
 	}
 	return object.UndefinedSingleton, strict
+}
+
+// callerEvalNewTarget 求"当前帧生效的 new.target"与"该语境是否允许 eval 源码
+// 出现 new.target" —— 供直接 eval 继承。规范 sec-scripts-static-semantics-early-
+// errors: NewTarget 只在「非箭头函数体内的直接 eval」合法, 故 allowed 仅当调用者
+// 帧是非箭头函数 (frame.Closure != nil && !IsArrow) 时为真。主帧 (script/module
+// 顶层) 与箭头帧均为 false —— 前者不是函数代码, 后者对 Contains 透明。
+func (vm *VM) callerEvalNewTarget() (object.Value, bool) {
+	frame := vm.currentFrame()
+	if frame == nil {
+		return object.UndefinedSingleton, false
+	}
+	allowed := frame.Closure != nil && !frame.Closure.IsArrow
+	nt := frame.NewTarget
+	if nt == nil {
+		nt = object.UndefinedSingleton
+	}
+	return nt, allowed
 }
 
 // propKey 将值转换为属性键字符串 (与 stdlib.toPropKey 一致)。
@@ -3908,6 +3933,17 @@ func (vm *VM) frameThis(frame *Frame) object.Value {
 	return object.UndefinedSingleton
 }
 
+// frameNewTarget 求"当前帧的 new.target", 供箭头函数在创建时做词法捕获。
+// 帧上已归一的 NewTarget 优先; 主帧 (frame.Closure == nil, script/module 顶层)
+// 语法上不允许 new.target, 但兜底返回 undefined。普通函数帧的 NewTarget 恒非
+// nil (callClosure 装配时写入), 故这里返回的非 nil 值可直接作为捕获结果。
+func (vm *VM) frameNewTarget(frame *Frame) object.Value {
+	if frame != nil && frame.NewTarget != nil {
+		return frame.NewTarget
+	}
+	return object.UndefinedSingleton
+}
+
 // ===== with 语句运行时支持 (对象环境记录) =====
 
 // withRefOf 从常量池取出 OP_WITH_* 的操作数所指的 *WithRef。
@@ -4096,6 +4132,17 @@ func (vm *VM) createClosure(meta *bytecode.FunctionMetadata, frame *Frame) *obje
 		thisVal = vm.frameThis(frame)
 	}
 
+	// new.target 绑定: 只有箭头函数按词法捕获所在帧生效的 new.target (与 this
+	// 同型)。箭头对 new.target 词法透明, 其取值必须解析到词法外层非箭头函数
+	// —— 在**创建时**捕获才能跨越「箭头被返回后于别处调用」的情形 (rNAtZs)。
+	// 非箭头留 nil, 由 callClosure 依调用形态 (OP_NEW / super 传递 / 普通调用)
+	// 决定。async 内层合成 generator (LexicalThis) 不捕获: async 函数本身是
+	// 普通函数, 其 new.target 与是否合成 generator 无关。
+	var newTargetVal object.Value
+	if meta.IsArrow {
+		newTargetVal = vm.frameNewTarget(frame)
+	}
+
 	// M2: 记录"这个函数属于哪个源码单元" —— 模块导出的函数被入口调用时,
 	// 抛错帧属于模块的 .ts, 而不是当前(入口)VM 的单元。只登记模块单元:
 	// 入口函数的帧可直接回退 mainUnit, 登记它们只会让注册表无谓增长。
@@ -4114,6 +4161,7 @@ func (vm *VM) createClosure(meta *bytecode.FunctionMetadata, frame *Frame) *obje
 		Fn:             fn,
 		Env:            vm.globals,
 		This:           thisVal,
+		NewTarget:      newTargetVal,
 		IsArrow:        meta.IsArrow,
 		CapturedLocals: captured,
 		CreatedAtFrame: vm.frameIdx,
@@ -4151,13 +4199,21 @@ func (vm *VM) callClosure(closure *object.Closure, args []object.Value) error {
 	frame.Closure = closure
 	// 本帧生效的 this: 箭头取词法捕获, 非箭头按 sloppy 归一 (裸调用 → globalThis)。
 	frame.This = vm.resolveFrameThis(closure)
-	// 本帧的 new.target: 由构造调用 (OP_NEW) 或 super() 传递 (OP_NEW_TARGET_MARK)
-	// 经 pendingNewTarget 通道写入; 其余调用为 undefined。标记是一次性的, 消费即清零。
-	// 箭头函数对 new.target 词法透明, 其词法继承需要在创建闭包时捕获外层 new.target
-	// (与 This 的捕获同型) —— 当前未实现, 归为边界 (见路线说明), 这里一律 undefined。
-	if !closure.IsArrow && vm.hasPendingNewTarget {
+	// 本帧的 new.target:
+	//   - 箭头函数: 取创建时词法捕获的 NewTarget (闭包携带), 与调用形态无关;
+	//   - 构造调用 (OP_NEW) 或 super() 传递 (OP_NEW_TARGET_MARK): 取
+	//     pendingNewTarget;
+	//   - 其余: 取闭包自带的 NewTarget (直接 eval 包装闭包由 stdlib 写入调用者
+	//     的 new.target; 普通函数为 nil ⇒ undefined)。
+	// pendingNewTarget 是一次性的 (仅对紧邻的这次调用有效), 无论是否消费都清零。
+	if closure.IsArrow {
+		frame.NewTarget = closure.NewTarget
+	} else if vm.hasPendingNewTarget {
 		frame.NewTarget = vm.pendingNewTarget
 	} else {
+		frame.NewTarget = closure.NewTarget
+	}
+	if frame.NewTarget == nil {
 		frame.NewTarget = object.UndefinedSingleton
 	}
 	vm.hasPendingNewTarget = false

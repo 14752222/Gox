@@ -8,10 +8,10 @@ import (
 //
 // 期望值全部对齐 Node 22 实测。覆盖: 普通调用 undefined / new 调用为构造器 /
 // super() 沿链传递 (含两跳与隐式构造) / apply·call·reflect.apply·tagged template
-// ·getter 均为 undefined / new 与 .target 间的空白·换行·注释 / 一元前缀运算。
+// ·getter 均为 undefined / new 与 .target 间的空白·换行·注释 / 一元前缀运算 /
+// 箭头词法继承 / Reflect.construct 的 newTarget 桥 / 直接 eval 继承 (rNAtZs)。
 //
-// 已知边界 (见文件末尾注释): 箭头函数词法继承、类字段初始化器、Reflect.construct
-// 的显式 newTarget、直接 eval 继承 —— 均未覆盖。
+// 已知边界 (见文件末尾注释): 类字段初始化器内、类静态初始化块内的 new.target。
 
 // TestNewTargetValues new.target 的取值语义。
 func TestNewTargetValues(t *testing.T) {
@@ -172,20 +172,122 @@ func TestNewTargetParseAccepted(t *testing.T) {
 	}
 }
 
+// TestNewTargetArrowLexical 箭头函数对 new.target 词法透明: 在**创建时**捕获
+// 所在帧的 new.target, 被返回后于别处调用仍取到创建处的值
+// (test262 lexical-new.target.js / lexical-new.target-closure-returned.js)。
+func TestNewTargetArrowLexical(t *testing.T) {
+	got := evalOut(t, `
+		function F() {
+			this.af = () => (new.target ? 1 : 2);
+		}
+		__out.push('returned-closure:' + new F().af());
+
+		let functionInvocationCount = 0;
+		let newInvocationCount = 0;
+		function G() {
+			if ((() => new.target)() !== undefined) { newInvocationCount++; }
+			functionInvocationCount++;
+		}
+		G(); new G();
+		__out.push('fcount:' + functionInvocationCount);
+		__out.push('ncount:' + newInvocationCount);
+
+		// 箭头嵌箭头: 逐层词法继承。
+		function H() { this.f = () => (() => new.target)(); }
+		__out.push('nested-arrow:' + (new H().f() === H));
+
+		// 箭头在普通函数内, 但该函数被普通调用 → undefined。
+		let plain = function () { return () => new.target; };
+		__out.push('normal-call:' + plain()());
+	`)
+	want := "returned-closure:1\n" +
+		"fcount:2\n" +
+		"ncount:1\n" +
+		"nested-arrow:true\n" +
+		"normal-call:undefined\n"
+	if got != want {
+		t.Errorf("箭头词法继承 new.target\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// TestNewTargetReflectConstruct Reflect.construct 的 newTarget 桥: 省略时等于
+// target, 显式给定时构造器内 new.target 即该值, 且实例原型取自 newTarget.prototype
+// (test262 value-via-reflect-construct.js)。
+func TestNewTargetReflectConstruct(t *testing.T) {
+	got := evalOut(t, `
+		let nt = null;
+		let custom = function () {};
+		custom.prototype = { tag: 'custom' };
+		function f() { nt = new.target; }
+
+		Reflect.construct(f, []);
+		__out.push('default:' + (nt === f));
+
+		Reflect.construct(f, [], custom);
+		__out.push('explicit:' + (nt === custom));
+
+		let inst = Reflect.construct(f, [], custom);
+		__out.push('proto:' + (Object.getPrototypeOf(inst) === custom.prototype));
+
+		// 不影响原函数的后续普通调用。
+		f();
+		__out.push('after:' + nt);
+	`)
+	want := "default:true\n" +
+		"explicit:true\n" +
+		"proto:true\n" +
+		"after:undefined\n"
+	if got != want {
+		t.Errorf("Reflect.construct newTarget 桥\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// TestNewTargetDirectEval 直接 eval 的 new.target 继承: 非箭头函数体内的直接
+// eval 合法且取调用者 new.target; 箭头/间接/顶层 eval 仍为 SyntaxError
+// (test262 eval-code/direct/new.target-fn.js / new.target-arrow.js)。
+func TestNewTargetDirectEval(t *testing.T) {
+	got := evalOut(t, `
+		let nt = 'unset';
+		let getNT = function () { nt = eval('new.target;'); };
+		getNT(); __out.push('plain:' + nt);
+		new getNT(); __out.push('new:' + (nt === getNT));
+
+		// eval 内嵌套箭头继承 eval 的 new.target。
+		let kOut = 'unset';
+		let k = function () { kOut = eval('(() => new.target)()'); };
+		new k(); __out.push('arrow-in-eval:' + (kOut === k));
+
+		try { (() => eval('new.target;'))(); __out.push('arrow-eval:no-throw'); }
+		catch (e) { __out.push('arrow-eval:' + (e instanceof SyntaxError)); }
+
+		try { (0, eval)('new.target;'); __out.push('indirect-eval:no-throw'); }
+		catch (e) { __out.push('indirect-eval:' + (e instanceof SyntaxError)); }
+
+		try { eval('new.target;'); __out.push('top-eval:no-throw'); }
+		catch (e) { __out.push('top-eval:' + (e instanceof SyntaxError)); }
+	`)
+	want := "plain:undefined\n" +
+		"new:true\n" +
+		"arrow-in-eval:true\n" +
+		"arrow-eval:true\n" +
+		"indirect-eval:true\n" +
+		"top-eval:true\n"
+	if got != want {
+		t.Errorf("直接 eval 继承 new.target\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
 // ===== 已知边界 (未实现, 供后续补课; 不写成绿色断言以免固化错误行为) =====
 //
-//  1. 箭头函数词法继承 new.target: 规范里箭头不建立自己的 new.target,
-//     继承外层函数的值。Gox 需要把外层 new.target 在创建箭头闭包时按词法捕获
-//     (与 this 的捕获同型), 但 object.Closure 无对应字段 (本路线文件区禁止改
-//     object/), 故箭头的 new.target 恒为 undefined。可能受影响的 test262:
-//     expressions/arrow-function/lexical-new.target*.js、各
-//     returns-async-arrow-returns-newtarget.js。
-//  2. 类字段初始化器内 new.target: Node 允许且为 undefined; 本路线把
+//  1. 类字段初始化器内 new.target: Node 允许且为 undefined; 本路线把
 //     parseClassMember 的字段初始化器视为非函数上下文 (解析期即早错)。
 //     (test262 相关为 eval 形态, 另受 eval 实现限制。)
-//  3. Reflect.construct(F, [], G) 显式 newTarget: 需 stdlib/reflect 把 newTarget
-//     传入 VM 构造路径 (本路线禁止改 stdlib/), 目前 new.target 恒 undefined。
-//  4. 直接 eval 内 new.target 继承调用者: eval 源码被编为全局脚本 (顶层),
-//     解析期即早错。需在 eval 编译期告知「调用者是非箭头函数」并桥接其
-//     new.target (另见看板 roiE5Z: eval 里 super.x 被误报)。
-//  5. 类静态初始化块内的 new.target: Gox 尚未实现 class static block。
+//  2. 类静态初始化块内的 new.target: Gox 尚未实现 class static block。
+//
+// 已由 rNAtZs 落地 (原边界 1/3/4): 箭头函数词法继承 new.target、Reflect.construct
+// 的显式 newTarget、非箭头函数体内直接 eval 的 new.target 继承 —— 见上方三个
+// 测试。注: test262 unary-expr.js 仍不通过, 但与 new.target 语义无关 —— 该用例
+// 的 async 段经 asyncHelpers 的 asyncTest 调用 hasOwnProperty.call(globalThis,
+// "$DONE"), 而 Gox 的 globalThis (GlobalObject) 未实现自有属性查询, 该 helper
+// 在全仓库 139 个用例里 0 通过 (属全局对象属性模型路线, 不在本路线)。
+

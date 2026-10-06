@@ -57,6 +57,13 @@ func setupEvalAndMisc(env *runtime.Environment) {
 		// 处理: this = globalThis (间接 eval 恒在全局 this 下执行, 与 node
 		// 一致 —— 即便源码含 "use strict" 指令也如此), 严格性只看源码指令。
 		evalThis, callerStrict, isDirect := object.TakeDirectEvalThis()
+		// 直接 eval 的 new.target 上下文: 调用者帧的 new.target 与「该语境是否
+		// 允许 new.target」(仅非箭头函数体内直接 eval 允许)。与 this 桥同纪律,
+		// 一并消费。非直接 eval 时 ok=false, 按全局 eval 处理 (禁止 new.target)。
+		evalNewTarget, evalNTAllowed, hasEvalNT := object.TakeDirectEvalNewTarget()
+		if !hasEvalNT {
+			evalNTAllowed = false
+		}
 		if !isDirect {
 			evalThis = object.UndefinedSingleton
 			if g, ok := env.Get("globalThis"); ok {
@@ -77,7 +84,7 @@ func setupEvalAndMisc(env *runtime.Environment) {
 			return object.NewErrorWithName("SyntaxError",
 				"SyntaxError: 'arguments' or 'super' call is not allowed in class field initializer")
 		}
-		return runGlobalEval(env, src.Value, evalThis, callerStrict)
+		return runGlobalEval(env, src.Value, evalThis, callerStrict, evalNewTarget, evalNTAllowed)
 	})
 	evalFn.SetProperty("name", object.NewString("eval"))
 	evalFn.SetProperty("length", object.NewNumber(1))
@@ -194,17 +201,32 @@ func splitStrictDirective(src string) (bool, string) {
 // 完成值策略: 若源码是单个表达式，包装为 `return (<expr>)` 捕获其值
 // (覆盖 eval 的绝大多数用途)；多语句源码退回普通函数包装，完成值为
 // undefined (函数体结尾是隐式 return void，编译器不保留语句完成值)。
-func runGlobalEval(env *runtime.Environment, src string, evalThis object.Value, callerStrict bool) object.Value {
+func runGlobalEval(env *runtime.Environment, src string, evalThis object.Value, callerStrict bool, evalNewTarget object.Value, allowNewTarget bool) object.Value {
 	// parseErr 记录最后一次解析/编译失败的原因, 用于拼进 SyntaxError 帮助定位
 	var parseErr string
 	buildAndRun := func(body string) object.Value {
-		fn, err := object.CompileSource(body)
+		// 编译: 仅「非箭头函数体内的直接 eval」(allowNewTarget) 放行 new.target;
+		// 其余 (global/indirect/箭头 eval) 整单元禁止。禁止时含 new.target 的源码
+		// 报 SyntaxError —— 与规范早错一致 (本函数多语句包装那轮会再次尝试并保留
+		// 该错误消息, 故不会被后退的包装掩盖)。
+		var fn *object.CompiledFunction
+		var err error
+		if allowNewTarget {
+			fn, err = object.CompileSourceAllowingNewTarget(body)
+		} else {
+			fn, err = object.CompileSource(body)
+		}
 		if err != nil {
 			// 记录最近一次失败原因 (多语句包装那轮的错误最贴近源码位置)
 			parseErr = err.Error()
 			return nil // 由外层换包装重试
 		}
 		closure := &object.Closure{Fn: fn, Env: env}
+		// 直接 eval 的 new.target 与调用者一致 (词法继承): 把调用者帧生效的
+		// new.target 写到包装闭包上, callClosure 装配帧时据此写入帧 (见 vm)。
+		if allowNewTarget {
+			closure.NewTarget = evalNewTarget
+		}
 		result := object.CallFunction(closure, evalThis)
 		if cbErr := object.TakeCallbackError(); cbErr != nil {
 			// 回调桥报告了 eval 代码里的 JS 异常。必须把异常重新交给 VM 的

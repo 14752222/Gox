@@ -20,9 +20,21 @@ type CompileSourceFunc func(src string) (*CompiledFunction, error)
 
 var compileSourceHook CompileSourceFunc
 
+// compileSourceNTAllowedHook 是「允许 new.target」的编译实现。仅「非箭头函数
+// 体内的直接 eval」这一语境需要: 该语境下 eval 源码的 new.target 合法 (规范
+// sec-scripts-static-semantics-early-errors), 其余 (global/indirect/箭头 eval、
+// Function 构造器) 一律禁止, 走 compileSourceHook。
+var compileSourceNTAllowedHook CompileSourceFunc
+
 // SetCompileSource 注册编译实现, 由 vm 包在初始化时调用。
 func SetCompileSource(f CompileSourceFunc) {
 	compileSourceHook = f
+}
+
+// SetCompileSourceAllowingNewTarget 注册「允许 new.target」的编译实现,
+// 由 vm 包在初始化时调用 (仅直接 eval 语境使用)。
+func SetCompileSourceAllowingNewTarget(f CompileSourceFunc) {
+	compileSourceNTAllowedHook = f
 }
 
 // CompileSource 编译源码为顶层函数。
@@ -31,6 +43,15 @@ func CompileSource(src string) (*CompiledFunction, error) {
 		return nil, errors.New("CompileSource: compile hook not registered (vm package not linked)")
 	}
 	return compileSourceHook(src)
+}
+
+// CompileSourceAllowingNewTarget 编译允许 new.target 的 eval 源码为顶层函数。
+// 只有在调用方确认为「非箭头函数体内的直接 eval」时才应使用。
+func CompileSourceAllowingNewTarget(src string) (*CompiledFunction, error) {
+	if compileSourceNTAllowedHook == nil {
+		return nil, errors.New("CompileSourceAllowingNewTarget: compile hook not registered (vm package not linked)")
+	}
+	return compileSourceNTAllowedHook(src)
 }
 
 // directEvalThis 记录最近一次「直接 eval 调用」的上下文 —— 调用者帧生效的
@@ -72,4 +93,36 @@ func TakeDirectEvalThis() (this Value, callerStrict bool, ok bool) {
 	directEvalStrict = false
 	hasDirectEvalThis = false
 	return v, s, true
+}
+
+// directEvalNewTarget 记录「直接 eval 调用者帧生效的 new.target」以及该语境
+// 是否允许 eval 源码出现 new.target。规范 sec-scripts-static-semantics-early-
+// errors: NewTarget 只在「非箭头函数体内的直接 eval」合法 —— 由 VM 依调用者帧
+// 的闭包种类判定, 与 this 桥同纪律 (一次性, 消费即清除, 避免泄漏)。
+var (
+	directEvalNewTarget Value
+	directEvalNTAllowed bool
+	hasDirectEvalNT     bool
+)
+
+// SetDirectEvalNewTarget 由 vm 在确认「本次调用是直接 eval」后调用, 写入调用者
+// 帧的 new.target 与「调用者是否为非箭头函数」。eval 内建随之消费: allowed 决定
+// 编译期是否放行 new.target, newTarget 写入包装闭包供取值。
+func SetDirectEvalNewTarget(newTarget Value, allowed bool) {
+	directEvalNewTarget = newTarget
+	directEvalNTAllowed = allowed
+	hasDirectEvalNT = true
+}
+
+// TakeDirectEvalNewTarget 取出并清除直接 eval 的 new.target 上下文。
+// ok 为 false 表示本次 eval 不是直接 eval (间接 / Go 侧调用)。
+func TakeDirectEvalNewTarget() (newTarget Value, allowed bool, ok bool) {
+	if !hasDirectEvalNT {
+		return UndefinedSingleton, false, false
+	}
+	v, a := directEvalNewTarget, directEvalNTAllowed
+	directEvalNewTarget = nil
+	directEvalNTAllowed = false
+	hasDirectEvalNT = false
+	return v, a, true
 }
