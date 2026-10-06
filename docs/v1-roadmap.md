@@ -214,6 +214,24 @@
 
 **本轮新增跟踪单**：`rNR2Zk`（module 用例未走模块入口）/ `r9fWvc`（`new import()` 早错缺失）/ `r23xdR`（runner 的 `Contains(err,NegType)` 会匹配到被回显的源码行 ⇒ 侥幸判过）/ `rmFazR`（`using` 声明零实现）。
 
+## 十三、已完成（2026-10-06 合流批次二：函数名推断 / 类静态成员 / bind / toString 格式 / 顶层 await）
+
+由 5 条并行工作流（每流一个 worktree + 分支 + agent，基线 `0e3c395` = 批次一的合流树）各自 `cherry-pick` 进 `merge/batch2`；
+`go build ./...` + `go vet` 干净，随后**串行全量 A/B**：
+`language` **16261 / 23726 = 68.54%**（批次一后的基线 14367，**+1894**）；CI 徽章独立复核 **68.5%**（`docs/test262-compliance.json` @ `a776100`，与本地逐位吻合）。
+
+| 项 | 结果 |
+|---|---|
+| 函数名推断 `SetFunctionName`（`r0XJbW`） | ✅ 已落地：变量声明 / 属性赋值 / 对象字面量键与简写方法 / class 字段统一走 SetFunctionName；匿名形态（`(function(){})`、实参、数组元素）保持 `name === ""` 不瞎猜；`name` 为 `{writable:false, enumerable:false, configurable:true}`。定向 `language -filter fn-name` **165/1054 → 805/1054（+640，零回归）** |
+| 类静态成员（`rkfPth` + `rWVt9D`） | ✅ 已落地：静态公有字段初始化器（按定义顺序、类定义求值时执行）+ 静态私有槽挂到构造器、brand check 用构造器。探针：`class C { static s=1; static #p=5; static #m(){return 9} static get g(){return this.#m()+this.#p} }` → `s=1 g=14`（基线同探针 `TypeError`）。定向 `-filter private` **1549/4148 → 2283/4148（+734）** |
+| `Function.prototype.call/apply/bind` 的 this 绑定（`rFvpFz`） | ✅ 已落地：改为**运行时 this 绑定**。真根因**不是**看板原口径的「bind 返回值丢失」，而是 `call/apply/bind` 组合链上的 this 绑定失效 ⇒ 通用工具 `Function.prototype.call.bind(Object.prototype.hasOwnProperty)` 拿不到结果，**整族挡住 `obj-ptrn-rest-*`**。定向 `-filter obj-ptrn-rest` **0/276 → 240/276**；broader 集 **5845/9347 → 6213/9347** |
+| `Object.prototype.toString` 格式 + `Symbol.toStringTag`（`r1qCg2`） | ✅ 已落地：Gox 原输出 `[Object]`/`[Array]`/`[Null]`（**丢了 `object ` 前缀、标签首字母大写**）不符规范 ⇒ 改为 `[object Object]` 族；命名空间与内建补自身 `Symbol.toStringTag`。定向 `built-ins -filter Object/prototype/toString` **1/41 → 25/41** |
+| 顶层 await（`rZU4qA`，部分） | ✅ 解析层 + 同步结算求值层落地：模块顶层 `+Await`（含 `for await...of`）、形参区显式 `~Await`（early-does-not-propagate）、编译器 `fnDepth`/`HasTopLevelAwait()` 把顶层 await 编成主单元 `OP_YIELD`、VM 新增 `RunCompiledAsync`（`Closure==nil` 生成器驱动，主帧仍 `frame#0`）。`module-code` **216/617 → 220/617（GAIN 7 / LOST 3）**。**3 条 LOST 属「遮羞布被揭」**：那三例**自身没有顶层 await**（靠 import 的 fixture），base 上是 runner 对 module+async「无错即放行」的**假通过**（连跑 3 次 100% 稳定），开 TLA 后模块真被执行才暴露缺 async 模块图求值 ⇒ 另立 `rEMAhe` |
+
+**本轮新增跟踪单**：`rEMAhe`（async 模块图求值顺序 `ExecuteAsyncModule`/`AsyncModuleExecutionFulfilled` + pending Promise 的 TLA）/ `rJ56bZ`（**ES2022 `static { }` 类静态初始化块零实现**，探针直接 `unexpected token in class body: LBRACE`）/ `rXrGfu`（**CI 红**：`ci.yml` 的 `ubuntu-latest` 在 `go test ./... (linux + xvfb)` 失败，check-run 注解只有 `Process completed with exit code 1.`，须补 `::error::` 证据）。
+
+**本轮补充证据（修正口径）**：`rm16Za` 的「无 `Object.prototype` 原型链」**不止限于内建命名空间**——`Object.getPrototypeOf({}) === Object.prototype` 为 **false**、`({}).hasOwnProperty` 为 `undefined`（而方法本身在 `Object.prototype` 上存在）⇒ **所有 `o.hasOwnProperty(...)` / `o.isPrototypeOf(...)` / `o.propertyIsEnumerable(...)` 的隐式调用形式全族受影响**，建议升 P1。
+
 ## 待确认（信息缺口）
 
 - `agent_doc/undecided-and-unimplemented.md` 是 **2026-09-18 快照**，其 §四 缺口清单中已有多项（cocoa 后端、iOS 后端、X11 修正、M2 IME、滚动条拖拽、tabs、table/tree、tooltip）在 09-18 后落地。本路线图已按 git 历史更正，但**建议回填该台账**，否则后续排期会继续基于过期口径。
