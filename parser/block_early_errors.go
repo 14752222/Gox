@@ -138,6 +138,17 @@ func declNames(name *ast.Identifier, more []ast.Declarator) []string {
 	return out
 }
 
+// blockLexicalEntry 是一个 LexicallyDeclaredNames 条目。
+// sloppyFnDupOK 表示该声明是**普通 function 声明** (非 async / 非 generator):
+// 按 annex B (B.3.3), sloppy 模式下块内重复的普通函数声明不作为
+// LexicallyDeclaredNames 的重复错误 —— 故参与「与 var 冲突」检查, 但豁免
+// 「lexical 重复」检查。async function / generator 声明不在此列 (node 22
+// 实测: `{ async function f(){} async function f(){} }` 是 SyntaxError)。
+type blockLexicalEntry struct {
+	name          string
+	sloppyFnDupOK bool
+}
+
 // blockLexicallyDeclaredNames 收集一个语句列表的 LexicallyDeclaredNames。
 //
 // 规范 (Static Semantics: LexicallyDeclaredNames):
@@ -145,37 +156,46 @@ func declNames(name *ast.Identifier, more []ast.Declarator) []string {
 //   - class 声明;
 //   - 函数声明 (在块里是 lexical, 且 **不** 递归进函数体);
 //   - 嵌套 Block 的 lexical 名**不**上抛 (block 是独立的词法边界)。
-//
-// 注意: 只有「语句位置」的声明才算。if 体里裸的 function 声明 (annexB)
-// 与本题无关, 这里也照收 —— 与 var 冲突时同样报冲突。
-func blockLexicallyDeclaredNames(stmts []ast.Statement) []string {
-	var out []string
+func blockLexicallyDeclaredNames(stmts []ast.Statement) []blockLexicalEntry {
+	var out []blockLexicalEntry
 	for _, s := range stmts {
-		out = append(out, stmtLexicalNames(s)...)
+		out = append(out, stmtLexicalEntries(s)...)
 	}
 	return out
 }
 
-func stmtLexicalNames(s ast.Statement) []string {
+func stmtLexicalEntries(s ast.Statement) []blockLexicalEntry {
+	var names []blockLexicalEntry
+	add := func(ns []string, sloppyOK bool) {
+		for _, n := range ns {
+			names = append(names, blockLexicalEntry{name: n, sloppyFnDupOK: sloppyOK})
+		}
+	}
 	switch v := s.(type) {
 	case *ast.LetStatement:
-		return declNames(v.Name, v.More)
+		add(declNames(v.Name, v.More), false)
 	case *ast.ConstStatement:
-		return declNames(v.Name, v.More)
+		add(declNames(v.Name, v.More), false)
 	case *ast.ClassDeclaration:
 		if v.Name != nil {
-			return []string{v.Name.Value}
+			add([]string{v.Name.Value}, false)
 		}
 	case *ast.FunctionDeclaration:
 		if v.Name != nil {
-			return []string{v.Name.Value}
+			// 仅普通同步非 generator 的函数声明享受 annex B 豁免。
+			add([]string{v.Name.Value}, !v.IsAsync && !v.IsGenerator)
 		}
 	}
-	return nil
+	return names
 }
 
-// checkBlockRedeclaration 执行「LexicallyDeclaredNames ∩ VarDeclaredNames ≠ ∅
-// ⇒ SyntaxError」。只在块里做 (模块/脚本顶层另有模块语义, 不在此处拦)。
+// checkBlockRedeclaration 执行块级的两条早错:
+//  1. LexicallyDeclaredNames ∩ VarDeclaredNames ≠ ∅ ⇒ SyntaxError
+//     (sec-block-static-semantics-early-errors);
+//  2. LexicallyDeclaredNames 含重复条目 ⇒ SyntaxError (同上),
+//     普通函数声明在 sloppy 模式下豁免 (annex B B.3.3)。
+//
+// 只在块里做 (模块/脚本顶层另有模块语义, 不在此处拦)。
 //
 // 报错位置取块起始的 { 所在行 (与 V8 报错位置大致对齐, 精确位置不影响
 // test262 negative 判定)。
@@ -183,23 +203,58 @@ func (p *Parser) checkBlockRedeclaration(block *ast.BlockStatement) {
 	if block == nil {
 		return
 	}
-	lexical := blockLexicallyDeclaredNames(block.Statements)
-	if len(lexical) == 0 {
+	entries := blockLexicallyDeclaredNames(block.Statements)
+	if len(entries) == 0 {
 		return
 	}
+	lexical := make([]string, 0, len(entries))
+	for _, e := range entries {
+		lexical = append(lexical, e.name)
+	}
+
+	// 规则 1: lexical ∩ var
 	varNames := blockVarDeclaredNames(block.Statements)
-	if len(varNames) == 0 {
-		return
-	}
-	varSet := make(map[string]bool, len(varNames))
-	for _, n := range varNames {
-		varSet[n] = true
-	}
-	for _, n := range lexical {
-		if varSet[n] {
-			p.errors.Add("Identifier '"+n+"' has already been declared",
-				block.Token.Line, block.Token.Column)
-			return // 一条足够, 避免同一块里重复报
+	if len(varNames) > 0 {
+		varSet := make(map[string]bool, len(varNames))
+		for _, n := range varNames {
+			varSet[n] = true
 		}
+		for _, n := range lexical {
+			if varSet[n] {
+				p.errors.Add("Identifier '"+n+"' has already been declared",
+					block.Token.Line, block.Token.Column)
+				return // 一条足够, 避免同一块里重复报
+			}
+		}
+	}
+
+	// 规则 2: lexical 内部重复。
+	//
+	// annex B (B.3.3) 让 sloppy 模式块内**重复的普通函数声明**不作为重复
+	// 错误; 但任一普通函数与**非豁免**声明 (let/const/class/async function/
+	// generator) 同名仍是错误。故:
+	//   - 非豁免条目: 与见过的任何同名条目 (豁免或非) 冲突;
+	//   - 豁免条目:   仅与见过的**非豁免**同名条目冲突。
+	// 用两个集合分别记录「见过的非豁免名」与「见过的豁免名」。
+	nonExempt := make(map[string]bool, len(entries))
+	exemptFn := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		if e.sloppyFnDupOK {
+			// 普通函数: 与已有非豁免同名即冲突。
+			if nonExempt[e.name] {
+				p.errors.Add("Identifier '"+e.name+"' has already been declared",
+					block.Token.Line, block.Token.Column)
+				return
+			}
+			exemptFn[e.name] = true
+			continue
+		}
+		// 非豁免声明: 与任何已有同名 (豁免或非) 即冲突。
+		if nonExempt[e.name] || exemptFn[e.name] {
+			p.errors.Add("Identifier '"+e.name+"' has already been declared",
+				block.Token.Line, block.Token.Column)
+			return
+		}
+		nonExempt[e.name] = true
 	}
 }

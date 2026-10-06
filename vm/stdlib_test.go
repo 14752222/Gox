@@ -658,7 +658,8 @@ func TestStrictEqualReferenceTypes(t *testing.T) {
 	assertBoolean(t, evalJS(t, `let o = {a: 1}; let p = o; o === p`), true)
 	assertBoolean(t, evalJS(t, `let o = {a: 1}; o == o`), true)
 	// 结构相同但引用不同则不相等
-	assertBoolean(t, evalJS(t, `{a: 1} === {a: 1}`), false)
+	// (语句位置的对象字面量须加括号 —— 裸 `{a:1}` 按规范是块, r9HBA8)
+	assertBoolean(t, evalJS(t, `({a: 1}) === {a: 1}`), false)
 	assertBoolean(t, evalJS(t, `[1] === [1]`), false)
 	assertBoolean(t, evalJS(t, `let a = [1]; let b = [1]; a === b`), false)
 	// 数组与函数同理

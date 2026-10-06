@@ -20,13 +20,18 @@ import (
 //   - 例外: 函数声明允许互相重定义；let 可遮蔽内置全局 (console/Math 等)
 
 // expectSyntaxError 断言求值以 SyntaxError (重声明) 失败。
+//
+// 重声明属于早期错误。块级 (Block) 重声明按规范在解析期就被发现，
+// 此时错误形态是 "parser errors: ..." 而非运行期 "SyntaxError";
+// 顶层/REPL 跨行场景仍由运行期检查报 "SyntaxError"。两者都接受。
 func expectSyntaxError(t *testing.T, input string) {
 	t.Helper()
 	_, err := EvalWithGlobals(input, stdlib.SetupGlobals())
 	if err == nil {
 		t.Fatalf("expected SyntaxError for %q, got success", input)
 	}
-	if !strings.Contains(err.Error(), "SyntaxError") {
+	msg := err.Error()
+	if !strings.Contains(msg, "SyntaxError") && !strings.Contains(msg, "parser errors") {
 		t.Fatalf("expected SyntaxError for %q, got: %v", input, err)
 	}
 }

@@ -320,35 +320,17 @@ func (p *Parser) addError(msg string) {
 }
 
 // isBlockStart 判断当前 LBRACE 是否开始块语句 (而非对象字面量)。
-// 当 { 后跟 } (空块) 或语句关键字时，判定为块语句。
+//
+// 规范 (Statement : BlockStatement) 与 12.2 ExpressionStatement 的
+// lookahead 限制: 语句位置的 `{` **一律**是 BlockStatement 的开始 ——
+// 对象字面量若要做语句, 必须加括号写成 `({ ... })`。因此这里恒为 true。
+//
+// 历史: 早期用「peek 是语句关键字/赋值号才算块」的启发式 (r9HBA8 前身),
+// 于是 `{length: 3000}` 这类被误判成对象字面量, 语句位置的 `{ f: g }`
+// (label) / `{ var x }` (块) 解析错。按规范统一成块后, 之前靠对象字面量
+// 路径「碰巧通过」的负例 (块级早错等) 由第 1 块的早错检查接管。
 func (p *Parser) isBlockStart() bool {
-	if p.peekTokenIs(lexer.RBRACE) {
-		return true // 空块 {}
-	}
-	switch p.peekToken().Type {
-	case lexer.LET, lexer.CONST, lexer.VAR, lexer.RETURN, lexer.IF, lexer.FOR,
-		lexer.WHILE, lexer.BREAK, lexer.CONTINUE, lexer.FUNCTION,
-		lexer.TRY, lexer.THROW, lexer.SWITCH,
-		lexer.SEMICOLON, lexer.DO, lexer.CASE, lexer.DEFAULT:
-		// VAR: { var x = 1 } 是块。对象字面量 { var: 1 } 会被 var 后的
-		// ':' 区分开 —— var 作键的写法在这里让位给块判定 (代价是
-		// { var: 1 } 要写成 ({ var: 1 }) 才能按对象解析, 与 return/if
-		// 等关键字键的既有处理一致)。
-		return true
-	}
-	// 若 peek 是标识符且其后是赋值号/自增/自减 (如 { x = 2; }, { x++; }),
-	// 则是块而非对象字面量 (对象属性是 x: ... 而非 x = ...)
-	if p.peekTokenIs(lexer.IDENTIFIER) {
-		switch p.peekTokenAt(2).Type {
-		case lexer.ASSIGN, lexer.PLUS_EQ, lexer.MINUS_EQ, lexer.ASTERISK_EQ,
-			lexer.SLASH_EQ, lexer.PERCENT_EQ, lexer.EXPONENT_EQ, lexer.AND_EQ,
-			lexer.OR_EQ, lexer.XOR_EQ, lexer.SHIFT_LEFT_EQ, lexer.SHIFT_RIGHT_EQ,
-			lexer.UNSIGNED_SHR_EQ, lexer.AND_AND_EQ, lexer.OR_OR_EQ,
-			lexer.NULLISH_ASSIGN, lexer.INC, lexer.DEC:
-			return true
-		}
-	}
-	return false
+	return true
 }
 
 func (p *Parser) Errors() *ErrorList { return p.errors }

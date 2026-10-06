@@ -513,7 +513,9 @@ func TestArrayWithSpread(t *testing.T) {
 }
 
 func TestObjectLiteral(t *testing.T) {
-	input := `{ name: "Alice", age: 30 };`
+	// 注意: 语句位置的 `{ name: ... }` 按规范是 BlockStatement (label + 语句),
+	// 对象字面量做语句必须加括号 → `({ ... })` (r9HBA8)。
+	input := `({ name: "Alice", age: 30 });`
 
 	l := lexer.New(input)
 	p := New(l)
