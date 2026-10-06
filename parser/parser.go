@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"reflect"
 	"strconv"
 	"strings"
 
@@ -350,7 +351,7 @@ func (p *Parser) ParseProgram() *ast.Program {
 	for !p.curTokenIs(lexer.EOF) {
 		startIsString := p.curTokenIs(lexer.STRING_LITERAL)
 		stmt := p.parseStatement()
-		if stmt != nil {
+		if !isNilStmt(stmt) {
 			program.Statements = append(program.Statements, stmt)
 			if inPrologue {
 				if sl, ok := directiveString(stmt, startIsString); ok {
@@ -393,6 +394,21 @@ func directiveString(stmt ast.Statement, startIsString bool) (*ast.StringLiteral
 // isUseStrictDirective 报告字符串字面量是否为精确 "use strict" 指令。
 // 含转义的 `"use\u0020strict"` 解码后虽等于 "use strict", 但按规范**不是**
 // 指令 (Directive 要求源码里就是精确字符序列), 故必须看 HadEscape。
+// isNilStmt 报告语句是否为 nil 或「typed-nil」(接口里持有 nil 指针)。
+//
+// Go 的经典陷阱: 解析器多处 `return p.parseClassDeclaration()` 在失败时返回
+// (*ast.ClassDeclaration)(nil) —— 装箱进 ast.Statement 接口后 `stmt != nil`
+// **为真**, 于是被 append 进语句列表, 后续按具体类型解引用 (如块级重声明早错
+// 的 stmtLexicalEntries) 即 nil panic。这里统一在语句入列处用 Kind()==Ptr &&
+// IsNil() 判掉, 覆盖所有「返回 typed nil 的 parseXxx」入口。
+func isNilStmt(s ast.Statement) bool {
+	if s == nil {
+		return true
+	}
+	v := reflect.ValueOf(s)
+	return v.Kind() == reflect.Ptr && v.IsNil()
+}
+
 func isUseStrictDirective(sl *ast.StringLiteral) bool {
 	return !sl.Token.HadEscape && sl.Value == "use strict"
 }
@@ -404,7 +420,7 @@ func isUseStrictDirective(sl *ast.StringLiteral) bool {
 func (p *Parser) parseStatement() ast.Statement {
 	startLine, startCol := p.curToken().Line, p.curToken().Column
 	stmt := p.parseStatementBody()
-	if stmt != nil {
+	if !isNilStmt(stmt) {
 		if p.stmtPos == nil {
 			p.stmtPos = ast.PositionTable{}
 		}
@@ -1406,7 +1422,7 @@ func (p *Parser) parseBlockImpl(asFunctionBody bool) *ast.BlockStatement {
 
 	for !p.curTokenIs(lexer.RBRACE) && !p.curTokenIs(lexer.EOF) {
 		stmt := p.parseStatement()
-		if stmt != nil {
+		if !isNilStmt(stmt) {
 			block.Statements = append(block.Statements, stmt)
 		}
 		p.nextToken()
@@ -1451,7 +1467,7 @@ func (p *Parser) parseBlockWithDirectives() (*ast.BlockStatement, bool) {
 	for !p.curTokenIs(lexer.RBRACE) && !p.curTokenIs(lexer.EOF) {
 		startIsString := p.curTokenIs(lexer.STRING_LITERAL)
 		stmt := p.parseStatement()
-		if stmt != nil {
+		if !isNilStmt(stmt) {
 			block.Statements = append(block.Statements, stmt)
 			if inPrologue {
 				if sl, ok := directiveString(stmt, startIsString); ok {
@@ -1500,7 +1516,7 @@ func (p *Parser) parseBody() *ast.BlockStatement {
 	defer func() { p.moduleTopLevel = prevTop }()
 	block := &ast.BlockStatement{Token: p.curToken(), Statements: []ast.Statement{}}
 	stmt := p.parseStatement()
-	if stmt != nil {
+	if !isNilStmt(stmt) {
 		block.Statements = append(block.Statements, stmt)
 	}
 	// 单语句后不自动消费分号外的 token (由调用方处理)
