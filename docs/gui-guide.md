@@ -90,6 +90,18 @@ macOS 后端（cocoa）已知限制：
 
 找不到可用字体时文字整体不渲染，错误里会给出候选条数与最后一个失败原因。
 
+### 移动端宿主（Android / iOS / 鸿蒙）
+
+上表三列是**桌面**后端。移动端不由 gfx 直接开窗口，而是由各平台的**壳工程**驱动同一份内核（node / layout / raster / font / 事件泵一行不改），界面逻辑仍然全部写在 JS 里：
+
+| 平台 | 壳 | 现状 |
+|---|---|---|
+| Android | Kotlin（`SurfaceView` + `Choreographer`） | 六个能力模块基本齐备；模拟器 x86_64 / API 34 **实测通过**（上屏 / 触摸 / 软键盘 IME / 安全区 / 折叠屏） |
+| iOS | Swift（`UIView` + `CADisplayLink`） | 六个能力模块大部分齐备（`exitApp` 报 `unsupported` —— iOS 不允许应用自杀）；壳工程与构建脚本（含 TestFlight）齐备，**真机验收待做** |
+| 鸿蒙 | ArkTS（`PixelMap` + `onTouch`） | 只通了安全区与折叠上报两条**纯上报**通道，六个能力模块仍是桩；交叉编译 + HAP 构建通过，**设备上尚未实跑** |
+
+移动端独有的三处消费点（都是响应式、桌面端自动退化）：安全区 `useInsets()`、软键盘避让 `useKeyboardHeight()`、断点 `widthClass()`；折叠屏半折时 `RouterView` 自动双栏。壳与内核的分工、JNI / NAPI 契约、逐方法（模块 × 平台）状态表与首帧自检清单见 [`app/NATIVE-HOST.md`](../app/NATIVE-HOST.md)；移动端打包前置（**需 Gox 源码仓库** + 平台工具链）与三平台构建步骤见官网教程 <https://14752222.github.io/Gox/guide/gui>（「跑在手机上」一节）。
+
 ## 3. 事件模型
 
 | 事件 | 参数 | 分发规则 |

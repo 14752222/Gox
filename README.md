@@ -283,10 +283,14 @@ try {
 ```
 
 桌面后端直接实现其中能实现的部分（电量 / 网络 / 亮度 / 屏幕常亮 / 打开系统设置页），
-给不出的一律诚实报 `unsupported`；**移动端原生壳实现同一个 `NativeHost` 契约即可接入**，
-不必改内核。语义、8 个错误码与各模块导出表见
-[GUI 开发指南 §9.6](docs/gui-guide.md#96-原生能力层)；三种形态的完整演示：
-[`testdata/native_demo.js`](testdata/native_demo.js)。
+给不出的一律诚实报 `unsupported`。**移动端同样实现这套 `NativeHost` 契约，不必改内核** ——
+Android 壳（Kotlin）与 iOS 壳（Swift）的六个模块基本齐备：Android 已在模拟器上实测通过
+（上屏 / 触摸 / IME / 安全区 / 折叠屏），iOS 壳工程与构建脚本（含 TestFlight 打包）齐备、**真机验收待做**；
+鸿蒙壳（ArkTS）目前只通了安全区与折叠上报两条纯上报通道，六个能力模块仍是桩。
+语义、8 个错误码与各模块导出表见
+[GUI 开发指南 §9.6](docs/gui-guide.md#96-原生能力层)；
+逐方法（模块 × 平台）状态表、壳构建说明与首帧自检清单见 [`app/NATIVE-HOST.md`](app/NATIVE-HOST.md)；
+三种形态的完整演示：[`testdata/native_demo.js`](testdata/native_demo.js)。
 
 ### GUI 桌面应用
 
