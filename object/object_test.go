@@ -298,6 +298,35 @@ func TestObjectPrototype(t *testing.T) {
 	}
 }
 
+// TestPlainObjectPrototype 锁定"对象字面量 → %Object.prototype%"这条根链:
+// NewPlainObject 在原型注册前回落 null, 注册后 [[Prototype]] 指向它, 且可
+// 沿原型链取到方法; NewObject (宿主纯数据对象通道) 始终保持 null 不变。
+func TestPlainObjectPrototype(t *testing.T) {
+	prev := GetObjectPrototype()
+	SetObjectPrototype(nil)
+	if p := NewPlainObject().Proto; p != Value(NullSingleton) {
+		t.Fatalf("before registration: expected null proto, got %v", p)
+	}
+
+	proto := NewObject()
+	proto.SetBuiltinProperty("probe", NewString("ok"))
+	SetObjectPrototype(proto)
+	defer SetObjectPrototype(prev)
+
+	o := NewPlainObject()
+	if o.Proto != Value(proto) {
+		t.Fatalf("expected [[Prototype]] = registered Object.prototype")
+	}
+	if v, ok := o.GetProperty("probe"); !ok || v.(*String).Value != "ok" {
+		t.Fatalf("expected to reach inherited 'probe' via prototype chain, got %v ok=%v", v, ok)
+	}
+
+	// NewObject 语义不变 (宿主纯数据对象)。
+	if p := NewObject().Proto; p != Value(NullSingleton) {
+		t.Fatalf("NewObject must keep null proto, got %v", p)
+	}
+}
+
 func TestError(t *testing.T) {
 	e := NewError("something went wrong")
 	if e.Type() != ERROR_OBJ {

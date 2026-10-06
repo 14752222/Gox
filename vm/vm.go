@@ -1744,7 +1744,9 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			}
 			vm.stack.Push(object.NewArray(elements))
 		case bytecode.OP_NEW_OBJECT:
-			vm.stack.Push(object.NewObject())
+			// 对象字面量 / class 基础类的 prototype 对象: 规范里都是
+			// "普通对象", [[Prototype]] = %Object.prototype%。
+			vm.stack.Push(object.NewPlainObject())
 		case bytecode.OP_SET_PROTO:
 			// 栈: [obj, parent] → obj.Proto = parent
 			parent := vm.stack.Pop()

@@ -295,10 +295,35 @@ func (o *Object) DeleteSymbolProperty(sym *Symbol) bool {
 }
 
 // NewObject 创建空对象的便捷函数
+//
+// 注意 [[Prototype]] 置为 null（而非 %Object.prototype%）: 历史实现以此形态
+// 服务"宿主侧纯数据对象"，普通对象字面量请改用 NewPlainObject。
 func NewObject() *Object {
 	return &Object{
 		Properties: make(map[string]PropertyDescriptor),
 		Proto:      NullSingleton,
+		Extensible: true,
+	}
+}
+
+// NewPlainObject 创建"普通对象"(ordinary object): 其 [[Prototype]] 指向全局
+// %Object.prototype%。
+//
+// 这是 ECMAScript 里 ObjectLiteral / ObjectCreate(%Object.prototype%) 的默认
+// 形态 —— 规范规定 `{}` 的 [[Prototype]] 就是 Object.prototype，于是
+// `({}).hasOwnProperty` / `.toString` / `.isPrototypeOf` 等经隐式原型链可达
+// (见 test262 harness/verifyProperty.js 对 o.hasOwnProperty 的依赖)。
+//
+// %Object.prototype% 尚未注册 (例如原型自身构造期) 时回落 null, 与
+// Object.prototype.[[Prototype]] === null 的规范要求一致。
+func NewPlainObject() *Object {
+	proto := objectPrototypeRef
+	if proto == nil {
+		proto = NullSingleton
+	}
+	return &Object{
+		Properties: make(map[string]PropertyDescriptor),
+		Proto:      proto,
 		Extensible: true,
 	}
 }

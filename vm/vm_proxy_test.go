@@ -205,11 +205,11 @@ func TestReflectApply(t *testing.T) {
 }
 
 func TestReflectGetPrototypeOf(t *testing.T) {
-	// 普通对象原型为 null (无原型链设置)
+	// 普通对象字面量的 [[Prototype]] 是 %Object.prototype%
+	// (规范 OrdinaryObjectCreate(%Object.prototype%); 之前误为 null)。
 	res := evalJS(t, `
 		let o = { a: 1 };
-		let proto = Reflect.getPrototypeOf(o);
-		proto === null || proto === undefined;
+		Reflect.getPrototypeOf(o) === Object.prototype;
 	`)
 	assertBoolean(t, res, true)
 }
