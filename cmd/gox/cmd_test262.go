@@ -482,7 +482,16 @@ func runCase(root string, c *test262Case, timeout time.Duration) test262Result {
 	}
 	doneCh := make(chan outcome, 1)
 	go func() {
-		engine, err := vm.EvalFileVM(tmpPath)
+		var engine *vm.VM
+		var err error
+		if isModule {
+			// module 用例: 语义是模块, 故按模块早错规则拦截 (重复导出名 /
+			// 未声明导出 / 顶层 return·yield 等); 执行仍是脚本语义 (与
+			// EvalFileVM 同一路径), 不改模块执行方式 —— 见 vm 侧注释。
+			engine, err = vm.EvalFileVMModuleEarlyErrors(tmpPath)
+		} else {
+			engine, err = vm.EvalFileVM(tmpPath)
+		}
 		if err != nil {
 			doneCh <- outcome{err: err}
 			return

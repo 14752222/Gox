@@ -68,6 +68,18 @@ type Parser struct {
 	// 该函数在返回前写入, 故外层调用读到的总是自己体的值 (嵌套函数体的写入
 	// 已被本层覆盖)。
 	lastBodyUsesStrict bool
+	// moduleEE 标记「按模块语义做早期错误检查」。它与 module 的区别:
+	// module 还额外开启恒严格 + +Await 顶层上下文 (真模块编译用); moduleEE
+	// 只影响**早期错误判定** —— test262 的 module 用例在 Gox 里是「以脚本
+	// 方式执行」的 (入口走 EvalFileVM → compileSource(src,false)), 但语义上
+	// 是模块, 需要按 Module 的早错规则拦截 (重复导出名/未声明导出/顶层
+	// return 等)。SetModule(true) 会一并置位; 宿主也可经 SetModuleEarlyErrors
+	// 单独开启 (见 vm.EvalFileVMModuleEarlyErrors)。见 module_early_errors.go。
+	moduleEE bool
+
+	// fnDepth 是当前所处的**函数体**嵌套层数 (每进一个 function/箭头/方法体
+	// +1)。顶层为 0 —— 模块顶层的 `return` / `yield` 据此判定为早错。
+	fnDepth int
 }
 
 // maxNestingDepth 是语法嵌套深度上限。
@@ -111,7 +123,17 @@ func (p *Parser) setAllowAwait(isAsync bool) func() {
 
 // SetModule 标记本编译单元是 ES module (模块顶层恒严格, 无需 "use strict")。
 // 必须在 ParseProgram 之前调用。
-func (p *Parser) SetModule(v bool) { p.module = v }
+func (p *Parser) SetModule(v bool) {
+	p.module = v
+	if v {
+		p.moduleEE = true
+	}
+}
+
+// SetModuleEarlyErrors 单独开启「按模块语义做早期错误检查」, 不改变严格模式 /
+// 顶层 await 上下文。用于把 test262 的 module 用例 (语义是模块, 但 Gox 按脚本
+// 执行) 纳入 ModuleItemList 的早错拦截。必须在 ParseProgram 之前调用。
+func (p *Parser) SetModuleEarlyErrors(v bool) { p.moduleEE = v }
 
 // setStrict 进入一个 (函数/类) 体前设置严格上下文, 返回恢复函数。
 // 与 setAllowAwait 同一范式: 保存/恢复, 保证嵌套函数退出后回到外层上下文。
@@ -383,6 +405,11 @@ func (p *Parser) ParseProgram() *ast.Program {
 	// 用了小写标签的 JSX 就要有 h: 带上标记, 交给 compiler 补缺省工厂导入
 	program.UsesJSX = p.usedJSXFactory
 	program.Positions = p.stmtPos
+	// ModuleItemList 的早期错误 (重复导出名 / 未声明导出 / 顶层 lexical 重声明 /
+	// 顶层 return·yield / 严格保留字绑定 …)。见 module_early_errors.go。
+	if p.moduleEE {
+		p.checkModuleEarlyErrors(program)
+	}
 	return program
 }
 
@@ -743,6 +770,13 @@ func (p *Parser) parseConstStatement() *ast.ConstStatement {
 
 func (p *Parser) parseReturnStatement() *ast.ReturnStatement {
 	stmt := &ast.ReturnStatement{Token: p.curToken()}
+
+	// 模块顶层不允许 return (spec: ModuleItem : StatementListItem[~Yield, ~Return])。
+	// Gox 把 test262 的 module 用例按脚本执行, 顶层 return 在脚本里被容忍
+	// (CommonJS 风格), 故只在 moduleEE 上下文里报早错。
+	if p.moduleEE && p.fnDepth == 0 {
+		p.addError("SyntaxError: return not in function")
+	}
 
 	if p.peekTokenIs(lexer.SEMICOLON) || p.peekTokenIs(lexer.RBRACE) || p.peekTokenIs(lexer.EOF) {
 		p.consumeSemicolon()
@@ -1388,6 +1422,11 @@ func (p *Parser) parseLabeledStatement() *ast.LabeledStatement {
 	}
 	p.nextToken() // 跳过 label 标识符
 	p.nextToken() // 跳过 ':'
+	// 标签体不是模块顶层 —— `test262: export default null;` 非法
+	// (spec: ModuleItem, test262 module-code/parse-err-decl-pos-export-labeled.js)。
+	prevTop := p.moduleTopLevel
+	p.moduleTopLevel = false
+	defer func() { p.moduleTopLevel = prevTop }()
 	// 标签后的 '{' 一定是块 (语句位置), 而非对象字面量
 	if p.curTokenIs(lexer.LBRACE) {
 		stmt.Body = p.parseBlockStatement()
@@ -1411,6 +1450,8 @@ func (p *Parser) parseBlockStatementAt(asFunctionBody bool) *ast.BlockStatement 
 
 // parseFunctionBody 解析函数体 { ... }: 豁免本层的「lexical ∩ var」重声明早错。
 func (p *Parser) parseFunctionBody() *ast.BlockStatement {
+	p.fnDepth++
+	defer func() { p.fnDepth-- }()
 	return p.parseBlockImpl(true)
 }
 
@@ -1510,7 +1551,9 @@ func (p *Parser) parseBlockWithDirectives() (*ast.BlockStatement, bool) {
 func (p *Parser) parseFunctionBodyWithStrict(isAsync bool) (*ast.BlockStatement, bool) {
 	inherited := p.strict
 	restoreAwait := p.setAllowAwait(isAsync)
+	p.fnDepth++
 	body, bodyStrict := p.parseBlockWithDirectives()
+	p.fnDepth--
 	restoreAwait()
 	p.strict = inherited
 	// 记下「本体自身含 use strict 指令」(区别于继承来的 strict), 供
@@ -2158,6 +2201,12 @@ func (p *Parser) finishAsyncArrow(expr ast.Expression) ast.Expression {
 // yield; 或 yield expr;
 func (p *Parser) parseYieldExpression() ast.Expression {
 	ye := &ast.YieldExpression{Token: p.curToken()}
+	// 模块顶层不是 generator 上下文, 裸 yield 是 SyntaxError
+	// (spec: ModuleItem : StatementListItem[~Yield, ~Return], parse-err-yield.js)。
+	// sloppy 脚本里 yield 是合法标识符, 故只在 moduleEE 上下文里报。
+	if p.moduleEE && p.fnDepth == 0 {
+		p.addError("SyntaxError: yield expression not allowed in module body")
+	}
 	p.nextToken()
 	// yield* iterable: 委托给另一个生成器/可迭代对象
 	if p.curTokenIs(lexer.ASTERISK) {
@@ -2198,6 +2247,13 @@ func (p *Parser) parseAwaitExpression() ast.Expression {
 func (p *Parser) parseNewExpression() ast.Expression {
 	expr := &ast.NewExpression{Token: p.curToken()}
 	p.nextToken()
+	// ImportCall 是 CallExpression, 不是 MemberExpression —— `new import(...)`
+	// 在语法上就不成立 (spec: NewExpression), 必须 parse 期 SyntaxError, 不能
+	// 编成 `new <promise>` 推到运行期抛 TypeError。见 test262
+	// dynamic-import/syntax/invalid/*-no-new-call-expression{,-prop-access}.js。
+	if p.curTokenIs(lexer.IMPORT) && p.peekTokenIs(lexer.LPAREN) {
+		p.addError("SyntaxError: import call is not a constructor (cannot be preceded by 'new')")
+	}
 	expr.Callee = p.parseExpression(MEMBER)
 	if expr.Callee == nil {
 		return nil
@@ -3329,6 +3385,11 @@ func (p *Parser) parseSwitchStatement() *ast.SwitchStatement {
 
 	prevInLoop := p.inLoop
 	p.inLoop = true // switch 内部允许 break
+	// case 体不是模块顶层 —— `switch(0){case 1: export default null;}` 非法
+	// (spec: ModuleItem, 见 parse-err-decl-pos-export-switch-*.js)。
+	prevTop := p.moduleTopLevel
+	p.moduleTopLevel = false
+	defer func() { p.moduleTopLevel = prevTop }()
 
 	for !p.curTokenIs(lexer.RBRACE) && !p.curTokenIs(lexer.EOF) {
 		sc := &ast.SwitchCase{Token: p.curToken()}
@@ -4138,6 +4199,7 @@ func (p *Parser) parseExportNamed(stmt *ast.ExportDeclaration) *ast.ExportDeclar
 		p.addError("expected '}' in export")
 		return nil
 	}
+	endLine := p.curToken().Line // `}` 所在行 —— ASI 判定基准
 	p.nextToken()
 
 	// 可选 `from "..."` → 具名再导出
@@ -4148,8 +4210,13 @@ func (p *Parser) parseExportNamed(stmt *ast.ExportDeclaration) *ast.ExportDeclar
 			return nil
 		}
 		stmt.Source = p.curToken().Literal
+		endLine = p.curToken().Line // 有 from 时以源串所在行为基准
 		p.nextToken()
 	}
+
+	// 规范: export NamedExports [FromClause] 必须由 ';' 或换行终止。`export {} null;`
+	// 里 null 与子句同行 ⇒ SyntaxError (test262 parse-err-semi-named-export{,-from}.js)。
+	p.checkExportClauseTerminator(endLine)
 	p.consumeSemicolon()
 	return stmt
 }
@@ -4164,6 +4231,20 @@ func (p *Parser) parseExportNamed(stmt *ast.ExportDeclaration) *ast.ExportDeclar
 func (p *Parser) consumeSemicolon() {
 	if p.peekTokenIs(lexer.SEMICOLON) {
 		p.nextToken()
+	}
+}
+
+// checkExportClauseTerminator 检查 export 子句是否被 ';' 或换行终止。
+// 调用时 curToken 是子句之后紧跟的 token (peek 才是它的后继), endLine 是子句
+// 末 token 所在行。同行的非终止 token ⇒ SyntaxError —— 若不报, `export {} null;`
+// 会被静默当成 export {} 然后 null 当独立语句执行 (test262
+// parse-err-semi-named-export.js / parse-err-semi-named-export-from.js)。
+func (p *Parser) checkExportClauseTerminator(endLine int) {
+	if p.curTokenIs(lexer.SEMICOLON) || p.curTokenIs(lexer.RBRACE) || p.curTokenIs(lexer.EOF) {
+		return
+	}
+	if p.curToken().Line == endLine {
+		p.addError(fmt.Sprintf("SyntaxError: export declaration requires a trailing semicolon, got %s", p.curToken().Type))
 	}
 }
 

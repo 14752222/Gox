@@ -2131,6 +2131,12 @@ func (c *Compiler) compileContinueStatement(stmt *ast.ContinueStatement) error {
 }
 
 func (c *Compiler) compileLabeledStatement(stmt *ast.LabeledStatement) error {
+	// 早错: 同一语句链上重复的标签 ⇒ SyntaxError (sec-labelled-statements-
+	// static-semantics-early-errors, ContainsDuplicateLabels)。此前不拦会
+	// 一路跑到运行期 (test262 module-code/early-dup-lables.js)。
+	if c.hasActiveLabel(stmt.Label.Value) {
+		return fmt.Errorf("SyntaxError: Label '%s' has already been declared", stmt.Label.Value)
+	}
 	// 若 body 是循环, 设置 pendingLabel 让循环编译函数把标签绑定到循环 context。
 	// 这样 continue outer 可以跳回外层循环头部, 而 break outer 跳出外层循环。
 	if isLoopStatement(stmt.Body) {
@@ -2155,6 +2161,20 @@ func (c *Compiler) compileLabeledStatement(stmt *ast.LabeledStatement) error {
 
 	// 非块非循环语句: 编译 body 即可 (标签本身无控制流意义, 但保留结构)
 	return c.compileStatement(stmt.Body)
+}
+
+// hasActiveLabel 报告 label 是否已在当前语句链上激活 (pendingLabel 或任一
+// 活跃控制上下文)。用于重复标签早错。
+func (c *Compiler) hasActiveLabel(label string) bool {
+	if c.pendingLabel == label {
+		return true
+	}
+	for _, ctx := range c.controlStack {
+		if ctx.label == label {
+			return true
+		}
+	}
+	return false
 }
 
 // isLoopStatement 判断语句是否为循环语句。
@@ -4885,7 +4905,10 @@ func (c *Compiler) compileIncDec(target ast.Expression, isInc, isPrefix bool) er
 		c.emitter.EmitNoOperand(bytecode.OP_POP)
 		return nil
 	}
-	return fmt.Errorf("++/-- only supports identifiers")
+	// 更新表达式的操作数必须是简单赋值目标 (标识符 / 成员); 对字面量等 `1++`
+	// 是语法错误 (InvalidAssignmentTargetType), 按 SyntaxError 报, 以便 test262
+	// 的 negative:parse 用例按正确类型判定 (parse-err-syntax-2.js 等)。
+	return fmt.Errorf("SyntaxError: ++/-- only supports identifiers")
 }
 
 // emitIncDecOp 发射 ++/-- 的加减指令。

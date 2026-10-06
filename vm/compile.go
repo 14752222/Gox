@@ -31,8 +31,20 @@ func init() {
 // compileSource 编译 JS 源码。moduleMode 为 true 时模块有自己的命名空间,
 // 顶层变量不写入共享全局环境 (见 loadModule)。
 func compileSource(src string, moduleMode bool) (*compiler.Compiler, error) {
+	return compileSourceEE(src, moduleMode, false)
+}
+
+// compileSourceEE 与 compileSource 相同, 额外可用 moduleEE 单独开启「模块早期
+// 错误」判定 (不改变 moduleMode 带来的运行语义)。见 parser.SetModuleEarlyErrors
+// 与 vm.EvalFileVMModuleEarlyErrors: test262 的 module 用例在 Gox 里按脚本执行
+// (moduleMode=false), 但需要按 Module 的早错规则拦截 (重复导出名/未声明导出/
+// 顶层 return 等)。
+func compileSourceEE(src string, moduleMode, moduleEE bool) (*compiler.Compiler, error) {
 	p := parser.New(lexer.New(src))
 	p.SetModule(moduleMode) // 模块顶层恒严格, 供解析期早错判定
+	if moduleEE {
+		p.SetModuleEarlyErrors(true)
+	}
 	program := p.ParseProgram()
 	if p.Errors().HasErrors() {
 		return nil, &sourceError{parse: true, msg: p.Errors().String()}

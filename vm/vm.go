@@ -1916,8 +1916,13 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			modExports, err := vm.loadModule(spec)
 			p := object.NewPromise()
 			if err != nil {
-				// 加载失败: reject Promise
-				p.Reject(object.NewErrorWithName("Error", err.Error()))
+				// 加载失败: reject Promise。模块**语法错误** (解析/编译失败)
+				// 的 reject 名是 SyntaxError, 其余 (解析不到模块等) 为 Error。
+				name := "Error"
+				if _, ok := err.(*moduleSyntaxError); ok {
+					name = "SyntaxError"
+				}
+				p.Reject(object.NewErrorWithName(name, err.Error()))
 			} else {
 				p.Resolve(modExports.buildNamespace(nil))
 			}
@@ -3697,6 +3702,13 @@ func (vm *VM) loadModule(spec string) (*ModuleExports, error) {
 // loadModuleFile 从已解析的磁盘路径加载、编译并执行模块。
 // 与 loadModule 拆开是为了让"解析"与"加载执行"各自可测（node_modules
 // 解析的测试只关心前者，不需要跑完整条编译执行链）。
+//
+// moduleSyntaxError 标记「模块的解析/编译失败属于语法错误」: 动态 import 据此
+// 把 reject 对象的 name 设为 SyntaxError (而非笼统的 Error)。
+type moduleSyntaxError struct{ msg string }
+
+func (e *moduleSyntaxError) Error() string { return e.msg }
+
 func (vm *VM) loadModuleFile(spec, absPath string) (*ModuleExports, error) {
 	// 检查缓存
 	if mod, ok := vm.modules[absPath]; ok {
@@ -3729,7 +3741,12 @@ func (vm *VM) loadModuleFile(spec, absPath string) (*ModuleExports, error) {
 			err = remapSourceError(err, lineMap)
 		}
 		if se, ok := err.(*sourceError); ok && se.parse {
-			return nil, fmt.Errorf("Module parse error: %s", se.msg)
+			return nil, &moduleSyntaxError{msg: fmt.Sprintf("Module parse error: %s", se.msg)}
+		}
+		// 编译器报的语法错误 (如模块内重复声明) 同样是 SyntaxError, 供
+		// dynamic import 的 reject 对象取正确 name。
+		if strings.Contains(err.Error(), "SyntaxError") {
+			return nil, &moduleSyntaxError{msg: fmt.Sprintf("Module compile error: %v", err)}
 		}
 		return nil, fmt.Errorf("Module compile error: %v", err)
 	}
@@ -5141,6 +5158,19 @@ func EvalFile(path string) (object.Value, error) {
 // TS 家族文件 (.ts/.tsx/...) 先过 tstransform 类型剥离再进编译管线;
 // 源码帧展示用户写的 .ts 原文, 并用转译行映射把 JS 行列翻回 .ts (M2 P0-1)。
 func EvalFileVM(path string) (*VM, error) {
+	return evalFileVM(path, false)
+}
+
+// EvalFileVMModuleEarlyErrors 与 EvalFileVM 相同, 但把入口源码**按模块语义做
+// 早期错误判定** (重复导出名 / 未声明导出 / 顶层 return·yield / 严格保留字绑定
+// 等), 而执行仍按脚本语义 (compiler moduleMode=false) —— 运行路径与 EvalFileVM
+// 完全一致, 只多拦一批应当在编译期就报的 SyntaxError。供 test262 runner 处理
+// flags:module 的用例 (它们语义是模块, 但 Gox 以脚本方式执行)。
+func EvalFileVMModuleEarlyErrors(path string) (*VM, error) {
+	return evalFileVM(path, true)
+}
+
+func evalFileVM(path string, moduleEE bool) (*VM, error) {
 	orig, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("cannot read file: %v", err)
@@ -5159,7 +5189,7 @@ func EvalFileVM(path string) (*VM, error) {
 		lineMap = res.LineMap
 	}
 
-	c, err := compileSource(string(code), false)
+	c, err := compileSourceEE(string(code), false, moduleEE)
 	if err != nil {
 		if isTS {
 			err = remapSourceError(err, lineMap)
