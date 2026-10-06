@@ -61,6 +61,13 @@ type Parser struct {
 	// 体里都是 SyntaxError。parseStatementBody 在此为 false 时对 IMPORT/EXPORT
 	// 报位置早错。见 block_early_errors.go。
 	moduleTopLevel bool
+
+	// lastBodyUsesStrict 记录**最近一次** parseFunctionBodyWithStrict 解析的
+	// 函数体自身是否含 "use strict" 指令 (不含继承)。用于 14.1.2 早错:
+	// 非简单形参列表 + 函数体含 use strict 指令 ⇒ SyntaxError。
+	// 该函数在返回前写入, 故外层调用读到的总是自己体的值 (嵌套函数体的写入
+	// 已被本层覆盖)。
+	lastBodyUsesStrict bool
 }
 
 // maxNestingDepth 是语法嵌套深度上限。
@@ -1506,7 +1513,25 @@ func (p *Parser) parseFunctionBodyWithStrict(isAsync bool) (*ast.BlockStatement,
 	body, bodyStrict := p.parseBlockWithDirectives()
 	restoreAwait()
 	p.strict = inherited
+	// 记下「本体自身含 use strict 指令」(区别于继承来的 strict), 供
+	// checkUseStrictNonSimpleParams 判定 14.1.2 早错。
+	p.lastBodyUsesStrict = bodyStrict
 	return body, inherited || bodyStrict
+}
+
+// checkUseStrictWithNonSimpleParams 报告「函数体含 use strict 指令」与
+// 「非简单形参列表」并存的早错 (规范 14.1.2 Static Semantics: Early Errors):
+//
+//	FunctionBody : FunctionStatementList
+//	  - It is a Syntax Error if FunctionBodyContainsUseStrict is true and
+//	    IsSimpleParameterList of FormalParameters is false.
+//
+// 必须在 parseFunctionBodyWithStrict 返回后立即调用 (此时 lastBodyUsesStrict
+// 即本次体自身的值)。继承来的 strict 不触发本规则。
+func (p *Parser) checkUseStrictWithNonSimpleParams(params []*ast.Parameter) {
+	if p.lastBodyUsesStrict && !isSimpleParameterList(params) {
+		p.addError("SyntaxError: 'use strict' directive is not allowed with a non-simple parameter list")
+	}
 }
 
 // parseBody 解析语句体: 若当前是 { 则解析代码块, 否则解析单条语句并包装为块。
@@ -1553,6 +1578,7 @@ func (p *Parser) parseFunctionDeclaration(isAsync bool) *ast.FunctionDeclaration
 	}
 	p.nextToken()
 	fn.Body, fn.Strict = p.parseFunctionBodyWithStrict(isAsync)
+	p.checkUseStrictWithNonSimpleParams(fn.Parameters)
 	if fn.Strict {
 		p.checkStrictFunctionParams(fn.Parameters)
 	}
@@ -1994,10 +2020,14 @@ func (p *Parser) parseArrowFunction(isAsync bool) ast.Expression {
 // 裸 await 是早错。
 func (p *Parser) parseArrowFunctionBody(params []*ast.Parameter, isAsync bool) *ast.ArrowFunctionExpression {
 	af := &ast.ArrowFunctionExpression{Token: p.curToken(), Parameters: params, IsAsync: isAsync}
+	// 箭头函数的形参形状是 UniqueFormalParameters: 重复绑定名恒为 SyntaxError
+	// (sloppy 简单列表也报), 与 checkStrictFunctionParams 的 strict 分支无关。
+	p.checkUniqueParamNames(params)
 
 	if p.peekTokenIs(lexer.LBRACE) {
 		p.nextToken()
 		af.Body, af.Strict = p.parseFunctionBodyWithStrict(isAsync)
+		p.checkUseStrictWithNonSimpleParams(af.Parameters)
 	} else {
 		p.nextToken()
 		af.Strict = p.strict // 表达式体无指令, 严格性继承自外层
@@ -2032,6 +2062,7 @@ func (p *Parser) parseFunctionExpression() ast.Expression {
 	p.nextToken()
 	// function 表达式永远是同步上下文 (async function 表达式走 parseAsyncExpression)
 	fn.Body, fn.Strict = p.parseFunctionBodyWithStrict(false)
+	p.checkUseStrictWithNonSimpleParams(fn.Parameters)
 	if fn.Strict {
 		p.checkStrictFunctionParams(fn.Parameters)
 	}
@@ -2068,6 +2099,7 @@ func (p *Parser) parseAsyncExpression() ast.Expression {
 		}
 		p.nextToken()
 		fn.Body, fn.Strict = p.parseFunctionBodyWithStrict(true)
+		p.checkUseStrictWithNonSimpleParams(fn.Parameters)
 		if fn.Strict {
 			p.checkStrictFunctionParams(fn.Parameters)
 		}
@@ -2347,6 +2379,7 @@ func (p *Parser) parseProperty() *ast.Property {
 		}
 		p.nextToken() // 到 {
 		fn.Body, fn.Strict = p.parseFunctionBodyWithStrict(false)
+		p.checkUseStrictWithNonSimpleParams(fn.Parameters)
 		restore()
 		if fn.Strict {
 			p.checkStrictFunctionParams(fn.Parameters)
@@ -2401,6 +2434,7 @@ func (p *Parser) parseProperty() *ast.Property {
 		}
 		p.nextToken()
 		fn.Body, fn.Strict = p.parseFunctionBodyWithStrict(isAsync)
+		p.checkUseStrictWithNonSimpleParams(fn.Parameters)
 		restore()
 		if fn.Strict {
 			p.checkStrictFunctionParams(fn.Parameters)

@@ -75,6 +75,33 @@ func isSimpleParameterList(params []*ast.Parameter) bool {
 	return true
 }
 
+// checkUniqueParamNames 报告形参列表里的重复绑定名早错 (**与 strict 无关**)。
+// 用于箭头函数等以 UniqueFormalParameters 为形状的形参表 (规范 15.3.1 /
+// 14.3 MethodDefinition): 重复绑定名恒为 SyntaxError, 不像普通函数的
+// FormalParameters 那样在 sloppy 简单列表下放行。
+func (p *Parser) checkUniqueParamNames(params []*ast.Parameter) {
+	seen := map[string]bool{}
+	for _, param := range params {
+		if param == nil {
+			continue
+		}
+		var names []string
+		if param.Pattern != nil {
+			collectPatternNames(param.Pattern, &names)
+		} else if param.Name != "" {
+			names = append(names, param.Name)
+		}
+		for _, name := range names {
+			if seen[name] {
+				p.addError(fmt.Sprintf(
+					"SyntaxError: duplicate parameter name '%s' is not allowed", name))
+				return
+			}
+			seen[name] = true
+		}
+	}
+}
+
 // checkNonSimpleDuplicateParams 报告非简单形参列表里的重复绑定名早错。
 // 规范 (ES2023 §14.1.2 Static Semantics: Early Errors):
 //

@@ -68,6 +68,62 @@ func TestNonSimpleDuplicateParams(t *testing.T) {
 	}
 }
 
+func TestUniqueParamNamesForArrow(t *testing.T) {
+	cases := []struct {
+		name    string
+		src     string
+		wantErr bool
+	}{
+		// 箭头形参 = UniqueFormalParameters: 重复名恒报错
+		{"箭头简单重复名", `0, (a, a) => {};`, true},
+		{"async 箭头重复名", `0, async (a, a) => {};`, true},
+		{"单参箭头去括号不适用", `var g = a => a;`, false},
+		{"箭头无重复", `var g = (a, b) => a + b;`, false},
+		// 普通函数在 sloppy 简单列表下重复名合法 (对照)
+		{"普通函数 sloppy 简单重复", `function f(a, a) { return a; }`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, ok := parseSrc(t, tc.src)
+			if ok == tc.wantErr {
+				t.Errorf("wantErr=%v 但 ok=%v\nsrc: %s", tc.wantErr, ok, tc.src)
+			}
+		})
+	}
+}
+
+func TestUseStrictWithNonSimpleParams(t *testing.T) {
+	cases := []struct {
+		name    string
+		src     string
+		wantErr bool
+	}{
+		// 非简单形参 + 体含 "use strict" 指令 ⇒ SyntaxError (14.1.2)
+		{"rest + use strict", `function f(a, ...r) { "use strict"; }`, true},
+		{"默认值 + use strict", `function f(a = 1) { "use strict"; }`, true},
+		{"解构 + use strict", `function f({a}) { "use strict"; }`, true},
+		{"数组解构 + use strict", `function f([a]) { "use strict"; }`, true},
+		{"箭头 rest + use strict", `var g = (...r) => { "use strict"; };`, true},
+		{"async 默认值 + use strict", `async function f(a = 1) { "use strict"; }`, true},
+		{"生成器 rest + use strict", `function* f(...r) { "use strict"; }`, true},
+		{"对象方法 rest + use strict", `({ m(...r) { "use strict"; } });`, true},
+		{"对象访问器非简单 + use strict", `({ set s(a = 1) { "use strict"; } });`, true},
+		// 合法: 简单列表 + use strict; 非简单列表无指令
+		{"简单列表 + use strict", `function f(a) { "use strict"; }`, false},
+		{"无参 + use strict", `function f() { "use strict"; }`, false},
+		{"非简单列表无指令", `function f(a = 1) { return a; }`, false},
+		{"非简单列表继承 strict (无自身指令)", `"use strict"; function f(a = 1) { return a; }`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, ok := parseSrc(t, tc.src)
+			if ok == tc.wantErr {
+				t.Errorf("wantErr=%v 但 ok=%v\nsrc: %s", tc.wantErr, ok, tc.src)
+			}
+		})
+	}
+}
+
 func TestShorthandReservedWord(t *testing.T) {
 	cases := []struct {
 		name    string
