@@ -30,7 +30,17 @@ type Parser struct {
 
 	inLoop        bool // 是否在循环体内 (用于 break/continue)
 	allowAwait    bool // 是否处于 async 上下文 (用于裸 await 早错; 每进一个函数体按该函数自身的 async 与否重置)
-	depth         int  // 当前语法嵌套深度 (表达式/语句递归层数)
+	// allowYield 标记当前函数体是否 generator / async-generator 体
+	// (规范的 [Yield] 参数上下文)。LabelIdentifier : Identifier 的早错误:
+	// It is a Syntax Error if this production has a [Yield] parameter and
+	// StringValue of Identifier is "yield" —— 生成器体内 yield 不得作标签名
+	// (test262 {language/expressions,language/statements}/async-generator/
+	// [named-]yield-as-label-identifier.js)。每进一个**非箭头**函数体按该
+	// 函数自身是否 generator 重置; 箭头函数没有自己的 [Yield] 参数, 词法
+	// 继承外层值 (同 newTargetAllowed 的口径)。默认 false (script/module
+	// 顶层与非生成器函数体)。
+	allowYield bool
+	depth      int // 当前语法嵌套深度 (表达式/语句递归层数)
 	depthExceeded bool // 已触发嵌套深度上限 (后续解析短路，防错误洪水)
 
 	// strict 是当前的严格模式上下文 (script 顶层默认 sloppy; 命中 "use strict"
@@ -175,6 +185,17 @@ func (p *Parser) setAllowAwait(isAsync bool) func() {
 	prev := p.allowAwait
 	p.allowAwait = isAsync
 	return func() { p.allowAwait = prev }
+}
+
+// setAllowYield 进入一个函数体前设置 yield 语境 ([Yield] 参数), 返回恢复函数。
+// 与 setAllowAwait 同一范式: 保存/恢复, 保证嵌套函数退出后回到外层上下文。
+// 非箭头函数体按自身是否 generator 重置 (同步/async 函数体 = ~Yield, yield
+// 恢复为普通标识符); 箭头函数由调用方把当前值原样传入以继承外层语境
+// (箭头没有自己的 [Yield] 参数)。
+func (p *Parser) setAllowYield(isGenerator bool) func() {
+	prev := p.allowYield
+	p.allowYield = isGenerator
+	return func() { p.allowYield = prev }
 }
 
 // SetModule 标记本编译单元是 ES module (模块顶层恒严格, 无需 "use strict")。
@@ -644,6 +665,17 @@ func (p *Parser) parseStatementBody() ast.Statement {
 				return nil
 			}
 			return p.parseUsingStatement(true)
+		}
+		return p.parseExpressionStatement()
+	case lexer.YIELD:
+		// yield 后紧跟 ':' 一律按标签语句解析: sloppy 非生成器代码里 yield 是
+		// 合法 IdentifierName (`yield: ;` 是标签语句); 生成器/async-generator
+		// 体内 yield 是保留字, 作标签名为早错 —— 由 parseLabeledStatement 判定
+		// (test262 {language/expressions,language/statements}/async-generator/
+		// [named-]yield-as-label-identifier.js)。其余位置留给表达式路径
+		// (yield / yield x / yield* x)。
+		if p.peekTokenIs(lexer.COLON) {
+			return p.parseLabeledStatement()
 		}
 		return p.parseExpressionStatement()
 	case lexer.LBRACE:
@@ -1705,6 +1737,16 @@ func (p *Parser) parseContinueStatement() *ast.ContinueStatement {
 
 // parseLabeledStatement 解析标签语句: label: statement
 func (p *Parser) parseLabeledStatement() *ast.LabeledStatement {
+	// LabelIdentifier : Identifier 的早错误 (规范 14.13.1 / 看板单 rDc5ui):
+	// It is a Syntax Error if this production has a [Yield] parameter and
+	// StringValue of Identifier is "yield" —— 生成器/async-generator 体内
+	// (allowYield=true) yield 不得作标签名 (test262 {language/expressions,
+	// language/statements}/async-generator/[named-]yield-as-label-identifier.js)。
+	// sloppy 非生成器代码里 yield 是普通 IdentifierName, `yield: ;` 仍是
+	// 合法标签语句; `var yield = 1` / `yield = 2` 不受影响。
+	if p.allowYield && p.curTokenIs(lexer.YIELD) {
+		p.addError("SyntaxError: yield is not allowed as a label identifier in a generator function")
+	}
 	stmt := &ast.LabeledStatement{
 		Token: p.curToken(),
 		Label: &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal},
@@ -1741,13 +1783,17 @@ func (p *Parser) parseBlockStatementAt(asFunctionBody bool) *ast.BlockStatement 
 }
 
 // parseFunctionBody 解析函数体 { ... }: 豁免本层的「lexical ∩ var」重声明早错。
-// 所有调用方都是**非箭头**函数体 (方法/访问器/构造器/函数表达式), 期间
-// new.target 合法, 故在此统一置位 (而不是逐调用点包装)。
-func (p *Parser) parseFunctionBody() *ast.BlockStatement {
+// 所有调用方都是**非箭头**函数体 (类方法/访问器/构造器/export default 匿名
+// 函数), 期间 new.target 合法, 故在此统一置位 (而不是逐调用点包装)。
+// isGenerator 决定体内 yield 语境 (生成器方法体内 yield 不得作标签标识符),
+// 存取器/构造器恒传 false。
+func (p *Parser) parseFunctionBody(isGenerator bool) *ast.BlockStatement {
 	p.fnDepth++
 	defer func() { p.fnDepth-- }()
 	restoreNT := p.enterNewTargetScope(true)
 	defer restoreNT()
+	restoreYield := p.setAllowYield(isGenerator)
+	defer restoreYield()
 	return p.parseBlockImpl(true)
 }
 
@@ -1862,13 +1908,17 @@ func (p *Parser) parseBlockWithDirectives() (*ast.BlockStatement, bool) {
 // async 上下文与 Directive Prologue。返回值: 体本身, 以及该函数**生效**的
 // strict (继承值 || 体自身含 "use strict" 指令)。退出后 p.strict 恢复为
 // 进入时的继承值 —— 指令只作用于本函数体, 不泄漏给后续兄弟语句。
-func (p *Parser) parseFunctionBodyWithStrict(isAsync bool) (*ast.BlockStatement, bool) {
+// isGenerator 决定体内的 yield 语境 (生成器体内 yield 是保留字, 不得作
+// 标签标识符); 箭头函数调用方传**继承值** p.allowYield (见 setAllowYield)。
+func (p *Parser) parseFunctionBodyWithStrict(isAsync bool, isGenerator bool) (*ast.BlockStatement, bool) {
 	inherited := p.strict
 	restoreAwait := p.setAllowAwait(isAsync)
+	restoreYield := p.setAllowYield(isGenerator)
 	p.fnDepth++
 	body, bodyStrict := p.parseBlockWithDirectives()
 	p.fnDepth--
 	restoreAwait()
+	restoreYield()
 	p.strict = inherited
 	// 记下「本体自身含 use strict 指令」(区别于继承来的 strict), 供
 	// checkUseStrictNonSimpleParams 判定 14.1.2 早错。
@@ -1895,10 +1945,10 @@ func (p *Parser) checkUseStrictWithNonSimpleParams(params []*ast.Parameter) {
 // 函数、对象方法/访问器): 期间 new.target 合法。与 parseFunctionBodyWithStrict
 // 分开, 是因为箭头函数体也走后者, 而箭头对 new.target 是词法透明的 (要继承外层
 // 合法性, 不能在此置 true)。
-func (p *Parser) parseNonArrowFunctionBody(isAsync bool) (*ast.BlockStatement, bool) {
+func (p *Parser) parseNonArrowFunctionBody(isAsync bool, isGenerator bool) (*ast.BlockStatement, bool) {
 	restoreNT := p.enterNewTargetScope(true)
 	defer restoreNT()
-	return p.parseFunctionBodyWithStrict(isAsync)
+	return p.parseFunctionBodyWithStrict(isAsync, isGenerator)
 }
 
 // parseBody 解析语句体: 若当前是 { 则解析代码块, 否则解析单条语句并包装为块。
@@ -1951,7 +2001,7 @@ func (p *Parser) parseFunctionDeclaration(isAsync bool) *ast.FunctionDeclaration
 	}
 	p.nextToken()
 	ntRestore := p.enterNewTargetScope(true)
-	fn.Body, fn.Strict = p.parseFunctionBodyWithStrict(isAsync)
+	fn.Body, fn.Strict = p.parseFunctionBodyWithStrict(isAsync, fn.IsGenerator)
 	p.checkUseStrictWithNonSimpleParams(fn.Parameters)
 	ntRestore()
 	if fn.Strict {
@@ -2410,7 +2460,9 @@ func (p *Parser) parseArrowFunctionBody(params []*ast.Parameter, isAsync bool) *
 
 	if p.peekTokenIs(lexer.LBRACE) {
 		p.nextToken()
-		af.Body, af.Strict = p.parseFunctionBodyWithStrict(isAsync)
+		// 箭头函数没有自己的 [Yield] 参数: 原样传当前值继承外层语境
+		// (生成器体内的箭头仍是 [+Yield] —— yield 作标签名一样早错)。
+		af.Body, af.Strict = p.parseFunctionBodyWithStrict(isAsync, p.allowYield)
 		p.checkUseStrictWithNonSimpleParams(af.Parameters)
 	} else {
 		p.nextToken()
@@ -2445,7 +2497,7 @@ func (p *Parser) parseFunctionExpression() ast.Expression {
 	}
 	p.nextToken()
 	// function 表达式永远是同步上下文 (async function 表达式走 parseAsyncExpression)
-	fn.Body, fn.Strict = p.parseNonArrowFunctionBody(false)
+	fn.Body, fn.Strict = p.parseNonArrowFunctionBody(false, fn.IsGenerator)
 	p.checkUseStrictWithNonSimpleParams(fn.Parameters)
 	if fn.Strict {
 		p.checkStrictFunctionParams(fn.Parameters)
@@ -2482,7 +2534,7 @@ func (p *Parser) parseAsyncExpression() ast.Expression {
 			return nil
 		}
 		p.nextToken()
-		fn.Body, fn.Strict = p.parseNonArrowFunctionBody(true)
+		fn.Body, fn.Strict = p.parseNonArrowFunctionBody(true, fn.IsGenerator)
 			p.checkUseStrictWithNonSimpleParams(fn.Parameters)
 		if fn.Strict {
 			p.checkStrictFunctionParams(fn.Parameters)
@@ -2801,7 +2853,7 @@ func (p *Parser) parseProperty() *ast.Property {
 			return nil
 		}
 		p.nextToken() // 到 {
-		fn.Body, fn.Strict = p.parseNonArrowFunctionBody(false)
+		fn.Body, fn.Strict = p.parseNonArrowFunctionBody(false, false)
 			p.checkUseStrictWithNonSimpleParams(fn.Parameters)
 		restore()
 		if fn.Strict {
@@ -2856,7 +2908,7 @@ func (p *Parser) parseProperty() *ast.Property {
 			return nil
 		}
 		p.nextToken()
-		fn.Body, fn.Strict = p.parseNonArrowFunctionBody(isAsync)
+		fn.Body, fn.Strict = p.parseNonArrowFunctionBody(isAsync, isGenerator)
 			p.checkUseStrictWithNonSimpleParams(fn.Parameters)
 		restore()
 		if fn.Strict {
@@ -3202,7 +3254,7 @@ func (p *Parser) parsePrivateAccessor(member *ast.ClassMethod) *ast.ClassMethod 
 			return nil
 		}
 		p.nextToken() // cur = {
-		member.Body = p.parseFunctionBody()
+		member.Body = p.parseFunctionBody(false)
 		restore()
 		p.nextToken() // 前进到下一成员/分隔符
 		return member
@@ -3235,7 +3287,7 @@ func (p *Parser) parsePrivateMember(member *ast.ClassMethod) *ast.ClassMethod {
 			return nil
 		}
 		p.nextToken() // cur = {
-		member.Body = p.parseFunctionBody()
+		member.Body = p.parseFunctionBody(member.IsGenerator)
 		restore()
 		// parseBlockStatement 返回时 cur 停在 } 上 (与 ctor/getter 路径一致),
 		// 再前进一格到下一成员/分隔符。
@@ -4151,7 +4203,7 @@ func (p *Parser) parseClassMember() *ast.ClassMethod {
 			return nil
 		}
 		p.nextToken()
-		member.Body = p.parseFunctionBody()
+		member.Body = p.parseFunctionBody(false)
 		restore()
 		p.nextToken() // 前进到下一个成员/分隔符
 		return member
@@ -4169,7 +4221,7 @@ func (p *Parser) parseClassMember() *ast.ClassMethod {
 			return nil
 		}
 		p.nextToken()
-		member.Body = p.parseFunctionBody()
+		member.Body = p.parseFunctionBody(false)
 		restore()
 		p.nextToken() // 前进到下一个成员/分隔符
 		return member
@@ -4204,7 +4256,7 @@ func (p *Parser) parseClassMember() *ast.ClassMethod {
 				return nil
 			}
 			p.nextToken()
-			member.Body = p.parseFunctionBody()
+			member.Body = p.parseFunctionBody(member.IsGenerator)
 			restore()
 			p.nextToken() // 前进到下一个成员/分隔符
 			return member
@@ -4542,7 +4594,7 @@ func (p *Parser) parseAnonymousFunctionExpression(isAsync bool) *ast.FunctionExp
 	}
 	p.nextToken()
 	restore := p.setAllowAwait(isAsync)
-	fn.Body = p.parseFunctionBody()
+	fn.Body = p.parseFunctionBody(fn.IsGenerator)
 	restore()
 	return fn
 }
