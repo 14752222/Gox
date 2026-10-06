@@ -154,3 +154,55 @@ func TestShorthandReservedWord(t *testing.T) {
 		})
 	}
 }
+
+// ===== async 形参区 await 保留字早错 (r4hv9u) =====
+//
+// 规范 FormalParameters[~Await]: async 函数/箭头/方法的形参列表 (含默认表达式)
+// 里 await 是保留字 —— `async f(x = await)` 必须解析期 SyntaxError (Node 22
+// 实测 "Illegal await-expression in formal parameters of async function")。
+// 此前 Gox 参数区恒 ~Await 且无保留字判定, `x = await` 被当成 sloppy 标识符
+// 放行, 运行期才由 $DONOTEVALUATE 之类暴露 ⇒ test262 early-errors-*-await-in-
+// formals-default.js 全族 LOST。
+// 边界 (Node 22 同口径): 同步函数 sloppy 下 await 仍是普通标识符; 嵌套函数/箭头
+// **体**不是形参窗口 (其中 await 回归标识符); 对象字面量键 `{ await: 1 }` 是
+// PropertyName 不受影响。
+func TestAwaitReservedInAsyncParams(t *testing.T) {
+	cases := []struct {
+		name    string
+		src     string
+		wantErr bool
+	}{
+		// —— 必须报错 (await 在 async 形参窗口) ——
+		{"async 函数默认值 await", `(async function(x = await) {})`, true},
+		{"async 箭头默认值 await", `async (x = await) => {}`, true},
+		{"async 函数形参名", `(async function(await) {})`, true},
+		{"对象方法默认值 await", `({ async foo (x = await) {} })`, true},
+		{"类方法默认值 await", `class Foo { async foo (x = await) {} }`, true},
+		{"async 生成器默认值 await", `(async function*(x = await) {})`, true},
+		{"解构模式绑定名 await", `(async function([await]) {})`, true},
+		{"默认值 await 成员", `(async function(x = await.foo) {})`, true},
+		{"对象计算键 await", `(async function(x = { [await]: 1 }) {})`, true},
+		{"类计算键 await", `(async function(x = class { [await]() {} }) {})`, true},
+		{"await 1 运算数形态", `(async function(x = await 1) {})`, true},
+		{"嵌套类 async 方法", `(async function(x = class { async m(y = await) {} }) {})`, true},
+		{"export default async fn", `export default async function(x = await) {}`, true},
+		// —— 必须放行 (不在形参窗口 / 同步上下文) ——
+		{"同步函数默认值 await(sloppy 标识符)", `(function(x = await) {})`, false},
+		{"同步箭头参数名 await", `((await) => 1)`, false},
+		{"sloppy var await", `var await = 1`, false},
+		{"嵌套箭头体 await", `(async function(x = () => await) {})`, false},
+		{"嵌套函数体 await", `(async function(x = function(){ return await }) {})`, false},
+		{"对象字面量键 await", `(async function(x = { await: 1 }) {})`, false},
+		{"async 函数体 await 表达式", `(async function() { return await 1 })`, false},
+		{"async 生成器体 yield", `(async function*(x = 1) { yield 2; await 3 })`, false},
+		{"普通 async 箭头", `(async (x = 1) => x)`, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, ok := parseSrc(t, tc.src)
+			if ok == tc.wantErr {
+				t.Errorf("wantErr=%v 但 ok=%v\nsrc: %s", tc.wantErr, ok, tc.src)
+			}
+		})
+	}
+}

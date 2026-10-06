@@ -43,6 +43,17 @@ type Parser struct {
 	depth      int // 当前语法嵌套深度 (表达式/语句递归层数)
 	depthExceeded bool // 已触发嵌套深度上限 (后续解析短路，防错误洪水)
 
+	// awaitReservedInParams 标记正在解析 **async 函数/箭头/方法的形参列表**
+	// (含默认表达式)。此窗口内 await 是保留字: `async f(x = await)` 与
+	// `({ async m(x = await) {} })` / `class C { async m(x = await) {} }` 必须
+	// 在解析期报 SyntaxError (规范 FormalParameters[~Await] + node 22 实测:
+	// "await is only valid in async functions" 家族; test262
+	// early-errors-{object-method,class-method,arrow}-await-in-formals-default.js)。
+	// 嵌套函数/箭头**体**经 setAllowAwait 清零 (那里 await 回归普通标识符,
+	// node 实测 `(async function(x = () => await) {})` 合法); 对象/类计算键
+	// 不在函数边界内, 保留保留字判据 (node 同样报错)。
+	awaitReservedInParams bool
+
 	// strict 是当前的严格模式上下文 (script 顶层默认 sloppy; 命中 "use strict"
 	// 指令、进入 class 体、或 module 顶层时置 true，函数体按继承值向下传播)。
 	// 解析期早错据此判定 (重复形参 / eval·arguments 作绑定名与赋值目标 /
@@ -181,10 +192,17 @@ func (p *Parser) leaveNesting() {
 // 任何函数体 (含同步函数、同步 generator) 都必须经过这里把 allowAwait
 // 重置为「该函数自身的 async 与否」—— 否则 async 函数里嵌套的同步函数
 // 会错误继承 async 上下文 (裸 await / for await 的上下文判定失效)。
+// 同时清零 awaitReservedInParams: 函数体不是形参窗口, 嵌套函数体里的
+// await 回归普通标识符 (见该字段注释)。
 func (p *Parser) setAllowAwait(isAsync bool) func() {
 	prev := p.allowAwait
 	p.allowAwait = isAsync
-	return func() { p.allowAwait = prev }
+	prevAwaitReserved := p.awaitReservedInParams
+	p.awaitReservedInParams = false
+	return func() {
+		p.allowAwait = prev
+		p.awaitReservedInParams = prevAwaitReserved
+	}
 }
 
 // setAllowYield 进入一个函数体前设置 yield 语境 ([Yield] 参数), 返回恢复函数。
@@ -228,6 +246,11 @@ func (p *Parser) setStrict(v bool) func() {
 // async 同理不是保留字 (node 22 实测: let async = 1 合法; test262
 // for-await-of/head-lhs-async.js), ASYNC token 在绑定位置按标识符接受。
 func (p *Parser) isBindingName() bool {
+	// async 形参区内 await 是保留字 (见 awaitReservedInParams): 绑定名判定
+	// 直接否掉, 由调用方报 "expected parameter name" 类 SyntaxError。
+	if p.awaitReservedInParams && p.curTokenIs(lexer.AWAIT) {
+		return false
+	}
 	return p.curTokenIs(lexer.IDENTIFIER) || p.curTokenIs(lexer.AWAIT) ||
 		p.curTokenIs(lexer.ASYNC)
 }
@@ -1995,7 +2018,7 @@ func (p *Parser) parseFunctionDeclaration(isAsync bool) *ast.FunctionDeclaration
 	if !p.expectPeek(lexer.LPAREN) {
 		return nil
 	}
-	fn.Parameters = p.parseParameters(lexer.RPAREN)
+	fn.Parameters = p.parseParameters(lexer.RPAREN, isAsync)
 	if !p.curTokenIs(lexer.RPAREN) {
 		return nil
 	}
@@ -2012,13 +2035,18 @@ func (p *Parser) parseFunctionDeclaration(isAsync bool) *ast.FunctionDeclaration
 
 // ==================== 参数解析 ====================
 
-func (p *Parser) parseParameters(close lexer.TokenType) []*ast.Parameter {
+// parseParameters 解析形参列表。isAsyncFn 是**所属函数自身的 async 与否**
+// (非外层上下文): 为真时形参区 await 是保留字 (见 awaitReservedInParams)。
+// 覆盖普通函数/箭头/async/生成器/对象方法/类方法全部入参点。
+func (p *Parser) parseParameters(close lexer.TokenType, isAsyncFn bool) []*ast.Parameter {
 	// 形参区恒为 ~Await 上下文 (规范 FormalParameters[~Yield, ~Await]):
 	// 即便所在函数是 async、即便处于模块顶层 (+Await) 或另一个 async 体内,
 	// 形参默认值里出现 await 表达式都是 SyntaxError
 	// (test262 top-level-await/syntax/early-does-not-propagate-to-fn-declaration-params.js)。
 	// 显式重置, 避免继承外层 +Await。
+	// awaitReservedInParams 随 setAllowAwait 的保存/恢复通道一起结转。
 	restoreAwait := p.setAllowAwait(false)
+	p.awaitReservedInParams = isAsyncFn
 	defer restoreAwait()
 
 	params := []*ast.Parameter{}
@@ -2436,7 +2464,7 @@ func (p *Parser) parenGroupFollowedByArrow(start int) bool {
 // isAsync 供 async 箭头传入, 决定函数体内是否允许 await。
 func (p *Parser) parseArrowFunction(isAsync bool) ast.Expression {
 	// curToken = LPAREN, parseParameters will advance past it
-	params := p.parseParameters(lexer.RPAREN)
+	params := p.parseParameters(lexer.RPAREN, isAsync)
 	if !p.curTokenIs(lexer.RPAREN) {
 		return nil
 	}
@@ -2491,7 +2519,7 @@ func (p *Parser) parseFunctionExpression() ast.Expression {
 	if !p.expectPeek(lexer.LPAREN) {
 		return nil
 	}
-	fn.Parameters = p.parseParameters(lexer.RPAREN)
+	fn.Parameters = p.parseParameters(lexer.RPAREN, false)
 	if !p.curTokenIs(lexer.RPAREN) {
 		return nil
 	}
@@ -2529,7 +2557,7 @@ func (p *Parser) parseAsyncExpression() ast.Expression {
 		if !p.expectPeek(lexer.LPAREN) {
 			return nil
 		}
-		fn.Parameters = p.parseParameters(lexer.RPAREN)
+		fn.Parameters = p.parseParameters(lexer.RPAREN, fn.IsAsync)
 		if !p.curTokenIs(lexer.RPAREN) {
 			return nil
 		}
@@ -2637,6 +2665,13 @@ func (p *Parser) parseYieldExpression() ast.Expression {
 // AwaitExpression, 编译成 OP_YIELD 后运行时才报 "yield outside generator"。
 func (p *Parser) parseAwaitExpression() ast.Expression {
 	if !p.allowAwait {
+		// async 形参窗口 (~Await + await 保留字): 此处 await 一律 SyntaxError,
+		// 覆盖 `x = await` / `x = await.foo` / 对象·类计算键 `[await]` 等形态
+		// (test262 early-errors-*-await-in-formals-default.js 家族)。
+		if p.awaitReservedInParams {
+			p.addError("SyntaxError: await is a reserved word in async function parameters")
+			return nil
+		}
 		if !p.peekStartsAwaitOperand() {
 			// 标识符用法: 交给中缀循环继续 (调用/索引/二元/后缀……)
 			return &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
@@ -2847,7 +2882,7 @@ func (p *Parser) parseProperty() *ast.Property {
 		fn := &ast.FunctionExpression{Token: prop.Token}
 		// 访问器不能是 async —— 同步上下文
 		restore := p.setAllowAwait(false)
-		fn.Parameters = p.parseParameters(lexer.RPAREN)
+		fn.Parameters = p.parseParameters(lexer.RPAREN, false)
 		if !p.curTokenIs(lexer.RPAREN) {
 			restore()
 			return nil
@@ -2902,7 +2937,7 @@ func (p *Parser) parseProperty() *ast.Property {
 		fn.IsGenerator = isGenerator
 		fn.IsAsync = isAsync
 		restore := p.setAllowAwait(isAsync)
-		fn.Parameters = p.parseParameters(lexer.RPAREN)
+		fn.Parameters = p.parseParameters(lexer.RPAREN, isAsync)
 		if !p.curTokenIs(lexer.RPAREN) {
 			restore()
 			return nil
@@ -3247,8 +3282,9 @@ func (p *Parser) parsePrivateAccessor(member *ast.ClassMethod) *ast.ClassMethod 
 	if p.peekTokenIs(lexer.LPAREN) {
 		p.nextToken() // cur = (
 		// 私有访问器不能是 async —— 同步上下文
-		restore := p.setAllowAwait(false)
-		member.Parameters = p.parseParameters(lexer.RPAREN)
+	// 私有访问器 / 类访问器 / constructor: 同步上下文
+	restore := p.setAllowAwait(false)
+	member.Parameters = p.parseParameters(lexer.RPAREN, false)
 		if !p.curTokenIs(lexer.RPAREN) {
 			restore()
 			return nil
@@ -3280,8 +3316,8 @@ func (p *Parser) parsePrivateMember(member *ast.ClassMethod) *ast.ClassMethod {
 	// 由 parseClassMember 解析 * / async 前缀时置好)。
 	if p.peekTokenIs(lexer.LPAREN) {
 		p.nextToken() // cur = (
-		restore := p.setAllowAwait(member.IsAsync)
-		member.Parameters = p.parseParameters(lexer.RPAREN)
+	restore := p.setAllowAwait(member.IsAsync)
+	member.Parameters = p.parseParameters(lexer.RPAREN, member.IsAsync)
 		if !p.curTokenIs(lexer.RPAREN) {
 			restore()
 			return nil
@@ -4196,8 +4232,9 @@ func (p *Parser) parseClassMember() *ast.ClassMethod {
 			p.nextToken()
 		}
 		// 访问器不能是 async —— 同步上下文
-		restore := p.setAllowAwait(false)
-		member.Parameters = p.parseParameters(lexer.RPAREN)
+	// 私有访问器 / 类访问器 / constructor: 同步上下文
+	restore := p.setAllowAwait(false)
+	member.Parameters = p.parseParameters(lexer.RPAREN, false)
 		if !p.curTokenIs(lexer.RPAREN) {
 			restore()
 			return nil
@@ -4214,8 +4251,9 @@ func (p *Parser) parseClassMember() *ast.ClassMethod {
 		member.Name = "constructor"
 		p.nextToken()
 		// constructor 不能是 async —— 同步上下文
-		restore := p.setAllowAwait(false)
-		member.Parameters = p.parseParameters(lexer.RPAREN)
+	// 私有访问器 / 类访问器 / constructor: 同步上下文
+	restore := p.setAllowAwait(false)
+	member.Parameters = p.parseParameters(lexer.RPAREN, false)
 		if !p.curTokenIs(lexer.RPAREN) {
 			restore()
 			return nil
@@ -4250,7 +4288,7 @@ func (p *Parser) parseClassMember() *ast.ClassMethod {
 		if p.curTokenIs(lexer.LPAREN) {
 			// 方法定义: name(params) { body } / [expr](params) { body }
 			restore := p.setAllowAwait(member.IsAsync)
-			member.Parameters = p.parseParameters(lexer.RPAREN)
+			member.Parameters = p.parseParameters(lexer.RPAREN, member.IsAsync)
 			if !p.curTokenIs(lexer.RPAREN) {
 				restore()
 				return nil
@@ -4588,7 +4626,7 @@ func (p *Parser) parseAnonymousFunctionExpression(isAsync bool) *ast.FunctionExp
 	if !p.expectPeek(lexer.LPAREN) {
 		return nil
 	}
-	fn.Parameters = p.parseParameters(lexer.RPAREN)
+	fn.Parameters = p.parseParameters(lexer.RPAREN, isAsync)
 	if !p.curTokenIs(lexer.RPAREN) {
 		return nil
 	}
