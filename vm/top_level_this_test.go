@@ -93,6 +93,55 @@ func TestEntryScriptTopLevelThisWithImports(t *testing.T) {
 	assertBoolean(t, vm.LastPopped(), true)
 }
 
+// TestEntryModuleFileVMEnteredAsModule 入口本身走**模块入口**时 (EvalModuleFileVM):
+// 顶层 this = undefined, 且顶层声明落在模块命名空间、不泄漏到全局 (rNR2Zk)。
+func TestEntryModuleFileVMEnteredAsModule(t *testing.T) {
+	dir := writeModuleDir(t, map[string]string{
+		"entry.js": "globalThis.__topUndef = (this === undefined);\n" +
+			"var leaked = 1;\n" +
+			"globalThis.__leaked = (globalThis.leaked !== undefined);\n",
+	})
+	v, err := EvalModuleFileVM(filepath.Join(dir, "entry.js"))
+	if err != nil {
+		t.Fatalf("EvalModuleFileVM: %v", err)
+	}
+	if val, ok := v.Globals().Get("__topUndef"); !ok {
+		t.Fatal("__topUndef 未写入")
+	} else {
+		assertBoolean(t, val, true)
+	}
+	if val, ok := v.Globals().Get("__leaked"); !ok {
+		t.Fatal("__leaked 未写入")
+	} else {
+		assertBoolean(t, val, false)
+	}
+}
+
+// TestModuleEntrySeesInjectedGlobalHarness 被 import 的模块能读到**注入进全局
+// 环境**的绑定 (test262 runner 把 harness 按 script 先执行注入全局, 模块入口
+// 用例与它 import 的 fixture 都要能看到 assert / Test262Error —— rNR2Zk)。
+func TestModuleEntrySeesInjectedGlobalHarness(t *testing.T) {
+	dir := writeModuleDir(t, map[string]string{
+		"entry.js": `import { v } from "./dep.js";
+globalThis.__v = v;`,
+		"dep.js": `export const v = __harnessFn();`,
+	})
+	// 模拟 runner: 先把 harness 按 script 执行, 绑定落到全局环境。
+	hvm, err := EvalVM(`function __harnessFn(){ return 42; }`)
+	if err != nil {
+		t.Fatalf("EvalVM(harness): %v", err)
+	}
+	v, err := EvalModuleFileVMWithGlobals(filepath.Join(dir, "entry.js"), hvm.Globals())
+	if err != nil {
+		t.Fatalf("EvalModuleFileVMWithGlobals: %v", err)
+	}
+	if val, ok := v.Globals().Get("__v"); !ok {
+		t.Fatal("__v 未写入")
+	} else {
+		assertNumber(t, val, 42)
+	}
+}
+
 // ===== 裸调用 / 方法调用 / 构造 / 箭头 (Phase 2) =====
 
 // TestBareCallThisIsGlobalThis 裸调用的非箭头函数 this = globalThis。

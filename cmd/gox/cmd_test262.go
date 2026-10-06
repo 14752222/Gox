@@ -400,10 +400,28 @@ func judgePhase(c *test262Case, execErr error) (bool, string, string) {
 	// "语法错误" 的性质已由 phase 判定确认, 故 parse/compile 阶段豁免
 	// 文本匹配 (否则要迁就实现给消息硬塞 "SyntaxError" 字样)。
 	// runtime 阶段的错误才是真异常, 仍要求类型名匹配。
-	if c.NegType != "" && phase == "runtime" && !strings.Contains(execErr.Error(), c.NegType) {
+	// 匹配只取**错误消息首行** (不掺源码回显), 理由见 errorHead。
+	if c.NegType != "" && phase == "runtime" && !strings.Contains(errorHead(execErr.Error()), c.NegType) {
 		return false, "runtime", fmt.Sprintf("错误类型不匹配: 期望含 %s, 实际: %s", c.NegType, firstLine(execErr.Error()))
 	}
 	return true, "pass", ""
+}
+
+// errorHead 只取错误消息的**首行**（去首尾空白），用于 negative.type 匹配。
+//
+// 运行时错误的 Error() 是 vm.FrameError 的渲染结果 —— 首行是引擎给出的异常
+// 消息本身（如 "vm error: TypeError: ..."），其后的行是「源码片段 + 插入符」。
+// 若拿整段字符串做 strings.Contains(_, NegType)，只要被回显的那一行源码里
+// 出现期望的类型名（典型：用例体里的 `throw new Test262Error();`）就会误判
+// 通过 —— 判据其实没有验证异常类型。故类型匹配必须限定在首行。
+//
+// 反例：用例体是 `throw new Test262Error();`、期望 type: Test262Error 时，
+// 只要报错帧恰好落在那一行，回显里就有 "Test262Error" 字样 —— 判据形同虚设。
+func errorHead(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimSpace(s)
 }
 
 func firstLine(s string) string {
@@ -425,9 +443,13 @@ func runCase(root string, c *test262Case, timeout time.Duration) test262Result {
 	isModule := hasFlag(c, "module")
 
 	var script string
+	var modulePreamble string // module 用例: 先按 script 执行的 harness（注入全局）
 	if isModule {
-		// module 用例: 源码写进用例同目录的临时文件（import 相对路径保持有效）,
-		// harness 依赖拼在最前（import 声明提升, 顺序合法）。
+		// module 用例走**真模块入口**（见下方 goroutine 的 EvalModuleFileVMWithGlobals 分支）,
+		// 于是不能把 harness 拼进模块源 —— 那样 harness 绑定只会是**模块作用域**,
+		// 被 import 的 fixture 与自导入副本看不到 assert/Test262Error（实测报
+		// "ReferenceError: assert is not defined"）。正解与官方 runner 同模型:
+		// harness 先按 script 在**同一全局环境**执行, 再把用例以模块入口执行。
 		var b strings.Builder
 		for _, inc := range harnessOrderFor(c) {
 			if !harnessLibs[inc] {
@@ -447,8 +469,9 @@ func runCase(root string, c *test262Case, timeout time.Duration) test262Result {
 		if hasFlag(c, "async") {
 			b.WriteString(test262AsyncShim)
 		}
-		b.WriteString(c.Source)
-		script = b.String()
+		modulePreamble = b.String()
+		// 临时文件只放用例源码: import 相对路径仍以用例所在目录为基准。
+		script = c.Source
 	} else {
 		built, err := buildScript(c, filepath.Join(root, "harness"))
 		if err != nil {
@@ -476,19 +499,27 @@ func runCase(root string, c *test262Case, timeout time.Duration) test262Result {
 	tmp.Close()
 
 	type outcome struct {
-		err   error
-		hasVM bool
-		vmRef *vm.VM
+		err        error
+		harnessErr bool
+		hasVM      bool
+		vmRef      *vm.VM
 	}
 	doneCh := make(chan outcome, 1)
 	go func() {
 		var engine *vm.VM
 		var err error
 		if isModule {
-			// module 用例: 语义是模块, 故按模块早错规则拦截 (重复导出名 /
-			// 未声明导出 / 顶层 return·yield 等); 执行仍是脚本语义 (与
-			// EvalFileVM 同一路径), 不改模块执行方式 —— 见 vm 侧注释。
-			engine, err = vm.EvalFileVMModuleEarlyErrors(tmpPath)
+			// module 用例走**真模块入口** (模块顶层恒严格 + 顶层 this=undefined,
+			// 且按模块早错规则拦截重复导出名/未声明导出/顶层 return·yield 等 ——
+			// EvalModuleFileVMWithGlobals 内部以 moduleMode+moduleEE 双 true 编译):
+			// 先把 harness 按 script 执行进**同一个全局环境**, 再让用例以模块入口
+			// 运行 —— 见上方 modulePreamble 注释。其余用例按 script 入口。
+			hvm, herr := vm.EvalVM(modulePreamble)
+			if herr != nil {
+				doneCh <- outcome{err: herr, harnessErr: true}
+				return
+			}
+			engine, err = vm.EvalModuleFileVMWithGlobals(tmpPath, hvm.Globals())
 		} else {
 			engine, err = vm.EvalFileVM(tmpPath)
 		}
@@ -505,6 +536,12 @@ func runCase(root string, c *test262Case, timeout time.Duration) test262Result {
 	case <-time.After(timeout):
 		res.Phase = "timeout"
 		res.Err = fmt.Sprintf("执行超时 (>%s)", timeout)
+		res.Seconds = time.Since(start).Seconds()
+		return res
+	}
+	if oc.harnessErr {
+		res.Phase = "harness"
+		res.Err = "harness 执行失败: " + oc.err.Error()
 		res.Seconds = time.Since(start).Seconds()
 		return res
 	}

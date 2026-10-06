@@ -6287,6 +6287,74 @@ func evalFileVM(path string, moduleEE bool) (*VM, error) {
 	return vm, nil
 }
 
+// EvalModuleFileVM 读取并执行一个 ESM 模块文件，把它当作**入口模块**，返回 VM。
+//
+// 与 EvalFileVM（把文件当 script 入口）的区别: 入口本身按模块单元编译执行 ——
+// 模块顶层恒严格、顶层 this 为 undefined、顶层声明落在模块命名空间而非全局
+// 对象。非模块脚本用 EvalFileVM；test262 的 module 用例走这里 (rNR2Zk)。
+func EvalModuleFileVM(path string) (*VM, error) {
+	return EvalModuleFileVMWithGlobals(path, stdlib.SetupGlobals())
+}
+
+// EvalModuleFileVMWithGlobals 是 EvalModuleFileVM 的变体，使用调用方给定的
+// 全局环境 —— 供 test262 runner 先把 harness 按 script 执行、把它的绑定注入
+// 全局环境（assert / Test262Error / $DONE …），再以**模块入口**执行用例：
+// 这样被 import 的 fixture 与自导入副本也能看到 harness 绑定（模块顶层声明只在
+// 模块命名空间里，fixture 看不到，会报 "assert is not defined"）。
+func EvalModuleFileVMWithGlobals(path string, globals *runtime.Environment) (*VM, error) {
+	absEntry, aerr := filepath.Abs(path)
+	if aerr != nil {
+		absEntry = filepath.Clean(path)
+	}
+	orig, err := os.ReadFile(absEntry)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read file: %v", err)
+	}
+	code := orig
+	var lineMap *tstransform.LineMap
+	isTS := tstransform.IsTS(absEntry)
+	if isTS {
+		res, terr := tstransform.TransformCached(orig, absEntry)
+		if terr != nil {
+			return nil, terr
+		}
+		code = res.Code
+		lineMap = res.LineMap
+	}
+
+	// moduleMode=true 且 moduleEE=true: 真模块入口既要模块运行语义 (顶层恒严格 /
+	// 顶层 this=undefined / 顶层声明进模块命名空间), 也要按模块早错规则拦截
+	// (重复导出名 / 未声明导出 / 顶层 return·yield 等) —— 二者互补, 缺一则
+	// test262 的 module 负例漏拦 (rTI1PN) 或模块语义不落地 (rNR2Zk)。
+	c, err := compileSourceOpts(string(code), true, true, false)
+	if err != nil {
+		if isTS {
+			err = remapSourceError(err, lineMap)
+		}
+		return nil, evalEntryError(err)
+	}
+
+	vm := NewWithGlobals(c.Bytes(), c.Constants(), c.NumLocals(), globals)
+	vm.SetModuleBase(dirOf(absEntry))
+	// 模块顶层 this = undefined (与 script 顶层 this = globalThis 相对)。
+	vm.moduleMode = true
+	vm.currentExports = newModuleExports()
+	// 循环导入防线: 入口模块先注册导出对象再执行 —— 执行期间若 import 自己/
+	// 成环，命中缓存拿到这份(填充中的)导出对象，而不是重新编译执行到栈溢出。
+	vm.modules[absEntry] = vm.currentExports
+	vm.SetSourceInfo(absEntry, string(orig))
+	if isTS {
+		vm.SetTranspileMap(lineMap, string(code))
+	}
+	vm.mainUnit.isModule = true
+	vm.SetStmtPositions(c.StmtPositions())
+	if err := vm.RunCompiled(c); err != nil {
+		return nil, fmt.Errorf("vm error: %v", vm.AttachFrame(err))
+	}
+
+	return vm, nil
+}
+
 // joinStrings 连接字符串切片。
 func joinStrings(strs []string, sep string) string {
 	return strings.Join(strs, sep)
