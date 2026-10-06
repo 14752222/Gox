@@ -18,6 +18,12 @@ func (b *Boolean) IsTruthy() bool {
 }
 
 func (b *Boolean) GetProperty(name string) (Value, bool) {
+	// Boolean 原始值没有自有属性 (typeof / valueOf 等一律沿 %Boolean.prototype%
+	// 查找)。此前直接返回 (nil,false) —— 于是 `true.toString()` /
+	// `true.hasOwnProperty` 全部取不到。
+	if BooleanProto != nil {
+		return BooleanProto.GetProperty(name)
+	}
 	return nil, false
 }
 

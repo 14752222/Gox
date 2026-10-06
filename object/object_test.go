@@ -327,6 +327,32 @@ func TestPlainObjectPrototype(t *testing.T) {
 	}
 }
 
+// TestPrimitivePrototypeLookup 锁定原始值装箱: Boolean/Symbol 原始值的属性访问
+// 必须沿各自的 prototype 对象查找 (此前 Boolean 直接返回未命中)。
+func TestPrimitivePrototypeLookup(t *testing.T) {
+	prevBool, prevSym := GetBooleanProto(), GetSymbolProto()
+	defer func() { SetBooleanProto(prevBool); SetSymbolProto(prevSym) }()
+
+	boolProto := NewObject()
+	boolProto.SetBuiltinProperty("toString", NewString("stub"))
+	SetBooleanProto(boolProto)
+	if v, ok := NewBoolean(true).GetProperty("toString"); !ok || v.(*String).Value != "stub" {
+		t.Fatalf("Boolean primitive must look up Boolean.prototype, got %v ok=%v", v, ok)
+	}
+
+	symProto := NewObject()
+	symProto.SetBuiltinProperty("valueOf", NewString("symval"))
+	SetSymbolProto(symProto)
+	s := NewSymbol("s")
+	if v, ok := s.GetProperty("valueOf"); !ok || v.(*String).Value != "symval" {
+		t.Fatalf("Symbol primitive must fall back to Symbol.prototype, got %v ok=%v", v, ok)
+	}
+	// description 仍是自有属性 (不回落原型)。
+	if v, ok := s.GetProperty("description"); !ok || v.(*String).Value != "s" {
+		t.Fatalf("Symbol description must stay own, got %v ok=%v", v, ok)
+	}
+}
+
 func TestError(t *testing.T) {
 	e := NewError("something went wrong")
 	if e.Type() != ERROR_OBJ {

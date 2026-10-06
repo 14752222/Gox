@@ -66,10 +66,12 @@ func SetupGlobals() *runtime.Environment {
 	}
 	env.Declare("Object", objectObj, false)
 
-	// Math / JSON 在此前创建 (Object.prototype 尚未就绪), 此处回填其
-	// [[Prototype]] = %Object.prototype%。
+	// Math / JSON / console 在此前创建 (Object.prototype 尚未就绪), 此处回填其
+	// [[Prototype]] = %Object.prototype% —— 它们是"普通对象"，规范要求原型链含
+	// Object.prototype。
 	setNamespaceProto(mathObj)
 	setNamespaceProto(jsonObj)
+	setNamespaceProto(console)
 
 	// ===== 函数对象原型链 (Function / GeneratorFunction / AsyncFunction) =====
 	// 必须在 setupAsync 之前: 后者要把 %AsyncGeneratorFunction.prototype% 链接到
@@ -169,6 +171,10 @@ func SetupGlobals() *runtime.Environment {
 	// ===== 聚合模块 "gox" (gx/* 导出并集, 一行导入) =====
 	setupGoxUmbrella(env)
 
+	// ===== 内建原型对象统一接入 %Object.prototype% =====
+	// 必须放在最后: 前面各 setup 造出的原型对象此刻均已注册完毕。
+	linkBuiltinPrototypes(env)
+
 	return env
 }
 
@@ -196,5 +202,74 @@ func attachPrototype(env *runtime.Environment, name string, proto *object.Object
 func setNamespaceProto(obj *object.Object) {
 	if p := object.GetObjectPrototype(); p != nil {
 		obj.Proto = p
+	}
+}
+
+// linkBuiltinPrototypes 把各内建原型对象的 [[Prototype]] 接入 %Object.prototype%。
+//
+// 规范里除 %Object.prototype% 自身 ([[Prototype]] = null) 外，内建原型对象都是
+// "普通对象"，其原型链必须含 Object.prototype。此前它们多由 object.NewObject()
+// 建成、[[Prototype]] = null —— 于是 `[].hasOwnProperty` / `"x".valueOf` /
+// `new Map().hasOwnProperty` 这类经原型链的隐式调用全部取不到方法
+// (test262 harness/verifyProperty.js 重度依赖 o.hasOwnProperty)。
+//
+// 只回填"当前为 null"的原型对象 —— 已显式接好者 (Function / Boolean / Symbol /
+// %GeneratorPrototype% 等) 的链不受影响。必须在 SetupGlobals 末尾调用: 各原型
+// 对象此刻均已注册完毕。
+func linkBuiltinPrototypes(env *runtime.Environment) {
+	objProto := object.GetObjectPrototype()
+	if objProto == nil {
+		return
+	}
+	link := func(p object.Value) { linkProtoTo(p, objProto) }
+
+	// (1) 直接注册在 object 包里的原型对象 (部分未暴露为全局的 .prototype，
+	//     例如 RegExp.prototype)。
+	for _, p := range []object.Value{
+		object.ArrayProto,
+		object.StringProto,
+		object.NumberProto,
+		object.GetBooleanProto(),
+		object.GetSymbolProto(),
+		object.GetBigIntProto(),
+		object.MapProto,
+		object.SetProto,
+		object.PromiseProto,
+		object.RegExpProto,
+	} {
+		link(p)
+	}
+
+	// (2) 全局构造器的 .prototype (TypedArray 子类 / Iterator / WeakRef ...)。
+	//     Object 不在列: 其 .prototype 就是 %Object.prototype%，必须保持 null 原型。
+	names := []string{
+		"Function", "Array", "String", "Number", "Boolean", "Symbol", "BigInt",
+		"RegExp", "Map", "Set", "WeakMap", "WeakSet", "Promise",
+		"AggregateError", "WeakRef", "FinalizationRegistry", "Iterator",
+		"ArrayBuffer", "DataView",
+	}
+	for _, k := range object.TAKindList() {
+		names = append(names, k.Name)
+	}
+	for _, n := range names {
+		v, ok := env.Get(n)
+		if !ok || v == nil {
+			continue
+		}
+		if p, ok := v.GetProperty("prototype"); ok {
+			link(p)
+		}
+	}
+}
+
+// linkProtoTo 把原型对象 p 的 [[Prototype]] 指向 target，仅当它当前为 null
+// (不覆盖已显式接好的原型链)。
+func linkProtoTo(p object.Value, target object.Value) {
+	o, ok := p.(*object.Object)
+	if !ok || o == nil {
+		return
+	}
+	if o.Proto == nil || o.Proto == object.NullSingleton {
+		o.Proto = target
 	}
 }

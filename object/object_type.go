@@ -294,10 +294,15 @@ func (o *Object) DeleteSymbolProperty(sym *Symbol) bool {
 	return false
 }
 
-// NewObject 创建空对象的便捷函数
+// NewObject 创建空对象的便捷函数。
 //
-// 注意 [[Prototype]] 置为 null（而非 %Object.prototype%）: 历史实现以此形态
-// 服务"宿主侧纯数据对象"，普通对象字面量请改用 NewPlainObject。
+// [[Prototype]] 置为 null（而非 %Object.prototype%）: 这是"宿主侧纯数据对象"
+// 与内建原型对象的构造形态。之所以不在这里默认接 %Object.prototype%，是因为
+// %Object.prototype% 在 object 包里是一个"跨 SetupGlobals 调用残留"的全局引用
+// —— 而 SetupGlobals 会被反复调用 (每次 Eval 一次)，若此处引用它，第二次调用
+// 造出的 Object.prototype 会挂到上一次的 Object.prototype 上，形成跨环境污染。
+// 需要"普通对象"语义请显式用 NewPlainObject，内建原型对象则在 SetupGlobals
+// 末尾统一回填 (见 stdlib.linkBuiltinPrototypes)。
 func NewObject() *Object {
 	return &Object{
 		Properties: make(map[string]PropertyDescriptor),

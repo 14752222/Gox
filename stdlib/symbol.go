@@ -112,6 +112,20 @@ func setupSymbolFunction(env *runtime.Environment) {
 	// 而 `delete Symbol.prototype[Symbol.toStringTag]` 之后回落 "[object Object]"。
 	symbolProto := object.NewObjectWithProto(object.GetObjectPrototype())
 	symbolProto.SetBuiltinProperty("constructor", symbolFn)
+	// Symbol.prototype.toString / valueOf (ES2024 20.4.3.3 / 20.4.3.4)。
+	// toString 同时是 Symbol 原始值经隐式装箱取到的方法。
+	symbolProto.SetBuiltinProperty("toString", object.NewBuiltinMethod("toString", func(this object.Value, args ...object.Value) object.Value {
+		if sym, ok := this.(*object.Symbol); ok {
+			return object.NewString(sym.Inspect())
+		}
+		return object.NewTypeError("Symbol.prototype.toString requires that 'this' be a Symbol")
+	}))
+	symbolProto.SetBuiltinProperty("valueOf", object.NewBuiltinMethod("valueOf", func(this object.Value, args ...object.Value) object.Value {
+		if sym, ok := this.(*object.Symbol); ok {
+			return sym
+		}
+		return object.NewTypeError("Symbol.prototype.valueOf requires that 'this' be a Symbol")
+	}))
 	setToStringTag(symbolProto, "Symbol")
 	symbolFn.SetProperty("prototype", symbolProto)
 	object.SetSymbolProto(symbolProto)

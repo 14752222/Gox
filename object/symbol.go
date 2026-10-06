@@ -25,7 +25,16 @@ func (s *Symbol) GetProperty(name string) (Value, bool) {
 	switch name {
 	case "description":
 		return NewString(s.Description), true
-	case "toString":
+	}
+	// 其余属性 (toString / valueOf / hasOwnProperty / @@toStringTag ...)
+	// 一律沿 %Symbol.prototype% 查找 —— 与 String/Number/BigInt 一致。
+	if SymbolProto != nil {
+		if v, ok := SymbolProto.GetProperty(name); ok {
+			return v, true
+		}
+	}
+	// 兜底: %Symbol.prototype% 未注册时仍支持 toString 反射。
+	if name == "toString" {
 		return NewBuiltinMethod("toString", func(this Value, args ...Value) Value {
 			if sym, ok := this.(*Symbol); ok {
 				return NewString(sym.Inspect())
