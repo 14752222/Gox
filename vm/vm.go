@@ -36,6 +36,90 @@ func (e *ThrowError) Error() string {
 	return e.Value.Inspect()
 }
 
+// thrownDisplayString 渲染顶层**未捕获**抛值的展示文本: 优先按 ToString
+// 语义, 对非 Error 对象调用其原型链/自有属性上的**用户自定义** toString
+// (JS 闭包) 并取其字符串结果; 缺失、非闭包 (如内建 Object.prototype.toString)、
+// 调用抛错、panic 或返回非字符串时, 回退到既有 Inspect (对象字面量) 渲染。
+//
+//   - Error 实例: 维持 Inspect ("Name: message"), 行为不变;
+//   - 原始值 (string/number/...): Inspect 即 ToString 展示, 维持既有;
+//   - 用户对象带自定义 toString: 调用之 (Test262Error / {toString(){...}});
+//   - 其余 (裸对象等): 回退 Inspect, 不退化成 "[object Object]"。
+//
+// 渲染路径绝不被用户 toString 带崩: callToString 内恢复 currentVM 并以
+// recover 兜底。
+func (vm *VM) thrownDisplayString(v object.Value) string {
+	if v == nil {
+		return "undefined"
+	}
+	if _, isErr := v.(*object.Error); isErr {
+		return v.Inspect()
+	}
+	obj, ok := v.(*object.Object)
+	if !ok {
+		return v.Inspect()
+	}
+	ts, exists := obj.GetProperty("toString")
+	if !exists {
+		return v.Inspect()
+	}
+	closure, isClosure := ts.(*object.Closure)
+	if !isClosure {
+		// 内建 toString (如 Object.prototype.toString → "[object Object]")
+		// 不算自定义, 回退 Inspect 以免裸对象丢信息。
+		return v.Inspect()
+	}
+	if s, ok := vm.callToString(closure, obj); ok {
+		return s
+	}
+	return v.Inspect()
+}
+
+// callToString 在恢复 currentVM 与 panic 保护下调用用户的 toString(闭包),
+// 返回其字符串结果; toString 抛错/panic/返回非字符串 ⇒ ok=false (回退 Inspect)。
+func (vm *VM) callToString(fn *object.Closure, this object.Value) (result string, ok bool) {
+	// 顶层 execute() 已返回、currentVM 被恢复为旧值; 渲染时要调回调桥
+	// (object.CallFunction → currentVM.callFunction) 执行用户 toString,
+	// 故在此重新注册 currentVM, 退出时恢复。
+	saved := currentVM
+	currentVM = vm
+	defer func() {
+		currentVM = saved
+		if r := recover(); r != nil {
+			result, ok = "", false
+		}
+	}()
+	rv := object.CallFunction(fn, this)
+	if object.TakeCallbackError() != nil {
+		return "", false
+	}
+	if s, isStr := rv.(*object.String); isStr {
+		return s.Value, true
+	}
+	return "", false
+}
+
+// uncaughtError 渲染顶层未捕获错误: throw 出的值按 thrownDisplayString
+// (ToString 语义 + Inspect 回退) 渲染, 其余错误维持既有形式; 尽力附带源码帧。
+// 渲染后的消息使错误**首行**即 ToString(thrownValue) 结果 —— test262 runner
+// 对 negative.runtime 的 NegType 匹配 (首行) 由此能见到如 "Test262Error"。
+func (vm *VM) uncaughtError(err error) error {
+	framed := vm.AttachFrame(err) // 先在有 throw 位置状态时算好源码帧
+	frame := ""
+	if fe, ok := framed.(*FrameError); ok {
+		frame = fe.Frame
+	}
+	var te *ThrowError
+	if errors.As(err, &te) {
+		msg := "vm error: " + vm.thrownDisplayString(te.Value)
+		if frame != "" {
+			return &FrameError{Inner: errors.New(msg), Frame: frame}
+		}
+		return errors.New(msg)
+	}
+	return fmt.Errorf("vm error: %v", framed)
+}
+
 // YieldSignal 表示 generator 执行到 yield 时的暂停信号。
 // genResume 捕获该信号后保存状态并返回 (value, done=false)。
 type YieldSignal struct {
@@ -5903,7 +5987,7 @@ func EvalVM(input string) (*VM, error) {
 
 	vm := NewWithGlobals(c.Bytes(), c.Constants(), c.NumLocals(), stdlib.SetupGlobals())
 	if err := vm.RunCompiled(c); err != nil {
-		return nil, fmt.Errorf("vm error: %v", err)
+		return nil, vm.uncaughtError(err)
 	}
 	return vm, nil
 }
@@ -5917,7 +6001,7 @@ func EvalWithGlobals(input string, globals *runtime.Environment) (object.Value, 
 
 	vm := NewWithGlobals(c.Bytes(), c.Constants(), c.NumLocals(), globals)
 	if err := vm.RunCompiled(c); err != nil {
-		return nil, fmt.Errorf("vm error: %v", err)
+		return nil, vm.uncaughtError(err)
 	}
 
 	return vm.LastPopped(), nil
@@ -5989,7 +6073,7 @@ func evalFileVM(path string, moduleEE bool) (*VM, error) {
 	}
 	vm.SetStmtPositions(c.StmtPositions())
 	if err := vm.RunCompiled(c); err != nil {
-		return nil, fmt.Errorf("vm error: %v", vm.AttachFrame(err))
+		return nil, vm.uncaughtError(err)
 	}
 
 	return vm, nil
