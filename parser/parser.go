@@ -54,6 +54,12 @@ type Parser struct {
 	// 未命中本层声明表的名字上抛外层 —— 全落空即「未在包围类中声明」早错。
 	// 见 class_early_errors.go。
 	privEnvStack []*privEnv
+
+	// moduleTopLevel 仅在解析模块**顶层**语句时为 true。
+	// import/export 声明只允许出现在模块顶层 (spec: ModuleItem), 嵌进块/函数
+	// 体里都是 SyntaxError。parseStatementBody 在此为 false 时对 IMPORT/EXPORT
+	// 报位置早错。见 block_early_errors.go。
+	moduleTopLevel bool
 }
 
 // maxNestingDepth 是语法嵌套深度上限。
@@ -357,6 +363,8 @@ func (p *Parser) ParseProgram() *ast.Program {
 	// 精确 "use strict"。
 	p.strict = p.module
 	inPrologue := true
+	// 顶层语句允许 import/export (ModuleItem); 进块/函数体后置 false。
+	p.moduleTopLevel = true
 	for !p.curTokenIs(lexer.EOF) {
 		startIsString := p.curTokenIs(lexer.STRING_LITERAL)
 		stmt := p.parseStatement()
@@ -474,6 +482,7 @@ func (p *Parser) parseStatementBody() ast.Statement {
 		}
 		stmt := &ast.ExpressionStatement{Token: p.curToken()}
 		stmt.Expression = p.parseExpression(LOWEST)
+		p.checkSameLineASI()
 		p.consumeSemicolon()
 		return stmt
 	case lexer.ASYNC:
@@ -494,8 +503,17 @@ func (p *Parser) parseStatementBody() ast.Statement {
 			// 动态 import(): import("./mod.js") 作为表达式
 			return p.parseExpressionStatement()
 		}
+		// import 声明只在模块顶层合法 (spec: ModuleItem)。块/函数体内的
+		// `import` 是 SyntaxError —— 报位置早错, 但仍继续解析以免错误恢复
+		// 产生噪音。
+		if !p.moduleTopLevel {
+			p.addError("import declarations may only appear at the top level of a module")
+		}
 		return p.parseImportDeclaration()
 	case lexer.EXPORT:
+		if !p.moduleTopLevel {
+			p.addError("export declarations may only appear at the top level of a module")
+		}
 		return p.parseExportDeclaration()
 	case lexer.SEMICOLON:
 		return &ast.ExpressionStatement{Token: p.curToken()}
@@ -539,6 +557,7 @@ func (p *Parser) parseVarStatement() *ast.VarStatement {
 		stmt.Value = &ast.AssignmentExpression{
 			Token: stmt.Token, Left: pattern, Operator: "=", Right: p.parseExpression(LOWEST),
 		}
+		p.checkSameLineASI()
 		p.consumeSemicolon()
 		return stmt
 	}
@@ -571,6 +590,7 @@ func (p *Parser) parseVarStatement() *ast.VarStatement {
 		}
 		stmt.More = append(stmt.More, decl)
 	}
+	p.checkSameLineASI()
 	p.consumeSemicolon()
 	return stmt
 }
@@ -624,6 +644,7 @@ func (p *Parser) parseLetStatement() *ast.LetStatement {
 		}
 		stmt.More = append(stmt.More, decl)
 	}
+	p.checkSameLineASI()
 	p.consumeSemicolon()
 	return stmt
 }
@@ -643,6 +664,7 @@ func (p *Parser) parseDestructuringLet(stmt *ast.LetStatement, isArray bool) *as
 	stmt.Value = &ast.AssignmentExpression{
 		Token: stmt.Token, Left: pattern, Operator: "=", Right: p.parseExpression(LOWEST),
 	}
+	p.checkSameLineASI()
 	p.consumeSemicolon()
 	return stmt
 }
@@ -702,6 +724,7 @@ func (p *Parser) parseConstStatement() *ast.ConstStatement {
 		decl.Value = p.parseExpression(LOWEST)
 		stmt.More = append(stmt.More, decl)
 	}
+	p.checkSameLineASI()
 	p.consumeSemicolon()
 	return stmt
 }
@@ -720,6 +743,7 @@ func (p *Parser) parseReturnStatement() *ast.ReturnStatement {
 	}
 	p.nextToken()
 	stmt.ReturnValue = p.parseExpression(LOWEST)
+	p.checkSameLineASI()
 	p.consumeSemicolon()
 	return stmt
 }
@@ -727,6 +751,7 @@ func (p *Parser) parseReturnStatement() *ast.ReturnStatement {
 func (p *Parser) parseExpressionStatement() *ast.ExpressionStatement {
 	stmt := &ast.ExpressionStatement{Token: p.curToken()}
 	stmt.Expression = p.parseCommaSequence()
+	p.checkSameLineASI()
 	p.consumeSemicolon()
 	return stmt
 }
@@ -1325,6 +1350,7 @@ func (p *Parser) parseBreakStatement() *ast.BreakStatement {
 		p.nextToken()
 		stmt.Label = &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
 	}
+	p.checkSameLineASI()
 	p.consumeSemicolon()
 	return stmt
 }
@@ -1337,6 +1363,7 @@ func (p *Parser) parseContinueStatement() *ast.ContinueStatement {
 		p.nextToken()
 		stmt.Label = &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
 	}
+	p.checkSameLineASI()
 	p.consumeSemicolon()
 	return stmt
 }
@@ -1358,7 +1385,24 @@ func (p *Parser) parseLabeledStatement() *ast.LabeledStatement {
 	return stmt
 }
 
+// parseBlockStatement 解析普通块语句 { ... }, 做块级早错检查。
 func (p *Parser) parseBlockStatement() *ast.BlockStatement {
+	return p.parseBlockImpl(false)
+}
+
+// parseBlockStatementAt 是 parseBlockStatement 的显式参数版本。
+// asFunctionBody 为 true 时豁免本层块的「lexical ∩ var」重声明早错 (函数体
+// 专用: `function g(){ var f; function f(){} }` 合法)。内层普通块不受影响。
+func (p *Parser) parseBlockStatementAt(asFunctionBody bool) *ast.BlockStatement {
+	return p.parseBlockImpl(asFunctionBody)
+}
+
+// parseFunctionBody 解析函数体 { ... }: 豁免本层的「lexical ∩ var」重声明早错。
+func (p *Parser) parseFunctionBody() *ast.BlockStatement {
+	return p.parseBlockImpl(true)
+}
+
+func (p *Parser) parseBlockImpl(asFunctionBody bool) *ast.BlockStatement {
 	if !p.enterNesting("block") {
 		return nil
 	}
@@ -1373,12 +1417,24 @@ func (p *Parser) parseBlockStatement() *ast.BlockStatement {
 	}
 	p.nextToken()
 
+	// 块内的语句不是模块顶层 —— import/export 在此非法 (spec: ModuleItem)。
+	prevTop := p.moduleTopLevel
+	p.moduleTopLevel = false
+	defer func() { p.moduleTopLevel = prevTop }()
+
 	for !p.curTokenIs(lexer.RBRACE) && !p.curTokenIs(lexer.EOF) {
 		stmt := p.parseStatement()
 		if stmt != nil {
 			block.Statements = append(block.Statements, stmt)
 		}
 		p.nextToken()
+	}
+	// 块级早错: LexicallyDeclaredNames ∩ VarDeclaredNames ≠ ∅ ⇒ SyntaxError
+	// (sec-block-static-semantics-early-errors)。见 block_early_errors.go。
+	// 函数体 (asFunctionBody=true) 豁免 —— 那里 var 与同名 function 声明合法;
+	// 但函数体**内层**的普通块仍照查 (豁免只作用于这一层)。
+	if !asFunctionBody {
+		p.checkBlockRedeclaration(block)
 	}
 	return block
 }
@@ -1402,6 +1458,12 @@ func (p *Parser) parseBlockWithDirectives() (*ast.BlockStatement, bool) {
 	}
 	p.nextToken()
 
+	// 函数体内的语句不是模块顶层 —— import/export 在此非法 (spec: ModuleItem)。
+	// 与 parseBlockImpl 一致 (block-ee rUZN3k 第1块); 本函数专用于 FunctionBody。
+	prevTop := p.moduleTopLevel
+	p.moduleTopLevel = false
+	defer func() { p.moduleTopLevel = prevTop }()
+
 	inPrologue := true
 	bodyStrict := false
 	for !p.curTokenIs(lexer.RBRACE) && !p.curTokenIs(lexer.EOF) {
@@ -1422,6 +1484,10 @@ func (p *Parser) parseBlockWithDirectives() (*ast.BlockStatement, bool) {
 		}
 		p.nextToken()
 	}
+	// 函数体豁免本层「lexical ∩ var」重声明早错: 在**函数体**里 function
+	// 声明是 var 作用域 (不像块里那样算 lexical), 故 `function g(){ var f;
+	// function f(){} }` 合法 —— 与 parseBlockImpl(asFunctionBody=true) 一致
+	// (block-ee rUZN3k 第1块)。内层普通块仍走 parseBlockStatement 照查。
 	return block, bodyStrict
 }
 
@@ -1444,7 +1510,12 @@ func (p *Parser) parseBody() *ast.BlockStatement {
 	if p.curTokenIs(lexer.LBRACE) {
 		return p.parseBlockStatement()
 	}
-	// 单条语句: 包装为 BlockStatement
+	// 单条语句: 包装为 BlockStatement。
+	// 这里同样不是模块顶层 —— `if (x) { } else export default null;` 非法
+	// (test262 module-code/parse-err-decl-pos-export-if-else.js)。
+	prevTop := p.moduleTopLevel
+	p.moduleTopLevel = false
+	defer func() { p.moduleTopLevel = prevTop }()
 	block := &ast.BlockStatement{Token: p.curToken(), Statements: []ast.Statement{}}
 	stmt := p.parseStatement()
 	if stmt != nil {
@@ -2633,7 +2704,7 @@ func (p *Parser) parsePrivateAccessor(member *ast.ClassMethod) *ast.ClassMethod 
 			return nil
 		}
 		p.nextToken() // cur = {
-		member.Body = p.parseBlockStatement()
+		member.Body = p.parseFunctionBody()
 		restore()
 		p.nextToken() // 前进到下一成员/分隔符
 		return member
@@ -2666,7 +2737,7 @@ func (p *Parser) parsePrivateMember(member *ast.ClassMethod) *ast.ClassMethod {
 			return nil
 		}
 		p.nextToken() // cur = {
-		member.Body = p.parseBlockStatement()
+		member.Body = p.parseFunctionBody()
 		restore()
 		// parseBlockStatement 返回时 cur 停在 } 上 (与 ctor/getter 路径一致),
 		// 再前进一格到下一成员/分隔符。
@@ -3059,6 +3130,7 @@ func (p *Parser) parseThrowStatement() *ast.ThrowStatement {
 	stmt := &ast.ThrowStatement{Token: p.curToken()}
 	p.nextToken()
 	stmt.Value = p.parseExpression(LOWEST)
+	p.checkSameLineASI()
 	p.consumeSemicolon()
 	return stmt
 }
@@ -3469,7 +3541,7 @@ func (p *Parser) parseClassMember() *ast.ClassMethod {
 			return nil
 		}
 		p.nextToken()
-		member.Body = p.parseBlockStatement()
+		member.Body = p.parseFunctionBody()
 		restore()
 		p.nextToken() // 前进到下一个成员/分隔符
 		return member
@@ -3487,7 +3559,7 @@ func (p *Parser) parseClassMember() *ast.ClassMethod {
 			return nil
 		}
 		p.nextToken()
-		member.Body = p.parseBlockStatement()
+		member.Body = p.parseFunctionBody()
 		restore()
 		p.nextToken() // 前进到下一个成员/分隔符
 		return member
@@ -3518,7 +3590,7 @@ func (p *Parser) parseClassMember() *ast.ClassMethod {
 				return nil
 			}
 			p.nextToken()
-			member.Body = p.parseBlockStatement()
+			member.Body = p.parseFunctionBody()
 			restore()
 			p.nextToken() // 前进到下一个成员/分隔符
 			return member
@@ -3566,6 +3638,7 @@ func (p *Parser) parseImportDeclaration() *ast.ImportDeclaration {
 	// import "module.js" (副作用导入)
 	if p.curTokenIs(lexer.STRING_LITERAL) {
 		stmt.Source = p.curToken().Literal
+		p.checkSameLineASI()
 		p.consumeSemicolon()
 		return stmt
 	}
@@ -3641,6 +3714,7 @@ func (p *Parser) parseImportDeclaration() *ast.ImportDeclaration {
 		return nil
 	}
 	stmt.Source = p.curToken().Literal
+	p.checkSameLineASI()
 	p.consumeSemicolon()
 	return stmt
 }
@@ -3769,6 +3843,7 @@ func (p *Parser) parseExportDefault(stmt *ast.ExportDeclaration) *ast.ExportDecl
 			return nil
 		}
 		stmt.Declaration = &ast.ExpressionStatement{Token: fn.Token, Expression: fn}
+		p.checkSameLineASI()
 		p.consumeSemicolon()
 		return stmt
 
@@ -3787,6 +3862,7 @@ func (p *Parser) parseExportDefault(stmt *ast.ExportDeclaration) *ast.ExportDecl
 			return nil
 		}
 		stmt.Declaration = &ast.ExpressionStatement{Token: fn.Token, Expression: fn}
+		p.checkSameLineASI()
 		p.consumeSemicolon()
 		return stmt
 
@@ -3807,6 +3883,7 @@ func (p *Parser) parseExportDefault(stmt *ast.ExportDeclaration) *ast.ExportDecl
 			return nil
 		}
 		stmt.Declaration = &ast.ExpressionStatement{Token: p.curToken(), Expression: cls}
+		p.checkSameLineASI()
 		p.consumeSemicolon()
 		return stmt
 
@@ -3816,6 +3893,7 @@ func (p *Parser) parseExportDefault(stmt *ast.ExportDeclaration) *ast.ExportDecl
 			return nil
 		}
 		stmt.Declaration = &ast.ExpressionStatement{Token: p.curToken(), Expression: expr}
+		p.checkSameLineASI()
 		p.consumeSemicolon()
 		return stmt
 	}
@@ -3853,7 +3931,7 @@ func (p *Parser) parseAnonymousFunctionExpression(isAsync bool) *ast.FunctionExp
 	}
 	p.nextToken()
 	restore := p.setAllowAwait(isAsync)
-	fn.Body = p.parseBlockStatement()
+	fn.Body = p.parseFunctionBody()
 	restore()
 	return fn
 }
@@ -3886,6 +3964,7 @@ func (p *Parser) parseExportStar(stmt *ast.ExportDeclaration) *ast.ExportDeclara
 		return nil
 	}
 	stmt.Source = p.curToken().Literal
+	p.checkSameLineASI()
 	p.consumeSemicolon()
 	return stmt
 }
@@ -3950,8 +4029,36 @@ func (p *Parser) parseExportNamed(stmt *ast.ExportDeclaration) *ast.ExportDeclar
 
 // ==================== 辅助方法 ====================
 
+// consumeSemicolon 消费可选的分号。
+//
+// 注意: 这里**不**做「同一行缺分号」的 ASI 早错 —— 调用点太多且 cur/peek
+// 状态不一致 (如 parseExportNamed 在调用前已把 cur 推过 `}`)。同一行缺分号
+// 的检查收拢在 parseExpressionStatement 单点 (见 checkSameLineASI)。
 func (p *Parser) consumeSemicolon() {
 	if p.peekTokenIs(lexer.SEMICOLON) {
 		p.nextToken()
 	}
+}
+
+// checkSameLineASI 在表达式语句收尾处检查「同一行缺分号」。
+//
+// ASI (spec 12.9 / S7.9): 分号只在三种情形下自动插入 ——
+//   1) 下一 token 前有换行 (LineTerminator);
+//   2) 下一 token 是 `}` ;
+//   3) 到达输入末尾。
+// 因此「同一行、下一 token 既非 `;` 也非 `}`/EOF」= 缺分号 ⇒ SyntaxError。
+// 例如 `{1 2} 3` 里第一个 1 之后紧跟同行的 2, 既不换行也不收块, 必须报错
+// (test262 asi/S7.9_A10_T8.js); 而 `{ 1 \n 2 } 3` 换行可插入分号, 合法
+// (asi/S7.9.2_A1_T2.js)。
+//
+// 调用前提 (parseExpressionStatement 满足): curToken 是表达式的最后一个
+// token, peekToken 是紧随其后的 token。
+func (p *Parser) checkSameLineASI() {
+	if p.peekTokenIs(lexer.SEMICOLON) || p.peekTokenIs(lexer.RBRACE) || p.peekTokenIs(lexer.EOF) {
+		return
+	}
+	if p.peekToken().Line != p.curToken().Line {
+		return // 换行 ⇒ 允许 ASI
+	}
+	p.addError(fmt.Sprintf("missing semicolon before %s", p.peekToken().Type))
 }

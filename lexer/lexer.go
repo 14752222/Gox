@@ -791,20 +791,38 @@ func (l *Lexer) readTemplateString(line, col int, isFirst bool) Token {
 	}
 }
 
+// isLineTerminator 报告 r 是否为 JS 的 LineTerminator 码点。
+//
+// 规范 12.3: LineTerminator :: <LF> | <CR> | <LS> | <PS>, 即
+// U+000A, U+000D, U+2028, U+2029。多行注释里出现任一码点, 整个注释就
+// 被当作一个 LineTerminator (供 ASI 判定)。此前只认 \n, 于是
+// `''/*<LS>*/''` / `''/*<CR>*/''` 这类被误判为「同一行缺分号」。
+func isLineTerminator(r rune) bool {
+	return r == '\n' || r == '\r' || r == '\u2028' || r == '\u2029'
+}
+
 // skipWhitespaceAndComments 跳过空白字符和注释。
-// 支持: 空格, 制表符, 换行, 回车, 单行注释 (//), 多行注释 (/* */)
+// 支持: 空格, 制表符, 换行 (含 CR/LS/PS), 单行注释 (//), 多行注释 (/* */)
 func (l *Lexer) skipWhitespaceAndComments() {
 	for {
 		switch {
-		case l.ch == ' ' || l.ch == '\t' || l.ch == '\r':
+		case l.ch == ' ' || l.ch == '\t' || l.ch == '\u000B' || l.ch == '\u000C':
 			l.readChar()
-		case l.ch == '\n':
+		case l.ch == '\r':
+			// CR 与 CRLF 都只算一个行终止符 (\r\n 不重复计数)。
+			l.line++
+			l.column = 0
+			l.readChar()
+			if l.ch == '\n' {
+				l.readChar()
+			}
+		case l.ch == '\n' || l.ch == '\u2028' || l.ch == '\u2029':
 			l.line++
 			l.column = 0
 			l.readChar()
 		case l.ch == '/' && l.peekChar() == '/':
 			// 单行注释
-			for l.ch != '\n' && l.ch != 0 {
+			for !isLineTerminator(l.ch) && l.ch != 0 {
 				l.readChar()
 			}
 		case l.ch == '/' && l.peekChar() == '*':
@@ -820,9 +838,12 @@ func (l *Lexer) skipWhitespaceAndComments() {
 					l.readChar() // 消费 /
 					break
 				}
-				if l.ch == '\n' {
+				if isLineTerminator(l.ch) {
 					l.line++
 					l.column = 0
+					if l.ch == '\r' && l.peekChar() == '\n' {
+						l.readChar() // CRLF 只算一个行终止符
+					}
 				}
 				l.readChar()
 			}
