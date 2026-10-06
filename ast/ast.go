@@ -1221,6 +1221,19 @@ func (te *ThisExpression) TokenLiteral() string { return te.Token.Literal }
 func (te *ThisExpression) String() string       { return "this" }
 func (te *ThisExpression) expressionNode()      {}
 
+// ==================== 元属性 (MetaProperty) ====================
+
+// MetaProperty 表示元属性, 目前唯一形态是 `new.target`。
+// 合法性 (只能出现在函数体内) 与求值语义 (普通调用 undefined / 构造调用为被 new
+// 的构造器 / super() 沿链传递) 都由解析器与 VM 分别把关, 见 parser/vm 的注释。
+type MetaProperty struct {
+	Token lexer.Token // NEW 关键字
+}
+
+func (mp *MetaProperty) TokenLiteral() string { return mp.Token.Literal }
+func (mp *MetaProperty) String() string       { return "new.target" }
+func (mp *MetaProperty) expressionNode()      {}
+
 // ==================== new 表达式 ====================
 
 // NewExpression 表示 new 表达式。

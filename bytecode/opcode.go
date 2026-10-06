@@ -126,6 +126,13 @@ const (
 	// 调用 → SyntaxError)。间接 eval 不发射此标记, 不受限。
 	OP_EVAL_MARK_INIT Opcode = 0x6B
 
+	// OP_NEW_TARGET_MARK: 无操作数。编译器在 super(...) 调用前发射, 把调用者帧
+	// 生效的 new.target 记为「下一次调用要继承的构造目标」。VM 在紧随其后的
+	// OP_CALL_METHOD / OP_CALL_METHOD_SPREAD 装配父构造器帧时消费: 父构造器里
+	// 看到的 new.target 即调用者 (派生类) 的 new.target —— 规范 sec-super-keyword
+	// 的 `Construct(func, argList, GetNewTarget())`。非 super 调用不发射, 不继承。
+	OP_NEW_TARGET_MARK Opcode = 0x6C
+
 	// 0x70-0x7F: 对象和数组
 	OP_NEW_ARRAY       Opcode = 0x70 // 创建数组 (operand = 元素个数)
 	OP_NEW_OBJECT      Opcode = 0x71 // 创建空对象
@@ -235,6 +242,7 @@ const (
 	OP_DELETE        Opcode = 0xC3 // delete 属性
 	OP_IN            Opcode = 0xC4 // in 运算符 (key in obj)
 	OP_TYPEOF_GLOBAL Opcode = 0xC5 // typeof 未绑定的标识符 (操作数 = 名字常量索引, 不抛 ReferenceError)
+	OP_NEW_TARGET    Opcode = 0xC6 // 加载 new.target (当前帧的构造目标; 普通调用为 undefined)
 
 	// 0xD0-0xDF: 控制
 	OP_BREAK            Opcode = 0xD0 // break (跳转到循环外)
@@ -301,6 +309,7 @@ var opcodeNames = map[Opcode]string{
 	OP_CALL_METHOD_SPREAD: "CALL_METHOD_SPREAD",
 	OP_EVAL_MARK:          "EVAL_MARK",
 	OP_EVAL_MARK_INIT:     "EVAL_MARK_INIT",
+	OP_NEW_TARGET_MARK:    "NEW_TARGET_MARK",
 	OP_NEW_ARRAY: "NEW_ARRAY", OP_NEW_OBJECT: "NEW_OBJECT",
 	OP_GET_PROP: "GET_PROP", OP_SET_PROP: "SET_PROP",
 	OP_GET_INDEX: "GET_INDEX", OP_SET_INDEX: "SET_INDEX",
@@ -327,6 +336,7 @@ var opcodeNames = map[Opcode]string{
 	OP_WITH_ENTER: "WITH_ENTER",
 	OP_TYPEOF: "TYPEOF", OP_INSTANCEOF: "INSTANCEOF",
 	OP_THIS: "THIS", OP_DELETE: "DELETE", OP_IN: "IN", OP_TYPEOF_GLOBAL: "TYPEOF_GLOBAL",
+	OP_NEW_TARGET: "NEW_TARGET",
 	OP_BREAK: "BREAK", OP_CONTINUE: "CONTINUE",
 	OP_PUSH_TRY: "PUSH_TRY", OP_PUSH_FINALLY: "PUSH_FINALLY",
 	OP_POP_TRY: "POP_TRY", OP_THROW: "THROW", OP_END_FINALLY: "END_FINALLY",

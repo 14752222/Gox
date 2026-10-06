@@ -80,6 +80,36 @@ type Parser struct {
 	// fnDepth 是当前所处的**函数体**嵌套层数 (每进一个 function/箭头/方法体
 	// +1)。顶层为 0 —— 模块顶层的 `return` / `yield` 据此判定为早错。
 	fnDepth int
+	// newTargetAllowed 标记当前位置 `new.target` 是否语法合法。
+	// 规范 (sec-scripts-static-semantics-early-errors): NewTarget 只能出现在
+	// **非箭头函数体**内 —— 箭头函数对 Contains 透明, 会一路冒泡到脚本/模块顶层
+	// 才报错, 所以 `() => new.target` 处于顶层时非法、嵌在函数里时合法。
+	// 进入非箭头函数体时置 true (保存/恢复), 进入箭头体时**保持**外层值。
+	// 默认 false (script/module/eval 顶层)。
+	newTargetAllowed bool
+
+	// newTargetForbidden 是给「eval / Function 构造器编译单元」的强制禁止开关。
+	// Gox 的 eval 实现为 stdlib 侧的**全局包装函数** (见 stdlib/eval.go), 编译器
+	// 只看到文本上的 `(function(){ ... })`, 无从区分直接/间接 eval 与调用者是否
+	// 非箭头函数 —— 而规范要求 eval 源码含 new.target 只在「非箭头函数内的直接
+	// eval」语境合法。为避免把包装函数误当成合法函数体 (会让 global/indirect/
+	// arrow eval 里的 new.target 静默变 undefined 而非 SyntaxError), 编译桥把该
+	// 单元整体标为禁止。此标志独立于 newTargetAllowed, 不受函数体进出影响。
+	newTargetForbidden bool
+}
+
+// SetNewTargetForbidden 强制本编译单元内禁止 new.target (供 eval/Function 编译桥)。
+func (p *Parser) SetNewTargetForbidden(v bool) { p.newTargetForbidden = v }
+
+// enterNewTargetScope 进入一段函数体前设置 new.target 合法性上下文, 返回恢复函数。
+// nonArrow=true (函数声明/表达式/方法/getter/setter/构造器/generator/async):
+// 置 true; nonArrow=false (箭头函数): 保持外层值 (词法继承)。
+func (p *Parser) enterNewTargetScope(nonArrow bool) func() {
+	prev := p.newTargetAllowed
+	if nonArrow {
+		p.newTargetAllowed = true
+	}
+	return func() { p.newTargetAllowed = prev }
 }
 
 // maxNestingDepth 是语法嵌套深度上限。
@@ -1449,9 +1479,13 @@ func (p *Parser) parseBlockStatementAt(asFunctionBody bool) *ast.BlockStatement 
 }
 
 // parseFunctionBody 解析函数体 { ... }: 豁免本层的「lexical ∩ var」重声明早错。
+// 所有调用方都是**非箭头**函数体 (方法/访问器/构造器/函数表达式), 期间
+// new.target 合法, 故在此统一置位 (而不是逐调用点包装)。
 func (p *Parser) parseFunctionBody() *ast.BlockStatement {
 	p.fnDepth++
 	defer func() { p.fnDepth-- }()
+	restoreNT := p.enterNewTargetScope(true)
+	defer restoreNT()
 	return p.parseBlockImpl(true)
 }
 
@@ -1577,6 +1611,16 @@ func (p *Parser) checkUseStrictWithNonSimpleParams(params []*ast.Parameter) {
 	}
 }
 
+// parseNonArrowFunctionBody 解析**非箭头**函数体 (function 声明/表达式、async
+// 函数、对象方法/访问器): 期间 new.target 合法。与 parseFunctionBodyWithStrict
+// 分开, 是因为箭头函数体也走后者, 而箭头对 new.target 是词法透明的 (要继承外层
+// 合法性, 不能在此置 true)。
+func (p *Parser) parseNonArrowFunctionBody(isAsync bool) (*ast.BlockStatement, bool) {
+	restoreNT := p.enterNewTargetScope(true)
+	defer restoreNT()
+	return p.parseFunctionBodyWithStrict(isAsync)
+}
+
 // parseBody 解析语句体: 若当前是 { 则解析代码块, 否则解析单条语句并包装为块。
 // 用于支持 if (x) y++; 这类不带花括号的单语句体。
 func (p *Parser) parseBody() *ast.BlockStatement {
@@ -1620,8 +1664,10 @@ func (p *Parser) parseFunctionDeclaration(isAsync bool) *ast.FunctionDeclaration
 		return nil
 	}
 	p.nextToken()
+	ntRestore := p.enterNewTargetScope(true)
 	fn.Body, fn.Strict = p.parseFunctionBodyWithStrict(isAsync)
 	p.checkUseStrictWithNonSimpleParams(fn.Parameters)
+	ntRestore()
 	if fn.Strict {
 		p.checkStrictFunctionParams(fn.Parameters)
 	}
@@ -1979,6 +2025,15 @@ func (p *Parser) parseUnaryExpression() ast.Expression {
 				strings.TrimPrefix(mem.Private, "#")))
 		}
 	}
+	// ++/-- 的操作数必须是有效简单赋值目标 (sec-update-expressions-static-
+	// semantics-early-errors)。new.target 的 AssignmentTargetType 为 invalid,
+	// `++new.target` / `++(new.target)` 都是早错。括号形式 (new.target) 解析后
+	// 直接是 MetaProperty 节点, 因此类型判定已覆盖 cover 形态。
+	if expr.Operator == "++" || expr.Operator == "--" {
+		if _, ok := expr.Right.(*ast.MetaProperty); ok {
+			p.addError("SyntaxError: Invalid left-hand side expression in prefix operation")
+		}
+	}
 	return expr
 }
 
@@ -2104,7 +2159,7 @@ func (p *Parser) parseFunctionExpression() ast.Expression {
 	}
 	p.nextToken()
 	// function 表达式永远是同步上下文 (async function 表达式走 parseAsyncExpression)
-	fn.Body, fn.Strict = p.parseFunctionBodyWithStrict(false)
+	fn.Body, fn.Strict = p.parseNonArrowFunctionBody(false)
 	p.checkUseStrictWithNonSimpleParams(fn.Parameters)
 	if fn.Strict {
 		p.checkStrictFunctionParams(fn.Parameters)
@@ -2141,8 +2196,8 @@ func (p *Parser) parseAsyncExpression() ast.Expression {
 			return nil
 		}
 		p.nextToken()
-		fn.Body, fn.Strict = p.parseFunctionBodyWithStrict(true)
-		p.checkUseStrictWithNonSimpleParams(fn.Parameters)
+		fn.Body, fn.Strict = p.parseNonArrowFunctionBody(true)
+			p.checkUseStrictWithNonSimpleParams(fn.Parameters)
 		if fn.Strict {
 			p.checkStrictFunctionParams(fn.Parameters)
 		}
@@ -2245,7 +2300,8 @@ func (p *Parser) parseAwaitExpression() ast.Expression {
 }
 
 func (p *Parser) parseNewExpression() ast.Expression {
-	expr := &ast.NewExpression{Token: p.curToken()}
+	newTok := p.curToken()
+	expr := &ast.NewExpression{Token: newTok}
 	p.nextToken()
 	// ImportCall 是 CallExpression, 不是 MemberExpression —— `new import(...)`
 	// 在语法上就不成立 (spec: NewExpression), 必须 parse 期 SyntaxError, 不能
@@ -2253,6 +2309,18 @@ func (p *Parser) parseNewExpression() ast.Expression {
 	// dynamic-import/syntax/invalid/*-no-new-call-expression{,-prop-access}.js。
 	if p.curTokenIs(lexer.IMPORT) && p.peekTokenIs(lexer.LPAREN) {
 		p.addError("SyntaxError: import call is not a constructor (cannot be preceded by 'new')")
+	}
+	// 元属性 new.target: `new` 后紧跟 `.target`。token 之间的空白/换行/注释
+	// 都只是分隔 (规范里 NewTarget 无 [no LineTerminator here] 限制, 见 test262
+	// new.target/asi.js), 词法层已把它们剥掉, 这里只需看 cur/peek 两个 token。
+	// `target` 必须是**未转义**的标识符: 词法层不处理 \u 转义, 所以
+	// `new.t\u0061rget` 会拆成 IDENTIFIER("t") + ILLEGAL, 天然落空 (早错)。
+	if p.curTokenIs(lexer.DOT) && p.peekTokenIs(lexer.IDENTIFIER) && p.peekToken().Literal == "target" {
+		p.nextToken() // cur: DOT → target
+		if p.newTargetForbidden || !p.newTargetAllowed {
+			p.addError("SyntaxError: new.target expression is not allowed here")
+		}
+		return &ast.MetaProperty{Token: newTok}
 	}
 	expr.Callee = p.parseExpression(MEMBER)
 	if expr.Callee == nil {
@@ -2434,8 +2502,8 @@ func (p *Parser) parseProperty() *ast.Property {
 			return nil
 		}
 		p.nextToken() // 到 {
-		fn.Body, fn.Strict = p.parseFunctionBodyWithStrict(false)
-		p.checkUseStrictWithNonSimpleParams(fn.Parameters)
+		fn.Body, fn.Strict = p.parseNonArrowFunctionBody(false)
+			p.checkUseStrictWithNonSimpleParams(fn.Parameters)
 		restore()
 		if fn.Strict {
 			p.checkStrictFunctionParams(fn.Parameters)
@@ -2489,8 +2557,8 @@ func (p *Parser) parseProperty() *ast.Property {
 			return nil
 		}
 		p.nextToken()
-		fn.Body, fn.Strict = p.parseFunctionBodyWithStrict(isAsync)
-		p.checkUseStrictWithNonSimpleParams(fn.Parameters)
+		fn.Body, fn.Strict = p.parseNonArrowFunctionBody(isAsync)
+			p.checkUseStrictWithNonSimpleParams(fn.Parameters)
 		restore()
 		if fn.Strict {
 			p.checkStrictFunctionParams(fn.Parameters)
@@ -2724,6 +2792,11 @@ func (p *Parser) literalToPattern(expr ast.Expression) ast.Expression {
 }
 
 func (p *Parser) parsePostfixExpression(left ast.Expression) ast.Expression {
+	// new.target 的 AssignmentTargetType 为 invalid, `new.target++` / `(new.target)++`
+	// 是早错 (sec-update-expressions-static-semantics-early-errors)。
+	if _, ok := left.(*ast.MetaProperty); ok {
+		p.addError("SyntaxError: Invalid left-hand side expression in postfix operation")
+	}
 	return &ast.UnaryExpression{
 		Token: p.curToken(), Operator: p.curToken().Literal, Right: left, Prefix: false,
 	}

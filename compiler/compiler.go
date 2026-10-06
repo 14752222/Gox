@@ -2687,6 +2687,8 @@ func (c *Compiler) compileClassConstructor(fields []*ast.ClassField, ctor *ast.C
 		c.emitSuperLoad(superName)
 		c.emitter.EmitNoOperand(bytecode.OP_THIS)
 		c.emitter.Emit(bytecode.OP_LOAD, uint16(argumentsSlot))
+		// 隐式构造也是 super(...): new.target 沿链传给父构造器。
+		c.emitter.EmitNoOperand(bytecode.OP_NEW_TARGET_MARK)
 		c.emitter.EmitNoOperand(bytecode.OP_CALL_METHOD_SPREAD)
 		// super() 的返回值 (父构造结果) 丢弃: 隐式构造体里没有表达式语句层。
 		c.emitter.EmitNoOperand(bytecode.OP_POP)
@@ -3516,6 +3518,11 @@ func (c *Compiler) compileExpression(expr ast.Expression) error {
 		return c.compileArrowFunctionExpression(node)
 	case *ast.ThisExpression:
 		c.emitter.EmitNoOperand(bytecode.OP_THIS)
+		return nil
+	case *ast.MetaProperty:
+		// new.target: 从当前帧的构造目标读取。普通调用/箭头函数帧为 undefined,
+		// 构造调用 (OP_NEW) 与 super() 传递 (OP_NEW_TARGET_MARK) 时由 VM 写入。
+		c.emitter.EmitNoOperand(bytecode.OP_NEW_TARGET)
 		return nil
 	case *ast.YieldExpression:
 		// yield* expr: 委托给可迭代对象。
@@ -5040,6 +5047,7 @@ func (c *Compiler) compileCallExpression(node *ast.CallExpression) error {
 			if err := c.compileArgumentsArray(node.Arguments); err != nil {
 				return err
 			}
+			c.emitter.EmitNoOperand(bytecode.OP_NEW_TARGET_MARK)
 			c.emitter.EmitNoOperand(bytecode.OP_CALL_METHOD_SPREAD)
 			return nil
 		}
@@ -5053,6 +5061,7 @@ func (c *Compiler) compileCallExpression(node *ast.CallExpression) error {
 				return err
 			}
 		}
+		c.emitter.EmitNoOperand(bytecode.OP_NEW_TARGET_MARK)
 		c.emitter.Emit(bytecode.OP_CALL_METHOD, uint16(len(node.Arguments)))
 		return nil
 	}

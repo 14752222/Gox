@@ -31,19 +31,27 @@ func init() {
 // compileSource 编译 JS 源码。moduleMode 为 true 时模块有自己的命名空间,
 // 顶层变量不写入共享全局环境 (见 loadModule)。
 func compileSource(src string, moduleMode bool) (*compiler.Compiler, error) {
-	return compileSourceEE(src, moduleMode, false)
+	return compileSourceOpts(src, moduleMode, false, false)
 }
 
-// compileSourceEE 与 compileSource 相同, 额外可用 moduleEE 单独开启「模块早期
-// 错误」判定 (不改变 moduleMode 带来的运行语义)。见 parser.SetModuleEarlyErrors
-// 与 vm.EvalFileVMModuleEarlyErrors: test262 的 module 用例在 Gox 里按脚本执行
-// (moduleMode=false), 但需要按 Module 的早错规则拦截 (重复导出名/未声明导出/
-// 顶层 return 等)。
-func compileSourceEE(src string, moduleMode, moduleEE bool) (*compiler.Compiler, error) {
+// compileSourceOpts 是 compileSource 的带选项版本。
+//
+//   - moduleEE 单独开启「模块早期错误」判定 (不改变 moduleMode 带来的运行语义)。
+//     见 parser.SetModuleEarlyErrors 与 vm.EvalFileVMModuleEarlyErrors: test262 的
+//     module 用例在 Gox 里按脚本执行 (moduleMode=false), 但需要按 Module 的早错
+//     规则拦截 (重复导出名/未声明导出/顶层 return 等)。
+//   - forbidNewTarget 仅供 compileForBridge (eval / Function 构造器) 使用: Gox 的
+//     eval 是 stdlib 侧的全局包装函数, 编译期只看到 `(function(){ ... })`, 无从
+//     判定 eval 语境是否允许 new.target, 故保守地整单元禁止
+//     (见 parser.Parser.newTargetForbidden)。
+func compileSourceOpts(src string, moduleMode, moduleEE, forbidNewTarget bool) (*compiler.Compiler, error) {
 	p := parser.New(lexer.New(src))
 	p.SetModule(moduleMode) // 模块顶层恒严格, 供解析期早错判定
 	if moduleEE {
 		p.SetModuleEarlyErrors(true)
+	}
+	if forbidNewTarget {
+		p.SetNewTargetForbidden(true)
 	}
 	program := p.ParseProgram()
 	if p.Errors().HasErrors() {
@@ -61,8 +69,14 @@ func compileSourceEE(src string, moduleMode, moduleEE bool) (*compiler.Compiler,
 // compileForBridge 是注册给 object.CompileSource 的实现:
 // 编译源码并取出常量池中的顶层包装函数, 供 stdlib 的 eval / new Function
 // 组装闭包后执行。
+//
+// 以 forbidNewTarget=true 编译: eval/Function 的源码被 stdlib 包进函数体,
+// 若照常放行 new.target, global/indirect/arrow eval 里的 new.target 会被静默
+// 求成 undefined 而不是规范要求的 SyntaxError。Gox 的全局 eval 模型无从区分
+// 这些语境, 故一律禁止 (保守近似; 代价是「非箭头函数内的直接 eval」也报错,
+// 见看板边界说明)。
 func compileForBridge(src string) (*object.CompiledFunction, error) {
-	c, err := compileSource(src, false)
+	c, err := compileSourceOpts(src, false, false, true)
 	if err != nil {
 		return nil, err
 	}

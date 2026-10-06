@@ -440,6 +440,15 @@ type VM struct {
 	// 受限早错模式。随 pendingDirectEval 一同清零。
 	pendingEvalInit bool
 
+	// pendingNewTarget / hasPendingNewTarget: super() 调用的 new.target 传递。
+	// OP_NEW_TARGET_MARK (编译器在 super(...) 前发射) 把**当前帧的 new.target**
+	// 记到这里; 紧随其后的方法调用装配父构造器帧时消费 (见 callClosure)。
+	// 规范 sec-super-keyword: Construct(func, argList, GetNewTarget()) —— 父构造器
+	// 里的 new.target 即派生类最初的构造目标。OP_NEW 也复用同一通道 (写被 new 的
+	// 构造器)。消费即清零, 非 super 调用不置位。
+	pendingNewTarget    object.Value
+	hasPendingNewTarget bool
+
 	// 模板字面量分段收集器 (支持嵌套): 每层对应一个 OP_TEMPLATE_START，
 	// 该层内 quasi/表达式产生的字符串依次 append，OP_TEMPLATE_END 时 join 入栈。
 	// 不用操作数栈保存段的原因是模板可能作为二元运算的操作数出现——
@@ -1623,6 +1632,14 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			// 进入受限早错模式 (PerformEval 补充早错)。
 			vm.pendingDirectEval = true
 			vm.pendingEvalInit = true
+		case bytecode.OP_NEW_TARGET_MARK:
+			// 编译器在 super(...) 调用前发射。把当前帧生效的 new.target 记为
+			// 「下一次调用要继承的构造目标」, 由紧随其后的方法调用装配父构造器帧
+			// 时消费 (callClosure)。无栈效果。非 super 调用不发射, 不继承。
+			if f := vm.currentFrame(); f != nil {
+				vm.pendingNewTarget = f.NewTarget
+				vm.hasPendingNewTarget = true
+			}
 		case bytecode.OP_NEW:
 			// new Constructor(args...) — 简化实现
 			numArgs := int(operand)
@@ -1674,6 +1691,11 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				//   - 有问题的错误逃过 handleThrow ⇒ 外层 `try { new X() } catch`
 				//     抓不到 (rVI6Eb);
 				//   - 且不回收构造函数帧 ⇒ 帧栈残留。
+				//
+				// 构造调用: 被 new 的构造器即本帧 new.target (规范 EvaluateNew →
+				// Construct(constructor, argList), newTarget 缺省为 constructor)。
+				vm.pendingNewTarget = fn
+				vm.hasPendingNewTarget = true
 				startIdx := vm.frameIdx + 1
 				if err := vm.callClosure(newClosure, args); err != nil {
 					vm.unwindFramesTo(startIdx)
@@ -2670,6 +2692,17 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			} else {
 				vm.stack.Push(object.UndefinedSingleton)
 			}
+		case bytecode.OP_NEW_TARGET:
+			// new.target: 当前帧的构造目标。callClosure 已在装配帧时写入
+			// (构造调用为被 new 的构造器 / super() 为调用者的构造目标); 其余
+			// (普通调用、箭头函数) 为 nil, 归一为 undefined。主帧 (顶层) 语法上
+			// 不可能出现 new.target (解析期已拦), 兜底也返回 undefined。
+			frame := vm.currentFrame()
+			if frame != nil && frame.NewTarget != nil {
+				vm.stack.Push(frame.NewTarget)
+			} else {
+				vm.stack.Push(object.UndefinedSingleton)
+			}
 		case bytecode.OP_DELETE:
 			// 栈: [obj, key] → 删除 obj 上的 key 属性, 推入 true/false
 			key := vm.stack.Pop()
@@ -3281,6 +3314,13 @@ func builtinName(v object.Value) string {
 //   - nil: 调用已完成 (结果已压栈), 或异常已被 catch/finally 接住, 调用方继续;
 //   - 非 nil: 异常继续向外传播, 调用方 return。
 func (vm *VM) invokeWithThis(fn, thisVal object.Value, args []object.Value) error {
+	// 一次性 new.target 传递标记 (super() 前由 OP_NEW_TARGET_MARK 置位):
+	// 只有被调是 Closure 时由 callClosure 消费装配父构造器帧; 内建/代理被调
+	// 不装配 JS 帧, 这里直接丢弃, 避免泄漏给后续无关调用。
+	if _, isClosure := fn.(*object.Closure); !isClosure {
+		vm.hasPendingNewTarget = false
+		vm.pendingNewTarget = nil
+	}
 	switch callee := fn.(type) {
 	case *object.BuiltinFunction:
 		// 内建函数: 不传 this，直接传参数
@@ -4111,6 +4151,17 @@ func (vm *VM) callClosure(closure *object.Closure, args []object.Value) error {
 	frame.Closure = closure
 	// 本帧生效的 this: 箭头取词法捕获, 非箭头按 sloppy 归一 (裸调用 → globalThis)。
 	frame.This = vm.resolveFrameThis(closure)
+	// 本帧的 new.target: 由构造调用 (OP_NEW) 或 super() 传递 (OP_NEW_TARGET_MARK)
+	// 经 pendingNewTarget 通道写入; 其余调用为 undefined。标记是一次性的, 消费即清零。
+	// 箭头函数对 new.target 词法透明, 其词法继承需要在创建闭包时捕获外层 new.target
+	// (与 This 的捕获同型) —— 当前未实现, 归为边界 (见路线说明), 这里一律 undefined。
+	if !closure.IsArrow && vm.hasPendingNewTarget {
+		frame.NewTarget = vm.pendingNewTarget
+	} else {
+		frame.NewTarget = object.UndefinedSingleton
+	}
+	vm.hasPendingNewTarget = false
+	vm.pendingNewTarget = nil
 	// 记录进入本帧时的栈高度, 返回时据此截断清理本帧残留栈值
 	frame.StackBase = vm.stack.Len()
 
@@ -5189,7 +5240,7 @@ func evalFileVM(path string, moduleEE bool) (*VM, error) {
 		lineMap = res.LineMap
 	}
 
-	c, err := compileSourceEE(string(code), false, moduleEE)
+	c, err := compileSourceOpts(string(code), false, moduleEE, false)
 	if err != nil {
 		if isTS {
 			err = remapSourceError(err, lineMap)

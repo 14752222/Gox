@@ -26,6 +26,12 @@ type Frame struct {
 	// 为 globalThis。主帧 (frame.Closure == nil) 保持 nil, 由 OP_THIS 按
 	// script/module 决定取值。与 Closure.This (创建时携带的原始绑定) 区分开。
 	This            object.Value
+	// NewTarget 是本帧的 `new.target` 绑定 (构造目标)。callClosure 装配帧时:
+	//   - 构造调用 (OP_NEW): 写被 new 的构造器;
+	//   - super() 调用 (OP_NEW_TARGET_MARK 传递): 写调用者帧的 NewTarget
+	//     —— 派生类构造器里 super() 父构造器看到的 new.target 是最初被 new 的那个;
+	//   - 其余 (普通调用/箭头): nil, 由 OP_NEW_TARGET 归一为 undefined。
+	NewTarget       object.Value
 	Constants       *bytecode.ConstantPool
 	ModifiedSlots   map[int]bool      // 修改过的 slot (用于 popFrame 传播)
 	CreatedClosures []*object.Closure // 本帧创建的闭包 (用于 STORE 传播)
