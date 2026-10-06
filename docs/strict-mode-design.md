@@ -113,4 +113,40 @@ save/restore 框架**:
   (f1a46fb 内 `e93a99a`), `vm/top_level_this_test.go` 有守卫。
 - eval 早错 (类字段初始化器内直接 eval): `wt-gox-eval2` 半成品, 属
   `wt/eval-ee` 工作流。
-- eval 对非 Error 抛出值的限制: 见子项 5 补充节 (下一提交)。
+- eval 对非 Error 抛出值的限制: 见 §5。
+
+## 5. eval 对非 Error 抛出值的模型级限制与桥接方案 —— 看板 r63RpV 子项 5
+
+**现象** (f1a46fb 基线探针): 普通脚本 `try { throw "x" }` catch 到原字符串
+(`typeof e === "string"`); 但 `try { eval('throw "x";') }` catch 到的是包装
+出来的 `Error` 对象 (`typeof e === "object"`), 原值丢失。
+
+**根因 (模型级)**: VM 的异常经 Go 返回值传播, 只支持 `*object.Error`
+(`vm.throwIfError`, vm.go:3098: 内建返回 Error 且非 `ReturnIsValue` ⇒
+抛)。stdlib 内建 (eval) 从 Go 侧**没有抛出通道**, 只能把异常编码进返回值。
+回调桥 (object/callback.go) 为此设了双槽: `callbackError` (Go 字符串) 与
+`callbackErrorValue` (原始 JS 值, vm.go:332 `setCallbackErrorValueFromThrow`
+写入)。`runGlobalEval` (stdlib/eval.go:231-246) 已经能把原值取回
+(`TakeCallbackErrorValue`) —— 但取回的原值只要不是 `*object.Error`, 就过不了
+"内建返回值" 边界, 只能 `NewErrorWithName("Error", ...)` 包一层。**限制不在
+eval 本身, 而在"Go 内建调用边界只能以返回值传异常"这一模型约束**;
+throw 字符串/数字/普通对象的 eval、Promise executor、timer 回调同族。
+
+**可行桥接 (按推荐序, 均不破坏 try/catch 状态机)**:
+
+- **A. 载体法 (推荐)**: 新增 `*object.ThrownError` (内嵌原始 `object.Value`
+  与可读 message)。`runGlobalEval` 对非 Error 抛出值返回 ThrownError 而非
+  包装 Error; VM 唯一 choke point `throwIfError` (vm.go:3098) 解包: 命中
+  ThrownError 就 `handleThrow(内嵌原值)`。原值已由 `callbackErrorValue` 送到
+  嘴边, **不引入任何新全局状态**; 改动收敛在 object/vm/stdlib 三处。收益外溢:
+  所有经 throwIfError 的内建路径 (vm.go:1441/1578/3452) 一并获得原样抛
+  非 Error 值能力。注意: ThrownError 落到 `e.message` 等普通读法仍需可读
+  (内嵌 Go 字符串消息), 或显式记录为"仅解包路径可见"。
+- **B. 部分桥接 (最小改动)**: 维持包 Error, 但把原值挂到 `.value` 属性,
+  catch 侧 `e.value` 取回载荷。`typeof`/`===` 身份语义仍不符, test262 的
+  身份类用例仍 FAIL, 只适合"先保载荷"的过渡。
+- **C (不做)**: 让 Go 侧 panic 穿过 VM —— 会绕过 try/catch 的栈恢复与
+  finally 语义, 破坏不变量。
+
+**验收口径**: 探针 `eval('throw "s"')` 的 `typeof` 与 `===` 原值; test262
+`-filter 'eval-code'` A/B 无 LOST。
