@@ -312,7 +312,8 @@ func agFinish(g *object.AsyncGenerator, req *object.AsyncGenRequest) {
 	agResumeNext(g)
 }
 
-// agAwait 按 await 语义处理一个值: Promise 等待其结算, 非 Promise 立即透传。
+// agAwait 按 await 语义处理一个值: Promise 等待其结算, thenable 调其
+// then(onFulfilled, onRejected), 其余值立即透传。
 // 回调按 Gox 现有的同步 Promise 模型执行 (结算即回调)。
 func agAwait(value object.Value, onResolve, onReject func(object.Value)) {
 	if p, ok := value.(*object.Promise); ok {
@@ -325,6 +326,36 @@ func agAwait(value object.Value, onResolve, onReject func(object.Value)) {
 			return object.UndefinedSingleton
 		}))
 		return
+	}
+	// thenable (Await 语义, 规范 Await/PromiseResolve 的 ThenableJob):
+	// 有 callable then 的对象调 then(onFulfilled, onRejected)。Gox 的同步
+	// Promise 模型 (结算即回调, 无微任务队列) 下用户 thenable 通常同步
+	// 回调 —— 直接驱动; settled 守卫防 then 多次回调 (规范只认第一次)。
+	if o, ok := value.(*object.Object); ok {
+		if thenFn, has := o.GetProperty("then"); has && object.IsCallable(thenFn) {
+			var settled bool
+			fulfil := object.NewBuiltin("__ag_thenable_fulfil", func(args ...object.Value) object.Value {
+				if !settled {
+					settled = true
+					onResolve(argAt(args, 0))
+				}
+				return object.UndefinedSingleton
+			})
+			reject := object.NewBuiltin("__ag_thenable_reject", func(args ...object.Value) object.Value {
+				if !settled {
+					settled = true
+					onReject(argAt(args, 0))
+				}
+				return object.UndefinedSingleton
+			})
+			res := object.CallFunction(thenFn, value, fulfil, reject)
+			if errObj, isErr := res.(*object.Error); isErr && !settled {
+				// then() 自身同步抛错: 规范以该值 reject thenable。
+				settled = true
+				onReject(errObj)
+			}
+			return
+		}
 	}
 	onResolve(value)
 }
