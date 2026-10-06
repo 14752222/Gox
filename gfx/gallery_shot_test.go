@@ -304,20 +304,25 @@ func galleryFontProbe() string {
 		}
 		names = append(names, name)
 	}
-	return fmt.Sprintf("族=%q 有CJK字形=%s｜候选共 %d 条, 前 %d 条: %s",
-		fam, covered, len(fontCandidates), n, strings.Join(names, ", "))
+	// 目录扫描的命中数要单独报: 它与候选总数的差就是"静态兜底有几条"。
+	// 扫描命中变成 0 是**共享状态被清掉**的典型症状 (见 font_test.go 里那条
+	// cleanup 的教训), 不是"这台机器没字体"。
+	return fmt.Sprintf("族=%q 有CJK字形=%s｜候选 %d 条 (目录扫描命中 %d 条), 前 %d 条: %s",
+		fam, covered, len(fontCandidates), len(scannedFonts), n, strings.Join(names, ", "))
 }
 
 // cjkProbeRunes 是"这个字体到底能不能画中文"的探针码位 (挑常用字)。
-// 缺字形时 sfnt.GlyphIndex 返回 ErrNotFound —— 注意这与"豆腐块"是两回事:
-// 豆腐块出现在 cmap 里有映射、但字形为空的情况, 那反而会画出一堆方框。
+//
+// 判据必须是 **glyph != 0**: sfnt 在码位没有字形时**不报错**, 而是回落到
+// .notdef (glyph 0) 并返回 nil —— 只看 error 会得到"每个字体都覆盖中文"这个
+// 假结论 (第一版就是这么写的, 于是 DejaVu Sans 被判成"有 CJK 字形")。
 var cjkProbeRunes = []rune("中文你好的")
 
-// fontCoversCJK 报告字体是否对全部探针码位都有字形。
+// fontCoversCJK 报告字体是否对全部探针码位都有**真**字形 (非 .notdef)。
 func fontCoversCJK(f *sfnt.Font) bool {
 	var buf sfnt.Buffer
 	for _, r := range cjkProbeRunes {
-		if _, err := f.GlyphIndex(&buf, r); err != nil {
+		if g, err := f.GlyphIndex(&buf, r); err != nil || g == 0 {
 			return false
 		}
 	}

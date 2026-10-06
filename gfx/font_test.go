@@ -281,10 +281,17 @@ func TestSetFontPathInjectsHostFont(t *testing.T) {
 
 	// 测试会改包级字体状态 (候选表/基础字体/掩码缓存), 收尾必须还原 ——
 	// 否则后续用例会拿着被改过的候选表下结论。
+	//
+	// 还原 = **存快照再放回**, 不是"清成空"。scannedFonts 是 initFontCandidates
+	// 一次性扫描的结果, 而那个 sync.Once 已经用掉 —— 清掉就再也补不回来, 候选表
+	// 会永久退化成静态兜底。那在 Linux 上是灾难: 兜底是 DejaVu/Liberation (没有
+	// CJK 字形), 于是**后面所有渲染中文的用例都看不见中文**。Windows/macOS 的静态
+	// 兜底本身就是 CJK 字体 (msyh / PingFang), 所以这个坑只在 Linux 上现形 ——
+	// gfx 画廊的非空白断言就是这么连续红了几个批次。
+	savedInjected, savedScanned := injectedFonts, scannedFonts
 	t.Cleanup(func() {
 		fontMu.Lock()
-		injectedFonts = nil
-		scannedFonts = nil
+		injectedFonts, scannedFonts = savedInjected, savedScanned
 		rebuildCandidatesLocked()
 		baseFont = nil
 		// 就地清空, 免得为了写 map[int]font.Face{} 再引入一个 import
@@ -347,5 +354,40 @@ func TestSetFontPathInjectsHostFont(t *testing.T) {
 	// 注入顺序即优先级: 先注入的仍排在前面 (后注入的不会插队)
 	if fontCandidates[0] != host || fontCandidates[1] != second {
 		t.Fatalf("两次注入应按先后顺序排在候选最前: %v", fontCandidates[:2])
+	}
+}
+
+// TestFontScanNotSilentlyEmpty 扫描目录真实存在、却一条字体都没扫到 —— 那是
+// "候选表退化成静态兜底"的症状, 不是"这台机器没字体", 必须报出来。
+//
+// 为什么单独立一条: 这个状态曾经把 Linux 的 gfx 画廊断言连续染红几个批次
+// (中文整体不渲染 ⇒ 只剩扁平色块 ⇒ 报"画面近乎空白"), 而报错完全指向组件
+// 注册表, 查了很久才发现根因是共享状态被后面用例清掉 (见
+// TestSetFontPathInjectsHostFont 收尾的那条教训)。
+//
+// 扫描命中 0 有两个可能: ① 状态被清空; ② 条目预算 fontScanLimit 被位图字体
+// 目录吃光 (walk 对每个条目都计数, 含 .pcf.gz)。两者的表现一样, 而这台机器上
+// 目录确实存在 —— 无论哪种都该立刻炸出来, 不该静默留一个没有 CJK 的兜底字体。
+func TestFontScanNotSilentlyEmpty(t *testing.T) {
+	initFontCandidates()
+	dirs := fontScanDirs()
+	if len(dirs) == 0 {
+		t.Skip("本平台不做目录扫描 (Windows: 静态候选已足够可靠)")
+	}
+	sawDir := false
+	for _, d := range dirs {
+		if st, err := os.Stat(d); err == nil && st.IsDir() {
+			sawDir = true
+			break
+		}
+	}
+	if !sawDir {
+		t.Skipf("本机没有可扫描的字体目录 (%v)", dirs)
+	}
+	if len(scannedFonts) == 0 {
+		t.Fatalf("字体目录 %v 存在, 但目录扫描命中 0 条 —— 候选表已退化为静态兜底 "+
+			"(fontCandidates=%v)。静态兜底若没有 CJK 字体, 整屏中文会静默不渲染; "+
+			"先查有没有用例把 scannedFonts 清空了, 再看 fontScanLimit(%d) 是不是被位图字体目录吃光。",
+			dirs, fontCandidates, fontScanLimit)
 	}
 }
