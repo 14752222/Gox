@@ -532,6 +532,133 @@ func TestObjectLiteral(t *testing.T) {
 	}
 }
 
+// TestStatementPositionBraceIsBlock 覆盖「语句位 `{` 恒为块」的三种形状
+// (r9HBA8 / test262 language/statementList)。`length` 是**标签**, 不是对象键。
+func TestStatementPositionBraceIsBlock(t *testing.T) {
+	assertLabeledBlock := func(t *testing.T, src string, wantLabel string) *ast.BlockStatement {
+		t.Helper()
+		prog, p := parseProgram(t, src)
+		checkParserErrors(t, p)
+		if len(prog.Statements) == 0 {
+			t.Fatalf("%s: 无语句", src)
+		}
+		block, ok := prog.Statements[0].(*ast.BlockStatement)
+		if !ok {
+			t.Fatalf("%s: 首条应为 BlockStatement, got %T", src, prog.Statements[0])
+		}
+		if len(block.Statements) != 1 {
+			t.Fatalf("%s: 块内应恰有 1 条语句, got %d", src, len(block.Statements))
+		}
+		labeled, ok := block.Statements[0].(*ast.LabeledStatement)
+		if !ok {
+			t.Fatalf("%s: 块内应为 LabeledStatement, got %T", src, block.Statements[0])
+		}
+		if labeled.Label.Value != wantLabel {
+			t.Fatalf("%s: 标签应为 %q, got %q", src, wantLabel, labeled.Label.Value)
+		}
+		return block
+	}
+
+	// 形状一: 单独成语句 —— 块 + 标签语句 `length: 3000`。
+	block := assertLabeledBlock(t, `{length: 3000}`, "length")
+	if _, ok := block.Statements[0].(*ast.LabeledStatement).Body.(*ast.ExpressionStatement); !ok {
+		t.Fatalf("标签体应为 ExpressionStatement, got %T",
+			block.Statements[0].(*ast.LabeledStatement).Body)
+	}
+
+	// 形状二: 块后跟空块 —— 两条 BlockStatement。
+	prog, p := parseProgram(t, `{length: 3000}{}`)
+	checkParserErrors(t, p)
+	if len(prog.Statements) != 2 {
+		t.Fatalf("应为 2 条语句, got %d", len(prog.Statements))
+	}
+	first, ok := prog.Statements[0].(*ast.BlockStatement)
+	if !ok {
+		t.Fatalf("首条应为 BlockStatement, got %T", prog.Statements[0])
+	}
+	second, ok := prog.Statements[1].(*ast.BlockStatement)
+	if !ok {
+		t.Fatalf("次条应为 BlockStatement, got %T", prog.Statements[1])
+	}
+	if len(second.Statements) != 0 {
+		t.Fatalf("次块应为空块, got %d 条语句", len(second.Statements))
+	}
+	if _, ok := first.Statements[0].(*ast.LabeledStatement); !ok {
+		t.Fatalf("首块内应为 LabeledStatement, got %T", first.Statements[0])
+	}
+
+	// 形状三: 块后跟正则字面量语句 —— `/1/g` 必须是 RegularExpressionLiteral
+	// (块 `}` 后 `/` 起正则, 而非除法), 否则 `{length: 3000}/1/g;` 会被读成
+	// 对象字面量除法并落到运行期。
+	prog, p = parseProgram(t, `{length: 3000}/1/g;`)
+	checkParserErrors(t, p)
+	if len(prog.Statements) != 2 {
+		t.Fatalf("应为 2 条语句, got %d", len(prog.Statements))
+	}
+	if _, ok := prog.Statements[0].(*ast.BlockStatement); !ok {
+		t.Fatalf("首条应为 BlockStatement, got %T", prog.Statements[0])
+	}
+	exprStmt, ok := prog.Statements[1].(*ast.ExpressionStatement)
+	if !ok {
+		t.Fatalf("次条应为 ExpressionStatement, got %T", prog.Statements[1])
+	}
+	re, ok := exprStmt.Expression.(*ast.RegexLiteral)
+	if !ok {
+		t.Fatalf("次条表达式应为 RegexLiteral, got %T", exprStmt.Expression)
+	}
+	if re.Pattern != "1" || re.Flags != "g" {
+		t.Fatalf(`正则应为 /1/g, got /%s/%s`, re.Pattern, re.Flags)
+	}
+}
+
+// TestAsyncNamedMethods 覆盖「名为 async 的 async 方法」(r81aQt):
+// PropertyName 位置上的 async 恒为名字, 只有构成修饰符前缀时才当关键字。
+func TestAsyncNamedMethods(t *testing.T) {
+	// 对象字面量: ({ async async(){} }) → 名为 async 的 async 方法。
+	prog, p := parseProgram(t, `({ async async(){} });`)
+	checkParserErrors(t, p)
+	objStmt := prog.Statements[0].(*ast.ExpressionStatement)
+	obj := objStmt.Expression.(*ast.ObjectLiteral)
+	if len(obj.Properties) != 1 {
+		t.Fatalf("应为 1 个属性, got %d", len(obj.Properties))
+	}
+	prop := obj.Properties[0]
+	if prop.Kind != ast.PROP_METHOD {
+		t.Fatalf("应为方法属性, got Kind=%v", prop.Kind)
+	}
+	if id, ok := prop.Key.(*ast.Identifier); !ok || id.Value != "async" {
+		t.Fatalf("键应为标识符 async, got %T %v", prop.Key, prop.Key)
+	}
+	fn, ok := prop.Value.(*ast.FunctionExpression)
+	if !ok || !fn.IsAsync {
+		t.Fatalf("值应为 async 函数, got %T", prop.Value)
+	}
+
+	// 类: class C { async async(){} } → 名为 async 的 async 方法。
+	prog, p = parseProgram(t, `class C { async async(){} }`)
+	checkParserErrors(t, p)
+	classDecl := prog.Statements[0].(*ast.ClassDeclaration)
+	if len(classDecl.Methods) != 1 {
+		t.Fatalf("应为 1 个方法, got %d", len(classDecl.Methods))
+	}
+	m := classDecl.Methods[0]
+	if m.Name != "async" || !m.IsAsync || m.Body == nil {
+		t.Fatalf("应为 async 的名为 async 的方法, got Name=%q IsAsync=%v", m.Name, m.IsAsync)
+	}
+
+	// 对照: async(){} 是名为 async 的**同步**方法 (async 是名字, 非修饰符)。
+	prog, p = parseProgram(t, `class C { async(){} }`)
+	checkParserErrors(t, p)
+	m = prog.Statements[0].(*ast.ClassDeclaration).Methods[0]
+	if m.Name != "async" || m.IsAsync {
+		t.Fatalf("async(){} 应为同步方法名为 async, got Name=%q IsAsync=%v", m.Name, m.IsAsync)
+	}
+
+	// 对照: obj.async 属性访问合法 (async 作 IdentifierName)。
+	prog, p = parseProgram(t, `obj.async;`)
+	checkParserErrors(t, p)
+}
+
 func TestObjectShorthand(t *testing.T) {
 	input := `let name = "Bob"; let obj = { name };`
 

@@ -2443,13 +2443,13 @@ func (p *Parser) parseProperty() *ast.Property {
 		p.nextToken()
 	}
 
-	// async 方法简写: async m() {} / async [expr]() {}
-	// (async 后必须跟方法名或 [ 才算 async 方法; 否则 async 是普通键)
+	// async 方法简写: async m() {} / async [expr]() {} / async async() {}
+	// async 只有构成修饰符前缀时才是关键字; 否则它是 PropertyName 位置上的
+	// **名字** (`{ async(){} }` 是名为 async 的方法, `{ async: 1 }` 是键)。
+	// 判据见 asyncModifierAhead (r81aQt: 名字可以是任意 PropertyName, 含 async)。
 	if (p.curTokenIs(lexer.ASYNC) ||
 		(p.curTokenIs(lexer.IDENTIFIER) && p.curToken().Literal == "async")) &&
-		!p.curTokenIs(lexer.LBRACKET) &&
-		(p.peekTokenIs(lexer.IDENTIFIER) || p.peekTokenIs(lexer.LBRACKET) ||
-			p.peekTokenIs(lexer.ASTERISK)) {
+		p.asyncModifierAhead() {
 		isAsync = true
 		p.nextToken()
 		if p.curTokenIs(lexer.ASTERISK) {
@@ -3025,6 +3025,8 @@ func (p *Parser) parseOptionalCall(fn ast.Expression) ast.Expression {
 }
 
 // isKeywordProperty 判断 token 类型是否为可用作属性名的关键字。
+// 含 ASYNC: `async` 在 IdentifierName 位置恒为名字 (`obj.async` /
+// `{ async: 1 }` / `get async(){}` 均合法 —— r81aQt)。
 func isKeywordProperty(t lexer.TokenType) bool {
 	switch t {
 	case lexer.LET, lexer.CONST, lexer.VAR, lexer.IF, lexer.ELSE, lexer.FOR, lexer.OF, lexer.WHILE,
@@ -3032,12 +3034,52 @@ func isKeywordProperty(t lexer.TokenType) bool {
 		lexer.UNDEFINED, lexer.TYPEOF, lexer.INSTANCEOF, lexer.NEW, lexer.THIS,
 		lexer.DELETE, lexer.IN, lexer.TRY, lexer.CATCH, lexer.FINALLY, lexer.THROW,
 		lexer.SWITCH, lexer.CASE, lexer.DEFAULT, lexer.CLASS, lexer.SUPER,
-		lexer.IMPORT, lexer.EXPORT, lexer.YIELD, lexer.AWAIT, lexer.WITH,
+		lexer.IMPORT, lexer.EXPORT, lexer.YIELD, lexer.AWAIT, lexer.ASYNC, lexer.WITH,
 		lexer.TRUE, lexer.FALSE, lexer.NULL:
 		return true
 	}
 	return false
 }
+
+// isPropertyNameToken 报告 token 类型能否作为 PropertyName 的首 token
+// (IdentifierName / StringLiteral / NumericLiteral)。用于 async 修饰符前瞻:
+// `async async(){}` / `async 'x'(){}` 里第二个位置上的名字可以是任意
+// PropertyName, 不限于 IDENTIFIER (r81aQt)。
+func isPropertyNameToken(t lexer.TokenType) bool {
+	switch t {
+	case lexer.IDENTIFIER, lexer.STRING_LITERAL, lexer.INT_LITERAL,
+		lexer.FLOAT_LITERAL, lexer.BIGINT_LITERAL, lexer.ASYNC, lexer.AWAIT:
+		return true
+	}
+	return isKeywordProperty(t)
+}
+
+// asyncModifierAhead 报告 curToken 处的 `async` 是否构成 async 方法/生成器的
+// **修饰符前缀**, 而不是 PropertyName 位置上名叫 `async` 的名字 (r81aQt)。
+//
+// 判据 (node 22 实测):
+//   - `async *`        → async 生成器方法;
+//   - `async [`        → async 计算属性名方法;
+//   - `async <PropertyName> (` → async 方法;
+//   - 其余 (直接跟 `(` / 跟 `name:` / 换行后跟名字) → `async` 是名字, 不是修饰符。
+//
+// [no LineTerminator here]: `async` 与 `*` / `[` / 名字之间不得换行
+// (`({async\nfoo(){}})` 非法, 但 `class C { async\nfoo(){} }` 里 async 退化为字段名)。
+//
+// 调用前提: curToken 为 ASYNC token 或文本 "async" 的 IDENTIFIER。
+func (p *Parser) asyncModifierAhead() bool {
+	asyncTok := p.curToken()
+	peek := p.peekToken()
+	if peek.Line != asyncTok.Line {
+		return false
+	}
+	switch peek.Type {
+	case lexer.ASTERISK, lexer.LBRACKET:
+		return true
+	}
+	return isPropertyNameToken(peek.Type) && p.peekTokenAt(2).Type == lexer.LPAREN
+}
+
 
 func (p *Parser) parseConditionalExpression(left ast.Expression) ast.Expression {
 	expr := &ast.ConditionalExpression{Token: p.curToken(), Condition: left}
@@ -3711,13 +3753,12 @@ func (p *Parser) parseClassMember() *ast.ClassMethod {
 	}
 
 	// async 方法/生成器: async name() {} / async *name() {} / async [expr]() {}
-	// async 是保留字 (ASYNC token)。async 后是方法名、* 或 [ 才按 async
-	// 处理; 后跟 ( : = ; , 等时它是字段名。
+	// async 只有构成修饰符前缀时才是关键字 (判据见 asyncModifierAhead); 否则
+	// 它是成员名 (`async(){}` 是名为 async 的方法, `async = 1` 是名为 async
+	// 的字段)。名字可以是任意 PropertyName, 含 `async` / `await` (r81aQt)。
 	isAsyncTok := p.curTokenIs(lexer.ASYNC) ||
 		(p.curTokenIs(lexer.IDENTIFIER) && p.curToken().Literal == "async")
-	if isAsyncTok &&
-		(p.peekTokenIs(lexer.ASTERISK) || p.peekTokenIs(lexer.LBRACKET) ||
-			(p.peekTokenIs(lexer.IDENTIFIER) && p.peek2TokenIs(lexer.LPAREN))) {
+	if isAsyncTok && p.asyncModifierAhead() {
 		member.IsAsync = true
 		if p.peekTokenIs(lexer.ASTERISK) {
 			member.IsGenerator = true
@@ -3840,7 +3881,11 @@ func (p *Parser) parseClassMember() *ast.ClassMethod {
 	}
 
 	// 方法或字段 (计算属性名已在前面解析时, cur 已停在 ( 或 =)
-	if member.ComputedKey != nil || p.curTokenIs(lexer.IDENTIFIER) {
+	// 成员名允许 IDENTIFIER 以及 `async` / `await` (二者在 sloppy 下可作
+	// IdentifierName; 之前只认 IDENTIFIER, 于是 `async async(){}` /
+	// `async(){}` 都在此被拒 —— r81aQt)。
+	if member.ComputedKey != nil || p.curTokenIs(lexer.IDENTIFIER) ||
+		p.curTokenIs(lexer.ASYNC) || p.curTokenIs(lexer.AWAIT) {
 		if member.ComputedKey == nil {
 			member.Name = p.curToken().Literal
 			p.nextToken()

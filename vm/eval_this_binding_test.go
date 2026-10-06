@@ -103,6 +103,26 @@ func TestEvalSloppyStillCreatesGlobal(t *testing.T) {
 	assertNumber(t, res, 7)
 }
 
+// TestEvalStatementPositionBraceIsBlock eval 源码以 `{` 开头时命中
+// ExpressionStatement 的 lookahead 限制, 必须按**语句表**解析为块, 不能走
+// `return (<expr>)` 表达式包装 —— 否则 `{length: 3000}/1/g;` 会被读成对象
+// 字面量除法并落到运行期 (报 `g is not defined`)。见看板 r9HBA8 /
+// test262 language/statementList/eval-block-with-statment-regexp-literal-flags.js。
+func TestEvalStatementPositionBraceIsBlock(t *testing.T) {
+	_, res := runEvalVM(t, `(function(){
+		try { eval("{length: 3000}/1/g;"); return "ok"; }
+		catch (e) { return e.name; }
+	})() === "ok"`)
+	assertBoolean(t, res, true)
+
+	// 同一形状 (块后跟空块) 也不得因表达式包装而解析失败/报错。
+	_, res = runEvalVM(t, `(function(){
+		try { eval("{length: 3000}{}"); return "ok"; }
+		catch (e) { return e.name; }
+	})() === "ok"`)
+	assertBoolean(t, res, true)
+}
+
 // TestEvalShadowedIdentifierDoesNotInherit 被局部变量遮蔽的 eval 不是直接
 // eval: 既不继承调用者 this, 也不受限 (标记不得泄漏给后续无关调用)。
 func TestEvalShadowedIdentifierDoesNotInherit(t *testing.T) {

@@ -54,11 +54,12 @@ func (p *Parser) parseStaticBlock(member *ast.ClassMethod) *ast.ClassMethod {
 
 // classStaticBlockScan 收集静态块体内的上下文敏感早错标记。
 type classStaticBlockScan struct {
-	hasReturn    bool // ~Return: 块内直接 return
-	hasYield     bool // ~Yield: 块内直接 yield
-	hasAwait     bool // ContainsAwait: 块内直接 await
-	hasArguments bool // ContainsArguments: 块内直接引用 arguments
-	hasSuperCall bool // HasDirectSuper: 块内直接 super() 调用
+	hasReturn     bool // ~Return: 块内直接 return
+	hasYield      bool // ~Yield: 块内直接 yield
+	hasAwait      bool // ContainsAwait: 块内直接 await
+	hasAwaitIdent bool // BindingIdentifier/IdentifierReference 名为 await
+	hasArguments  bool // ContainsArguments: 块内直接引用 arguments
+	hasSuperCall  bool // HasDirectSuper: 块内直接 super() 调用
 }
 
 // checkClassStaticBlockEarlyErrors 对静态块体做上下文早错扫描。
@@ -68,7 +69,7 @@ func (p *Parser) checkClassStaticBlockEarlyErrors(body *ast.BlockStatement) {
 		return
 	}
 	var s classStaticBlockScan
-	scanClassStaticBlock(body, &s, true)
+	scanClassStaticBlock(body, &s, true, true)
 
 	if s.hasReturn {
 		p.errors.Add("SyntaxError: 'return' not allowed in class static block", body.Token.Line, body.Token.Column)
@@ -78,6 +79,13 @@ func (p *Parser) checkClassStaticBlockEarlyErrors(body *ast.BlockStatement) {
 	}
 	if s.hasAwait {
 		p.errors.Add("SyntaxError: 'await' not allowed in class static block", body.Token.Line, body.Token.Column)
+	}
+	if s.hasAwaitIdent {
+		// 规范 ClassStaticBlock Static Semantics 早错: BindingIdentifier : Identifier
+		// 与 IdentifierReference : Identifier 嵌套在静态块内 (不跨 function / 静态
+		// 块边界) 且 StringValue 为 "await" ⇒ SyntaxError。await 在 sloppy 下本是
+		// 普通标识符 (不能靠 strict 拦截), 必须按静态块上下文单独判定。
+		p.errors.Add("SyntaxError: 'await' is not a valid identifier in class static block", body.Token.Line, body.Token.Column)
 	}
 	if s.hasArguments {
 		p.errors.Add("SyntaxError: 'arguments' not allowed in class static block", body.Token.Line, body.Token.Column)
@@ -97,8 +105,13 @@ func (p *Parser) checkClassStaticBlockEarlyErrors(body *ast.BlockStatement) {
 //   - 普通函数（声明/表达式）与类声明/表达式: 完整边界, 整体跳过;
 //   - 箭头函数: 没有自己的 return 作用域边界（return 是其自身的）⇒ 不再向
 //     下判定 return; 但箭头没有独立的 arguments, 且 yield/super 继承外层
-//     静态块 ⇒ 继续扫描这几个标记（allowReturn=false）。
-func scanClassStaticBlock(n ast.Node, s *classStaticBlockScan, allowReturn bool) {
+//     静态块 ⇒ 继续扫描这几个标记（allowReturn=false, awaitForbidden=false）。
+//
+// awaitForbidden 单独承载「await 作标识符」的早错上下文: 静态块体/箭头**参数**
+// 为 true; 进普通函数、箭头**函数体**、嵌套静态块时按各自规则重置 ——
+// 箭头函数体是 await 早错的边界（`(() => await)` 合法）, 但其参数默认值/解构
+// 仍处外层上下文（`((x = await) => 0)` 非法）, 故二者区别对待。
+func scanClassStaticBlock(n ast.Node, s *classStaticBlockScan, allowReturn, awaitForbidden bool) {
 	switch node := n.(type) {
 	case nil:
 		return
@@ -107,75 +120,131 @@ func scanClassStaticBlock(n ast.Node, s *classStaticBlockScan, allowReturn bool)
 			s.hasReturn = true
 		}
 		if node.ReturnValue != nil {
-			scanClassStaticBlock(node.ReturnValue, s, allowReturn)
+			scanClassStaticBlock(node.ReturnValue, s, allowReturn, awaitForbidden)
 		}
 		return
 	case *ast.YieldExpression:
 		s.hasYield = true
 		if node.Value != nil {
-			scanClassStaticBlock(node.Value, s, allowReturn)
+			scanClassStaticBlock(node.Value, s, allowReturn, awaitForbidden)
 		}
 		return
 	case *ast.AwaitExpression:
 		s.hasAwait = true
-		scanClassStaticBlock(node.Argument, s, allowReturn)
+		scanClassStaticBlock(node.Argument, s, allowReturn, awaitForbidden)
 		return
 	case *ast.Identifier:
 		if node.Value == "arguments" {
 			s.hasArguments = true
 		}
+		if awaitForbidden && node.Value == "await" {
+			s.hasAwaitIdent = true
+		}
 		return
 	case *ast.MemberExpression:
-		// 非计算属性名 obj.arguments 里的 arguments 是属性名, 不是标识符引用。
-		scanClassStaticBlock(node.Object, s, allowReturn)
+		// 非计算属性名 obj.arguments / obj.await 里的名字是属性名, 不是标识符引用。
+		scanClassStaticBlock(node.Object, s, allowReturn, awaitForbidden)
 		if node.Computed {
-			scanClassStaticBlock(node.Property, s, allowReturn)
+			scanClassStaticBlock(node.Property, s, allowReturn, awaitForbidden)
 		}
 		return
 	case *ast.OptionalMemberExpression:
-		scanClassStaticBlock(node.Object, s, allowReturn)
+		scanClassStaticBlock(node.Object, s, allowReturn, awaitForbidden)
 		if node.Computed {
-			scanClassStaticBlock(node.Property, s, allowReturn)
+			scanClassStaticBlock(node.Property, s, allowReturn, awaitForbidden)
 		}
 		return
 	case *ast.ObjectLiteral:
-		// 字面量的键（非计算）不是引用; 简写 { arguments } 的 Value 才是引用。
+		// 字面量的键（非计算）不是引用; 简写 { arguments } / { await } 的 Value 才是引用。
 		for _, pair := range node.Properties {
 			if pair == nil {
 				continue
 			}
 			if pair.Computed {
-				scanClassStaticBlock(pair.Key, s, allowReturn)
+				scanClassStaticBlock(pair.Key, s, allowReturn, awaitForbidden)
 			}
-			scanClassStaticBlock(pair.Value, s, allowReturn)
+			scanClassStaticBlock(pair.Value, s, allowReturn, awaitForbidden)
 		}
 		for _, sp := range node.Spread {
-			scanClassStaticBlock(sp, s, allowReturn)
+			scanClassStaticBlock(sp, s, allowReturn, awaitForbidden)
+		}
+		return
+	case *ast.ArrayPattern:
+		// 解构模式的绑定目标 (childNodes 不遍历模式节点, 这里显式展开)。
+		for _, e := range node.Elements {
+			if e == nil {
+				continue
+			}
+			if e.Target != nil {
+				scanClassStaticBlock(e.Target, s, allowReturn, awaitForbidden)
+			}
+			if e.Default != nil {
+				scanClassStaticBlock(e.Default, s, allowReturn, awaitForbidden)
+			}
+		}
+		return
+	case *ast.ObjectPattern:
+		// 非计算键是属性名; 绑定目标 Value 与默认值才是引用。
+		for _, prop := range node.Properties {
+			if prop == nil {
+				continue
+			}
+			if prop.Computed {
+				scanClassStaticBlock(prop.Key, s, allowReturn, awaitForbidden)
+			}
+			if prop.Value != nil {
+				scanClassStaticBlock(prop.Value, s, allowReturn, awaitForbidden)
+			}
+			if prop.Default != nil {
+				scanClassStaticBlock(prop.Default, s, allowReturn, awaitForbidden)
+			}
+		}
+		if node.RestTarget != nil {
+			scanClassStaticBlock(node.RestTarget, s, allowReturn, awaitForbidden)
 		}
 		return
 	case *ast.CallExpression:
 		if _, ok := node.Function.(*ast.SuperExpression); ok {
 			s.hasSuperCall = true
 		}
-		scanClassStaticBlock(node.Function, s, allowReturn)
+		scanClassStaticBlock(node.Function, s, allowReturn, awaitForbidden)
 		for _, a := range node.Arguments {
-			scanClassStaticBlock(a, s, allowReturn)
+			scanClassStaticBlock(a, s, allowReturn, awaitForbidden)
 		}
 		return
 	case *ast.NewExpression:
-		scanClassStaticBlock(node.Callee, s, allowReturn)
+		scanClassStaticBlock(node.Callee, s, allowReturn, awaitForbidden)
 		for _, a := range node.Arguments {
-			scanClassStaticBlock(a, s, allowReturn)
+			scanClassStaticBlock(a, s, allowReturn, awaitForbidden)
 		}
 		return
 	case *ast.ArrowFunctionExpression:
-		scanClassStaticBlock(node.Body, s, false)
+		// 参数默认值/解构仍在外层静态块上下文 (awaitForbidden 继承);
+		// 函数体是 await 早错的边界, 但 arguments/yield/super 继续下钻。
+		for _, param := range node.Parameters {
+			if param == nil {
+				continue
+			}
+			if param.Name == "arguments" {
+				s.hasArguments = true
+			}
+			if awaitForbidden && param.Name == "await" {
+				s.hasAwaitIdent = true
+			}
+			if param.Pattern != nil {
+				scanClassStaticBlock(param.Pattern, s, allowReturn, awaitForbidden)
+			}
+			if param.Default != nil {
+				scanClassStaticBlock(param.Default, s, allowReturn, awaitForbidden)
+			}
+		}
+		scanClassStaticBlock(node.Body, s, false, false)
 		return
 	case *ast.FunctionExpression, *ast.FunctionDeclaration, *ast.ClassDeclaration, *ast.ClassExpression:
 		return // 完整边界
 	}
 	for _, child := range childNodes(n) {
-		scanClassStaticBlock(child, s, allowReturn)
+		scanClassStaticBlock(child, s, allowReturn, awaitForbidden)
 	}
 }
 

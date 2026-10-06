@@ -130,6 +130,17 @@ func trimTrailingSemicolons(src string) string {
 	return s
 }
 
+// startsWithBrace 报告已 TrimSpace 的源码是否以 `{` 开头 —— 即命中
+// ExpressionStatement 的 lookahead 限制 (规范 12.2: lookahead ∉ { {, function,
+// async function, class, let [ })。这类源码不能走 `return (<expr>)` 包装。
+//
+// 本函数只判 `{` 这一种 (r9HBA8 的实际触发形态); 其余 lookahead 关键字
+// (function/class/let [) 未纳入 —— 它们的表达式包装在 Gox 里与规范的分野
+// 尚未有测试覆盖, 留作后续 (见本次改动说明的「未做项」)。
+func startsWithBrace(src string) bool {
+	return len(src) > 0 && src[0] == '{'
+}
+
 // splitStrictDirective 从源码里剥出前导的 "use strict" 指令 (若存在)。
 // 返回 (strict, rest): strict 表示源码带严格指令; rest 是剥掉指令与紧随其
 // 分号后的剩余源码。
@@ -231,7 +242,14 @@ func runGlobalEval(env *runtime.Environment, src string, evalThis object.Value, 
 	// 1) 表达式包装: <directive> return (<expr>) —— 去掉末尾分号, 否则
 	// `return (expr;)` 是语法错误, 会错误地退回多语句包装并丢掉完成值
 	// (典型症状: eval("this;") 本应返回 this 却得 undefined)。
-	if expr := trimTrailingSemicolons(body); expr != "" {
+	//
+	// 但 ExpressionStatement 有 lookahead 限制 (规范 12.2): 以 `{` 开头的源码
+	// 在语句位置**不是** ExpressionStatement 而是 BlockStatement。若仍塞进
+	// `return (...)`, `{length: 3000}/1/g;` 会被读成对象字面量除法并落到运行期
+	// (报 `g is not defined`)。这类源码必须交给下面的多语句包装按语句表解析。
+	// 见 test262 language/statementList/eval-block-with-statment-regexp-literal-flags.js
+	// (看板 r9HBA8)。
+	if expr := trimTrailingSemicolons(body); expr != "" && !startsWithBrace(expr) {
 		if r := buildAndRun("(function(){\n" + directive + " return (" + expr + ") })"); r != nil {
 			return r
 		}
