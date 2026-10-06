@@ -328,7 +328,7 @@ func hasOperand(op Opcode) bool {
 		OP_PUSH_SCOPE, OP_POP_SCOPE,
 		OP_THIS,
 		OP_YIELD, OP_AWAIT,
-		OP_TO_NUMBER,
+		OP_TO_NUMBER, OP_TO_PROPERTY_KEY,
 		OP_NEW_TARGET,
 		OP_NEW_TARGET_MARK:
 		return false

@@ -2709,6 +2709,18 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				continue
 			}
 			vm.stack.Push(result)
+		case bytecode.OP_TO_PROPERTY_KEY:
+			// 成员引用的键在此**只转一次**: 之后 GET_INDEX / SET_INDEX 共用
+			// 这份结果, 带自定义 toString 的对象键不会被求值两次。
+			v := vm.stack.Pop()
+			vm.stack.Push(toPropertyKey(v))
+			// 对象键的转换会调用用户 toString ⇒ 经回调桥可能抛出, 立即重抛,
+			// 否则错误会残留到之后某个不相干的内建调用才被消费 (见 GET_INDEX)。
+			if err := vm.checkCallbackErr(); err != nil {
+				if terr := vm.rethrowBridgeError(err); terr != nil {
+					return terr
+				}
+			}
 		case bytecode.OP_TYPEOF:
 			val := vm.stack.Pop()
 			vm.stack.Push(object.NewString(object.TypeOf(val)))
@@ -2771,6 +2783,18 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			// 栈: [obj, key] → 删除 obj 上的 key 属性, 推入 true/false
 			key := vm.stack.Pop()
 			obj := vm.stack.Pop()
+			// 键归一 (ToPropertyKey): 之前只认 String/Symbol, 于是
+			// `delete obj[0]` / `delete obj[objKey]` 会静默返回 false 且不删属性。
+			switch key.(type) {
+			case *object.String, *object.Symbol:
+			default:
+				key = object.NewString(toJSString(key))
+				if err := vm.checkCallbackErr(); err != nil {
+					if terr := vm.rethrowBridgeError(err); terr != nil {
+						return terr
+					}
+				}
+			}
 			if o, ok := obj.(*object.Object); ok {
 				if s, ok := key.(*object.String); ok {
 					vm.stack.Push(object.NewBoolean(o.DeleteProperty(s.Value)))
@@ -5703,6 +5727,22 @@ func toNumber(v object.Value) float64 {
 // 自定义 toString 优先)，见 object.ToString。
 func toJSString(v object.Value) string {
 	return object.ToString(v)
+}
+
+// toPropertyKey 实现规范 ToPropertyKey 的「求值一次」语义, 供 OP_TO_PROPERTY_KEY 使用。
+//
+// 已经是原语的键原样返回: 原语到属性键的转换是纯函数、重复调用不可观测,
+// 而保留数字/符号键还能让数组 / 类型化数组的数字索引快路径原样工作。
+// 只有对象键 (可带用户 toString/valueOf) 需要在此转成字符串一次, 之后
+// GET_INDEX 与 SET_INDEX 共用它, 不再二次触发用户代码。
+func toPropertyKey(v object.Value) object.Value {
+	switch v.Type() {
+	case object.STRING_OBJ, object.SYMBOL_OBJ,
+		object.NUMBER_OBJ, object.BOOLEAN_OBJ, object.BIGINT_OBJ,
+		object.NULL_OBJ, object.UNDEFINED_OBJ:
+		return v
+	}
+	return object.NewString(object.ToString(v))
 }
 
 // looseEquals 实现 JavaScript 的 == (宽松相等)。

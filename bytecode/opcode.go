@@ -293,6 +293,12 @@ const (
 
 	// 0xF0-0xFF: 显式类型转换
 	OP_TO_NUMBER Opcode = 0xF0 // 一元 + (ToNumber): BigInt 抛 TypeError
+	// OP_TO_PROPERTY_KEY: 弹出键值, 按规范 ToPropertyKey 转换后压回。
+	// 编译器在计算成员引用 (`obj[expr]`) 时于键表达式之后发射一次, 使
+	// GET_INDEX / SET_INDEX 共用同一份已转换的键 —— 否则复合赋值 / ++ / --
+	// 的「读-改-写」会让带自定义 toString 的对象键被 ToPropertyKey 两次
+	// (规范 13.15.1 要求 LHS 只求值一次)。已经是原语的键原样返回。
+	OP_TO_PROPERTY_KEY Opcode = 0xF1
 )
 
 // InstructionSize 是每条指令的字节长度 (固定 3 字节)。
@@ -364,6 +370,7 @@ var opcodeNames = map[Opcode]string{
 	OP_DISPOSE_ADD:  "DISPOSE_ADD",
 	OP_DISPOSE_EXIT: "DISPOSE_EXIT",
 	OP_TO_NUMBER:    "TO_NUMBER",
+	OP_TO_PROPERTY_KEY: "TO_PROPERTY_KEY",
 }
 
 // Name 返回操作码的可读名称。

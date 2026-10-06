@@ -4436,7 +4436,15 @@ func (c *Compiler) compileMemberRef(m *ast.MemberExpression) error {
 		return err
 	}
 	if m.Computed {
-		return c.compileExpression(m.Property)
+		if err := c.compileExpression(m.Property); err != nil {
+			return err
+		}
+		// 键在引用创建时按 ToPropertyKey 只转一次 (§13.15.1: LHS 只求值一次)。
+		// 复合赋值 / ++ / -- 会用 DUP2 复制 [obj, key] 后先 GET_INDEX 再
+		// SET_INDEX —— 若键仍是带自定义 toString 的对象, 两次索引操作会各触发
+		// 一次 ToPropertyKey (S11.13.2_A7.*_T4 系列)。转成原语键后二者共用结果。
+		c.emitter.EmitNoOperand(bytecode.OP_TO_PROPERTY_KEY)
+		return nil
 	}
 	ident, ok := m.Property.(*ast.Identifier)
 	if !ok {
