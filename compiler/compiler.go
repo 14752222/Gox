@@ -1120,16 +1120,20 @@ func (c *Compiler) emitWithRef(ref *bytecode.WithRef) uint16 {
 
 // compileWithStatement 编译 with (obj) 语句体。
 //
-// 实现: 对象表达式在进入 with 前求值**一次**, 存入一个合成局部槽
-// (compileExpression + OP_STORE)。with 体里受影响的自由标识符编译为
-// OP_WITH_LOAD/STORE/DELETE, 其 WithRef.Slots 携带该槽位链 —— 运行时按槽
-// 取对象逐个查属性。因为槽位是普通局部槽, with 体内创建的闭包天然把它
-// 捕获进 CapturedLocals, 于是「闭包引用 with 对象」也能正确解析。
+// 实现: 对象表达式在进入 with 前求值**一次**, 经 OP_WITH_ENTER 做 ToObject
+// (null/undefined 抛 TypeError), 再存入一个合成局部槽 (OP_STORE)。with 体里
+// 受影响的自由标识符编译为 OP_WITH_LOAD/STORE/DELETE, 其 WithRef.Slots 携带
+// 该槽位链 —— 运行时按槽取对象逐个查属性。因为槽位是普通局部槽, with 体内
+// 创建的闭包天然把它捕获进 CapturedLocals, 于是「闭包引用 with 对象」也能
+// 正确解析。
 func (c *Compiler) compileWithStatement(stmt *ast.WithStatement) error {
 	// 对象表达式在外层环境求值 (不受本 with 影响)。
 	if err := c.compileExpression(stmt.Object); err != nil {
 		return err
 	}
+	// ToObject: 规范 14.11.2 在绑定对象环境记录前对值做 ToObject,
+	// null/undefined 在此抛 TypeError (即使 with 体从不执行)。
+	c.emitter.EmitNoOperand(bytecode.OP_WITH_ENTER)
 	// 合成槽位: 名字含空格, 用户标识符不可能与之冲突。
 	c.withSlotSeq++
 	sym := c.scope.Define(fmt.Sprintf(" with#%d", c.withSlotSeq), false)

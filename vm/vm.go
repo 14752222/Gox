@@ -2400,6 +2400,18 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			// 局部变量使用 slot 管理，作用域操作在 VM 中是 NOP
 
 		// ===== with 语句 (对象环境记录, 规范 13.11.7) =====
+		case bytecode.OP_WITH_ENTER:
+			// 对象表达式结果 → ToObject (规范 14.11.2): null / undefined 抛
+			// TypeError, 其余原样压回 (原始值按包装对象语义由 GetProperty 承接)。
+			objVal := vm.stack.Pop()
+			if objVal == object.NullSingleton || objVal == object.UndefinedSingleton {
+				if err := vm.throwNamedError("TypeError",
+					"Cannot convert %s to object", objVal.Inspect()); err != nil {
+					return err
+				}
+				continue
+			}
+			vm.stack.Push(objVal)
 		case bytecode.OP_WITH_LOAD:
 			ref := withRefOf(frame, operand)
 			if ref == nil {

@@ -6,7 +6,12 @@ package vm
 // Symbol.unscopables / 嵌套 with / this 不受影响 / 对象表达式只求值一次 /
 // 闭包捕获 with 环境 / 函数作用域与 delete 语义。
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/14752222/Gox/lexer"
+	"github.com/14752222/Gox/parser"
+)
 
 // TestWithReadWriteHit: with 体内读写先命中对象属性, 该对象被改写。
 func TestWithReadWriteHit(t *testing.T) {
@@ -228,3 +233,65 @@ func TestWithCompoundAndIncDec(t *testing.T) {
 	`)
 	assertNumber(t, res, 17)
 }
+
+// TestWithUndefinedThrowsTypeError: with 对象表达式求值为 undefined 时,
+// ToObject 抛 TypeError (规范 14.11.2), 且 with 体不执行。
+func TestWithUndefinedThrowsTypeError(t *testing.T) {
+	res := evalJS(t, `
+		var r;
+		var ran = false;
+		try { with (undefined) { ran = true; } r = "no-throw"; }
+		catch (e) { r = e.name; }
+		r + ":" + ran;
+	`)
+	assertString(t, res, "TypeError:false")
+}
+
+// TestWithNullThrowsTypeError: with(null) 同样抛 TypeError。
+func TestWithNullThrowsTypeError(t *testing.T) {
+	res := evalJS(t, `
+		var r;
+		try { with (null) { } r = "no-throw"; }
+		catch (e) { r = e.name; }
+		r;
+	`)
+	assertString(t, res, "TypeError")
+}
+
+// TestWithCommaSequenceObject: with 头是完整 Expression —— 允许逗号序列。
+func TestWithCommaSequenceObject(t *testing.T) {
+	res := evalJS(t, `
+		var r = 0;
+		var obj;
+		with (1, obj = { v: 9 }) { r = v; }
+		r;
+	`)
+	assertNumber(t, res, 9)
+}
+
+// TestWithDeclarationBodyIsSyntaxError: let/const/class/function 声明不能作
+// with 体 (必须是 Statement), 解析期报 SyntaxError。
+func TestWithDeclarationBodyIsSyntaxError(t *testing.T) {
+	bodies := []string{
+		"with ({}) let x;",
+		"with ({}) const x = 1;",
+		"with ({}) class C {}",
+		"with ({}) function f() {}",
+		"with ({}) function* g() {}",
+		"with ({}) async function f() {}",
+	}
+	for _, src := range bodies {
+		p := parser.New(lexer.New(src))
+		p.ParseProgram()
+		if !p.Errors().HasErrors() {
+			t.Fatalf("expected parse error for %q, got none", src)
+		}
+	}
+	// var 是 VariableStatement (属 Statement), 仍合法。
+	p := parser.New(lexer.New("with ({}) var x = 1;"))
+	p.ParseProgram()
+	if p.Errors().HasErrors() {
+		t.Fatalf("var as with-body should parse, got: %s", p.Errors().String())
+	}
+}
+

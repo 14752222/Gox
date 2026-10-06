@@ -216,6 +216,11 @@ const (
 	OP_WITH_LOAD   Opcode = 0xB2
 	OP_WITH_STORE  Opcode = 0xB3
 	OP_WITH_DELETE Opcode = 0xB4
+	// OP_WITH_ENTER: 进入 with 前把对象表达式的结果做一次 ToObject
+	// (规范 14.11.2 WithStatementEvaluation): null / undefined 抛 TypeError,
+	// 其余原样压回。编译器在对象表达式之后、OP_STORE 之前发射一次 ——
+	// 保证对象只求值一次、且 with 体从不执行也仍会做类型检查。
+	OP_WITH_ENTER Opcode = 0xB5
 
 	// 0xC0-0xCF: 类型操作
 	OP_TYPEOF        Opcode = 0xC0 // typeof
@@ -312,6 +317,7 @@ var opcodeNames = map[Opcode]string{
 	OP_FOR_IN_INIT: "FOR_IN_INIT", OP_FOR_IN_NEXT: "FOR_IN_NEXT", OP_FOR_IN_END: "FOR_IN_END",
 	OP_PUSH_SCOPE: "PUSH_SCOPE", OP_POP_SCOPE: "POP_SCOPE",
 	OP_WITH_LOAD: "WITH_LOAD", OP_WITH_STORE: "WITH_STORE", OP_WITH_DELETE: "WITH_DELETE",
+	OP_WITH_ENTER: "WITH_ENTER",
 	OP_TYPEOF: "TYPEOF", OP_INSTANCEOF: "INSTANCEOF",
 	OP_THIS: "THIS", OP_DELETE: "DELETE", OP_IN: "IN", OP_TYPEOF_GLOBAL: "TYPEOF_GLOBAL",
 	OP_BREAK: "BREAK", OP_CONTINUE: "CONTINUE",

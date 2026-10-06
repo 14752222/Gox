@@ -1280,7 +1280,10 @@ func (p *Parser) parseWithStatement() *ast.WithStatement {
 		return nil
 	}
 	p.nextToken()
-	stmt.Object = p.parseExpression(LOWEST)
+	// with 头是 Expression —— 允许逗号序列: with (a, b, obj) {...}。
+	// (test262 statements/with/scope-var-open.js 依赖此点; parseExpression
+	// 本身刻意不吞逗号, 故用 parseCommaSequence 收集。)
+	stmt.Object = p.parseCommaSequence()
 	if stmt.Object == nil {
 		return nil
 	}
@@ -1288,9 +1291,28 @@ func (p *Parser) parseWithStatement() *ast.WithStatement {
 		return nil
 	}
 	p.nextToken()
-	// 语句体: 块或单条语句。parseStatement 返回时 curToken 停在该语句的
-	// 末 token 上 (与 if/while 的 parseBody 一致), 由调用循环统一前进。
-	stmt.Body = p.parseStatement()
+	// 语法: WithStatement 的语句体必须是 Statement —— 不能是 Declaration。
+	// `let`/`const`/`class`/function 声明作 with 体是**早期 SyntaxError**
+	// (test262 statements/with/decl-*)。`var` 是 VariableStatement, 属
+	// Statement, 仍合法。
+	// 例外: `let` 后紧跟换行时按标识符表达式处理 (ASI), 与 parseStatement 的
+	// LET 分支同口径 —— let-block/let-identifier-with-newline.js 依赖此点。
+	if p.curTokenIs(lexer.CONST) || p.curTokenIs(lexer.CLASS) || p.curTokenIs(lexer.FUNCTION) ||
+		(p.curTokenIs(lexer.ASYNC) && p.peekTokenIs(lexer.FUNCTION)) ||
+		(p.curTokenIs(lexer.LET) && p.peekToken().Line == p.curToken().Line) {
+		p.addError("SyntaxError: declaration is not allowed as the body of a 'with' statement")
+		return nil
+	}
+	// 语句体: 块或单条语句。语句位置上的 '{' 一定是块 (而非对象字面量),
+	// 与 parseLabeledStatement 同口径 —— 不能直接交给 parseStatement, 否则
+	// 会落进 isBlockStart 的启发式判定, 把 `{ x; }` 误当对象字面量。
+	// parseBlockStatement / parseStatement 返回时 curToken 停在该语句的末
+	// token 上 (与 if/while 的 parseBody 一致), 由调用循环统一前进。
+	if p.curTokenIs(lexer.LBRACE) {
+		stmt.Body = p.parseBlockStatement()
+	} else {
+		stmt.Body = p.parseStatement()
+	}
 	return stmt
 }
 
