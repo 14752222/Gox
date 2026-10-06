@@ -445,6 +445,21 @@ func LookupSymbolProperty(o *Object, sym *Symbol) (Value, bool) {
 	return nil, false
 }
 
+// LookupSymbolPropertyDescriptor 沿原型链查找以 Symbol 为键的属性描述符。
+func LookupSymbolPropertyDescriptor(o *Object, sym *Symbol) (PropertyDescriptor, bool) {
+	for cur := o; cur != nil; {
+		if d, found := cur.GetSymbolPropertyDescriptor(sym); found {
+			return d, true
+		}
+		next, ok := cur.Proto.(*Object)
+		if !ok || next == nil {
+			break
+		}
+		cur = next
+	}
+	return PropertyDescriptor{}, false
+}
+
 // HasOwnSymbolProperty 检查对象是否有以 Symbol 为键的自有属性。
 func (o *Object) HasOwnSymbolProperty(sym *Symbol) bool {
 	if o.SymbolProperties == nil {

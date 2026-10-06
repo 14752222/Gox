@@ -45,6 +45,34 @@ func (o *Object) DefineAccessor(name string, getter, setter Value) {
 	}
 }
 
+// DefineSymbolAccessor 以 Symbol 为键在对象上定义 getter/setter 属性
+// (对象字面量 `get [Symbol.x](){}` / `set [Symbol.x](v){}` 语义)。
+// 与 DefineAccessor 同构, 只是键落在 SymbolProperties (按 sym.ID) 键空间。
+func (o *Object) DefineSymbolAccessor(sym *Symbol, getter, setter Value) {
+	if o.SymbolProperties == nil {
+		o.SymbolProperties = make(map[uint64]PropertyDescriptor)
+	}
+	if existing, ok := o.SymbolProperties[sym.ID]; ok {
+		if acc, isAcc := existing.Value.(*Accessor); isAcc {
+			if getter != nil {
+				acc.Getter = getter
+			}
+			if setter != nil {
+				acc.Setter = setter
+			}
+			return
+		}
+	} else {
+		o.SymbolKeyList = append(o.SymbolKeyList, sym)
+	}
+	o.SymbolProperties[sym.ID] = PropertyDescriptor{
+		Value:        NewAccessor(getter, setter),
+		Writable:     false,
+		Enumerable:   true,
+		Configurable: true,
+	}
+}
+
 // DefineBuiltinAccessor 在内建原型/命名空间上定义 getter/setter 属性。
 // 描述符为 {enumerable: false, configurable: true} (规范内建访问器形态),
 // 与 DefineAccessor (对象字面量语义, enumerable: true) 相对。

@@ -1881,6 +1881,19 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			key := vm.stack.Pop()
 			fn := vm.stack.Pop()
 			obj := vm.stack.Peek() // 保留对象在栈上
+			// Symbol 键 (get [Symbol.x](){}) 必须落进 SymbolProperties 键空间,
+			// 不能 toJSString 成 "Symbol(Symbol.x)" 字符串键 —— 否则
+			// obj[Symbol.x] / Object.getOwnPropertySymbols 全部查不到。
+			if sym, isSym := key.(*object.Symbol); isSym {
+				if o, ok := obj.(*object.Object); ok {
+					if op == bytecode.OP_SET_GETTER_DYN {
+						o.DefineSymbolAccessor(sym, fn, nil)
+					} else {
+						o.DefineSymbolAccessor(sym, nil, fn)
+					}
+				}
+				continue
+			}
 			propName := toJSString(key)
 			if o, ok := obj.(*object.Object); ok {
 				if op == bytecode.OP_SET_GETTER_DYN {
@@ -5097,10 +5110,25 @@ func (vm *VM) getIndex(obj, index object.Value) object.Value {
 			}
 			return val
 		}
-		// Symbol 键: 检查自身及原型链上的 Symbol 属性
+		// Symbol 键: 检查自身及原型链上的 Symbol 属性。访问器 (getter)
+		// 必须展开调用 (this = 原接收者 o) —— 如 `get [Symbol.iterator](){}`。
+		// getter 抛错经回调桥记录, 由 GET_INDEX 之后的 checkCallbackErr 消费。
 		if sym, ok := index.(*object.Symbol); ok {
-			if val, found := object.LookupSymbolProperty(o, sym); found {
-				return val
+			if desc, found := object.LookupSymbolPropertyDescriptor(o, sym); found {
+				if acc, isAcc := desc.Value.(*object.Accessor); isAcc {
+					if acc.Getter != nil && object.IsCallable(acc.Getter) {
+						v := object.CallFunction(acc.Getter, o)
+						if v == nil {
+							v = object.UndefinedSingleton
+						}
+						return v
+					}
+					return object.UndefinedSingleton
+				}
+				if desc.Value == nil {
+					return object.UndefinedSingleton
+				}
+				return desc.Value
 			}
 			return object.UndefinedSingleton
 		}
@@ -5578,8 +5606,11 @@ func (vm *VM) resolveSymbolIterator(val object.Value) (object.Value, bool, error
 	if sym == nil {
 		return nil, false, nil
 	}
-	fn, found := object.LookupSymbolProperty(o, sym)
-	if !found || !object.IsCallable(fn) {
+	fn, err := vm.getSymbolMember(o, sym)
+	if err != nil {
+		return nil, false, err
+	}
+	if !object.IsCallable(fn) {
 		return nil, false, nil
 	}
 	res, err := vm.callFunction(fn, o, nil)
@@ -5614,8 +5645,11 @@ func (vm *VM) resolveAsyncSymbolIterator(val object.Value) (object.Value, bool, 
 	if sym == nil {
 		return nil, false, nil
 	}
-	fn, found := object.LookupSymbolProperty(o, sym)
-	if !found || !object.IsCallable(fn) {
+	fn, err := vm.getSymbolMember(o, sym)
+	if err != nil {
+		return nil, false, err
+	}
+	if !object.IsCallable(fn) {
 		return nil, false, nil
 	}
 	res, err := vm.callFunction(fn, o, nil)
