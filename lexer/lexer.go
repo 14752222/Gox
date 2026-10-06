@@ -28,6 +28,15 @@ type Lexer struct {
 	// 正则字面量上下文: 追踪前一个 token 类型以区分 / 是除法还是正则开始
 	prevTokenType TokenType
 
+	// 花括号/括号种类栈 (见 brace_context.go): 用于判定 `}` 之后的 `/`
+	// 是正则还是除法。
+	braceStack           []braceKind
+	parenStack           []parenKind
+	lastRbraceIsBlock    bool // 最近一个 `}` 是否闭合语句块
+	lastRparenWasControl bool // 最近一个 `)` 是否控制头括号
+	pendingClassBody     bool // 刚见到 class, 下一个 `{` 是类体
+	pendingClassIsDecl   bool // 该类体是否为声明形态 (class 在语句位置)
+
 	// JSX 上下文栈 (见 jsx.go): 标签内 / 子文本 / 插值表达式三种帧。
 	// 栈空表示当前处于普通代码。
 	jsxStack []jsxFrame
@@ -93,6 +102,20 @@ func (l *Lexer) peekCharAt(offset int) rune {
 // 除法 / 与正则字面量 / 的上下文。
 func (l *Lexer) NextToken() Token {
 	tok := l.nextToken()
+	// 花括号/括号种类栈必须在**所有**返回路径上更新 (含提前返回的正则/模板
+	// 路径), 才能在后续 `}` 处正确判定 `/` 的语义。见 brace_context.go。
+	switch tok.Type {
+	case LBRACE:
+		l.noteOpenBrace()
+	case RBRACE:
+		l.noteCloseBrace()
+	case LPAREN:
+		l.noteOpenParen()
+	case RPAREN:
+		l.noteCloseParen()
+	case CLASS:
+		l.noteClass()
+	}
 	l.prevTokenType = tok.Type
 	return tok
 }
@@ -415,10 +438,23 @@ func (l *Lexer) nextToken() Token {
 // 基于前一个 token 类型: 如果前一个 token 是标识符、数字、字符串、
 // )、]、}、this、true、false、null、undefined 等，则 / 是除法。
 // 否则 / 是正则字面量的开始。
+//
+// RBRACE 是唯一的例外: `}` 之后 `/` 是除法还是正则, 取决于该 `}` 闭合的是
+// 表达式 (对象字面量 / 函数体 / 类体 → 除法) 还是语句块 (→ 正则开始)。
+// 这一信息由 braceStack 追踪 (见 brace_context.go)。
 func (l *Lexer) isRegexContext() bool {
 	switch l.prevTokenType {
+	case RBRACE:
+		// 闭合语句块的 `}` 之后, `/` 起一个正则 (如 `if (x) {} /re/.test(s)`)。
+		return l.lastRbraceIsBlock
+	case RPAREN:
+		// 控制头括号的 `)` 之后, `/` 起一个正则 —— 该 `)` 之后是控制结构的
+		// 语句体, 可以是一条以正则开头的表达式语句 (如 `if (x) /re/.test(s)`
+		// / `do {} while (x) /re/`; node 22 实测合法)。普通分组/调用括号的
+		// `)` 之后则是除法 (`(a) / 2` / `foo() / 2`)。
+		return l.lastRparenWasControl
 	case IDENTIFIER, INT_LITERAL, FLOAT_LITERAL, STRING_LITERAL, REGEX_LITERAL,
-		RPAREN, RBRACKET, RBRACE, BIGINT_LITERAL,
+		RBRACKET, BIGINT_LITERAL,
 		THIS, TRUE, FALSE, NULL, UNDEFINED,
 		INC, DEC:
 		return false
