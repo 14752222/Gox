@@ -712,7 +712,7 @@ func (c *Compiler) compileLetStatement(stmt *ast.LetStatement) error {
 	// 规范: let x; 等价于 let x = undefined —— 必须显式写入 undefined，
 	// 否则局部槽保持未初始化态 (读取触发 TDZ 报错)、全局则根本未声明。
 	if stmt.Value != nil {
-		if err := c.compileExpression(stmt.Value); err != nil {
+		if err := c.compileNamedExpression(stmt.Value, stmt.Name.Value); err != nil {
 			return err
 		}
 		sym, err := c.declareOnce(stmt.Name.Value, false, false)
@@ -743,7 +743,7 @@ func (c *Compiler) compileLetStatement(stmt *ast.LetStatement) error {
 	// 多条声明: let a = 1, b = 2;
 	for _, d := range stmt.More {
 		if d.Value != nil {
-			if err := c.compileExpression(d.Value); err != nil {
+			if err := c.compileNamedExpression(d.Value, d.Name.Value); err != nil {
 				return err
 			}
 			sym, err := c.declareOnce(d.Name.Value, false, false)
@@ -831,7 +831,7 @@ func (c *Compiler) compileVarStatement(stmt *ast.VarStatement) error {
 	}
 
 	if stmt.Value != nil {
-		if err := c.compileExpression(stmt.Value); err != nil {
+		if err := c.compileNamedExpression(stmt.Value, stmt.Name.Value); err != nil {
 			return err
 		}
 		sym, err := declareVar(stmt.Name.Value)
@@ -842,7 +842,7 @@ func (c *Compiler) compileVarStatement(stmt *ast.VarStatement) error {
 	}
 	for _, d := range stmt.More {
 		if d.Value != nil {
-			if err := c.compileExpression(d.Value); err != nil {
+			if err := c.compileNamedExpression(d.Value, d.Name.Value); err != nil {
 				return err
 			}
 		} else {
@@ -865,7 +865,7 @@ func (c *Compiler) compileConstStatement(stmt *ast.ConstStatement) error {
 		}
 	}
 
-	if err := c.compileExpression(stmt.Value); err != nil {
+	if err := c.compileNamedExpression(stmt.Value, stmt.Name.Value); err != nil {
 		return err
 	}
 	sym, err := c.declareOnce(stmt.Name.Value, true, false)
@@ -882,7 +882,7 @@ func (c *Compiler) compileConstStatement(stmt *ast.ConstStatement) error {
 
 	// 多条声明: const a = 1, b = 2;
 	for _, d := range stmt.More {
-		if err := c.compileExpression(d.Value); err != nil {
+		if err := c.compileNamedExpression(d.Value, d.Name.Value); err != nil {
 			return err
 		}
 		sym, err := c.declareOnce(d.Name.Value, true, false)
@@ -2535,9 +2535,18 @@ func (c *Compiler) compileStaticElements(superName string, statics []*ast.ClassM
 // 与声明的差别: 类名不进作用域 (匿名类 Name 为 nil), 类值直接
 // 作为表达式结果留在栈顶。
 func (c *Compiler) compileClassExpression(node *ast.ClassExpression) error {
-	className := "<anonymous>"
+	return c.compileClassExpressionNamed(node, "")
+}
+
+// compileClassExpressionNamed 编译类表达式; 匿名类在 NamedEvaluation 语境下
+// 用 nameHint 作为类名 (会体现在构造函数闭包的 name 上)。
+func (c *Compiler) compileClassExpressionNamed(node *ast.ClassExpression, nameHint string) error {
+	className := nameHint
 	if node.Name != nil {
 		className = node.Name.Value
+	}
+	if className == "" {
+		className = "<anonymous>"
 	}
 	return c.compileClassBody(className, node.SuperClass, node.Methods, node.Statics, node.Fields)
 }
@@ -2711,7 +2720,15 @@ func (c *Compiler) compileClassConstructor(fields []*ast.ClassField, ctor *ast.C
 	c.tryScopes = prevTryScopes
 	c.finallyRetSlot = prevFinallyRetSlot
 
-	meta := bytecode.NewFunctionMetadata("constructor", fnIns, fnScope.NumLocals(), len(paramSpecs), paramSpecs, false)
+	// 类构造函数 (类值本身) 的 name 应为**类名** (规范 ClassDefinitionEvaluation
+	// 步骤 SetFunctionName(F, className)); 匿名类先留空, 由 NamedEvaluation
+	// 语境补名。此前硬编码 "constructor" 会让 `class X{}.name` 错误地是
+	// "constructor"。
+	ctorName := className
+	if ctorName == "<anonymous>" {
+		ctorName = ""
+	}
+	meta := bytecode.NewFunctionMetadata(ctorName, fnIns, fnScope.NumLocals(), len(paramSpecs), paramSpecs, false)
 	meta.BaseSlot = baseSlot
 	meta.ArgumentsSlot = argumentsSlot
 	meta.IsStrict = c.strict
@@ -2733,7 +2750,13 @@ func (c *Compiler) compileParamBinding(params []*ast.Parameter, paramSlots []int
 		}
 		slot := paramSlots[i]
 		c.emitter.Emit(bytecode.OP_LOAD, uint16(slot))
-		if err := c.compileDestructureDefault(param.Default); err != nil {
+		// 简单参数 (无解构模式) 的默认值是匿名函数/类定义时按其参数名命名;
+		// 解构模式参数无单一名, 不命名。
+		defName := ""
+		if param.Pattern == nil {
+			defName = param.Name
+		}
+		if err := c.compileDestructureDefaultNamed(param.Default, defName); err != nil {
 			return err
 		}
 		c.emitter.Emit(bytecode.OP_STORE, uint16(slot))
@@ -3132,7 +3155,8 @@ func (c *Compiler) compileDefaultExport(decl ast.Statement) error {
 	switch d := decl.(type) {
 	case *ast.ExpressionStatement:
 		// 表达式只求值一次: 值入栈 → OP_EXPORT 弹出。
-		if err := c.compileExpression(d.Expression); err != nil {
+		// 匿名函数/类默认导出按规范命名为 "default"。
+		if err := c.compileNamedExpression(d.Expression, "default"); err != nil {
 			return err
 		}
 	case *ast.FunctionDeclaration:
@@ -3892,7 +3916,7 @@ func (c *Compiler) compileAssignmentExpression(node *ast.AssignmentExpression) e
 			// with 体内自由标识符的赋值: 先查对象链, 未命中再回退。
 			ref := c.emitWithRef(c.buildWithRef(left.Value, sym))
 			if node.Operator == "=" {
-				if err := c.compileExpression(node.Right); err != nil {
+				if err := c.compileNamedExpression(node.Right, left.Value); err != nil {
 					return err
 				}
 				c.emitter.EmitNoOperand(bytecode.OP_DUP)
@@ -3912,7 +3936,7 @@ func (c *Compiler) compileAssignmentExpression(node *ast.AssignmentExpression) e
 			// 全局变量: 读写共享全局环境
 			unresolved := sym == nil
 			if node.Operator == "=" {
-				if err := c.compileExpression(node.Right); err != nil {
+				if err := c.compileNamedExpression(node.Right, left.Value); err != nil {
 					return err
 				}
 				c.emitter.EmitNoOperand(bytecode.OP_DUP)
@@ -3932,7 +3956,7 @@ func (c *Compiler) compileAssignmentExpression(node *ast.AssignmentExpression) e
 
 		if node.Operator == "=" {
 			// x = val: 编译右值, DUP, STORE
-			if err := c.compileExpression(node.Right); err != nil {
+			if err := c.compileNamedExpression(node.Right, left.Value); err != nil {
 				return err
 			}
 			c.emitter.EmitNoOperand(bytecode.OP_DUP)
@@ -4359,7 +4383,7 @@ func (c *Compiler) emitArrayElementBind(iterSlot int, elem *ast.PatternElement, 
 	c.emitter.PatchJump(slotEmptyDone)
 	// [value]
 	if elem.Default != nil {
-		if err := c.compileDestructureDefault(elem.Default); err != nil {
+		if err := c.compileDestructureDefaultNamed(elem.Default, namedTargetName(elem.Target)); err != nil {
 			return err
 		}
 	}
@@ -4474,7 +4498,7 @@ func (c *Compiler) compileObjectPatternBind(pattern *ast.ObjectPattern, isDecl b
 
 		// 处理默认值
 		if prop.Default != nil {
-			if err := c.compileDestructureDefault(prop.Default); err != nil {
+			if err := c.compileDestructureDefaultNamed(prop.Default, namedTargetName(prop.Value)); err != nil {
 				return err
 			}
 		}
@@ -4608,6 +4632,13 @@ func (c *Compiler) emitSyncIterClose(iterSlot int) {
 // 仅当 val **恰为 undefined** 时用默认表达式替换 (规范: Initializer 只对
 // undefined 生效, null 保留)。结束后栈顶为最终值 [val 或 default]。
 func (c *Compiler) compileDestructureDefault(def ast.Expression) error {
+	return c.compileDestructureDefaultNamed(def, "")
+}
+
+// compileDestructureDefaultNamed 同 compileDestructureDefault, 但当默认值是匿名
+// 函数/类定义时, 用 name 给它命名 (规范 IteratorBindingInitialization /
+// ObjectBindingPattern 的 SingleNameBinding: 默认值经 NamedEvaluation 求值)。
+func (c *Compiler) compileDestructureDefaultNamed(def ast.Expression, name string) error {
 	// [val] → [val, isUndefined]
 	c.emitter.EmitNoOperand(bytecode.OP_DUP)
 	c.emitter.EmitNoOperand(bytecode.OP_UNDEFINED)
@@ -4616,7 +4647,7 @@ func (c *Compiler) compileDestructureDefault(def ast.Expression) error {
 	// undefined 路径: 弹出判定位与原始值, 用默认值替换
 	c.emitter.EmitNoOperand(bytecode.OP_POP)
 	c.emitter.EmitNoOperand(bytecode.OP_POP)
-	if err := c.compileExpression(def); err != nil {
+	if err := c.compileNamedExpression(def, name); err != nil {
 		return err
 	}
 	done := c.emitter.EmitJump(bytecode.OP_JUMP)
@@ -5250,7 +5281,12 @@ func (c *Compiler) compileObjectLiteral(node *ast.ObjectLiteral) error {
 				return fmt.Errorf("compiler: getter/setter value is not a function")
 			}
 			name := prop.Key.(*ast.Identifier).Value
-			meta, err := c.compileFunctionWithStrict(fn.Strict, "get "+name, fn.Parameters, fn.Body, false, fn.IsGenerator, fn.IsAsync)
+			// 访问器函数的 name 按规范带前缀: get x / set x。
+			prefix := "get "
+			if prop.Kind == ast.PROP_SETTER {
+				prefix = "set "
+			}
+			meta, err := c.compileFunctionWithStrict(fn.Strict, prefix+name, fn.Parameters, fn.Body, false, fn.IsGenerator, fn.IsAsync)
 			if err != nil {
 				return err
 			}
@@ -5264,12 +5300,22 @@ func (c *Compiler) compileObjectLiteral(node *ast.ObjectLiteral) error {
 			}
 		} else {
 			// 普通属性 / 简写 / 方法定义
-			// 编译值 (简写时 prop.Value 是同名 Identifier)
-			if err := c.compileExpression(prop.Value); err != nil {
+			// 键名先取出: 匿名函数/类定义要按属性名命名 (NamedEvaluation)。
+			keyName := prop.Key.(*ast.Identifier).Value
+			// { __proto__: v } 是原型设值 (B.3.1), 不是属性定义, 不参与命名 ——
+			// 故其匿名函数值保持 ""。而 { __proto__(){} } (PROP_METHOD) 是真正
+			// 的属性, 照常命名为 "__proto__"。
+			protoSetter := prop.Kind == ast.PROP_INIT && !prop.Shorthand && keyName == "__proto__"
+			var err error
+			if protoSetter {
+				err = c.compileExpression(prop.Value)
+			} else {
+				err = c.compileNamedExpression(prop.Value, keyName)
+			}
+			if err != nil {
 				return err
 			} // [obj, val]
 			// 设置属性
-			keyName := prop.Key.(*ast.Identifier).Value
 			idx := c.constants.AddConstant(object.NewString(keyName))
 			c.emitter.Emit(bytecode.OP_SET_PROP, idx) // [obj]
 		}
@@ -5771,13 +5817,74 @@ func (c *Compiler) compileAsyncGeneratorSelf(name, selfName string, params []*as
 	return meta, nil
 }
 
+// isAnonymousFunctionDefinition 报告表达式是否为"匿名函数/类定义"—— 即
+// NamedEvaluation 会据上下文赋予名字的那些形式: 箭头函数、无名字的 function
+// 表达式、无名字的 class 表达式。
+//
+// 解析器已折叠括号 ((function(){}) 直接解析成 FunctionExpression), 与规范
+// IsAnonymousFunctionDefinition 对 ParenthesizedExpression 透明的规定天然一致;
+// 逗号表达式 (0, function(){}) / 成员 / 实参等形态则不是匿名函数定义, 不会被命名。
+func isAnonymousFunctionDefinition(expr ast.Expression) bool {
+	switch e := expr.(type) {
+	case *ast.ArrowFunctionExpression:
+		return true
+	case *ast.FunctionExpression:
+		return e.Name == nil
+	case *ast.ClassExpression:
+		return e.Name == nil
+	}
+	return false
+}
+
+// namedTargetName 返回解构/参数默认值这类绑定目标的名字。只有标识符目标参与
+// NamedEvaluation (成员目标、嵌套模式目标都不会给匿名函数命名), 故非标识符
+// 一律返回 ""。
+func namedTargetName(target ast.Expression) string {
+	if id, ok := target.(*ast.Identifier); ok {
+		return id.Value
+	}
+	return ""
+}
+
+// compileNamedExpression 按 NamedEvaluation 语义编译表达式: 若表达式是匿名
+// 函数/类定义, 用 name 作为其函数名编译; 否则丢弃名字提示、原样编译。
+//
+// 关键纪律 —— "不该有名字" 的形态绝不能走到这里: 成员赋值右侧 (o.k = fn)、
+// 实参、下标、逗号表达式、数组/对象字面量元素等都不经过本函数, 因此不会被
+// 误命名。只有"绑定到标识符名"或"属性定义"的语境才调用它。
+func (c *Compiler) compileNamedExpression(expr ast.Expression, name string) error {
+	if !isAnonymousFunctionDefinition(expr) {
+		// 非匿名函数/类定义: 名字提示被丢弃 (NamedEvaluation 就此终止)。
+		return c.compileExpression(expr)
+	}
+	switch e := expr.(type) {
+	case *ast.ArrowFunctionExpression:
+		return c.compileArrowFunctionNamed(e, name)
+	case *ast.FunctionExpression:
+		return c.compileFunctionExpressionNamed(e, name)
+	case *ast.ClassExpression:
+		return c.compileClassExpressionNamed(e, name)
+	}
+	return c.compileExpression(expr)
+}
+
 func (c *Compiler) compileFunctionExpression(node *ast.FunctionExpression) error {
+	return c.compileFunctionExpressionNamed(node, "")
+}
+
+// compileFunctionExpressionNamed 编译函数表达式; 匿名时用 nameHint 作为名字
+// (NamedEvaluation)。名字**只**作为函数对象的 name 属性, 不建立函数体内可见的
+// 自引用绑定 (故 selfName 仍为空, 与规范一致: `var f = function(){}` 里 f 只在
+// 外层可见, 函数体内引用 f 走外层绑定而非自引用槽)。
+func (c *Compiler) compileFunctionExpressionNamed(node *ast.FunctionExpression, nameHint string) error {
 	var name string
 	selfName := ""
 	if node.Name != nil {
 		name = node.Name.Value
 		// 命名函数表达式: 函数体内名字可见且指向自身 (递归入口)
 		selfName = name
+	} else {
+		name = nameHint
 	}
 	prevStrict := c.strict
 	c.strict = node.Strict
@@ -5792,7 +5899,14 @@ func (c *Compiler) compileFunctionExpression(node *ast.FunctionExpression) error
 }
 
 func (c *Compiler) compileArrowFunctionExpression(node *ast.ArrowFunctionExpression) error {
-	name := "arrow"
+	return c.compileArrowFunctionNamed(node, "")
+}
+
+// compileArrowFunctionNamed 编译箭头函数; nameHint 是其 name 属性的初始值
+// (NamedEvaluation 时由绑定语境给出, 否则为空字符串 —— 规范里匿名箭头
+// 函数的 name 就是 "")。
+func (c *Compiler) compileArrowFunctionNamed(node *ast.ArrowFunctionExpression, nameHint string) error {
+	name := nameHint
 	// isAsync 走 compileAsyncFunctionSelf (wrapper + 内层 generator), 但 isArrow
 	// 一路传下去 —— 否则 `async () => this.x` 的 this 会被调用时的接收者覆盖。
 	meta, err := c.compileFunctionWithStrict(node.Strict, name, node.Parameters, getBlockFromBody(node.Body), true, false, node.IsAsync)

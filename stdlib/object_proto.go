@@ -199,6 +199,12 @@ func hasOwnPropertyImpl(this object.Value, key object.Value) bool {
 			return true
 		}
 		return false
+	case *object.Closure, *object.BuiltinFunction, *object.BuiltinMethod:
+		// 函数类值的 name 是自有属性 (值存在结构体字段, 见 object.NamePropertyOf)。
+		if name == "name" {
+			return true
+		}
+		return false
 	}
 	return false
 }

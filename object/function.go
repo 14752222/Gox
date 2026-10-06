@@ -285,6 +285,39 @@ func NewBuiltin(name string, fn func(args ...Value) Value) *BuiltinFunction {
 	return &BuiltinFunction{Name: name, Fn: fn}
 }
 
+// NamePropertyOf 返回函数类值 (Closure / BuiltinFunction / BuiltinMethod) 上
+// "name" 自有属性的描述符。ok=false 表示该值不是函数类, 没有 name 自有属性。
+//
+// 规范里函数的 name 是 { writable:false, enumerable:false, configurable:true }
+// 的数据属性 (SetFunctionName / 内建函数定义)。Gox 的 name 值存在结构体字段
+// 里 (而非 Object.Properties), 故 getOwnPropertyDescriptor / hasOwnProperty
+// 需要这个统一的读取口来"看见"它。
+//
+// Closure 的 Props 若显式带了 "name" (例如类静态方法 `static name(){}`),
+// 以存储值为准 —— 与 Closure.GetProperty 的查找优先级一致。
+func NamePropertyOf(v Value) (PropertyDescriptor, bool) {
+	fnName := func(name string) PropertyDescriptor {
+		return PropertyDescriptor{Value: NewString(name), Writable: false, Enumerable: false, Configurable: true}
+	}
+	switch f := v.(type) {
+	case *Closure:
+		if f.Props != nil {
+			if val, ok := f.Props["name"]; ok {
+				return PropertyDescriptor{Value: val, Writable: false, Enumerable: false, Configurable: true}, true
+			}
+		}
+		if f.Fn != nil {
+			return fnName(f.Fn.Name), true
+		}
+		return fnName(""), true
+	case *BuiltinFunction:
+		return fnName(f.Name), true
+	case *BuiltinMethod:
+		return fnName(f.Name), true
+	}
+	return PropertyDescriptor{}, false
+}
+
 // BuiltinMethod 表示需要 this 绑定的内建方法。
 // 用于 Array.prototype.push, String.prototype.toUpperCase 等原型方法。
 // this 作为第一个参数传递，实际参数从 args 切片获取。

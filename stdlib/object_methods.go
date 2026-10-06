@@ -289,13 +289,26 @@ func setupObjectGlobal() *object.BuiltinFunction {
 		if len(args) < 2 {
 			return object.UndefinedSingleton
 		}
-		obj, ok := args[0].(*object.Object)
-		if !ok {
+		key := toStr(args[1])
+		var desc object.PropertyDescriptor
+		if obj, ok := args[0].(*object.Object); ok {
+			d, exists := obj.Properties[key]
+			if !exists {
+				return object.UndefinedSingleton
+			}
+			desc = d
+		} else if key == "name" {
+			// 函数类值 (Closure / 内建函数) 的 name 是自有属性, 但值存在
+			// 结构体字段而非 Object.Properties 里 —— 这里显式报告它, 使
+			// 规范要求的 {writable:false, enumerable:false, configurable:true}
+			// 描述符可被观察到。
+			d, ok := object.NamePropertyOf(args[0])
+			if !ok {
+				return object.NewTypeError("Object.getOwnPropertyDescriptor called on non-object")
+			}
+			desc = d
+		} else {
 			return object.NewTypeError("Object.getOwnPropertyDescriptor called on non-object")
-		}
-		desc, exists := obj.Properties[toStr(args[1])]
-		if !exists {
-			return object.UndefinedSingleton
 		}
 		result := object.NewObject()
 		// 反映真实描述符属性 (此前硬编码 configurable=false / enumerable=true)。
