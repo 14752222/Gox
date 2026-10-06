@@ -28,12 +28,13 @@ func init() {
 	object.SetCompileSource(compileForBridge)
 	object.SetCompileSourceAllowingNewTarget(compileForBridgeAllowingNewTarget)
 	object.SetCompileSourceEval(compileForBridgeEval)
+	object.SetCompileSourceOpts(compileForBridgeWithOpts)
 }
 
 // compileSource 编译 JS 源码。moduleMode 为 true 时模块有自己的命名空间,
 // 顶层变量不写入共享全局环境 (见 loadModule)。
 func compileSource(src string, moduleMode bool) (*compiler.Compiler, error) {
-	return compileSourceOpts(src, moduleMode, false, false, false)
+	return compileSourceOpts(src, moduleMode, false, false, false, nil)
 }
 
 // compileSourceOpts 是 compileSource 的带选项版本。
@@ -51,7 +52,10 @@ func compileSource(src string, moduleMode bool) (*compiler.Compiler, error) {
 //     await using 声明报早错 (规范: eval 按 Script goal 解析, UsingDeclaration
 //     不被 Block/FunctionBody 等包含即 SyntaxError; 见 parser.usingDeclAllowed)。
 //     new Function 的体是真正的 FunctionBody, **不**置本标志。
-func compileSourceOpts(src string, moduleMode, moduleEE, forbidNewTarget, evalTopLevel bool) (*compiler.Compiler, error) {
+//   - superHome 仅供「直接 eval 单元」使用 (roiE5Z): 调用点函数有
+//     [[HomeObject]] 时, eval 源码的 SuperProperty (super.x) 合法并按该 home
+//     解析; SuperCall 仍恒拦 (eval 单元的 currentSuperClass 恒空)。
+func compileSourceOpts(src string, moduleMode, moduleEE, forbidNewTarget, evalTopLevel bool, superHome *object.EvalSuperHome) (*compiler.Compiler, error) {
 	p := parser.New(lexer.New(src))
 	p.SetModule(moduleMode) // 模块顶层恒严格, 供解析期早错判定
 	if moduleEE {
@@ -70,6 +74,7 @@ func compileSourceOpts(src string, moduleMode, moduleEE, forbidNewTarget, evalTo
 	c := compiler.New()
 	c.SetModuleMode(moduleMode)
 	c.SetStmtPos(program.Positions) // T05: 语句位置表 → 运行时错误源码帧
+	c.SetEvalSuperHome(superHome)
 	if err := c.Compile(program); err != nil {
 		return nil, &sourceError{msg: err.Error()}
 	}
@@ -111,10 +116,25 @@ func compileForBridgeAllowingNewTarget(src string) (*object.CompiledFunction, er
 	return bridgeCompile(src, false, true)
 }
 
-// bridgeCompile 是三条编译桥的公用躯干: forbidNewTarget 控制 new.target 早错,
+// compileForBridgeWithOpts 是注册给 object.CompileSourceWithOpts 的实现:
+// 按 EvalCompileOptions (new.target 放行 / super home / eval 顶层 using 早错)
+// 编译 eval 源码。仅 stdlib 的直接 eval 路径使用 (见 runGlobalEval)。
+func compileForBridgeWithOpts(src string, opts object.EvalCompileOptions) (*object.CompiledFunction, error) {
+	c, err := compileSourceOpts(src, false, false, !opts.AllowNewTarget, opts.EvalTopLevel, &opts.SuperHome)
+	if err != nil {
+		return nil, err
+	}
+	meta := lastFunctionMeta(c)
+	if meta == nil {
+		return nil, fmt.Errorf("compile: no function metadata in output")
+	}
+	return metaToCompiledFunction(meta, c.Constants().Constants), nil
+}
+
+// bridgeCompile 是各编译桥的公用躯干: forbidNewTarget 控制 new.target 早错,
 // evalTopLevel 控制 eval 顶层 using / await using 早错 (见 compileSourceOpts)。
 func bridgeCompile(src string, forbidNewTarget, evalTopLevel bool) (*object.CompiledFunction, error) {
-	c, err := compileSourceOpts(src, false, false, forbidNewTarget, evalTopLevel)
+	c, err := compileSourceOpts(src, false, false, forbidNewTarget, evalTopLevel, nil)
 	if err != nil {
 		return nil, err
 	}

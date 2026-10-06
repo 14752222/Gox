@@ -131,6 +131,31 @@ const (
 	// 调用 → SyntaxError)。间接 eval 不发射此标记, 不受限。
 	OP_EVAL_MARK_INIT Opcode = 0x6B
 
+	// OP_EVAL_MARK_HOME / OP_EVAL_MARK_HOME_STATIC / OP_EVAL_MARK_HOME_THIS /
+	// OP_EVAL_MARK_SUPER: 直接 eval 的 **super home 上下文** 标记 (看板 roiE5Z)。
+	// 规范 PerformEval 18.2.1.1.1: eval 源码含 SuperProperty (super.x) 只在
+	// 「调用者函数有 [[HomeObject]]」(类方法/对象方法/字段初始化器等) 的
+	// 直接 eval 里合法。Gox 的 super 解析靠编译期静态名, 而这些名字只有编译器
+	// 在发射标记的现场知道, 故随标记附带:
+	//   - OP_EVAL_MARK_HOME:       operand = home 类名常量索引 (实例语境;
+	//     home = <类名>.prototype, super base = Object.getPrototypeOf(home))。
+	//   - OP_EVAL_MARK_HOME_STATIC: operand = home 类名常量索引 (静态语境;
+	//     home = <类名> 本身, 含 static 方法 / 静态初始化块)。
+	//   - OP_EVAL_MARK_HOME_THIS:  无操作数。对象字面量方法的 home 没有可加载
+	//     的名字, 运行期取 eval 包装函数的 this (调用者帧的 this) 作 home。
+	//   - OP_EVAL_MARK_SUPER:      operand = 父类名常量索引。仅「静态语境且类有
+	//     extends」时随 HOME_STATIC 一同发射: Gox 未链接 ctor.__proto__,
+	//     静态 super base 只能是父类构造器本身。
+	// SuperCall (super()) 不在此列: eval 源码里的 super() 一律 SyntaxError
+	// (18.2.1.1.2), 由 eval 单元的编译期 currentSuperClass=="" 拦截。
+	// 这些标记只携带信息, 无栈效果; 与 OP_EVAL_MARK / _INIT 前后组合出现
+	// (INIT 可叠加在 HOME 之后表示字段初始化器语境)。无 home 语境的直接
+	// eval 仍发射不带 home 的 OP_EVAL_MARK / _INIT (VM 据此清空上次残留)。
+	OP_EVAL_MARK_HOME       Opcode = 0x6D
+	OP_EVAL_MARK_HOME_STATIC Opcode = 0x6E
+	OP_EVAL_MARK_HOME_THIS  Opcode = 0x6F
+	OP_EVAL_MARK_SUPER      Opcode = 0x56
+
 	// OP_NEW_TARGET_MARK: 无操作数。编译器在 super(...) 调用前发射, 把调用者帧
 	// 生效的 new.target 记为「下一次调用要继承的构造目标」。VM 在紧随其后的
 	// OP_CALL_METHOD / OP_CALL_METHOD_SPREAD 装配父构造器帧时消费: 父构造器里
@@ -298,6 +323,13 @@ const (
 
 	// 0xF0-0xFF: 显式类型转换
 	OP_TO_NUMBER Opcode = 0xF0 // 一元 + (ToNumber): BigInt 抛 TypeError
+	// OP_GET_PROTO: 取栈顶对象的 [[Prototype]] (Object.getPrototypeOf 的底层)。
+	// 栈: [obj] → [proto]。供 eval 单元的 super.x 代码生成使用: 规范
+	// MakeSuperPropertyReference 以 Object.getPrototypeOf(homeObject) 为 base,
+	// 而 Gox 未实现 __proto__ 访问器 (o.__proto__ 得 undefined), 只能走指令。
+	// proto 为 nil (原型链尽头) 时压 null, 与 Object.getPrototypeOf(Object.prototype)
+	// 的规范返回一致。
+	OP_GET_PROTO Opcode = 0xF2
 	// OP_TO_PROPERTY_KEY: 弹出键值, 按规范 ToPropertyKey 转换后压回。
 	// 编译器在计算成员引用 (`obj[expr]`) 时于键表达式之后发射一次, 使
 	// GET_INDEX / SET_INDEX 共用同一份已转换的键 —— 否则复合赋值 / ++ / --
@@ -340,6 +372,10 @@ var opcodeNames = map[Opcode]string{
 	OP_CALL_METHOD_SPREAD: "CALL_METHOD_SPREAD",
 	OP_EVAL_MARK:          "EVAL_MARK",
 	OP_EVAL_MARK_INIT:     "EVAL_MARK_INIT",
+	OP_EVAL_MARK_HOME:      "EVAL_MARK_HOME",
+	OP_EVAL_MARK_HOME_STATIC: "EVAL_MARK_HOME_STATIC",
+	OP_EVAL_MARK_HOME_THIS: "EVAL_MARK_HOME_THIS",
+	OP_EVAL_MARK_SUPER:     "EVAL_MARK_SUPER",
 	OP_NEW_TARGET_MARK:    "NEW_TARGET_MARK",
 	OP_NEW_ARRAY: "NEW_ARRAY", OP_NEW_OBJECT: "NEW_OBJECT",
 	OP_GET_PROP: "GET_PROP", OP_SET_PROP: "SET_PROP",
@@ -377,6 +413,7 @@ var opcodeNames = map[Opcode]string{
 	OP_DISPOSE_EXIT: "DISPOSE_EXIT",
 	OP_TO_NUMBER:    "TO_NUMBER",
 	OP_TO_PROPERTY_KEY: "TO_PROPERTY_KEY",
+	OP_GET_PROTO:          "GET_PROTO",
 }
 
 // Name 返回操作码的可读名称。

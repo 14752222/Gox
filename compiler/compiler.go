@@ -77,6 +77,24 @@ type Compiler struct {
 	// 仅在编译 class 方法时非空。
 	currentSuperClass string
 
+	// evalHome 是「当前编译位置外围的 home object 上下文」——规范意义即
+	// 外层函数的 [[HomeObject]] 是否可得。仅在**直接 eval 调用点**被读取
+	// (emitEvalMarks): 非空时把 home 上下文随 OP_EVAL_MARK 家族的指令带出,
+	// 让 eval 单元的 super.x 合法 (PerformEval 18.2.1.1.1 inMethod 语境)。
+	//
+	// 与 currentSuperClass 的关系: 后者驱动普通 super 代码生成 (仅 extends
+	// 类), 前者只服务 eval 标记, 覆盖全部方法宿主 (含基类/对象字面量方法)。
+	// 故意**不在函数边界重置**: 与 currentSuperClass 同纪律 —— 嵌套普通函数
+	// 沿用外层 home (规范上应断, 属既有近似, 见 docs/roiE5Z 分析文档)。
+	// 各宿主编译点设置后 defer 恢复, 不会跨编译单元泄漏。
+	evalHome evalHomeCtx
+
+	// evalSuperHome 非 nil 时, 本单元是「带 super home 语境的直接 eval 单元」
+	// (stdlib 经编译桥的 EvalCompileOptions.SuperHome 注入): SuperProperty
+	// (super.x) 合法并按 home 解析; SuperCall (super()) 恒 SyntaxError
+	// (currentSuperClass 在 eval 单元恒为 "", 两条 super 调用分支原样拦下)。
+	evalSuperHome *evalSuperHomeCtx
+
 	// tryScopes 是当前函数内「仍活跃」的 try 处理器条目的编译期镜像 ——
 	// 对应运行时 vm.tryStack 里属于当前帧的那一段。长度即 try 嵌套深度。
 	//
@@ -269,8 +287,50 @@ func New() *Compiler {
 	}
 }
 
+// evalHomeCtx 描述「外层方法的 home object」——即规范 [[HomeObject]] 在
+// Gox 静态名模型下的等价物。仅在直接 eval 调用点读取 (emitEvalMarks)。
+//
+//   - Name:     home 所在类名 (类方法/字段初始化器/静态语境)。匿名类
+//     ("<anonymous>") 与无名场景留空, 表示无可加载的 home。
+//   - Static:   home 是类本身 (static 方法/静态块) 而非 prototype。
+//   - SuperName: 仅 Static 且类有 extends: 静态 super base = 父类构造器。
+//   - ThisHome: home 是对象字面量方法宿主 (无名字, 运行期取 this)。
+type evalHomeCtx struct {
+	Name      string
+	Static    bool
+	SuperName string
+	ThisHome  bool
+}
+
+// evalSuperHomeCtx 是 eval 单元的 super home 上下文 (由 vm 编译桥经
+// EvalCompileOptions.SuperHome 注入, 见 object.EvalSuperHome)。字段同
+// evalHomeCtx; 语义差异: 它描述的是 **eval 源码自己** 的 super 解析目标。
+type evalSuperHomeCtx struct {
+	Name      string
+	Static    bool
+	SuperName string
+	ThisHome  bool
+}
+
 // SetModuleMode 设置模块编译模式。
 func (c *Compiler) SetModuleMode(v bool) { c.moduleMode = v }
+
+// SetEvalSuperHome 注入「直接 eval 单元的 super home 上下文」——由 vm 编译桥
+// 在编译带 home 语境的 eval 源码前调用 (见 object.EvalSuperHome)。注入后
+// 本单元的 SuperProperty 合法并按 home 解析; SuperCall 仍拦 (currentSuperClass
+// 在 eval 单元恒空)。nil / home.Has=false 表示无 home 语境 (super.x 报错)。
+func (c *Compiler) SetEvalSuperHome(h *object.EvalSuperHome) {
+	if h == nil || !h.Has {
+		c.evalSuperHome = nil
+		return
+	}
+	c.evalSuperHome = &evalSuperHomeCtx{
+		Name:      h.Name,
+		Static:    h.Static,
+		SuperName: h.SuperName,
+		ThisHome:  h.ThisHome,
+	}
+}
 
 // HasTopLevelAwait 报告本模块顶层是否含 await / for await (TLA)。
 // 为真时主单元字节码含 OP_YIELD 挂起点, 模块求值必须由 VM 异步驱动
@@ -2483,6 +2543,16 @@ func (c *Compiler) compileClassBody(className string, superClass ast.Expression,
 	prevPrefix := c.currentPrivatePrefix
 	c.currentPrivatePrefix = fmt.Sprintf("%s\x01%d", className, c.privateClassSeq)
 
+	// 实例语境 home (roiE5Z): constructor / 实例方法 / 字段初始化器的
+	// [[HomeObject]] = <className>.prototype。匿名类表达式没有可加载的
+	// 类名 (LOAL_GLOBAL 无从解析), 不设 home —— 其中的直接 eval 保持
+	// "super.x → SyntaxError" 的现状。
+	prevHome := c.evalHome
+	if className != "" && className != "<anonymous>" {
+		c.evalHome = evalHomeCtx{Name: className, SuperName: superName}
+	}
+	defer func() { c.evalHome = prevHome }()
+
 	// 编译 constructor
 	prevSuper := c.currentSuperClass
 	c.currentSuperClass = superName
@@ -2549,7 +2619,15 @@ func (c *Compiler) compileClassBody(className string, superClass ast.Expression,
 	// 而类名要到 class 声明语句末尾才绑定)。故把这些元素编进一个合成函数,
 	// 再用 OP_CALL_METHOD 以 ctor 为 this 调用它。
 	if len(statics) > 0 {
+		// 静态语境 home (roiE5Z): static 方法 / 静态初始化块的 [[HomeObject]]
+		// = 构造器本身。静态 super base = 父类构造器 (extends 时), Gox 未链接
+		// ctor.__proto__, 故 SuperName 单独随标记带出。
+		prevStaticHome := c.evalHome
+		if className != "" && className != "<anonymous>" {
+			c.evalHome = evalHomeCtx{Name: className, Static: true, SuperName: superName}
+		}
 		initMeta, err := c.compileStaticInitFn(className, superName, statics)
+		c.evalHome = prevStaticHome
 		if err != nil {
 			return err
 		}
@@ -5269,15 +5347,21 @@ func (c *Compiler) compileCallExpression(node *ast.CallExpression) error {
 
 	// 检查是否是方法调用: obj.method(args)
 	if member, ok := node.Function.(*ast.MemberExpression); ok && !member.Computed && !hasSpreadArgs(node.Arguments) {
-		// super.method(args): 从父 prototype 取方法, this 绑定当前 this
-		if _, isSuperObj := member.Object.(*ast.SuperExpression); isSuperObj {
-			if c.currentSuperClass == "" {
-				return fmt.Errorf("compiler: super method call outside class")
+	// super.method(args): 从父 prototype 取方法, this 绑定当前 this
+	if _, isSuperObj := member.Object.(*ast.SuperExpression); isSuperObj {
+		if c.evalSuperHome != nil {
+			// 直接 eval 单元 (roiE5Z): SuperProperty 语境下 super.method()
+			// 合法 —— base 与 super.x 同一套 home 解析。
+			if err := c.emitEvalSuperBase(); err != nil {
+				return err
 			}
-			// LOAD_GLOBAL Super → GET_PROP prototype → GET_PROP method → OP_THIS → args → CALL_METHOD
+		} else if c.currentSuperClass == "" {
+			return fmt.Errorf("compiler: super method call outside class")
+		} else {
 			c.emitSuperLoad(c.currentSuperClass)
 			pidx := c.constants.AddConstant(object.NewString("prototype"))
 			c.emitter.Emit(bytecode.OP_GET_PROP, pidx)
+		}
 			// super.#m(): 规范早错, 解析器已拦; 兜底防 Property 断言 panic。
 			if member.Private != "" {
 				return fmt.Errorf("compiler: SyntaxError: private member access on 'super' is not allowed")
@@ -5335,6 +5419,12 @@ func (c *Compiler) compileCallExpression(node *ast.CallExpression) error {
 	//   - OP_EVAL_MARK_INIT: 仅类字段初始化器内的直接 eval。在上一标记基础上
 	//     额外让 eval 内建进入受限模式 (PerformEval 补充早错: 源码含
 	//     arguments/super 调用 → SyntaxError)。
+	// 另有一族 home 标记 (roiE5Z): 外层函数有 [[HomeObject]] 时, 把 home
+	// 上下文随标记带出, 让 eval 源码的 SuperProperty (super.x) 合法并按
+	// home 解析 (PerformEval 18.2.1.1.1 的 inMethod 语境)。无 home 语境
+	// (全局/普通函数/箭头内的直接 eval) 只发不带 home 的标记, eval 源码
+	// 里的 super.x 维持 SyntaxError。home 标记与 INIT 标记前后组合:
+	// [HOME(..)] [HOME_STATIC(..)] [SUPER(..)] [INIT?] <call>。
 	directEval := isDirectEvalCallee(node.Function)
 	restrictedEval := c.inClassFieldInit && directEval
 
@@ -5342,9 +5432,32 @@ func (c *Compiler) compileCallExpression(node *ast.CallExpression) error {
 		if !directEval {
 			return
 		}
+		// home 上下文先行 (操作数 = 常量池里的名字), 供 VM 经桥传给 eval 内建。
+		// 注意: 发了 home 标记就**不再**发普通 OP_EVAL_MARK / _INIT —— home
+		// 标记本身已置 pendingDirectEval, 而普通标记会清空 home (其语义就是
+		// 「本语境无 home」)。受限 (字段初始化器) 语境由 _INIT 叠加在 home
+		// 标记之后 (VM 侧 _INIT 不清 home)。
+		homeMarked := false
+		if c.evalHome.ThisHome {
+			// 对象字面量方法: home 无名字, 运行期取调用者帧的 this。
+			c.emitter.EmitNoOperand(bytecode.OP_EVAL_MARK_HOME_THIS)
+			homeMarked = true
+		} else if c.evalHome.Name != "" {
+			nameIdx := c.constants.AddConstant(object.NewString(c.evalHome.Name))
+			if c.evalHome.Static {
+				c.emitter.Emit(bytecode.OP_EVAL_MARK_HOME_STATIC, nameIdx)
+				if c.evalHome.SuperName != "" {
+					superIdx := c.constants.AddConstant(object.NewString(c.evalHome.SuperName))
+					c.emitter.Emit(bytecode.OP_EVAL_MARK_SUPER, superIdx)
+				}
+			} else {
+				c.emitter.Emit(bytecode.OP_EVAL_MARK_HOME, nameIdx)
+			}
+			homeMarked = true
+		}
 		if restrictedEval {
 			c.emitter.EmitNoOperand(bytecode.OP_EVAL_MARK_INIT)
-		} else {
+		} else if !homeMarked {
 			c.emitter.EmitNoOperand(bytecode.OP_EVAL_MARK)
 		}
 	}
@@ -5436,6 +5549,19 @@ func (c *Compiler) compileMemberExpression(node *ast.MemberExpression) error {
 	// super.prop: 访问父类 prototype 上的属性
 	if super, ok := node.Object.(*ast.SuperExpression); ok {
 		_ = super
+		// 直接 eval 单元 (roiE5Z): home 语境由调用点随标记带出 (见
+		// Compiler.SetEvalSuperHome)。按 home 解析 SuperProperty:
+		//   - 实例语境: base = Object.getPrototypeOf(<Name>.prototype)
+		//     —— 有 extends 时是父类 prototype, 无 extends 时是
+		//     Object.prototype (基类方法的 super.x 同样合法);
+		//   - 静态语境: base = <SuperName> (父类构造器本身; Gox 未链接
+		//     ctor.__proto__, 不能走 __proto__), 无 extends 时退化为
+		//     Object.getPrototypeOf(<Name>) = Function.prototype;
+		//   - ThisHome (对象字面量方法): base = Object.getPrototypeOf(this)
+		//     —— 近似: 接收者即方法宿主时成立 (o.m() 直接调用)。
+		if c.evalSuperHome != nil {
+			return c.emitEvalSuperProperty(node)
+		}
 		if c.currentSuperClass == "" {
 			return fmt.Errorf("compiler: super property access outside class")
 		}
@@ -5471,6 +5597,54 @@ func (c *Compiler) compileMemberExpression(node *ast.MemberExpression) error {
 		idx := c.constants.AddConstant(object.NewString(propName))
 		c.emitter.Emit(bytecode.OP_GET_PROP, idx)
 	}
+	return nil
+}
+
+// emitEvalSuperBase 生成「直接 eval 单元里 super 的 base 对象」入栈代码
+// (roiE5Z)。栈: [] → [base]。home 上下文的三种解析路径见
+// compileMemberExpression 的 super 分支注释。
+//
+// 名字解析一律走 emitSuperLoad (先作用域后全局): eval 单元是全局脚本,
+// 类名落在全局环境 (顶层 class 声明 / var 赋值的类表达式); 类名是外层
+// 局部时运行期抛 ReferenceError —— 与 Gox 既有 super 静态名模型同边界。
+func (c *Compiler) emitEvalSuperBase() error {
+	h := c.evalSuperHome
+	switch {
+	case h.ThisHome:
+		// 对象字面量方法: home = this (调用者帧的 this 经 eval 包装函数代入)。
+		c.emitter.EmitNoOperand(bytecode.OP_THIS)
+		c.emitter.EmitNoOperand(bytecode.OP_GET_PROTO)
+	case h.Static && h.SuperName != "":
+		// 静态语境 + extends: base = 父类构造器本身 (无 .prototype 一层)。
+		c.emitSuperLoad(h.SuperName)
+	default:
+		// 实例语境 (含静态基类): base = getProto(home[.prototype])。
+		c.emitSuperLoad(h.Name)
+		if !h.Static {
+			pidx := c.constants.AddConstant(object.NewString("prototype"))
+			c.emitter.Emit(bytecode.OP_GET_PROP, pidx)
+		}
+		c.emitter.EmitNoOperand(bytecode.OP_GET_PROTO)
+	}
+	return nil
+}
+
+// emitEvalSuperProperty 生成「直接 eval 单元里 super.prop / super[expr]」
+// 的代码 (roiE5Z)。栈序: [base] → [val] (与普通成员访问尾段一致)。
+func (c *Compiler) emitEvalSuperProperty(node *ast.MemberExpression) error {
+	if err := c.emitEvalSuperBase(); err != nil {
+		return err
+	}
+	if node.Computed {
+		if err := c.compileExpression(node.Property); err != nil {
+			return err
+		}
+		c.emitter.EmitNoOperand(bytecode.OP_GET_INDEX)
+		return nil
+	}
+	propName := node.Property.(*ast.Identifier).Value
+	idx := c.constants.AddConstant(object.NewString(propName))
+	c.emitter.Emit(bytecode.OP_GET_PROP, idx)
 	return nil
 }
 
@@ -5585,26 +5759,41 @@ func (c *Compiler) compileObjectLiteral(node *ast.ObjectLiteral) error {
 		} // [obj, src]
 		c.emitter.EmitNoOperand(bytecode.OP_OBJECT_SPREAD) // [obj]
 	}
+	// withThisHome 在「方法定义 / 访问器」的 home object 语境里编译函数值:
+	// 对象字面量方法的 [[HomeObject]] 是字面量产生的对象本身, 没有可加载
+	// 的名字, 只能运行期取 this (evalHome.ThisHome, 见 emitEvalMarks 与
+	// eval 单元的代码生成)。{ m: function(){} } / { m: v } 这类非方法值
+	// **不**设 —— 它们是普通函数/表达式, 没有 home object (roiE5Z)。
+	withThisHome := func(fn func() error) error {
+		prev := c.evalHome
+		c.evalHome = evalHomeCtx{ThisHome: true}
+		defer func() { c.evalHome = prev }()
+		return fn()
+	}
 	for _, prop := range node.Properties {
 		if prop.Computed {
 			// 计算属性: [expr]: value / [expr]() {} / get [expr]() / set [expr](v)
 			if prop.Kind == ast.PROP_GETTER || prop.Kind == ast.PROP_SETTER {
 				// 动态键访问器: [obj] → DUP → fn → key → SET_x_DYN → [obj]
 				c.emitter.EmitNoOperand(bytecode.OP_DUP)
-				fn, ok := prop.Value.(*ast.FunctionExpression)
-				if !ok {
-					return fmt.Errorf("compiler: getter/setter value is not a function")
-				}
-				name := "get/set <computed>"
-				if id, ok := prop.Key.(*ast.Identifier); ok {
-					name = id.Value
-				}
-				meta, err := c.compileFunctionWithStrict(fn.Strict, name, fn.Parameters, fn.Body, false, fn.IsGenerator, fn.IsAsync)
-				if err != nil {
-					return err
-				}
-				idx := c.constants.AddConstant(meta)
-				c.emitter.Emit(bytecode.OP_FUNCTION, idx) // [obj, obj, fn]
+			fn, ok := prop.Value.(*ast.FunctionExpression)
+			if !ok {
+				return fmt.Errorf("compiler: getter/setter value is not a function")
+			}
+			name := "get/set <computed>"
+			if id, ok := prop.Key.(*ast.Identifier); ok {
+				name = id.Value
+			}
+			var meta *bytecode.FunctionMetadata
+			if err := withThisHome(func() error {
+				var merr error
+				meta, merr = c.compileFunctionWithStrict(fn.Strict, name, fn.Parameters, fn.Body, false, fn.IsGenerator, fn.IsAsync)
+				return merr
+			}); err != nil {
+				return err
+			}
+			idx := c.constants.AddConstant(meta)
+			c.emitter.Emit(bytecode.OP_FUNCTION, idx) // [obj, obj, fn]
 				if err := c.compileExpression(prop.Key); err != nil {
 					return err
 				} // [obj, obj, fn, key]
@@ -5615,13 +5804,19 @@ func (c *Compiler) compileObjectLiteral(node *ast.ObjectLiteral) error {
 				}
 				continue
 			}
-			// 计算键值/方法: [expr]: value / [expr]() {}
-			// [obj] → DUP → [obj, obj]
-			c.emitter.EmitNoOperand(bytecode.OP_DUP)
-			// 编译值
-			if err := c.compileExpression(prop.Value); err != nil {
+		// 计算键值/方法: [expr]: value / [expr]() {}
+		// [obj] → DUP → [obj, obj]
+		c.emitter.EmitNoOperand(bytecode.OP_DUP)
+		// 编译值。计算键**方法** ([k]() {}) 有 home object; 计算键值
+		// ([k]: v) 是普通表达式, 没有 home (roiE5Z)。
+		compileVal := func() error { return c.compileExpression(prop.Value) }
+		if prop.Kind == ast.PROP_METHOD {
+			if err := withThisHome(compileVal); err != nil {
 				return err
-			} // [obj, obj, val]
+			}
+		} else if err := compileVal(); err != nil {
+			return err
+		} // [obj, obj, val]
 			// 编译键表达式
 			if err := c.compileExpression(prop.Key); err != nil {
 				return err
@@ -5644,8 +5839,12 @@ func (c *Compiler) compileObjectLiteral(node *ast.ObjectLiteral) error {
 			if prop.Kind == ast.PROP_SETTER {
 				prefix = "set "
 			}
-			meta, err := c.compileFunctionWithStrict(fn.Strict, prefix+name, fn.Parameters, fn.Body, false, fn.IsGenerator, fn.IsAsync)
-			if err != nil {
+			var meta *bytecode.FunctionMetadata
+			if err := withThisHome(func() error {
+				var merr error
+				meta, merr = c.compileFunctionWithStrict(fn.Strict, prefix+name, fn.Parameters, fn.Body, false, fn.IsGenerator, fn.IsAsync)
+				return merr
+			}); err != nil {
 				return err
 			}
 			idx := c.constants.AddConstant(meta)
@@ -5665,10 +5864,18 @@ func (c *Compiler) compileObjectLiteral(node *ast.ObjectLiteral) error {
 			// 的属性, 照常命名为 "__proto__"。
 			protoSetter := prop.Kind == ast.PROP_INIT && !prop.Shorthand && keyName == "__proto__"
 			var err error
-			if protoSetter {
-				err = c.compileExpression(prop.Value)
+			compileVal := func() error {
+				if protoSetter {
+					return c.compileExpression(prop.Value)
+				}
+				return c.compileNamedExpression(prop.Value, keyName)
+			}
+			// 方法定义 { m(){} } / { get x(){} } 有 home object;
+			// 数据属性 (含简写、函数表达式值) 没有 (roiE5Z)。
+			if prop.Kind == ast.PROP_METHOD {
+				err = withThisHome(compileVal)
 			} else {
-				err = c.compileNamedExpression(prop.Value, keyName)
+				err = compileVal()
 			}
 			if err != nil {
 				return err

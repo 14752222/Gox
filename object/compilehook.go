@@ -18,6 +18,46 @@ import "errors"
 // 组成 Closure 即可执行 (见 stdlib 的 runGlobalEval / newDynamicFunction)。
 type CompileSourceFunc func(src string) (*CompiledFunction, error)
 
+// EvalSuperHome 描述「直接 eval 调用点的 super home 上下文」(看板 roiE5Z)。
+// 规范 PerformEval 18.2.1.1.1: eval 源码含 SuperProperty (super.x) 只在
+// 调用者函数有 [[HomeObject]] 时合法。Gox 的 super 靠编译期静态名解析,
+// eval 单元是独立编译单元, 拿不到外层函数的 home object —— 故由编译器在
+// 直接 eval 调用点把 home 上下文随 OP_EVAL_MARK 家族的指令带出, VM 经本
+// 桥传给 stdlib 的 eval 内建, 再随编译选项进入 eval 单元的编译。
+//
+// 字段语义 (与编译器侧的 home 上下文一致):
+//   - Name:     home 所在类名。instance 语境 super base =
+//     Object.getPrototypeOf(<Name>.prototype); 无 extends 的基类也能解析
+//     (落到 Object.prototype)。
+//   - Static:   home 是类本身 (static 方法 / 静态初始化块) 而非 prototype。
+//   - ThisHome: home 是对象字面量方法宿主 —— 没有可加载的名字, 运行期取
+//     eval 包装函数的 this (调用者帧的 this) 作 home。近似成立条件:
+//     接收者即宿主 (o.m() 直接调用); o.m.call(x) 会读错宿主 (规范仍读 o)。
+//   - SuperName: 仅 Static 且类有 extends 时非空: Gox 未链接 ctor.__proto__,
+//     静态 super base 只能是父类构造器本身 (LOAD_GIAL SuperName)。
+//   - Has:      false 表示本次直接 eval 的调用点没有 home 语境 (全局/普通
+//     函数/箭头函数内) —— eval 源码含 super.x 仍按 SyntaxError 处理。
+type EvalSuperHome struct {
+	Name      string
+	Static    bool
+	ThisHome  bool
+	SuperName string
+	Has       bool
+}
+
+// EvalCompileOptions 是 eval 单元编译选项 (object.CompileSourceWithOpts)。
+type EvalCompileOptions struct {
+	// AllowNewTarget: eval 源码允许出现 new.target (仅「非箭头函数体内的
+	// 直接 eval」语境为真, 值由 VM 经闭包写入)。
+	AllowNewTarget bool
+	// EvalTopLevel: 本单元是 eval 源码 (eval 顶层 using / await using 是
+	// SyntaxError, 看板 rabcWh); new Function 的体是真 FunctionBody, 不置。
+	EvalTopLevel bool
+	// SuperHome: 直接 eval 调用点的 super home 上下文。SuperProperty 是否
+	// 合法由 Has 决定; SuperCall (super()) 恒不合法 (18.2.1.1.2)。
+	SuperHome EvalSuperHome
+}
+
 var compileSourceHook CompileSourceFunc
 
 // compileSourceNTAllowedHook 是「允许 new.target」的编译实现。仅「非箭头函数
@@ -50,6 +90,25 @@ func SetCompileSourceEval(f CompileSourceFunc) {
 // 由 vm 包在初始化时调用 (仅直接 eval 语境使用)。
 func SetCompileSourceAllowingNewTarget(f CompileSourceFunc) {
 	compileSourceNTAllowedHook = f
+}
+
+// compileSourceOptsHook 是「带编译选项」的编译实现 (见 EvalCompileOptions)。
+// 由 vm 包在初始化时注册; stdlib 的 eval 在需要 super home / new.target
+// 组合语境时经 CompileSourceWithOpts 调用。
+var compileSourceOptsHook func(src string, opts EvalCompileOptions) (*CompiledFunction, error)
+
+// SetCompileSourceOpts 注册带选项的编译实现, 由 vm 包在初始化时调用。
+func SetCompileSourceOpts(f func(src string, opts EvalCompileOptions) (*CompiledFunction, error)) {
+	compileSourceOptsHook = f
+}
+
+// CompileSourceWithOpts 按选项编译 eval 源码为顶层函数 (super home /
+// new.target 等语境信息见 EvalCompileOptions)。
+func CompileSourceWithOpts(src string, opts EvalCompileOptions) (*CompiledFunction, error) {
+	if compileSourceOptsHook == nil {
+		return nil, errors.New("CompileSourceWithOpts: compile hook not registered (vm package not linked)")
+	}
+	return compileSourceOptsHook(src, opts)
 }
 
 // CompileSource 编译源码为顶层函数。
@@ -150,4 +209,32 @@ func TakeDirectEvalNewTarget() (newTarget Value, allowed bool, ok bool) {
 	directEvalNTAllowed = false
 	hasDirectEvalNT = false
 	return v, a, true
+}
+
+// directEvalSuperHome 记录「直接 eval 调用点的 super home 上下文」(roiE5Z)。
+// 与 this / new.target 两桥同纪律: VM 在确认本次调用是直接 eval 后写入
+// (随 OP_EVAL_MARK 家族的 home 标记), eval 内建在 runGlobalEval 里取出并
+// 转交编译桥; 消费即清除, 无 home 语境的调用置 Has=false。
+var (
+	directEvalSuperHome    EvalSuperHome
+	hasDirectEvalSuperHome bool
+)
+
+// SetDirectEvalSuperHome 由 vm 在确认「本次调用是直接 eval」后调用, 写入
+// 调用点的 super home 上下文 (无 home 语境时传 Has=false 的空值)。
+func SetDirectEvalSuperHome(h EvalSuperHome) {
+	directEvalSuperHome = h
+	hasDirectEvalSuperHome = true
+}
+
+// TakeDirectEvalSuperHome 取出并清除直接 eval 的 super home 上下文。
+// ok 为 false 表示本次 eval 不是直接 eval (间接 / Go 侧调用)。
+func TakeDirectEvalSuperHome() (home EvalSuperHome, ok bool) {
+	if !hasDirectEvalSuperHome {
+		return EvalSuperHome{}, false
+	}
+	h := directEvalSuperHome
+	directEvalSuperHome = EvalSuperHome{}
+	hasDirectEvalSuperHome = false
+	return h, true
 }

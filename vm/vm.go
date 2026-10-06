@@ -528,6 +528,20 @@ type VM struct {
 	// 受限早错模式。随 pendingDirectEval 一同清零。
 	pendingEvalInit bool
 
+	// pendingEvalHome* / hasPendingEvalHome: OP_EVAL_MARK_HOME 家族的
+	// 指令携带的「直接 eval 调用点 super home 上下文」(roiE5Z)。名字取自
+	// 指令操作数 (常量池里的类名/父类名, 执行标记的帧解析)。与 this /
+	// new.target 两桥同纪律: 紧跟的 OP_CALL / OP_CALL_SPREAD 经
+	// consumeEvalMark 取出并清零 (无论被调是否恰为 %eval%), 不会泄漏给
+	// 后续无关调用; 不带 home 语境的 OP_EVAL_MARK 也会清空它们 (表示
+	// 「该语境无 home」)。注意 OP_EVAL_MARK_INIT **不清** home —— 它可
+	// 叠加在 HOME 标记之后 (字段初始化器 + home 语境)。
+	pendingEvalHomeName   string
+	pendingEvalHomeStatic bool
+	pendingEvalHomeThis   bool
+	pendingEvalSuperName  string
+	hasPendingEvalHome    bool
+
 	// pendingNewTarget / hasPendingNewTarget: super() 调用的 new.target 传递。
 	// OP_NEW_TARGET_MARK (编译器在 super(...) 前发射) 把**当前帧的 new.target**
 	// 记到这里; 紧随其后的方法调用装配父构造器帧时消费 (见 callClosure)。
@@ -1725,12 +1739,47 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			// 其后的 OP_CALL / OP_CALL_SPREAD 判定: 仅当被调恰为全局 %eval%
 			// 内建时才把调用者帧的 this 传给 eval, 否则丢弃 —— eval 被局部
 			// 变量遮蔽时既不继承 this 也不会泄漏给后续调用。
+			//
+			// 不带 home 语境的直接 eval 只发此标记: 同时清空 pending 的
+			// super home (roiE5Z), 表示「该语境无 home, eval 源码里的
+			// super.x 应维持 SyntaxError」。带 home 语境的调用点不发此标记
+			// (改发 HOME 家族, 见下), 避免把刚设置的 home 又清掉。
 			vm.pendingDirectEval = true
+			vm.clearPendingEvalHome()
 		case bytecode.OP_EVAL_MARK_INIT:
 			// 同 OP_EVAL_MARK, 但额外标记「类字段初始化器内」—— 让 eval 内建
 			// 进入受限早错模式 (PerformEval 补充早错)。
+			// 注意: 不清 home —— 字段初始化器本身有 home (类 prototype),
+			// 该语境由前置的 OP_EVAL_MARK_HOME 标记携带 (roiE5Z)。
 			vm.pendingDirectEval = true
 			vm.pendingEvalInit = true
+		case bytecode.OP_EVAL_MARK_HOME:
+			// roiE5Z: 直接 eval 调用点带 super home (实例语境, 类方法 /
+			// 字段初始化器 / 箭头继承的外层)。operand = home 类名常量索引。
+			vm.pendingDirectEval = true
+			vm.clearPendingEvalHome()
+			vm.setPendingEvalHomeName(operand, frame)
+		case bytecode.OP_EVAL_MARK_HOME_STATIC:
+			// roiE5Z: 静态语境的 home (static 方法 / 静态初始化块)。
+			// operand = home 类名常量索引。
+			vm.pendingDirectEval = true
+			vm.clearPendingEvalHome()
+			vm.pendingEvalHomeStatic = true
+			vm.setPendingEvalHomeName(operand, frame)
+		case bytecode.OP_EVAL_MARK_HOME_THIS:
+			// roiE5Z: 对象字面量方法的 home —— 无可加载的名字, 运行期取
+			// 调用者帧的 this。consumeEvalMark 依 HomeThis 置桥。
+			vm.pendingDirectEval = true
+			vm.clearPendingEvalHome()
+			vm.pendingEvalHomeThis = true
+			vm.hasPendingEvalHome = true
+		case bytecode.OP_EVAL_MARK_SUPER:
+			// roiE5Z: 静态语境且类有 extends —— 父类名 (静态 super base)。
+			// 与 HOME_STATIC 成对出现 (HOME_STATIC 在前, 不清后续标记)。
+			vm.pendingDirectEval = true
+			if s := vm.markName(operand, frame); s != "" {
+				vm.pendingEvalSuperName = s
+			}
 		case bytecode.OP_NEW_TARGET_MARK:
 			// 编译器在 super(...) 调用前发射。把当前帧生效的 new.target 记为
 			// 「下一次调用要继承的构造目标」, 由紧随其后的方法调用装配父构造器帧
@@ -1876,6 +1925,16 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			if o, ok := obj.(*object.Object); ok {
 				o.Proto = parent
 			}
+		case bytecode.OP_GET_PROTO:
+			// 栈: [obj] → [proto] (roiE5Z: eval 单元 super.x 的 base 解析)。
+			// proto 为 nil (原型链尽头) 时压 null, 与规范
+			// Object.getPrototypeOf(Object.prototype) === null 一致。
+			obj := vm.stack.Pop()
+			proto := protoOf(obj)
+			if proto == nil {
+				proto = object.NullSingleton
+			}
+			vm.stack.Push(proto)
 		case bytecode.OP_GET_PROP:
 			propNameVal := frame.Constants.Get(operand)
 			propName := ""
@@ -3610,18 +3669,21 @@ func describeCallee(v object.Value) string {
 	return s
 }
 
-// consumeEvalMark 消费一次 OP_EVAL_MARK / OP_EVAL_MARK_INIT: 弹出被调值后调用。
+// consumeEvalMark 消费一次 OP_EVAL_MARK / OP_EVAL_MARK_INIT (及 roiE5Z 的
+// OP_EVAL_MARK_HOME 家族): 弹出被调值后调用。
 // 只有当被调恰为全局 %eval% 内建 (直接 eval 规范要求引用的值即内建本身)
 // 时:
 //   - 把**调用者帧生效的 this** 经 object 层桥传给 eval 内建 (direct eval
 //     的 this 绑定与调用者一致 —— 规范 sec-performeval);
-//   - 若标记是 OP_EVAL_MARK_INIT (类字段初始化器内), 再置位 stdlib 的一次性
-//     受限标志, 让 eval 内建进入补充早错模式。
+//   - 把调用者帧的 new.target 与「该语境是否允许 new.target」一并传入;
+//   - 把调用点的 super home 上下文 (标记携带) 传入 (roiE5Z);
+//   - 若本次是类字段初始化器内的直接 eval, 再置位 stdlib 的一次性受限
+//     标志, 让 eval 内建进入补充早错模式。
 //
 // 否则直接丢弃标记 —— 被局部变量遮蔽的 eval 不是直接 eval, 既不应继承 this
 // 也不应受限, 标记也不能泄漏给后续无关的 eval 调用。
-// 无论是否命中都把 vm.pendingDirectEval / pendingEvalInit 清零 (标记只对紧邻
-// 的这一次调用有效)。
+// 无论是否命中都把 vm.pendingDirectEval / pendingEvalInit / pendingEvalHome*
+// 清零 (标记只对紧邻的这一次调用有效)。
 func (vm *VM) consumeEvalMark(fn object.Value) {
 	if !vm.pendingDirectEval {
 		return
@@ -3630,6 +3692,7 @@ func (vm *VM) consumeEvalMark(fn object.Value) {
 	// init 受限标志与 this 桥都是一次性的: 无论本次是否命中 eval 都清零。
 	initRestricted := vm.pendingEvalInit
 	vm.pendingEvalInit = false
+	superHome := vm.takePendingEvalHome()
 	if vm.globals == nil {
 		return
 	}
@@ -3640,9 +3703,57 @@ func (vm *VM) consumeEvalMark(fn object.Value) {
 		// 允许 new.target」。规范只允许「非箭头函数体内的直接 eval」含 new.target。
 		nt, ntAllowed := vm.callerEvalNewTarget()
 		object.SetDirectEvalNewTarget(nt, ntAllowed)
+		// 直接 eval 的 super home 上下文 (roiE5Z): 无 home 语境的调用点
+		// Has=false, eval 源码里的 super.x 维持 SyntaxError。
+		object.SetDirectEvalSuperHome(superHome)
 		if initRestricted {
 			stdlib.MarkDirectEvalInit()
 		}
+	}
+}
+
+// clearPendingEvalHome 清空 pending 的 super home 上下文 (取出即清零,
+// 见 consumeEvalMark 的同款纪律)。
+func (vm *VM) clearPendingEvalHome() {
+	vm.pendingEvalHomeName = ""
+	vm.pendingEvalHomeStatic = false
+	vm.pendingEvalHomeThis = false
+	vm.pendingEvalSuperName = ""
+	vm.hasPendingEvalHome = false
+}
+
+// takePendingEvalHome 取出并清零 pending 的 super home 上下文, 组装成
+// object.EvalSuperHome 供 stdlib 的 eval 内建消费 (Has=false = 无 home)。
+func (vm *VM) takePendingEvalHome() object.EvalSuperHome {
+	h := object.EvalSuperHome{
+		Name:      vm.pendingEvalHomeName,
+		Static:    vm.pendingEvalHomeStatic,
+		ThisHome:  vm.pendingEvalHomeThis,
+		SuperName: vm.pendingEvalSuperName,
+		Has:       vm.hasPendingEvalHome,
+	}
+	vm.clearPendingEvalHome()
+	return h
+}
+
+// markName 取 OP_EVAL_MARK 家族指令操作数指向的常量池字符串 (home 类名 /
+// 父类名)。取不到 (非字符串常量) 时返回空串, 由调用方按「无名字」处理。
+func (vm *VM) markName(operand uint16, frame *Frame) string {
+	if frame == nil || frame.Constants == nil {
+		return ""
+	}
+	if s, ok := frame.Constants.Get(operand).(*object.String); ok {
+		return s.Value
+	}
+	return ""
+}
+
+// setPendingEvalHomeName 记录 OP_EVAL_MARK_HOME / _STATIC 的 home 类名。
+// 不清零其它 pending 标记 (HOME → SUPER 成对出现时 SUPER 要保留)。
+func (vm *VM) setPendingEvalHomeName(operand uint16, frame *Frame) {
+	if name := vm.markName(operand, frame); name != "" {
+		vm.pendingEvalHomeName = name
+		vm.hasPendingEvalHome = true
 	}
 }
 
@@ -6056,7 +6167,7 @@ func evalFileVM(path string, moduleEE bool) (*VM, error) {
 
 	// evalTopLevel=false: 本入口是 Script/Module 语境的 Go 侧求值, 不是 JS
 	// eval 语境; 顶层 using 已由 parser.usingAllowed (script 顶层为 false) 拦截。
-	c, err := compileSourceOpts(string(code), false, moduleEE, false, false)
+	c, err := compileSourceOpts(string(code), false, moduleEE, false, false, nil)
 	if err != nil {
 		if isTS {
 			err = remapSourceError(err, lineMap)

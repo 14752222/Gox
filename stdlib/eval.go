@@ -64,6 +64,11 @@ func setupEvalAndMisc(env *runtime.Environment) {
 		if !hasEvalNT {
 			evalNTAllowed = false
 		}
+		// 直接 eval 的 super home 上下文 (roiE5Z): 调用点函数有 [[HomeObject]]
+		// (类方法/对象方法/字段初始化器等) 时, eval 源码的 super.x 合法并按该
+		// home 解析; Has=false 的语境 (全局/普通函数/箭头内) super.x 仍
+		// SyntaxError。super() 恒不合法 (18.2.1.1.2), 不随桥传递。
+		superHome, _ := object.TakeDirectEvalSuperHome()
 		if !isDirect {
 			evalThis = object.UndefinedSingleton
 			if g, ok := env.Get("globalThis"); ok {
@@ -84,7 +89,7 @@ func setupEvalAndMisc(env *runtime.Environment) {
 			return object.NewErrorWithName("SyntaxError",
 				"SyntaxError: 'arguments' or 'super' call is not allowed in class field initializer")
 		}
-		return runGlobalEval(env, src.Value, evalThis, callerStrict, evalNewTarget, evalNTAllowed)
+		return runGlobalEval(env, src.Value, evalThis, callerStrict, evalNewTarget, evalNTAllowed, superHome)
 	})
 	evalFn.SetProperty("name", object.NewString("eval"))
 	evalFn.SetProperty("length", object.NewNumber(1))
@@ -198,27 +203,41 @@ func splitStrictDirective(src string) (bool, string) {
 // 指令) 编译出的 Fn.IsStrict 为 true, callClosure 遂**原样保留** thisValue
 // (undefined 不被归一) —— 与规范「严格 eval 代码的 thisValue 原样」一致。
 //
+// superHome 是直接 eval 调用点的 super home 上下文 (roiE5Z, 见
+// object.EvalSuperHome): Has 为真时经带选项的编译桥进入 eval 单元, 让
+// 源码里的 SuperProperty (super.x) 合法并按 home 解析; SuperCall (super())
+// 恒 SyntaxError (编译单元不放行)。
+//
 // 完成值策略: 若源码是单个表达式，包装为 `return (<expr>)` 捕获其值
 // (覆盖 eval 的绝大多数用途)；多语句源码退回普通函数包装，完成值为
 // undefined (函数体结尾是隐式 return void，编译器不保留语句完成值)。
-func runGlobalEval(env *runtime.Environment, src string, evalThis object.Value, callerStrict bool, evalNewTarget object.Value, allowNewTarget bool) object.Value {
+func runGlobalEval(env *runtime.Environment, src string, evalThis object.Value, callerStrict bool, evalNewTarget object.Value, allowNewTarget bool, superHome object.EvalSuperHome) object.Value {
 	// parseErr 记录最后一次解析/编译失败的原因, 用于拼进 SyntaxError 帮助定位
 	var parseErr string
 	buildAndRun := func(body string) object.Value {
-		// 编译: 仅「非箭头函数体内的直接 eval」(allowNewTarget) 放行 new.target;
-		// 其余 (global/indirect/箭头 eval) 整单元禁止。禁止时含 new.target 的源码
-		// 报 SyntaxError —— 与规范早错一致 (本函数多语句包装那轮会再次尝试并保留
-		// 该错误消息, 故不会被后退的包装掩盖)。
-		//
-		// 两条分支都走 eval 专用编译桥 (evalTopLevel): eval 源码按 Script goal
-		// 解析, 顶层 using / await using 声明是 SyntaxError (规范早错,
-		// test262 using-not-allowed-at-top-level-of-eval.js), 而块内/函数体内的
-		// using 仍合法 (看板 rabcWh)。
+		// 编译: 语境三选一, 全部走 eval 专用编译桥 (evalTopLevel=true,
+		// 看板 rabcWh: eval 源码按 Script goal 解析, 顶层 using / await using
+		// 声明是 SyntaxError, 块内/函数体内的 using 仍合法) ——
+		//   1) superHome.Has: 带选项编译桥 (super home [+ new.target] 语境,
+		//      roiE5Z: 方法内直接 eval 的 super.x 合法, super() 恒拦);
+		//   2) allowNewTarget: 仅「非箭头函数体内的直接 eval」放行 new.target;
+		//   3) 其余 (global/indirect/箭头 eval): 整单元禁止 new.target,
+		//      无 home 语境时 super.x 也维持 SyntaxError。
+		// 禁止时含 new.target / super.x 的源码报 SyntaxError —— 与规范早错
+		// 一致 (本函数多语句包装那轮会再次尝试并保留该错误消息, 故不会被后退
+		// 的包装掩盖)。
 		var fn *object.CompiledFunction
 		var err error
-		if allowNewTarget {
+		switch {
+		case superHome.Has:
+			fn, err = object.CompileSourceWithOpts(body, object.EvalCompileOptions{
+				AllowNewTarget: allowNewTarget,
+				EvalTopLevel:   true,
+				SuperHome:      superHome,
+			})
+		case allowNewTarget:
 			fn, err = object.CompileSourceAllowingNewTarget(body)
-		} else {
+		default:
 			fn, err = object.CompileSourceEval(body)
 		}
 		if err != nil {

@@ -190,9 +190,13 @@ func TestEvalInitializerRestrictionScopeExtended(t *testing.T) {
 //  1. new.target: Node 允许字段初始化器内直接 eval 的源码含 new.target
 //     (`class C { x = eval("new.target") }` → 不抛); Gox 报 SyntaxError,
 //     因为 Gox 解析器根本不支持 `new.target`。
-//  2. super.x 属性访问: Node 允许 (`class C extends Object { x = eval("super.toString") }`
-//     → 不抛); Gox 报 SyntaxError, 因为 Gox 把 eval 编成全局脚本, 全局脚本里
-//     的 super 一律不合法。规范这条规则只拦 SuperCall, 不拦 SuperProperty。
+//  2. (roiE5Z 已修复) super.x 属性访问: Node 允许 (`class C extends Object
+//     { x = eval("super.toString") }` → 不抛); 旧 Gox 报 SyntaxError (eval
+//     编成全局脚本, 全局脚本里 super 一律不合法)。现已落地 home 语境桥
+//     (OP_EVAL_MARK_HOME 家族 + SetDirectEvalSuperHome + CompileSourceWithOpts),
+//     见 vm/eval_super_home_test.go 与 docs/roiE5Z-super-in-direct-eval.md。
+//     遗留: super["x"] (计算形式) 仍不支持 —— 解析器只认 super. 与 super(
+//     (既有缺口, 与 eval 无关, 故 *-contains-superproperty-2.js 族仍失败)。
 //  3. 静态公有字段初始化器: Node 在类定义期求值 `static x = eval(...)` 并报错;
 //     Gox 尚未实现静态公有字段初始化 (compileClassBody 直接跳过), 初始化器
 //     根本不被编译/求值, 故无法触发任何早错。属独立特性缺口。
