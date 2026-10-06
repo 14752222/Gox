@@ -4698,7 +4698,10 @@ func (c *Compiler) emitArrayElementBind(iterSlot int, elem *ast.PatternElement, 
 	// 迭代器已耗尽 (槽被清空): 不再调 next(), 直接给 undefined (规范:
 	// iteratorRecord.[[done]] 为 true 时后续绑定不再步进)。
 	slotEmpty := c.emitter.EmitJump(bytecode.OP_JUMP_IF_NULL)
-	c.emitter.EmitNoOperand(bytecode.OP_ITER_STEP) // [it, step]
+	// ITER_STEP 带迭代器槽号: next() 抛异常时 VM 先把槽清空再重抛, 表示
+	// iteratorRecord.[[done]] = true (规范 7.4.6 IteratorStepValue 在 abrupt
+	// 时置 Done) —— 于是异常路径的 IteratorClose 收尾会跳过 return()。
+	c.emitter.Emit(bytecode.OP_ITER_STEP, uint16(iterSlot)) // [it, step]
 	c.emitter.EmitNoOperand(bytecode.OP_DUP)
 	c.emitter.Emit(bytecode.OP_GET_PROP, doneIdx) // [it, step, done]
 	notDone := c.emitter.EmitJump(bytecode.OP_JUMP_IF_FALSE)
@@ -4754,7 +4757,7 @@ func (c *Compiler) compileArrayRestCollect(iterSlot int, target ast.Expression, 
 	loopStart := c.emitter.Pos()
 	c.emitter.Emit(bytecode.OP_LOAD, uint16(iterSlot)) // [arr, it]
 	restDone := c.emitter.EmitJump(bytecode.OP_JUMP_IF_NULL) // 槽已空 → rest 为空数组
-	c.emitter.EmitNoOperand(bytecode.OP_ITER_STEP)           // [arr, it, step]
+	c.emitter.Emit(bytecode.OP_ITER_STEP, uint16(iterSlot))  // [arr, it, step]
 	c.emitter.EmitNoOperand(bytecode.OP_DUP)
 	c.emitter.Emit(bytecode.OP_GET_PROP, doneIdx) // [arr, it, step, done]
 	restEnd := c.emitter.EmitJump(bytecode.OP_JUMP_IF_TRUE)

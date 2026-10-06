@@ -1990,6 +1990,17 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				continue
 			}
 			val := vm.getIndex(obj, index)
+			// GetProperty 触发 getter 时, getter 是 JS 闭包 ⇒ 经回调桥调用,
+			// 抛出的异常只记录在 object.callbackError 上 (GetProperty 无 error
+			// 返回), 必须在此刻取出重抛。否则错误会残留到之后某个不相干的内建
+			// 调用才被消费 —— 那时外层 try 处理器可能已 POP_TRY 出栈, 异常变成
+			// 未捕获 (rvdPPH: 解构成员目标 x.y=... / [x.y]=... 的 setter 抛)。
+			if err := vm.checkCallbackErr(); err != nil {
+				if terr := vm.rethrowBridgeError(err); terr != nil {
+					return terr
+				}
+				continue
+			}
 			vm.stack.Push(val)
 		case bytecode.OP_SET_INDEX:
 			val := vm.stack.Pop()
@@ -2015,6 +2026,17 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				continue
 			}
 			vm.setIndex(obj, index, val)
+			// SetProperty 触发 setter 时, setter 是 JS 闭包 ⇒ 经回调桥调用,
+			// 抛出的异常只记录在 object.callbackError 上 (SetProperty 无 error
+			// 返回), 必须在此刻取出重抛。否则错误会残留到之后某个不相干的内建
+			// 调用才被消费 —— 那时外层 try 处理器可能已 POP_TRY 出栈, 异常变成
+			// 未捕获 (rvdPPH: 解构成员目标 x.y=... / [x.y]=... 的 setter 抛)。
+			if err := vm.checkCallbackErr(); err != nil {
+				if terr := vm.rethrowBridgeError(err); terr != nil {
+					return terr
+				}
+				continue
+			}
 			vm.stack.Push(val)
 		case bytecode.OP_ARRAY_PUSH:
 			// 弹出值，追加到栈顶下方的数组
@@ -2306,9 +2328,16 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			}
 		case bytecode.OP_ITER_STEP:
 			// 同步迭代一步: 读栈顶迭代器 (不弹出), 压入 {value, done} 步进对象。
+			// operand = 迭代器隐藏槽号。next() 抛异常 (abrupt) 时先清空槽,
+			// 等价 iteratorRecord.[[done]] = true (规范 7.4.6 IteratorStepValue
+			// 步骤 2) —— 异常路径的 IteratorClose 收尾据此跳过 return()
+			// (thrw-close-skip 一族)。
 			iter := vm.stack.Peek()
 			step, err := vm.syncIterStep(iter)
 			if err != nil {
+				if slot := int(operand); slot < len(frame.Locals) {
+					frame.Locals[slot] = object.UndefinedSingleton
+				}
 				if terr := vm.rethrowBridgeError(err); terr != nil {
 					return terr
 				}
