@@ -48,6 +48,11 @@ func setupSymbol(env *runtime.Environment) {
 	symbolObj.SetProperty("isConcatSpreadable", object.GetGlobalSymbol("Symbol.isConcatSpreadable"))
 	symbolObj.SetProperty("unscopables", object.GetGlobalSymbol("Symbol.unscopables"))
 	symbolObj.SetProperty("matchAll", object.GetGlobalSymbol("Symbol.matchAll"))
+	// ES2023 explicit resource management: using / await using 的释放协议键。
+	// 与其它 well-known symbol 一样必须走 GetGlobalSymbol 注册表 ——
+	// VM 的 OP_DISPOSE_ADD/EXIT 按同一实例取方法。
+	symbolObj.SetProperty("dispose", object.SymbolDispose())
+	symbolObj.SetProperty("asyncDispose", object.SymbolAsyncDispose())
 
 	env.Declare("Symbol", symbolObj, false)
 }
@@ -98,6 +103,9 @@ func setupSymbolFunction(env *runtime.Environment) {
 	symbolObj.SetProperty("isConcatSpreadable", object.GetGlobalSymbol("Symbol.isConcatSpreadable"))
 	symbolObj.SetProperty("unscopables", object.GetGlobalSymbol("Symbol.unscopables"))
 	symbolObj.SetProperty("matchAll", object.GetGlobalSymbol("Symbol.matchAll"))
+	// ES2023 explicit resource management (见 setupSymbol 同款说明)。
+	symbolObj.SetProperty("dispose", object.SymbolDispose())
+	symbolObj.SetProperty("asyncDispose", object.SymbolAsyncDispose())
 
 	// 将 Symbol 对象的属性复制到函数上
 	for _, k := range symbolObj.Keys() {

@@ -272,6 +272,25 @@ const (
 	// operand = 模块路径常量索引; 记录星号再导出 (不含 default, 不覆盖本地同名)。
 	OP_EXPORT_STAR Opcode = 0xE4
 
+	// 0xE5-0xEF: explicit resource management (ES2023 using / await using)
+	//
+	// OP_DISPOSE_ADD: 登记一个 using 资源。operand = 常量池索引, 指向
+	// *DisposeResource (记录资源值/释放方法落在哪两个隐藏局部槽, 以及同步
+	// 还是异步释放)。栈: [v] → []。语义对齐规范 AddDisposableResource +
+	// CreateDisposableResource: v 为 null/undefined 时跳过; 非对象抛
+	// TypeError; 取释放方法 (sync 取 @@dispose, async 先 @@asyncDispose
+	// 再回退 @@dispose); 方法缺失/非可调用抛 TypeError。取到后把值与方法
+	// 分别存入槽位 (读取方法 getter 只发生这一次)。
+	OP_DISPOSE_ADD Opcode = 0xE5
+	//
+	// OP_DISPOSE_EXIT: 释放当前 using 作用域的全部资源。operand = 常量池索引,
+	// 指向 *DisposeScope (按声明顺序记录各 *DisposeResource)。按**逆序**调用
+	// 各资源的释放方法 (以资源值为 this)。若释放过程中又抛错, 且当前帧正带着
+	// 一个挂起异常跑 finally (tryEntry.inFinally), 则合成为 SuppressedError
+	// (error = 后发生的, suppressed = 原挂起异常) 并写回该条目的 pendingVal;
+	// 否则新异常直接向外传播 (无挂起异常时它替换正常/return 完成)。
+	OP_DISPOSE_EXIT Opcode = 0xE6
+
 	// 0xF0-0xFF: 显式类型转换
 	OP_TO_NUMBER Opcode = 0xF0 // 一元 + (ToNumber): BigInt 抛 TypeError
 )
@@ -342,7 +361,9 @@ var opcodeNames = map[Opcode]string{
 	OP_POP_TRY: "POP_TRY", OP_THROW: "THROW", OP_END_FINALLY: "END_FINALLY",
 	OP_IMPORT: "IMPORT", OP_EXPORT: "EXPORT",
 	OP_EXPORT_BINDING: "EXPORT_BINDING", OP_EXPORT_FROM: "EXPORT_FROM", OP_EXPORT_STAR: "EXPORT_STAR",
-	OP_TO_NUMBER: "TO_NUMBER",
+	OP_DISPOSE_ADD:  "DISPOSE_ADD",
+	OP_DISPOSE_EXIT: "DISPOSE_EXIT",
+	OP_TO_NUMBER:    "TO_NUMBER",
 }
 
 // Name 返回操作码的可读名称。

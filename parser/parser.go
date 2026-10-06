@@ -80,6 +80,32 @@ type Parser struct {
 	// fnDepth 是当前所处的**函数体**嵌套层数 (每进一个 function/箭头/方法体
 	// +1)。顶层为 0 —— 模块顶层的 `return` / `yield` 据此判定为早错。
 	fnDepth int
+
+	// blockOrFnDepth 统计当前解析位置位于多深的 Block/FunctionBody 之内
+	// (script/eval 顶层为 0)。parseBlockImpl / parseBlockWithDirectives 进出时
+	// 加减。仅用于 eval 顶层的 using 判定 (见 usingDeclAllowed): Gox 的 eval 把
+	// 源码包进合成函数体, 该函数体是深度 1, 其直接语句即 eval 顶层。
+	blockOrFnDepth int
+
+	// usingAllowed 报告当前是否处于「规范的 StatementListItem 位置」——
+	// 只有 Block 的 StatementList / FunctionBody / ClassStaticBlockBody /
+	// ClassBody / ModuleItemList 允许 using / await using 声明。下列位置一律
+	// 禁止 (sec-using-declaration-static-semantics-early-errors 等):
+	//   - Script / eval 顶层 (仅 Module 顶层允许);
+	//   - if/else/while/do/for/label 的**无花括号**单语句体;
+	//   - CaseClause / DefaultClause 的语句列表。
+	// 默认 false。parseBlockImpl / parseBlockWithDirectives / 模块顶层置 true;
+	// parseBody 的单语句分支、parseLabeledStatement 的非块分支、
+	// parseSwitchStatement 的子句体显式置 false。
+	usingAllowed bool
+
+	// evalTopLevel 标记「本编译单元是 eval 的源码」。Gox 的 eval 把源码包进
+	// 合成函数体 (见 stdlib/eval.go 的 runGlobalEval), 该函数体经
+	// parseBlockWithDirectives 会把 usingAllowed 置 true —— 若不特判, eval 顶层
+	// 的 `using x = null;` 会被误认为合法函数体语句。本标志由 eval 编译桥置位,
+	// 配合 blockOrFnDepth<=1 (即合成函数体的直接语句) 拒绝之。
+	// new Function 的体是真正的 FunctionBody, **不**置本标志 (using 合法)。
+	evalTopLevel bool
 	// newTargetAllowed 标记当前位置 `new.target` 是否语法合法。
 	// 规范 (sec-scripts-static-semantics-early-errors): NewTarget 只能出现在
 	// **非箭头函数体**内 —— 箭头函数对 Contains 透明, 会一路冒泡到脚本/模块顶层
@@ -407,6 +433,9 @@ func (p *Parser) ParseProgram() *ast.Program {
 	inPrologue := true
 	// 顶层语句允许 import/export (ModuleItem); 进块/函数体后置 false。
 	p.moduleTopLevel = true
+	// 顶层是 StatementListItem 位置: 只有模块 (含按模块语义判早错的 test262
+	// module 用例) 允许 using 声明; script/eval 顶层不允许。
+	p.usingAllowed = p.module || p.moduleEE
 	// 模块顶层是 +Await 上下文 (top-level await, ES2022):
 	// ModuleItem 的语法参数带 +Await, 故模块顶层的 `await expr` 合法, 且
 	// for-await 头部也合法。函数/类体经 setAllowAwait 重置, 不会外泄 —— 见
@@ -591,6 +620,25 @@ func (p *Parser) parseStatementBody() ast.Statement {
 	case lexer.IDENTIFIER:
 		if p.peekTokenIs(lexer.COLON) {
 			return p.parseLabeledStatement()
+		}
+		// using 是上下文关键字: 仅当后面同行紧跟绑定标识符时才当声明;
+		// 且只在允许的位置 (块/函数体/模块顶层/for 头) 成立。
+		if p.isUsingDeclStart() {
+			if !p.usingDeclAllowed() {
+				p.addError("SyntaxError: using declarations are not allowed at the top level of a script or eval")
+				return nil
+			}
+			return p.parseUsingStatement(false)
+		}
+		return p.parseExpressionStatement()
+	case lexer.AWAIT:
+		// await using x = ... (async 上下文 / 模块顶层的显式资源管理声明)。
+		if p.isAwaitUsingDeclStart() {
+			if !p.usingDeclAllowed() {
+				p.addError("SyntaxError: await using declarations are not allowed here")
+				return nil
+			}
+			return p.parseUsingStatement(true)
 		}
 		return p.parseExpressionStatement()
 	case lexer.LBRACE:
@@ -798,6 +846,133 @@ func (p *Parser) parseConstStatement() *ast.ConstStatement {
 	return stmt
 }
 
+// ==================== using / await using 声明 (ES2023) ====================
+
+// usingDeclAllowed 报告当前位置是否允许出现 using 声明。
+// 规范 sec-let-const-using-and-await-using-declarations-static-semantics-
+// early-errors: goal 为 Script 时, UsingDeclaration 必须被 Block /
+// ForStatement / ForInOfStatement / FunctionBody / ClassStaticBlockBody /
+// ClassBody 包含; 换言之 script/eval 顶层、单语句位置、CaseClause/
+// DefaultClause 语句列表都不允许 (usingAllowed 已按位置维护), 模块顶层允许。
+func (p *Parser) usingDeclAllowed() bool {
+	if !p.usingAllowed {
+		return false
+	}
+	// eval 顶层: 合成函数体的直接语句 (blockOrFnDepth==1) 就是 eval 顶层。
+	if p.evalTopLevel && p.blockOrFnDepth <= 1 {
+		return false
+	}
+	return true
+}
+
+// SetEvalTopLevel 标记本编译单元是 eval 源码 (供 eval 编译桥)。
+// 只影响 using / await using 的顶层早错判定 (见 evalTopLevel 字段说明)。
+func (p *Parser) SetEvalTopLevel(v bool) { p.evalTopLevel = v }
+
+// isUsingDeclStart 报告当前 token (标识符 using) 是否开启一个 using 声明。
+// 上下文关键字判定: 仅当 `using` 之后**同一行**紧跟一个绑定标识符时才当声明,
+// 否则 using 仍是普通标识符 (using = 1 / using.length / using[x] 都合法)。
+//
+// 允许的绑定名: IDENTIFIER / await / async (isBindingName), 以及 of —— 后者在
+// 传统 for 头部写作 `for (using of = null;;)` (using-for-statement.js);
+// 要求 of 之后是 `=` 才认, 避免把 `for (using of of xs)` 误判成声明。
+func (p *Parser) isUsingDeclStart() bool {
+	if !p.curTokenIs(lexer.IDENTIFIER) || p.curToken().Literal != "using" {
+		return false
+	}
+	peek := p.peekToken()
+	if peek.Line != p.curToken().Line {
+		return false // 换行 ⇒ ASI, using 是独立标识符
+	}
+	switch peek.Type {
+	case lexer.IDENTIFIER, lexer.AWAIT, lexer.ASYNC:
+		return true
+	case lexer.OF:
+		return p.peek2TokenIs(lexer.ASSIGN)
+	}
+	return false
+}
+
+// isAwaitUsingDeclStart 报告当前 token (await) 是否开启一个 await using 声明。
+// 仅在 await 作关键字 (async 上下文 / 模块顶层, allowAwait 为真) 时才成立。
+func (p *Parser) isAwaitUsingDeclStart() bool {
+	if !p.curTokenIs(lexer.AWAIT) || !p.allowAwait {
+		return false
+	}
+	usingTok := p.peekToken()
+	if usingTok.Type != lexer.IDENTIFIER || usingTok.Literal != "using" {
+		return false
+	}
+	if usingTok.Line != p.curToken().Line {
+		return false
+	}
+	bind := p.peekTokenAt(2)
+	if bind.Line != usingTok.Line {
+		return false
+	}
+	switch bind.Type {
+	case lexer.IDENTIFIER, lexer.AWAIT, lexer.ASYNC:
+		return true
+	case lexer.OF:
+		return p.peek3TokenIs(lexer.ASSIGN)
+	}
+	return false
+}
+
+// parseUsingStatement 解析 using / await using 声明。
+// 进入时: isAwait=false 时 cur 在 `using`; isAwait=true 时 cur 在 `await`
+// (peek 是 using)。BindingList 里每一项都必须有初始化器, 且绑定名只允许
+// 标识符 (不支持解构 —— 规范如此, `using [a] = x` 是 SyntaxError)。
+func (p *Parser) parseUsingStatement(isAwait bool) ast.Statement {
+	stmt := &ast.UsingStatement{IsAwait: isAwait}
+	if isAwait {
+		p.nextToken() // cur = using
+	}
+	stmt.Token = p.curToken() // using 令牌
+	p.nextToken()             // cur = 绑定名
+
+	if !p.isUsingBindingName() {
+		p.addError(fmt.Sprintf("expected identifier, got %s", p.curToken().Type))
+		return nil
+	}
+	stmt.Name = &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
+	if !p.peekTokenIs(lexer.ASSIGN) {
+		p.addError("SyntaxError: using declaration requires an initializer")
+		return nil
+	}
+	p.nextToken() // =
+	p.nextToken() // 初始化器首 token
+	stmt.Value = p.parseExpression(LOWEST)
+
+	// 多条声明: using a = f(), b = g();
+	for p.peekTokenIs(lexer.COMMA) {
+		p.nextToken() // ,
+		p.nextToken() // 下一个绑定名
+		if !p.isUsingBindingName() {
+			p.addError(fmt.Sprintf("expected identifier, got %s", p.curToken().Type))
+			return nil
+		}
+		decl := ast.Declarator{Name: &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}}
+		if !p.peekTokenIs(lexer.ASSIGN) {
+			p.addError("SyntaxError: using declaration requires an initializer")
+			return nil
+		}
+		p.nextToken() // =
+		p.nextToken()
+		decl.Value = p.parseExpression(LOWEST)
+		stmt.More = append(stmt.More, decl)
+	}
+	p.checkSameLineASI()
+	p.consumeSemicolon()
+	return stmt
+}
+
+// isUsingBindingName 报告当前 token 能否作 using 声明项的绑定名。
+// 与 isBindingName 同口径, 额外放行 of (contextual, 见 isUsingDeclStart)。
+func (p *Parser) isUsingBindingName() bool {
+	return p.isBindingName() || p.curTokenIs(lexer.OF)
+}
+
 func (p *Parser) parseReturnStatement() *ast.ReturnStatement {
 	stmt := &ast.ReturnStatement{Token: p.curToken()}
 
@@ -906,6 +1081,16 @@ func (p *Parser) parseForStatement() ast.Statement {
 		return nil
 	}
 	p.nextToken()
+
+	// for (using x = expr; ...) / for (using x of y): 头部是 using 声明。
+	// 必须在下面的 isForOfLHS 之前判定 —— 否则 `for (using of = null;;)`
+	// 会被 isForOfLHS 误判成 for-of (深度 0 处出现 of)。
+	// 注意: ForStatement 本身就是规范允许 using 的容器, 故 script/eval 顶层
+	// 的 for 头部也合法 (test262 using-invalid-assignment-next-expression-for.js),
+	// 这里不做 usingDeclAllowed 检查。
+	if p.isUsingDeclStart() || p.isAwaitUsingDeclStart() {
+		return p.parseForWithUsingHead(forToken)
+	}
 
 	// for...of / for...in 的头部: let/const/var 后跟**绑定**, 绑定之后是 of / in。
 	// 绑定可以是标识符, 也可以是解构模式 —— 后者要跳过配对的 ]/} 才看得到关键字,
@@ -1278,6 +1463,12 @@ func (p *Parser) parseTraditionalFor() *ast.ForStatement {
 		p.nextToken() // 空 init: 越过第一个 ';' 到 condition 开头 (或第二个 ';')
 	}
 
+	return p.finishTraditionalFor(stmt)
+}
+
+// finishTraditionalFor 解析传统 for 的 condition / update / 循环体。
+// 进入时 stmt.Init 已就绪, curToken 停在 init 之后的 condition 开头。
+func (p *Parser) finishTraditionalFor(stmt *ast.ForStatement) *ast.ForStatement {
 	// ---- condition ----
 	// 解析后 curToken 停在最后一个 condition token 上, peek 是 ';',
 	// consumeSemicolon 把 curToken 移到 ';' 上。
@@ -1310,6 +1501,66 @@ func (p *Parser) parseTraditionalFor() *ast.ForStatement {
 	stmt.Body = p.parseBody()
 	p.inLoop = prevInLoop
 	return stmt
+}
+
+// parseForWithUsingHead 解析 for 头部以 using / await using 声明开头的形态:
+//
+//	for (using x = expr; cond; upd) body   传统三段式 (释放落点是整个 for)
+//	for (using x of iterable) body          for-of (每轮重新登记并释放)
+//	for (await using x = expr; ...)         async 上下文的 await using
+//
+// 进入时 curToken 在 using (await using 时在 await)。for-in 头部用 using 是
+// 早错 (test262 using-invalid-for-in.js)。
+func (p *Parser) parseForWithUsingHead(forToken lexer.Token) ast.Statement {
+	isAwait := false
+	if p.curTokenIs(lexer.AWAIT) {
+		isAwait = true
+		p.nextToken() // cur = using
+	}
+	usingTok := p.curToken()
+	p.nextToken() // cur = 绑定名
+
+	if !p.isUsingBindingName() {
+		p.addError(fmt.Sprintf("expected identifier, got %s", p.curToken().Type))
+		return nil
+	}
+	name := &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
+
+	switch p.peekToken().Type {
+	case lexer.OF:
+		// for (using x of iterable): 头部声明项无初始化器 (迭代变量)。
+		decl := &ast.UsingStatement{Token: usingTok, Name: name, IsAwait: isAwait, InForHead: true}
+		stmt := &ast.ForOfStatement{Token: forToken, VarDecl: decl, Variable: name}
+		p.nextToken() // cur = of
+		stmt.Keyword = p.curToken()
+		p.nextToken() // 迭代表达式首 token
+		stmt.Iterable = p.parseExpression(LOWEST)
+		if !p.expectPeek(lexer.RPAREN) {
+			return nil
+		}
+		p.nextToken()
+		prevInLoop := p.inLoop
+		p.inLoop = true
+		stmt.Body = p.parseBody()
+		p.inLoop = prevInLoop
+		return stmt
+	case lexer.ASSIGN:
+		// for (using x = expr; cond; upd): 传统三段式。
+		p.nextToken() // =
+		p.nextToken() // 初始化器首 token
+		value := p.parseExpression(LOWEST)
+		decl := &ast.UsingStatement{Token: usingTok, Name: name, Value: value, IsAwait: isAwait, InForHead: true}
+		stmt := &ast.ForStatement{Token: forToken, Init: decl}
+		p.consumeSemicolon()
+		p.nextToken() // 越过 ';' 到 condition
+		return p.finishTraditionalFor(stmt)
+	case lexer.IN:
+		p.addError("SyntaxError: for-in loop variable declaration may not use 'using'")
+		return nil
+	default:
+		p.addError("SyntaxError: using declaration requires an initializer")
+		return nil
+	}
 }
 
 func (p *Parser) parseWhileStatement() *ast.WhileStatement {
@@ -1509,6 +1760,10 @@ func (p *Parser) parseBlockImpl(asFunctionBody bool) *ast.BlockStatement {
 	p.moduleTopLevel = false
 	defer func() { p.moduleTopLevel = prevTop }()
 
+	// 块/函数体内的 `using` 声明合法 (规范允许 Block / FunctionBody)。
+	p.blockOrFnDepth++
+	defer func() { p.blockOrFnDepth-- }()
+
 	for !p.curTokenIs(lexer.RBRACE) && !p.curTokenIs(lexer.EOF) {
 		stmt := p.parseStatement()
 		if !isNilStmt(stmt) {
@@ -1550,6 +1805,10 @@ func (p *Parser) parseBlockWithDirectives() (*ast.BlockStatement, bool) {
 	prevTop := p.moduleTopLevel
 	p.moduleTopLevel = false
 	defer func() { p.moduleTopLevel = prevTop }()
+
+	// 函数体内 `using` 声明合法。
+	p.blockOrFnDepth++
+	defer func() { p.blockOrFnDepth-- }()
 
 	inPrologue := true
 	bodyStrict := false

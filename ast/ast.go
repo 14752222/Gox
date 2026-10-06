@@ -174,6 +174,51 @@ func (cs *ConstStatement) String() string {
 }
 func (cs *ConstStatement) statementNode() {}
 
+// ==================== using / await using 声明 ====================
+
+// UsingStatement 表示 ES2023 explicit resource management 的 using 声明。
+// 例如: using x = expr;  using a = f(), b = g();  以及 async 上下文里的
+// await using x = expr;。
+//
+// using 是**上下文关键字** (词法上是标识符), 只有后面紧跟「标识符且不换行」
+// 时才当声明, 否则仍是普通标识符。故本节点只在确实成声明时产生。
+//
+// IsAwait 为真表示 await using (释放走 @@asyncDispose)。
+// InForHead 为真表示该声明出现在 for 头部 (for (using x = expr; ...)) ——
+// 释放落点是整个 for 语句而非某个块。
+type UsingStatement struct {
+	Token     lexer.Token // using 令牌
+	Name      *Identifier
+	Value     Expression   // 初始化器 (using 必须有; 无初始化器是 SyntaxError)
+	More      []Declarator // using a = 1, b = 2; 里的 b = 2
+	IsAwait   bool
+	InForHead bool
+}
+
+func (us *UsingStatement) TokenLiteral() string { return us.Token.Literal }
+func (us *UsingStatement) String() string {
+	kw := "using"
+	if us.IsAwait {
+		kw = "await using"
+	}
+	if us.Name == nil {
+		return kw + " <nil>;"
+	}
+	result := kw + " " + us.Name.String()
+	if us.Value != nil {
+		result += " = " + us.Value.String()
+	}
+	for _, d := range us.More {
+		result += ", " + d.Name.String()
+		if d.Value != nil {
+			result += " = " + d.Value.String()
+		}
+	}
+	result += ";"
+	return result
+}
+func (us *UsingStatement) statementNode() {}
+
 // ==================== 表达式语句 ====================
 
 // ExpressionStatement 表示一个作为语句使用的表达式。

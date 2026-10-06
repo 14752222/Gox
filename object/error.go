@@ -116,3 +116,14 @@ func NewRangeError(format string, args ...interface{}) *Error {
 func NewReferenceError(format string, args ...interface{}) *Error {
 	return &Error{Message: fmt.Sprintf(format, args...), Name: "ReferenceError"}
 }
+
+// NewSuppressedError 创建 SuppressedError (ES2023 explicit resource
+// management): 释放资源过程中又抛错、且此前已有挂起异常时的合成错误。
+// 规范 sec-SuppressedError 规定自有属性 error (后发生的) 与 suppressed
+// (被压制的原异常); 二者均非可枚举。
+func NewSuppressedError(err, suppressed Value) *Error {
+	e := &Error{Message: "An error was suppressed during disposal.", Name: "SuppressedError"}
+	e.SetProperty("error", err)
+	e.SetProperty("suppressed", suppressed)
+	return e
+}

@@ -122,6 +122,42 @@ func (w *WithRef) IsTruthy() bool                             { return true }
 func (w *WithRef) GetProperty(string) (object.Value, bool)    { return nil, false }
 func (w *WithRef) SetProperty(string, object.Value)           {}
 
+// ===== explicit resource management (using / await using) =====
+
+// DisposeResource 描述一个 using 声明的资源记录在**帧局部槽**中的落点,
+// 作为常量池条目由 OP_DISPOSE_ADD 的操作数引用 (登记时用), 也作为
+// DisposeScope.Resources 的元素 (释放时用)。
+//
+//   - ValueSlot  资源值所在隐藏局部槽 (登记时写入);
+//   - MethodSlot 释放方法所在隐藏局部槽 (登记时写入; 未登记时保持 undefined);
+//   - Async      true = await using (取 @@asyncDispose, 释放结果需 await)。
+//
+// 资源记录不用 VM 全局栈而用帧局部槽, 是因为槽随帧 (含 generator 挂起)
+// 一起保存/恢复, 天然支持资源跨 yield 存活。
+type DisposeResource struct {
+	ValueSlot  int
+	MethodSlot int
+	Async      bool
+}
+
+func (d *DisposeResource) Type() object.ObjectType         { return object.OBJECT_OBJ }
+func (d *DisposeResource) Inspect() string                 { return "[DisposeResource]" }
+func (d *DisposeResource) IsTruthy() bool                  { return true }
+func (d *DisposeResource) GetProperty(string) (object.Value, bool) { return nil, false }
+func (d *DisposeResource) SetProperty(string, object.Value)       {}
+
+// DisposeScope 描述一个 using 作用域的全部资源 (按声明顺序), 由
+// OP_DISPOSE_EXIT 的操作数引用, 释放时按逆序处理。
+type DisposeScope struct {
+	Resources []*DisposeResource
+}
+
+func (d *DisposeScope) Type() object.ObjectType         { return object.OBJECT_OBJ }
+func (d *DisposeScope) Inspect() string                 { return "[DisposeScope]" }
+func (d *DisposeScope) IsTruthy() bool                  { return true }
+func (d *DisposeScope) GetProperty(string) (object.Value, bool) { return nil, false }
+func (d *DisposeScope) SetProperty(string, object.Value)       {}
+
 // ===== 函数元数据 =====
 
 // FunctionMetadata 存储编译后的函数信息。
@@ -303,7 +339,8 @@ func hasOperand(op Opcode) bool {
 // isConstantOp 判断操作码是否引用常量池。
 func isConstantOp(op Opcode) bool {
 	switch op {
-	case OP_CONST, OP_WITH_LOAD, OP_WITH_STORE, OP_WITH_DELETE:
+	case OP_CONST, OP_WITH_LOAD, OP_WITH_STORE, OP_WITH_DELETE,
+		OP_DISPOSE_ADD, OP_DISPOSE_EXIT:
 		return true
 	}
 	return false

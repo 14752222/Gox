@@ -2311,6 +2311,25 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				}
 				continue
 			}
+		case bytecode.OP_DISPOSE_ADD:
+			// using 资源登记 (见 bytecode.DisposeResource 与 AddDisposableResource)。
+			res, _ := frame.Constants.Get(operand).(*bytecode.DisposeResource)
+			v := vm.stack.Pop()
+			if err := vm.disposeAdd(res, v); err != nil {
+				if terr := vm.rethrowBridgeError(err); terr != nil {
+					return terr
+				}
+				continue
+			}
+		case bytecode.OP_DISPOSE_EXIT:
+			// using 作用域退出: 逆序释放 (见 bytecode.DisposeScope)。
+			scope, _ := frame.Constants.Get(operand).(*bytecode.DisposeScope)
+			if err := vm.disposeExit(scope); err != nil {
+				if terr := vm.rethrowBridgeError(err); terr != nil {
+					return terr
+				}
+				continue
+			}
 		case bytecode.OP_REQUIRE_OBJECT_COERCIBLE:
 			// RequireObjectCoercible: 栈顶 null/undefined → TypeError (不弹出)。
 			v := vm.stack.Peek()
@@ -3269,6 +3288,13 @@ func matchBuiltinType(left, right object.Value) bool {
 		return lt == object.PROMISE_OBJ
 	case "Error", "TypeError", "RangeError", "ReferenceError", "SyntaxError":
 		return lt == object.ERROR_OBJ
+	case "SuppressedError":
+		// explicit resource management: 释放期合成错误。精确按 Name 匹配 ——
+		// 不能并进上面那组 (那组对任意 ERROR_OBJ 都返回真)。
+		if e, ok := left.(*object.Error); ok {
+			return e.Name == "SuppressedError"
+		}
+		return false
 	case "String":
 		return lt == object.STRING_OBJ
 	case "Number":
@@ -4892,7 +4918,228 @@ func (vm *VM) iteratorClose(iter object.Value) error {
 	return nil
 }
 
-// objectRest 实现对象解构 rest 的 CopyDataProperties(restObj, source, excluded)
+// ===== explicit resource management (using / await using) =====
+
+// disposeAdd 实现 AddDisposableResource + CreateDisposableResource
+// (sync-dispose hint) 的登记步骤:
+//   - v 为 null/undefined: 跳过 (规范 step 1a; async 下等价无操作);
+//   - v 非对象: TypeError;
+//   - 取释放方法 (sync: @@dispose; async: @@asyncDispose, 缺失回退 @@dispose);
+//     方法为 null/undefined 或非可调用: TypeError;
+//   - 把值与方法写入两个隐藏局部槽 (方法 getter 只在此时读取一次)。
+//
+// 返回非 nil 表示要抛出的异常 (交给 rethrowBridgeError 走抛出流程)。
+func (vm *VM) disposeAdd(res *bytecode.DisposeResource, v object.Value) error {
+	if res == nil {
+		return nil
+	}
+	if isNullish(v) {
+		return nil
+	}
+	if !object.IsObjectLike(v) {
+		return &jsThrow{Name: "TypeError", Message: "using value must be an object"}
+	}
+	method, err := vm.getDisposeMethod(v, res.Async)
+	if err != nil {
+		return err
+	}
+	if isNullish(method) {
+		return &jsThrow{Name: "TypeError", Message: "using value has no dispose method"}
+	}
+	if !object.IsCallable(method) {
+		return &jsThrow{Name: "TypeError", Message: "using value's dispose method is not callable"}
+	}
+	vm.setLocalSlot(res.ValueSlot, v)
+	vm.setLocalSlot(res.MethodSlot, method)
+	return nil
+}
+
+// getDisposeMethod 取释放方法: sync 取 @@dispose; async 先取 @@asyncDispose,
+// 为 null/undefined 时回退 @@dispose (规范 GetDisposeMethod)。属性读取会触发
+// getter, 且只发生一次。
+func (vm *VM) getDisposeMethod(v object.Value, async bool) (object.Value, error) {
+	if async {
+		m, err := vm.getSymbolMember(v, object.SymbolAsyncDispose())
+		if err != nil {
+			return nil, err
+		}
+		if !isNullish(m) {
+			return m, nil
+		}
+	}
+	return vm.getSymbolMember(v, object.SymbolDispose())
+}
+
+// getSymbolMember 以 Symbol 为键读取属性, 展开访问器 getter (this = 原接收者)。
+// object.LookupSymbolProperty 只返回描述符里的原始值 (不展开 getter), 而
+// `{ get [Symbol.dispose]() {...} }` 必须调用 getter, 故这里自带展开。
+func (vm *VM) getSymbolMember(obj object.Value, sym *object.Symbol) (object.Value, error) {
+	if sym == nil {
+		return object.UndefinedSingleton, nil
+	}
+	if o, ok := obj.(*object.Object); ok {
+		for cur := o; cur != nil; {
+			if desc, found := cur.GetSymbolPropertyDescriptor(sym); found {
+				if acc, isAcc := desc.Value.(*object.Accessor); isAcc {
+					if acc.Getter != nil && object.IsCallable(acc.Getter) {
+						res, err := vm.callFunction(acc.Getter, o, nil)
+						if err != nil {
+							return nil, err
+						}
+						if err := vm.checkCallbackErr(); err != nil {
+							return nil, err
+						}
+						if res == nil {
+							res = object.UndefinedSingleton
+						}
+						return res, nil
+					}
+					return object.UndefinedSingleton, nil
+				}
+				if desc.Value == nil {
+					return object.UndefinedSingleton, nil
+				}
+				return desc.Value, nil
+			}
+			next, ok := cur.Proto.(*object.Object)
+			if !ok {
+				break
+			}
+			cur = next
+		}
+		return object.UndefinedSingleton, nil
+	}
+	if sp, ok := obj.(interface {
+		GetSymbolProperty(*object.Symbol) (object.Value, bool)
+	}); ok {
+		if val, found := sp.GetSymbolProperty(sym); found {
+			if val == nil {
+				return object.UndefinedSingleton, nil
+			}
+			return val, nil
+		}
+	}
+	return object.UndefinedSingleton, nil
+}
+
+// setLocalSlot 把值写入当前帧的局部槽, 必要时扩展 Locals (编译器已保证
+// 该槽在 NumLocals 内, 这里是防御性兜底)。
+func (vm *VM) setLocalSlot(slot int, v object.Value) {
+	if slot < 0 {
+		return
+	}
+	f := vm.currentFrame()
+	for len(f.Locals) <= slot {
+		f.Locals = append(f.Locals, object.UndefinedSingleton)
+	}
+	if v == nil {
+		v = object.UndefinedSingleton
+	}
+	f.Locals[slot] = v
+}
+
+// getLocalSlot 读取当前帧的局部槽 (越界返回 undefined)。
+func (vm *VM) getLocalSlot(slot int) object.Value {
+	f := vm.currentFrame()
+	if slot < 0 || slot >= len(f.Locals) || f.Locals[slot] == nil {
+		return object.UndefinedSingleton
+	}
+	return f.Locals[slot]
+}
+
+// disposeExit 实现 DisposeResources (规范): 逆序释放 scope 里的全部资源,
+// 每个资源以 ResourceValue 为 this 调用其方法。
+//
+// 错误合成口径 (与本帧挂起异常的关系):
+//   - 若释放方法抛错, 且当前帧正**带着挂起异常**跑 finally (tryStack 栈顶
+//     是本帧的 inFinally 条目), 则把新错误与原挂起异常合成 SuppressedError
+//     (error = 新错误, suppressed = 原挂起异常), 并写回条目 pendingVal ——
+//     随后 OP_END_FINALLY 会重抛它;
+//   - 若无挂起异常, 释放方法抛错直接向外传播 (替换正常/return 完成)。
+//
+// 返回值非 nil 表示需要抛出的异常 (仅无挂起异常的情况)。
+func (vm *VM) disposeExit(scope *bytecode.DisposeScope) error {
+	if scope == nil || len(scope.Resources) == 0 {
+		return nil
+	}
+	// 判断本帧是否正在跑一个带挂起异常的 finally (从栈顶往下找本帧的 inFinally
+	// 条目)。是则以它的 pendingVal 作为「已有完成」, 释放错误与之合成。
+	// 只记下标不取指针: 释放方法调用可能触发嵌套调用, 让 tryStack 底层数组
+	// 重新分配, 指针会失效。
+	pendingIdx := -1
+	var pendingErr object.Value
+	for i := len(vm.tryStack) - 1; i >= 0; i-- {
+		top := vm.tryStack[i]
+		if top.inFinally && top.frameIdx == vm.frameIdx {
+			pendingIdx = i
+			pendingErr = top.pendingVal
+			break
+		}
+	}
+	hadPending := pendingIdx >= 0
+
+	for i := len(scope.Resources) - 1; i >= 0; i-- {
+		res := scope.Resources[i]
+		method := vm.getLocalSlot(res.MethodSlot)
+		if isNullish(method) {
+			continue // 未登记 (初始化为 null/undefined) 或已释放
+		}
+		value := vm.getLocalSlot(res.ValueSlot)
+		_, err := vm.callFunction(method, value, nil)
+		if err == nil {
+			if cerr := vm.checkCallbackErr(); cerr != nil {
+				err = cerr
+			}
+		}
+		if err == nil {
+			continue
+		}
+		// 释放抛错: 取出 JS 抛出值 (非 JS 级异常原样上抛)。
+		var thrown object.Value
+		var te *ThrowError
+		if errors.As(err, &te) {
+			thrown = te.Value
+		} else if vr := vm.throwJSErrorValue(err); vr != nil {
+			thrown = vr
+		} else {
+			return err
+		}
+		if hadPending {
+			pendingErr = object.NewSuppressedError(thrown, pendingErr)
+		} else {
+			pendingErr = thrown
+		}
+	}
+
+	if !hadPending {
+		if pendingErr != nil {
+			return &ThrowError{Value: pendingErr}
+		}
+		return nil
+	}
+	// 把 (可能合成过的) 错误写回挂起条目, 交给 OP_END_FINALLY 重抛。
+	if pendingIdx < len(vm.tryStack) {
+		vm.tryStack[pendingIdx].pendingVal = pendingErr
+		return nil
+	}
+	// 条目已不在 (极端情形): 直接抛出。
+	if pendingErr != nil {
+		return &ThrowError{Value: pendingErr}
+	}
+	return nil
+}
+
+// throwJSErrorValue 把非 *ThrowError 的 Go error (如 *jsThrow) 转成 JS 异常值。
+// 不是 JS 语言级异常时返回 nil。
+func (vm *VM) throwJSErrorValue(err error) object.Value {
+	var jt *jsThrow
+	if errors.As(err, &jt) {
+		return object.NewErrorWithName(jt.Name, jt.Message)
+	}
+	return nil
+}
+
+
 // 语义 (规范 7.3.25): 新建对象, 复制 source 的自有可枚举属性 (字符串键 + Symbol
 // 键, 按 OrdinaryOwnPropertyKeys 顺序, 触发 getter), 跳过 excluded 中的键。
 // 非对象源 (Number/Boolean/Symbol/BigInt) 得空对象; 字符串按 UTF-16 索引字符复制。

@@ -176,6 +176,10 @@ func stmtLexicalEntries(s ast.Statement) []blockLexicalEntry {
 		add(declNames(v.Name, v.More), false)
 	case *ast.ConstStatement:
 		add(declNames(v.Name, v.More), false)
+	case *ast.UsingStatement:
+		// using 声明也是 LexicallyDeclaredNames (sec-...-early-errors),
+		// 且与 let/const 一样互斥重声明。
+		add(declNames(v.Name, v.More), false)
 	case *ast.ClassDeclaration:
 		if v.Name != nil {
 			add([]string{v.Name.Value}, false)

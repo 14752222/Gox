@@ -94,6 +94,11 @@ type Compiler struct {
 	// 每个函数一份, 进出函数时保存/恢复。
 	finallyRetSlot int
 
+	// disposeResources 记录当前正在编译的 using 作用域里, 每个 UsingStatement
+	// 声明的资源记录所落的隐藏槽 (按声明顺序)。compileUsingStatement 据此登记;
+	// 作用域外为 nil。进出 using 作用域时保存/恢复 (可嵌套)。
+	disposeResources map[*ast.UsingStatement][]*bytecode.DisposeResource
+
 	// inAsyncFunction 标记正在编译 async 函数的**内层 generator** 体
 	// (await 的实际执行处, for await...of 只在此合法)。进出内层体时
 	// 保存/恢复; 普通函数/顶层恒为 false, for-await 在那里是 SyntaxError。
@@ -169,6 +174,18 @@ type tryScope struct {
 	hasFinally  bool
 	finallyBody *ast.BlockStatement
 	closeSlot   int
+
+	// dispose 非 nil 时该条目是 using 作用域的释放条目: 控制转移穿出时
+	// 内联发射 OP_DISPOSE_EXIT <dispose.idx> (常量池索引, 指向 *DisposeScope)。
+	// 它与 finally 复用同一套运行时机制 (PUSH_TRY 0 + PUSH_FINALLY), 只是
+	// 内联的不是用户 finally 体而是资源释放序列。nil 表示非释放条目。
+	dispose *disposeEntry
+}
+
+// disposeEntry 是一个已登记常量池条目的 using 释放作用域。
+type disposeEntry struct {
+	scope *bytecode.DisposeScope
+	idx   uint16
 }
 
 // controlContext 表示一个循环/switch/标签块的控制流上下文。
@@ -265,7 +282,11 @@ func (c *Compiler) NumLocals() int { return c.scope.NumLocals() }
 func (c *Compiler) Compile(program *ast.Program) error {
 	// 严格性: ScriptBody 含 "use strict" 指令, 或本单元是 module (恒严格)。
 	c.strict = program.Strict || c.moduleMode
-	return c.compileStatements(programStatements(program))
+	stmts := programStatements(program)
+	// 模块顶层可能有 using 声明: 在主单元建立释放作用域 (程序结束/异常时释放)。
+	return c.withDisposeScope(stmts, func() error {
+		return c.compileStatements(stmts)
+	})
 }
 
 // jsxFactoryModule / jsxFactoryName 是 JSX 的缺省工厂: parser 把小写标签降级成
@@ -666,6 +687,8 @@ func (c *Compiler) compileStatement(stmt ast.Statement) error {
 		return c.compileVarStatement(node)
 	case *ast.ConstStatement:
 		return c.compileConstStatement(node)
+	case *ast.UsingStatement:
+		return c.compileUsingStatement(node)
 	case *ast.ReturnStatement:
 		return c.compileReturnStatement(node)
 	case *ast.BlockStatement:
@@ -909,6 +932,148 @@ func (c *Compiler) compileConstStatement(stmt *ast.ConstStatement) error {
 	return nil
 }
 
+// ==================== using / await using (ES2023) ====================
+
+// collectUsingDecls 收集一个语句列表**本层**的 using 声明 (不进嵌套块/函数)。
+// 嵌套块的 using 由该块自己的 compileBlockStatement 处理。
+func collectUsingDecls(stmts []ast.Statement) []*ast.UsingStatement {
+	var out []*ast.UsingStatement
+	for _, s := range stmts {
+		if us, ok := s.(*ast.UsingStatement); ok {
+			out = append(out, us)
+		}
+	}
+	return out
+}
+
+// withDisposeScope 编译一个语句列表, 并为其**本层**的 using 声明建立释放作用域:
+//   - 为每个声明项分配两个隐藏局部槽 (资源值 / 释放方法), 初始化为 undefined
+//     (方法槽保持 undefined = 未登记, 释放时跳过);
+//   - 登记 tryScope{dispose} 条目, 运行时对应 PUSH_TRY 0 + PUSH_FINALLY <exit>;
+//   - body 正常结束后 POP_TRY + JUMP; exit 处发 OP_DISPOSE_EXIT + OP_END_FINALLY;
+//   - return / break / continue 穿出时由 emitTryUnwind 内联 OP_DISPOSE_EXIT;
+//   - 抛异常时由运行时 finally 机制跳到 exit 执行释放。
+//
+// 无 using 声明时直接调 body (零开销)。
+func (c *Compiler) withDisposeScope(stmts []ast.Statement, body func() error) error {
+	return c.withDisposeScopeFor(collectUsingDecls(stmts), body)
+}
+
+// withDisposeScopeFor 与 withDisposeScope 相同, 但直接给出要登记的 using 声明
+// (供 for 头部这种「声明不在语句列表里」的场景使用)。
+func (c *Compiler) withDisposeScopeFor(usings []*ast.UsingStatement, body func() error) error {
+	if len(usings) == 0 {
+		return body()
+	}
+
+	scope := &bytecode.DisposeScope{}
+	byStmt := make(map[*ast.UsingStatement][]*bytecode.DisposeResource)
+	for _, us := range usings {
+		n := 1 + len(us.More)
+		for i := 0; i < n; i++ {
+			res := &bytecode.DisposeResource{
+				ValueSlot:  c.allocHiddenSlot(),
+				MethodSlot: c.allocHiddenSlot(),
+				Async:      us.IsAwait,
+			}
+			scope.Resources = append(scope.Resources, res)
+			byStmt[us] = append(byStmt[us], res)
+		}
+	}
+	// 隐藏槽初始化为 undefined。
+	for _, res := range scope.Resources {
+		c.emitter.EmitNoOperand(bytecode.OP_UNDEFINED)
+		c.emitter.Emit(bytecode.OP_STORE, uint16(res.ValueSlot))
+		c.emitter.EmitNoOperand(bytecode.OP_UNDEFINED)
+		c.emitter.Emit(bytecode.OP_STORE, uint16(res.MethodSlot))
+	}
+	idx := c.constants.AddConstant(scope)
+
+	c.emitter.Emit(bytecode.OP_PUSH_TRY, 0)
+	finallyJump := c.emitter.EmitJump(bytecode.OP_PUSH_FINALLY)
+
+	prevMap := c.disposeResources
+	c.disposeResources = byStmt
+	savedTryLen := len(c.tryScopes)
+	c.tryScopes = append(c.tryScopes, tryScope{dispose: &disposeEntry{scope: scope, idx: idx}})
+	bodyErr := body()
+	if len(c.tryScopes) > savedTryLen {
+		c.tryScopes = c.tryScopes[:savedTryLen]
+	}
+	c.disposeResources = prevMap
+	if bodyErr != nil {
+		return bodyErr
+	}
+	// 无 catch 体 ⇒ try 体正常结束后 POP_TRY 紧跟释放代码, 直接落进 finally。
+	// (参照 compileTryStatement 里 skipCatch 的落点: 正常路径 JUMP 到 finally
+	// 体入口, 绝不跳过它 —— 早期版本把 JUMP 目标回填到 END_FINALLY 之后,
+	// 导致「正常落到块尾」这一条路径从不释放。)
+	c.emitter.EmitNoOperand(bytecode.OP_POP_TRY)
+	c.emitter.PatchJump(finallyJump)
+	c.emitter.Emit(bytecode.OP_DISPOSE_EXIT, idx)
+	c.emitter.EmitNoOperand(bytecode.OP_END_FINALLY)
+	return nil
+}
+
+// compileLoopBody 编译循环体语句列表 (while/do/for/for-of/for-in 的 body),
+// 并套上 using 释放作用域。调用前调用方已 PUSH_SCOPE 并建立块作用域。
+func (c *Compiler) compileLoopBody(stmts []ast.Statement) error {
+	return c.withDisposeScope(stmts, func() error {
+		for _, s := range stmts {
+			if err := c.compileStatement(s); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+// compileUsingStatement 编译 using / await using 声明 (非 for-of 头形态)。
+//
+// 每个绑定项: 求值初始化器 → 复制一份 → 存 const 绑定 (using 绑定不可赋值,
+// 赋值在运行期抛 TypeError) → OP_DISPOSE_ADD 登记资源。登记时初始化器为
+// null/undefined 则跳过; 非对象或缺失释放方法抛 TypeError (运行时判定)。
+func (c *Compiler) compileUsingStatement(stmt *ast.UsingStatement) error {
+	res := c.disposeResources[stmt]
+	if len(res) == 0 {
+		return fmt.Errorf("compiler: using declaration outside a dispose scope")
+	}
+	i := 0
+	compileOne := func(name *ast.Identifier, value ast.Expression) error {
+		if name == nil || i >= len(res) {
+			return fmt.Errorf("compiler: using resource slot mismatch")
+		}
+		r := res[i]
+		i++
+		if err := c.compileNamedExpression(value, name.Value); err != nil {
+			return err
+		}
+		c.emitter.EmitNoOperand(bytecode.OP_DUP) // 留一份值给 OP_DISPOSE_ADD
+		sym, err := c.declareOnce(name.Value, true, false)
+		if err != nil {
+			return err
+		}
+		if c.isGlobalScope() {
+			nameIdx := c.constants.AddConstant(object.NewString(name.Value))
+			c.emitter.Emit(bytecode.OP_DECLARE_CONST, nameIdx)
+		} else {
+			c.emitter.Emit(bytecode.OP_STORE_CONST, uint16(sym.Slot))
+		}
+		ridx := c.constants.AddConstant(r)
+		c.emitter.Emit(bytecode.OP_DISPOSE_ADD, ridx)
+		return nil
+	}
+	if err := compileOne(stmt.Name, stmt.Value); err != nil {
+		return err
+	}
+	for _, d := range stmt.More {
+		if err := compileOne(d.Name, d.Value); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // allocFinallyRetSlot 惰性分配 (并全函数复用) 「穿 finally 的 return 值」暂存槽。
 //
 // 槽号取当前作用域链上所有层 nextSlot 的最大值 —— 活跃变量都落在各自作用域的
@@ -955,6 +1120,12 @@ func (c *Compiler) emitTryUnwind(targetDepth int) error {
 		sc := c.tryScopes[i]
 		// 先摘掉本条目: finally/close 序列里再抛异常时不该重新进入自己。
 		c.emitter.EmitNoOperand(bytecode.OP_POP_TRY)
+		if sc.dispose != nil {
+			// using 释放条目: 内联发射资源释放序列 (逆序调用各资源的方法)。
+			// 进来时栈为空, 离开也是空。
+			c.emitter.Emit(bytecode.OP_DISPOSE_EXIT, sc.dispose.idx)
+			continue
+		}
 		if sc.closeSlot >= 0 {
 			// for-await 的迭代器收尾条目: 内联 AsyncIteratorClose。
 			// 进来时栈为空 (穿出的控制转移点都保证语句级干净), 离开也是空。
@@ -1077,13 +1248,13 @@ func (c *Compiler) compileBlockStatement(block *ast.BlockStatement) error {
 	prevScope := c.scope
 	c.scope = NewSymbolScope(prevScope)
 
-	if err := c.compileStatements(block.Statements); err != nil {
-		return err
-	}
+	err := c.withDisposeScope(block.Statements, func() error {
+		return c.compileStatements(block.Statements)
+	})
 
 	c.scope = prevScope
 	c.emitter.EmitNoOperand(bytecode.OP_POP_SCOPE)
-	return nil
+	return err
 }
 
 // ==================== with 语句 (对象环境记录) ====================
@@ -1259,10 +1430,8 @@ func (c *Compiler) compileWhileStatement(stmt *ast.WhileStatement) error {
 
 	ctx := c.pushControl(c.takePendingLabel(), true)
 
-	for _, s := range stmt.Body.Statements {
-		if err := c.compileStatement(s); err != nil {
-			return err
-		}
+	if err := c.compileLoopBody(stmt.Body.Statements); err != nil {
+		return err
 	}
 
 	c.scope = prevScope
@@ -1302,10 +1471,8 @@ func (c *Compiler) compileDoWhileStatement(stmt *ast.DoWhileStatement) error {
 	ctx := c.pushControl(c.takePendingLabel(), true)
 
 	// 先执行循环体
-	for _, s := range stmt.Body.Statements {
-		if err := c.compileStatement(s); err != nil {
-			return err
-		}
+	if err := c.compileLoopBody(stmt.Body.Statements); err != nil {
+		return err
 	}
 
 	c.scope = prevScope
@@ -1424,10 +1591,8 @@ func (c *Compiler) compileForOfStatement(stmt *ast.ForOfStatement) error {
 	ctx := c.pushControl(c.takePendingLabel(), true)
 
 	// 循环体
-	for _, s := range stmt.Body.Statements {
-		if err := c.compileStatement(s); err != nil {
-			return err
-		}
+	if err := c.compileLoopBody(stmt.Body.Statements); err != nil {
+		return err
 	}
 
 	c.scope = prevScope
@@ -1597,11 +1762,9 @@ func (c *Compiler) compileForAwaitOfStatement(stmt *ast.ForOfStatement) error {
 	c.emitter.EmitNoOperand(bytecode.OP_POP) // 绑定消耗 value 后残留的 [iter] → [] (body 阶段栈干净)
 
 	// 循环体
-	for _, s := range stmt.Body.Statements {
-		if err := c.compileStatement(s); err != nil {
-			c.tryScopes = c.tryScopes[:savedTryLen]
-			return err
-		}
+	if err := c.compileLoopBody(stmt.Body.Statements); err != nil {
+		c.tryScopes = c.tryScopes[:savedTryLen]
+		return err
 	}
 
 	c.tryScopes = c.tryScopes[:savedTryLen]
@@ -1725,10 +1888,8 @@ func (c *Compiler) compileForInStatement(stmt *ast.ForInStatement) error {
 	ctx := c.pushControl(c.takePendingLabel(), true)
 
 	// 循环体
-	for _, s := range stmt.Body.Statements {
-		if err := c.compileStatement(s); err != nil {
-			return err
-		}
+	if err := c.compileLoopBody(stmt.Body.Statements); err != nil {
+		return err
 	}
 
 	c.scope = prevScope
@@ -1765,6 +1926,17 @@ func (c *Compiler) compileForInStatement(stmt *ast.ForInStatement) error {
 }
 
 func (c *Compiler) compileForStatement(stmt *ast.ForStatement) error {
+	// for (using x = expr; cond; upd): 释放落点是整个 for 语句 —— 资源在
+	// init 登记, 循环结束 (含 break / return / 抛异常穿出) 时逆序释放。
+	if us, ok := stmt.Init.(*ast.UsingStatement); ok {
+		return c.withDisposeScopeFor([]*ast.UsingStatement{us}, func() error {
+			return c.compileForStatementCore(stmt)
+		})
+	}
+	return c.compileForStatementCore(stmt)
+}
+
+func (c *Compiler) compileForStatementCore(stmt *ast.ForStatement) error {
 	c.emitter.EmitNoOperand(bytecode.OP_PUSH_SCOPE)
 	prevScope := c.scope
 	c.scope = NewSymbolScope(prevScope)
@@ -1792,7 +1964,9 @@ func (c *Compiler) compileForStatement(stmt *ast.ForStatement) error {
 		c.emitter.EmitNoOperand(bytecode.OP_PUSH_SCOPE)
 		bodyScope := c.scope
 		c.scope = NewSymbolScope(bodyScope)
-		if err := c.compileStatements(stmt.Body.Statements); err != nil {
+		if err := c.withDisposeScope(stmt.Body.Statements, func() error {
+			return c.compileStatements(stmt.Body.Statements)
+		}); err != nil {
 			return err
 		}
 		c.scope = bodyScope
@@ -1826,7 +2000,9 @@ func (c *Compiler) compileForStatement(stmt *ast.ForStatement) error {
 		c.emitter.EmitNoOperand(bytecode.OP_PUSH_SCOPE)
 		bodyScope := c.scope
 		c.scope = NewSymbolScope(bodyScope)
-		if err := c.compileStatements(stmt.Body.Statements); err != nil {
+		if err := c.withDisposeScope(stmt.Body.Statements, func() error {
+			return c.compileStatements(stmt.Body.Statements)
+		}); err != nil {
 			return err
 		}
 		c.scope = bodyScope
@@ -2662,10 +2838,14 @@ func (c *Compiler) compileClassConstructor(fields []*ast.ClassField, ctor *ast.C
 	c.tryScopes = nil
 	prevFinallyRetSlot := c.finallyRetSlot
 	c.finallyRetSlot = -1
+	// using 释放作用域同样不跨函数边界: 内层函数体里出现的 using 只属于它自己。
+	prevDisposeResources := c.disposeResources
+	c.disposeResources = nil
 	// defer: 保证错误早退路径也恢复, 否则 compileTryStatement 的 [:len-1] 会 panic (rCzckg 回归)。
 	defer func() {
 		c.tryScopes = prevTryScopes
 		c.finallyRetSlot = prevFinallyRetSlot
+		c.disposeResources = prevDisposeResources
 	}()
 
 	// 参数默认值 + 解构模式绑定: 必须先于字段初始化与构造体执行
@@ -4141,6 +4321,21 @@ func (c *Compiler) prescanScope(stmts []ast.Statement) error {
 			}
 			for _, d := range s.More {
 				if d.Name != nil && d.Name.Value != destructureSyntheticName {
+					if err := c.prescanDeclare(d.Name.Value, true, false); err != nil {
+						return err
+					}
+				}
+			}
+		case *ast.UsingStatement:
+			// using 绑定是 const 语义 (不可赋值): 预登记为 const, 供 TDZ 与
+			// 重声明早错复用。
+			if s.Name != nil {
+				if err := c.prescanDeclare(s.Name.Value, true, false); err != nil {
+					return err
+				}
+			}
+			for _, d := range s.More {
+				if d.Name != nil {
 					if err := c.prescanDeclare(d.Name.Value, true, false); err != nil {
 						return err
 					}
@@ -5643,10 +5838,14 @@ func (c *Compiler) compileFunctionSelf(name, selfName string, params []*ast.Para
 	c.tryScopes = nil
 	prevFinallyRetSlot := c.finallyRetSlot
 	c.finallyRetSlot = -1
+	// using 释放作用域同样不跨函数边界: 内层函数体里出现的 using 只属于它自己。
+	prevDisposeResources := c.disposeResources
+	c.disposeResources = nil
 	// defer: 保证错误早退路径也恢复, 否则 compileTryStatement 的 [:len-1] 会 panic (rCzckg 回归)。
 	defer func() {
 		c.tryScopes = prevTryScopes
 		c.finallyRetSlot = prevFinallyRetSlot
+		c.disposeResources = prevDisposeResources
 	}()
 
 	// 参数默认值 + 解构模式绑定 (rest 收集由 VM 依 ParameterSpec.IsRest 完成)。
@@ -5666,7 +5865,10 @@ func (c *Compiler) compileFunctionSelf(name, selfName string, params []*ast.Para
 	}
 
 	// 在函数体内不自动添加 PUSH_SCOPE/POP_SCOPE (函数本身已有作用域)
-	if err := c.compileStatements(body.Statements); err != nil {
+	// 函数体里的 using 声明: 在函数体退出 (含 return / 抛异常) 时逆序释放。
+	if err := c.withDisposeScope(body.Statements, func() error {
+		return c.compileStatements(body.Statements)
+	}); err != nil {
 		return nil, err
 	}
 	// 默认返回 undefined
@@ -5796,10 +5998,14 @@ func (c *Compiler) compileAsyncFunctionSelf(name, selfName string, params []*ast
 	c.tryScopes = nil
 	prevFinallyRetSlot := c.finallyRetSlot
 	c.finallyRetSlot = -1
+	// using 释放作用域同样不跨函数边界: 内层函数体里出现的 using 只属于它自己。
+	prevDisposeResources := c.disposeResources
+	c.disposeResources = nil
 	// defer: 保证错误早退路径也恢复, 否则 compileTryStatement 的 [:len-1] 会 panic (rCzckg 回归)。
 	defer func() {
 		c.tryScopes = prevTryScopes
 		c.finallyRetSlot = prevFinallyRetSlot
+		c.disposeResources = prevDisposeResources
 	}()
 
 	spawnIdx := c.constants.AddConstant(object.NewString("__spawn"))

@@ -674,6 +674,33 @@ func setupErrorTypes(env *runtime.Environment) {
 		object.RegisterErrorConstructor("SyntaxError", f)
 		return f
 	}(), false)
+
+	// SuppressedError (ES2023 explicit resource management): 释放资源时又抛错、
+	// 且此前已有挂起异常时的合成错误 (error = 后发生的, suppressed = 被压制的)。
+	env.Declare("SuppressedError", func() *object.BuiltinFunction {
+		f := object.NewBuiltin("SuppressedError", func(args ...object.Value) object.Value {
+			var errV object.Value = object.UndefinedSingleton
+			var suppressedV object.Value = object.UndefinedSingleton
+			msg := ""
+			if len(args) > 0 {
+				errV = args[0]
+			}
+			if len(args) > 1 {
+				suppressedV = args[1]
+			}
+			if len(args) > 2 {
+				msg = toStr(args[2])
+			}
+			e := object.NewSuppressedError(errV, suppressedV)
+			if msg != "" {
+				e.Message = msg
+			}
+			return e
+		})
+		f.ReturnIsValue = true
+		object.RegisterErrorConstructor("SuppressedError", f)
+		return f
+	}(), false)
 }
 
 // newParseIntBuiltin 构造 parseInt 内建函数。

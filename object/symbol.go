@@ -106,3 +106,12 @@ func KeyForSymbol(sym *Symbol) (string, bool) {
 	}
 	return "", false
 }
+
+// SymbolDispose 返回 well-known symbol @@dispose (ES2023 explicit resource
+// management 的同步释放方法键)。与 JS 侧 Symbol.dispose 是同一实例 ——
+// 二者都走 GetGlobalSymbol 注册表。
+func SymbolDispose() *Symbol { return GetGlobalSymbol("Symbol.dispose") }
+
+// SymbolAsyncDispose 返回 well-known symbol @@asyncDispose (await using 的
+// 异步释放方法键)。同上, 与 JS 侧 Symbol.asyncDispose 同一实例。
+func SymbolAsyncDispose() *Symbol { return GetGlobalSymbol("Symbol.asyncDispose") }
