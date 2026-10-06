@@ -9,15 +9,17 @@ package gfx
 //      不写死像素 (字体候选换台机器就变, 写死会变成"只在作者机器上过");
 //   3. **绘制层**: 合成粗体/斜体的像素级行为 —— 用一个**手工构造的掩码**
 //      直接调 blitGlyph, 于是结果与装了什么字体完全无关。
+//      (例外: TestDrawTextStyledDiffersPerAxis 走真实基础字体 —— 它断言的是
+//      "粗细/斜体必须看得出来"这条产品要求; 判据与字体无关, 但像素值会随字体变。)
 //
 // 另外两条"不依赖装了什么字体"的强断言:
 //   - 泛型族 "monospace" 必须真的等宽 (iii 与 WWW 同宽);
 //   - 不认识的族名必须与默认字体**度量完全一致** (静默降级到默认)。
 
 import (
+	"bytes"
 	"image"
 	"image/color"
-	"strings"
 	"testing"
 
 	"github.com/14752222/Gox/object"
@@ -393,15 +395,19 @@ func TestDrawTextStyledDiffersPerAxis(t *testing.T) {
 		DrawTextStyled(img, img.Bounds(), "Hamburgefonstiv", 2, 2, st, color.RGBA{A: 255}, 0)
 		return img
 	}
+	// 像素比较必须用 bytes.Equal —— strings.EqualFold 对**二进制**数据是错的:
+	// 它按 rune 解码, 而非法 UTF-8 的字节一律解成 RuneError, 于是"两个不同的非法
+	// 字节"会被判成相等 (0x80-0xBF 的续字节与 0xFF 都非法)。抗锯齿的中间色大量
+	// 落在这些值上, 所以这个判据会随字体/字号偶然地"看不见差异"。
 	same := func(a, b *image.RGBA) bool {
-		return strings.EqualFold(string(a.Pix), string(b.Pix))
+		return bytes.Equal(a.Pix, b.Pix)
 	}
 	reg := draw(TextStyle{Size: 18})
 	bold := draw(TextStyle{Size: 18, Bold: true})
 	ital := draw(TextStyle{Size: 18, Italic: true})
 
 	if same(reg, bold) {
-		t.Fatalf("粗体与正体的像素应不同 (真变体或合成都必须看得出来)")
+		t.Fatalf("粗体与正体的像素应不同 (真变体或合成都必须看得出来); 基础字体族=%q", baseFamilyKey())
 	}
 	if same(reg, ital) {
 		t.Fatalf("斜体与正体的像素应不同 (合成斜体也要改变落笔位置)")
@@ -504,7 +510,7 @@ func TestTextStyleInheritedByTextNode(t *testing.T) {
 	if def == nil || mono == nil {
 		t.Fatalf("渲染失败")
 	}
-	if strings.EqualFold(string(def.Pix), string(mono.Pix)) {
+	if bytes.Equal(def.Pix, mono.Pix) {
 		t.Fatalf("fontFamily 没有影响到 #text 的绘制")
 	}
 }
