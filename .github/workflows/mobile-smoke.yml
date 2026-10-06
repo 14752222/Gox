@@ -214,6 +214,13 @@ jobs:
         with:
           node-version: '22'
 
+      - name: 断言子包定义已同步（packaging/npm-mobile/ → npm/packages/）
+        run: |
+          set -euo pipefail
+          # 单一真源在主仓 packaging/npm-mobile/<dirname>/metadata.json；
+          # npm/packages/ 下的 package.json 是生成物。手改了生成物忘了刷新定义会在这里红。
+          python3 scripts/gen-npm-mobile-pkgs.py --check
+
       - name: 交叉编译 android 平台子包
         run: |
           set -euo pipefail

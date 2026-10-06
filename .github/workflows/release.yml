@@ -218,6 +218,13 @@ jobs:
       #   ios 由上面的 mobile-ios 作业产出（c-archive 只能在 macOS 上编），下载后
       #       原样落到 dist/npm-mobile-pkgs/（目录名不冲突）；
       #   harmony 不在 CI：要 DevEco SDK 的 clang+sysroot，托管 runner 装不了。
+      - name: 断言子包定义已同步（packaging/npm-mobile/ → npm/packages/）
+        run: |
+          set -euo pipefail
+          # 单一真源在主仓 packaging/npm-mobile/<dirname>/metadata.json；
+          # npm/packages/ 下的 package.json 是生成物。发出去的身份必须与定义一致。
+          python3 scripts/gen-npm-mobile-pkgs.py --check
+
       - name: 交叉编译 android 平台子包
         run: |
           set -euo pipefail

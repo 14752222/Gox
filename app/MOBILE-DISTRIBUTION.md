@@ -108,9 +108,15 @@ bash scripts/fetch-mobile-libs.sh --check-only # 只校验，不落盘（CI 可�
 | `@goxjs/goxjs-mobile-ios-iphoneos-arm64` | `libgox.a` + `libgox.h` |
 | `@goxjs/goxjs-mobile-ios-iphonesimulator-arm64` | `libgox.a` + `libgox.h` |
 
-子包**定义**（`npm/packages/<dirname>/package.json`）是 committed 源文件；**产物目录**
-`dist/npm-mobile-pkgs/<dirname>/` 是构建输出（`dist/` 已 gitignore），由
-`build-npm-mobile.sh` 把 committed 的 `package.json`/`README.md` 拷进去、再落产物与清单。
+子包**定义**（单一真源）在主仓 `packaging/npm-mobile/<dirname>/metadata.json`，经
+`scripts/gen-npm-mobile-pkgs.py` 生成到 `npm/packages/<dirname>/{package.json,README.md}`；
+**产物目录** `dist/npm-mobile-pkgs/<dirname>/` 是构建输出（`dist/` 已 gitignore），由
+`build-npm-mobile.sh` 把生成的 `package.json`/`README.md` 拷进去、再落产物与清单。
+
+> 定义为什么放主仓而不是 `npm/`：`npm/` 是独立仓库（`gox-npm`）的 git submodule，
+> 定义放进子模块就脱离主仓版本管理、也没法跟 `scripts/`、`release.yml` 一起 review。
+> `build-npm-mobile.sh` 也不再硬编码子包表，而是从 `packaging/npm-mobile/` 读
+> （加平台只需加一个定义目录，脚本自动认到）。详见 `packaging/npm-mobile/README.md`。
 
 ---
 
@@ -149,16 +155,49 @@ OHOS clang + musl sysroot 来自 DevEco SDK，需华为账号/许可且体积大
 差异的根因：桌面是**可执行文件**（跑起来就完事），移动端是**要被宿主 App 链接的库**
 （还差一层壳工程把它装进 APK/HAP/App）。
 
+### 5.1 移动端用户：怎么装子包（按平台选一条）
+
+移动端消费方（壳工程）**显式安装**自己那一个平台子包 —— 不需要 `optionalDependencies`，
+也不会因为装了主包而多下几十 MB：
+
+```bash
+# Android（arm64-v8a 真机）
+npm i @goxjs/goxjs-mobile-android-arm64-v8a
+
+# HarmonyOS（arm64-v8a）
+npm i @goxjs/goxjs-mobile-harmony-arm64-v8a
+
+# iOS 真机 / 模拟器（各一个子包，按需）
+npm i @goxjs/goxjs-mobile-ios-iphoneos-arm64
+npm i @goxjs/goxjs-mobile-ios-iphonesimulator-arm64
+```
+
+装完把库落进壳工程（脚本会校验 `manifest.json` 的 `goxVersion` 与逐产物 `sha256`，
+不匹配就拒绝拷贝）：
+
+```bash
+bash scripts/fetch-mobile-libs.sh              # 落进 app/{android,harmony,ios}
+bash scripts/fetch-mobile-libs.sh --check-only # 只校验不落盘（CI 可用）
+```
+
+- 装的是哪个平台、哪个版本，`npm ls @goxjs/goxjs-mobile-*` 一清二楚（不藏在 optional 依赖树里）。
+- **不要**把子包写进任何 `dependencies` / `optionalDependencies` —— 理由见决策 2 与 §2。
+- 子包**版本号与主包同号**（本轮 `0.9.0`）；壳工程 ↔ 引擎版本错配是运行时才崩，编译期拦不住，
+  所以取库前必须过 `goxVersion` 校验。
+
 ---
 
 ## 6. 已落地的改动清单
 
 | 文件 | 作用 |
 |---|---|
-| `npm/packages/goxjs-mobile-*/package.json` + `README.md`（新增） | 4 个平台子包的定义 |
-| `scripts/build-npm-mobile.sh`（重写） | 编 android/harmony/ios 的 libgox，staging 成 `dist/npm-mobile-pkgs/<dirname>/`（含生成的 `manifest.json`） |
+| `packaging/npm-mobile/<dirname>/metadata.json`（新增，**单一真源**） | 4 个平台子包的元数据定义（主仓可版本管理） |
+| `scripts/gen-npm-mobile-pkgs.py`（新增） | 从上面的定义生成 `npm/packages/<dirname>/{package.json,README.md}`；`--check` 供 CI 断言已同步 |
+| `npm/packages/goxjs-mobile-*/{package.json,README.md}`（生成物） | 4 个平台子包的 npm 身份与包页面文案 |
+| `scripts/build-npm-mobile.sh`（重写） | 编 android/harmony/ios 的 libgox，staging 成 `dist/npm-mobile-pkgs/<dirname>/`（含生成的 `manifest.json`）；子包表从 `packaging/npm-mobile/` 读，不硬编码 |
 | `scripts/fetch-mobile-libs.sh`（重写） | 消费端：从已装的平台子包校验 `goxVersion` + 逐产物 `sha256`，再放进三平台壳工程 |
 | `scripts/check-registries.py` | 检查4 改为主包 `files` **不含 `mobile/`**；新增检查5「移动端子包自洽」（命名/版本/清单；对存在的 staging 逐产物比对 sha256） |
+
 | `scripts/build-ios.sh` | 新增 `--lib-only`（只编 `libgox.a`，不碰壳工程/xcodebuild） |
 | `.github/workflows/release.yml` | `mobile-ios` 作业产出 iOS 子包；`publish` 编 android 子包、下载 ios 子包、校验、逐子包 pack/publish |
 | `.github/workflows/mobile-smoke.yml` | `npm-package` 作业：主包 pack **不含 mobile/** 且无大文件回归 + 每个子包 pack 含产物且 sha256 与 manifest 一致 |
