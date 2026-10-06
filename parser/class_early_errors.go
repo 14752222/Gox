@@ -256,6 +256,24 @@ func childNodes(n ast.Node) []ast.Node {
 				out = append(out, d.Value)
 			}
 		}
+	case *ast.UsingStatement:
+		// using / await using 的绑定名与初始化器都是子节点 —— 静态块早错扫描
+		// (BindingIdentifier : Identifier 名为 await) 靠它下钻 (static-init-await-
+		// binding-invalid: `static { using await = null; }`)。
+		if node.Name != nil {
+			out = append(out, node.Name)
+		}
+		if node.Value != nil {
+			out = append(out, node.Value)
+		}
+		for _, d := range node.More {
+			if d.Name != nil {
+				out = append(out, d.Name)
+			}
+			if d.Value != nil {
+				out = append(out, d.Value)
+			}
+		}
 	case *ast.ReturnStatement:
 		if node.ReturnValue != nil {
 			out = append(out, node.ReturnValue)
