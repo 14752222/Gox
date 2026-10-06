@@ -2292,45 +2292,203 @@ func (c *Compiler) compileClassBody(className string, superClass ast.Expression,
 	pidx := c.constants.AddConstant(object.NewString("prototype"))
 	c.emitter.Emit(bytecode.OP_SET_PROP, pidx)
 
-	// 静态方法挂到 ctor
+	// 静态成员: 在类定义求值处、按定义顺序执行 (方法定义与字段初始化器交错,
+	// parser 把二者都放进 Statics 且保序)。其中的 `this` 必须是构造器本身、
+	// 类名绑定也必须已指向构造器 —— 内联发射做不到 (this 会是外层函数的 this,
+	// 而类名要到 class 声明语句末尾才绑定)。故把这些元素编进一个合成函数,
+	// 再用 OP_CALL_METHOD 以 ctor 为 this 调用它。
+	if len(statics) > 0 {
+		initMeta, err := c.compileStaticInitFn(className, superName, statics)
+		if err != nil {
+			return err
+		}
+		initIdx := c.constants.AddConstant(initMeta)
+		// 栈: [ctor] → DUP → [ctor, ctor] → FUNCTION → [ctor, ctor, fn]
+		//   → SWAP → [ctor, fn, ctor] → CALL_METHOD(0) → [ctor, result] → POP → [ctor]
+		c.emitter.EmitNoOperand(bytecode.OP_DUP)
+		c.emitter.Emit(bytecode.OP_FUNCTION, initIdx)
+		c.emitter.EmitNoOperand(bytecode.OP_SWAP)
+		c.emitter.Emit(bytecode.OP_CALL_METHOD, 0)
+		c.emitter.EmitNoOperand(bytecode.OP_POP)
+	}
+	c.currentPrivatePrefix = prevPrefix
+	return nil
+}
+
+// compileStaticInitFn 把类的静态元素 (静态方法 + 静态字段) 编成一个合成函数。
+// 调用者以构造器为 this 调用它, 于是函数内 OP_THIS 即构造器; 函数作用域内
+// 额外把类名绑定到一个局部槽 (= this), 满足 `static b = C.a + 1` 这类
+// 「静态初始化器里引用类名」的规范语义。返回时类名的槽位由 VM 在入口按
+// 下面的 STORE 序列写入。
+func (c *Compiler) compileStaticInitFn(className, superName string, statics []*ast.ClassMethod) (*bytecode.FunctionMetadata, error) {
+	prevScope := c.scope
+	baseSlot := prevScope.NumLocals()
+	fnScope := NewFunctionScope(prevScope)
+	c.scope = fnScope
+
+	// arguments 槽位 (静态初始化器内引用 arguments 是 parser 层早错, 但函数帧
+	// 需要一个槽; 与 compileFunctionSelf 同口径)。
+	argSym := fnScope.Define("__arguments__", false)
+	argSym.Declared = true
+	argumentsSlot := argSym.Slot
+	prevArgumentsSlot := c.currentArgumentsSlot
+	c.currentArgumentsSlot = argumentsSlot
+
+	// 类名绑定: 局部槽指向构造器 (类体求值期间 ClassNameBinding 已初始化)。
+	nameSlot := -1
+	if className != "" && className != "<anonymous>" {
+		sym := fnScope.Define(className, false)
+		sym.Declared = true
+		nameSlot = sym.Slot
+	}
+
+	prevEmitter := c.emitter
+	c.emitter = NewEmitter()
+	prevSrcPositions := c.srcPositions
+	c.srcPositions = nil
+	prevControlStack := c.controlStack
+	c.controlStack = nil
+	prevPendingLabel := c.pendingLabel
+	c.pendingLabel = ""
+	prevTryScopes := c.tryScopes
+	c.tryScopes = nil
+	prevFinallyRetSlot := c.finallyRetSlot
+	c.finallyRetSlot = -1
+	defer func() {
+		c.tryScopes = prevTryScopes
+		c.finallyRetSlot = prevFinallyRetSlot
+	}()
+
+	// 类名槽 = this (构造器)。
+	if nameSlot >= 0 {
+		c.emitter.EmitNoOperand(bytecode.OP_THIS)
+		c.emitter.Emit(bytecode.OP_STORE, uint16(nameSlot))
+	}
+	// 类对象 = this, 压在栈底供各元素写入 (compileStaticElements 假定它在栈顶)。
+	c.emitter.EmitNoOperand(bytecode.OP_THIS)
+	if err := c.compileStaticElements(superName, statics); err != nil {
+		return nil, err
+	}
+	c.emitter.EmitNoOperand(bytecode.OP_RETURN_VOID)
+
+	fnIns := c.emitter.Bytes()
+	fnSrcPositions := c.srcPositions
+	c.srcPositions = prevSrcPositions
+	c.emitter = prevEmitter
+	c.scope = prevScope
+	c.currentArgumentsSlot = prevArgumentsSlot
+	c.controlStack = prevControlStack
+	c.pendingLabel = prevPendingLabel
+	c.tryScopes = prevTryScopes
+	c.finallyRetSlot = prevFinallyRetSlot
+
+	meta := bytecode.NewFunctionMetadata("__static_init__", fnIns, fnScope.NumLocals(), 0, nil, false)
+	meta.BaseSlot = baseSlot
+	meta.ArgumentsSlot = argumentsSlot
+	meta.IsStrict = true
+	meta.Positions = toSrcPosList(fnSrcPositions)
+	return meta, nil
+}
+
+// compileStaticElements 发射静态方法/字段的挂载序列。
+// 前提: 类对象 (构造器) 已在栈顶; 本函数保持其正好一份留在栈顶。
+// 静态字段初始化器按定义顺序求值, this 即该构造器。
+func (c *Compiler) compileStaticElements(superName string, statics []*ast.ClassMethod) error {
+	prevSuper := c.currentSuperClass
+	c.currentSuperClass = superName
+	defer func() { c.currentSuperClass = prevSuper }()
+
 	for _, m := range statics {
-		// 静态字段 (static f = expr): 解析器把它放进 Statics 且 Body 为 nil。
-		// 字段初始化语义尚未实现 —— 此处跳过而不是 nil deref 崩掉编译进程
-		// (崩进程会让 test262 分片子进程整片孤儿)。
+		// 静态字段 (static f = expr / static #x = expr): 解析器把它放进
+		// Statics 且 Body 为 nil。
+		// 栈: [obj] → DUP → [obj, obj] → 值 → 键 → SET_* → [obj]
 		if m.Body == nil {
-			// 静态私有字段 (static #x = v): 挂到 ctor, 键混编码。
 			if m.IsPrivate {
+				// 静态私有字段: 键混编码 (\x00<prefix>:<name>), 外部摸不到。
+				// [obj] → 值 → [obj, val] → SET_PROP(命名键, 弹值留对象) → [obj]
+				if m.FieldValue != nil {
+					if err := c.compileFieldInitValue(m.FieldValue); err != nil {
+						return err
+					}
+				} else {
+					c.emitter.EmitNoOperand(bytecode.OP_UNDEFINED)
+				}
+				keyIdx := c.constants.AddConstant(object.NewString(c.privateKey(m.Name)))
+				c.emitter.Emit(bytecode.OP_SET_PROP, keyIdx)
+				continue
+			}
+			if m.ComputedKey != nil {
+				// 计算键静态字段: static [expr] = value
+				c.emitter.EmitNoOperand(bytecode.OP_DUP)
+				if m.FieldValue != nil {
+					if err := c.compileFieldInitValue(m.FieldValue); err != nil {
+						return err
+					}
+				} else {
+					c.emitter.EmitNoOperand(bytecode.OP_UNDEFINED)
+				}
+				if err := c.compileExpression(m.ComputedKey); err != nil {
+					return err
+				}
+				c.emitter.EmitNoOperand(bytecode.OP_SWAP)
+				c.emitter.EmitNoOperand(bytecode.OP_SET_INDEX)
+				c.emitter.EmitNoOperand(bytecode.OP_POP)
+				continue
+			}
+			// 命名静态字段: static f = value / 裸 static f
+			c.emitter.EmitNoOperand(bytecode.OP_DUP) // [obj, obj]
+			if m.FieldValue != nil {
 				if err := c.compileFieldInitValue(m.FieldValue); err != nil {
 					return err
 				}
-				keyIdx := c.constants.AddConstant(object.NewString(c.privateKey(m.Name)))
-				c.emitter.Emit(bytecode.OP_SET_PROP, keyIdx) // [ctor]
+			} else {
+				c.emitter.EmitNoOperand(bytecode.OP_UNDEFINED)
+			}
+			keyIdx := c.constants.AddConstant(object.NewString(m.Name))
+			c.emitter.Emit(bytecode.OP_SET_PROP, keyIdx) // [obj]
+			continue
+		}
+		// 静态**私有**方法/访问器: 必须走混编码键 (与实例私有方法同键空间),
+		// 否则会被写成名为 "#m" 的公有属性 —— 既让 this.#m 解析不到 (rWVt9D),
+		// 又把私有成员泄漏给类外常规访问。
+		if m.IsPrivate {
+			meta, err := c.compileFunctionWithStrict(true, m.Name, m.Parameters, m.Body, false, m.IsGenerator, m.IsAsync)
+			if err != nil {
+				return err
+			}
+			midx := c.constants.AddConstant(meta)
+			c.emitter.Emit(bytecode.OP_FUNCTION, midx) // [obj, fn]
+			pkeyIdx := c.constants.AddConstant(object.NewString(c.privateKey(m.Name)))
+			switch {
+			case m.IsGetter:
+				c.emitter.Emit(bytecode.OP_SET_GETTER, pkeyIdx)
+			case m.IsSetter:
+				c.emitter.Emit(bytecode.OP_SET_SETTER, pkeyIdx)
+			default:
+				c.emitter.Emit(bytecode.OP_SET_PROP, pkeyIdx)
 			}
 			continue
 		}
 		// 编译静态方法函数
-		prevSuper2 := c.currentSuperClass
-		c.currentSuperClass = superName
 		meta, err := c.compileFunctionWithStrict(true, m.Name, m.Parameters, m.Body, false, m.IsGenerator, m.IsAsync)
 		if err != nil {
 			return err
 		}
-		c.currentSuperClass = prevSuper2
 		midx := c.constants.AddConstant(meta)
 		if m.ComputedKey != nil && !m.IsGetter && !m.IsSetter {
 			// 动态键静态方法: SET_INDEX 弹 [obj, key, val] 三元组,
-			// 先 DUP ctor 让写入消耗副本 (getter/setter 走 DYN 弹2保留 obj, 不需要)。
+			// 先 DUP obj 让写入消耗副本 (getter/setter 走 DYN 弹2保留 obj, 不需要)。
 			c.emitter.EmitNoOperand(bytecode.OP_DUP)
 		}
-		c.emitter.Emit(bytecode.OP_FUNCTION, midx) // [ctor, fn]
+		c.emitter.Emit(bytecode.OP_FUNCTION, midx) // [obj, fn]
 		if m.ComputedKey != nil {
-			// 动态键静态方法: [ctor(, ctor), fn] → key → DYN 访问器/SET_INDEX
+			// 动态键静态方法: [obj(, obj), fn] → key → DYN 访问器/SET_INDEX
 			if err := c.compileExpression(m.ComputedKey); err != nil {
 				return err
 			}
 			switch {
 			case m.IsGetter:
-				// [ctor, fn, key] → SET_GETTER_DYN(弹2留obj) → [ctor]
+				// [obj, fn, key] → SET_GETTER_DYN(弹2留obj) → [obj]
 				c.emitter.EmitNoOperand(bytecode.OP_SET_GETTER_DYN)
 			case m.IsSetter:
 				c.emitter.EmitNoOperand(bytecode.OP_SET_SETTER_DYN)
@@ -2344,14 +2502,13 @@ func (c *Compiler) compileClassBody(className string, superClass ast.Expression,
 		keyIdx := c.constants.AddConstant(object.NewString(m.Name))
 		switch {
 		case m.IsGetter:
-			c.emitter.Emit(bytecode.OP_SET_GETTER, keyIdx) // [ctor]
+			c.emitter.Emit(bytecode.OP_SET_GETTER, keyIdx) // [obj]
 		case m.IsSetter:
-			c.emitter.Emit(bytecode.OP_SET_SETTER, keyIdx) // [ctor]
+			c.emitter.Emit(bytecode.OP_SET_SETTER, keyIdx) // [obj]
 		default:
-			c.emitter.Emit(bytecode.OP_SET_PROP, keyIdx) // [ctor]
+			c.emitter.Emit(bytecode.OP_SET_PROP, keyIdx) // [obj]
 		}
 	}
-	c.currentPrivatePrefix = prevPrefix
 	return nil
 }
 

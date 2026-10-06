@@ -74,6 +74,54 @@ func TestPrivateMethodsAndStatics(t *testing.T) {
 	}
 }
 
+// TestClassStaticFields 静态公有字段初始化器 (rkfPth, 2026-10-06)。
+// 历史缺陷: compileClassBody 对 Body==nil 的公有静态字段直接 continue,
+// 于是 `class C { static s = 1 }` 里 C.s === undefined。
+// 规范要点: 按**定义顺序**在类定义求值处执行; 初始化器内 `this` 指向构造器;
+// 类名绑定在类体求值期间已指向构造器 (故 static b = C.a + 1 成立)。
+func TestClassStaticFields(t *testing.T) {
+	got := evalP(t, `
+		class C { static s = 1; static f() { return 2; } }
+		__out.push("basic:" + C.s + "/" + C.f());
+		class O { static a = 1; static b = O.a + 1; static c = 7; }
+		__out.push("order:" + O.a + O.b + O.c);
+		class T { static t = this; }
+		__out.push("this:" + (T.t === T));
+		let side = 0;
+		class K { static m() { return "m" } static x = (side = 1, "x"); }
+		__out.push("side:" + side + "/" + K.x + "/" + K.m());
+		const E = class { static v = 41; };
+		__out.push("expr:" + E.v);
+	`)
+	want := "basic:1/2\norder:127\nthis:true\nside:1/x/m\nexpr:41\n"
+	if got != want {
+		t.Errorf("静态字段初始化器\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
+// TestPrivateStaticMethods 静态私有方法/访问器 (rWVt9D, 2026-10-06)。
+// 历史缺陷: 静态私有方法走公有发码路径, 被写成名为 "#m" 的**公有**属性 ——
+// this.#m 解析不到 (D.m === undefined) 且私有成员泄漏给类外常规访问。
+// 修法: 静态私有方法/访问器与静态私有字段共用混编码键。
+func TestPrivateStaticMethods(t *testing.T) {
+	got := evalP(t, `
+		class D { static #m() { return 3 } static get m() { return this.#m() } }
+		__out.push("method:" + D.m);
+		__out.push("leak:" + (D["#m"] === undefined));
+		class E { static #v = 5; static get #g() { return this.#v * 2 } static rd() { return this.#g } }
+		__out.push("accessor:" + E.rd());
+		class G { static #z = 1; static has(o) { return #z in o } }
+		__out.push("brand:" + G.has(G) + "/" + G.has({}));
+		class H { static #f = 1; static set(v) { this.#f = v } static get() { return this.#f } }
+		H.set(8);
+		__out.push("rw:" + H.get());
+	`)
+	want := "method:3\nleak:true\naccessor:10\nbrand:true/false\nrw:8\n"
+	if got != want {
+		t.Errorf("静态私有方法/访问器\nwant:\n%s\ngot:\n%s", want, got)
+	}
+}
+
 // TestPrivateInOperator #z in obj 按接收者实例判有。
 func TestPrivateInOperator(t *testing.T) {
 	got := evalP(t, `
