@@ -5970,7 +5970,9 @@ func evalFileVM(path string, moduleEE bool) (*VM, error) {
 		lineMap = res.LineMap
 	}
 
-	c, err := compileSourceOpts(string(code), false, moduleEE, false)
+	// evalTopLevel=false: 本入口是 Script/Module 语境的 Go 侧求值, 不是 JS
+	// eval 语境; 顶层 using 已由 parser.usingAllowed (script 顶层为 false) 拦截。
+	c, err := compileSourceOpts(string(code), false, moduleEE, false, false)
 	if err != nil {
 		if isTS {
 			err = remapSourceError(err, lineMap)

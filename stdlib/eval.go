@@ -209,12 +209,17 @@ func runGlobalEval(env *runtime.Environment, src string, evalThis object.Value, 
 		// 其余 (global/indirect/箭头 eval) 整单元禁止。禁止时含 new.target 的源码
 		// 报 SyntaxError —— 与规范早错一致 (本函数多语句包装那轮会再次尝试并保留
 		// 该错误消息, 故不会被后退的包装掩盖)。
+		//
+		// 两条分支都走 eval 专用编译桥 (evalTopLevel): eval 源码按 Script goal
+		// 解析, 顶层 using / await using 声明是 SyntaxError (规范早错,
+		// test262 using-not-allowed-at-top-level-of-eval.js), 而块内/函数体内的
+		// using 仍合法 (看板 rabcWh)。
 		var fn *object.CompiledFunction
 		var err error
 		if allowNewTarget {
 			fn, err = object.CompileSourceAllowingNewTarget(body)
 		} else {
-			fn, err = object.CompileSource(body)
+			fn, err = object.CompileSourceEval(body)
 		}
 		if err != nil {
 			// 记录最近一次失败原因 (多语句包装那轮的错误最贴近源码位置)

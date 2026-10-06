@@ -27,12 +27,13 @@ func (e *sourceError) Error() string { return e.msg }
 func init() {
 	object.SetCompileSource(compileForBridge)
 	object.SetCompileSourceAllowingNewTarget(compileForBridgeAllowingNewTarget)
+	object.SetCompileSourceEval(compileForBridgeEval)
 }
 
 // compileSource 编译 JS 源码。moduleMode 为 true 时模块有自己的命名空间,
 // 顶层变量不写入共享全局环境 (见 loadModule)。
 func compileSource(src string, moduleMode bool) (*compiler.Compiler, error) {
-	return compileSourceOpts(src, moduleMode, false, false)
+	return compileSourceOpts(src, moduleMode, false, false, false)
 }
 
 // compileSourceOpts 是 compileSource 的带选项版本。
@@ -45,7 +46,12 @@ func compileSource(src string, moduleMode bool) (*compiler.Compiler, error) {
 //     eval 是 stdlib 侧的全局包装函数, 编译期只看到 `(function(){ ... })`, 无从
 //     判定 eval 语境是否允许 new.target, 故保守地整单元禁止
 //     (见 parser.Parser.newTargetForbidden)。
-func compileSourceOpts(src string, moduleMode, moduleEE, forbidNewTarget bool) (*compiler.Compiler, error) {
+//   - evalTopLevel 仅供 eval 编译桥使用: 标记本编译单元是 eval 的源码, 使
+//     parser 对「合成函数体的直接语句 (blockOrFnDepth==1)」上的 using /
+//     await using 声明报早错 (规范: eval 按 Script goal 解析, UsingDeclaration
+//     不被 Block/FunctionBody 等包含即 SyntaxError; 见 parser.usingDeclAllowed)。
+//     new Function 的体是真正的 FunctionBody, **不**置本标志。
+func compileSourceOpts(src string, moduleMode, moduleEE, forbidNewTarget, evalTopLevel bool) (*compiler.Compiler, error) {
 	p := parser.New(lexer.New(src))
 	p.SetModule(moduleMode) // 模块顶层恒严格, 供解析期早错判定
 	if moduleEE {
@@ -53,6 +59,9 @@ func compileSourceOpts(src string, moduleMode, moduleEE, forbidNewTarget bool) (
 	}
 	if forbidNewTarget {
 		p.SetNewTargetForbidden(true)
+	}
+	if evalTopLevel {
+		p.SetEvalTopLevel(true)
 	}
 	program := p.ParseProgram()
 	if p.Errors().HasErrors() {
@@ -68,33 +77,44 @@ func compileSourceOpts(src string, moduleMode, moduleEE, forbidNewTarget bool) (
 }
 
 // compileForBridge 是注册给 object.CompileSource 的实现:
-// 编译源码并取出常量池中的顶层包装函数, 供 stdlib 的 eval / new Function
-// 组装闭包后执行。
+// 编译源码并取出常量池中的顶层包装函数, 供 stdlib 的 new Function /
+// 类字段初始化器合成检查组装闭包后执行。
 //
-// 以 forbidNewTarget=true 编译: eval/Function 的源码被 stdlib 包进函数体,
-// 若照常放行 new.target, global/indirect/arrow eval 里的 new.target 会被静默
-// 求成 undefined 而不是规范要求的 SyntaxError。Gox 的全局 eval 模型无从区分
-// 这些语境, 故一律禁止 (保守近似; 代价是「非箭头函数内的直接 eval」也报错,
-// 见看板边界说明)。
+// 以 forbidNewTarget=true 编译: 包装源码的顶层是函数体, 若照常放行
+// new.target, Function 构造器产物里的 new.target 会被静默求成 undefined 而不
+// 是规范要求的行为。Gox 的全局模型无从区分这些语境, 故一律禁止 (保守近似)。
+//
+// **不置 evalTopLevel**: 本桥服务的是 new Function (FunctionBody, using 合法)
+// 与合成 class 检查, 均非 eval 语境。eval 语境走 compileForBridgeEval
+// (看板 rabcWh)。
 func compileForBridge(src string) (*object.CompiledFunction, error) {
-	c, err := compileSourceOpts(src, false, false, true)
-	if err != nil {
-		return nil, err
-	}
-	meta := lastFunctionMeta(c)
-	if meta == nil {
-		return nil, fmt.Errorf("compile: no function metadata in output")
-	}
-	return metaToCompiledFunction(meta, c.Constants().Constants), nil
+	return bridgeCompile(src, true, false)
 }
 
-// compileForBridgeAllowingNewTarget 与 compileForBridge 同, 但**放行** new.target。
+// compileForBridgeEval 是注册给 object.CompileSourceEval 的实现:
+// global/indirect/箭头 eval 的源码 (stdlib 的 runGlobalEval 非允许 new.target
+// 分支)。相对 compileForBridge 只多置 evalTopLevel —— eval 源码按 Script goal
+// 解析, 其顶层的 using / await using 声明是 SyntaxError
+// (规范 sec-let-const-using-and-await-using-declarations-static-semantics-
+// early-errors; test262 using-not-allowed-at-top-level-of-eval.js)。
+func compileForBridgeEval(src string) (*object.CompiledFunction, error) {
+	return bridgeCompile(src, true, true)
+}
+
+// compileForBridgeAllowingNewTarget 与 compileForBridgeEval 同 (eval 语境,
+// evalTopLevel=true), 但**放行** new.target。
 // 仅「非箭头函数体内的直接 eval」这一语境由 stdlib 经 object.CompileSource-
 // AllowingNewTarget 使用 —— 该语境下 eval 源码 (含其内箭头) 出现 new.target 合法,
 // 值由 VM 写入的调用者 new.target 决定 (见 runGlobalEval / SetDirectEvalNewTarget)。
-// 其余语境 (global/indirect/箭头 eval、Function 构造器) 仍走 compileForBridge 禁止。
+// 其余语境 (global/indirect/箭头 eval、Function 构造器) 仍走各自桥 (禁止/非 eval)。
 func compileForBridgeAllowingNewTarget(src string) (*object.CompiledFunction, error) {
-	c, err := compileSourceOpts(src, false, false, false)
+	return bridgeCompile(src, false, true)
+}
+
+// bridgeCompile 是三条编译桥的公用躯干: forbidNewTarget 控制 new.target 早错,
+// evalTopLevel 控制 eval 顶层 using / await using 早错 (见 compileSourceOpts)。
+func bridgeCompile(src string, forbidNewTarget, evalTopLevel bool) (*object.CompiledFunction, error) {
+	c, err := compileSourceOpts(src, false, false, forbidNewTarget, evalTopLevel)
 	if err != nil {
 		return nil, err
 	}

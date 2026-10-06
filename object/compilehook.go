@@ -26,9 +26,24 @@ var compileSourceHook CompileSourceFunc
 // Function 构造器) 一律禁止, 走 compileSourceHook。
 var compileSourceNTAllowedHook CompileSourceFunc
 
+// compileSourceEvalHook 是「eval 源码」专用的编译实现。与 compileSourceHook
+// 的差别仅在解析期的 eval 顶层早错判定 (parser.SetEvalTopLevel): eval 源码
+// 按 Script goal 解析, `using` / `await using` 声明出现在其顶层是 SyntaxError
+// (规范 sec-let-const-using-and-await-using-declarations-static-semantics-
+// early-errors; test262 using-not-allowed-at-top-level-of-eval.js)。
+// 而 new Function 的体是真正的 FunctionBody (using 合法), 必须走
+// compileSourceHook, 故两者分开注册 (看板 rabcWh)。
+var compileSourceEvalHook CompileSourceFunc
+
 // SetCompileSource 注册编译实现, 由 vm 包在初始化时调用。
 func SetCompileSource(f CompileSourceFunc) {
 	compileSourceHook = f
+}
+
+// SetCompileSourceEval 注册 eval 源码专用的编译实现, 由 vm 包在初始化时调用
+// (eval 内建经 CompileSourceEval / CompileSourceAllowingNewTarget 使用)。
+func SetCompileSourceEval(f CompileSourceFunc) {
+	compileSourceEvalHook = f
 }
 
 // SetCompileSourceAllowingNewTarget 注册「允许 new.target」的编译实现,
@@ -52,6 +67,16 @@ func CompileSourceAllowingNewTarget(src string) (*CompiledFunction, error) {
 		return nil, errors.New("CompileSourceAllowingNewTarget: compile hook not registered (vm package not linked)")
 	}
 	return compileSourceNTAllowedHook(src)
+}
+
+// CompileSourceEval 编译 eval 源码为顶层函数 (eval 顶层 using / await using
+// 早错生效)。只有调用方确认为「eval 语境」时才应使用; new Function 等
+// FunctionBody 语境请使用 CompileSource。
+func CompileSourceEval(src string) (*CompiledFunction, error) {
+	if compileSourceEvalHook == nil {
+		return nil, errors.New("CompileSourceEval: compile hook not registered (vm package not linked)")
+	}
+	return compileSourceEvalHook(src)
 }
 
 // directEvalThis 记录最近一次「直接 eval 调用」的上下文 —— 调用者帧生效的
