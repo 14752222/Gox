@@ -232,6 +232,30 @@
 
 **本轮补充证据（修正口径）**：`rm16Za` 的「无 `Object.prototype` 原型链」**不止限于内建命名空间**——`Object.getPrototypeOf({}) === Object.prototype` 为 **false**、`({}).hasOwnProperty` 为 `undefined`（而方法本身在 `Object.prototype` 上存在）⇒ **所有 `o.hasOwnProperty(...)` / `o.isPrototypeOf(...)` / `o.propertyIsEnumerable(...)` 的隐式调用形式全族受影响**，建议升 P1。
 
+## 十四、已完成（2026-10-06 合流批次三：对象原型链 / 形参解构与早错 / 类静态块 / 模块早错 / new.target）
+
+由 5 条并行工作流（每流一个 worktree + 分支 + agent，基线 `7a016b6` = 批次二的合流树）各自 `cherry-pick` 进 `merge/batch3`；
+`go build ./...` + `go vet` 干净，`go test`（parser / compiler / object / stdlib / bytecode / vm / runtime / config）全绿，随后**串行全量 A/B**：
+`language` **16640 / 23726 = 70.13%**（同机同口径基线 `7a016b6` 实测 **16263**；**GAIN 384 / LOST 7**，净 **+377**）。
+
+> **基线口径说明**：本次实测基线 **16263**，与批次二记录的 16261 差 **2** —— 即 `-jobs 4` 下仍有 ±2 的用例判定漂移。分片固化（`test262ShardCount=128`）只保证「结果对 `-jobs` 确定」，**不是每例真隔离**（与 `rjeHji` 的遗留说明一致：引擎包级状态仍在，相隔 ≤128 条的邻居仍可互相影响）。
+
+| 项 | 结果 |
+|---|---|
+| 对象字面量 `[[Prototype]]` + 内建原型链（`rm16Za`） | ✅ 新增 `object.NewPlainObject()`，`OP_NEW_OBJECT` 走它 ⇒ `Object.getPrototypeOf({}) === Object.prototype`；`stdlib.linkBuiltinPrototypes()` 把内建命名空间 / 原始值包装器接上各自原型。定向 `-filter Object/prototype` **49/248 → 106/248**；全量 **GAIN 52 / LOST 0** |
+| 形参位置解构 + 形参早错 + 默认值 TDZ（`rGXXZ6` / `r9JAuo`） | ✅ `function f([a,b])` / 方法形参解构；非简单形参 + `"use strict"` 指令 ⇒ SyntaxError；箭头形参唯一名；形参默认值 TDZ。定向合并集 **386/594 → 519/594（+133）**；全量 **GAIN 181 / LOST 0** |
+| ES2022 类静态初始化块 `static { }`（`rJ56bZ`） | ✅ `ast.IsStaticBlock` + `parser/class_static_block.go` + 编译器按**定义顺序**在类定义求值时执行。定向 `statements/class/static-init` **11/27 → 23/27（+12）** |
+| 模块早错 + `new import()` 早错（`rTI1PN` / `r9fWvc`） | ✅ 新增 `parser/module_early_errors.go`（重复导出名 / 未声明导出 / 顶层 return）；`new import(...)` 判 SyntaxError；宿主经 `vm.EvalFileVMModuleEarlyErrors` **单独**开启模块早错而不改运行语义。定向 `module-code` **226/617 → 258/617**、`dynamic-import` **512/1010 → 574/1010**；全量 **GAIN 102 / LOST 0** |
+| 元属性 `new.target`（`rvi5ZG`） | ✅ `ast.MetaProperty` + 新字节码/常量 + 词法合法性上下文（非箭头函数体内合法、箭头**词法透明**、script/module/eval 顶层非法）+ eval/Function 编译桥整单元禁止。定向 `-filter new\.target` **7/22 → 17/22（+10）**；全量 **GAIN 26 / LOST 0** |
+| 合流冲突：`vm` 编译入口被两条路线各自重命名 | ✅ 合并为**一个 4 参 `compileSourceOpts(src, moduleMode, moduleEE, forbidNewTarget)`**（取代 `compileSourceEE` / `compileSourceOpts` 两份并行实现），三个调用点同步更新 |
+
+**7 条 LOST 全部归因（同一家族，遮羞布被揭）**：`static-init-await-reference.js`、`static-init-await-binding-invalid.js`（variable / let / const 各一）、`static-init-invalid-await.js`、`identifier-shorthand-static-init-await-invalid.js`、`obj-ptrn-elem-id-static-init-await-invalid.js`。
+base 上这些负例「通过」是因为 `static {` **整段解析失败**（实测 base 输出 `unexpected token in class body: LBRACE`），并非真的报了规范要求的早错；批次三让 `static {}` 能解析后，**缺的早错（`ClassStaticBlock` 内 `await` 作标识符引用/绑定名恒为 SyntaxError）**才暴露出来。⇒ 另立 `r5T1AR`。
+
+**本轮新增跟踪单**：
+- `r5T1AR` —— 类静态块内 `await` 早错缺失（上条 7 例的正面修复；**不能靠 strict 判定**：`await` 在 sloppy 下是普通标识符，必须按「类静态块上下文」单独标记，且不跨 function / 嵌套静态块边界）。
+- `rNAtZs` —— `new.target` 收尾 5 例（箭头函数**运行时**词法继承需 `object.Closure` 槽 / `Reflect.construct(Target, args, newTarget)` 的 newTarget 桥 / 派生构造器里 `new.target` 应为最初被 `new` 的那个构造器）。
+- `r81aQt` —— `parser`：名为 `async` 的 async 方法解析失败（`({async async(){}})` / `class C { async async(){} }`）。
 ## 待确认（信息缺口）
 
 - `agent_doc/undecided-and-unimplemented.md` 是 **2026-09-18 快照**，其 §四 缺口清单中已有多项（cocoa 后端、iOS 后端、X11 修正、M2 IME、滚动条拖拽、tabs、table/tree、tooltip）在 09-18 后落地。本路线图已按 git 历史更正，但**建议回填该台账**，否则后续排期会继续基于过期口径。
