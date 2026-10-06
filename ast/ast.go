@@ -685,6 +685,7 @@ type ClassMethod struct {
 	IsGenerator   bool       // 是否生成器方法: *name() {}
 	IsAsync       bool       // 是否 async 方法: async name() {}
 	IsPrivate     bool       // 是否 #name 私有成员 (Name 含前导 #)
+	IsStaticBlock bool       // 是否静态初始化块 static { ... } (Body 为块体, 无参数)
 	Parameters    []*Parameter
 	Body          *BlockStatement
 	FieldValue    Expression // 字段值 (方法解析时若为字段则非 nil)

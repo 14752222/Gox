@@ -2428,6 +2428,25 @@ func (c *Compiler) compileStaticElements(superName string, statics []*ast.ClassM
 	defer func() { c.currentSuperClass = prevSuper }()
 
 	for _, m := range statics {
+		// 静态初始化块 static { ... }: 与静态字段同层, 按定义顺序执行。
+		// 规范 ClassStaticBlock 是一个 OrdinaryFunctionCreate, 有自己的作用域
+		// (var 不泄漏) 且 this = 构造器本身 ⇒ 编成独立合成函数, 再以当前
+		// 类对象为 this 调用 (与 compileClassBody 调用 __static_init__ 同一手法)。
+		// 栈: [obj] → DUP → [obj, obj] → FUNCTION → [obj, obj, fn]
+		//   → SWAP → [obj, fn, obj] → CALL_METHOD(0) → [obj, result] → POP → [obj]
+		if m.IsStaticBlock {
+			meta, err := c.compileFunctionWithStrict(true, "", nil, m.Body, false, false, false)
+			if err != nil {
+				return err
+			}
+			midx := c.constants.AddConstant(meta)
+			c.emitter.EmitNoOperand(bytecode.OP_DUP)
+			c.emitter.Emit(bytecode.OP_FUNCTION, midx)
+			c.emitter.EmitNoOperand(bytecode.OP_SWAP)
+			c.emitter.Emit(bytecode.OP_CALL_METHOD, 0)
+			c.emitter.EmitNoOperand(bytecode.OP_POP)
+			continue
+		}
 		// 静态字段 (static f = expr / static #x = expr): 解析器把它放进
 		// Statics 且 Body 为 nil。
 		// 栈: [obj] → DUP → [obj, obj] → 值 → 键 → SET_* → [obj]

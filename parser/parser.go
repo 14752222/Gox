@@ -3568,6 +3568,12 @@ func (p *Parser) parseClassMember() *ast.ClassMethod {
 		if p.curTokenIs(lexer.PRIVATE_NAME) {
 			return p.parsePrivateMember(member)
 		}
+		// static { ... }: 静态初始化块 (ES2022 ClassStaticBlock)。
+		// static 后紧跟 '{' 只可能是静态块 (字段初始化器需要 '=' 或终止符,
+		// 方法需要名字/参数表), 故这里无歧义。
+		if p.curTokenIs(lexer.LBRACE) {
+			return p.parseStaticBlock(member)
+		}
 	}
 
 	// async 方法/生成器: async name() {} / async *name() {} / async [expr]() {}
