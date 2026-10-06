@@ -124,7 +124,7 @@ jobs:
             echo "===== apt-get update ====="; sudo apt-get update -q
             echo "===== apt-get install ====="; sudo apt-get install -yq xvfb fonts-dejavu-core fonts-noto-cjk
             echo "===== xvfb-run go test ./... ====="
-            xvfb-run -a -s "-screen 0 1280x800x24" go test ./...
+            GOX_SHOTS_STATS=1 xvfb-run -a -s "-screen 0 1280x800x24" go test ./...
           ) >"$log" 2>&1
           rc=$?
           echo "---- 原始输出尾部（末 60 行）----"
@@ -136,6 +136,12 @@ jobs:
           failtests="$(grep -aE '^[[:space:]]*--- FAIL:' "$log" | sed -E 's/^[[:space:]]+//' | tr '\n' ';' | cut -c1-900)"
           sigcount="$(grep -acE 'panic:|fatal error:|test timed out|DATA RACE' "$log")"
           echo "::error::linux/xvfb go test 失败 rc=${rc}｜失败包=[${failpkgs:-（无 FAIL 行，可能红在 apt 或构建期）}]｜失败用例=[${failtests:-（无 --- FAIL 行）}]｜panic或超时命中=${sigcount}"
+          # 注解散布在几条上：一条塞满会顶到注解长度上限，而定位靠的正是这些数值。
+          failmsg="$(grep -aE '_test\.go:[0-9]+:' "$log" | grep -av '非底色像素' | sed -E 's/^[[:space:]]+//' | tr '\n' '|' | cut -c1-1200)"
+          # 画廊/测量类用例的**实测**统计：跨平台阈值漂移必须拿数字说话，不能靠猜。
+          gstats="$(grep -aE '非底色像素' "$log" | sed -E 's/^[[:space:]]+//' | tr '\n' '|' | cut -c1-1600)"
+          echo "::error::linux/xvfb 断言明细=[${failmsg:-（无 _test.go 行）}]"
+          if [ -n "$gstats" ]; then echo "::error::linux/xvfb 画廊实测=[${gstats}]"; fi
           exit "$rc"
 
       - name: go test ./...
