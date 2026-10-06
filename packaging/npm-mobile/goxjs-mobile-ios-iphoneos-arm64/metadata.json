@@ -1,0 +1,20 @@
+{
+  "dirname": "goxjs-mobile-ios-iphoneos-arm64",
+  "name": "@goxjs/goxjs-mobile-ios-iphoneos-arm64",
+  "platform": "ios",
+  "abi": "iphoneos-arm64",
+  "description": "Gox 移动端预编译库 —— iOS 真机 arm64（libgox.a，c-archive + libgox.h）。@goxjs/goxjs 的平台子包（M11）",
+  "keywords": ["gox", "javascript", "runtime", "mobile", "ios", "iphoneos", "arm64"],
+  "artifacts": ["libgox.a", "libgox.h"],
+  "libName": "libgox.a",
+  "buildmode": "c-archive",
+  "readmeTitle": "@goxjs/goxjs-mobile-ios-iphoneos-arm64",
+  "readmeIntro": "Gox 运行时在 **iOS 真机 arm64** 上的预编译静态库（`libgox.a`，Go `-buildmode=c-archive`，附 `libgox.h`）。",
+  "readmeArtifacts": [
+    "| `libgox.a` | Gox 引擎（lexer → parser → 字节码 VM → gfx）编成的 c-archive |",
+    "| `libgox.h` | 全部 `//export` 的 C 声明（Swift 侧 `import` 用） |",
+    "| `manifest.json` | `goxVersion` + 本产物 `sha256`/`size`（取库前校验，防版本错配） |"
+  ],
+  "readmeHost": "壳工程（Swift 宿主）",
+  "readmeDest": "`app/ios/libs/iphoneos-arm64/`"
+}

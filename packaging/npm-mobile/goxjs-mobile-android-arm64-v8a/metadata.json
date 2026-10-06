@@ -1,0 +1,19 @@
+{
+  "dirname": "goxjs-mobile-android-arm64-v8a",
+  "name": "@goxjs/goxjs-mobile-android-arm64-v8a",
+  "platform": "android",
+  "abi": "arm64-v8a",
+  "description": "Gox 移动端预编译库 —— Android arm64-v8a（libgox.so，c-shared）。@goxjs/goxjs 的平台子包（M11）",
+  "keywords": ["gox", "javascript", "runtime", "mobile", "android", "arm64-v8a"],
+  "artifacts": ["libgox.so"],
+  "libName": "libgox.so",
+  "buildmode": "c-shared",
+  "readmeTitle": "@goxjs/goxjs-mobile-android-arm64-v8a",
+  "readmeIntro": "Gox 运行时在 **Android arm64-v8a** 上的预编译库（`libgox.so`，Go `-buildmode=c-shared`）。",
+  "readmeArtifacts": [
+    "| `libgox.so` | Gox 引擎（lexer → parser → 字节码 VM → gfx）编成的共享库 |",
+    "| `manifest.json` | `goxVersion` + 本产物 `sha256`/`size`（取库前校验，防版本错配） |"
+  ],
+  "readmeHost": "壳工程（Kotlin 宿主）",
+  "readmeDest": "`app/src/main/jniLibs/arm64-v8a/`"
+}

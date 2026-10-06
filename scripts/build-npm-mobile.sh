@@ -11,9 +11,15 @@
 #   2. 移动端产物是 .so/.a（单平台 20–30MB），塞进主包会把每个桌面用户从 ~20MB
 #      顶到 ~72MB —— 所以按「平台 × ABI」拆成独立子包，谁用谁装。
 #
-# 子包目录 = `npm/packages/<dirname>/package.json`（**committed 源文件**，本脚本只读它、
+# 子包目录 = `npm/packages/<dirname>/package.json`（**committed 生成物**，本脚本只读它、
 # 不改它）+ 本脚本拷进去的产物 + 生成的 manifest.json。所有产物落到
 # `dist/npm-mobile-pkgs/<dirname>/`，CI 直接从这些目录 `npm publish`。
+#
+# ⚠️ 子包定义的**单一真源**在主仓 `packaging/npm-mobile/<dirname>/metadata.json`
+#    （可版本管理，不进 gox-npm 子模块）。`npm/packages/<dirname>/{package.json,README.md}`
+#    是 `scripts/gen-npm-mobile-pkgs.py` 从它生成的产物 —— 要加/改子包，改主仓的
+#    metadata.json 再跑一次生成器，**不要手改 npm/packages/ 下的文件**（会被覆盖）。
+#    本脚本的 subpkg_dirname 表也从这些定义读（见下面 load_subpkg_table），不再硬编码。
 #
 # 三个平台的产物与来源（复用既有脚本，不重复实现编译细节）：
 #   android  scripts/build-android.sh          → dist/android/<abi>/libgox.so
@@ -86,17 +92,44 @@ pkg_version() {
   fi
 }
 
-# 子包目录名 ← 平台 + ABI（包内 ABI 记号）。表是唯一真源，加平台/ABI 就在这里加一行。
+# 子包 dirname ← 平台 + ABI。表是**从主仓定义目录**读出来的（单一真源 =
+# packaging/npm-mobile/<dirname>/metadata.json），不是硬编码：加平台/ABI 只需在
+# packaging/npm-mobile/ 里加一个目录 + 跑一次 gen-npm-mobile-pkgs.py。
+#
+# 用 node 解析 metadata.json 的 platform/abi → dirname 映射（node 是本脚本的既有
+# 依赖，见上面的 command -v node）。结果缓存在 _SUBPKG_TABLE，只算一次。
+_SUBPKG_TABLE=""
+load_subpkg_table() {
+  [ -n "$_SUBPKG_TABLE" ] && return 0
+  command -v node >/dev/null 2>&1 || { echo "error: node not found in PATH（用来读 packaging/npm-mobile/ 定义）" >&2; return 1; }
+  _SUBPKG_TABLE=$(node -e '
+    const fs = require("fs"), path = require("path");
+    const defs = path.join(process.cwd(), "packaging", "npm-mobile");
+    const out = [];
+    if (fs.existsSync(defs)) {
+      for (const name of fs.readdirSync(defs).sort()) {
+        const mf = path.join(defs, name, "metadata.json");
+        if (!fs.statSync(path.join(defs, name)).isDirectory()) continue;
+        if (!fs.existsSync(mf)) continue;
+        const m = JSON.parse(fs.readFileSync(mf, "utf8"));
+        out.push(`${m.platform}/${m.abi} ${m.dirname}`);
+      }
+    }
+    process.stdout.write(out.join("\n"));
+  ' 2>/dev/null) || return 1
+  if [ -z "$_SUBPKG_TABLE" ]; then
+    echo "error: 从 packaging/npm-mobile/ 读不到任何子包定义 —— 定义目录丢了或 metadata.json 不合法" >&2
+    return 1
+  fi
+}
+
 subpkg_dirname() { # subpkg_dirname <platform> <abi>  → 打印 dirname，未知则返回 1
-  case "$1/$2" in
-    android/arm64-v8a)      echo "goxjs-mobile-android-arm64-v8a" ;;
-    android/armeabi-v7a)    echo "goxjs-mobile-android-armeabi-v7a" ;;
-    android/x86_64)         echo "goxjs-mobile-android-x86_64" ;;
-    harmony/arm64-v8a)      echo "goxjs-mobile-harmony-arm64-v8a" ;;
-    ios/iphoneos-arm64)     echo "goxjs-mobile-ios-iphoneos-arm64" ;;
-    ios/iphonesimulator-arm64) echo "goxjs-mobile-ios-iphonesimulator-arm64" ;;
-    *) return 1 ;;
-  esac
+  load_subpkg_table || return 1
+  local key="$1/$2" line
+  while IFS= read -r line; do
+    [ "${line%% *}" = "$key" ] && { echo "${line#* }"; return 0; }
+  done <<< "$_SUBPKG_TABLE"
+  return 1
 }
 
 # 在 $OUT 下建一个干净的子包目录，并把 committed 的 package.json / README.md 拷进去。
@@ -108,8 +141,10 @@ init_subpkg() { # init_subpkg <dirname>
   local src="npm/packages/$1/package.json"
   if [ ! -f "$src" ]; then
     echo "error: 子包未定义：$src 不存在" >&2
-    echo "       移动端子包按「平台 × ABI」拆开，新增一个得先在 npm/packages/<dirname>/" >&2
-    echo "       放好 package.json（见 app/MOBILE-DISTRIBUTION.md）。" >&2
+    echo "       移动端子包按「平台 × ABI」拆开，新增一个得先在主仓" >&2
+    echo "       packaging/npm-mobile/<dirname>/metadata.json 里定义，" >&2
+    echo "       再跑 python3 scripts/gen-npm-mobile-pkgs.py 生成 npm/packages/。" >&2
+    echo "       见 app/MOBILE-DISTRIBUTION.md。" >&2
     return 1
   fi
   rm -rf "$dir"
@@ -135,7 +170,9 @@ write_manifest_for() { # write_manifest_for <dirname> <platform> <abi>
     return 1
   fi
 
-  local pkgname; pkgname=$(node -p "require('./$dir/package.json').name")
+  # 用绝对路径喂 node：--out 可能给的是 Windows 盘符路径（F:/tmp/…），
+  # `require('./F:/tmp/…')` 会被当成相对路径（'./' 前缀）而 MODULE_NOT_FOUND。
+  local pkgname; pkgname=$(node -p "require(require('path').resolve(process.argv[1])).name" "$dir/package.json")
   local ver; ver=$(pkg_version)
 
   {
