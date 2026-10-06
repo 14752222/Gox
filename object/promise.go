@@ -97,12 +97,17 @@ func (p *Promise) Resolve(val Value) {
 				}),
 				NextPromise: nil,
 			})
+			// IsCatch 必须为 true: invokePromiseCallbacks 只对 IsCatch 的回调
+			// 走 rejection 分支。此前漏标 ⇒ 内层 promise 稍后被 reject 时本
+			// 回调被静默跳过, 外层 p 永久停留 pending —— 即 "then 回调返回一个
+			// 最终会 reject 的 promise 时派生 promise 永不 reject"。
 			innerPromise.CatchCallbacks = append(innerPromise.CatchCallbacks, PromiseCallback{
 				Callback: NewBuiltin("__inner_reject", func(args ...Value) Value {
 					p.Reject(args[0])
 					return UndefinedSingleton
 				}),
 				NextPromise: nil,
+				IsCatch:     true,
 			})
 			innerPromise.mu.Unlock()
 			p.mu.Unlock()
