@@ -880,6 +880,97 @@ func (vm *VM) RunCompiled(c *compiler.Compiler) error {
 	return vm.execute()
 }
 
+// RunCompiledAsync 以"主单元即生成器"的方式驱动含顶层 await 的模块。
+//
+// 模块顶层是 +Await 上下文 (TLA): 顶层 await 被编译成主单元字节码里的
+// OP_YIELD 挂起点。这里把主单元包装成一个无闭包生成器 (Closure==nil),
+// 逐次恢复; 每次挂起后按 await 语义结算操作数。
+//
+// 已知边界 (本版刻意不做): 结算建立在 Gox 的"同步 Promise 模型"上 ——
+// 非 Promise 原样透传, 已结算的 Promise 由 Then 回调同步取值。
+// **pending** 的 Promise (典型: `await new Promise(r => setTimeout(r, 0))`)
+// 需要真实异步模块图求值 (§16.2.1.5.2 ExecuteAsyncModule /
+// AsyncModuleExecutionFulfilled), 本版不实现: 直接报错而不是在模块加载期
+// 重入事件循环 —— 模块加载发生在入口脚本执行期, 期间跑事件循环会污染
+// runner 的包级状态并导致分片超时 (实测)。
+//
+// 与 RunCompiled 的差别仅在驱动方式: 主帧仍是 frame#0, 顶层声明的槽位与
+// OP_EXPORT_BINDING 的读取器都指向同一份 Locals (rebuildGenFrame 对
+// Closure==nil 的生成器强制复用数组)。
+func (vm *VM) RunCompiledAsync(c *compiler.Compiler) error {
+	gen := &object.Generator{
+		PC:            0,
+		Started:       false,
+		PrologueBound: true, // 首帧由 gen.PC/Locals 直接重建, 无闭包可调用
+		Locals:        make([]object.Value, c.NumLocals()),
+		Constants:     c.Constants().Constants,
+		Instructions:  c.Bytes(),
+	}
+	saved := currentVM
+	currentVM = vm
+	defer func() { currentVM = saved }()
+	return vm.runProtected(func() error { return vm.driveMainUnit(gen) })
+}
+
+// driveMainUnit 驱动主单元生成器直到完成。
+func (vm *VM) driveMainUnit(gen *object.Generator) error {
+	val, done, err := vm.genResume(gen, object.UndefinedSingleton)
+	for !done {
+		if err != nil {
+			return err
+		}
+		res, thrown := vm.settleTopLevelAwait(val)
+		if thrown != nil {
+			// await 的 Promise 被 reject: 作为异常抛回生成器 (体内 try/catch 可捕获)
+			val, done, err = vm.genThrow(gen, thrown)
+		} else {
+			val, done, err = vm.genResume(gen, res)
+		}
+	}
+	return err
+}
+
+// settleTopLevelAwait 结算一个顶层 await 的操作数, 返回 (resolved, thrown)。
+// thrown 非 nil 表示该值是被 reject 的 Promise。
+//
+// 非 Promise 原样透传; 已结算 Promise 由 Then/Catch 回调同步给出值 (Gox
+// 同步 Promise 模型); pending Promise 不支持 (见 RunCompiledAsync 说明)。
+func (vm *VM) settleTopLevelAwait(val object.Value) (object.Value, object.Value) {
+	p, ok := val.(*object.Promise)
+	if !ok {
+		return val, nil // 非 Promise: await 原样透传
+	}
+	var got bool
+	var resolved object.Value
+	var thrown object.Value
+	p.Then(object.NewBuiltin("__tla_ok", func(args ...object.Value) object.Value {
+		got = true
+		if len(args) > 0 {
+			resolved = args[0]
+		} else {
+			resolved = object.UndefinedSingleton
+		}
+		return object.UndefinedSingleton
+	}))
+	p.Catch(object.NewBuiltin("__tla_err", func(args ...object.Value) object.Value {
+		got = true
+		if len(args) > 0 {
+			thrown = args[0]
+		} else {
+			thrown = object.UndefinedSingleton
+		}
+		return object.UndefinedSingleton
+	}))
+	if !got {
+		return object.UndefinedSingleton,
+			object.NewErrorWithName("Error", "top-level await: promise did not settle synchronously")
+	}
+	if thrown != nil {
+		return object.UndefinedSingleton, thrown
+	}
+	return resolved, nil
+}
+
 // execute 设置当前 VM 并从主帧开始执行。
 func (vm *VM) execute() error {
 	saved := currentVM
@@ -3671,13 +3762,21 @@ func (vm *VM) loadModuleFile(spec, absPath string) (*ModuleExports, error) {
 	}
 	modVM.mainUnit.isModule = true // 标记为模块单元: 其函数登记进 units 注册表
 	modVM.SetStmtPositions(c.StmtPositions())
-	if err := modVM.RunCompiled(c); err != nil {
+	// 顶层 await (TLA): 主单元含 OP_YIELD 挂起点, 必须走异步生成器驱动;
+	// 普通模块仍走同步 RunCompiled。
+	var runErr error
+	if c.HasTopLevelAwait() {
+		runErr = modVM.RunCompiledAsync(c)
+	} else {
+		runErr = modVM.RunCompiled(c)
+	}
+	if runErr != nil {
 		// 执行失败不缓存半成品, 便于上层重试时报出同样错误
 		delete(vm.modules, absPath)
 		vm.currentExports = savedExports
 		vm.moduleBase = savedBase
 		// 附加源码帧 (此前直接 %v, 模块内异常只有一行消息没有帧)。
-		return nil, fmt.Errorf("Module execution error: %v", modVM.AttachFrame(err))
+		return nil, fmt.Errorf("Module execution error: %v", modVM.AttachFrame(runErr))
 	}
 
 	// 恢复状态
@@ -4250,6 +4349,12 @@ func (vm *VM) genReturn(gen *object.Generator, returnVal object.Value) (object.V
 // { a = 6; yield f() }` 会错读到形参初值。复用同一数组使这些闭包与函数体
 // 共享绑定, 与"前导段与函数体同一帧"的语义一致。
 func (vm *VM) rebuildGenFrame(gen *object.Generator, reuseLocals bool) *Frame {
+	// 主单元生成器 (模块顶层 TLA, Closure==nil): 全程复用同一份 Locals
+	// 数组。顶层导出绑定 (OP_EXPORT_BINDING) 的读取器持有该数组引用,
+	// 恢复时若拷贝成新数组, await 之后的赋值对导出方不可见。
+	if gen.Closure == nil {
+		reuseLocals = true
+	}
 	// 帧基 = 当前栈高 (SavedStack 之前的顶端)。必须先取再压 SavedStack:
 	// SavedStack 是挂起时「帧基之上」的中间值 (如 2 + (yield 3) 中的 2),
 	// 恢复后仍应位于帧基之上; 若压入后再取栈高, 帧基被抬到 SavedStack 之上,

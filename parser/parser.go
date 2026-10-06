@@ -348,6 +348,13 @@ func (p *Parser) ParseProgram() *ast.Program {
 	inPrologue := true
 	// 顶层语句允许 import/export (ModuleItem); 进块/函数体后置 false。
 	p.moduleTopLevel = true
+	// 模块顶层是 +Await 上下文 (top-level await, ES2022):
+	// ModuleItem 的语法参数带 +Await, 故模块顶层的 `await expr` 合法, 且
+	// for-await 头部也合法。函数/类体经 setAllowAwait 重置, 不会外泄 —— 见
+	// setAllowAwait 的说明。script 顶层仍是 ~Await, await 只是普通标识符。
+	if p.module {
+		p.allowAwait = true
+	}
 	for !p.curTokenIs(lexer.EOF) {
 		startIsString := p.curTokenIs(lexer.STRING_LITERAL)
 		stmt := p.parseStatement()
@@ -1555,6 +1562,14 @@ func (p *Parser) parseFunctionDeclaration(isAsync bool) *ast.FunctionDeclaration
 // ==================== 参数解析 ====================
 
 func (p *Parser) parseParameters(close lexer.TokenType) []*ast.Parameter {
+	// 形参区恒为 ~Await 上下文 (规范 FormalParameters[~Yield, ~Await]):
+	// 即便所在函数是 async、即便处于模块顶层 (+Await) 或另一个 async 体内,
+	// 形参默认值里出现 await 表达式都是 SyntaxError
+	// (test262 top-level-await/syntax/early-does-not-propagate-to-fn-declaration-params.js)。
+	// 显式重置, 避免继承外层 +Await。
+	restoreAwait := p.setAllowAwait(false)
+	defer restoreAwait()
+
 	params := []*ast.Parameter{}
 
 	if p.peekTokenIs(close) {

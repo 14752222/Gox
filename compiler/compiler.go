@@ -95,6 +95,16 @@ type Compiler struct {
 	// 普通 async 函数的内层体为 false (await 仍 OP_YIELD)。
 	asyncGeneratorBody bool
 
+	// fnDepth 记录当前编译位置所处的函数嵌套层数 (模块/脚本顶层为 0)。
+	// 用于区分"模块顶层的顶层 await (TLA)"与"函数体内的 await" —— 顶层
+	// await 需要 VM 把主单元当生成器驱动 (见 vm.RunCompiledAsync)。
+	fnDepth int
+
+	// topLevelAwait 标记本编译单元 (模块) 顶层出现过 await / for await。
+	// 置位后 Compile 产物的"主单元"含 OP_YIELD 挂起点, 模块求值必须走异步
+	// 驱动; VM 由 HasTopLevelAwait 读取该标志决定驱动方式。
+	topLevelAwait bool
+
 	// innerGenRestPreCollected 标记「即将编译的函数是 async / async-generator
 	// 的**内层 generator**」。这类函数的 wrapper 已经把末尾 rest 实参收成数组,
 	// 再作为**单个实参**传给内层 —— 所以内层末位参数 (含解构模式) 不能再按
@@ -226,6 +236,11 @@ func New() *Compiler {
 
 // SetModuleMode 设置模块编译模式。
 func (c *Compiler) SetModuleMode(v bool) { c.moduleMode = v }
+
+// HasTopLevelAwait 报告本模块顶层是否含 await / for await (TLA)。
+// 为真时主单元字节码含 OP_YIELD 挂起点, 模块求值必须由 VM 异步驱动
+// (vm.RunCompiledAsync) —— 直接 RunCompiled 会得到 "yield outside generator"。
+func (c *Compiler) HasTopLevelAwait() bool { return c.topLevelAwait }
 
 // Bytes 返回编译后的字节码。
 func (c *Compiler) Bytes() bytecode.Instructions { return c.emitter.Bytes() }
@@ -1466,7 +1481,11 @@ func (c *Compiler) compileForOfStatement(stmt *ast.ForOfStatement) error {
 //     异常被吞掉 (原异常胜出, closePC 处再套一层 catch 丢弃); break/return
 //     路径上 close 的异常照常传播。done 正常出口与 continue 不调 return()。
 func (c *Compiler) compileForAwaitOfStatement(stmt *ast.ForOfStatement) error {
-	if !c.inAsyncFunction {
+	// async 函数体内合法; 模块顶层 (TLA) 同样合法 —— 它与顶层 await 走
+	// 同一条"主单元当生成器"的驱动路径。
+	if c.moduleMode && c.fnDepth == 0 {
+		c.topLevelAwait = true
+	} else if !c.inAsyncFunction {
 		return fmt.Errorf("compiler: SyntaxError: 'for await...of' is only allowed inside an async function")
 	}
 
@@ -3383,6 +3402,12 @@ func (c *Compiler) compileExpression(expr ast.Expression) error {
 		// async generator 体内用 OP_AWAIT: 它与 OP_YIELD 的帧语义完全相同,
 		// 但会让异步生成器驱动识别为内部挂起点 (等待后自动恢复), 与消费者
 		// 可见的 yield (OP_YIELD) 区分开。普通 async 函数体内仍是 OP_YIELD。
+		//
+		// 模块顶层 (fnDepth==0) 的 await 是顶层 await (TLA): 它同样编为
+		// OP_YIELD, 但主单元本身成为生成器 —— 由 vm.RunCompiledAsync 驱动。
+		if c.moduleMode && c.fnDepth == 0 {
+			c.topLevelAwait = true
+		}
 		if err := c.compileExpression(node.Argument); err != nil {
 			return err
 		}
@@ -5348,6 +5373,12 @@ func (c *Compiler) compileFunctionWithStrict(strict bool, name string, params []
 // 函数自身 (ES 规范 NamedFunctionExpression 作用域)，VM 调用时把闭包
 // 写入对应槽位。参数与 selfName 同名时参数优先 (规范行为)。
 func (c *Compiler) compileFunctionSelf(name, selfName string, params []*ast.Parameter, body *ast.BlockStatement, isArrow, isGenerator, isAsync bool) (*bytecode.FunctionMetadata, error) {
+	// 函数嵌套层数 +1: 顶层 await (TLA) 只在 fnDepth==0 判定, 任何函数
+	// (含 async 的内层 generator 体) 都在 >=1 层。defer 覆盖所有返回路径,
+	// 包括下方 async / async generator 的早退分支。
+	c.fnDepth++
+	defer func() { c.fnDepth-- }()
+
 	// 非箭头函数开辟独立的 arguments 作用域, 其内的 eval 不再受「类字段
 	// 初始化器」规则约束 (规范: 该规则按直接 eval 的运行上下文判定, 嵌套
 	// 普通函数的上下文不是初始化器)。箭头函数无独立 arguments 作用域,
