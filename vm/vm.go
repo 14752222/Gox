@@ -3427,6 +3427,17 @@ func (vm *VM) instanceOf(left, right object.Value) object.Value {
 		}
 	}
 
+	// 规范 7.3.19 OrdinaryHasInstance 第 3 步: 左值不是对象时直接返回
+	// false, 且**不读取** rval.prototype —— getter/setter 不得被触发
+	// (test262 instanceof/prototype-getter-with-primitive.js: 在
+	// Function.prototype 上装抛错 getter 后 `0 instanceof Function.prototype`
+	// 必须静默得 false)。此前无条件读 ctorProto, 该用例依赖
+	// defineProperty 对函数类是 no-op 才"意外"通过; 自有属性接口打通后
+	// 必须按规范短路。
+	if !object.IsObjectLike(left) {
+		return object.NewBoolean(false)
+	}
+
 	// 右侧构造器的 prototype 属性
 	var ctorProto object.Value
 	switch c := right.(type) {
@@ -5244,6 +5255,17 @@ func (vm *VM) addValues(a, b object.Value) (object.Value, error) {
 func (vm *VM) getIndex(obj, index object.Value) object.Value {
 	switch o := obj.(type) {
 	case *object.Array:
+		// 已通过 Object.defineProperty 定义过描述符 (索引访问器 / 不可写)
+		// 的数组, 索引读必须走描述符通道 (GetProperty 调 getter), 与自有
+		// 属性接口保持一致。PropDescs 为空 (绝大多数数组) 时走下方的快速
+		// 路径, 行为与此前完全一致。
+		if len(o.PropDescs) > 0 {
+			val, found := o.GetProperty(toJSString(index))
+			if !found || val == nil {
+				return object.UndefinedSingleton
+			}
+			return val
+		}
 		if n, ok := index.(*object.Number); ok {
 			idx := int(n.Value)
 			if idx >= 0 && idx < len(o.Elements) {
@@ -5899,6 +5921,13 @@ func (vm *VM) resolveAsyncSymbolIterator(val object.Value) (object.Value, bool, 
 func (vm *VM) setIndex(obj, index, val object.Value) {
 	switch o := obj.(type) {
 	case *object.Array:
+		// 已通过 Object.defineProperty 定义过描述符的数组, 索引写走
+		// SetProperty 的描述符语义 (访问器调 setter / 不可写静默失败)。
+		// PropDescs 为空时走下方快速路径, 行为与此前完全一致。
+		if len(o.PropDescs) > 0 {
+			o.SetProperty(toJSString(index), val)
+			return
+		}
 		if n, ok := index.(*object.Number); ok {
 			idx := int(n.Value)
 			if idx >= 0 {

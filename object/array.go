@@ -11,6 +11,12 @@ type Array struct {
 	proto Value
 	// ExtraProps 存储非数字索引的额外属性 (如 exec 返回的 index, input)
 	ExtraProps map[string]Value
+	// PropDescs 存储 Object.defineProperty 显式定义过的自有属性描述符
+	// (按属性名)。存在描述符时, 读/写该属性必须经描述符语义
+	// (访问器调 getter/setter、不可写数据属性拒绝赋值), 见 OwnPropertyStore。
+	PropDescs map[string]PropertyDescriptor
+	// propKeyOrder 记录 PropDescs 字符串键的定义顺序 (OwnKeys 用)。
+	propKeyOrder []string
 }
 
 // ArrayProto 是所有数组实例的原型对象。
@@ -54,6 +60,21 @@ func (a *Array) GetProperty(name string) (Value, bool) {
 		return NewInt(int64(len(a.Elements))), true
 	}
 
+	// 显式定义过的描述符 (Object.defineProperty): 访问器调用 getter
+	// (this = 数组本身), 数据属性返回描述符的值。
+	if d, ok := a.PropDescs[name]; ok {
+		if acc, isAcc := d.Value.(*Accessor); isAcc {
+			if acc.Getter != nil && IsCallable(acc.Getter) {
+				return CallFunction(acc.Getter, a), true
+			}
+			return UndefinedSingleton, true
+		}
+		if d.Value == nil {
+			return UndefinedSingleton, true
+		}
+		return d.Value, true
+	}
+
 	// 额外属性 (如 index, input)
 	if a.ExtraProps != nil {
 		if val, ok := a.ExtraProps[name]; ok {
@@ -87,12 +108,36 @@ func (a *Array) SetProperty(name string, val Value) {
 			if newLen >= 0 {
 				if newLen < len(a.Elements) {
 					a.Elements = a.Elements[:newLen]
+					// 截断同时删除越界索引上的显式描述符 (规范: 缩小
+					// length 会移除该位置的自有属性)。
+					a.dropDescsFrom(newLen)
 				} else {
 					for len(a.Elements) < newLen {
 						a.Elements = append(a.Elements, UndefinedSingleton)
 					}
 				}
 			}
+		}
+		return
+	}
+
+	// 显式定义过的描述符优先: 访问器调用 setter (this = 数组本身);
+	// 不可写数据属性静默失败 (非严格模式), 与 *Object.SetProperty 一致。
+	if d, ok := a.PropDescs[name]; ok {
+		if acc, isAcc := d.Value.(*Accessor); isAcc {
+			if acc.Setter != nil && IsCallable(acc.Setter) {
+				CallFunction(acc.Setter, a, val)
+			}
+			return
+		}
+		if !d.Writable {
+			return
+		}
+		d.Value = val
+		a.PropDescs[name] = d
+		// 索引数据属性同步 Elements, 使不经描述符通道的读保持一致。
+		if idx, err := strconv.Atoi(name); err == nil && idx >= 0 && idx < len(a.Elements) {
+			a.Elements[idx] = val
 		}
 		return
 	}

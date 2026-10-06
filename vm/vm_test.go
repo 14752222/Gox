@@ -890,7 +890,10 @@ func TestInstanceofOperator(t *testing.T) {
 	}{
 		{`let a = [1,2,3]; a instanceof Array;`, true},
 		{`let a = [1,2,3]; a instanceof Object;`, true},
-		{`let s = "hi"; s instanceof String;`, true},
+		// 规范 7.3.19 OrdinaryHasInstance: 左值是原始值时直接 false
+		// (不读取 C.prototype)。旧断言 true 是非规范行为; test262
+		// instanceof/prototype-getter-with-primitive.js 依赖该短路。
+		{`let s = "hi"; s instanceof String;`, false},
 		{`let m = new Map(); m instanceof Map;`, true},
 		{`let r = /ab/; r instanceof RegExp;`, true},
 		{`let p = Promise.resolve(1); p instanceof Promise;`, true},

@@ -320,6 +320,8 @@ func proxyBuiltinTagFor(p *object.Proxy) string {
 }
 
 // hasOwnPropertyImpl 实现 hasOwnProperty 的"自有属性"查询。
+// 实现 OwnPropertyStore 的值 (普通对象 / globalThis / 数组 / 函数类)
+// 统一走接口; 字符串 / Error 等保留各自的自有键规则。
 func hasOwnPropertyImpl(this object.Value, key object.Value) bool {
 	if this == nil {
 		return false
@@ -332,20 +334,10 @@ func hasOwnPropertyImpl(this object.Value, key object.Value) bool {
 		return false
 	}
 	name := propertyKeyString(key)
+	if store, ok := this.(object.OwnPropertyStore); ok {
+		return store.HasOwn(name)
+	}
 	switch t := this.(type) {
-	case *object.Object:
-		return t.HasOwnProperty(name)
-	case *object.GlobalObject:
-		// globalThis 把所有 (非词法) 全局绑定都当作自有属性。
-		return t.HasOwn(name)
-	case *object.Array:
-		if name == "length" {
-			return true
-		}
-		if idx, err := strconv.Atoi(name); err == nil {
-			return idx >= 0 && idx < len(t.Elements)
-		}
-		return false
 	case *object.String:
 		if name == "length" {
 			return true
@@ -360,18 +352,14 @@ func hasOwnPropertyImpl(this object.Value, key object.Value) bool {
 			return true
 		}
 		return false
-	case *object.Closure, *object.BuiltinFunction, *object.BuiltinMethod:
-		// 函数类值的 name 是自有属性 (值存在结构体字段, 见 object.NamePropertyOf)。
-		if name == "name" {
-			return true
-		}
-		return false
 	}
 	return false
 }
 
 // propertyIsEnumerableImpl 实现 propertyIsEnumerable: 自有且 Enumerable=true。
 // 调用方已按 ToObject/ToPropertyKey 处理 this 与 key (经 propertyKeyString)。
+// 实现 OwnPropertyStore 的值统一经 OwnDescriptor 判枚举性 (数组 length 因此
+// 不再被误判为可枚举); 字符串保持码元索引口径。
 func propertyIsEnumerableImpl(this object.Value, key object.Value) bool {
 	if this == nil {
 		return false
@@ -385,15 +373,12 @@ func propertyIsEnumerableImpl(this object.Value, key object.Value) bool {
 		return false
 	}
 	name := propertyKeyString(key)
-	switch t := this.(type) {
-	case *object.Object:
-		desc, ok := t.Properties[name]
+	if store, ok := this.(object.OwnPropertyStore); ok {
+		desc, ok := store.OwnDescriptor(name)
 		return ok && desc.Enumerable
-	case *object.GlobalObject:
-		desc, ok := t.OwnDescriptor(name)
-		return ok && desc.Enumerable
-	case *object.Array, *object.String:
-		// 索引元素 / length 均为可枚举自有属性 (简化模型)。
+	}
+	if _, ok := this.(*object.String); ok {
+		// 字符串索引均为可枚举自有属性 (简化模型)。
 		return hasOwnPropertyImpl(this, key)
 	}
 	return false

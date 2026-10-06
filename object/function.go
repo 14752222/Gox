@@ -28,6 +28,10 @@ type CompiledFunction struct {
 	Name string
 	// IsArrow 标识是否为箭头函数
 	IsArrow bool
+	// IsMethod 标识该函数是否由"方法定义"产出 (对象字面量简洁方法 /
+	// 访问器 / class 方法)。这类函数没有 [[Construct]], 除 generator /
+	// async-generator 方法外无 prototype 自有属性 (OwnPropertyStore 用)。
+	IsMethod bool
 	// IsGenerator 标识是否为生成器函数 (function*)
 	IsGenerator bool
 	// IsAsync 标识是否为 async 函数
@@ -123,6 +127,11 @@ type Closure struct {
 	CreatedAtFrame int               // 创建时的帧索引 (用于递归自引用检测)
 	Proto          Value             // prototype 属性 (new 实例的原型; 箭头函数无)
 	Props          map[string]Value  // 其他可设置属性 (如 class 的静态方法)
+	// PropDescs 存储 Object.defineProperty 显式定义过的自有属性描述符
+	// (按属性名)。读取优先于 Props 与 name/length/prototype 的结构体语义,
+	// 使 defineProperty 定义的访问器/不可写属性在函数对象上可观测,
+	// 见 OwnPropertyStore。
+	PropDescs map[string]PropertyDescriptor
 	// FuncPrototype 是函数对象自身的 [[Prototype]] (与实例侧的 Proto 不同)。
 	// 按函数种类指向 %Function.prototype% / %GeneratorFunction.prototype% /
 	// %AsyncFunction.prototype% / %AsyncGeneratorFunction.prototype%。
@@ -141,6 +150,20 @@ func (c *Closure) Inspect() string {
 func (c *Closure) IsTruthy() bool { return true }
 
 func (c *Closure) GetProperty(name string) (Value, bool) {
+	// 显式定义过的描述符 (Object.defineProperty) 优先: 访问器调用 getter
+	// (this = 闭包本身), 数据属性返回描述符的值。
+	if d, ok := c.PropDescs[name]; ok {
+		if acc, isAcc := d.Value.(*Accessor); isAcc {
+			if acc.Getter != nil && IsCallable(acc.Getter) {
+				return CallFunction(acc.Getter, c), true
+			}
+			return UndefinedSingleton, true
+		}
+		if d.Value == nil {
+			return UndefinedSingleton, true
+		}
+		return d.Value, true
+	}
 	// 先查自定义属性 (如 class 的静态方法/静态访问器)
 	if c.Props != nil {
 		if val, ok := c.Props[name]; ok {
@@ -212,6 +235,22 @@ func (c *Closure) GetProperty(name string) (Value, bool) {
 }
 
 func (c *Closure) SetProperty(name string, val Value) {
+	// 显式定义过的描述符优先: 访问器调用 setter (this = 闭包本身);
+	// 不可写数据属性静默失败 (与 GetProperty 的 PropDescs 分支对称)。
+	if d, ok := c.PropDescs[name]; ok {
+		if acc, isAcc := d.Value.(*Accessor); isAcc {
+			if acc.Setter != nil && IsCallable(acc.Setter) {
+				CallFunction(acc.Setter, c, val)
+			}
+			return
+		}
+		if !d.Writable {
+			return
+		}
+		d.Value = val
+		c.PropDescs[name] = d
+		return
+	}
 	if name == "prototype" {
 		c.Proto = val
 		return
@@ -242,6 +281,9 @@ type BuiltinFunction struct {
 	Name       string
 	Fn         func(args ...Value) Value
 	Properties map[string]Value // 静态属性 (如 String.fromCharCode)
+	// PropDescs 存储 Object.defineProperty 显式定义过的自有属性描述符,
+	// 读取优先于 Properties 与 name/length 的结构体语义, 见 OwnPropertyStore。
+	PropDescs map[string]PropertyDescriptor
 	// ReturnIsValue 为 true 时，Fn 返回的 *Error 是"普通值"而非异常，
 	// VM 不会将其抛出。典型例子: Error/TypeError 等错误构造器——
 	// new Error("x") 与 Error("x") 都应返回错误对象本身，而不是 throw。
@@ -259,6 +301,19 @@ func (b *BuiltinFunction) Inspect() string {
 func (b *BuiltinFunction) IsTruthy() bool { return true }
 
 func (b *BuiltinFunction) GetProperty(name string) (Value, bool) {
+	// 显式定义过的描述符 (Object.defineProperty) 优先。
+	if d, ok := b.PropDescs[name]; ok {
+		if acc, isAcc := d.Value.(*Accessor); isAcc {
+			if acc.Getter != nil && IsCallable(acc.Getter) {
+				return CallFunction(acc.Getter, b), true
+			}
+			return UndefinedSingleton, true
+		}
+		if d.Value == nil {
+			return UndefinedSingleton, true
+		}
+		return d.Value, true
+	}
 	// 先查自定义属性
 	if b.Properties != nil {
 		if val, ok := b.Properties[name]; ok {
@@ -331,6 +386,9 @@ func NamePropertyOf(v Value) (PropertyDescriptor, bool) {
 type BuiltinMethod struct {
 	Name string
 	Fn   func(this Value, args ...Value) Value
+	// PropDescs 存储 Object.defineProperty 显式定义过的自有属性描述符,
+	// 见 OwnPropertyStore。
+	PropDescs map[string]PropertyDescriptor
 	// FuncPrototype 是函数对象自身的 [[Prototype]]。nil 时回退到全局
 	// %Function.prototype%。
 	FuncPrototype Value
@@ -344,6 +402,19 @@ func (b *BuiltinMethod) Inspect() string {
 func (b *BuiltinMethod) IsTruthy() bool { return true }
 
 func (b *BuiltinMethod) GetProperty(name string) (Value, bool) {
+	// 显式定义过的描述符 (Object.defineProperty) 优先。
+	if d, ok := b.PropDescs[name]; ok {
+		if acc, isAcc := d.Value.(*Accessor); isAcc {
+			if acc.Getter != nil && IsCallable(acc.Getter) {
+				return CallFunction(acc.Getter, b), true
+			}
+			return UndefinedSingleton, true
+		}
+		if d.Value == nil {
+			return UndefinedSingleton, true
+		}
+		return d.Value, true
+	}
 	switch name {
 	case "name":
 		return NewString(b.Name), true

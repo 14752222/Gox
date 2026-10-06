@@ -265,15 +265,12 @@ func setupObjectGlobal() *object.BuiltinFunction {
 			return object.NewBoolean(false)
 		}
 		key := toStr(args[1])
-		if g, ok := args[0].(*object.GlobalObject); ok {
-			return object.NewBoolean(g.HasOwn(key))
+		// 统一自有属性接口: 普通对象 / globalThis / 数组 / 函数类一视同仁
+		// (数组索引与 length、函数的 name/length/prototype 都是自有属性)。
+		if store, ok := args[0].(object.OwnPropertyStore); ok {
+			return object.NewBoolean(store.HasOwn(key))
 		}
-		obj, ok := args[0].(*object.Object)
-		if !ok {
-			return object.NewBoolean(false)
-		}
-		_, exists := obj.Properties[key]
-		return object.NewBoolean(exists)
+		return object.NewBoolean(false)
 	}))
 
 	// Object.defineProperty(obj, prop, descriptor)
@@ -293,27 +290,27 @@ func setupObjectGlobal() *object.BuiltinFunction {
 			g.DefineGlobal(toStr(args[1]), desc)
 			return args[0]
 		}
-		obj, ok := args[0].(*object.Object)
-		if !ok {
-			// 函数/数组/顶层 this 等非 *Object 对象: 本期内建属性槽尚不支持, 保持 no-op。
-			// (Gox 顶层 this 目前是 undefined —— 既有建模缺口, 见 vm 顶层 this 绑定。
-			//  因此这里不能对"非对象 target"抛 TypeError, 否则会打断大量
-			//  Object.defineProperty(this, ...) 类 test262 用例。)
-			return args[0]
-		}
-		// Symbol 键: 必须写入 SymbolProperties (按 Symbol.ID), 不能经
-		// toStr 落成 "Symbol(...)" 字符串键 —— 否则符号键属性读不到,
-		// 且 Object.defineProperty(X, Symbol.toStringTag, ...) 全部失效。
-		if sym, isSym := args[1].(*object.Symbol); isSym {
-			if errVal := defineOneSymbolProperty(obj, sym, args[2]); errVal != nil {
+		// 统一自有属性接口: 普通对象 / 数组 / 函数类都经 OwnPropertyStore
+		// 落地描述符 —— 数组索引访问器、函数 name/length 重定义等此前进
+		// 非 *Object 分支一律静默 no-op, 现在走各类型自己的描述符通道。
+		if store, ok := args[0].(object.OwnPropertyStore); ok {
+			if sym, isSym := args[1].(*object.Symbol); isSym {
+				// Symbol 键只有 *Object 有 SymbolProperties 槽; 数组/函数
+				// 无符号键属性, 静默忽略 (与 globalThis 分支一致)。
+				if o, ok := args[0].(*object.Object); ok {
+					if errVal := defineOneSymbolProperty(o, sym, args[2]); errVal != nil {
+						return errVal
+					}
+				}
+				return args[0]
+			}
+			if errVal := defineOneProperty(store, toStr(args[1]), args[2]); errVal != nil {
 				return errVal
 			}
 			return args[0]
 		}
-		key := toStr(args[1])
-		if errVal := defineOneProperty(obj, key, args[2]); errVal != nil {
-			return errVal
-		}
+		// 原始值等: 本运行时不实现包装对象, 保持 no-op (规范里对基本值
+		// 应先 ToObject; Gox 的 new Number(5) 得到的也是 number)。
 		return args[0]
 	}))
 
@@ -334,59 +331,32 @@ func setupObjectGlobal() *object.BuiltinFunction {
 			}
 			return describeProperty(desc)
 		}
-		// Symbol 键: 查 SymbolProperties。
+		// Symbol 键: *Object 查 SymbolProperties; 其它实现 OwnPropertyStore
+		// 的类型 (数组/函数) 无符号键属性槽, 返回 undefined (规范同样是
+		// undefined 而非 TypeError)。
 		if sym, isSym := args[1].(*object.Symbol); isSym {
-			sobj, ok := args[0].(*object.Object)
-			if !ok {
-				return object.NewTypeError("Object.getOwnPropertyDescriptor called on non-object")
+			if sobj, ok := args[0].(*object.Object); ok {
+				sdesc, found := sobj.GetSymbolPropertyDescriptor(sym)
+				if !found {
+					return object.UndefinedSingleton
+				}
+				return describeProperty(sdesc)
 			}
-			sdesc, found := sobj.GetSymbolPropertyDescriptor(sym)
-			if !found {
+			if _, ok := args[0].(object.OwnPropertyStore); ok {
 				return object.UndefinedSingleton
 			}
-			return describeProperty(sdesc)
+			return object.NewTypeError("Object.getOwnPropertyDescriptor called on non-object")
 		}
-		key := toStr(args[1])
-		var desc object.PropertyDescriptor
-		if obj, ok := args[0].(*object.Object); ok {
-			d, exists := obj.Properties[key]
+		// 字符串键: 统一走自有属性接口 —— 普通对象查 Properties, 数组查
+		// 索引/length/defineProperty 描述符, 函数查 name/length/prototype。
+		if store, ok := args[0].(object.OwnPropertyStore); ok {
+			desc, exists := store.OwnDescriptor(toStr(args[1]))
 			if !exists {
 				return object.UndefinedSingleton
 			}
-			desc = d
-		} else if key == "name" {
-			// 函数类值 (Closure / 内建函数) 的 name 是自有属性, 但值存在
-			// 结构体字段而非 Object.Properties 里 —— 这里显式报告它, 使
-			// 规范要求的 {writable:false, enumerable:false, configurable:true}
-			// 描述符可被观察到。
-			d, ok := object.NamePropertyOf(args[0])
-			if !ok {
-				return object.NewTypeError("Object.getOwnPropertyDescriptor called on non-object")
-			}
-			desc = d
-		} else {
-			return object.NewTypeError("Object.getOwnPropertyDescriptor called on non-object")
+			return describeProperty(desc)
 		}
-		result := object.NewObject()
-		// 反映真实描述符属性 (此前硬编码 configurable=false / enumerable=true)。
-		result.SetProperty("configurable", object.NewBoolean(desc.Configurable))
-		result.SetProperty("enumerable", object.NewBoolean(desc.Enumerable))
-		if acc, isAcc := desc.Value.(*object.Accessor); isAcc {
-			if acc.Getter != nil {
-				result.SetProperty("get", acc.Getter)
-			} else {
-				result.SetProperty("get", object.UndefinedSingleton)
-			}
-			if acc.Setter != nil {
-				result.SetProperty("set", acc.Setter)
-			} else {
-				result.SetProperty("set", object.UndefinedSingleton)
-			}
-			return result
-		}
-		result.SetProperty("value", desc.Value)
-		result.SetProperty("writable", object.NewBoolean(desc.Writable))
-		return result
+		return object.NewTypeError("Object.getOwnPropertyDescriptor called on non-object")
 	}))
 
 	// Object.setPrototypeOf(obj, proto)
@@ -419,21 +389,14 @@ func setupObjectGlobal() *object.BuiltinFunction {
 			}
 			return object.NewArray(result)
 		}
-		if obj, ok := args[0].(*object.Object); ok {
-			keys := obj.Keys()
-			result := make([]object.Value, len(keys))
-			for i, k := range keys {
+		// 统一自有属性接口: 普通对象 / 数组 (索引+length+defineProperty 键) /
+		// 函数类 (length/name/prototype/静态成员) 一视同仁。
+		if store, ok := args[0].(object.OwnPropertyStore); ok {
+			ks := store.OwnKeys()
+			result := make([]object.Value, len(ks))
+			for i, k := range ks {
 				result[i] = object.NewString(k)
 			}
-			return object.NewArray(result)
-		}
-		if arr, ok := args[0].(*object.Array); ok {
-			n := len(arr.Elements)
-			result := make([]object.Value, n+1)
-			for i := 0; i < n; i++ {
-				result[i] = object.NewString(strconv.Itoa(i))
-			}
-			result[n] = object.NewString("length")
 			return object.NewArray(result)
 		}
 		return object.NewArray([]object.Value{})
@@ -483,6 +446,16 @@ func setupObjectGlobal() *object.BuiltinFunction {
 			}
 			return result
 		}
+		// 统一自有属性接口: 数组 / 函数类同样返回逐属性描述符表。
+		if store, ok := args[0].(object.OwnPropertyStore); ok {
+			result := object.NewObject()
+			for _, k := range store.OwnKeys() {
+				if d, ok := store.OwnDescriptor(k); ok {
+					result.SetProperty(k, describeProperty(d))
+				}
+			}
+			return result
+		}
 		return object.NewObject()
 	}))
 
@@ -517,11 +490,10 @@ func setupObjectGlobal() *object.BuiltinFunction {
 		if len(args) < 2 {
 			return object.UndefinedSingleton
 		}
-		obj, ok := args[0].(*object.Object)
+		// 统一自有属性接口: 普通对象 / 数组 / 函数类都可作 target。
+		// 原始值等非对象仍抛 TypeError (规范 ToObject 前的目标校验)。
+		store, ok := args[0].(object.OwnPropertyStore)
 		if !ok {
-			// 保持既有行为: 非 *Object 目标抛 TypeError (数组 / 基本值 / 函数
-			// 等内建属性槽本期内尚不支持)。与 defineProperty 的 no-op 不同 ——
-			// 那是历史行为, 且顶层 this===undefined 依赖它。
 			return object.NewTypeError("Object.defineProperties: target must be an object")
 		}
 		props, ok := args[1].(*object.Object)
@@ -533,11 +505,11 @@ func setupObjectGlobal() *object.BuiltinFunction {
 			if !found {
 				continue
 			}
-			if errVal := defineOneProperty(obj, key, descVal); errVal != nil {
+			if errVal := defineOneProperty(store, key, descVal); errVal != nil {
 				return errVal
 			}
 		}
-		return obj
+		return args[0]
 	}))
 
 	// Object.getOwnPropertySymbols(obj) (ES6): 返回 Symbol 自有键
@@ -603,6 +575,8 @@ func ownKeysArg(args []object.Value, api string) ([]string, object.Value) {
 
 // ownKeys 返回值的自有键列表，顺序遵循 OrdinaryOwnPropertyKeys。
 // 支持普通对象、数组与字符串 (字符串按 UTF-16 码元索引展开)。
+// 数组分支走 OwnPropertyStore: 描述符标记 enumerable:false 的索引/
+// defineProperty 定义的字符串键会被正确纳入或排除。
 func ownKeys(v object.Value) ([]string, object.Value) {
 	switch val := v.(type) {
 	case *object.GlobalObject:
@@ -611,11 +585,7 @@ func ownKeys(v object.Value) ([]string, object.Value) {
 	case *object.Object:
 		return val.EnumerableKeys(), nil
 	case *object.Array:
-		keys := make([]string, len(val.Elements))
-		for i := range val.Elements {
-			keys[i] = strconv.Itoa(i)
-		}
-		return keys, nil
+		return val.EnumerableOwnKeys(), nil
 	case *object.String:
 		// 规范: Object.keys("ab") === ["0", "1"]
 		n := object.UTF16Len(val.Value)
@@ -631,6 +601,8 @@ func ownKeys(v object.Value) ([]string, object.Value) {
 }
 
 // getOwnProperty 取值的自有属性，未找到时返回 undefined。
+// 只查自有 (不沿原型链): 数组的索引/length/defineProperty 描述符、
+// globalThis 的非词法绑定、字符串的码元索引。
 func getOwnProperty(v object.Value, key string) (object.Value, bool) {
 	switch val := v.(type) {
 	case *object.GlobalObject:
@@ -651,6 +623,20 @@ func getOwnProperty(v object.Value, key string) (object.Value, bool) {
 		}
 		return object.UndefinedSingleton, false
 	case *object.Array:
+		// defineProperty 定义过的描述符优先: 访问器调 getter,
+		// 数据属性取描述符值 (此时 Elements 同步占位, 不能直接读)。
+		if d, ok := val.PropDescs[key]; ok {
+			if acc, isAcc := d.Value.(*object.Accessor); isAcc {
+				if acc.Getter != nil && object.IsCallable(acc.Getter) {
+					return object.CallFunction(acc.Getter, val), true
+				}
+				return object.UndefinedSingleton, true
+			}
+			if d.Value == nil {
+				return object.UndefinedSingleton, true
+			}
+			return d.Value, true
+		}
 		if i, err := strconv.Atoi(key); err == nil && i >= 0 && i < len(val.Elements) {
 			if e := val.Elements[i]; e != nil {
 				return e, true
@@ -1182,7 +1168,12 @@ func descriptorFromJS(descVal object.Value) (object.PropertyDescriptor, object.V
 	return nd, nil
 }
 
-func defineOneProperty(obj *object.Object, key string, descVal object.Value) object.Value {
+// defineOneProperty 按 property descriptor 在任意 OwnPropertyStore 上定义
+// 一个属性: 访问器描述符 (get/set) 注册为访问器；数据描述符
+// (value/writable) 注册为数据属性。供 defineProperty / defineProperties
+// 共用 (普通对象 / 数组 / 函数类一视同仁 —— 各类型的描述符落点由
+// OwnPropertyStore.DefineOwn 负责)。
+func defineOneProperty(store object.OwnPropertyStore, key string, descVal object.Value) object.Value {
 	if !object.IsObjectValue(descVal) {
 		// 规范: ToPropertyDescriptor 对非对象 (原始值) 抛 TypeError。
 		return object.NewTypeError("Property description must be an object")
@@ -1205,7 +1196,7 @@ func defineOneProperty(obj *object.Object, key string, descVal object.Value) obj
 		return v
 	}
 
-	existing, exists := obj.Properties[key]
+	existing, exists := store.OwnDescriptor(key)
 	// 已存在属性: 缺省字段保持原值 (从 existing 起步)。
 	nd := existing
 	if !exists {
@@ -1273,7 +1264,7 @@ func defineOneProperty(obj *object.Object, key string, descVal object.Value) obj
 		if v, found := get("configurable"); found {
 			nd.Configurable = toBool(v)
 		}
-		obj.DefineOwnProperty(key, nd)
+		store.DefineOwn(key, nd)
 		return nil
 	}
 
@@ -1299,7 +1290,7 @@ func defineOneProperty(obj *object.Object, key string, descVal object.Value) obj
 	if v, found := get("configurable"); found {
 		nd.Configurable = toBool(v)
 	}
-	obj.DefineOwnProperty(key, nd)
+	store.DefineOwn(key, nd)
 	return nil
 }
 

@@ -41,6 +41,13 @@ type Compiler struct {
 	// FunctionMetadata.IsStrict 盖章。
 	strict bool
 
+	// methodFnDepth > 0 表示正在编译"方法定义"函数 (对象字面量简洁方法 /
+	// 访问器 / class 方法/静态方法)。compileFunctionSelf 入口据此给
+	// FunctionMetadata 盖 IsMethod, 并在编译函数体前清 0 —— 函数体内
+	// 嵌套的函数声明/表达式不是方法, 各自恢复。计数而非 bool: 方法体内
+	// 再出现方法 (对象字面量嵌对象字面量) 也能正确归位。
+	methodFnDepth int
+
 	// currentArgumentsSlot 记录当前函数 (非箭头) 的 arguments 槽位。
 	// 全局作用域或箭头函数为 -1 (箭头函数继承外层 arguments, 见 argumentsSlotStack)。
 	currentArgumentsSlot int
@@ -2576,7 +2583,10 @@ func (c *Compiler) compileClassBody(className string, superClass ast.Expression,
 		if m.IsPrivate && m.Body != nil {
 			prevSuperP := c.currentSuperClass
 			c.currentSuperClass = superName
+			// class 方法是"方法定义": 无 [[Construct]] / 无 prototype。
+			c.methodFnDepth++
 			meta, err := c.compileFunctionWithStrict(true, m.Name, m.Parameters, m.Body, false, m.IsGenerator, m.IsAsync)
+			c.methodFnDepth--
 			c.currentSuperClass = prevSuperP
 			if err != nil {
 				return err
@@ -2800,7 +2810,10 @@ func (c *Compiler) compileStaticElements(superName string, statics []*ast.ClassM
 		// 否则会被写成名为 "#m" 的公有属性 —— 既让 this.#m 解析不到 (rWVt9D),
 		// 又把私有成员泄漏给类外常规访问。
 		if m.IsPrivate {
+			// class 静态方法是"方法定义": 无 [[Construct]] / 无 prototype。
+			c.methodFnDepth++
 			meta, err := c.compileFunctionWithStrict(true, m.Name, m.Parameters, m.Body, false, m.IsGenerator, m.IsAsync)
+			c.methodFnDepth--
 			if err != nil {
 				return err
 			}
@@ -2818,7 +2831,10 @@ func (c *Compiler) compileStaticElements(superName string, statics []*ast.ClassM
 			continue
 		}
 		// 编译静态方法函数
+		// class 静态方法是"方法定义": 无 [[Construct]] / 无 prototype。
+		c.methodFnDepth++
 		meta, err := c.compileFunctionWithStrict(true, m.Name, m.Parameters, m.Body, false, m.IsGenerator, m.IsAsync)
+		c.methodFnDepth--
 		if err != nil {
 			return err
 		}
@@ -3182,11 +3198,15 @@ func collectNamesFrom(paramNames [][]string, start int) map[string]bool {
 func (c *Compiler) compileClassMethodToObject(m *ast.ClassMethod, superName string) error {
 	prevSuper := c.currentSuperClass
 	c.currentSuperClass = superName
+	// class 方法是"方法定义": 无 [[Construct]] / 无 prototype (构造函数走
+	// compileClassConstructor, 不经此路径, 保留 prototype)。
+	c.methodFnDepth++
 	meta, err := c.compileFunctionWithStrict(true, m.Name, m.Parameters, m.Body, false, m.IsGenerator, m.IsAsync)
+	c.methodFnDepth--
+	c.currentSuperClass = prevSuper
 	if err != nil {
 		return err
 	}
-	c.currentSuperClass = prevSuper
 	midx := c.constants.AddConstant(meta)
 	if m.ComputedKey != nil && !m.IsGetter && !m.IsSetter {
 		// 动态键普通方法: SET_INDEX 弹 [obj, key, val] 三元组,
@@ -5787,7 +5807,10 @@ func (c *Compiler) compileObjectLiteral(node *ast.ObjectLiteral) error {
 			var meta *bytecode.FunctionMetadata
 			if err := withThisHome(func() error {
 				var merr error
+				// 访问器是"方法定义": 无 [[Construct]] / 无 prototype (rlGCky)。
+				c.methodFnDepth++
 				meta, merr = c.compileFunctionWithStrict(fn.Strict, name, fn.Parameters, fn.Body, false, fn.IsGenerator, fn.IsAsync)
+				c.methodFnDepth--
 				return merr
 			}); err != nil {
 				return err
@@ -5809,7 +5832,16 @@ func (c *Compiler) compileObjectLiteral(node *ast.ObjectLiteral) error {
 		c.emitter.EmitNoOperand(bytecode.OP_DUP)
 		// 编译值。计算键**方法** ([k]() {}) 有 home object; 计算键值
 		// ([k]: v) 是普通表达式, 没有 home (roiE5Z)。
-		compileVal := func() error { return c.compileExpression(prop.Value) }
+		compileVal := func() error {
+			if prop.Kind != ast.PROP_INIT {
+				// 方法定义: 无 [[Construct]] / 无 prototype (rlGCky)。
+				c.methodFnDepth++
+				err := c.compileExpression(prop.Value)
+				c.methodFnDepth--
+				return err
+			}
+			return c.compileExpression(prop.Value)
+		}
 		if prop.Kind == ast.PROP_METHOD {
 			if err := withThisHome(compileVal); err != nil {
 				return err
@@ -5842,7 +5874,10 @@ func (c *Compiler) compileObjectLiteral(node *ast.ObjectLiteral) error {
 			var meta *bytecode.FunctionMetadata
 			if err := withThisHome(func() error {
 				var merr error
+				// 访问器是"方法定义": 无 [[Construct]] / 无 prototype (rlGCky)。
+				c.methodFnDepth++
 				meta, merr = c.compileFunctionWithStrict(fn.Strict, prefix+name, fn.Parameters, fn.Body, false, fn.IsGenerator, fn.IsAsync)
+				c.methodFnDepth--
 				return merr
 			}); err != nil {
 				return err
@@ -5867,6 +5902,13 @@ func (c *Compiler) compileObjectLiteral(node *ast.ObjectLiteral) error {
 			compileVal := func() error {
 				if protoSetter {
 					return c.compileExpression(prop.Value)
+				}
+				if prop.Kind != ast.PROP_INIT {
+					// 方法定义: 无 [[Construct]] / 无 prototype (rlGCky)。
+					c.methodFnDepth++
+					cerr := c.compileNamedExpression(prop.Value, keyName)
+					c.methodFnDepth--
+					return cerr
 				}
 				return c.compileNamedExpression(prop.Value, keyName)
 			}
@@ -5990,6 +6032,14 @@ func (c *Compiler) compileFunctionSelf(name, selfName string, params []*ast.Para
 	c.fnDepth++
 	defer func() { c.fnDepth-- }()
 
+	// IsMethod 归位: 本函数是否"方法定义"由调用方 (方法编译点) 经
+	// methodFnDepth 置位; 读取后清 0, 使函数体内嵌套的函数声明/表达式
+	// 恢复默认 (非方法), 退出时恢复外层值 (方法嵌方法)。
+	isMethod := c.methodFnDepth > 0
+	prevMethodDepth := c.methodFnDepth
+	c.methodFnDepth = 0
+	defer func() { c.methodFnDepth = prevMethodDepth }()
+
 	// 非箭头函数开辟独立的 arguments 作用域, 其内的 eval 不再受「类字段
 	// 初始化器」规则约束 (规范: 该规则按直接 eval 的运行上下文判定, 嵌套
 	// 普通函数的上下文不是初始化器)。箭头函数无独立 arguments 作用域,
@@ -6004,11 +6054,11 @@ func (c *Compiler) compileFunctionSelf(name, selfName string, params []*ast.Para
 	// async generator: wrapper 创建并返回 AsyncGenerator 对象,
 	// 内层 generator 的 await 编为 OP_AWAIT、yield 编为 OP_YIELD。
 	if isAsync && isGenerator {
-		return c.compileAsyncGeneratorSelf(name, selfName, params, body, isArrow)
+		return c.compileAsyncGeneratorSelf(name, selfName, params, body, isArrow, isMethod)
 	}
 	// async 函数: 编译为 wrapper (返回 __spawn(generator)), 内层 generator 处理 await→yield
 	if isAsync {
-		return c.compileAsyncFunctionSelf(name, selfName, params, body, isArrow)
+		return c.compileAsyncFunctionSelf(name, selfName, params, body, isArrow, isMethod)
 	}
 
 	// 内层 generator 标记只影响本层参数放置, 入口立即消费 (见字段注释)。
@@ -6145,6 +6195,7 @@ func (c *Compiler) compileFunctionSelf(name, selfName string, params []*ast.Para
 	meta.SelfSlot = selfSlot
 	meta.IsGenerator = isGenerator
 	meta.IsAsync = false
+	meta.IsMethod = isMethod
 	meta.ParamPrologueEnd = paramPrologueEnd
 	meta.IsStrict = c.strict
 	meta.Positions = toSrcPosList(fnSrcPositions)
@@ -6167,7 +6218,7 @@ func (c *Compiler) compileFunctionSelf(name, selfName string, params []*ast.Para
 //	RETURN
 func (c *Compiler) compileAsyncFunction(name string, params []*ast.Parameter, body *ast.BlockStatement) (*bytecode.FunctionMetadata, error) {
 	// 非箭头入口 (async function 声明/表达式走这里)。
-	return c.compileAsyncFunctionSelf(name, "", params, body, false)
+	return c.compileAsyncFunctionSelf(name, "", params, body, false, false)
 }
 
 // compileAsyncFunctionSelf 把异步函数编译成两段: wrapper + 内层 generator。
@@ -6176,7 +6227,9 @@ func (c *Compiler) compileAsyncFunction(name string, params []*ast.Parameter, bo
 // FunctionMetadata 的 IsArrow。箭头函数在调用时**不重绑 this**(vm 按
 // Closure.IsArrow 判断), 漏了这个, `async () => this.x` 里的 this 就会变成
 // 调用时的接收者。
-func (c *Compiler) compileAsyncFunctionSelf(name, selfName string, params []*ast.Parameter, body *ast.BlockStatement, isArrow bool) (*bytecode.FunctionMetadata, error) {
+// isMethod 只盖在 wrapper 的 meta 上 (对外可见的函数对象是 wrapper):
+// 方法定义产出的 async 函数无 prototype 自有属性。
+func (c *Compiler) compileAsyncFunctionSelf(name, selfName string, params []*ast.Parameter, body *ast.BlockStatement, isArrow, isMethod bool) (*bytecode.FunctionMetadata, error) {
 	// 1. 编译内层 generator (同一参数, await 编译为 yield)
 	// 自引用绑定传播到内层: await 所在的用户代码在内层执行。
 	// inAsyncFunction 标志在内层体编译期间为真: for await...of 的
@@ -6280,6 +6333,7 @@ func (c *Compiler) compileAsyncFunctionSelf(name, selfName string, params []*ast
 	meta.BaseSlot = baseSlot
 	meta.ArgumentsSlot = argumentsSlot
 	meta.IsAsync = true
+	meta.IsMethod = isMethod
 	meta.IsStrict = c.strict
 	return meta, nil
 }
@@ -6296,7 +6350,7 @@ func (c *Compiler) compileAsyncFunctionSelf(name, selfName string, params []*ast
 // AsyncGenerator 对象并返回 —— 因此 f() 的结果不是 Promise, 而是 AsyncGenerator。
 //
 // 复用 compileAsyncFunctionSelf 的参数作用域与 wrapper 结构, 仅替换收尾调用。
-func (c *Compiler) compileAsyncGeneratorSelf(name, selfName string, params []*ast.Parameter, body *ast.BlockStatement, isArrow bool) (*bytecode.FunctionMetadata, error) {
+func (c *Compiler) compileAsyncGeneratorSelf(name, selfName string, params []*ast.Parameter, body *ast.BlockStatement, isArrow, isMethod bool) (*bytecode.FunctionMetadata, error) {
 	// 1. 编译内层 generator。asyncGeneratorBody=true 让 await 编为 OP_AWAIT;
 	//    inAsyncFunction=true 让 for await...of 在主路径内合法。
 	prevAGBody := c.asyncGeneratorBody
@@ -6389,6 +6443,7 @@ func (c *Compiler) compileAsyncGeneratorSelf(name, selfName string, params []*as
 	// 单靠 IsAsync/IsGenerator 无法与普通 async 函数区分 (内层体才 IsGenerator)，
 	// 故显式标记种类供 vm.createClosure 选择函数对象原型 (见 object.FuncPrototypeOf)。
 	meta.IsAsyncGenerator = true
+	meta.IsMethod = isMethod
 	meta.IsStrict = c.strict
 	return meta, nil
 }

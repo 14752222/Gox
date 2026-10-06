@@ -171,6 +171,11 @@ type FunctionMetadata struct {
 	IsArrow       bool            // 是否箭头函数
 	IsGenerator   bool            // 是否生成器函数 (function*)
 	IsAsync       bool            // 是否 async 函数
+	// IsMethod 标识该函数由"方法定义"产出 (对象字面量简洁方法/访问器 /
+	// class 方法/静态方法)。规范里 MethodDefinition 的函数没有
+	// [[Construct]], 无 prototype 自有属性 —— 与函数声明/函数表达式区分
+	// (generator/async-generator 方法例外: 它们有 prototype)。
+	IsMethod bool
 	// IsStrict 报告该函数体是否处于严格模式 (继承外层, 或自身含 "use strict"
 	// 指令; 类方法/模块恒严格)。VM 据此决定 this 归一、未声明赋值等运行期语义。
 	IsStrict bool
