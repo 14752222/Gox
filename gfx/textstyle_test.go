@@ -18,11 +18,16 @@ package gfx
 
 import (
 	"bytes"
+	"fmt"
 	"image"
 	"image/color"
+	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/14752222/Gox/object"
+	"golang.org/x/image/font/sfnt"
 )
 
 // ===== 解析层 =====
@@ -407,7 +412,31 @@ func TestDrawTextStyledDiffersPerAxis(t *testing.T) {
 	ital := draw(TextStyle{Size: 18, Italic: true})
 
 	if same(reg, bold) {
-		t.Fatalf("粗体与正体的像素应不同 (真变体或合成都必须看得出来); 基础字体族=%q", baseFamilyKey())
+		t.Logf("字体样式探针: %s", fontStyleProbe())
+		// 带上现场: "粗体等于正体"有两种完全不同的成因, 只看墨量分不出来 ——
+		//   ① 面选对了但合成没生效 (synth 为假且槽位不同);
+		//   ② 缺字形 ⇒ 两次都是空掩码 (mask=nil), 自然逐像素相同。
+		// 把槽位 / synth / isBase / 掩码 / 墨量一次打全, 免得为取一条诊断再推一次 CI。
+		r0, _ := faceForStyle(TextStyle{Size: 18})
+		r1, _ := faceForStyle(TextStyle{Size: 18, Bold: true})
+		g0, _ := rasterizeGlyph(r0, 18, 'H')
+		g1, _ := rasterizeGlyph(r1, 18, 'H')
+		maskDesc := func(g *glyphEntry) string {
+			switch {
+			case g == nil:
+				return "条目=nil"
+			case g.mask == nil:
+				return "掩码=nil(缺字形)"
+			default:
+				return fmt.Sprintf("掩码=%v", g.mask.Bounds())
+			}
+		}
+		t.Fatalf("粗体与正体的像素应不同 (真变体或合成都必须看得出来); 基础字体族=%q｜"+
+			"正体{槽=%d synthB=%v synthI=%v base=%v 墨量=%d 'H'%s} "+
+			"粗体{槽=%d synthB=%v synthI=%v base=%v 墨量=%d 'H'%s}",
+			baseFamilyKey(),
+			r0.id, r0.synthB, r0.synthI, r0.isBase, inkOf(reg), maskDesc(g0),
+			r1.id, r1.synthB, r1.synthI, r1.isBase, inkOf(bold), maskDesc(g1))
 	}
 	if same(reg, ital) {
 		t.Fatalf("斜体与正体的像素应不同 (合成斜体也要改变落笔位置)")
@@ -513,4 +542,113 @@ func TestTextStyleInheritedByTextNode(t *testing.T) {
 	if bytes.Equal(def.Pix, mono.Pix) {
 		t.Fatalf("fontFamily 没有影响到 #text 的绘制")
 	}
+}
+
+// b2i 把 bool 打成 0/1 —— 探针行要塞进 CI 注解 1200 字符的预算里, 每个字段都得省。
+func b2i(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
+}
+
+// fontStyleProbe 把"一次样式请求在族索引里落到哪个文件的第几个面"打成一行。
+//
+// TestDrawTextStyledDiffersPerAxis 失败时这是关键事实: 粗体与正体**逐像素相同**,
+// 在索引层面只有两种可能 —— ① 该族注册了 {bold:true}, 但它指的面其实就是正体
+// (查表命中 ⇒ **不触发合成**); ② 该族没有 {bold:true}, 本该退成"默认字体 + 合成",
+// 而合成标记没生效。
+// 只看渲染结果分不出这两者 (一个是"选错面", 一个是"标记丢了")。所以把查表结果
+// 连同命中面的**子族名**一并报出来 —— 子族名与它被登记的轴标不一致, 就是
+// "索引把正体标成了粗体"的直接证据。
+func fontStyleProbe() string {
+	baseKey := baseFamilyKey() // 必须在取 ix.mu 之前算: 它自己要取 fontMu
+	familyIdx.build()
+
+	familyIdx.mu.Lock()
+	axes := []styleAxis{}
+	srcs := []faceSrc{}
+	if m, ok := familyIdx.files[baseKey]; ok {
+		for a := range m {
+			axes = append(axes, a)
+		}
+		sort.Slice(axes, func(i, j int) bool {
+			if axes[i].bold != axes[j].bold {
+				return !axes[i].bold // 正体在前, 便于与"命中面"对照
+			}
+			return !axes[i].italic
+		})
+		for _, a := range axes {
+			srcs = append(srcs, m[a])
+		}
+	}
+	type stylePick struct {
+		want  styleAxis
+		src   faceSrc
+		synth styleAxis
+		ok    bool
+	}
+	wants := []styleAxis{{bold: true}, {italic: true}, {}}
+	picks := make([]stylePick, 0, len(wants))
+	for _, w := range wants {
+		src, synth, ok := familyIdx.pickLocked(baseKey, w)
+		picks = append(picks, stylePick{want: w, src: src, synth: synth, ok: ok})
+	}
+	total := len(familyIdx.files)
+	familyIdx.mu.Unlock()
+
+	// 面的子族名要**出了锁再读**: fontFromSrc 自己取 fontSrcMu, 而
+	// resetFontCaches 是 fontSrcMu → ix.mu 的顺序取锁, 持 ix.mu 再取
+	// fontSrcMu 会成环。
+	var buf sfnt.Buffer
+	desc := func(src faceSrc) string {
+		f, err := fontFromSrc(src)
+		if err != nil {
+			return fmt.Sprintf("%s#%d(读不出)", filepath.Base(src.path), src.index)
+		}
+		return fmt.Sprintf("%s#%d(子族=%q)", filepath.Base(src.path), src.index,
+			fontNameOf(f, &buf, sfnt.NameIDSubfamily))
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "默认族=%q", baseKey)
+	// 默认字体自己是哪个面? 这一条是谜题的关键: 若候选表把**粗体文件**排在了正体
+	// 之前 (Linux 目录序里 NotoSansCJK-Bold.ttc 就在 NotoSansCJK-Regular.ttc 前), 那么
+	// "无样式"请求画的其实是粗体面, 而"要粗体"请求经索引也落到同一个面 ⇒ 两张图
+	// 逐像素相同, 且两个文件的族名一样 (都叫 "Noto Sans CJK JP"), 从渲染结果上根本
+	// 区分不出来。所以必须把默认字体自己的**子族名**报出来。
+	if bf, err := loadBaseFont(); err == nil {
+		sub := fontNameOf(bf, &buf, sfnt.NameIDSubfamily)
+		a := axisFromFont(bf, sub)
+		initFontCandidates()
+		names := make([]string, 0, 3)
+		for i, p := range fontCandidates {
+			if i >= 3 {
+				break
+			}
+			names = append(names, filepath.Base(p))
+		}
+		fmt.Fprintf(&b, " 默认字体 子族=%q→轴{b=%d i=%d} 候选前3=[%s]",
+			sub, b2i(a.bold), b2i(a.italic), strings.Join(names, ","))
+	}
+	if len(srcs) == 0 {
+		fmt.Fprintf(&b, " 该族**不在索引里** (索引共 %d 个族)", total)
+	} else {
+		items := make([]string, 0, len(srcs))
+		for i, a := range axes {
+			items = append(items, fmt.Sprintf("{b=%d i=%d}→%s",
+				b2i(a.bold), b2i(a.italic), desc(srcs[i])))
+		}
+		fmt.Fprintf(&b, " 注册轴=%d[%s]", len(axes), strings.Join(items, " "))
+	}
+	for _, p := range picks {
+		if !p.ok {
+			fmt.Fprintf(&b, " ｜问{b=%d i=%d}=未命中", b2i(p.want.bold), b2i(p.want.italic))
+			continue
+		}
+		fmt.Fprintf(&b, " ｜问{b=%d i=%d}→%s 合成{b=%d i=%d}",
+			b2i(p.want.bold), b2i(p.want.italic), desc(p.src),
+			b2i(p.synth.bold), b2i(p.synth.italic))
+	}
+	return b.String()
 }
