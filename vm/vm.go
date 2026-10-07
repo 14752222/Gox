@@ -2452,6 +2452,12 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			// 生成器方法的返回值 (*object.Generator) 只能由 VM 帧驱动,
 			// runtime.GetIterable 的 Go 层适配器接管不了。
 			if resolved, ok, err := vm.resolveSymbolIterator(val); err != nil {
+				// 抛错已被 try/catch 处理器接住 (PC 已跳 catchPC): 不能继续
+				// 往下走 runtime.GetIterable 兜底, 否则会在 catch 帧上多压一个
+				// 迭代器导致栈失衡 —— 仅 continue 重新取指。
+				if err == errHandledThrow {
+					continue
+				}
 				// Symbol.iterator 方法自身抛错: 必须走抛出流程, 否则外层
 				// try/catch 抓不到 (解构/for-of 的 iter-get-err 用例)。
 				if terr := vm.rethrowBridgeError(err); terr != nil {
@@ -6054,6 +6060,11 @@ func hasSymbolProps(val object.Value) bool {
 	return false
 }
 
+// errHandledThrow 表示"抛错已被 try/catch 处理器接住" (PC 已跳到 catchPC)。
+// 由 resolveSymbolIterator 在 @@iterator 非可调用 / 不可迭代时返回, 提示
+// OP_GET_ITERATOR 直接 continue 重新取指, 不再执行后续兜底逻辑。
+var errHandledThrow = errors.New("vm: throw handled")
+
 func (vm *VM) resolveSymbolIterator(val object.Value) (object.Value, bool, error) {
 	// 只有持有符号键属性的类型才可能实现了 @@iterator: *Object, 以及
 	// *Array/*TypedArray (SymbolPropertyStore)。其余值 (原始值 / 无符号键槽的
@@ -6069,8 +6080,20 @@ func (vm *VM) resolveSymbolIterator(val object.Value) (object.Value, bool, error
 	if err != nil {
 		return nil, false, err
 	}
-	if !object.IsCallable(fn) {
+	// 规范 GetMethod/GetIterator: @@iterator 为 undefined/null (含未定义) →
+	// 回退到其它可迭代形状 (返回值 false, 由调用方交 runtime.GetIterable);
+	// 存在但不可调用 → TypeError (不得静默回退)。
+	if fn == nil || fn == object.UndefinedSingleton || fn == object.NullSingleton {
 		return nil, false, nil
+	}
+	if !object.IsCallable(fn) {
+		// @@iterator 存在但不可调用: TypeError。throwNamedError 若被 try/catch
+		// 接住返回 nil, 此时需以 errHandledThrow 提示调用点停止兜底。
+		if err := vm.throwNamedError("TypeError",
+			"%s[Symbol.iterator] is not a function", val.Inspect()); err != nil {
+			return nil, false, err
+		}
+		return nil, false, errHandledThrow
 	}
 	res, err := vm.callFunction(fn, val, nil)
 	if err != nil {
