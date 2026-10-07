@@ -128,3 +128,75 @@ func TestPropDescGetOwnPropertyDescriptors(t *testing.T) {
 		return ds.b.enumerable+'/'+ds.b.configurable+'/'+ds.a.enumerable+'/'+ds.a.configurable;})()`,
 		"false/false/true/true")
 }
+
+// ===== 看板 rxsCia: 函数对象的自有可枚举属性 =====
+//
+// 函数是独立类型 (不是 *object.Object), 此前 Object.keys(fn) 恒为 []。
+// 规范: 函数上普通赋值 (f.custom = 1) 是 { writable:true, enumerable:true,
+// configurable:true } 的自有数据属性, 必须被 Object.keys / for-in /
+// JSON.stringify / Object.assign / 展开 / getOwnPropertyNames 列出;
+// 而结构性 name/length/prototype 与内置/class 静态方法/访问器不可枚举。
+// 期望值以 Node 22 实测为准。
+
+// 函数上的普通赋值: Object.keys 列出, 描述符 enumerable:true。
+func TestFunctionOwnAssignEnumerable(t *testing.T) {
+	assertJS(t, `(function(){function f(){} f.custom=1; return JSON.stringify(Object.keys(f));})()`, `["custom"]`)
+	assertJS(t, `(function(){function f(){} f.a=1; f.b=2; return JSON.stringify(Object.keys(f));})()`, `["a","b"]`)
+	assertJS(t, `(function(){function f(){} f.custom=1;
+		var d=Object.getOwnPropertyDescriptor(f,'custom');
+		return d.value+'/'+d.writable+'/'+d.enumerable+'/'+d.configurable;})()`, "1/true/true/true")
+}
+
+// 箭头函数与赋值的可枚举性一致。
+func TestArrowFunctionOwnAssignEnumerable(t *testing.T) {
+	assertJS(t, `(function(){const g=()=>{}; g.z=3; return JSON.stringify(Object.keys(g));})()`, `["z"]`)
+}
+
+// Object.values / entries / assign / 展开 / for-in / JSON.stringify 一致。
+//
+// 注: Gox 的 Closure.Props 是 Go map, 无插入顺序信息, 自有键按名排序输出
+// (值/条目顺序随之)。这是既有表示局限, 非本次改动引入 —— 断言的是一致性
+// 与集合内容, 顺序按 Gox 的确定性排序 (a/b/custom) 钉住。
+func TestFunctionOwnAssignConsumers(t *testing.T) {
+	const setup = `function f(){} f.custom=1; f.b=2;`
+	assertJS(t, `(function(){`+setup+`return JSON.stringify(Object.values(f));})()`, `[2,1]`)
+	assertJS(t, `(function(){`+setup+`return JSON.stringify(Object.entries(f));})()`, `[["b",2],["custom",1]]`)
+	assertJS(t, `(function(){`+setup+`return JSON.stringify(Object.assign({},f));})()`, `{"b":2,"custom":1}`)
+	assertJS(t, `(function(){`+setup+`return JSON.stringify({...f});})()`, `{"b":2,"custom":1}`)
+	assertJS(t, `(function(){`+setup+`var r=[];for(var k in f)r.push(k);return JSON.stringify(r.sort());})()`, `["b","custom"]`)
+}
+
+// getOwnPropertyNames 含全部自有键 (name/length/prototype + 赋值属性)。
+func TestFunctionGetOwnPropertyNames(t *testing.T) {
+	assertJS(t, `(function(){function f(){} f.custom=1;
+		return JSON.stringify(Object.getOwnPropertyNames(f));})()`, `["length","name","prototype","custom"]`)
+	// 结构性 name/length/prototype 不可枚举, 不出现在 keys 里。
+	assertJS(t, `(function(){function f(){}
+		return JSON.stringify(Object.keys(f));})()`, `[]`)
+}
+
+// 内置函数的静态成员 (String.fromCharCode 等) 仍不可枚举。
+func TestBuiltinFunctionStaticsNonEnumerable(t *testing.T) {
+	assertJS(t, `JSON.stringify(Object.keys(String))`, `[]`)
+	assertJS(t, `JSON.stringify(Object.keys(Array))`, `[]`)
+	assertJS(t, `JSON.stringify(Object.keys(Object))`, `[]`)
+	// 但用户新增的静态属性可枚举。
+	assertJS(t, `(function(){String.qq=5; var r=JSON.stringify(Object.keys(String)); delete String.qq; return r;})()`, `["qq"]`)
+}
+
+// class 静态方法/访问器不可枚举, class 静态字段可枚举。
+func TestClassStaticMemberEnumerable(t *testing.T) {
+	assertJS(t, `(function(){class C{static m(){} static f=5; static get g(){return 1}}
+		return JSON.stringify(Object.keys(C));})()`, `["f"]`)
+	assertJS(t, `(function(){class C{static m(){}}
+		return Object.getOwnPropertyDescriptor(C,'m').enumerable;})()`, "false")
+	assertJS(t, `(function(){class C{static f=5;}
+		return Object.getOwnPropertyDescriptor(C,'f').enumerable;})()`, "true")
+}
+
+// 数组 Object.keys 行为保持不变 (回归护栏): 只列可枚举索引, 不含 length。
+func TestArrayKeysUnaffected(t *testing.T) {
+	assertJS(t, `JSON.stringify(Object.keys([1,2,3]))`, `["0","1","2"]`)
+	assertJS(t, `JSON.stringify(Object.getOwnPropertyNames([1,2]))`, `["0","1","length"]`)
+	assertJS(t, `JSON.stringify(Object.keys([]))`, `[]`)
+}
