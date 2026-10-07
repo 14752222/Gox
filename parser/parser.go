@@ -4484,16 +4484,24 @@ func (p *Parser) parseClassMember() *ast.ClassMethod {
 }
 
 // parseSuperExpression 解析 super 关键字。
-// super(...) → 父构造函数调用; super.method / super.prop → 父类成员访问。
+// super(...) → 父构造函数调用; super.method / super[expr] → 父类成员访问。
+//
+// SuperProperty 的两种形态 (sec-super-property): super . IdentifierName 与
+// super [ Expression ]。后者此前被前缀解析直接拒 (只认 '(' / '.')，
+// 使 test262 *-contains-superproperty-2.js 一族 (computed 形式) 恒 SyntaxError
+// (roiE5Z 遗留边界)。实为纯解析缺口: 中缀下标解析 (parseIndexExpression) 与
+// 编译器 super 成员访问分支 (compileMemberExpression / emitEvalSuperProperty)
+// 早已支持 Computed。
 func (p *Parser) parseSuperExpression() ast.Expression {
 	super := &ast.SuperExpression{Token: p.curToken()}
 
-	// super(...) 或 super.method
-	if p.peekTokenIs(lexer.LPAREN) || p.peekTokenIs(lexer.DOT) {
-		// 返回 SuperExpression 本身, 由中缀解析继续处理 (LPAREN → 调用, DOT → 成员)
+	// super(...) / super.method / super[expr]
+	if p.peekTokenIs(lexer.LPAREN) || p.peekTokenIs(lexer.DOT) || p.peekTokenIs(lexer.LBRACKET) {
+		// 返回 SuperExpression 本身, 由中缀解析继续处理
+		// (LPAREN → 调用, DOT → 点访问, LBRACKET → 计算成员访问)
 		return super
 	}
-	p.addError("super must be followed by '(' or '.'")
+	p.addError("super must be followed by '(', '.' or '['")
 	return nil
 }
 

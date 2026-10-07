@@ -224,3 +224,52 @@ func TestEvalSuperPropertyNewTargetCombo(t *testing.T) {
 		t.Errorf("home + new.target 组合\nwant:\n%s\ngot:\n%s", want, got)
 	}
 }
+
+// TestEvalSuperPropertyComputed 计算式 SuperProperty `super[expr]`
+// (sec-super-property: super . IdentifierName | super [ Expression ]) ——
+// 与 `super.prop` 同族, 规范在方法/eval 内的合法性判据完全一致。
+//
+// roiE5Z 遗留边界: 前缀解析此前只认 super( / super. , 直接把 super[expr]
+// 判成 SyntaxError (test262 *-contains-superproperty-2.js 一族恒失败)。
+// 实为纯解析缺口 —— 中缀下标解析 (parseIndexExpression) 与编译器 super
+// 成员访问两分支 (compileMemberExpression) 早已支持 Computed, 故放开
+// `super[` 前缀即可, 无新增代码生成路径。
+func TestEvalSuperPropertyComputed(t *testing.T) {
+	got := evalOut(t, `
+		// 原生 (带 extends 的派生类方法), 静态键与动态键
+		class A { get x(){ return 42 } }
+		class C extends A { m(){ return super['x'] } }
+		__out.push('native:' + new C().m());
+		class D extends A { m(k){ return super[k] } }
+		__out.push('dynamic:' + new D().m('x'));
+
+		// 直接 eval 单元 (roiE5Z home 桥) 的 super[expr]
+		class E extends A { m(){ return eval("super['x']") } }
+		__out.push('eval:' + new E().m());
+
+		// 字段初始化器内的直接 eval (computed)
+		var executed = false;
+		var B = class {};
+		var F = class extends B { y = eval("executed = true; super['x'];") };
+		new F();
+		__out.push('field:' + executed);
+
+		// 对象字面量方法内直接 eval 的 super[expr] (home = this)
+		var o = { method(){ return eval("super['test262']") } };
+		Object.setPrototypeOf(o, { test262: 262 });
+		__out.push('obj-eval:' + o.method());
+	`)
+	want := "native:42\ndynamic:42\neval:42\nfield:true\nobj-eval:262\n"
+	if got != want {
+		t.Errorf("计算式 super[expr]\nwant:\n%s\ngot:\n%s", want, got)
+	}
+
+	// 无 home 语境: super[expr] 与 super.prop 一样仍是早错 (放行的是解析,
+	// 不是合法性判定)。
+	assertJSThrows(t, `eval("super['x'];")`, "SyntaxError")
+	assertJSThrows(t, `(function f(){ return eval("super['x'];"); })()`, "SyntaxError")
+	// 裸 super (后不接 ( / . / [) 仍是解析错。
+	if _, err := EvalVM("var z = super;"); err == nil {
+		t.Errorf("裸 super 应报解析错, 实际未报")
+	}
+}
