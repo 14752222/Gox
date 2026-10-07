@@ -304,17 +304,26 @@ func functionNameDescriptor(v Value) (PropertyDescriptor, bool) {
 	return NamePropertyOf(v)
 }
 
-// isFunctionStructuralKey 报告键是否为函数对象的结构性自有键
-// (length / name / prototype)。这三个键由 OwnKeys 以固定前缀给出, 不参与
-// 用户键的插入顺序表。
+// isFunctionStructuralKey 报告键是否为函数对象的"结构性"自有键
+// (length / name / prototype)。*Closure 的 prototype 由结构体字段承载, 故
+// 属结构性键; *BuiltinFunction 的 prototype 是 Properties 里的普通自有键,
+// 不适用 (用 isFuncSlotKey)。
 func isFunctionStructuralKey(name string) bool {
 	return name == "length" || name == "name" || name == "prototype"
 }
 
+// isFuncSlotKey 报告键是否为函数对象的 length/name 两个"不可写槽位"自有属性。
+// 二者对三种函数类型都是结构性的 (由字段或内建注册承载), 不参与用户键的插入
+// 顺序表; prototype 不在此列 —— *BuiltinFunction.prototype 存在 Properties 中,
+// 必须照常列出 (Object.getOwnPropertyNames(Object) 含 "prototype")。
+func isFuncSlotKey(name string) bool {
+	return name == "length" || name == "name"
+}
+
 // noteFuncKey 记录函数类自有字符串键的创建顺序 (已存在则保持原位)。
-// 结构性键不记入 (见 isFunctionStructuralKey)。
+// length/name 槽位不记入 (见 isFuncSlotKey)。
 func noteFuncKey(order *[]string, name string) {
-	if isFunctionStructuralKey(name) {
+	if isFuncSlotKey(name) {
 		return
 	}
 	for _, k := range *order {
@@ -610,13 +619,15 @@ func (b *BuiltinFunction) OwnKeys() []string {
 		keys = append(keys, "name")
 	}
 	for k := range b.Properties {
-		if isFunctionStructuralKey(k) || deletedProp(b.PropDescs, k) {
+		// prototype 在 *BuiltinFunction 是 Properties 里的普通自有键 (如
+		// Object.prototype), 不能当结构性键跳过 —— 只跳 length/name 槽位。
+		if isFuncSlotKey(k) || deletedProp(b.PropDescs, k) {
 			continue
 		}
 		keys = append(keys, k)
 	}
 	for _, k := range activePropDescs(b.PropDescs) {
-		if isFunctionStructuralKey(k) {
+		if isFuncSlotKey(k) {
 			continue
 		}
 		if b.Properties != nil {
@@ -742,7 +753,7 @@ func (b *BuiltinMethod) OwnKeys() []string {
 		keys = append(keys, "name")
 	}
 	for _, k := range activePropDescs(b.PropDescs) {
-		if isFunctionStructuralKey(k) {
+		if isFuncSlotKey(k) {
 			continue
 		}
 		keys = append(keys, k)
