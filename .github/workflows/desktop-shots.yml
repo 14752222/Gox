@@ -20,6 +20,13 @@
 #     `GOX_SHOTS_OUT=website/public/components/shots go test ./gfx/ -run
 #     TestGalleryShotScripts` 并提交。
 #
+# 字体包 (2026-10-07 补): ubuntu 上必须装 fonts-noto-cjk —— 与 ci.yml 同款。
+#   runner 自带的几十个族 (DejaVu / Liberation / TeX Gyre) 全是拉丁系, 一个汉字
+#   字形都没有, 而 Gox 是单字体、无逐字形回退, 于是中文整屏静默消失; 症状是
+#   button / checkbox / switch 这类靠中文撑复杂度的图, 颜色种类从 ~390 塌到 5~6
+#   而触发非空白断言。本工作流建成时 (2026-10-02) 漏抄了 ci.yml 的这步 apt,
+#   于是 ubuntu 一路红到现在 (16 次 run 全红, 注解只有 exit code 1)。
+#
 # 与 ci.yml 的关系: 互不阻塞。ci.yml 的 build-test 矩阵同样会跑
 #   TestGalleryShotScripts 的**非空白断言** (那个用例在 GOX_SHOTS_OUT 未设时
 #   只渲染 + 断言、不写文件), 所以"组件被画成空盒子"这类静默失效在常规 CI
@@ -65,13 +72,43 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # 字体: 与 ci.yml 的 xvfb 闸门同款。Ubuntu runner 自带的几十个族全是拉丁
+      # 系 (DejaVu / Liberation / TeX Gyre), **一个汉字字形都没有**; 缺它时中文
+      # 全丢 —— 本工作流是**出图**用的, 缺字体会让 artifact 直接变成"没有中文的
+      # 那一版", 比断言变红更隐蔽, 所以这步不做成可选。
+      - name: 安装中文字体 (linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo apt-get update -q
+          sudo apt-get install -yq fonts-dejavu-core fonts-noto-cjk
+
       # env 写法是刻意的: windows-latest 的 shell 是 PowerShell,
       # `GOX_SHOTS_OUT=... go test` 这种 Unix 前缀写法在那里不成立。
       - name: 离屏渲染 15 个组件截图
+        # Windows runner 默认 shell 是 PowerShell, 而下面这段要用别名的 rc/$? 与
+        # PIPESTATUS, 必须显式走 bash (runner 自带 Git Bash)。
+        shell: bash
         env:
           GOX_SHOTS_OUT: shots
           GOX_SHOTS_STATS: "1"
-        run: go test ./gfx/ -run TestGalleryShotScripts -count=1 -v
+        run: |
+          # 证据纪律 (看板 rXrGfu): 未登录读不到 job 日志时, check-run 注解里
+          # 只剩一句 Process completed with exit code 1., 无法归因。
+          # ⇒ 自己把「失败子测试 + 字体探针 + 实测统计」写成 ::error:: 注解。
+          # 字体探针尤其关键: "中文整屏不渲染"的根因只有一条 —— 选中的基础字体
+          # 没有 CJK 字形, 而它只能从这里看到。
+          set +e
+          log="$(mktemp)"
+          go test ./gfx/ -run TestGalleryShotScripts -count=1 -v 2>&1 | tee "$log"
+          rc="${PIPESTATUS[0]}"
+          if [ "$rc" -eq 0 ]; then exit 0; fi
+          failtests="$(grep -aE '^[[:space:]]*--- FAIL:' "$log" | sed -E 's/^[[:space:]]+//' | tr '\n' ';' | cut -c1-900)"
+          fontprobe="$(grep -aoE '字体: .*' "$log" | head -1 | cut -c1-400)"
+          inkstats="$(grep -aE '画面近乎空白' "$log" | sed -E 's/^[[:space:]]+//' | tr '\n' '|' | cut -c1-900)"
+          echo "::error::gallery 失败用例=[${failtests:-（无 --- FAIL 行）}]｜字体=[${fontprobe:-（无探针）}]"
+          if [ -n "$inkstats" ]; then echo "::error::gallery 非空白断言=[${inkstats}]"; fi
+          exit "$rc"
 
       # 产物目录结构: shots/<GOOS>/<组件>.png —— 下载三份 artifact 后,
       # 同名 PNG 跨平台两两对比 (肉眼或像素 diff) 即可。
