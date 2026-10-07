@@ -347,6 +347,29 @@ func markDeleted(m *map[string]PropertyDescriptor, name string) {
 
 // --- *Closure ---
 
+// SetBuiltinProperty 以内建属性语义 (writable:true, enumerable:false,
+// configurable:true) 在函数对象上注册静态成员 —— 与 *Object.SetBuiltinProperty
+// 对应, 用于 class 静态方法/访问器以及宿主注册的内建静态成员。
+func (c *Closure) SetBuiltinProperty(name string, val Value) {
+	if c.Props == nil {
+		c.Props = make(map[string]Value)
+	}
+	if c.NonEnumProps == nil {
+		c.NonEnumProps = make(map[string]bool)
+	}
+	c.Props[name] = val
+	c.NonEnumProps[name] = true
+}
+
+// SetNonEnumerableProperty 把已存在的 Props 键标记为不可枚举 (class 静态
+// 方法/字段经 OP_SET_PROP 写入后, 由 VM 按上下文补标)。
+func (c *Closure) SetNonEnumerableProperty(name string) {
+	if c.NonEnumProps == nil {
+		c.NonEnumProps = make(map[string]bool)
+	}
+	c.NonEnumProps[name] = true
+}
+
 func (c *Closure) OwnKeys() []string {
 	keys := []string{}
 	if !deletedProp(c.PropDescs, "length") {
@@ -358,8 +381,25 @@ func (c *Closure) OwnKeys() []string {
 	if closureHasPrototypeOwn(c) && !deletedProp(c.PropDescs, "prototype") {
 		keys = append(keys, "prototype")
 	}
+	// Props 中的普通赋值/class 静态成员 (无显式描述符): 按名排序保证确定。
+	// PropDescs 里已有的键跳过, 避免重复。
+	rest := make([]string, 0, len(c.Props))
+	for k := range c.Props {
+		if k == "length" || k == "name" || k == "prototype" {
+			continue
+		}
+		if deletedProp(c.PropDescs, k) {
+			continue
+		}
+		rest = append(rest, k)
+	}
+	sort.Strings(rest)
+	keys = append(keys, rest...)
 	for _, k := range activePropDescs(c.PropDescs) {
 		if k == "length" || k == "name" || k == "prototype" {
+			continue
+		}
+		if _, dup := c.Props[k]; dup {
 			continue
 		}
 		keys = append(keys, k)
@@ -368,8 +408,21 @@ func (c *Closure) OwnKeys() []string {
 }
 
 func (c *Closure) EnumerableOwnKeys() []string {
-	// 函数的自有属性 (name/length/prototype/静态成员) 均不可枚举。
-	return nil
+	// 函数自有属性里 name/length/prototype 恒不可枚举, 其余 (普通赋值如
+	// f.custom = 1、class 静态字段) 可枚举。内置静态成员与 class 静态
+	// 方法/访问器由 NonEnumProps 标记排除 (见 SetBuiltinProperty)。
+	var keys []string
+	for k := range c.Props {
+		if k == "name" || k == "length" || k == "prototype" {
+			continue
+		}
+		if c.NonEnumProps[k] {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func (c *Closure) HasOwn(name string) bool {
@@ -406,10 +459,11 @@ func (c *Closure) OwnDescriptor(name string) (PropertyDescriptor, bool) {
 	}
 	if c.Props != nil {
 		if v, ok := c.Props[name]; ok {
+			enum := !c.NonEnumProps[name]
 			if acc, isAcc := v.(*Accessor); isAcc {
-				return PropertyDescriptor{Value: acc, Writable: false, Enumerable: false, Configurable: true}, true
+				return PropertyDescriptor{Value: acc, Writable: false, Enumerable: enum, Configurable: true}, true
 			}
-			return PropertyDescriptor{Value: v, Writable: true, Enumerable: false, Configurable: true}, true
+			return PropertyDescriptor{Value: v, Writable: true, Enumerable: enum, Configurable: true}, true
 		}
 	}
 	return PropertyDescriptor{}, false
@@ -457,6 +511,19 @@ func (c *Closure) DeleteOwn(name string) bool {
 
 // --- *BuiltinFunction ---
 
+// SetBuiltinProperty 以内建属性语义在对应 *Object-like 内建函数上注册静态
+// 成员 (不可枚举)。与 *Object.SetBuiltinProperty 对应。
+func (b *BuiltinFunction) SetBuiltinProperty(name string, val Value) {
+	if b.Properties == nil {
+		b.Properties = make(map[string]Value)
+	}
+	if b.NonEnumProps == nil {
+		b.NonEnumProps = make(map[string]bool)
+	}
+	b.Properties[name] = val
+	b.NonEnumProps[name] = true
+}
+
 func (b *BuiltinFunction) OwnKeys() []string {
 	keys := []string{}
 	if !deletedProp(b.PropDescs, "length") {
@@ -488,8 +555,20 @@ func (b *BuiltinFunction) OwnKeys() []string {
 }
 
 func (b *BuiltinFunction) EnumerableOwnKeys() []string {
-	// 内建函数的静态成员均为不可枚举 (Object.keys(String) === [])。
-	return nil
+	// 内置静态成员 (Properties 中经 SetBuiltinProperty 注册的) 不可枚举,
+	// 用户赋值新增的属性 (String.qq = 5) 可枚举。
+	var keys []string
+	for k := range b.Properties {
+		if k == "name" || k == "length" || k == "prototype" {
+			continue
+		}
+		if b.NonEnumProps[k] {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func (b *BuiltinFunction) HasOwn(name string) bool {
@@ -517,7 +596,8 @@ func (b *BuiltinFunction) OwnDescriptor(name string) (PropertyDescriptor, bool) 
 			if name == "prototype" {
 				configurable = false
 			}
-			return PropertyDescriptor{Value: v, Writable: true, Enumerable: false, Configurable: configurable}, true
+			// 内置静态成员不可枚举, 用户赋值新增的可枚举。
+			return PropertyDescriptor{Value: v, Writable: true, Enumerable: !b.NonEnumProps[name], Configurable: configurable}, true
 		}
 	}
 	return PropertyDescriptor{}, false

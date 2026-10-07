@@ -2039,6 +2039,8 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				continue
 			}
 			obj.SetProperty(propName, val)
+			// 函数对象: 普通赋值/class 静态字段转可枚举 (静态方法/访问器保持不可枚举)。
+			vm.markAssignmentEnumerable(obj, propName, val, vm.inStaticInitFrame(frame))
 			// setter 可能经回调桥执行用户代码并抛出异常: 立即消费
 			if err := vm.checkCallbackErr(); err != nil {
 				if terr := vm.rethrowBridgeError(err); terr != nil {
@@ -2235,7 +2237,7 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				}
 				continue
 			}
-			vm.setIndex(obj, index, val)
+			vm.setIndex(obj, index, val, vm.inStaticInitFrame(frame))
 			// SetProperty 触发 setter 时, setter 是 JS 闭包 ⇒ 经回调桥调用,
 			// 抛出的异常只记录在 object.callbackError 上 (SetProperty 无 error
 			// 返回), 必须在此刻取出重抛。否则错误会残留到之后某个不相干的内建
@@ -2359,7 +2361,7 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			copy(rest, a.Elements[start:])
 			vm.stack.Push(object.NewArray(rest))
 		case bytecode.OP_OBJECT_SPREAD:
-			// 弹出源对象, 复制其自有属性到栈顶下方的目标对象
+			// 弹出源对象, 复制其可枚举自有属性到栈顶下方的对象 (CopyDataProperties)。
 			src := vm.stack.Pop()
 			dst := vm.stack.Peek()
 			to, ok := dst.(*object.Object)
@@ -2367,12 +2369,23 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				continue
 			}
 			if so, ok := src.(*object.Object); ok {
-				for k, desc := range so.Properties {
-					to.SetProperty(k, desc.Value)
+				for _, k := range so.EnumerableKeys() {
+					if desc, exists := so.Properties[k]; exists {
+						to.SetProperty(k, desc.Value)
+					}
 				}
 			} else if arr, ok := src.(*object.Array); ok {
 				for i, v := range arr.Elements {
 					to.SetProperty(fmt.Sprintf("%d", i), v)
+				}
+			} else if store, ok := src.(object.OwnPropertyStore); ok {
+				// 函数类 (Closure/BuiltinFunction/BuiltinMethod) 等: 走统一接口。
+				for _, k := range store.EnumerableOwnKeys() {
+					if v, found := src.(interface {
+						GetProperty(string) (object.Value, bool)
+					}).GetProperty(k); found {
+						to.SetProperty(k, v)
+					}
 				}
 			}
 
@@ -2626,7 +2639,14 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				iter := runtime.NewObjectKeysIteratorWithKeys(v, keys)
 				vm.stack.Push(iter)
 			default:
-				vm.stack.Push(runtime.NewObjectKeysIterator(object.NewObject()))
+				// 函数类 (Closure/BuiltinFunction/BuiltinMethod) 等实现
+				// OwnPropertyStore 的对象: 用自有可枚举键 (排除 name/length/
+				// prototype 与内置/class 静态方法)。其余值 (原始值等) 空迭代。
+				if store, ok := val.(object.OwnPropertyStore); ok {
+					vm.stack.Push(runtime.NewObjectKeysIteratorWithKeys(val, store.EnumerableOwnKeys()))
+				} else {
+					vm.stack.Push(runtime.NewObjectKeysIterator(object.NewObject()))
+				}
 			}
 		case bytecode.OP_FOR_IN_NEXT:
 			// 读取栈顶迭代器, 取下一个键
@@ -5609,6 +5629,35 @@ func (vm *VM) getSymbolIndexedValue(receiver object.Value, sym *object.Symbol) o
 	return desc.Value
 }
 
+// markAssignmentEnumerable 把函数对象上刚被"赋值/定义"的自有属性转成可枚举
+// (规范: 普通赋值与 class 静态字段的 [[Enumerable]] 为 true)。函数类的
+// SetProperty 默认按内建语义置为不可枚举, 由这里按运行时上下文显式转正。
+//
+// 例外: 在 class 静态初始化帧 (__static_init__) 中, 若被写的是"方法定义"
+// 产出的函数 (IsMethod) —— class 静态方法/访问器在规范里不可枚举 —— 保持
+// 不可枚举。class 静态字段 (普通值 / 非方法函数) 仍可枚举。
+func (vm *VM) markAssignmentEnumerable(obj object.Value, name string, val object.Value, inStaticInit bool) {
+	if inStaticInit {
+		if c, ok := val.(*object.Closure); ok && c.Fn != nil && c.Fn.IsMethod {
+			return // class 静态方法: 不可枚举
+		}
+		if _, ok := val.(*object.Accessor); ok {
+			return // class 静态访问器: 不可枚举
+		}
+	}
+	switch o := obj.(type) {
+	case *object.Closure:
+		o.MarkEnumerable(name)
+	case *object.BuiltinFunction:
+		o.MarkEnumerable(name)
+	}
+}
+
+// inStaticInitFrame 报告当前帧是否是 class 静态初始化合成帧。
+func (vm *VM) inStaticInitFrame(frame *Frame) bool {
+	return frame.Closure != nil && frame.Closure.Fn != nil && frame.Closure.Fn.Name == "__static_init__"
+}
+
 // defineClosureAccessor 在函数对象 (class 构造器) 上定义静态访问器:
 // 存入 Closure.Props 的 *object.Accessor, 由 Closure.Get/SetProperty 解释。
 // obj 非 *object.Closure 时静默忽略 (与 SET_GETTER 对未知类型的行为一致)。
@@ -6175,7 +6224,9 @@ func (vm *VM) resolveAsyncSymbolIterator(val object.Value) (object.Value, bool, 
 // lookupSymbolProperty 已迁至 object.LookupSymbolProperty (原型链 Symbol 键查找)。
 
 // setIndex 实现索引赋值 obj[index] = val。
-func (vm *VM) setIndex(obj, index, val object.Value) {
+// inStaticInit 表示当前帧是 class 静态初始化帧 (决定函数对象自有属性的
+// 可枚举性: 静态方法/访问器不可枚举, 字段可枚举)。
+func (vm *VM) setIndex(obj, index, val object.Value, inStaticInit bool) {
 	// 键归一 (ToPropertyKey): 见 getIndex 同款说明。简单赋值 base[prop] = v
 	// 的键转换在此发生 ⇒ 晚于右值求值 (assignment/
 	// target-member-computed-reference.js)。复合赋值等已在编译期转过一次,
@@ -6246,6 +6297,8 @@ func (vm *VM) setIndex(obj, index, val object.Value) {
 		// SetProperty 是无操作，与 JS 原始值语义一致。
 		if s, ok := index.(*object.String); ok {
 			obj.SetProperty(s.Value, val)
+			// 函数对象的计算键赋值: 与 OP_SET_PROP 一致地转可枚举。
+			vm.markAssignmentEnumerable(obj, s.Value, val, inStaticInit)
 		} else if sym, ok := index.(*object.Symbol); ok {
 			if sp, ok := obj.(interface {
 				SetSymbolProperty(*object.Symbol, object.Value)

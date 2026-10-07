@@ -101,10 +101,20 @@ func setupObjectGlobal() *object.BuiltinFunction {
 			return args[0]
 		}
 		for i := 1; i < len(args); i++ {
-			if src, ok := args[i].(*object.Object); ok {
-				// 规范: 只复制可枚举自有属性。
-				for _, k := range src.EnumerableKeys() {
-					val, _ := src.GetProperty(k)
+			// 规范 ToObject(source) 后复制可枚举自有属性; 函数类/数组等
+			// 走 OwnPropertyStore 统一接口, 不再只认 *object.Object。
+			src := args[i]
+			if src == object.UndefinedSingleton || src == object.NullSingleton {
+				continue
+			}
+			if store, ok := src.(object.OwnPropertyStore); ok {
+				for _, k := range store.EnumerableOwnKeys() {
+					val, found := getOwnProperty(src, k)
+					if !found {
+						val, _ = src.(interface {
+							GetProperty(string) (object.Value, bool)
+						}).GetProperty(k)
+					}
 					target.SetProperty(k, val)
 				}
 			}
@@ -588,36 +598,35 @@ func ownKeysArg(args []object.Value, api string) ([]string, object.Value) {
 	return ownKeys(args[0])
 }
 
-// ownKeys 返回值的自有键列表，顺序遵循 OrdinaryOwnPropertyKeys。
-// 支持普通对象、数组与字符串 (字符串按 UTF-16 码元索引展开)。
-// 数组分支走 OwnPropertyStore: 描述符标记 enumerable:false 的索引/
-// defineProperty 定义的字符串键会被正确纳入或排除。
+// ownKeys 返回值的自有可枚举键列表，顺序遵循 OrdinaryOwnPropertyKeys。
+// 支持普通对象、数组、函数 (Closure/BuiltinFunction/BuiltinMethod) 与字符串
+// (字符串按 UTF-16 码元索引展开)。
+// 对象型一律优先走 OwnPropertyStore 统一接口 —— 与 defineProperty /
+// getOwnPropertyDescriptor / hasOwnProperty 同一收口点, 不再按类型穷举。
 func ownKeys(v object.Value) ([]string, object.Value) {
-	switch val := v.(type) {
-	case *object.GlobalObject:
-		// globalThis: 可枚举的自有绑定 (顶层 var/函数声明/隐式赋值全局)。
-		return val.EnumerableOwnKeys(), nil
-	case *object.Object:
-		return val.EnumerableKeys(), nil
-	case *object.Array:
-		return val.EnumerableOwnKeys(), nil
+	switch v.(type) {
+	case *object.Undefined, *object.Null:
+		return nil, object.NewTypeError("Cannot convert undefined or null to object")
 	case *object.String:
 		// 规范: Object.keys("ab") === ["0", "1"]
-		n := object.UTF16Len(val.Value)
+		s := v.(*object.String)
+		n := object.UTF16Len(s.Value)
 		keys := make([]string, n)
 		for i := 0; i < n; i++ {
 			keys[i] = strconv.Itoa(i)
 		}
 		return keys, nil
-	case *object.Undefined, *object.Null:
-		return nil, object.NewTypeError("Cannot convert undefined or null to object")
+	}
+	// 统一接口: 普通对象 / 数组 / 函数类 / globalThis 都实现 OwnPropertyStore。
+	if store, ok := v.(object.OwnPropertyStore); ok {
+		return store.EnumerableOwnKeys(), nil
 	}
 	return nil, nil
 }
 
 // getOwnProperty 取值的自有属性，未找到时返回 undefined。
 // 只查自有 (不沿原型链): 数组的索引/length/defineProperty 描述符、
-// globalThis 的非词法绑定、字符串的码元索引。
+// globalThis 的非词法绑定、函数的 Props/描述符、字符串的码元索引。
 func getOwnProperty(v object.Value, key string) (object.Value, bool) {
 	switch val := v.(type) {
 	case *object.GlobalObject:
@@ -666,6 +675,17 @@ func getOwnProperty(v object.Value, key string) (object.Value, bool) {
 			}
 		}
 		return object.UndefinedSingleton, false
+	}
+	// 函数类 (Closure/BuiltinFunction/BuiltinMethod): 有自有描述符即取值,
+	// 访问器描述符调 getter。取不到按未找到处理 (不暴露 undefined 自有)。
+	if store, ok := v.(object.OwnPropertyStore); ok {
+		if _, has := store.OwnDescriptor(key); has {
+			got, found := v.(interface{ GetProperty(string) (object.Value, bool) }).GetProperty(key)
+			if !found || got == nil {
+				return object.UndefinedSingleton, true
+			}
+			return got, true
+		}
 	}
 	return object.UndefinedSingleton, false
 }

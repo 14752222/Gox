@@ -132,6 +132,10 @@ type Closure struct {
 	CreatedAtFrame int               // 创建时的帧索引 (用于递归自引用检测)
 	Proto          Value             // prototype 属性 (new 实例的原型; 箭头函数无)
 	Props          map[string]Value  // 其他可设置属性 (如 class 的静态方法)
+	// NonEnumProps 记录 Props 中"不可枚举"的键 (内置静态成员 / class 静态
+	// 方法/访问器)。普通赋值 (f.custom = 1) 与 class 静态字段不在此列,
+	// 因此 Object.keys(fn) 能列出它们而排除掉方法/内置成员。
+	NonEnumProps map[string]bool
 	// PropDescs 存储 Object.defineProperty 显式定义过的自有属性描述符
 	// (按属性名)。读取优先于 Props 与 name/length/prototype 的结构体语义,
 	// 使 defineProperty 定义的访问器/不可写属性在函数对象上可观测,
@@ -308,6 +312,19 @@ func (c *Closure) SetProperty(name string, val Value) {
 		c.Props = make(map[string]Value)
 	}
 	c.Props[name] = val
+	// 默认按"内建/结构性"语义记为不可枚举; 用户赋值与 class 静态字段由 VM
+	// 经 MarkEnumerable 显式转正 (见 vm OP_SET_PROP 等)。这样宿主在 setup
+	// 期间用 SetProperty 注册的内建静态成员 (String.fromCharCode 等) 天然
+	// 不可枚举, 无需逐点迁移。
+	c.SetNonEnumerableProperty(name)
+}
+
+// MarkEnumerable 把函数对象上的自有属性标记为可枚举 (用户赋值 / class 静态
+// 字段)。与 SetNonEnumerableProperty 相对。
+func (c *Closure) MarkEnumerable(name string) {
+	if c.NonEnumProps != nil {
+		delete(c.NonEnumProps, name)
+	}
 }
 
 // BuiltinFunction 表示用 Go 实现的内建函数。
@@ -316,6 +333,10 @@ type BuiltinFunction struct {
 	Name       string
 	Fn         func(args ...Value) Value
 	Properties map[string]Value // 静态属性 (如 String.fromCharCode)
+	// NonEnumProps 记录 Properties 中"不可枚举"的键 (内置静态成员)。
+	// 用户赋值 (String.qq = 5) 不在此列, 故 Object.keys(String) 只列用户
+	// 新增的属性。见 OwnPropertyStore / EnumerableOwnKeys。
+	NonEnumProps map[string]bool
 	// PropDescs 存储 Object.defineProperty 显式定义过的自有属性描述符,
 	// 读取优先于 Properties 与 name/length 的结构体语义, 见 OwnPropertyStore。
 	PropDescs map[string]PropertyDescriptor
@@ -396,6 +417,18 @@ func (b *BuiltinFunction) SetProperty(name string, val Value) {
 		b.Properties = make(map[string]Value)
 	}
 	b.Properties[name] = val
+	// 默认不可枚举 (内建静态成员语义); 用户赋值由 VM 经 MarkEnumerable 转正。
+	if b.NonEnumProps == nil {
+		b.NonEnumProps = make(map[string]bool)
+	}
+	b.NonEnumProps[name] = true
+}
+
+// MarkEnumerable 把内建函数对象上的自有属性标记为可枚举 (用户赋值)。
+func (b *BuiltinFunction) MarkEnumerable(name string) {
+	if b.NonEnumProps != nil {
+		delete(b.NonEnumProps, name)
+	}
 }
 
 // NewBuiltin 创建内建函数的便捷函数
