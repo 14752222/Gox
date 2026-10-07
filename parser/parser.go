@@ -2626,15 +2626,7 @@ func (p *Parser) finishAsyncArrow(expr ast.Expression) ast.Expression {
 }
 
 // parseYieldExpression 解析 yield 表达式。
-// yield; 或 yield expr; 或 yield* expr;
-//
-// ⚠ 空 yield 必须**保持 curToken 停在 YIELD 上** (只前进 peek): 本解析器的
-// 全局不变量是「parseExpression 返回后 curToken 是表达式最后一个 token,
-// peek 才是后继」(见 parseCommaSequence 注释)。此前的写法先无条件 nextToken
-// 再判空, 于是 `yield }` / `[yield]` / `f(yield)` / `{k: yield}` 都把 curToken
-// 留在了 `}`/`]`/`)` 这些**后继** token 上: 调用方的「peek 是终止符吗」
-// 全部落空, 报出 "missing semicolon before …" / "expected ',' or ']'"。
-// 改为先看 peek 决定空 yield, 命中即原样返回 (cur 仍是 YIELD)。
+// yield; 或 yield expr;
 func (p *Parser) parseYieldExpression() ast.Expression {
 	ye := &ast.YieldExpression{Token: p.curToken()}
 	// 模块顶层不是 generator 上下文, 裸 yield 是 SyntaxError
@@ -2643,30 +2635,29 @@ func (p *Parser) parseYieldExpression() ast.Expression {
 	if p.moduleEE && p.fnDepth == 0 {
 		p.addError("SyntaxError: yield expression not allowed in module body")
 	}
-	// 空 yield: 操作数位置紧跟分号/闭合符/逗号/冒号/EOF, 或与 operand 之间
-	// 有换行 ([no LineTerminator here] ⇒ ASI 成空 yield)。
-	// 规范: YieldExpression : yield [no LineTerminator here] AssignmentExpression。
-	// RBRACKET/COMMA/COLON 覆盖 `[yield]` / `f(yield, 1)` / `a ? yield : b`。
-	if p.peekTokenIs(lexer.SEMICOLON) || p.peekTokenIs(lexer.RPAREN) ||
-		p.peekTokenIs(lexer.RBRACKET) || p.peekTokenIs(lexer.RBRACE) ||
-		p.peekTokenIs(lexer.COMMA) || p.peekTokenIs(lexer.COLON) ||
-		p.peekTokenIs(lexer.EOF) {
-		return ye
-	}
+	p.nextToken()
 	// `yield` 与操作数之间禁止换行 ([no LineTerminator here]): 一旦换行即为空
 	// yield (ASI), 后续 token 另起一条语句。
 	// ⚠ 必须在消费 `*` **之前**判定 —— `yield *` 与其右操作数之间**允许**换行
 	// (规范 YieldExpression : yield * AssignmentExpression 没有该限制), 否则
 	// `yield *\ng()` 会被误判成空 yield, 丢掉委托目标
 	// (test262: async-generator/expression-yield-star-before-newline.js)。
-	if p.peekToken().Line > ye.Token.Line {
+	if p.curToken().Line > ye.Token.Line {
 		return ye
 	}
-	p.nextToken()
 	// yield* iterable: 委托给另一个生成器/可迭代对象
 	if p.curTokenIs(lexer.ASTERISK) {
 		ye.Delegate = true
 		p.nextToken()
+	}
+	// 空 yield: 后跟分号/闭合符/逗号/冒号/EOF。
+	// 规范: YieldExpression : yield [no LineTerminator here] AssignmentExpression。
+	// 少了 RBRACKET/COMMA/COLON 会让 `[yield]` / `f(yield, 1)` / `a ? yield : b` 报错。
+	if p.curTokenIs(lexer.SEMICOLON) || p.curTokenIs(lexer.RPAREN) ||
+		p.curTokenIs(lexer.RBRACKET) || p.curTokenIs(lexer.RBRACE) ||
+		p.curTokenIs(lexer.COMMA) || p.curTokenIs(lexer.COLON) ||
+		p.curTokenIs(lexer.EOF) {
+		return ye
 	}
 	ye.Value = p.parseExpression(LOWEST)
 	return ye
