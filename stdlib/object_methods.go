@@ -303,10 +303,11 @@ func setupObjectGlobal() *object.BuiltinFunction {
 		// 非 *Object 分支一律静默 no-op, 现在走各类型自己的描述符通道。
 		if store, ok := args[0].(object.OwnPropertyStore); ok {
 			if sym, isSym := args[1].(*object.Symbol); isSym {
-				// Symbol 键只有 *Object 有 SymbolProperties 槽; 数组/函数
-				// 无符号键属性, 静默忽略 (与 globalThis 分支一致)。
-				if o, ok := args[0].(*object.Object); ok {
-					if errVal := defineOneSymbolProperty(o, sym, args[2]); errVal != nil {
+				// Symbol 键: *Object 有 SymbolProperties; *Array/*TypedArray
+				// 经 SymbolPropertyStore 亦有符号键槽。其余实现
+				// OwnPropertyStore 的类型 (函数类等) 无符号键属性, 静默忽略。
+				if sp, ok := args[0].(object.SymbolPropertyStore); ok {
+					if errVal := defineOneSymbolProperty(sp, sym, args[2]); errVal != nil {
 						return errVal
 					}
 				}
@@ -339,11 +340,11 @@ func setupObjectGlobal() *object.BuiltinFunction {
 			}
 			return describeProperty(desc)
 		}
-		// Symbol 键: *Object 查 SymbolProperties; 其它实现 OwnPropertyStore
-		// 的类型 (数组/函数) 无符号键属性槽, 返回 undefined (规范同样是
-		// undefined 而非 TypeError)。
+		// Symbol 键: *Object 与 *Array/*TypedArray 经 SymbolPropertyStore 查到
+		// 各自符号键描述符; 其余实现 OwnPropertyStore 的类型无符号键槽, 按
+		// 规范返回 undefined (而非 TypeError)。
 		if sym, isSym := args[1].(*object.Symbol); isSym {
-			if sobj, ok := args[0].(*object.Object); ok {
+			if sobj, ok := args[0].(object.SymbolPropertyStore); ok {
 				sdesc, found := sobj.GetSymbolPropertyDescriptor(sym)
 				if !found {
 					return object.UndefinedSingleton
@@ -530,7 +531,7 @@ func setupObjectGlobal() *object.BuiltinFunction {
 	o.SetProperty("getOwnPropertySymbols", object.NewBuiltin("getOwnPropertySymbols", func(args ...object.Value) object.Value {
 		result := []object.Value{}
 		if len(args) > 0 {
-			if obj, ok := args[0].(*object.Object); ok {
+			if obj, ok := args[0].(object.SymbolPropertyStore); ok {
 				for _, sym := range obj.SymbolKeys() {
 					result = append(result, sym)
 				}
@@ -1079,9 +1080,10 @@ func describeProperty(desc object.PropertyDescriptor) object.Value {
 }
 
 // defineOneSymbolProperty 按 property descriptor 定义一个 Symbol 键自有属性。
-// 与 defineOneProperty 同一套 ToPropertyDescriptor 语义, 但落点在
-// Object.SymbolProperties (按 Symbol.ID), 与字符串键空间隔离。
-func defineOneSymbolProperty(obj *object.Object, sym *object.Symbol, descVal object.Value) object.Value {
+// 与 defineOneProperty 同一套 ToPropertyDescriptor 语义, 但落点在持有者的符号
+// 键存储 (*Object.SymbolProperties 或 *Array/*TypedArray 同构槽), 与字符串键
+// 空间隔离。
+func defineOneSymbolProperty(obj object.SymbolPropertyStore, sym *object.Symbol, descVal object.Value) object.Value {
 	if !object.IsObjectValue(descVal) {
 		return object.NewTypeError("Property description must be an object")
 	}

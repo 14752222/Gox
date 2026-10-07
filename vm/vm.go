@@ -5417,6 +5417,12 @@ func (vm *VM) getIndex(obj, index object.Value) object.Value {
 	index = vm.normalizeIndexKey(index)
 	switch o := obj.(type) {
 	case *object.Array:
+		// Symbol 键: 数组此前无符号键槽, arr[Symbol.iterator] 读回 undefined,
+		// 使被覆盖的迭代器不可见。现走符号键通道 (自身 + 原型链)。getter
+		// 抛错经 object 回调桥记录, 由 GET_INDEX 之后的 checkCallbackErr 消费。
+		if sym, ok := index.(*object.Symbol); ok {
+			return vm.getSymbolIndexedValue(o, sym)
+		}
 		// 已通过 Object.defineProperty 定义过描述符 (索引访问器 / 不可写)
 		// 的数组, 索引读必须走描述符通道 (GetProperty 调 getter), 与自有
 		// 属性接口保持一致。PropDescs 为空 (绝大多数数组) 时走下方的快速
@@ -5470,6 +5476,9 @@ func (vm *VM) getIndex(obj, index object.Value) object.Value {
 		return object.UndefinedSingleton
 
 	case *object.TypedArray:
+		if sym, ok := index.(*object.Symbol); ok {
+			return vm.getSymbolIndexedValue(o, sym)
+		}
 		if n, ok := index.(*object.Number); ok {
 			idx := int(n.Value)
 			if idx >= 0 && idx < o.Length {
@@ -5568,6 +5577,30 @@ func (vm *VM) getIndex(obj, index object.Value) object.Value {
 		}
 		return val
 	}
+}
+
+// getSymbolIndexedValue 读取数组/类型化数组的 Symbol 键属性值 (自身 + 原型链)。
+// 访问器 (getter) 展开调用 (this = 原接收者) —— getter 抛错经 object 回调桥
+// 记录, 由调用点 (OP_GET_INDEX) 之后的 checkCallbackErr 消费。
+func (vm *VM) getSymbolIndexedValue(receiver object.Value, sym *object.Symbol) object.Value {
+	desc, found := object.LookupSymbolPropertyDescriptorChain(receiver, sym)
+	if !found {
+		return object.UndefinedSingleton
+	}
+	if acc, isAcc := desc.Value.(*object.Accessor); isAcc {
+		if acc.Getter != nil && object.IsCallable(acc.Getter) {
+			v := object.CallFunction(acc.Getter, receiver)
+			if v == nil {
+				v = object.UndefinedSingleton
+			}
+			return v
+		}
+		return object.UndefinedSingleton
+	}
+	if desc.Value == nil {
+		return object.UndefinedSingleton
+	}
+	return desc.Value
 }
 
 // defineClosureAccessor 在函数对象 (class 构造器) 上定义静态访问器:
@@ -5747,47 +5780,44 @@ func (vm *VM) getSymbolMember(obj object.Value, sym *object.Symbol) (object.Valu
 	if sym == nil {
 		return object.UndefinedSingleton, nil
 	}
-	if o, ok := obj.(*object.Object); ok {
-		for cur := o; cur != nil; {
-			if desc, found := cur.GetSymbolPropertyDescriptor(sym); found {
-				if acc, isAcc := desc.Value.(*object.Accessor); isAcc {
-					if acc.Getter != nil && object.IsCallable(acc.Getter) {
-						res, err := vm.callFunction(acc.Getter, o, nil)
-						if err != nil {
-							return nil, err
-						}
-						if err := vm.checkCallbackErr(); err != nil {
-							return nil, err
-						}
-						if res == nil {
-							res = object.UndefinedSingleton
-						}
-						return res, nil
-					}
-					return object.UndefinedSingleton, nil
-				}
-				if desc.Value == nil {
-					return object.UndefinedSingleton, nil
-				}
-				return desc.Value, nil
-			}
-			next, ok := cur.Proto.(*object.Object)
-			if !ok {
-				break
-			}
-			cur = next
+	// 沿原型链查 Symbol 键 (支持 *Object 的 SymbolProperties 与
+	// *Array/*TypedArray 的 SymbolPropertyStore 段)。
+	for cur := obj; cur != nil; {
+		var desc object.PropertyDescriptor
+		var found bool
+		switch o := cur.(type) {
+		case *object.Object:
+			desc, found = o.GetSymbolPropertyDescriptor(sym)
+		case object.SymbolPropertyStore:
+			desc, found = o.GetSymbolPropertyDescriptor(sym)
 		}
-		return object.UndefinedSingleton, nil
-	}
-	if sp, ok := obj.(interface {
-		GetSymbolProperty(*object.Symbol) (object.Value, bool)
-	}); ok {
-		if val, found := sp.GetSymbolProperty(sym); found {
-			if val == nil {
+		if found {
+			if acc, isAcc := desc.Value.(*object.Accessor); isAcc {
+				if acc.Getter != nil && object.IsCallable(acc.Getter) {
+					res, err := vm.callFunction(acc.Getter, obj, nil)
+					if err != nil {
+						return nil, err
+					}
+					if err := vm.checkCallbackErr(); err != nil {
+						return nil, err
+					}
+					if res == nil {
+						res = object.UndefinedSingleton
+					}
+					return res, nil
+				}
 				return object.UndefinedSingleton, nil
 			}
-			return val, nil
+			if desc.Value == nil {
+				return object.UndefinedSingleton, nil
+			}
+			return desc.Value, nil
 		}
+		pp, ok := cur.(interface{ GetProto() object.Value })
+		if !ok {
+			break
+		}
+		cur = pp.GetProto()
 	}
 	return object.UndefinedSingleton, nil
 }
@@ -6007,22 +6037,42 @@ func hasNextKey(o *object.Object) bool {
 	return false
 }
 
-func (vm *VM) resolveSymbolIterator(val object.Value) (object.Value, bool, error) {	o, ok := val.(*object.Object)
-	if !ok {
-		return nil, false, nil
+// hasSymbolProps 判断值自身或原型链上是否可能持有符号键属性 —— 即
+// resolveSymbolIterator 是否值得走符号键通道。仅 *Object 与实现
+// SymbolPropertyStore 的 *Array/*TypedArray 为真; 其余值交回
+// runtime.GetIterable 的 Go 层兜底 (字符串/Map/Set 迭代器等)。
+func hasSymbolProps(val object.Value) bool {
+	switch v := val.(type) {
+	case *object.Object:
+		return true
+	case object.SymbolPropertyStore:
+		// 数组/类型化数组自身无符号键时, 其原型 (Array.prototype 等,
+		// 为 *Object) 仍可能挂了 @@iterator; 沿 GetProto 继续判一层。
+		_ = v
+		return true
 	}
+	return false
+}
+
+func (vm *VM) resolveSymbolIterator(val object.Value) (object.Value, bool, error) {
+	// 只有持有符号键属性的类型才可能实现了 @@iterator: *Object, 以及
+	// *Array/*TypedArray (SymbolPropertyStore)。其余值 (原始值 / 无符号键槽的
+	// 对象类型) 直接交回 runtime.GetIterable 兜底。
 	sym := object.GetGlobalSymbol("Symbol.iterator")
 	if sym == nil {
 		return nil, false, nil
 	}
-	fn, err := vm.getSymbolMember(o, sym)
+	if !hasSymbolProps(val) {
+		return nil, false, nil
+	}
+	fn, err := vm.getSymbolMember(val, sym)
 	if err != nil {
 		return nil, false, err
 	}
 	if !object.IsCallable(fn) {
 		return nil, false, nil
 	}
-	res, err := vm.callFunction(fn, o, nil)
+	res, err := vm.callFunction(fn, val, nil)
 	if err != nil {
 		return nil, false, err
 	}
@@ -6110,6 +6160,13 @@ func (vm *VM) setIndex(obj, index, val object.Value) {
 	index = vm.normalizeIndexKey(index)
 	switch o := obj.(type) {
 	case *object.Array:
+		// Symbol 键: 数组此前没有符号键槽, arr[Symbol.iterator] = fn 被静默
+		// 丢弃。现落进数组自己的 SymbolProperties (用户赋值语义: 新建全 true
+		// 数据属性, 或按既有描述符写入)。
+		if sym, ok := index.(*object.Symbol); ok {
+			o.SetSymbolProperty(sym, val)
+			return
+		}
 		// 已通过 Object.defineProperty 定义过描述符的数组, 索引写走
 		// SetProperty 的描述符语义 (访问器调 setter / 不可写静默失败)。
 		// PropDescs 为空时走下方快速路径, 行为与此前完全一致。
@@ -6132,6 +6189,10 @@ func (vm *VM) setIndex(obj, index, val object.Value) {
 			o.SetProperty(s.Value, val)
 		}
 	case *object.TypedArray:
+		if sym, ok := index.(*object.Symbol); ok {
+			o.SetSymbolProperty(sym, val)
+			return
+		}
 		if n, ok := index.(*object.Number); ok {
 			idx := int(n.Value)
 			if idx >= 0 {

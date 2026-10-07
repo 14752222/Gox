@@ -26,3 +26,28 @@ type SymbolPropertyStore interface {
 	// SymbolKeys 按插入顺序返回自身 Symbol 键。
 	SymbolKeys() []*Symbol
 }
+
+// LookupSymbolPropertyDescriptorChain 沿原型链查找 Symbol 键属性描述符,
+// 同时支持 *Object (SymbolProperties) 与实现 SymbolPropertyStore 的非 *Object
+// 类型 (数组 / 类型化数组)。与 LookupSymbolPropertyDescriptor 的差别: 后者
+// 只在 *Object.Proto 为 *Object 时续走, 遇到数组实例即停。
+func LookupSymbolPropertyDescriptorChain(v Value, sym *Symbol) (PropertyDescriptor, bool) {
+	for cur := v; cur != nil; {
+		switch o := cur.(type) {
+		case *Object:
+			if d, found := o.GetSymbolPropertyDescriptor(sym); found {
+				return d, true
+			}
+		case SymbolPropertyStore:
+			if d, found := o.GetSymbolPropertyDescriptor(sym); found {
+				return d, true
+			}
+		}
+		pp, ok := cur.(interface{ GetProto() Value })
+		if !ok {
+			break
+		}
+		cur = pp.GetProto()
+	}
+	return PropertyDescriptor{}, false
+}
