@@ -150,6 +150,7 @@ jobs:
       # 写成 ::error:: 注解，否则永远无法归因。Windows/macOS 都要能自证。
       - name: go test ./...
         if: runner.os != 'Linux'
+        shell: bash
         run: |
           set +e
           log="$(mktemp)"
