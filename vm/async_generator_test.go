@@ -297,6 +297,247 @@ func TestAsyncGeneratorYieldStarNonObjectThrows(t *testing.T) {
 	}
 }
 
+// ===== yield* 异步委托的三类完成透传 (r6e5qp 第1项) =====
+//
+// 规范 AsyncGeneratorYieldDelegate 把消费者的 next(v)/throw(e)/return(v) 分别
+// 转发给被委托迭代器的同名方法, 并按步进结果的 done 决定「完成生成器」还是
+// 「再 yield 一次」。此前 return 完成完全未透传 (生成器被直接关闭), throw
+// 缺失方法时既不 AsyncIteratorClose 也不抛 TypeError。
+//
+// 期望值均以 Node 22 实测为准 (同片段在 Node 下输出与断言一致)。
+
+// (h) 消费者 return(v) 转发给被委托迭代器的 return(v): 结果为未完成 ⇒
+// 以该步进值 yield 给消费者, 之后回到正常委托循环 (不结束生成器)。
+func TestAsyncGeneratorYieldStarReturnForwardNotDone(t *testing.T) {
+	got := runAsyncEval(t, `
+		var src = {
+			[Symbol.asyncIterator]() { return this; },
+			next() { return { done: false, value: "n1" }; },
+			return(v) { return { done: false, value: "ret:" + v }; },
+		};
+		async function* g() { const r = yield* src; __out.push("after:" + r); }
+		(async function(){
+			const it = g();
+			__out.push("1:" + JSON.stringify(await it.next()));
+			__out.push("2:" + JSON.stringify(await it.return("X")));
+			__out.push("3:" + JSON.stringify(await it.next()));
+		})();
+	`)
+	for _, want := range []string{
+		`1:{"value":"n1","done":false}`,
+		`2:{"value":"ret:X","done":false}`,
+		`3:{"value":"n1","done":false}`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("yield* return(v) 未完成时应继续委托, 缺少 %q, got:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "after:") {
+		t.Errorf("return 未完成时生成器不应结束 (yield* 表达式未取值), got:\n%s", got)
+	}
+}
+
+// (h') 委托的 return 返回 done:true ⇒ 生成器以该步进值完成。
+func TestAsyncGeneratorYieldStarReturnForwardDone(t *testing.T) {
+	got := runAsyncEval(t, `
+		var src = {
+			[Symbol.asyncIterator]() { return this; },
+			next() { return { done: false, value: "n" }; },
+			return(v) { return { done: true, value: "R-" + v }; },
+		};
+		async function* g() { yield* src; __out.push("unreachable"); }
+		(async function(){
+			const it = g();
+			__out.push("1:" + JSON.stringify(await it.next()));
+			__out.push("2:" + JSON.stringify(await it.return("Y")));
+			__out.push("3:" + JSON.stringify(await it.next()));
+		})();
+	`)
+	for _, want := range []string{
+		`1:{"value":"n","done":false}`,
+		`2:{"value":"R-Y","done":true}`,
+		`3:{"done":true}`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("yield* return(v) 完成时应以步进值结束生成器, 缺少 %q, got:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "unreachable") {
+		t.Errorf("done 的 return 完成后不应继续执行委托之后的语句, got:\n%s", got)
+	}
+}
+
+// (h'') 委托对象没有 return 方法 ⇒ 生成器以 return(v) 的实参 (await 后)
+// 完成, 不抛 TypeError (规范 7.c.ii)。
+func TestAsyncGeneratorYieldStarReturnMissingMethod(t *testing.T) {
+	got := runAsyncEval(t, `
+		var src = {
+			[Symbol.asyncIterator]() { return this; },
+			next() { return { done: false, value: "n" }; },
+		};
+		async function* g() { yield* src; __out.push("unreachable"); }
+		(async function(){
+			const it = g();
+			__out.push("1:" + JSON.stringify(await it.next()));
+			__out.push("2:" + JSON.stringify(await it.return(Promise.resolve("CV"))));
+			__out.push("3:" + JSON.stringify(await it.next()));
+		})();
+	`)
+	for _, want := range []string{
+		`1:{"value":"n","done":false}`,
+		`2:{"value":"CV","done":true}`,
+		`3:{"done":true}`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("缺 return 方法时应以实参 (await 后) 完成, 缺少 %q, got:\n%s", want, got)
+		}
+	}
+}
+
+// (h''') return 属性为 null ⇒ 按 GetMethod 语义等同「无 return 方法」。
+func TestAsyncGeneratorYieldStarReturnMethodIsNull(t *testing.T) {
+	got := runAsyncEval(t, `
+		var src = {
+			[Symbol.asyncIterator]() { return this; },
+			next() { return { done: false, value: "n" }; },
+			return: null,
+		};
+		async function* g() { yield* src; }
+		(async function(){
+			const it = g();
+			__out.push("1:" + JSON.stringify(await it.next()));
+			__out.push("2:" + JSON.stringify(await it.return("DV")));
+		})();
+	`)
+	for _, want := range []string{
+		`1:{"value":"n","done":false}`,
+		`2:{"value":"DV","done":true}`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("return:null 应等同缺 return 方法, 缺少 %q, got:\n%s", want, got)
+		}
+	}
+}
+
+// (i) 委托对象没有 throw 方法 ⇒ 先 AsyncIteratorClose (调用其可调 return),
+// 再以 TypeError reject (规范 7.b.iii)。
+func TestAsyncGeneratorYieldStarNoThrowMethodClosesThenTypeError(t *testing.T) {
+	got := runAsyncEval(t, `
+		var closed = 0;
+		var src = {
+			[Symbol.asyncIterator]() { return this; },
+			next() { return { done: false, value: "n" }; },
+			return() { closed++; return { done: true }; },
+		};
+		async function* g() { yield* src; }
+		(async function(){
+			const it = g();
+			await it.next();
+			try { await it.throw("boom"); __out.push("no-throw"); }
+			catch (e) { __out.push("caught:" + e.name + " closed:" + closed); }
+		})();
+	`)
+	if !strings.Contains(got, "caught:TypeError closed:1") {
+		t.Errorf("缺 throw 方法时应 AsyncIteratorClose 后抛 TypeError, got:\n%s", got)
+	}
+}
+
+// (j) 委托对象的 return 方法本身抛错 ⇒ 该错误原样传播 (其余无关错误不得掩盖)。
+func TestAsyncGeneratorYieldStarReturnAbruptPropagates(t *testing.T) {
+	got := runAsyncEval(t, `
+		var err = new Error("return-boom");
+		var src = {
+			[Symbol.asyncIterator]() { return this; },
+			next() { return { done: false, value: "n" }; },
+			return() { throw err; },
+		};
+		async function* g() { yield* src; }
+		(async function(){
+			const it = g();
+			await it.next();
+			try { await it.return("z"); __out.push("no-throw"); }
+			catch (e) { __out.push("caught:" + (e === err) + ":" + e.message); }
+		})();
+	`)
+	if !strings.Contains(got, "caught:true:return-boom") {
+		t.Errorf("委托 return 抛出的错误应原样传播 (===), got:\n%s", got)
+	}
+}
+
+// (g') 委托对象的 next 是抛错的访问器 ⇒ 抛出的是该原始值, 不得退化成
+// "no callable next()" 的 TypeError。
+func TestAsyncGeneratorYieldStarNextGetterAbruptPropagates(t *testing.T) {
+	got := runAsyncEval(t, `
+		var err = new Error("getter-boom");
+		async function* g(){
+			yield* {
+				[Symbol.asyncIterator]() { return this; },
+				get next() { throw err; },
+			};
+		}
+		(async function(){
+			try { await g().next(); __out.push("no-throw"); }
+			catch (e) { __out.push("caught:" + (e === err) + ":" + e.message); }
+		})();
+	`)
+	if !strings.Contains(got, "caught:true:getter-boom") {
+		t.Errorf("get next 抛出的原始值应原样传播, got:\n%s", got)
+	}
+}
+
+// (k) 委托「同步」可迭代对象/同步 generator: 步进值按
+// %AsyncFromSyncIteratorPrototype%.next 步骤 14 解包 (PromiseResolve)。
+func TestAsyncGeneratorYieldStarSyncSourceUnwrapsValue(t *testing.T) {
+	got := runAsyncEval(t, `
+		function* syncGen() { yield Promise.resolve("SV"); yield "second"; }
+		async function* gArr() { yield* [Promise.resolve("EV"), "plain"]; }
+		async function* gGen() { yield* syncGen(); }
+		(async function(){
+			const it = gArr();
+			__out.push("arr1:" + JSON.stringify(await it.next()));
+			__out.push("arr2:" + JSON.stringify(await it.next()));
+			const itg = gGen();
+			__out.push("gen1:" + JSON.stringify(await itg.next()));
+			__out.push("gen2:" + JSON.stringify(await itg.next()));
+		})();
+	`)
+	for _, want := range []string{
+		`arr1:{"value":"EV","done":false}`,
+		`arr2:{"value":"plain","done":false}`,
+		`gen1:{"value":"SV","done":false}`,
+		`gen2:{"value":"second","done":false}`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("同步源的委托值应被解包, 缺少 %q, got:\n%s", want, got)
+		}
+	}
+}
+
+// (k') 委托「原生 @@asyncIterator」: 步进值**不**解包 (yield* 不做
+// AsyncGeneratorYield(Await) 之外的额外解包 —— test262
+// yield-star-promise-not-unwrapped)。
+func TestAsyncGeneratorYieldStarNativeAsyncSourceDoesNotUnwrap(t *testing.T) {
+	got := runAsyncEval(t, `
+		var innerPromise = Promise.resolve("FV");
+		async function* g(){
+			yield* {
+				[Symbol.asyncIterator]() { return this; },
+				next() { return { done: false, value: innerPromise }; },
+			};
+		}
+		(async function(){
+			const r = await g().next();
+			__out.push("done:" + r.done);
+			__out.push("same:" + (r.value === innerPromise));
+		})();
+	`)
+	for _, want := range []string{"done:false", "same:true"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("原生 @@asyncIterator 的值不得解包, 缺少 %q, got:\n%s", want, got)
+		}
+	}
+}
+
 // ===== 子项3: @@toStringTag 沿原型链可达 (r6e5qp) =====
 //
 // async generator 实例的 @@toStringTag 落在 %AsyncGeneratorPrototype% (AGP) 上,
