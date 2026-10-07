@@ -3,6 +3,22 @@
 面向 `jsbuild` 打包产物 (P2–P4) 的各平台分发注意事项。Gox GUI 应用自带
 运行时与软件渲染器, 无任何动态库依赖 (Windows/Linux 产物均为静态单文件)。
 
+> **本文不适用移动端 (Android / iOS / HarmonyOS)。** 移动端产物不是一个可执行文件,
+> 而是「预编译库 (`libgox.so` / `libgox.a`) + 一层宿主壳工程 (Kotlin / Swift / ArkTS)」——
+> 桌面这条「编出一个文件、用户直接跑」的路子在移动端不存在。
+>
+> | | 桌面 (本文) | 移动端 |
+> |---|---|---|
+> | 拿到什么 | 一个 `gox` 可执行文件 | 预编译库 + 要自己铺一层壳工程 |
+> | 从哪拿 | `npm i -g @goxjs/goxjs` | `npm i @goxjs/goxjs-mobile-<platform>-<abi>` |
+> | 怎么用 | 直接跑 `gox` / `goxjs` | 库落进壳工程后 `gradle` / `hvigor` / `xcodebuild` |
+> | 本机工具链 | **不需要** (静态单文件) | **需要**: Android NDK+JDK / DevEco / Xcode (但不需要 Go) |
+> | 想装上直接看 | Release 下 universal 二进制 | Release 下成品 APK / 壳工程 zip (`mobile-release.yml`) |
+>
+> 移动端怎么拿、怎么装、版本怎么对齐, 见
+> [`docs/mobile-distribution-decision.md`](./mobile-distribution-decision.md);
+> 发版口径见 [`docs/npm-release.md`](./npm-release.md) §7。
+
 ## 产物命名约定
 
 | 平台 | 命令 | 产物 |

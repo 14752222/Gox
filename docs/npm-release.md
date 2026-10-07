@@ -3,9 +3,13 @@
 > **一句话**：在 `npm/`（**独立仓库 `gox-npm` 的子模块**）里改 `version` 并提交推送 →
 > 回主仓库提交子模块指针再 push 到 `main`。剩下的由
 > `.github/workflows/release.yml` 全自动完成：判重（版本已在 registry 上就跳过）→
-> 注册表一致性校验（内置组件四处 / gx 模块三处 / 版本号 / npm 清单）→ 交叉编译
-> 五平台二进制 → 打包内容校验 → OIDC 发布 → 打 tag + 建 Release。
+> 注册表一致性校验（内置组件四处 / gx 模块三处 / 版本号 / npm 清单 / **移动端子包自洽**）→
+> 交叉编译五平台二进制 → **交叉编译移动端平台子包** → 打包内容校验 → OIDC 发布（主包 + 子包）→
+> 打 tag + 建 Release。
 > **本机不需要 token、不需要 `npm login`、不需要手工 `npm publish`。**
+>
+> 移动端产物（`libgox.so` / `libgox.a`）走**另一条渠道**：平台子包
+> `@goxjs/goxjs-mobile-<platform>-<abi>`，同一条流水线发布 —— 见 §7。
 
 流水线自身的注释里也有同一套说明（`.github/workflows/release.yml` 文件头），改动请两边同步。
 
@@ -105,6 +109,10 @@ curl -s "https://registry.npmjs.org/-/npm/v1/attestations/@goxjs%2Fgoxjs@0.3.0" 
 
 失配的症状是**误导性的 404**（不是 403）：看着像"包不存在"，实际是身份没对上。
 
+> **移动端子包要各配一次**：上面这四个字段是**按包**配的 —— 主包 `@goxjs/goxjs` 配一遍，
+> 4 个平台子包 `@goxjs/goxjs-mobile-*` **每个都要再配一遍**（org/repo/workflow 三个字段相同）。
+> 少配哪个，哪个子包首次发布就是那个 404。见 §7。
+
 **workflow 侧的红线（已写死在 `release.yml` 里，别"顺手优化"掉）：**
 
 - `permissions: id-token: write` —— 换 OIDC 凭据必需；`contents: write` —— 自动打 tag / 建 Release 必需。
@@ -127,8 +135,15 @@ curl -s "https://registry.npmjs.org/-/npm/v1/attestations/@goxjs%2Fgoxjs@0.3.0" 
 1. `npm view @goxjs/goxjs@<ver> version` 能查到；
 2. `/-/npm/v1/attestations/@goxjs%2Fgoxjs@<ver>` 里出现 **`attestations`**（`publish/v0.1` +
    `slsa.dev/provenance/v1`）—— 这才证明是 OIDC 发布的；只有 `signatures` 说明是旧 token 手工发的；
-3. 包里内容对：`npm pack` 出来的 tgz 用 `tar -tzf` 列出 **5 个平台二进制 + package.json + README.md**；
-4. GitHub 上出现 `v<ver>` 标签与 Release（push main 发布成功后由 workflow 自动创建）。
+3. 包里内容对：`npm pack` 出来的 tgz 用 `tar -tzf` 列出 **5 个平台二进制 + package.json + README.md**
+   （**且不含 `mobile/`** —— 出现即违反 M5，见 §7）；
+4. **（移动端）每个平台子包**能查到且内容对：`npm view @goxjs/goxjs-mobile-<platform>-<abi>@<ver> version`
+   能查到；`npm pack` 出来的 tgz 里含该平台产物 + `manifest.json`，且解包后逐产物
+   `sha256` 与 `manifest.json` 一致（CI 里是 `release.yml` 的「子包打包校验」步骤，判据与
+   `mobile-smoke.yml` 的 `npm-package` 作业同一份）；
+5. GitHub 上出现 `v<ver>` 标签与 Release（push main 发布成功后由 workflow 自动创建）。
+   > **分界**：v0.7.0 及更早的 Release 是 **0 assets**（自动建 Release 是后来才补的），
+   > **v0.8.0 起才真正挂产物**。详细口径见 `docs/release-post--checklist.md` §2。
 
 ## 6. 出问题怎么查
 
@@ -146,11 +161,42 @@ curl -s "https://registry.npmjs.org/-/npm/v1/attestations/@goxjs%2Fgoxjs@0.3.0" 
 - **判重命中**：日志里是 `::notice::… 已在 registry 上，跳过发布`，不是失败 —— 重推、重跑历史
   run、补跑失败的发版都不会误发。
 
-## 7. 相关文件
+## 7. 移动端产物（与桌面不同的一条路）
+
+移动端**不是一个可执行文件**，而是「预编译库 + 一层壳工程」，所以发布面被拆成两处 ——
+完整论证（含 `optionalDependencies` 为什么不行）见 `docs/mobile-distribution-decision.md`。
+
+| | 桌面 | 移动端 |
+|---|---|---|
+| 发什么 | 5 平台 `gox` 可执行文件 | 预编译库 `libgox.so` / `libgox.a`（+ `libgox.h`） |
+| 发到哪 | 主包 `@goxjs/goxjs` 的 `binaries/` | **平台子包** `@goxjs/goxjs-mobile-<platform>-<abi>`（各发各的） |
+| 用户怎么拿 | `npm i -g @goxjs/goxjs` | `npm i @goxjs/goxjs-mobile-android-arm64-v8a`（按需，**子包不在主包依赖里**） |
+| 想直接装来试 | Release 下 universal 二进制 | **GitHub Releases 的成品 APK / 壳工程 zip**（`.github/workflows/mobile-release.yml`，nightly + release 两档） |
+
+- **子包定义**（单一真源）在 `packaging/npm-mobile/<dirname>/metadata.json`，由
+  `scripts/gen-npm-mobile-pkgs.py` 生成到 `npm/packages/<dirname>/`；CI 用 `--check` 断言已同步。
+- **子包版本恒等于主包版本**（同号约定），由 `scripts/check-registries.py` 检查5 卡死。
+- **`mobile/` 绝不能回到主包**：主包 `files` 一旦出现 `mobile/`，`check-registries.py:523` 直接红
+  （M5 的红线：桌面包必须保持 ~20MB，不能被移动端顶到 ~72MB）。
+- **每个子包都要在 npmjs.com 上单独配 Trusted Publishing**（同一组 `org/repo/workflow` 字段），
+  否则该子包首次发布以**误导性的 404** 收场（与主包 §4 的坑同源）。
+- 三个移动平台里，**android / ios 进 CI**（NDK / Xcode）；**harmony 进不了托管 CI**
+  （要 DevEco SDK）—— 该子包目前只能本地或自建 runner 手工发。
+- **成品 APK/HAP/壳工程 zip** 不走 npm，走 `.github/workflows/mobile-release.yml`（§8 列出）。
+  该工作流当前**无签名材料 / 无 DevEco**，所以 Android 只出 **debug 签名**的 APK、harmony 恒跳过。
+
+## 8. 相关文件
 
 - `.github/workflows/release.yml` —— 流水线本体（文件头有同一份说明）
+- `.github/workflows/mobile-release.yml` —— 移动端**成品 App** 发布（APK / HAP / iOS 壳工程 zip，
+  nightly + release 两档；本工作流不发 npm）
+- `.github/workflows/mobile-smoke.yml` —— 移动端构建冒烟 + npm 包内容核对（主包无 `mobile/`、子包含产物）
+- `scripts/check-shell-engine-version.py` —— 壳工程 ↔ 引擎版本「成对发布」闸门
+- `scripts/gen-npm-mobile-pkgs.py` / `packaging/npm-mobile/` —— 移动端子包定义（单一真源）与生成器
+- `scripts/build-npm-mobile.sh` / `scripts/fetch-mobile-libs.sh` —— 移动端库的产出端 / 消费端
+- `docs/mobile-distribution-decision.md` —— 移动端分发策略决策（产物形态 / 分发渠道 / 版本兼容矩阵）
 - `.github/workflows/ci.yml` —— 常规闸门：注册表一致性 + `go build`/`vet`/`test`
-- `scripts/check-registries.py` —— 四项静态一致性（内置组件四处 / gx 模块三处 / 版本号 / npm 清单）
+- `scripts/check-registries.py` —— 五项静态一致性（内置组件四处 / gx 模块三处 / 版本号 / npm 清单 / 移动端子包自洽）
 - `scripts/check-registries-selftest.py` —— 上一条的负向自测，证明它真的会红
 - `scripts/build-npm.sh` —— 五平台交叉编译 + 可选 `--into-package`
 - `npm/package.json` / `npm/bin/gox.js` / `npm/README.md` —— 包定义三件套；2026-09-24 起住在

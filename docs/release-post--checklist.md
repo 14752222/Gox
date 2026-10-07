@@ -22,6 +22,7 @@
 | 已知缺口（test262） | 70.8% language 合规率（16809/23726，2026-10-06 批次四口径；新版本以当批 A/B 回填） | README「已知限制」小节同数字 | 同左 |
 | 已知缺口（语义） | ① class `extends` 仅支持标识符（heritage 箭头/裸计算字段未做，`rO13zU`）；② `await using` 异步释放整体 33.7%（主缺口）；③ module 用例未走真模块入口（`rNR2Zk`，runner 侧）；④ 平台空白见 roadmap §二（Windows/macOS/Linux 桌面之外，Android/iOS 尚在补） | 同左 | 同左 |
 | 安装方式 | 文档链 `npm install -g @goxjs/goxjs` | 包页 install 段 | 快速开始 |
+| **移动端产物渠道** | 成品 APK / iOS 壳工程 zip 挂在本 Release（`mobile-release.yml`）；**harmony HAP 当前恒缺**（无 DevEco/签名）。子包 `@goxjs/goxjs-mobile-*` 见下 | 平台子包 `@goxjs/goxjs-mobile-<platform>-<abi>`（与主包同号；**不在主包依赖里**，按需 `npm i`） | 下载页需写清：**移动端不是下一个 exe，是「库 + 壳工程」**（见 `docs/mobile-distribution-decision.md` §5.1） |
 
 **一处一勾**：每次发版后按上表逐格核对，两轮（发布当天 + 一周后抽查）。
 
@@ -30,6 +31,10 @@
 - **v0.7.0 及更早的 Release 是 0 assets**（空壳，只有 tag 和一段文字）——
   workflow 的「自动打 tag + 建 Release + 内容校验」是后来才补齐的。
 - **v0.8.0 起才真正挂产物**（5 平台二进制 + OIDC attestation）。
+- **移动端成品产物是更晚才有的另一档**：`v0.7.0 ～ v0.8.0+` 的 Release 里**没有** APK / HAP /
+  壳工程 zip，那要等 `.github/workflows/mobile-release.yml` 真正跑起来（它只在 nightly cron /
+  `release: published` / 手动触发时跑）。所以「某个 v0.x Release 没有移动端产物」**不是事故**。
+  启用后要在此处补上「首个含移动端产物的版本」。
 - 因此：回溯老版本的用户看到 v0.7.0 及更早「没有下载」不是事故；Release 说明模板里
   带一句「v0.8.0 以前的 Release 不含二进制产物，请使用 v0.8.0+」。
 
@@ -69,6 +74,14 @@ test262 language 合规率 <当批数字>；class extends 仅标识符；await u
 - [ ] npm 包页：在 `gox-npm` 仓库 README 的「已知限制」小节补三平台一致口径（随下一版发出）
 - [ ] 官网：下载页/首页版本号改 v0.9.0、平台矩阵与 §1 一致、补缺口说明
 - [ ] 三平台版本号回查一遍（发布后 1 天 + 7 天各一次）
+- [ ] **移动端 · npm 侧**：到 npmjs.com 为 4 个平台子包（`@goxjs/goxjs-mobile-{android,harmony}-arm64-v8a`、
+  `@goxjs/goxjs-mobile-ios-{iphoneos,iphonesimulator}-arm64`）各配一次 Trusted Publishing
+  （org=`14752222`、repo=`Gox`、workflow=`release.yml`），否则首次发布以**误导性的 404** 收场
+- [ ] **移动端 · 成品产物**：确认是否要启用 `.github/workflows/mobile-release.yml`
+  （需 Android 签名材料才出可上架 APK；需自建 runner + DevEco 才出 HAP）；
+  启用后在本文件 §2 补「首个含移动端产物的版本」
+- [ ] **移动端 · 官网**：下载页写清两端差异（桌面是下一个 exe；移动端是「库 + 壳工程」，
+  想直接装去看 Release 的 APK / 壳工程 zip），口径见 `docs/mobile-distribution-decision.md` §5
 
 ## 5. 掘金 / 知乎互挂（依赖 `rcfa8R`，本条不阻塞）
 
