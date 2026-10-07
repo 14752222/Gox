@@ -188,3 +188,58 @@ func TestGeneratorParamDefaultsOrder(t *testing.T) {
 		t.Errorf("多个默认值应按形参顺序在调用时求值, got:\n%s", got)
 	}
 }
+
+// ===== 子项4 补充: 形参求值严格早于 async generator 对象返回 (r6e5qp) =====
+//
+// 规范 sec-asyncgenerator-definitions-evaluation: AsyncGeneratorFunctionCreate
+// 发生在形参绑定**之后**, 故形参默认值求值时"返回对象"尚不存在。用形参默认值
+// 里的副作用对返回目标做嗅探即可区分顺序 —— 若先返回后求值, 嗅探会看到已赋值。
+// (期望值以 Node 22 实测为准。)
+
+func TestAsyncGeneratorParamEvalBeforeObjectCreated(t *testing.T) {
+	got := runAsyncEval(t, `
+		var _result;
+		var sideAtParam = "unset";
+		async function* g(a = (sideAtParam = (_result === undefined ? "param-before-return" : "param-AFTER-return"), 1)) {
+			yield a;
+		}
+		_result = g();
+		__out.push("order:" + sideAtParam);
+	`)
+	if !strings.Contains(got, "order:param-before-return") {
+		t.Errorf("async generator 形参求值必须早于返回对象, got:/n%s", got)
+	}
+}
+
+// 同步生成器同款: 形参副作用在调用时 (对象已构造前) 发生。
+func TestGeneratorParamEvalBeforeObjectCreated(t *testing.T) {
+	got := runAsyncEval(t, `
+		var token = { n: 0 };
+		var observed = "unset";
+		function* sg(a = (observed = token.n, 1)) { yield a; }
+		token.n = 7;
+		var it = sg();
+		__out.push("observed:" + observed);
+		__out.push("first:" + it.next().value);
+	`)
+	for _, want := range []string{"observed:7", "first:1"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("缺少 %q, got:/n%s", want, got)
+		}
+	}
+}
+
+// async generator: 解构 + 默认值形参求值抛错 => **同步**抛出 (非 rejected Promise)。
+// 与普通 async 函数的 rejected Promise 形成对照 (见 async_param_binding_test.go
+// 的 TestAsyncFunctionParamThrowRejects)。
+func TestAsyncGeneratorParamDestructureAndDefaultThrowSync(t *testing.T) {
+	got := runAsyncEval(t, `
+		var sync = "none";
+		async function* h({x} = null, b = (function(){ throw new Error("dflt"); })()) { yield x; }
+		try { h(undefined); } catch(e) { sync = e.message; }
+		__out.push("sync:" + sync);
+	`)
+	if !strings.Contains(got, "sync:dflt") {
+		t.Errorf("async generator 形参求值抛错应同步抛出, got:/n%s", got)
+	}
+}
