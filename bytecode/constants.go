@@ -166,8 +166,14 @@ type FunctionMetadata struct {
 	Name          string          // 函数名
 	Instructions  Instructions    // 函数体字节码
 	NumLocals     int             // 局部变量数 (含参数和外层捕获)
-	NumParameters int             // 参数个数
+	NumParameters int             // 参数个数 (含 rest 与解构; VM 据此摆放实参)
 	Parameters    []ParameterSpec // 参数规格
+	// Length 是函数对象 length 自有属性的值 = 规范的 ExpectedArgumentCount:
+	// 从左数形参, 遇到第一个"带初始化器 (默认值)"或"rest"的形参即停, 之前
+	// 已数个数即 Length (rest 本身不计入; 解构形参无默认值时算 1 个)。
+	// 与 NumParameters 不同 (后者含全部形参), 由 NewFunctionMetadata 从
+	// Parameters 推导 (ECMA-262 §15.1.4 / §10.2.11 SetFunctionLength)。
+	Length        int
 	IsArrow       bool            // 是否箭头函数
 	IsGenerator   bool            // 是否生成器函数 (function*)
 	IsAsync       bool            // 是否 async 函数
@@ -249,11 +255,27 @@ func NewFunctionMetadata(name string, ins Instructions, numLocals, numParams int
 		NumLocals:     numLocals,
 		NumParameters: numParams,
 		Parameters:    params,
+		Length:        expectedArgumentCount(params),
 		IsArrow:       isArrow,
 		BaseSlot:      0,
 		ArgumentsSlot: -1,
 		SelfSlot:      -1,
 	}
+}
+
+// expectedArgumentCount 计算规范定义的 ExpectedArgumentCount (函数的 length):
+// 从左往右数形参, 遇到第一个 rest 形参或带初始化器 (HasDefault) 的形参即停,
+// 返回此前已数的形参数; rest 形参本身不计入。解构形参只要没有默认值就
+// 算作 1 个普通形参 (ECMA-262 §15.1.4 / §10.2.11)。
+func expectedArgumentCount(params []ParameterSpec) int {
+	n := 0
+	for _, p := range params {
+		if p.IsRest || p.HasDefault {
+			break
+		}
+		n++
+	}
+	return n
 }
 
 // Inspect 返回函数元数据的可读表示 (实现 object.Value 接口)

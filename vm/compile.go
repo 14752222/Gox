@@ -164,6 +164,7 @@ func metaToCompiledFunction(meta *bytecode.FunctionMetadata, consts []object.Val
 		Instructions:  meta.Instructions,
 		NumLocals:      meta.NumLocals,
 		NumParameters:  meta.NumParameters,
+		Length:         meta.Length,
 		Name:           meta.Name,
 		IsArrow:        meta.IsArrow,
 		IsGenerator:    meta.IsGenerator,

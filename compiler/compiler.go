@@ -3013,7 +3013,7 @@ func (c *Compiler) compileClassConstructor(fields []*ast.ClassField, ctor *ast.C
 				// 解构模式参数: 隐藏槽存原始实参, 函数入口处解构到各绑定
 				// (与 compileFunctionSelf 同口径; 默认值/解构由 compileParamBinding 生成)。
 				name := fmt.Sprintf("__param_%d", i)
-				paramSpecs = append(paramSpecs, bytecode.ParameterSpec{Name: name, IsRest: param.Rest})
+				paramSpecs = append(paramSpecs, bytecode.ParameterSpec{Name: name, HasDefault: param.Default != nil, IsRest: param.Rest})
 				sym := fnScope.Define(name, false)
 				paramSlots = append(paramSlots, sym.Slot)
 				continue
@@ -6261,7 +6261,7 @@ func (c *Compiler) compileFunctionSelf(name, selfName string, params []*ast.Para
 			// 再按模式拆开 (内层 generator 场景 wrapper 已收好, restPreCollected)。
 			paramSpecs[i] = bytecode.ParameterSpec{
 				Name:       fmt.Sprintf("__param_%d", i),
-				HasDefault: false,
+				HasDefault: param.Default != nil,
 				IsRest:     param.Rest && !restPreCollected,
 			}
 			sym := fnScope.Define(paramSpecs[i].Name, false)
@@ -6450,7 +6450,7 @@ func (c *Compiler) compileAsyncFunctionSelf(name, selfName string, params []*ast
 			// generator (内层做解构); rest 模式参数在此收集剩余实参。
 			paramSpecs[i] = bytecode.ParameterSpec{
 				Name:       fmt.Sprintf("__param_%d", i),
-				HasDefault: false,
+				HasDefault: param.Default != nil,
 				IsRest:     param.Rest,
 			}
 		} else {
@@ -6562,7 +6562,7 @@ func (c *Compiler) compileAsyncGeneratorSelf(name, selfName string, params []*as
 		if param.Pattern != nil {
 			paramSpecs[i] = bytecode.ParameterSpec{
 				Name:       fmt.Sprintf("__param_%d", i),
-				HasDefault: false,
+				HasDefault: param.Default != nil,
 				IsRest:     param.Rest,
 			}
 		} else {

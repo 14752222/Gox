@@ -390,7 +390,7 @@ func (c *Closure) OwnDescriptor(name string) (PropertyDescriptor, bool) {
 	case "length":
 		n := 0
 		if c.Fn != nil {
-			n = c.Fn.NumParameters
+			n = c.Fn.Length
 		}
 		return closureLengthDescriptor(n), true
 	case "prototype":

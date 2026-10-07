@@ -22,6 +22,11 @@ type CompiledFunction struct {
 	NumLocals int
 	// NumParameters 是参数个数
 	NumParameters int
+	// Length 是函数对象 length 自有属性的值 = 规范的 ExpectedArgumentCount:
+	// 从左数形参, 遇到第一个"带默认值"或"rest"的形参即停 (rest 不计入;
+	// 解构形参无默认值时算 1 个)。由编译器按 bytecode.FunctionMetadata.Length
+	// 填入 (ECMA-262 §15.1.4 / §10.2.11 SetFunctionLength)。
+	Length int
 	// Parameters 是参数元数据 (名称、默认值、剩余参数标志)
 	Parameters []ParameterInfo
 	// Name 是函数名 (匿名函数为 "")
@@ -99,7 +104,7 @@ func (f *CompiledFunction) GetProperty(name string) (Value, bool) {
 	case "name":
 		return NewString(f.Name), true
 	case "length":
-		return NewInt(int64(f.NumParameters)), true
+		return NewInt(int64(f.Length)), true
 	}
 	return nil, false
 }
@@ -189,7 +194,7 @@ func (c *Closure) GetProperty(name string) (Value, bool) {
 		return NewString(""), true
 	case "length":
 		if c.Fn != nil {
-			return NewInt(int64(c.Fn.NumParameters)), true
+			return NewInt(int64(c.Fn.Length)), true
 		}
 		return NewInt(0), true
 	case "prototype":
