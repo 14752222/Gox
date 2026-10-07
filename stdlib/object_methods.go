@@ -109,12 +109,12 @@ func setupObjectGlobal() *object.BuiltinFunction {
 			}
 			if store, ok := src.(object.OwnPropertyStore); ok {
 				for _, k := range store.EnumerableOwnKeys() {
-					val, found := getOwnProperty(src, k)
-					if !found {
-						val, _ = src.(interface {
-							GetProperty(string) (object.Value, bool)
-						}).GetProperty(k)
-					}
+					// 规范 19.1.2.1: Get(from, nextKey) —— 必须经 GetProperty
+					// 调用访问器 (getter 抛错要向上传播, 见
+					// source-get-attr-error.js)。
+					val, _ := src.(interface {
+						GetProperty(string) (object.Value, bool)
+					}).GetProperty(k)
 					target.SetProperty(k, val)
 				}
 			}
