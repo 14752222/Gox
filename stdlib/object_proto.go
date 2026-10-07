@@ -157,8 +157,12 @@ func lookupToStringTag(v object.Value) (string, bool) {
 		return stringTagOf(object.LookupSymbolProperty(o, sym))
 	}
 	// 独立 struct 类型: 各自的原型对象 (无则视为未定义)。
+	// 必须走 LookupSymbolProperty **完整链**查找, 而非 p.GetSymbolProperty ——
+	// 后者只看原型对象自己的 SymbolProperties。async generator 实例的
+	// @@toStringTag 落在 fn.prototype 的原型 (%AsyncGeneratorPrototype%) 上,
+	// 只看一层会漏 (得到 "[object Object]"，规范应为 "[object AsyncGenerator]")。
 	if p := protoObjectOf(v); p != nil {
-		return stringTagOf(p.GetSymbolProperty(sym))
+		return stringTagOf(object.LookupSymbolProperty(p, sym))
 	}
 	return "", false
 }

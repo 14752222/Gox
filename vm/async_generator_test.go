@@ -296,3 +296,61 @@ func TestAsyncGeneratorYieldStarNonObjectThrows(t *testing.T) {
 		t.Errorf("非对象迭代结果应抛 TypeError, got:\n%s", got)
 	}
 }
+
+// ===== 子项3: @@toStringTag 沿原型链可达 (r6e5qp) =====
+//
+// async generator 实例的 @@toStringTag 落在 %AsyncGeneratorPrototype% (AGP) 上,
+// 实例到 AGP 之间还隔着一层该函数自己的 .prototype。规范里 Get(@@toStringTag)
+// 是**完整原型链**查找, 故 it[Symbol.toStringTag] 与 Object.prototype.toString
+// 都必须看得到它。此前 Gox 只向 fn.prototype 委托一层即止, *Object 的
+// GetSymbolProperty 又不走链, 于是两者分别得到 undefined / "[object Object]"。
+// (期望值以 Node 22 实测为准。)
+
+// it[Symbol.toStringTag] === "AsyncGenerator" (跨两层原型可达)。
+func TestAsyncGeneratorInstanceToStringTag(t *testing.T) {
+	got := runAsyncEval(t, `
+		async function* g(){ yield 1; }
+		const it = g();
+		__out.push("tag:" + it[Symbol.toStringTag]);
+		__out.push("str:" + Object.prototype.toString.call(it));
+		__out.push("strAgp:" + Object.prototype.toString.call(Object.getPrototypeOf(Object.getPrototypeOf(it))));
+	`)
+	for _, want := range []string{"tag:AsyncGenerator", "str:[object AsyncGenerator]", "strAgp:[object AsyncGenerator]"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("缺少 %q, got:/n%s", want, got)
+		}
+	}
+}
+
+// 删除 AGP[@@toStringTag] 后: 实例标签回落 undefined, toString 回落 "[object Object]"
+// (证明是**链式**查找而非硬编码标签)。
+func TestAsyncGeneratorToStringTagChainFallback(t *testing.T) {
+	got := runAsyncEval(t, `
+		async function* g(){ yield 1; }
+		const AGP = Object.getPrototypeOf(Object.getPrototypeOf(g()));
+		delete AGP[Symbol.toStringTag];
+		__out.push("tag:" + g()[Symbol.toStringTag]);
+		__out.push("str:" + Object.prototype.toString.call(g()));
+	`)
+	for _, want := range []string{"tag:undefined", "str:[object Object]"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("缺少 %q, got:/n%s", want, got)
+		}
+	}
+}
+
+// 用户在该函数自己的 .prototype 上定义 @@toStringTag → 覆盖 AGP 的 (近者优先)。
+func TestAsyncGeneratorToStringTagShadowing(t *testing.T) {
+	got := runAsyncEval(t, `
+		async function* g(){ yield 1; }
+		const it = g();
+		Object.defineProperty(Object.getPrototypeOf(it), Symbol.toStringTag, { value: "Custom", configurable: true });
+		__out.push("tag:" + it[Symbol.toStringTag]);
+		__out.push("str:" + Object.prototype.toString.call(it));
+	`)
+	for _, want := range []string{"tag:Custom", "str:[object Custom]"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("缺少 %q, got:/n%s", want, got)
+		}
+	}
+}

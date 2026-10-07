@@ -81,15 +81,37 @@ func (g *AsyncGenerator) SetProperty(name string, val Value) {}
 
 // GetSymbolProperty 使 async generator 满足异步迭代协议:
 // [Symbol.asyncIterator]() 返回自身。
+//
+// 其余 Symbol 键**必须沿完整原型链查找** —— 实例 → fn.prototype →
+// %AsyncGeneratorPrototype%。此前只向 g.Proto (即 fn.prototype, 一个 *Object)
+// 委托一层, 而 *Object.GetSymbolProperty 只查自身 SymbolProperties, 于是落在
+// 更外层 AGP 上的 @@toStringTag 永不可达:
+//
+//	it[Symbol.toStringTag]                       // 应是 "AsyncGenerator"
+//	Object.prototype.toString.call(it)           // 应是 "[object AsyncGenerator]"
+//
+// 二者当时分别得到 undefined / "[object Object]" (test262 未覆盖, 见 commit 说明)。
 func (g *AsyncGenerator) GetSymbolProperty(sym *Symbol) (Value, bool) {
 	if sym != nil && sym.ID == GetGlobalSymbol("Symbol.asyncIterator").ID {
 		return NewBuiltin("[Symbol.asyncIterator]", func(args ...Value) Value { return g }), true
 	}
-	if g.Proto != nil {
-		if sp, ok := g.Proto.(interface {
+	// 沿 [[Prototype]] 链向上: 起点可能是 *Object (fn.prototype) 或其它实现
+	// GetSymbolProperty 的类型; *Object 段由 LookupSymbolProperty 接力走完。
+	for cur := g.Proto; cur != nil; {
+		switch p := cur.(type) {
+		case *Object:
+			return LookupSymbolProperty(p, sym)
+		case interface {
 			GetSymbolProperty(*Symbol) (Value, bool)
-		}); ok {
-			return sp.GetSymbolProperty(sym)
+		}:
+			if v, ok := p.GetSymbolProperty(sym); ok {
+				return v, true
+			}
+			// 该类型内部已自行向上代为查找 (如嵌套 AsyncGenerator),
+			// 未命中即视为整条链未命中, 避免重复走链。
+			return nil, false
+		default:
+			return nil, false
 		}
 	}
 	return nil, false
