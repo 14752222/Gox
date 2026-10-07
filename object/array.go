@@ -17,6 +17,13 @@ type Array struct {
 	PropDescs map[string]PropertyDescriptor
 	// propKeyOrder 记录 PropDescs 字符串键的定义顺序 (OwnKeys 用)。
 	propKeyOrder []string
+	// SymbolProperties 存储以 Symbol 为键的自有属性 (键为 Symbol 唯一 ID),
+	// 与字符串键空间隔离。数组此前没有 Symbol 键槽, 导致
+	// `arr[Symbol.iterator] = fn` 被静默丢弃 (数组解构/for-of 忽略被覆盖的
+	// 迭代器)。实现 SymbolPropertyStore 后与 *Object 同构。
+	SymbolProperties map[uint64]PropertyDescriptor
+	// symbolKeyOrder 记录 Symbol 键的定义顺序 (getOwnPropertySymbols 用)。
+	symbolKeyOrder []*Symbol
 }
 
 // ArrayProto 是所有数组实例的原型对象。
@@ -165,6 +172,71 @@ func (a *Array) SetProto(p Value) { a.proto = p }
 
 // GetProto 返回数组的原型
 func (a *Array) GetProto() Value { return a.proto }
+
+// ===== Symbol 键自有属性 (SymbolPropertyStore) =====
+//
+// 语义与 *Object 的对应方法一致, 只是存储落在 Array 自己的字段上。
+
+// GetSymbolProperty 查自身 Symbol 键属性值。
+func (a *Array) GetSymbolProperty(sym *Symbol) (Value, bool) {
+	if a.SymbolProperties == nil {
+		return nil, false
+	}
+	desc, ok := a.SymbolProperties[sym.ID]
+	if !ok {
+		return nil, false
+	}
+	if desc.Value == nil {
+		return UndefinedSingleton, true
+	}
+	return desc.Value, true
+}
+
+// GetSymbolPropertyDescriptor 返回自身 Symbol 键属性描述符。
+func (a *Array) GetSymbolPropertyDescriptor(sym *Symbol) (PropertyDescriptor, bool) {
+	if a.SymbolProperties == nil {
+		return PropertyDescriptor{}, false
+	}
+	d, ok := a.SymbolProperties[sym.ID]
+	return d, ok
+}
+
+// SetSymbolProperty 用户赋值路径: 新建数据属性或按既有描述符写入。
+// 已存在且不可写时静默失败 (与 *Object.SetSymbolProperty 一致)。
+func (a *Array) SetSymbolProperty(sym *Symbol, val Value) {
+	if a.SymbolProperties == nil {
+		a.SymbolProperties = make(map[uint64]PropertyDescriptor)
+	}
+	if d, exists := a.SymbolProperties[sym.ID]; exists {
+		if acc, isAcc := d.Value.(*Accessor); isAcc {
+			if acc.Setter != nil && IsCallable(acc.Setter) {
+				CallFunction(acc.Setter, a, val)
+			}
+			return
+		}
+		if d.Writable {
+			d.Value = val
+			a.SymbolProperties[sym.ID] = d
+		}
+		return
+	}
+	a.symbolKeyOrder = append(a.symbolKeyOrder, sym)
+	a.SymbolProperties[sym.ID] = DataProperty(val)
+}
+
+// DefineOwnSymbolProperty 以完整描述符定义自身 Symbol 键属性。
+func (a *Array) DefineOwnSymbolProperty(sym *Symbol, desc PropertyDescriptor) {
+	if a.SymbolProperties == nil {
+		a.SymbolProperties = make(map[uint64]PropertyDescriptor)
+	}
+	if _, exists := a.SymbolProperties[sym.ID]; !exists {
+		a.symbolKeyOrder = append(a.symbolKeyOrder, sym)
+	}
+	a.SymbolProperties[sym.ID] = desc
+}
+
+// SymbolKeys 按插入顺序返回自身 Symbol 键。
+func (a *Array) SymbolKeys() []*Symbol { return a.symbolKeyOrder }
 
 // NewArray 创建数组值的便捷函数。
 // 自动设置数组原型。

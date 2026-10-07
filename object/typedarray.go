@@ -145,7 +145,12 @@ type TypedArray struct {
 	Buffer     *ArrayBuffer
 	ByteOffset int
 	Length     int // 元素个数
-	mu         sync.Mutex
+	// SymbolProperties 存储以 Symbol 为键的自有属性 (键为 Symbol 唯一 ID)。
+	// 与 *Array 同构: 让 `ta[Symbol.iterator] = fn` 这类覆盖能落地,
+	// 迭代协议解析 (resolveSymbolIterator) 才看得到。
+	SymbolProperties map[uint64]PropertyDescriptor
+	symbolKeyOrder   []*Symbol
+	mu               sync.Mutex
 }
 
 func (t *TypedArray) Type() ObjectType { return OBJECT_OBJ }
@@ -905,3 +910,64 @@ func CallTypedArrayMethod(ta *TypedArray, name string, args []Value) (Value, boo
 	}
 	return CallFunction(m, ta, args...), true
 }
+
+// GetProto 返回类型化数组的原型 (经注册表按类型名解析)。
+// 迭代协议解析沿原型链查找 Symbol 键时需要它。
+func (t *TypedArray) GetProto() Value {
+	if p, ok := typedArrayProto(t.Kind.Name); ok {
+		return p
+	}
+	return nil
+}
+
+// ===== Symbol 键自有属性 (SymbolPropertyStore) =====
+// 语义与 *Array / *Object 一致, 存储落在 TypedArray 自身。
+
+func (t *TypedArray) GetSymbolProperty(sym *Symbol) (Value, bool) {
+	if t.SymbolProperties == nil {
+		return nil, false
+	}
+	desc, ok := t.SymbolProperties[sym.ID]
+	if !ok {
+		return nil, false
+	}
+	if desc.Value == nil {
+		return UndefinedSingleton, true
+	}
+	return desc.Value, true
+}
+
+func (t *TypedArray) GetSymbolPropertyDescriptor(sym *Symbol) (PropertyDescriptor, bool) {
+	if t.SymbolProperties == nil {
+		return PropertyDescriptor{}, false
+	}
+	d, ok := t.SymbolProperties[sym.ID]
+	return d, ok
+}
+
+func (t *TypedArray) SetSymbolProperty(sym *Symbol, val Value) {
+	if t.SymbolProperties == nil {
+		t.SymbolProperties = make(map[uint64]PropertyDescriptor)
+	}
+	if d, exists := t.SymbolProperties[sym.ID]; exists {
+		if d.Writable {
+			d.Value = val
+			t.SymbolProperties[sym.ID] = d
+		}
+		return
+	}
+	t.symbolKeyOrder = append(t.symbolKeyOrder, sym)
+	t.SymbolProperties[sym.ID] = DataProperty(val)
+}
+
+func (t *TypedArray) DefineOwnSymbolProperty(sym *Symbol, desc PropertyDescriptor) {
+	if t.SymbolProperties == nil {
+		t.SymbolProperties = make(map[uint64]PropertyDescriptor)
+	}
+	if _, exists := t.SymbolProperties[sym.ID]; !exists {
+		t.symbolKeyOrder = append(t.symbolKeyOrder, sym)
+	}
+	t.SymbolProperties[sym.ID] = desc
+}
+
+func (t *TypedArray) SymbolKeys() []*Symbol { return t.symbolKeyOrder }
