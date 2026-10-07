@@ -91,6 +91,93 @@ func TestCompoundAssignToPropertyKeyCalledOnce(t *testing.T) {
 	assertString(t, got, "1|6")
 }
 
+// ===== 2b. ToPropertyKey 必须晚于基的 RequireObjectCoercible =====
+//
+// 规范 GetValue/PutValue 先 ToObject(base) (null/undefined 立即抛 TypeError),
+// 再做 ToPropertyKey(键)。此前 OP_TO_PROPERTY_KEY 被排在 GET_INDEX 之前, 于是
+// 基为 null 的复合赋值会先把对象键 toString 跑掉 —— 键抛出的 Test262Error 顶替了
+// 本该出现的 TypeError。看板 rknvx2。
+//
+// test262: language/expressions/compound-assignment/S11.13.2_A7.*_T1|T2.js
+//          language/expressions/logical-assignment/lgcl-*-lhs-before-rhs.js
+//          language/expressions/{postfix,prefix}-{increment,decrement}/S11.*_A6_T1|T2.js
+func TestCompoundAssignNullBaseThrowsTypeErrorWithoutKeyConversion(t *testing.T) {
+	// null 基: 必须 TypeError, 且键的 toString 一次都不被调用。
+	got := evalWithStdlib(t, "var n = 0;"+
+		"var prop = { toString: function () { n++; return \"k\"; } };"+
+		"var name = \"\";"+
+		"try { var base = null; base[prop] *= 1; } catch (e) { name = e.name; }"+
+		"name + \"|\" + n;")
+	assertString(t, got, "TypeError|0")
+}
+
+func TestCompoundAssignUndefinedBaseThrowsTypeErrorWithoutKeyConversion(t *testing.T) {
+	got := evalWithStdlib(t, "var n = 0;"+
+		"var prop = { toString: function () { n++; return \"k\"; } };"+
+		"var name = \"\";"+
+		"try { var base = undefined; base[prop] += 1; } catch (e) { name = e.name; }"+
+		"name + \"|\" + n;")
+	assertString(t, got, "TypeError|0")
+}
+
+// 键表达式本身仍必须被求值 (只求到 propertyNameValue, 不做 ToPropertyKey):
+// null[抛出 DummyError 的键表达式] *= 1 必须看到 DummyError 而非 TypeError。
+func TestCompoundAssignNullBaseStillEvaluatesKeyExpression(t *testing.T) {
+	got := evalWithStdlib(t, "function DummyError() {}"+
+		"var seen = \"\";"+
+		"try { var base = null; base[(function () { throw new DummyError(); })()] *= 1; }"+
+		"catch (e) { seen = (e instanceof DummyError) ? \"DummyError\" : \"other\"; }"+
+		"seen;")
+	assertString(t, got, "DummyError")
+}
+
+// 逻辑赋值 / ++ / -- 的 null 基同样: TypeError 且不转换键。
+func TestLogicalAssignAndIncDecNullBaseThrowsTypeError(t *testing.T) {
+	got := evalWithStdlib(t, "var n = 0;"+
+		"var mk = function () { return { toString: function () { n++; return \"k\"; } }; };"+
+		"var names = [];"+
+		"try { var a = null; a[mk()] ??= 1; } catch (e) { names.push(e.name); }"+
+		"try { var b = null; b[mk()]++; } catch (e) { names.push(e.name); }"+
+		"try { var c = undefined; ++c[mk()]; } catch (e) { names.push(e.name); }"+
+		"names.join(\",\") + \"|\" + n;")
+	assertString(t, got, "TypeError,TypeError,TypeError|0")
+}
+
+// 有效基上的「键只转一次」在三种路径都不回归 (复合赋值 / 逻辑赋值 / ++)。
+func TestToPropertyKeyOnceOnValidBaseAllPaths(t *testing.T) {
+	got := evalWithStdlib(t, "var out = [];"+
+		"var n1 = 0; var p1 = { toString: function () { n1++; return \"k\"; } };"+
+		"var o1 = { k: 2 }; o1[p1] *= 3; out.push(n1 + \":\" + o1.k);"+
+		"var n2 = 0; var p2 = { toString: function () { n2++; return \"v\"; } };"+
+		"var o2 = { v: null }; o2[p2] ??= 7; out.push(n2 + \":\" + o2.v);"+
+		"var n3 = 0; var p3 = { toString: function () { n3++; return \"x\"; } };"+
+		"var o3 = { x: 10 }; o3[p3]++; out.push(n3 + \":\" + o3.x);"+
+		"out.join(\",\");")
+	assertString(t, got, "1:6,1:7,1:11")
+}
+
+// ===== 2c. 读取/写入 null 基的 TypeError 消息不得触发键的用户代码 =====
+//
+// test262: language/expressions/member-expression/
+//          computed-reference-null-or-undefined.js
+func TestComputedReadNullBaseThrowsTypeErrorWithoutKeyToString(t *testing.T) {
+	got := evalWithStdlib(t, "var n = 0;"+
+		"var prop = { toString: function () { n++; return \"k\"; } };"+
+		"var name = \"\";"+
+		"try { null[prop]; } catch (e) { name = e.name; }"+
+		"name + \"|\" + n;")
+	assertString(t, got, "TypeError|0")
+}
+
+func TestComputedWriteNullBaseThrowsTypeErrorWithoutKeyToString(t *testing.T) {
+	got := evalWithStdlib(t, "var n = 0;"+
+		"var prop = { toString: function () { n++; return \"k\"; } };"+
+		"var name = \"\";"+
+		"try { null[prop] = 1; } catch (e) { name = e.name; }"+
+		"name + \"|\" + n;")
+	assertString(t, got, "TypeError|0")
+}
+
 // ===== 3. delete 在 globalThis / 数组索引上必须遵循可配置性 =====
 //
 // test262: language/arguments-object/mapped/
@@ -125,4 +212,19 @@ func TestDeleteConfigurableArrayIndexSucceeds(t *testing.T) {
 		"var r = delete arr[0];"+
 		"r + \"|\" + String(arr[0]) + \"|\" + arr.length;")
 	assertString(t, got, "true|undefined|2")
+}
+
+// 基为 null/undefined 的 delete 必须抛 TypeError (先 ToObject(ref.[[Base]])),
+// 且**完全不碰键** —— 此前会先做 ToPropertyKey (触发键 toString) 再静默返回 true。
+//
+// test262: language/expressions/delete/
+//          member-{computed,identifier}-reference-{null,undefined}.js
+func TestDeleteNullBaseThrowsTypeErrorWithoutKeyToString(t *testing.T) {
+	got := evalWithStdlib(t, "var n = 0;"+
+		"var prop = { toString: function () { n++; return \"k\"; } };"+
+		"var names = [];"+
+		"try { delete null[prop]; } catch (e) { names.push(e.name); }"+
+		"try { delete undefined[prop]; } catch (e) { names.push(e.name); }"+
+		"names.join(\",\") + \"|\" + n;")
+	assertString(t, got, "TypeError,TypeError|0")
 }
