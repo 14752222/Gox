@@ -54,6 +54,20 @@ type Parser struct {
 	// 不在函数边界内, 保留保留字判据 (node 同样报错)。
 	awaitReservedInParams bool
 
+	// yieldReservedInParams 标记正在解析 **生成器上下文下的形参列表**
+	// (FormalParameters[+Yield] 窗口, 含默认表达式的整个形参区)。此窗口内
+	// 不得出现 YieldExpression —— 规范 Generator/AsyncGenerator/Arrow/方法
+	// 定义均有早错: "It is a Syntax Error if FormalParameters Contains
+	// YieldExpression is true" (test262 generators/param-dflt-yield.js、
+	// arrow-function/param-dflt-yield-expr.js 一族, node 22 实测:
+	// `function*(x = yield){}` / `function*(x = [yield]){}` / 形参默认值里
+	// 类·对象计算键 `[yield]` 皆 SyntaxError)。
+	// 与 awaitReservedInParams 同一范式: 由 parseParameters 设位, 嵌套函数/
+	// 箭头的**体**经 setAllowYield 清零 (那里 yield 回到外层语境, node 实测
+	// `function*(x = () => yield){}` / `function*(x = function*(){ yield }){}`
+	// 合法); 对象/类计算键不在函数边界内, 保留该判据。
+	yieldReservedInParams bool
+
 	// strict 是当前的严格模式上下文 (script 顶层默认 sloppy; 命中 "use strict"
 	// 指令、进入 class 体、或 module 顶层时置 true，函数体按继承值向下传播)。
 	// 解析期早错据此判定 (重复形参 / eval·arguments 作绑定名与赋值目标 /
@@ -213,7 +227,14 @@ func (p *Parser) setAllowAwait(isAsync bool) func() {
 func (p *Parser) setAllowYield(isGenerator bool) func() {
 	prev := p.allowYield
 	p.allowYield = isGenerator
-	return func() { p.allowYield = prev }
+	// 函数体不是形参窗口: 进入实体即清零 yieldReservedInParams, 使嵌套函数/
+	// 箭头体里的 yield 回到该体自身的语境 (见该字段注释)。
+	prevYieldReserved := p.yieldReservedInParams
+	p.yieldReservedInParams = false
+	return func() {
+		p.allowYield = prev
+		p.yieldReservedInParams = prevYieldReserved
+	}
 }
 
 // yieldIsIdentifier 报告当前上下文里 yield 是否按**普通标识符**处理
@@ -2093,6 +2114,10 @@ func (p *Parser) parseParameters(close lexer.TokenType, isAsyncFn bool, isGenera
 	// 其余按所属函数自身 generator 与否重置, 箭头由调用方传继承值。
 	restoreYield := p.setAllowYield(isGeneratorFn)
 	defer restoreYield()
+	// 形参窗口: 此窗口内不得出现 YieldExpression (见 yieldReservedInParams)。
+	// 仅在 yield 为保留字的语境里才可能触发 (sloppy 非生成器里 yield 是普通
+	// 标识符, 走 parseYieldExpression 的标识符分支, 不报错)。
+	p.yieldReservedInParams = true
 
 	params := []*ast.Parameter{}
 
@@ -2207,6 +2232,15 @@ func (p *Parser) parseExpression(precedence Precedence) ast.Expression {
 	}
 
 	leftExp := prefix()
+	// 空 yield (YieldExpression : yield, 无操作数) 自身已是完整的
+	// AssignmentExpression, 不能作任何中缀运算符的操作数 —— 中缀循环必须
+	// 在此立即收尾。否则 `yield\n* 1` 会被误当作 `(yield) * 1` 而静默通过,
+	// 而规范要求它报 SyntaxError (test262 generators/yield-star-after-newline.js:
+	// 换行后单独的 `*` 无法起头语句); `yield\n+1` 同理走 ASI 成为两条语句。
+	// 非空 yield (Value≠nil) 与委托 yield* (Delegate) 不受影响。
+	if ye, ok := leftExp.(*ast.YieldExpression); ok && ye.Value == nil && !ye.Delegate {
+		return leftExp
+	}
 
 	for !p.peekTokenIs(lexer.SEMICOLON) && !p.peekTokenIs(lexer.RBRACE) && !p.peekTokenIs(lexer.EOF) &&
 		!p.peekTokenIs(lexer.RPAREN) && !p.peekTokenIs(lexer.RBRACKET) && !p.peekTokenIs(lexer.COMMA) &&
@@ -2543,7 +2577,13 @@ func (p *Parser) parseArrowFunctionBody(params []*ast.Parameter, isAsync bool) *
 		p.nextToken()
 		af.Strict = p.strict // 表达式体无指令, 严格性继承自外层
 		restore := p.setAllowAwait(isAsync)
+		// 箭头表达式体是函数边界, 不再是形参窗口: 生成器形参默认值里的
+		// `() => yield` 合法 (node 实测), 故此处清零该标记 (块体走
+		// parseFunctionBodyWithStrict -> setAllowYield 一并清零)。
+		prevYieldReserved := p.yieldReservedInParams
+		p.yieldReservedInParams = false
 		af.Body = p.parseExpression(LOWEST)
+		p.yieldReservedInParams = prevYieldReserved
 		restore()
 	}
 	if af.Strict {
@@ -2680,10 +2720,13 @@ func (p *Parser) finishAsyncArrow(expr ast.Expression) ast.Expression {
 // 判据只在 yieldIsIdentifier() 为真时启用 (sloppy 非生成器非模块);
 // 生成器/严格/模块里 yield 恒是关键字, 走下面的表达式路径 (含空 yield)。
 //
-// ⚠ 不改「parseExpression 返回后 curToken 是表达式最后一个 token」的全局不变量
-// —— 标识符分支 cur 就停在 YIELD 上; 表达式路径本体一行未动。历史上改写空-yield
-// 提前 return 导致过 46 例回归 (dc15392/aeaf943), 故这里只在**进入表达式路径
-// 之前**做分派。
+// ⚠ 全局不变量: parseExpression 返回后 curToken 停在表达式的**末 token**上。
+// 空 yield 的末 token 就是 YIELD, 故其提前 return 时 curToken 必须仍在 YIELD
+// (判定只看 peekToken); 越位消费终结符会让调用方 (数组/对象字面量/实参表/
+// 括号/条件表达式/解构模式) 的终结符判定错位。历史上 dc15392/aeaf943 撤回的
+// 版本确实把 cur 停在 YIELD, 但当时**形参区早错**靠终结符越位侥幸触发, 于是
+// 一撤就出 46 例回归 —— 现已把该早错显式改用 yieldReservedInParams 承接
+// (见 parseYieldExpression 内注释), 两条约束不再互相牵制。
 func (p *Parser) parseYieldExpression() ast.Expression {
 	if p.yieldIsIdentifier() {
 		// 单参数箭头: yield => body (node 实测合法, yield 是合法绑定名)
@@ -2697,36 +2740,66 @@ func (p *Parser) parseYieldExpression() ast.Expression {
 		return &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
 	}
 	ye := &ast.YieldExpression{Token: p.curToken()}
-	// 模块顶层不是 generator 上下文, 裸 yield 是 SyntaxError
-	// (spec: ModuleItem : StatementListItem[~Yield, ~Return], parse-err-yield.js)。
-	// sloppy 脚本里 yield 是合法标识符, 故只在 moduleEE 上下文里报。
-	if p.moduleEE && p.fnDepth == 0 {
-		p.addError("SyntaxError: yield expression not allowed in module body")
+	// 走到这里说明 yield 在**当前语境里是保留字** (yieldIsIdentifier() 为假):
+	// 即 生成器体 / 严格模式 / 模块 / class 体。此时若不在生成器体 (allowYield
+	// 为假) —— 严格模式函数体、class 体、模块体 —— yield 既不能作标识符也
+	// 不能构成 YieldExpression, 裸 yield 一律 SyntaxError。
+	// 规范: AssignmentExpression[~Yield] 不含 YieldExpression (test262
+	// dstr/*-yield{,-ident}-invalid.js 一族, flags:[onlyStrict]:
+	// `0, [ x = yield ] = [];` / class 体内裸 yield 皆早错)。
+	// sloppy 非生成器里 yieldIsIdentifier() 为真, 已在上面的标识符分支返回,
+	// 不会到达此处。
+	if !p.allowYield {
+		if p.moduleEE && p.fnDepth == 0 {
+			// 模块顶层不是 generator 上下文 (spec:
+			// ModuleItem : StatementListItem[~Yield, ~Return], parse-err-yield.js)。
+			p.addError("SyntaxError: yield expression not allowed in module body")
+		} else {
+			p.addError("SyntaxError: yield is a reserved word in this context")
+		}
 	}
-	p.nextToken()
-	// `yield` 与操作数之间禁止换行 ([no LineTerminator here]): 一旦换行即为空
-	// yield (ASI), 后续 token 另起一条语句。
-	// ⚠ 必须在消费 `*` **之前**判定 —— `yield *` 与其右操作数之间**允许**换行
-	// (规范 YieldExpression : yield * AssignmentExpression 没有该限制), 否则
-	// `yield *\ng()` 会被误判成空 yield, 丢掉委托目标
-	// (test262: async-generator/expression-yield-star-before-newline.js)。
-	if p.curToken().Line > ye.Token.Line {
+	// 形参窗口里不得出现 YieldExpression (见 yieldReservedInParams)。
+	if p.yieldReservedInParams {
+		p.addError("SyntaxError: yield expression is not allowed in formal parameters")
+	}
+	// ⚠ 判定一律基于 **peekToken**, 且空 yield 分支**不消费**下一个 token ——
+	// curToken 必须停在 YIELD 上, 以维持「parseExpression 返回后 curToken 是
+	// 表达式末 token」的全局约定。调用方 (数组/对象字面量元素、实参表、括号、
+	// 条件表达式、解构模式终止符判定) 都据该约定用 peekToken 找终结符;
+	// 一旦越位消费终结符, `[yield]` / `f(yield)` / `(yield)` / `a ? yield : b`
+	// 就会在调用方报「expected ']' / ')' / ':' got ...」而解析失败。
+	// (历史上 dc15392/aeaf943 撤回的正是把 cur 停在 YIELD 的版本; 那次回归的
+	//  真正根因是**形参区早错**当时靠终结符越位侥幸触发 —— 现已由
+	//  yieldReservedInParams 显式承接, 故此处可安全保持 cur=YIELD。)
+	//
+	// `yield` 与操作数之间禁止换行 ([no LineTerminator here]): peek 一旦换行
+	// 即为空 yield (ASI), 后续 token 另起一条语句。必须在消费 `*` **之前**判定
+	// —— `yield *` 与其右操作数之间**允许**换行 (规范 YieldExpression :
+	// yield * AssignmentExpression 无该限制), 否则 `yield *\ng()` 会被误判成
+	// 空 yield, 丢掉委托目标 (test262: async-generator/
+	// expression-yield-star-before-newline.js)。
+	if p.peekToken().Line > p.curToken().Line {
 		return ye
 	}
 	// yield* iterable: 委托给另一个生成器/可迭代对象
-	if p.curTokenIs(lexer.ASTERISK) {
+	if p.peekTokenIs(lexer.ASTERISK) {
 		ye.Delegate = true
-		p.nextToken()
-	}
-	// 空 yield: 后跟分号/闭合符/逗号/冒号/EOF。
-	// 规范: YieldExpression : yield [no LineTerminator here] AssignmentExpression。
-	// 少了 RBRACKET/COMMA/COLON 会让 `[yield]` / `f(yield, 1)` / `a ? yield : b` 报错。
-	if p.curTokenIs(lexer.SEMICOLON) || p.curTokenIs(lexer.RPAREN) ||
-		p.curTokenIs(lexer.RBRACKET) || p.curTokenIs(lexer.RBRACE) ||
-		p.curTokenIs(lexer.COMMA) || p.curTokenIs(lexer.COLON) ||
-		p.curTokenIs(lexer.EOF) {
+		p.nextToken() // cur = *
+		p.nextToken() // cur = 操作数首 token
+		ye.Value = p.parseExpression(LOWEST)
 		return ye
 	}
+	// 空 yield: peek 为终结符 (分号/闭合符/逗号/冒号/EOF)。
+	// 规范: YieldExpression : yield [no LineTerminator here] AssignmentExpression。
+	// 缺 RBRACKET/COMMA/COLON 会让 `[yield]` / `f(yield, 1)` / `a ? yield : b`
+	// 误入操作数分支。
+	if p.peekTokenIs(lexer.SEMICOLON) || p.peekTokenIs(lexer.RPAREN) ||
+		p.peekTokenIs(lexer.RBRACKET) || p.peekTokenIs(lexer.RBRACE) ||
+		p.peekTokenIs(lexer.COMMA) || p.peekTokenIs(lexer.COLON) ||
+		p.peekTokenIs(lexer.EOF) {
+		return ye
+	}
+	p.nextToken() // cur = 操作数首 token
 	ye.Value = p.parseExpression(LOWEST)
 	return ye
 }
