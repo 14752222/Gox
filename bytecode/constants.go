@@ -353,7 +353,7 @@ func hasOperand(op Opcode) bool {
 func isConstantOp(op Opcode) bool {
 	switch op {
 	case OP_CONST, OP_WITH_LOAD, OP_WITH_STORE, OP_WITH_DELETE,
-		OP_DISPOSE_ADD, OP_DISPOSE_EXIT:
+		OP_DISPOSE_ADD, OP_DISPOSE_EXIT, OP_DELETE_GLOBAL:
 		return true
 	}
 	return false

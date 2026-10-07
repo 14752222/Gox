@@ -3060,6 +3060,21 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				vm.stack.Push(object.NewBoolean(true))
 			}
 
+		case bytecode.OP_DELETE_GLOBAL:
+			// `delete 标识符` 的全局侧 (sloppy; 编译器已排除词法绑定,
+			// 故这里的名字一律按 globalThis 自有属性删除)。语义等价于
+			// delete globalThis[name]: 顶层 var / 函数声明不可配置 →
+			// false; 隐式赋值全局 / 未绑定名 → true 并真正删掉绑定。
+			// 不内联成 OP_THIS + OP_DELETE: 函数体内的 this 是调用方接收者,
+			// module 顶层 this 是 undefined, 二者都会让删除落到错误的基上。
+			name := frame.Constants.Get(operand)
+			if s, ok := name.(*object.String); ok {
+				vm.stack.Push(object.NewBoolean(vm.globals.DeleteGlobalBinding(s.Value)))
+			} else {
+				// 名字常量恒为 String (编译器构造); 兜底保持栈平衡。
+				vm.stack.Push(object.NewBoolean(false))
+			}
+
 		// ===== 控制 =====
 		case bytecode.OP_BREAK, bytecode.OP_CONTINUE:
 			// break/continue 已由编译器转换为 OP_JUMP/OP_LOOP

@@ -4440,6 +4440,30 @@ func (c *Compiler) compileDelete(target ast.Expression) error {
 			c.emitter.Emit(bytecode.OP_WITH_DELETE, c.emitWithRef(c.buildWithRef(ident.Value, sym)))
 			return nil
 		}
+		// sloppy 下 delete 标识符按引用基分三类 (规范 UnaryExpression:
+		// delete + 环境记录 DeleteBinding):
+		//   ① 顶层 var / 函数声明 / 隐式赋值全局 / 未绑定名 —— 基是全局
+		//      对象, 走自有属性删除 (var/函数声明不可配置 → false;
+		//      隐式/未绑定 → true);
+		//   ② 顶层 let/const/class 与模块顶层绑定 —— 基是全局词法(声明式)
+		//      环境, 不可删 → false;
+		//   ③ 内层局部绑定 (局部变量/形参) —— 同为声明式环境 → false。
+		// 旧实现一律编译成「求值标识符 + POP + TRUE」: 既不删属性, 又给
+		// 未定义名徒增一次 ReferenceError。
+		isGlobalVarLike := sym == nil ||
+			(sym.Depth == 0 && !c.moduleMode && sym.IsVarLike)
+		if !isGlobalVarLike {
+			// ② ③: 词法绑定不可删 (引用基不是全局对象)。
+			c.emitter.EmitNoOperand(bytecode.OP_FALSE)
+			return nil
+		}
+		// ①: 按名删全局对象的自有属性。不写 OP_THIS + OP_DELETE: 函数体内
+		// this 是调用方接收者, module 顶层 this 是 undefined, 都不该影响
+		// 全局对象的属性删除; 也不走 LOAD_GLOBAL "globalThis" (裸 VM 未装配
+		// 该绑定)。用专用指令直接查全局环境。
+		nameIdx := c.constants.AddConstant(object.NewString(ident.Value))
+		c.emitter.Emit(bytecode.OP_DELETE_GLOBAL, nameIdx)
+		return nil
 	}
 	// delete 普通表达式: 求值后丢弃, 返回 true (简化)
 	if err := c.compileExpression(target); err != nil {

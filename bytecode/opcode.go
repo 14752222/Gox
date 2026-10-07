@@ -344,6 +344,12 @@ const (
 	// 的「读-改-写」会让带自定义 toString 的对象键被 ToPropertyKey 两次
 	// (规范 13.15.1 要求 LHS 只求值一次)。已经是原语的键原样返回。
 	OP_TO_PROPERTY_KEY Opcode = 0xF1
+	// OP_DELETE_GLOBAL: sloppy 下 `delete 标识符` 的全局侧实现。
+	// operand = 名字常量索引; 不弹栈, 压入删除结果 (true/false)。
+	// 编译器只在引用基是全局对象 (顶层 var / 函数声明 / 隐式赋值全局 /
+	// 未绑定名) 时发射; 词法绑定 (顶层 let/const/class 与内层局部) 由
+	// 编译期直接压 false, 不走这里。
+	OP_DELETE_GLOBAL Opcode = 0xF3
 )
 
 // InstructionSize 是每条指令的字节长度 (固定 3 字节)。
@@ -423,6 +429,7 @@ var opcodeNames = map[Opcode]string{
 	OP_TO_NUMBER:    "TO_NUMBER",
 	OP_TO_PROPERTY_KEY: "TO_PROPERTY_KEY",
 	OP_GET_PROTO:          "GET_PROTO",
+	OP_DELETE_GLOBAL:      "DELETE_GLOBAL",
 }
 
 // Name 返回操作码的可读名称。
