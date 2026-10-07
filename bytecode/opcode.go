@@ -64,6 +64,14 @@ const (
 	// 的自有属性 (不可配置)，与 let/const/class 的词法绑定区分开。
 	OP_DECLARE_VAR Opcode = 0x29
 
+	// OP_STORE_CONST_GUARD: 对**已声明的局部 const 槽位**赋值 [name_idx]。
+	// 弹出栈顶值, 无条件抛 TypeError (Assignment to constant variable: <name>)
+	// —— 可被 try/catch 捕获。与 OP_STORE_CONST 的区别: 后者是声明期的一次性
+	// 初始化 (槽位可为 TDZ 的 nil), 前者只出现在**赋值位置** (x = v、复合赋值、
+	// ++/--、解构/for-of 赋值目标), 此时 const 必已初始化, 故直接拒绝。
+	// operand = 常量池索引, 指向名字 (*object.String), 仅用于报错消息。
+	OP_STORE_CONST_GUARD Opcode = 0x2A
+
 	// 0x30-0x3F: 算术运算
 	OP_ADD     Opcode = 0x30 // 栈顶两值相加 (弹出 a, b, 推入 a+b)
 	OP_SUB     Opcode = 0x31
@@ -348,6 +356,7 @@ var opcodeNames = map[Opcode]string{
 	OP_CONST: "CONST", OP_NULL: "NULL", OP_UNDEFINED: "UNDEFINED",
 	OP_TRUE: "TRUE", OP_FALSE: "FALSE", OP_INT: "INT",
 	OP_LOAD: "LOAD", OP_STORE: "STORE", OP_STORE_CONST: "STORE_CONST",
+	OP_STORE_CONST_GUARD: "STORE_CONST_GUARD",
 	OP_LOAD_GLOBAL: "LOAD_GLOBAL", OP_STORE_GLOBAL: "STORE_GLOBAL", OP_DECLARE: "DECLARE", OP_DECLARE_CONST: "DECLARE_CONST",
 	OP_STORE_UNDECLARED: "STORE_UNDECLARED",
 	OP_DECLARE_VAR:      "DECLARE_VAR",

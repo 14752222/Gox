@@ -1281,6 +1281,20 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				frame.ModifiedSlots = make(map[int]bool)
 			}
 			frame.ModifiedSlots[slot] = true
+		case bytecode.OP_STORE_CONST_GUARD:
+			// 对已声明的局部 const 槽位赋值 —— 无条件拒绝 (可被 try/catch 捕获)。
+			// 与 OP_STORE_CONST 的分工: 那条只在**声明期**发射一次 (槽位可能
+			// 尚为 TDZ 的 nil), 这条只出现在**赋值位置**, 此时 const 必已初始化,
+			// 故直接抛 TypeError。弹出值以保持栈平衡 (编译器在存储前 DUP 保留了
+			// 表达式结果, 与 OP_STORE 一致)。
+			vm.stack.Pop()
+			name := ""
+			if s, ok := frame.Constants.Get(operand).(*object.String); ok {
+				name = s.Value
+			}
+			if err := vm.throwNamedError("TypeError", "Assignment to constant variable: %s", name); err != nil {
+				return err
+			}
 		case bytecode.OP_LOAD_GLOBAL:
 			name := frame.Constants.Get(operand)
 			if s, ok := name.(*object.String); ok {

@@ -2484,7 +2484,12 @@ func (c *Compiler) compileClassDeclaration(node *ast.ClassDeclaration) error {
 	}
 	// 类值在栈顶 → 声明类名并绑定
 	className := node.Name.Value
-	sym, err := c.declareOnce(className, true, false)
+	// 类声明的绑定是**可变**的词法绑定 (规范 CreateMutableBinding), 与 let
+	// 同类, 不是 const —— `class C {}; C = 1;` 合法。此前误按 isConst=true
+	// 登记 (且局部槽用 OP_STORE_CONST), 在 IsConst 尚无人读取时无害; 一旦
+	// 赋值路径开始查 IsConst (OP_STORE_CONST_GUARD), 这个错标就会让
+	// `classBinding = 44` 误抛 TypeError (test262 eval-gtbndng-local-bndng-cls)。
+	sym, err := c.declareOnce(className, false, false)
 	if err != nil {
 		return err
 	}
@@ -2492,7 +2497,7 @@ func (c *Compiler) compileClassDeclaration(node *ast.ClassDeclaration) error {
 		nameIdx := c.constants.AddConstant(object.NewString(className))
 		c.emitter.Emit(bytecode.OP_DECLARE, nameIdx)
 	} else {
-		c.emitter.Emit(bytecode.OP_STORE_CONST, uint16(sym.Slot))
+		c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
 	}
 	return nil
 }
@@ -4199,8 +4204,23 @@ func (c *Compiler) emitStore(sym *Symbol) {
 	if sym.Depth == 0 && !c.moduleMode {
 		c.emitGlobalStore(sym.Name)
 	} else {
-		c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
+		c.emitLocalStore(sym)
 	}
+}
+
+// emitLocalStore 发射「写局部槽位」的指令 (sym 为已解析的局部符号)。
+// const 绑定改发 OP_STORE_CONST_GUARD (运行期抛 TypeError), 其余 OP_STORE。
+// 用于**赋值位置** (x = v、复合赋值、++/--、解构/for-of 赋值目标) ——
+// 与 OP_STORE_CONST (声明期一次性初始化, 允许 TDZ 的 nil 槽) 相对。
+// 模块顶层的 const 也走局部槽位 (见 isGlobalScope: 模块模式恒 false),
+// 故这里必须自己守卫, 否则模块顶层 const 完全可变。
+func (c *Compiler) emitLocalStore(sym *Symbol) {
+	if sym.IsConst {
+		nameIdx := c.constants.AddConstant(object.NewString(sym.Name))
+		c.emitter.Emit(bytecode.OP_STORE_CONST_GUARD, nameIdx)
+		return
+	}
+	c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
 }
 
 // emitIdentifierAssign 发射标识符赋值 (解构赋值的目标)。
@@ -4215,7 +4235,7 @@ func (c *Compiler) emitIdentifierAssign(name string) {
 	if sym == nil || (sym.Depth == 0 && !c.moduleMode) {
 		c.emitAssignmentStore(name, sym == nil)
 	} else {
-		c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
+		c.emitLocalStore(sym)
 	}
 }
 
@@ -4499,7 +4519,7 @@ func (c *Compiler) compileAssignmentExpression(node *ast.AssignmentExpression) e
 				return err
 			}
 			c.emitter.EmitNoOperand(bytecode.OP_DUP)
-			c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
+			c.emitLocalStore(sym)
 		} else {
 			// 复合赋值: x += val → LOAD old, 编译右值, OP, DUP, STORE
 			c.emitter.Emit(bytecode.OP_LOAD, uint16(sym.Slot))
@@ -4508,7 +4528,7 @@ func (c *Compiler) compileAssignmentExpression(node *ast.AssignmentExpression) e
 			}
 			c.emitCompoundOp(node.Operator)
 			c.emitter.EmitNoOperand(bytecode.OP_DUP)
-			c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
+			c.emitLocalStore(sym)
 		}
 
 	case *ast.MemberExpression:
@@ -4755,7 +4775,7 @@ func (c *Compiler) compileLogicalAssignment(node *ast.AssignmentExpression) erro
 		if isGlobal {
 			c.emitGlobalStore(left.Value)
 		} else {
-			c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
+			c.emitLocalStore(sym)
 		}
 		done := c.emitter.EmitJump(bytecode.OP_JUMP)
 
