@@ -1291,6 +1291,27 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 					}
 					continue
 				}
+				// 全局访问器绑定 (Object.defineProperty(globalThis, "x", {get})):
+				// 全局环境记录的绑定值存的是 *object.Accessor, 必须显式调用
+				// getter 取回属性值 —— 否则读出来的是 Accessor 对象本身
+				// (typeof x 得 "object"、`x ^= 3` 把 Accessor 当左值参与运算)。
+				// 与 GlobalObject.GetProperty / unscopablesBlocked 同纪律:
+				// getter 是用户闭包, 经回调桥可能抛出, 立即消费。
+				if acc, isAcc := val.(*object.Accessor); isAcc {
+					if acc.Getter == nil || !object.IsCallable(acc.Getter) {
+						vm.stack.Push(object.UndefinedSingleton)
+						continue
+					}
+					res := object.CallFunction(acc.Getter, vm.globalThisValue())
+					if err := vm.checkCallbackErr(); err != nil {
+						if terr := vm.rethrowBridgeError(err); terr != nil {
+							return terr
+						}
+						continue
+					}
+					vm.stack.Push(res)
+					continue
+				}
 				vm.stack.Push(val)
 			}
 		case bytecode.OP_STORE_GLOBAL:
@@ -1304,11 +1325,8 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 					}
 					continue
 				}
-				if _, exists := vm.globals.Get(s.Value); exists {
-					vm.globals.Set(s.Value, val)
-				} else {
-					// 隐式赋值创建的全局: globalThis 的自有可配置属性。
-					vm.globals.DeclareImplicit(s.Value, val)
+				if err := vm.storeGlobalBinding(s.Value, val); err != nil {
+					return err
 				}
 			}
 		case bytecode.OP_STORE_UNDECLARED:
@@ -1326,7 +1344,9 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 					continue
 				}
 				if _, exists := vm.globals.Get(s.Value); exists {
-					vm.globals.Set(s.Value, val)
+					if err := vm.storeGlobalBinding(s.Value, val); err != nil {
+						return err
+					}
 				} else {
 					if err := vm.throwNamedError("ReferenceError", "%s is not defined", s.Value); err != nil {
 						return err
@@ -2988,15 +3008,29 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				} else {
 					vm.stack.Push(object.NewBoolean(false))
 				}
-			} else if arr, ok := obj.(*object.Array); ok {
-				// 数组删除 (简化): 仅当索引存在时删除并压缩
+			} else if g, ok := obj.(*object.GlobalObject); ok {
+				// globalThis: 删除对应全局环境记录里的自有可配置绑定。
+				// 此前 GlobalObject 掉进最下方 else 分支 ⇒ 恒返回 true 却什么都没删,
+				// 于是 `delete this.x`(getter 自删) 后 `x in this` 仍为 true,
+				// 且后续对 x 的严格赋值因「绑定仍存在」而不抛 ReferenceError
+				// (compound-assignment/…-putvalue-lref--v--* 一族 23 例)。
 				if s, ok := key.(*object.String); ok {
-					if idx, err := strconv.Atoi(s.Value); err == nil && idx >= 0 && idx < len(arr.Elements) {
-						arr.Elements[idx] = object.UndefinedSingleton
-						vm.stack.Push(object.NewBoolean(true))
-					} else {
-						vm.stack.Push(object.NewBoolean(false))
-					}
+					vm.stack.Push(object.NewBoolean(g.DeleteOwn(s.Value)))
+				} else {
+					// 全局环境无符号键绑定: 无可删, 按规范返回 true。
+					vm.stack.Push(object.NewBoolean(true))
+				}
+			} else if arr, ok := obj.(*object.Array); ok {
+				// 数组删除: 先查自有属性描述符 —— 不可配置的索引 (如
+				// Object.defineProperty(arguments, "0", {configurable:false})
+				// 之后的 mapped arguments) [[Delete]] 必须返回 false 且不删;
+				// 之前无条件删并恒返回 true (arguments-object/mapped/
+				// mapped-arguments-nonconfigurable-delete-1.js)。
+				// 注意 key 已在上方按 ToPropertyKey 归一为字符串, 故这里
+				// 数字索引用 "0"/"1" 形态匹配。删除走 Array.DeleteOwn, 由它
+				// 按描述符可配置性裁决并同步 Elements / propKeyOrder。
+				if s, ok := key.(*object.String); ok {
+					vm.stack.Push(object.NewBoolean(arr.DeleteOwn(s.Value)))
 				} else {
 					vm.stack.Push(object.NewBoolean(false))
 				}
@@ -5299,6 +5333,12 @@ func (vm *VM) addValues(a, b object.Value) (object.Value, error) {
 
 // getIndex 实现索引访问 obj[index]。
 func (vm *VM) getIndex(obj, index object.Value) object.Value {
+	// 键归一 (ToPropertyKey): 编译器对「键只用一次」的场合 (简单赋值 /
+	// for-of 目标 / 解构目标) 不再提前发 OP_TO_PROPERTY_KEY, 由这里补 ——
+	// 这样 ToPropertyKey 落在右值求值之后, 求值顺序合规。对已被
+	// OP_TO_PROPERTY_KEY 转过一次的键是幂等的 (原语原样返回), 不会二次
+	// 触发用户 toString。对象键转换会调用户代码, 故需消费回调桥异常。
+	index = vm.normalizeIndexKey(index)
 	switch o := obj.(type) {
 	case *object.Array:
 		// 已通过 Object.defineProperty 定义过描述符 (索引访问器 / 不可写)
@@ -5987,6 +6027,11 @@ func (vm *VM) resolveAsyncSymbolIterator(val object.Value) (object.Value, bool, 
 
 // setIndex 实现索引赋值 obj[index] = val。
 func (vm *VM) setIndex(obj, index, val object.Value) {
+	// 键归一 (ToPropertyKey): 见 getIndex 同款说明。简单赋值 base[prop] = v
+	// 的键转换在此发生 ⇒ 晚于右值求值 (assignment/
+	// target-member-computed-reference.js)。复合赋值等已在编译期转过一次,
+	// 这里是幂等的。
+	index = vm.normalizeIndexKey(index)
 	switch o := obj.(type) {
 	case *object.Array:
 		// 已通过 Object.defineProperty 定义过描述符的数组, 索引写走
@@ -6049,6 +6094,26 @@ func (vm *VM) setIndex(obj, index, val object.Value) {
 			}
 		}
 	}
+}
+
+// normalizeIndexKey 把计算成员键的原始值按 ToPropertyKey 归一。
+//
+// 幂等: 已是原语 (String/Symbol/Number/BigInt/Boolean/null/undefined) 的键
+// 原样返回 —— 数字键保留给数组/类型化数组的数字索引快路径, 符号键保留给
+// 符号属性通道。仅对象键 (可能带用户 toString/valueOf) 会在这里转成字符串,
+// 因此**同一引用的两次索引操作只触发一次用户代码**。
+//
+// 转换可能调用用户 toString ⇒ 经回调桥抛出: 这里只做转换, 异常由
+// 调用方 (OP_GET_INDEX / OP_SET_INDEX) 紧跟的 checkCallbackErr 消费;
+// 非 opcode 调用点 (如内建直接调 getIndex) 由 object 层的回调错误机制兜底。
+func (vm *VM) normalizeIndexKey(index object.Value) object.Value {
+	switch index.Type() {
+	case object.STRING_OBJ, object.SYMBOL_OBJ,
+		object.NUMBER_OBJ, object.BOOLEAN_OBJ, object.BIGINT_OBJ,
+		object.NULL_OBJ, object.UNDEFINED_OBJ:
+		return index
+	}
+	return toPropertyKey(index)
 }
 
 // ===== 类型转换辅助函数 =====
@@ -6759,4 +6824,35 @@ func (vm *VM) resolveModuleFile(spec string) (string, error) {
 // dirOf 返回路径的目录部分。
 func dirOf(path string) string {
 	return filepath.Dir(path)
+}
+
+// storeGlobalBinding 把 val 写入全局环境里 name 的绑定, 处理三种形态:
+//
+//  1. 访问器绑定 (Object.defineProperty(globalThis, "x", {get/set})): 有 setter
+//     时调用它 (规范 Object Environment Record 的 SetMutableBinding 走
+//     Set(bindings, N, V, S), 即对属性做 [[Set]]); 只读访问器在严格模式下
+//     应抛 TypeError, 这里按「静默忽略」处理以与 Gox 既有的「不建模属性写入
+//     失败」保持一致 —— 真值语义由 x ^= 3 那条 test262 用例覆盖 getter 侧。
+//  2. 已存在的普通绑定: 更新其值。
+//  3. 不存在: 隐式创建 globalThis 的自有可配置属性 (sloppy 语义; 调用方已
+//     保证 strict 路径不会走到这里)。
+func (vm *VM) storeGlobalBinding(name string, val object.Value) error {
+	if cur, exists := vm.globals.Get(name); exists {
+		if acc, isAcc := cur.(*object.Accessor); isAcc {
+			if acc.Setter != nil && object.IsCallable(acc.Setter) {
+				object.CallFunction(acc.Setter, vm.globalThisValue(), val)
+				if err := vm.checkCallbackErr(); err != nil {
+					if terr := vm.rethrowBridgeError(err); terr != nil {
+						return terr
+					}
+				}
+			}
+			// 无 setter 的访问器: 写入被忽略 (见上注)。
+			return nil
+		}
+		return vm.globals.Set(name, val)
+	}
+	// 隐式赋值创建的全局: globalThis 的自有可配置属性。
+	vm.globals.DeclareImplicit(name, val)
+	return nil
 }

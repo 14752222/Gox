@@ -4648,15 +4648,15 @@ func (c *Compiler) compileMemberRef(m *ast.MemberExpression) error {
 		return err
 	}
 	if m.Computed {
-		if err := c.compileExpression(m.Property); err != nil {
-			return err
-		}
-		// 键在引用创建时按 ToPropertyKey 只转一次 (§13.15.1: LHS 只求值一次)。
-		// 复合赋值 / ++ / -- 会用 DUP2 复制 [obj, key] 后先 GET_INDEX 再
-		// SET_INDEX —— 若键仍是带自定义 toString 的对象, 两次索引操作会各触发
-		// 一次 ToPropertyKey (S11.13.2_A7.*_T4 系列)。转成原语键后二者共用结果。
-		c.emitter.EmitNoOperand(bytecode.OP_TO_PROPERTY_KEY)
-		return nil
+		// 注意: 这里**不能**发 OP_TO_PROPERTY_KEY。成员引用只产出未转换的
+		// [obj, keyRaw] (规范 EvaluatePropertyAccessWithExpressionKey 只取
+		// propertyNameValue; ToPropertyKey 属于 GetValue/PutValue 内部)。
+		// 简单赋值 base[prop] = expr() 要求 ToPropertyKey 晚于右值求值
+		// (assignment/target-member-computed-reference.js: prop.toString 抛
+		// Test262Error, 而 expr() 抛 DummyError ⇒ 必须看到 DummyError)。
+		// 键会被用两次的场合 (复合赋值 / 逻辑赋值 / ++/--) 由各自发射点
+		// 在 DUP2 前自行调用 emitToPropertyKeyOnce()。
+		return c.compileExpression(m.Property)
 	}
 	ident, ok := m.Property.(*ast.Identifier)
 	if !ok {
@@ -4665,6 +4665,21 @@ func (c *Compiler) compileMemberRef(m *ast.MemberExpression) error {
 	idx := c.constants.AddConstant(object.NewString(ident.Value))
 	c.emitter.Emit(bytecode.OP_CONST, idx) // [obj, "prop"]
 	return nil
+}
+
+// emitToPropertyKeyOnce 在栈顶是计算成员键的**原始值**时, 就地把键按
+// ToPropertyKey 转成原语, 供后续同一引用上的**两次**索引操作共用。
+//
+// 只在「键会被用两次」的场合调用 (复合赋值 / 逻辑赋值 / ++/--), 且必须在
+// 复制引用的 DUP2 **之前**调用 —— 转换结果留在栈上, DUP2 复制的是已转换
+// 的键, GET_INDEX 与 SET_INDEX 因此只触发一次 ToPropertyKey
+// (compound-assignment/S11.13.2_A7.*_T4: ToPropertyKey(prop) is only
+// called once)。
+//
+// 简单赋值 / for-of 目标 / 解构目标每处键只用一次, 转换交给 SET_INDEX
+// 自身完成 —— 这样 ToPropertyKey 落在右值求值之后, 求值顺序才合规。
+func (c *Compiler) emitToPropertyKeyOnce() {
+	c.emitter.EmitNoOperand(bytecode.OP_TO_PROPERTY_KEY)
 }
 
 // emitCompoundMemberAssign 发射成员复合赋值 (obj.k += v / obj[k] *= v)。
@@ -4678,6 +4693,8 @@ func (c *Compiler) compileMemberRef(m *ast.MemberExpression) error {
 // 这样 obj 与 key 各只求值一次 (obj[f()] += v 中 f 只调用一次)，
 // 且 SET_INDEX 之后栈顶就是赋值表达式的值，与简单赋值一致。
 func (c *Compiler) emitCompoundMemberAssign(node *ast.AssignmentExpression) error {
+	// 键只转一次, 供下面 GET_INDEX 与 SET_INDEX 共用 (S11.13.2_A7.*_T4)。
+	c.emitToPropertyKeyOnce()
 	c.emitter.EmitNoOperand(bytecode.OP_DUP2)
 	c.emitter.EmitNoOperand(bytecode.OP_GET_INDEX)
 	if err := c.compileExpression(node.Right); err != nil {
@@ -4760,6 +4777,8 @@ func (c *Compiler) compileLogicalAssignment(node *ast.AssignmentExpression) erro
 		if err := c.compileMemberRef(left); err != nil {
 			return err
 		}
+		// 键只转一次, 供下面 GET_INDEX 与 SET_INDEX 共用。
+		c.emitToPropertyKeyOnce()
 		c.emitter.EmitNoOperand(bytecode.OP_DUP2)
 		c.emitter.EmitNoOperand(bytecode.OP_GET_INDEX) // → [obj, key, val]
 		c.emitter.EmitNoOperand(bytecode.OP_DUP)       // [obj, key, val, val]
@@ -5301,6 +5320,8 @@ func (c *Compiler) compileIncDec(target ast.Expression, isInc, isPrefix bool) er
 		if err := c.compileMemberRef(member); err != nil {
 			return err
 		}
+		// 键只转一次, 供下面 GET_INDEX 与 SET_INDEX 共用。
+		c.emitToPropertyKeyOnce()
 		// [obj, key] → DUP2 → [obj, key, obj, key] → GET_INDEX → [obj, key, old]
 		c.emitter.EmitNoOperand(bytecode.OP_DUP2)
 		c.emitter.EmitNoOperand(bytecode.OP_GET_INDEX)

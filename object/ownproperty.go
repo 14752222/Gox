@@ -168,6 +168,40 @@ func (a *Array) OwnDescriptor(name string) (PropertyDescriptor, bool) {
 	return PropertyDescriptor{}, false
 }
 
+// DeleteOwn 删除数组的自有属性, 遵循描述符的可配置性 ([[Delete]])。
+//
+//   - name 有显式描述符 (Object.defineProperty 定义): 不可配置 ⇒ false;
+//     可配置 ⇒ 从 PropDescs 移除 (索引还会清出 Elements 与 propKeyOrder)。
+//   - "length": 规范恒不可配置 ⇒ false。
+//   - 范围内的普通索引: 可配置 ⇒ 置洞 (Elements[idx] = undefined) 并 true。
+//   - 范围外: false (自有属性不存在)。
+func (a *Array) DeleteOwn(name string) bool {
+	if d, ok := a.PropDescs[name]; ok {
+		if !d.Configurable {
+			return false
+		}
+		delete(a.PropDescs, name)
+		if idx, err := Atoi(name); err == nil && idx >= 0 && idx < len(a.Elements) {
+			a.Elements[idx] = UndefinedSingleton
+		}
+		for i, k := range a.propKeyOrder {
+			if k == name {
+				a.propKeyOrder = append(a.propKeyOrder[:i], a.propKeyOrder[i+1:]...)
+				break
+			}
+		}
+		return true
+	}
+	if name == "length" {
+		return false
+	}
+	if idx, err := Atoi(name); err == nil && idx >= 0 && idx < len(a.Elements) {
+		a.Elements[idx] = UndefinedSingleton
+		return true
+	}
+	return false
+}
+
 // DefineOwn 以完整描述符定义数组自有属性 (Object.defineProperty 落点)。
 // 索引上的数据描述符会同步写入 Elements, 使不经描述符通道的读
 // (Array.prototype 方法 / JSON / inspect) 仍看到定义的值; 访问器描述符
