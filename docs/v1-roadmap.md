@@ -427,6 +427,37 @@ cherry-pick 8 条 —— `f121d25`（未捕获抛值渲染）、`9dd6dac`（`OP_
 **流程纪律（第三条，本次新增）**：`git cherry -v` 的输出**必须读到最后一行**再决定
 cherry-pick 清单 —— 差集末尾的提交最容易因「看到前面几条就以为齐了」而漏掉。
 
+## 二十一、批 5 补遗：`delete 标识符` 按引用基三分（c02e051）
+
+**背景**：批 5（§十六）合流时，`delete this.x` / `delete globalThis.x`（引用基是
+GlobalObject 的那一支）已随 `47f4d81` 修掉，但 **`delete 标识符` 整支没动** ——
+`compileDelete` 对标识符一律编译成「求值 + POP + TRUE」：既不删绑定（隐式赋值
+建的全局删不掉），又给未定义名徒增一次 ReferenceError（规范 sloppy 下直接
+true），顶层 var / let / 内层局部还一律误报 true。
+
+**修法**（c02e051，5 文件 +128/-1）：按规范 UnaryExpression 的引用基三分 ——
+① 顶层 var / 函数声明 / 隐式全局 / 未绑定名 → 新指令 `OP_DELETE_GLOBAL`（0xF3；
+0xF1/0xF2 已被 OP_TO_PROPERTY_KEY / OP_GET_PROTO 占用）按名删全局环境绑定；
+② 顶层 let/const/class 与模块顶层绑定 → 编译期压 `OP_FALSE`；
+③ 内层局部绑定 → 同样 `OP_FALSE`。
+**不**内联成 `OP_THIS + OP_DELETE`：函数体内 this 是调用方接收者、module 顶层
+this 是 undefined，都会把删除落到错误的基上。
+
+**A/B**（基线 = 合流后的远端 main，验证时 tip = 0e35257）：
+- 定向 `expressions/delete` 69 例：30 → 42，**GAIN 12 / LOST 0**；
+- 全量 23726 例：17477（73.66%）→ 17498（73.75%），**GAIN 21 / LOST 0**；
+- 基线复跑得 17477，与 §十九 记录**逐例吻合** ⇒ 本轮并行跑 go test 未污染基准。
+- `go build` / `go vet` / `go test ./...` 全绿；新增 `vm/delete_identifier_test.go`（5 例）钉三类语义。
+- 徽章由 CI（test262.yml，compiler/** vm/** 触发）自动回写；73.7488% 与原值同到一位小数
+  （73.7%），故无可见变化。
+
+**跨会话 tip 漂移实锤（又一次）**：本条 delta 从 323703b 起共 rebase 三次
+（323703b → 0e35257 → 475c2c8 → 231ee25），其中一次推送被拒（non-fast-forward）——
+另一会话先推了 docs / CI 提交。**推论**：验证完的 delta 不要放很久再推；推送前
+先 `git fetch` 对一次 tip，rebase 次数才少。后两次 rebase 均为 docs/CI-only 提交，Go 源码树
+不变，因此 A/B 数字无需重跑。
+
+
 ## 待确认（信息缺口）
 
 - `agent_doc/undecided-and-unimplemented.md` 是 **2026-09-18 快照**，其 §四 缺口清单中已有多项（cocoa 后端、iOS 后端、X11 修正、M2 IME、滚动条拖拽、tabs、table/tree、tooltip）在 09-18 后落地。本路线图已按 git 历史更正，但**建议回填该台账**，否则后续排期会继续基于过期口径。
