@@ -458,6 +458,60 @@ this 是 undefined，都会把删除落到错误的基上。
 不变，因此 A/B 数字无需重跑。
 
 
+## 二十二、合流批次九（parser yield 标识符 / 函数 length / ToPropertyKey 时序 / 数组符号键 / 自有属性枚举）
+
+**背景**：批 5 补遗（§二十一）合流后，基线 `b3e2088` = `17498/23726 = 73.7503%`。
+从 wb-issues 看板挑出 5 个可独立完成的 parser/VM 缺陷，**并行派 5 路 agent** 修复，
+各自在独立 worktree 工作、只 add 自己的文件、**每步 commit**、**不 push**；lead 收工后
+统一 cherry-pick 进 `merge/batch9` 并做一次全量验收。
+
+| 路线 | 分支 | 提交数 | 缺陷 | delta |
+|---|---|---|---|---|
+| yld | `open/yld` | 3 | sloppy 非生成器代码里 `yield` 应作普通标识符（`rmg9Qy`） | 定向 +58 / 全量 +56 |
+| fnlen | `open/fnlen` | 2 | 函数 `length` 应按规范 `ExpectedArgumentCount` 截断 | 定向 +32 / 全量 +49 |
+| tpk | `open/tpk` | 2 | 成员访问的 `ToPropertyKey` 必须晚于基 null/undefined 检查（`rknvx2`） | 定向 +39 / 全量 +18 |
+| dstr | `open/dstr` | 4 | 数组解构须尊重被覆盖的 `@@iterator`（`ryPk0S`） | 定向 +80 / 全量 +80 |
+| keys | `open/keys` | 4 | `Object.keys` 等枚举 API 须列函数对象自有可枚举属性（`rxsCia`） | 全量 +18 |
+
+合计 15 条提交，唯一冲突在 `vm/vm.go`：`dstr` 的 `getSymbolIndexedValue` 与 `keys` 的
+`markAssignmentEnumerable`/`inStaticInitFrame` **都在文件末尾追加互不相关的新函数**，
+保留两侧即解。`go build` / `go vet` / `go test ./...`（20 包）全绿。
+
+**关键实现要点**：
+
+- **yld**：新增 `p.yieldIsIdentifier()`（判据 = 非 `allowYield`、非 strict、非 module）；
+  `parseYieldExpression` 前缀返回 `Identifier`；**原有表达式 / 空-yield 逻辑一行未动**
+  ——刻意绕开 `dc15392`/`aeaf943` 的 46 例回归雷区（空 yield 在表达式位置解析失败
+  属既有缺陷，另立新单）。
+- **fnlen**：`FunctionMetadata` 新增 `Length` 字段，与 `NumParameters` **分义保留**
+  （后者按实参摆放用，不可动）；4 处解构形参 `HasDefault` 从硬编码 `false` 改
+  `param.Default != nil`。
+- **tpk**：**编译期零改动**，全在 VM 层；`OP_TO_PROPERTY_KEY` 增就地基数检查
+  `PeekAt(1)`（基为 null/undefined 时抛 TypeError 且**不碰键**）——
+  未新增操作码，保住 `d61d89d` 的「键只转一次」语义（`S11.13.2_A7.*_T4` 仍全绿）。
+- **dstr**：根因**不是**编译期索引快路径，而是**数组/类型化数组没有 Symbol 键属性槽**
+  （`arr[Symbol.iterator] = fn` 被 `setIndex` 的 `*Array` 分支静默丢弃）。
+  新增 `object/symbol_props.go`（`SymbolPropertyStore` 接口 + 沿原型链查找），
+  `object/array.go` / `object/typedarray.go` 补齐槽位；`@@iterator` 存在但不可调用时
+  抛 TypeError，不再静默回退索引快路径。
+- **keys**：`ownKeys` / `getOwnProperty` 走统一 `OwnPropertyStore` 接口；
+  `OP_FOR_IN_INIT` / `OP_OBJECT_SPREAD` 同接口；函数对象自有属性加 `NonEnumProps` 标记。
+  agent **自己 A/B 抓出并修掉了自己引入的 1 条 LOST**（`Object.assign` 取源属性未触发
+  访问器，`82ddc41` 改走 `GetProperty`）。
+
+**A/B（合流后统一跑，基线 `b3e2088`）**：
+
+- **全量 23726 例：17498（73.7503%）→ 17742（74.7787%），GAIN 244 / LOST 0**；
+- **逐用例 diff 三项全 0**：`only_a = 0` / `only_b = 0` / `pass_differs = 0`
+  —— 这是「零回归」的最强证据（比总数相等强得多）；
+- `-jobs 8` 下报的 21 条 `timeout` 经 `-jobs 2` 单独复验**全部 PASS**，判定为机器争抢假阳性；
+- 徽章 `docs/test262-compliance.json` 由 `73.7%` 改为 `74.8%`。
+
+**诚实列出的 3 项不修（另立新单）**：① 空 yield 在表达式位置解析失败
+（`[...yield]` / `{...yield}` / `(yield)` / `f(yield)`，基线同样失败）；② for-of 的 `break`
+不调 `IteratorClose`（既有 bug）；③ 函数 Symbol 键枚举缺失（`*Closure` 无
+`SymbolProperties`）+ 函数自有键顺序（Go map 无插入序）。
+
 ## 待确认（信息缺口）
 
 - `agent_doc/undecided-and-unimplemented.md` 是 **2026-09-18 快照**，其 §四 缺口清单中已有多项（cocoa 后端、iOS 后端、X11 修正、M2 IME、滚动条拖拽、tabs、table/tree、tooltip）在 09-18 后落地。本路线图已按 git 历史更正，但**建议回填该台账**，否则后续排期会继续基于过期口径。
