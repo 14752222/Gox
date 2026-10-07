@@ -359,6 +359,41 @@ cand `phase=timeout`）。根因是**全量跑时机器过载**（观测到 9–
 `async-generator/dstr` 12 例）、`rxsCia`（`Object.keys(函数)` 不列出动态自有的可枚举
 属性）。前两条基线即如此，第三条由 `a328874` 的 tombstone 改动部分触及但未修完。
 
+## 十九、最终合流（批次八独有提交 rebase 到已推进的远端 main）
+
+**背景**：批次八准备合流时，`git fetch` 发现远端 `Gox/main` 已被另一会话推进到
+`323703b`，其中① 包含批次五/六/七的**全部内容**（re-commit 过，SHA 不同）；
+② 多一个 `47f4d81`（全局访问器绑定与计算成员键三处语义修复），其提交信息记录
+「批次七净增 +417 例，但全量 A/B 复核发现 **23 例回归**」——即对方已把批次七合进
+main 并修掉了一批我未发现的回归。故**不再整体 merge 批次八**，改为用
+`git cherry -v Gox/main merge/batch8` 取出**真正独有**的提交，rebase 到远端 main 上。
+
+**最终集成分支** `merge/final2`（基线 `Gox/main` = `323703b`）：
+cherry-pick 8 条 —— `f121d25`（未捕获抛值渲染）、`9dd6dac`（`OP_STORE_CONST_GUARD`
+模块顶层 const 不可变）、`fce17cc`/`3c47ba5`/`7bd05d6`（async generator 原型链 /
+`@@toStringTag` 沿链可达 / 形参求值时机钉子）、`e98de49`（promise 采纳）、
+`aeaf943`（**再次**撤回 `a328874` 对 `parseYieldExpression` 的越界改写 ——
+证明该坑会随每次 cherry-pick 复现，必须每次复查）、外加 2 条 docs。
+
+**逐文件净 diff 审计**：改动面精确等于上述 8 条修复 + docs，
+**`git diff --name-only Gox/main HEAD -- parser gfx` 为空**（parser 与 gfx 与 main 零 diff）。
+
+**全量 A/B（静默机器上单跑）**：
+`language` 全量 **17273 → 17477 = GAIN 204 / LOST 0**（23726 例）。
+`go build ./...` + `go vet` + `go test -count=1 ./...`（20 包）全绿。
+徽章更新为 **73.7%**（17477/23726）。
+
+**流程纪律（新增两条）**：
+1. **同机并行会话会污染基准跑分**：本次跑到一半机器上出现 14 个 gox 进程，
+   抓父链发现 `gox-f2.exe -jobs 8` 来自**另一个 CodeBuddy 会话**（其 shell 包装器
+   命令行带 `__codebuddy_payload=…`），其二进制 mtime 比本验证启动仅晚 2 分钟。
+   12 分片 / 16 核 ⇒ 首轮结果里的超时均为**假 `phase: timeout`**。
+   ⇒ 全量 A/B 开跑前必须 `tasklist | grep -i '^gox'` 按**可执行文件名**核查有无
+   他人运行（本机 `wmic ... get CommandLine` 取不到命令行，不能作判据）；等机器静默再跑。
+2. **cherry-pick 后必须复查越界文件**（本条在本次又一次生效：`aeaf943` 是第二次
+   因同一提交撤回同一处 parser 改写）。
+
+
 ## 待确认（信息缺口）
 
 - `agent_doc/undecided-and-unimplemented.md` 是 **2026-09-18 快照**，其 §四 缺口清单中已有多项（cocoa 后端、iOS 后端、X11 修正、M2 IME、滚动条拖拽、tabs、table/tree、tooltip）在 09-18 后落地。本路线图已按 git 历史更正，但**建议回填该台账**，否则后续排期会继续基于过期口径。
