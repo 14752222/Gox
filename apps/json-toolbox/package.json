@@ -1,0 +1,13 @@
+{
+  "name": "gox-json-toolbox",
+  "version": "0.1.0",
+  "private": true,
+  "description": "JSON / 数据工具箱 —— Gox 实用应用（格式化 / 校验 / 路径查询）",
+  "scripts": {
+    "dev": "goxjs dev src/main.js",
+    "start": "goxjs src/main.js"
+  },
+  "devDependencies": {
+    "@goxjs/goxjs": "^0.9.0"
+  }
+}

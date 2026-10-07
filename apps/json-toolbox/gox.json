@@ -1,0 +1,10 @@
+{
+  "name": "json-toolbox",
+  "title": "JSON 工具箱",
+  "appId": "com.gox.apps.jsontoolbox",
+  "version": "0.1.0",
+  "permissions": [],
+  "desktop": {
+    "windowed": true
+  }
+}
