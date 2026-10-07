@@ -5752,6 +5752,15 @@ func (vm *VM) iteratorClose(iter object.Value) error {
 		return vm.checkCallbackErr()
 	case *object.Object:
 		ret, found := it.GetProperty("return")
+		// `return` 是访问器 (getter) 且 getter 抛错 ⇒ GetMethod abrupt
+		// (规范 7.4.6 step 4 + GetMethod step 2): 该错误必须**照常传播**,
+		// 由调用点按 completion 类型决定去留 (break/return 路径向上抛;
+		// body 抛异常路径被吞掉、原异常优先)。getter 经回调桥执行, 错误
+		// 滞留在桥信号里, 必须在此消费 —— 否则会残留到之后某个内建调用点,
+		// 报错位置串台 (test262 iterator-close-*-get-method-abrupt)。
+		if err := vm.checkCallbackErr(); err != nil {
+			return err
+		}
 		if !found || ret == nil || isNullish(ret) {
 			return nil
 		}

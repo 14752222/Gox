@@ -220,6 +220,11 @@ type tryScope struct {
 	finallyBody *ast.BlockStatement
 	closeSlot   int
 
+	// closeSync 为 true 时该 closeSlot 条目是**同步** for-of 的迭代器收尾
+	// (IteratorClose, 规范 7.4.6): 内联发射 OP_ITER_CLOSE, 而非 for-await
+	// 的 AsyncIteratorClose 序列 (后者带 await)。closeSlot >= 0 时二者互斥。
+	closeSync bool
+
 	// dispose 非 nil 时该条目是 using 作用域的释放条目: 控制转移穿出时
 	// 内联发射 OP_DISPOSE_EXIT <dispose.idx> (常量池索引, 指向 *DisposeScope)。
 	// 它与 finally 复用同一套运行时机制 (PUSH_TRY 0 + PUSH_FINALLY), 只是
@@ -1232,9 +1237,14 @@ func (c *Compiler) emitTryUnwind(targetDepth int) error {
 			continue
 		}
 		if sc.closeSlot >= 0 {
-			// for-await 的迭代器收尾条目: 内联 AsyncIteratorClose。
-			// 进来时栈为空 (穿出的控制转移点都保证语句级干净), 离开也是空。
-			c.emitIteratorCloseSequence(sc.closeSlot)
+			// 迭代器收尾条目: 内联 IteratorClose (同步 for-of) 或
+			// AsyncIteratorClose (for-await)。进来时栈为空 (穿出的控制转移点
+			// 都保证语句级干净), 离开也是空。
+			if sc.closeSync {
+				c.emitSyncIterClose(sc.closeSlot)
+			} else {
+				c.emitIteratorCloseSequence(sc.closeSlot)
+			}
 			continue
 		}
 		if !sc.hasFinally || sc.finallyBody == nil {
@@ -1610,38 +1620,83 @@ func (c *Compiler) compileDoWhileStatement(stmt *ast.DoWhileStatement) error {
 	return nil
 }
 
+// compileForOfStatement 编译同步 for-of 语句 for (binding of iterable) { body }。
+//
+// 迭代与收尾按规范 ForIn/OfBodyEvaluation + IteratorClose (7.4.6) 实现:
+//   - 取一次迭代器, 存进隐藏局部槽 closeSlot (循环头每轮 LOAD, body 阶段
+//     求值栈完全干净)。
+//   - 每步用 OP_ITER_STEP 取 {value, done}, **按 .done 判结束**。早先的实现
+//     用 OP_ITER_NEXT 并以「值 === undefined/null」当结束信号, 会把迭代器
+//     正常产出的 null/undefined 误判成结束 (test262 iterator-close-via-* 用
+//     value: null, 会整段不进入循环体), 已一并纠正。
+//   - break / return / body 抛异常穿出循环体时必须 IteratorClose (调
+//     iterator.return(), 没有该方法则静默跳过)。挂载机制完全复用 for-await
+//     的 try/finally 基础设施 (rMkA8D): 每轮绑定+body 前面 PUSH_TRY 0 +
+//     PUSH_FINALLY closePC; body 抛异常由 handleThrowInner 走 finallyPC 跳到
+//     closePC → close 序列 → END_FINALLY 重抛原异常。编译器侧把 close 条目
+//     (closeSlot + closeSync) 压进 tryScopes, body 里的 break/return 由
+//     emitTryUnwind 自动内联 OP_ITER_CLOSE —— 标签 break、嵌套 for-of、穿
+//     多层 try 全部由既有机制按由内向外顺序收尾。
+//   - 异常优先级 (node 实测, 与 for-await 同口径): body 抛异常时 close 序列里
+//     的异常被吞掉 (原异常胜出, closePC 处套一层 catch 丢弃); break/return
+//     路径上 close 的异常照常传播。continue 与 done 正常出口不调 return()。
+//   - GetIterator 自身抛错时**没有迭代器**, 不进入任何 close 路径 (handler 在
+//     取到迭代器之后才压入)。
 func (c *Compiler) compileForOfStatement(stmt *ast.ForOfStatement) error {
 	if stmt.Await {
 		return c.compileForAwaitOfStatement(stmt)
 	}
-	// 编译可迭代对象
+
+	closeSlot := c.allocHiddenSlot()
+
+	// 编译可迭代对象并取迭代器, 存进隐藏槽 (栈不留副本 —— 循环头每轮从槽里
+	// LOAD, body 阶段栈完全干净)。
 	if err := c.compileExpression(stmt.Iterable); err != nil {
 		return err
 	}
-	// 获取迭代器
-	c.emitter.EmitNoOperand(bytecode.OP_GET_ITERATOR)
+	c.emitter.EmitNoOperand(bytecode.OP_GET_ITERATOR)     // [iter]
+	c.emitter.Emit(bytecode.OP_STORE, uint16(closeSlot))  // []
 
 	loopStart := c.emitter.Pos()
-	// 迭代下一步
-	c.emitter.EmitNoOperand(bytecode.OP_ITER_NEXT)
-	// 栈顶是值或 undefined (迭代结束)
+	c.emitter.Emit(bytecode.OP_LOAD, uint16(closeSlot)) // [iter]
+	// 同步迭代一步: [iter] → [iter, step] (step 是 {value, done} 对象)。
+	// next() 抛异常时 VM 先清空 closeSlot 再重抛 (等价 iteratorRecord.[[done]]
+	// = true), 且该异常发生在 close handler 覆盖范围之外 ⇒ 不调 return()。
+	c.emitter.Emit(bytecode.OP_ITER_STEP, uint16(closeSlot)) // [iter, step]
 
-	// 检查是否迭代结束
+	// 检查 step.done (GET_PROP 弹 obj 压结果, 故先 DUP 保住 step):
+	// [iter, step] → DUP → [iter, step, step] → GET_PROP "done" →
+	// [iter, step, done] → JUMP_IF_TRUE (不弹) → 假值 POP → [iter, step]
+	doneIdx := c.constants.AddConstant(object.NewString("done"))
 	c.emitter.EmitNoOperand(bytecode.OP_DUP)
-	endJump := c.emitter.EmitJump(bytecode.OP_JUMP_IF_NULL)
-	c.emitter.EmitNoOperand(bytecode.OP_POP) // 弹出检查的 undefined
+	c.emitter.Emit(bytecode.OP_GET_PROP, doneIdx) // [iter, step, done]
+	endJump := c.emitter.EmitJump(bytecode.OP_JUMP_IF_TRUE)
+	c.emitter.EmitNoOperand(bytecode.OP_POP) // 假值路径: 弹出 done → [iter, step]
+	valueIdx := c.constants.AddConstant(object.NewString("value"))
+	c.emitter.Emit(bytecode.OP_GET_PROP, valueIdx) // [iter, value]
 
-	// 块作用域
+	// ---- 本轮迭代的 close handler: 只覆盖绑定 + body ----
 	c.emitter.EmitNoOperand(bytecode.OP_PUSH_SCOPE)
 	prevScope := c.scope
 	c.scope = NewSymbolScope(prevScope)
+	// 运行时: 纯 finally 形状 (catchPC=0), 异常走 finallyPC → closePC。
+	c.emitter.Emit(bytecode.OP_PUSH_TRY, 0)
+	closeFin := c.emitter.EmitJump(bytecode.OP_PUSH_FINALLY)
+	// 控制上下文先压栈: close 条目随后追加, 处于 ctx.tryScopes 之外 ——
+	// break/return 穿出时由 emitTryUnwind 解退并内联 close; continue 靠
+	// ctx.selfClose 把它排除 (循环底常规 POP_TRY 摘掉)。
+	ctx := c.pushControl(c.takePendingLabel(), true)
+	ctx.selfClose = 1
+	// 编译期镜像: body 里的 break/return 由 emitTryUnwind 内联 close。
+	savedTryLen := len(c.tryScopes)
+	c.tryScopes = append(c.tryScopes, tryScope{hasFinally: true, closeSlot: closeSlot, closeSync: true})
 
 	// 绑定本次迭代的值 (栈顶)。三种形状:
 	//   简单绑定 for (let x of arr)          → 直接存进新建的槽位
 	//   解构绑定 for (const [a, b] of pairs) → 交给 compilePatternBind 按模式拆开
 	//   var 绑定 for (var x of arr)          → 存进**函数作用域层**的共享槽位
-	// 两边进来时栈都是 [.., value]、离开时都回到 [..] —— compilePatternBind 末尾
-	// 自带 POP, 与 OP_STORE 消耗栈顶值的语义对齐。
+	// 进来时栈是 [.., value]、离开时回到 [..] —— compilePatternBind 末尾自带
+	// POP, 与 OP_STORE 消耗栈顶值的语义对齐。
 	varKind := bytecode.OP_STORE
 	if _, ok := stmt.VarDecl.(*ast.ConstStatement); ok {
 		varKind = bytecode.OP_STORE_CONST
@@ -1655,20 +1710,15 @@ func (c *Compiler) compileForOfStatement(stmt *ast.ForOfStatement) error {
 		//   赋值目标 for ([a, b] of xs) → VarDecl 为 nil, isDecl=false:
 		//     每轮是**赋值**, 写入外部已声明的绑定 (node 实测: for ([a,b] of …)
 		//     修改的就是外层 a/b)。
-		//
-		// 注: 解构出来的名字按 let 语义登记 (compilePatternBind 内部是
-		// declareOnce(…, false, …)), 与 const [a, b] = … 的现有口径一致。本运行时
-		// 的 const **只在全局词法绑定上强制** (见 vm.go 的 OP_STORE_GLOBAL);
-		// 局部槽位根本不查 (compiler.Symbol.IsConst 目前无人读取), 所以
-		// for (const [a, b] of …) 的 a/b 可被重新赋值 —— 这是既有边界, 不是本次
-		// 解构支持引入的。
 		if err := c.compilePatternBind(stmt.Pattern, stmt.VarDecl != nil); err != nil {
+			c.tryScopes = c.tryScopes[:savedTryLen]
 			return err
 		}
 	} else if stmt.Target != nil {
 		// 无声明赋值目标 for (x of xs) / for (obj.k of xs): 每轮迭代是
 		// 赋值, 与 var 形态一样写**外部**绑定 (不是每轮新声明)
 		if err := c.compileForOfTargetAssign(stmt.Target); err != nil {
+			c.tryScopes = c.tryScopes[:savedTryLen]
 			return err
 		}
 	} else if _, isVarDecl := stmt.VarDecl.(*ast.VarStatement); isVarDecl {
@@ -1692,35 +1742,55 @@ func (c *Compiler) compileForOfStatement(stmt *ast.ForOfStatement) error {
 		sym := c.scope.Define(stmt.Variable.Value, varKind == bytecode.OP_STORE_CONST)
 		c.emitter.Emit(varKind, uint16(sym.Slot))
 	}
-
-	ctx := c.pushControl(c.takePendingLabel(), true)
+	// 绑定消耗 value 后残留的 [iter] → [] (body 阶段栈干净)
+	c.emitter.EmitNoOperand(bytecode.OP_POP)
 
 	// 循环体
 	if err := c.compileLoopBody(stmt.Body.Statements); err != nil {
+		c.tryScopes = c.tryScopes[:savedTryLen]
 		return err
 	}
 
+	c.tryScopes = c.tryScopes[:savedTryLen]
 	c.scope = prevScope
 	c.emitter.EmitNoOperand(bytecode.OP_POP_SCOPE)
 
-	// continue 跳回迭代头 (经过迭代边界: 每次迭代的绑定互不影响)
+	// 循环底: continue 跳回迭代头 (先摘掉本轮 close handler 再回跳)
 	c.emitter.EmitNoOperand(bytecode.OP_ITER_BOUNDARY)
 	iterPos := c.emitter.Pos()
 	for _, jmp := range ctx.continueJumps {
 		c.emitter.ReplaceJumpTarget(jmp, uint16(iterPos))
 	}
+	c.emitter.EmitNoOperand(bytecode.OP_POP_TRY)
 	c.emitter.Emit(bytecode.OP_LOOP, uint16(loopStart))
 
-	// 迭代结束: 清理栈上的残留值
+	// done 出口: [iter, step, done] → 逐个弹出 (正常完成不 close)
 	c.emitter.PatchJump(endJump)
-	c.emitter.EmitNoOperand(bytecode.OP_POP) // 弹出 DUP 的副本 (null/undefined)
-	c.emitter.EmitNoOperand(bytecode.OP_POP) // 弹出 ITER_NEXT 的值
+	c.emitter.EmitNoOperand(bytecode.OP_POP) // 弹出 done (JUMP_IF_TRUE 不弹)
+	c.emitter.EmitNoOperand(bytecode.OP_POP) // 弹出 step
+	c.emitter.EmitNoOperand(bytecode.OP_POP) // 弹出 iter
 
-	// break 跳到这里 → 栈上只剩迭代器
+	// break 也汇到这里 (break 点已在 emitTryUnwind 内联过 close + POP_TRY)
 	for _, jmp := range ctx.breakJumps {
 		c.emitter.PatchJump(jmp)
 	}
-	c.emitter.EmitNoOperand(bytecode.OP_POP) // 弹出迭代器
+	exitJump := c.emitter.EmitJump(bytecode.OP_JUMP) // 正常出口: 跳过 closePC 块
+
+	// ---- 异常路径的 close 落点 ----
+	// handleThrowInner 的 finallyPC 分支: 栈已截回 entry.stackBase, 错误值记在
+	// tryStack 条目的 pendingVal 上。跑 close 序列 (套一层 catch 丢弃 close
+	// 自身的异常 —— node: 原异常优先), 然后 END_FINALLY 重抛原异常。
+	c.emitter.PatchJump(closeFin)
+	swallowTry := c.emitter.EmitJump(bytecode.OP_PUSH_TRY)
+	c.emitSyncIterClose(closeSlot)
+	c.emitter.EmitNoOperand(bytecode.OP_POP_TRY)
+	overSwallow := c.emitter.EmitJump(bytecode.OP_JUMP)
+	// close 序列自己抛异常: 丢弃它, 让 END_FINALLY 重抛原异常
+	c.emitter.PatchJump(swallowTry)
+	c.emitter.EmitNoOperand(bytecode.OP_POP)
+	c.emitter.PatchJump(overSwallow)
+	c.emitter.EmitNoOperand(bytecode.OP_END_FINALLY)
+	c.emitter.PatchJump(exitJump)
 
 	c.popControl()
 	return nil
