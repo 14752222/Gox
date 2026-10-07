@@ -347,22 +347,9 @@ func markDeleted(m *map[string]PropertyDescriptor, name string) {
 
 // --- *Closure ---
 
-// SetBuiltinProperty 以内建属性语义 (writable:true, enumerable:false,
-// configurable:true) 在函数对象上注册静态成员 —— 与 *Object.SetBuiltinProperty
-// 对应, 用于 class 静态方法/访问器以及宿主注册的内建静态成员。
-func (c *Closure) SetBuiltinProperty(name string, val Value) {
-	if c.Props == nil {
-		c.Props = make(map[string]Value)
-	}
-	if c.NonEnumProps == nil {
-		c.NonEnumProps = make(map[string]bool)
-	}
-	c.Props[name] = val
-	c.NonEnumProps[name] = true
-}
-
 // SetNonEnumerableProperty 把已存在的 Props 键标记为不可枚举 (class 静态
-// 方法/字段经 OP_SET_PROP 写入后, 由 VM 按上下文补标)。
+// 方法/访问器、宿主注册的内建静态成员经 SetProperty 写入后默认即落此; 该
+// 方法供 VM / 宿主在需要时按上下文显式补标)。
 func (c *Closure) SetNonEnumerableProperty(name string) {
 	if c.NonEnumProps == nil {
 		c.NonEnumProps = make(map[string]bool)
@@ -510,19 +497,6 @@ func (c *Closure) DeleteOwn(name string) bool {
 }
 
 // --- *BuiltinFunction ---
-
-// SetBuiltinProperty 以内建属性语义在对应 *Object-like 内建函数上注册静态
-// 成员 (不可枚举)。与 *Object.SetBuiltinProperty 对应。
-func (b *BuiltinFunction) SetBuiltinProperty(name string, val Value) {
-	if b.Properties == nil {
-		b.Properties = make(map[string]Value)
-	}
-	if b.NonEnumProps == nil {
-		b.NonEnumProps = make(map[string]bool)
-	}
-	b.Properties[name] = val
-	b.NonEnumProps[name] = true
-}
 
 func (b *BuiltinFunction) OwnKeys() []string {
 	keys := []string{}
