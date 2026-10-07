@@ -2707,7 +2707,8 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 		if o, isObj := val.(*object.Object); isObj && hasNextKey(o) {
 			// 包 Async-from-Sync wrapper: next method 懒缓存 (V8 实测行为),
 			// throw/return 每次 GetMethod —— 见 wrapSyncIterForAsync。
-			vm.stack.Push(vm.wrapSyncIterForAsync(o))
+			// 裸 next 对象按「手写迭代器」处理 (fromSync=false): 值不解包。
+			vm.stack.Push(vm.wrapSyncIterForAsync(o, false))
 			continue
 		}
 		// 3) 同步可迭代 (数组/字符串/Map 等, 规范允许 for-await 与 yield*
@@ -2718,7 +2719,8 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 		if resolved, ok, err := vm.resolveSymbolIterator(val); err != nil {
 			return err
 		} else if ok {
-			vm.stack.Push(vm.wrapSyncIterForAsync(resolved))
+			// 同步源 (CreateAsyncFromSyncIterator): 委托时步进值须解包。
+			vm.stack.Push(vm.wrapSyncIterForAsync(resolved, true))
 			continue
 		}
 			if iter, hasIter := runtime.GetIterable(val); hasIter {
@@ -2817,13 +2819,17 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				step := object.NewObject()
 				step.SetProperty("value", val)
 				step.SetProperty("done", object.NewBoolean(done))
-				vm.stack.Push(step)
+				// 同步源: 步进值按 Async-from-Sync 解包 (%AsyncFromSyncIterator
+				// Prototype%.next, valueWrapper = PromiseResolve(value))。
+				vm.stack.Push(vm.asyncFromSyncAwaitedStep(step))
 			case *runtime.Iterator:
 				val, done := it.Next()
 				step := object.NewObject()
 				step.SetProperty("value", val)
 				step.SetProperty("done", object.NewBoolean(done))
-				vm.stack.Push(step)
+				// runtime.Iterator 只承载同步可迭代 (数组/字符串/Map ...):
+				// 同款值解包。
+				vm.stack.Push(vm.asyncFromSyncAwaitedStep(step))
 			case *object.Object, *object.AsyncGenerator:
 				var nextFn object.Value
 				var found bool
@@ -2855,6 +2861,12 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				res, err := vm.callFunction(nextFn, recv, []object.Value{arg})
 				if err != nil {
 					return err
+				}
+				// 同步源的 Async-from-Sync wrapper: 步进结果的值须按
+				// PromiseResolve 解包 (%AsyncFromSyncIteratorPrototype%.next)。
+				// 原生 @@asyncIterator 与裸 next 对象的值不解包。
+				if o, isObj := iter.(*object.Object); isObj && vm.wrapperIsFromSync(o) {
+					res = vm.asyncFromSyncAwaitedStep(res)
 				}
 				vm.stack.Push(res)
 			default:
@@ -6282,7 +6294,7 @@ func (vm *VM) resolveAsyncSymbolIterator(val object.Value) (object.Value, bool, 
 	// 会多触发一次 getter, 破坏 yield* 异步委托的属性访问顺序
 	// (r6e5qp, test262 yield-star-async-next 等)。
 	if obj, isObj := res.(*object.Object); isObj && hasNextKey(obj) {
-		return vm.wrapSyncIterForAsync(obj), true, nil
+		return vm.wrapSyncIterForAsync(obj, false), true, nil
 	}
 	// 调用结果不是对象: GetIterator 要求抛 TypeError。
 	return nil, false, vm.throwNamedError("TypeError",

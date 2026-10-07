@@ -13,6 +13,13 @@ import (
 // 都能作为 reject reason 传播 (builtin 返回值协议只携带 *object.Error)。
 const wrapperSrcKey = "__async_from_sync_src__"
 
+// wrapperFromSyncKey 标记该 wrapper 包装的是**同步**可迭代对象 (经
+// CreateAsyncFromSyncIterator)。只有这种 wrapper 需要在 yield* 委托时把
+// 步进结果的 value 按 PromiseResolve 解包 (%AsyncFromSyncIteratorPrototype%
+// .next 步骤 14: valueWrapper = PromiseResolve(value)) —— 原生 @@asyncIterator
+// 的值**不**解包 (yield-star-promise-not-unwrapped)。
+const wrapperFromSyncKey = "__async_from_sync_value_await__"
+
 // wrapSyncIterForAsync 按 CreateAsyncFromSyncIterator + %AsyncFromSync%
 // IteratorPrototype% 语义, 把「同步可迭代产出」的 JS 迭代器对象包成异步
 // 委托 (yield*) / for-await 消费专用的 wrapper。
@@ -29,7 +36,7 @@ const wrapperSrcKey = "__async_from_sync_src__"
 //
 // 只对 *object.Object 包装; Generator / runtime.Iterator / JSIterator
 // 形状无 JS getter 参与, 原样返回 (Generator 的委托本就走 genResume)。
-func (vm *VM) wrapSyncIterForAsync(iter object.Value) object.Value {
+func (vm *VM) wrapSyncIterForAsync(iter object.Value, fromSync bool) object.Value {
 	src, ok := iter.(*object.Object)
 	if !ok {
 		return iter
@@ -38,6 +45,10 @@ func (vm *VM) wrapSyncIterForAsync(iter object.Value) object.Value {
 	// 标记源对象 (不可枚举): ASYNC_ITER_NEXT[_ARG] 据此做 next 懒缓存。
 	w.DefineOwnProperty(wrapperSrcKey, object.PropertyDescriptor{
 		Value: src, Writable: false, Enumerable: false, Configurable: true,
+	})
+	// 标记是否同步源 (决定 yield* 委托是否解包步进值)。
+	w.DefineOwnProperty(wrapperFromSyncKey, object.PropertyDescriptor{
+		Value: object.NewBoolean(fromSync), Writable: false, Enumerable: false, Configurable: true,
 	})
 	w.SetProperty("throw", object.NewBuiltin("throw", func(args ...object.Value) object.Value {
 		fn, found := src.GetProperty("throw")
@@ -86,6 +97,62 @@ func (vm *VM) wrapSyncIterForAsync(iter object.Value) object.Value {
 		return res
 	}))
 	return w
+}
+
+// asyncFromSyncAwaitedStep 实现 %AsyncFromSyncIteratorPrototype%.next 的
+// 「值须 PromiseResolve」语义 (步骤 9-14): 拆出同步迭代器产出 step 的
+// done/value (done 先读, 与 IteratorComplete→IteratorValue 同序), 把 value
+// 解包成 promise, 返回一个结算为 { value: resolvedValue, done } 的 promise。
+//
+// 仅 yield* 委托**同步**可迭代时使用 (native @@asyncIterator 的值不解包)。
+// done 为真时按规范直接以原 step 结算 (值不解包), 此处仍返回同形对象。
+func (vm *VM) asyncFromSyncAwaitedStep(step object.Value) object.Value {
+	o, ok := step.(*object.Object)
+	if !ok {
+		// 非对象 (含 promise): 原样交回, 由外层 AWAIT 处理。
+		return step
+	}
+	firstArg := func(args []object.Value) object.Value {
+		if len(args) > 0 {
+			return args[0]
+		}
+		return object.UndefinedSingleton
+	}
+	doneV, _ := o.GetProperty("done")
+	if err := vm.checkCallbackErr(); err != nil {
+		return errToValue(err)
+	}
+	valV, _ := o.GetProperty("value")
+	if err := vm.checkCallbackErr(); err != nil {
+		return errToValue(err)
+	}
+	done := doneV.IsTruthy()
+	if done {
+		// 已结束: 规范不以 PromiseResolve 包 value, 直接给同形 step。
+		return object.NewIteratorResult(valV, true)
+	}
+	p := object.NewPromise()
+	p.Resolve(valV) // PromiseResolve 语义: promise/thenable 值被采纳 (reject 会传染)
+	out := object.NewPromise()
+	p.Then(object.NewBuiltin("__afs_value", func(args ...object.Value) object.Value {
+		out.Resolve(object.NewIteratorResult(firstArg(args), false))
+		return object.UndefinedSingleton
+	}))
+	p.Catch(object.NewBuiltin("__afs_value_err", func(args ...object.Value) object.Value {
+		out.Reject(firstArg(args))
+		return object.UndefinedSingleton
+	}))
+	return out
+}
+
+// wrapperIsFromSync 报告该 Async-from-Sync wrapper 是否包装同步可迭代对象
+// (决定 yield* 委托是否解包步进值)。
+func (vm *VM) wrapperIsFromSync(w *object.Object) bool {
+	v, ok := w.GetProperty(wrapperFromSyncKey)
+	if !ok {
+		return false
+	}
+	return v.IsTruthy()
 }
 
 // syncWrapperNext 取 Async-from-Sync wrapper 的 next method 及其 this

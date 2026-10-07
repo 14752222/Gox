@@ -3967,13 +3967,23 @@ func (c *Compiler) compileExpression(expr ast.Expression) error {
 			}
 			return c.compileYieldDelegate(node.Value)
 		}
-		// yield [expr]: 编译 expr (默认 undefined), 然后 OP_YIELD 暂停
+		// yield [expr]: 编译 expr (默认 undefined), 然后 OP_YIELD 暂停。
+		//
+		// async generator 体内 `yield X` 规范语义是 AsyncGeneratorYield(Await(X))
+		// —— 值必须先 await (reject 则当作在该 yield 点抛出; test262
+		// yield-promise-reject-next)。await 在编译期显式发射 (OP_AWAIT),
+		// 于是驱动层对 OP_YIELD 的值不再二次 await: 这恰好让 yield* 委托
+		// (compileYieldDelegateAsync, 委托值按规范**不** await) 与普通 yield
+		// 共用同一条 OP_YIELD 结算路径。
 		if node.Value != nil {
 			if err := c.compileExpression(node.Value); err != nil {
 				return err
 			}
 		} else {
 			c.emitter.EmitNoOperand(bytecode.OP_UNDEFINED)
+		}
+		if c.asyncGeneratorBody {
+			c.emitter.EmitNoOperand(bytecode.OP_AWAIT)
 		}
 		c.emitter.EmitNoOperand(bytecode.OP_YIELD)
 		return nil
