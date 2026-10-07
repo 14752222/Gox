@@ -338,11 +338,16 @@ const (
 	// proto 为 nil (原型链尽头) 时压 null, 与 Object.getPrototypeOf(Object.prototype)
 	// 的规范返回一致。
 	OP_GET_PROTO Opcode = 0xF2
-	// OP_TO_PROPERTY_KEY: 弹出键值, 按规范 ToPropertyKey 转换后压回。
-	// 编译器在计算成员引用 (`obj[expr]`) 时于键表达式之后发射一次, 使
-	// GET_INDEX / SET_INDEX 共用同一份已转换的键 —— 否则复合赋值 / ++ / --
-	// 的「读-改-写」会让带自定义 toString 的对象键被 ToPropertyKey 两次
-	// (规范 13.15.1 要求 LHS 只求值一次)。已经是原语的键原样返回。
+	// OP_TO_PROPERTY_KEY: 栈 [obj, keyRaw] → [obj, keyTransformed]。
+	//
+	// 先做 RequireObjectCoercible(obj) —— 基为 null/undefined 时抛 TypeError
+	// (且不碰键), 再对键做 ToPropertyKey。顺序不可颠倒: 规范 GetValue/PutValue
+	// 先 ToObject(base) 再 ToPropertyKey(键) (ES2023 6.2.5.5), 故
+	// `null[prop] *= v` 必须抛 TypeError 而非触发 prop.toString()。
+	// 接着把键按 ToPropertyKey 转换后压回, 使 GET_INDEX / SET_INDEX 共用同一份
+	// 已转换的键 —— 否则复合赋值 / ++ / -- 的「读-改-写」会让带自定义 toString
+	// 的对象键被 ToPropertyKey 两次 (规范 13.15.1 要求 LHS 只求值一次)。
+	// 已经是原语的键原样返回。
 	OP_TO_PROPERTY_KEY Opcode = 0xF1
 	// OP_DELETE_GLOBAL: sloppy 下 `delete 标识符` 的全局侧实现。
 	// operand = 名字常量索引; 不弹栈, 压入删除结果 (true/false)。

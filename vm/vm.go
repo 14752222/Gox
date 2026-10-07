@@ -2182,10 +2182,16 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				vm.stack.Push(val)
 				continue
 			}
-			// null/undefined 索引读取抛 TypeError (规范要求)
+			// null/undefined 索引读取抛 TypeError (规范要求)。
+			// 注意: 这里**不得**对键做 ToPropertyKey —— 规范 GetValue 先
+			// ToObject(base) (null/undefined 立即抛 TypeError), 再 ToPropertyKey。
+			// 键只用于拼错误消息, 故仅在它已是 String 时取用, 否则给占位符;
+			// 绝不调用 toJSString(index) (会触发对象键的用户 toString)。
+			// null[prop] 必须抛 TypeError 且完全不碰 prop
+			// (member-expression/computed-reference-null-or-undefined)。
 			if obj == object.NullSingleton || obj == object.UndefinedSingleton {
 				if err := vm.throwNamedError("TypeError",
-					"Cannot read properties of %s (reading '%s')", obj.Inspect(), toJSString(index)); err != nil {
+					"Cannot read properties of %s (reading '%s')", obj.Inspect(), safeKeyForError(index)); err != nil {
 					return err
 				}
 				continue
@@ -2218,10 +2224,13 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				vm.stack.Push(val)
 				continue
 			}
-			// null/undefined 索引写入抛 TypeError (规范要求)
+			// null/undefined 索引写入抛 TypeError (规范要求)。
+			// 同 GET_INDEX: 不得对键做 ToPropertyKey (ToObject(base) 在先),
+			// 键仅在已是 String 时用于错误消息 (assignment/
+			// target-member-computed-reference-null-or-undefined)。
 			if obj == object.NullSingleton || obj == object.UndefinedSingleton {
 				if err := vm.throwNamedError("TypeError",
-					"Cannot set properties of %s (setting '%s')", obj.Inspect(), toJSString(index)); err != nil {
+					"Cannot set properties of %s (setting '%s')", obj.Inspect(), safeKeyForError(index)); err != nil {
 					return err
 				}
 				continue
@@ -2929,8 +2938,26 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			}
 			vm.stack.Push(result)
 		case bytecode.OP_TO_PROPERTY_KEY:
+			// 栈: [obj, keyRaw] → [obj, keyTransformed]。
+			//
 			// 成员引用的键在此**只转一次**: 之后 GET_INDEX / SET_INDEX 共用
 			// 这份结果, 带自定义 toString 的对象键不会被求值两次。
+			//
+			// 但 ToPropertyKey **必须晚于 RequireObjectCoercible(obj)**: 规范里
+			// GetValue/PutValue 先 ToObject(base) (null/undefined 立即抛 TypeError),
+			// 再 ToPropertyKey(键)。本指令发出的位置恰在复合赋值 / 逻辑赋值 /
+			// ++/-- 的「键表达式求值之后、GET_INDEX 之前」, 此时栈上 obj 就在键
+			// 之下, 故先就地做基数检查: 基为 null/undefined 时抛 TypeError 并且
+			// **完全不碰键** (不得触发键的用户 toString)。
+			// null[prop] *= v 场景: 修复前会先调 prop.toString() 抛 Test262Error,
+			// 规范要求的是 TypeError (compound-assignment/S11.13.2_A7.*_T1|T2)。
+			if base := vm.stack.PeekAt(1); base == object.NullSingleton || base == object.UndefinedSingleton {
+				if err := vm.throwNamedError("TypeError",
+					"Cannot read properties of %s", base.Inspect()); err != nil {
+					return err
+				}
+				continue
+			}
 			v := vm.stack.Pop()
 			vm.stack.Push(toPropertyKey(v))
 			// 对象键的转换会调用用户 toString ⇒ 经回调桥可能抛出, 立即重抛,
@@ -3002,6 +3029,18 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			// 栈: [obj, key] → 删除 obj 上的 key 属性, 推入 true/false
 			key := vm.stack.Pop()
 			obj := vm.stack.Pop()
+			// 规范 delete 的 IsPropertyReference 分支先 ToObject(ref.[[Base]]):
+			// 基为 null/undefined 时**立即抛 TypeError 且不碰键**。此检查必须
+			// 在下面 ToPropertyKey 归一之前 —— 否则 `delete null[prop]` 会先调
+			// prop.toString() 再静默返回 true (delete/member-computed-reference-
+			// null/undefined 期望 TypeError)。
+			if obj == object.NullSingleton || obj == object.UndefinedSingleton {
+				if err := vm.throwNamedError("TypeError",
+					"Cannot convert %s to object", obj.Inspect()); err != nil {
+					return err
+				}
+				continue
+			}
 			// 键归一 (ToPropertyKey): 之前只认 String/Symbol, 于是
 			// `delete obj[0]` / `delete obj[objKey]` 会静默返回 false 且不删属性。
 			switch key.(type) {
@@ -6197,6 +6236,21 @@ func toPropertyKey(v object.Value) object.Value {
 		return v
 	}
 	return object.NewString(object.ToString(v))
+}
+
+// safeKeyForError 为「基为 null/undefined」的成员访问错误的**消息**取键的
+// 可读描述, 但**绝不触发用户代码**。
+//
+// 规范 GetValue/PutValue 在 ToObject(base) 抛 TypeError 时根本还没做
+// ToPropertyKey, 因此这里不能调 toJSString(index): 那会触发对象键的
+// toString, 把本该抛 TypeError 的场合变成抛用户异常 (test262
+// member-expression/computed-reference-null-or-undefined 期望 TypeError,
+// 且键的 toString 不得被调用)。只在键已是 String 时取用其值, 其余给占位符。
+func safeKeyForError(index object.Value) string {
+	if s, ok := index.(*object.String); ok {
+		return s.Value
+	}
+	return "[unknown]"
 }
 
 // looseEquals 实现 JavaScript 的 == (宽松相等)。
