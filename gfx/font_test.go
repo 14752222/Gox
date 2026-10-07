@@ -498,3 +498,128 @@ func TestBundledFontPair(t *testing.T) {
 		t.Fatalf("随包正体(%q)与粗体(%q)的族名必须一致, 否则族索引里「加粗」查不到同一族", familyR, familyB)
 	}
 }
+
+// baseFaceKey 返回一个面的"族名/子族名", 用来断言"两次选择是同一个面"。
+func baseFaceKey(f *opentype.Font) string {
+	var buf sfnt.Buffer
+	return fontNameOf(f, &buf, sfnt.NameIDFamily) + "/" + fontNameOf(f, &buf, sfnt.NameIDSubfamily)
+}
+
+// baseFontSamplePair 返回一对**真实存在**的 (正体, 粗体) 字体路径。
+//
+// 为什么按平台写死几个路径, 而不是从族索引里找现成的一对: Windows 上几乎收不到
+// {bold} 轴 —— msyhbd.ttc / segoeuib.ttf 的子族名是本地化的 ("Negreta"),
+// 而 sfnt.Name 取 name 表第一条记录、不做语言筛选, axisFromFont 于是判不出粗体
+// (那是另一处已知缺陷, 见 subfamilyOf 的说明)。这里需要的只是"一个能被判定的
+// 粗体样本", 系统自带的经典配对恰好满足。
+func baseFontSamplePair(t *testing.T) (regular, bold string) {
+	t.Helper()
+	var pairs [][2]string
+	switch runtime.GOOS {
+	case "windows":
+		pairs = [][2]string{
+			{`C:\Windows\Fonts\arial.ttf`, `C:\Windows\Fonts\arialbd.ttf`},
+			{`C:\Windows\Fonts\tahoma.ttf`, `C:\Windows\Fonts\tahomabd.ttf`},
+		}
+	case "darwin":
+		pairs = [][2]string{
+			{"/System/Library/Fonts/Supplemental/Arial.ttf",
+				"/System/Library/Fonts/Supplemental/Arial Bold.ttf"},
+		}
+	default:
+		pairs = [][2]string{
+			// CI (ubuntu + fonts-noto-cjk) 用的正是这一对: 它俩在字体目录里按
+			// 文件名字典序排列时 **Bold 在 Regular 之前**, 就是这个缺陷的现场。
+			{"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+				"/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"},
+			{"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+				"/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"},
+			{"/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+				"/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"},
+		}
+	}
+	for _, p := range pairs {
+		rf, errR := parseFontFile(p[0])
+		bf, errB := parseFontFile(p[1])
+		if errR != nil || errB != nil {
+			continue // 这台机器没装这一对
+		}
+		// 自检: 这对样本必须真的"一正一粗", 否则换下一对 (避免把字体库差异
+		// 当成被测代码的缺陷报出去)。
+		if baseFaceRank(rf) != 0 || baseFaceRank(bf) == 0 {
+			continue
+		}
+		return p[0], p[1]
+	}
+	t.Skip("本机没有可用的 (正体, 粗体) 字体样本")
+	return "", ""
+}
+
+// TestBaseFontPrefersRegularFace 默认正文面必须是正体, 且与候选顺序无关。
+//
+// 缺陷现场 (看板 rXrGfu, CI ubuntu-latest): 候选表在 Linux 上是"先目录扫描、
+// 后静态路径", 而 scanSystemFonts 对 CJK 组保持目录序 (= 文件名字典序) ——
+// fonts-noto-cjk 里 NotoSansCJK-Bold.ttc 排在 NotoSansCJK-Regular.ttc 之前,
+// 于是默认字体成了**粗体面**: 整屏正文变粗, 而且"要粗体"的请求经族索引恰好
+// 落到同一个文件、同一个 face index ⇒ 正体与粗体逐像素完全相同, 看起来像
+// "fontWeight 完全没生效" (TestDrawTextStyledDiffersPerAxis 就是这么红的)。
+func TestBaseFontPrefersRegularFace(t *testing.T) {
+	requireFont(t)
+	regular, bold := baseFontSamplePair(t)
+	regFace, err := parseFontFile(regular)
+	if err != nil {
+		t.Fatalf("解析正体样本 %s: %v", filepath.Base(regular), err)
+	}
+
+	// ① 顺序无关: 粗体文件排在候选表最前时, 也必须选到正体面。
+	for _, c := range []struct {
+		name  string
+		paths []string
+	}{
+		{"[正体,粗体]", []string{regular, bold}},
+		{"[粗体,正体] (Linux 目录序)", []string{bold, regular}},
+	} {
+		got, err := chooseBaseFont(c.paths)
+		if err != nil {
+			t.Fatalf("候选序 %s: chooseBaseFont: %v", c.name, err)
+		}
+		if k := baseFaceKey(got); k != baseFaceKey(regFace) {
+			t.Fatalf("候选序 %s 选出的默认面是 %s, 应为正体面 %s", c.name, k, baseFaceKey(regFace))
+		}
+	}
+
+	// ② 候选里一个正体面都没有时退回首个能解析者 (整机只有粗体也要有字可渲染),
+	//    而不是报"没有可用字体"。
+	only, err := chooseBaseFont([]string{bold})
+	if err != nil {
+		t.Fatalf("只有粗体候选时应静默降级: %v", err)
+	}
+	if baseFaceRank(only) == 0 {
+		t.Fatalf("样本自检失效: %s 被判成了正体面", filepath.Base(bold))
+	}
+
+	// ③ 真实环境: 本机默认字体不得是粗/斜。
+	bf, err := loadBaseFont()
+	if err != nil {
+		t.Fatalf("loadBaseFont: %v", err)
+	}
+	if a := fontAxisOf(bf); a != (styleAxis{}) {
+		if !anyPlainCandidate() {
+			t.Skipf("本机候选里没有正体面, 只能退到 %s", baseFaceKey(bf))
+		}
+		t.Fatalf("默认字体是 {b=%v i=%v} (%s), 但候选里有正体面 —— 正文会整屏变粗",
+			a.bold, a.italic, baseFaceKey(bf))
+	}
+}
+
+// anyPlainCandidate 报告候选表里是否有能判成正体的面 (只在失败诊断路径上调用:
+// 它要把每条候选整份读盘, 正是这条路径故意不够便宜)。
+func anyPlainCandidate() bool {
+	for _, p := range fontCandidates {
+		if f, err := parseFontFile(p); err == nil && baseFaceRank(f) == 0 {
+			return true
+		}
+	}
+	return false
+}
+

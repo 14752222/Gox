@@ -356,6 +356,23 @@ func fontNameOf(f *opentype.Font, buf *sfnt.Buffer, id sfnt.NameID) string {
 	return strings.TrimSpace(s)
 }
 
+// subfamilyOf 读字体的子族名 (name 表 ID 2)。
+//
+// 注意 sfnt.Name 取的是 name 表里**第一条**该 ID 的记录, 不做语言筛选 ——
+// 本地化的子族名会原样返回 (Windows 的 msyhbd.ttc 回来的是加泰罗尼亚语的
+// "Negreta")。所以"靠子族名判轴"是"多数平台上够用"的启发式: Linux/macOS 的
+// Noto/苹方都把英文记录排在最前, 而 Windows 那些只写本地化名的面会判不出来
+// (表现为该族收不到 {bold} 轴, 加粗退化成合成)。
+func subfamilyOf(f *opentype.Font) string {
+	var buf sfnt.Buffer
+	return fontNameOf(f, &buf, sfnt.NameIDSubfamily)
+}
+
+// fontAxisOf 按字体自己的子族名判定样式轴 (与族索引登记面、默认字体选面同一口径)。
+func fontAxisOf(f *opentype.Font) styleAxis {
+	return axisFromFont(f, 0, subfamilyOf(f))
+}
+
 // axisFromFont 判定一个面属于哪个样式轴。
 //
 // 子族名是主判据 (Regular / Bold / Italic / Bold Italic / Oblique …),

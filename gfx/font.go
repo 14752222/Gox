@@ -12,7 +12,6 @@ import (
 
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/opentype"
-	"golang.org/x/image/font/sfnt"
 	"golang.org/x/image/math/fixed"
 )
 
@@ -353,7 +352,11 @@ func scanSystemFonts(dirs []string, limit int) []string {
 	return append(cjk, other...)
 }
 
-// parseFontFile 试解析一个字体文件, 返回其首个 face。
+// parseFontFile 试解析一个字体文件, 返回它**最适合当默认正文**的那个面。
+//
+// 不再是 col.Font(0): 集合字体里的 face 0 未必是正体 (fonts-noto-cjk 的
+// NotoSansCJK-Bold.ttc 每个面都是粗体), 而拿粗体面当默认字体 = 整屏正文加粗
+// —— 见 chooseBaseFont 的说明。
 func parseFontFile(path string) (*opentype.Font, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -363,7 +366,68 @@ func parseFontFile(path string) (*opentype.Font, error) {
 	if err != nil {
 		return nil, err
 	}
+	return regularFaceOf(col)
+}
+
+// regularFaceOf 在一个字体集合里挑"最像正体"的面 (评分见 baseFaceRank)。
+//
+// 一个面都读不出来时退回 col.Font(0): 调用方 scanSystemFonts 只拿返回值当
+// "这文件是不是真字体"的判据, 报告错误的口径与旧实现保持一致。
+func regularFaceOf(col *opentype.Collection) (*opentype.Font, error) {
+	var best *opentype.Font
+	bestRank := 0
+	for i, n := 0, col.NumFonts(); i < n; i++ {
+		f, err := col.Font(i)
+		if err != nil {
+			continue
+		}
+		r := baseFaceRank(f)
+		if best == nil || r < bestRank {
+			best, bestRank = f, r
+			if r == 0 {
+				break // 已经是正体, 无需再看
+			}
+		}
+	}
+	if best != nil {
+		return best, nil
+	}
 	return col.Font(0)
+}
+
+// baseFaceRank 给"这个面适不适合当默认正文字面"打分, 越小越合适 (0 = 正体)。
+//
+// 分档而不是只判"粗不粗": Linux 的 fonts-noto-cjk 目录里同时躺着 Black /
+// Bold / DemiLight / Light / Medium / Regular, 目录序又是文件名字典序 ——
+// 只排除粗体的话默认字体会落到 DemiLight (它确实不粗, 但也不该当正文)。
+// 判据与 axisFromFont 同一口径 (子族名), 所以索引认得的粗/斜这里也认得。
+func baseFaceRank(f *opentype.Font) int {
+	a := fontAxisOf(f)
+	rank := 0
+	if a.bold {
+		rank += 2
+	} else if !subIsPlain(subfamilyOf(f)) {
+		rank++ // Light / Medium / DemiLight …: 不粗, 但也不是正体
+	}
+	if a.italic {
+		rank += 4
+	}
+	return rank
+}
+
+// subIsPlain 报告子族名是否就是"正体" (Regular / Book / Normal / Roman / 空)。
+// 空串算正体: 有些老字体不写子族名, 而"没写"通常就是正体。
+func subIsPlain(sub string) bool {
+	s := strings.ToLower(strings.TrimSpace(sub))
+	if s == "" {
+		return true
+	}
+	for _, w := range []string{"regular", "book", "normal", "roman"} {
+		if strings.Contains(s, w) {
+			return true
+		}
+	}
+	return false
 }
 
 var (
@@ -390,43 +454,54 @@ func loadBaseFontLocked() (*opentype.Font, error) {
 	// 会让"从不用 GUI"的脚本平白付一次开销。initFontCandidates 自带 sync.Once,
 	// 且**不取 fontMu** —— 调用方已经持有, 再取会自锁。
 	initFontCandidates()
-	var buf sfnt.Buffer
+	f, err := chooseBaseFont(fontCandidates)
+	if err != nil {
+		return nil, err
+	}
+	baseFont = f
+	return baseFont, nil
+}
+
+// chooseBaseFont 从候选里挑出默认字体: **正体面优先**, 一个都没有才退回首个
+// 能解析的候选。
+//
+// 为什么不能"取首个可解析者": Linux 的候选表是"先目录扫描、后静态路径", 而
+// scanSystemFonts 对 CJK 组保持目录序 (= 文件名字典序) —— fonts-noto-cjk 里
+// NotoSansCJK-Bold.ttc 恰好排在 NotoSansCJK-Regular.ttc 之前。于是默认字体
+// 成了**粗体面**: 症状是整屏正文都变粗, 而且"要粗体"的请求经族索引恰好落到
+// 同一个文件、同一个 face index, 逐像素完全相同 —— 看起来像"fontWeight 完全
+// 没生效"。CI 上的 TestDrawTextStyledDiffersPerAxis 就是这么红的。
+//
+// 判面用的是 baseFaceRank (与族索引登记面同一口径), 不是文件名 —— Linux 上
+// 文件名与真实字重对不上的情况很常见。
+func chooseBaseFont(paths []string) (*opentype.Font, error) {
+	var first *opentype.Font
 	var lastErr error
-	var boldFallback *opentype.Font // 全是粗体面时的保底 (见下)
-	for _, path := range fontCandidates {
-		if filepath.Base(path) == "" {
+	for _, p := range paths {
+		if filepath.Base(p) == "" {
 			continue
 		}
-		f, err := parseFontFile(path)
+		f, err := parseFontFile(p)
 		if err != nil {
 			// 带上文件名: 候选动辄几十上百条, 只说"解析失败"没法定位是哪台
 			// 机器上哪个文件的问题。
-			lastErr = fmt.Errorf("%s: %w", filepath.Base(path), err)
+			lastErr = fmt.Errorf("%s: %w", filepath.Base(p), err)
 			continue
 		}
-		// 默认字体必须是**正体面**: 粗体面当正体用, 整个应用的正文都会变粗,
-		// 而且"加粗"这个样式再也做不出来 —— 索引里 {bold:true} 也会指到它
-		// 自己, 于是"正体"与"粗体"逐像素相同 (实测 CI 的 ubuntu runner:
-		// 目录扫描按字母序把 NotoSansCJK-Bold.ttc 排在了最前)。
-		// 用**面内容**判 (子族名 + 面序号), 而不是文件名 —— Linux 上文件名
-		// 与真实字重对不上的情况很常见。
-		if axisFromFont(f, 0, fontNameOf(f, &buf, sfnt.NameIDSubfamily)).bold {
-			if boldFallback == nil {
-				boldFallback = f
-			}
-			continue
+		if baseFaceRank(f) == 0 {
+			return f, nil
 		}
-		baseFont = f
-		return baseFont, nil
+		// 候选里没有正体 (整机只有粗体/斜体面): 留首个作兜底, 有字渲染
+		// 永远优于无字渲染 (与 SetCursor 同一套静默降级口径)。
+		if first == nil {
+			first = f
+		}
 	}
-	// 整个候选表里没有一个正体面 (极端环境): 宁可退回粗体也不报错 ——
-	// 有字可渲染永远优于"整屏无字"。
-	if boldFallback != nil {
-		baseFont = boldFallback
-		return baseFont, nil
+	if first != nil {
+		return first, nil
 	}
 	return nil, fmt.Errorf("no usable system font (tried %d candidates, last: %v)",
-		len(fontCandidates), lastErr)
+		len(paths), lastErr)
 }
 
 // fontFace 返回指定像素字号的 face (懒建并缓存)。
