@@ -14,6 +14,12 @@ type PropertyDescriptor struct {
 	Writable     bool // 是否可写 (const 属性为 false)
 	Enumerable   bool // 是否参与 for-in / Object.keys / JSON 枚举
 	Configurable bool // 是否可删除 / 可改描述符
+	// Deleted 是函数类自有属性的"墓碑"标记: delete 一个可配置属性后,
+	// 该键在 PropDescs 里留下 { Deleted: true } 占位。因为函数对象的
+	// length/name 的事实来源是结构体字段 (Fn.NumParameters / Fn.Name),
+	// 单从 PropDescs 删除条目无法让 OwnDescriptor / hasOwnProperty / 属性
+	// 读取"看不见"它 —— 墓碑让这几处显式跳过硬编码的结构性回退。
+	Deleted bool
 }
 
 // DataProperty 创建一个普通的"赋值语义"数据属性描述符: 全 true。

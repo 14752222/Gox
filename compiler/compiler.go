@@ -6556,6 +6556,15 @@ func (c *Compiler) compileAsyncGeneratorSelf(name, selfName string, params []*as
 	argSym.Declared = true
 	argumentsSlot := argSym.Slot
 
+	// 合成自引用槽: wrapper 体要把"自己"的 .prototype 传给 __async_generator,
+	// 用作 async generator 实例的 [[Prototype]]（规范: 每个 async generator
+	// 函数对象有自己的 .prototype, 其实例 [[Prototype]] 指向它, 而该对象
+	// 的 [[Prototype]] 才是 %AsyncGeneratorPrototype%）。名字用用户不可能
+	// 写出的控制符前缀, 保证不与形参冲突。
+	selfSym := wrapperScope.Define("\x00agself", false)
+	selfSym.Declared = true
+	selfSlot := selfSym.Slot
+
 	// 3. 编译 wrapper 体
 	prevEmitter := c.emitter
 	c.emitter = NewEmitter()
@@ -6573,6 +6582,7 @@ func (c *Compiler) compileAsyncGeneratorSelf(name, selfName string, params []*as
 	}()
 
 	helperIdx := c.constants.AddConstant(object.NewString("__async_generator"))
+	protoIdx := c.constants.AddConstant(object.NewString("prototype"))
 	// 调用约定: fn 必须在栈顶。先压参数, 再 FUNCTION 创建 gen closure,
 	// CALL n 弹出 fn=genClosure + 参数 → 创建 Generator。
 	for _, slot := range paramSlots {
@@ -6580,8 +6590,13 @@ func (c *Compiler) compileAsyncGeneratorSelf(name, selfName string, params []*as
 	}
 	c.emitter.Emit(bytecode.OP_FUNCTION, uint16(genIdx))      // [param..., genClosure]
 	c.emitter.Emit(bytecode.OP_CALL, uint16(len(paramSlots))) // [genObj]
-	c.emitter.Emit(bytecode.OP_LOAD_GLOBAL, helperIdx)        // [genObj, __async_generator]
-	c.emitter.Emit(bytecode.OP_CALL, 1)                       // [asyncGenerator]
+	// 把自己 (.prototype) 作为第 2 个实参传给 __async_generator:
+	// 实例的 [[Prototype]] 必须是本函数自己的 .prototype 对象 (惰性创建,
+	// [[Prototype]] = %AsyncGeneratorPrototype%), 而非直接是后者。
+	c.emitter.Emit(bytecode.OP_LOAD, uint16(selfSlot)) // [genObj, wrapperClosure]
+	c.emitter.Emit(bytecode.OP_GET_PROP, protoIdx)     // [genObj, wrapperProto]
+	c.emitter.Emit(bytecode.OP_LOAD_GLOBAL, helperIdx) // [genObj, wrapperProto, __async_generator]
+	c.emitter.Emit(bytecode.OP_CALL, 2)                // [asyncGenerator]
 	c.emitter.EmitNoOperand(bytecode.OP_RETURN)
 
 	wrapperIns := c.emitter.Bytes()
@@ -6596,6 +6611,7 @@ func (c *Compiler) compileAsyncGeneratorSelf(name, selfName string, params []*as
 	meta.BaseSlot = baseSlot
 	meta.CapturePrefixLen = computeCapturePrefixLen(wrapperIns, baseSlot)
 	meta.ArgumentsSlot = argumentsSlot
+	meta.SelfSlot = selfSlot
 	meta.IsAsync = true
 	// wrapper 的 [[Prototype]] 是 %AsyncGeneratorFunction.prototype%，
 	// 单靠 IsAsync/IsGenerator 无法与普通 async 函数区分 (内层体才 IsGenerator)，

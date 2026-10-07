@@ -222,6 +222,14 @@ func setupObjectGlobal() *object.BuiltinFunction {
 			}
 			return object.NullSingleton
 		}
+		// async generator 实例的 [[Prototype]] = 该 async generator 函数
+		// 自己的 .prototype 对象 (其 [[Prototype]] 才是 %AsyncGeneratorPrototype%)。
+		if ag, ok := args[0].(*object.AsyncGenerator); ok {
+			if ag.Proto != nil {
+				return ag.Proto
+			}
+			return object.NullSingleton
+		}
 		// 函数对象: [[Prototype]] 按种类指向 Function/GeneratorFunction/
 		// AsyncFunction/AsyncGeneratorFunction.prototype。
 		if fp := object.FuncPrototypeOf(args[0]); fp != nil {
@@ -466,6 +474,12 @@ func setupObjectGlobal() *object.BuiltinFunction {
 		}
 		if obj, ok := args[0].(*object.Object); ok {
 			return object.NewBoolean(obj.Extensible)
+		}
+		// 其它对象类型 (函数/数组/代理/async generator 等) 默认可扩展 ——
+		// 之前只认 *Object, 于是 Object.isExtensible(AsyncGeneratorFunction)
+		// 误报 false (test262 built-ins/AsyncGeneratorFunction/extensibility.js)。
+		if object.IsObjectValue(args[0]) {
+			return object.NewBoolean(true)
 		}
 		return object.NewBoolean(false)
 	}))
@@ -1006,10 +1020,12 @@ func newDynamicFunction(env *runtime.Environment, args []object.Value, kind dyna
 			body = toStr(a)
 		}
 	}
-	// 基本合法性检查: 形参不能含 ) { 等破坏结构的内容 (node 实测此类为 SyntaxError)
+	// 基本合法性检查: 形参不能含 ) { 等破坏结构的内容 (node 实测此类为 SyntaxError)。
+	// 逗号**不在**此列 —— 它是合法的形参分隔符 (Function('a, b') 就是两个形参),
+	// 误拒会让 Function/GeneratorFunction/AsyncGeneratorFunction 的多形参形式挂。
 	for _, p := range params {
 		for _, ch := range p {
-			if ch == ')' || ch == '{' || ch == '}' || ch == ',' || ch == '[' || ch == ']' {
+			if ch == ')' || ch == '{' || ch == '}' || ch == '[' || ch == ']' {
 				return object.NewErrorWithName("SyntaxError", fmt.Sprintf("Unexpected character %q in argument list", string(ch)))
 			}
 		}

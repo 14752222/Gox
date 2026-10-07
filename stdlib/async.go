@@ -20,6 +20,9 @@ func setupAsync(env *runtime.Environment) {
 
 	// __async_generator: 把内层 Generator 包装成 AsyncGenerator 对象。
 	// async generator 的 wrapper 收尾调用它 (见 compiler.compileAsyncGeneratorSelf)。
+	// 第 2 个实参是 wrapper 自己的 .prototype 对象, 作为实例的 [[Prototype]]
+	// (规范: 实例 → fn.prototype → %AsyncGeneratorPrototype%); 缺省时回退到
+	// %AsyncGeneratorPrototype% (老码路径/防御性)。
 	env.Declare("__async_generator", object.NewBuiltin("__async_generator",
 		func(args ...object.Value) object.Value {
 			if len(args) == 0 {
@@ -30,7 +33,9 @@ func setupAsync(env *runtime.Environment) {
 				return object.UndefinedSingleton
 			}
 			ag := object.NewAsyncGenerator(gen)
-			if proto := object.GetAsyncGeneratorProto(); proto != nil {
+			if len(args) > 1 && object.IsObjectValue(args[1]) {
+				ag.Proto = args[1]
+			} else if proto := object.GetAsyncGeneratorProto(); proto != nil {
 				ag.Proto = proto
 			}
 			return ag
@@ -67,28 +72,36 @@ func setupAsync(env *runtime.Environment) {
 	setupAsyncGeneratorIntrinsics(env)
 }
 
-// setupAsyncGeneratorIntrinsics 装配 AsyncGenerator 的内建原型链 (最小可用版)。
+// setupAsyncGeneratorIntrinsics 装配 AsyncGenerator 的内建原型链。
 //
-// 规范结构:
+// 规范结构 (经 Node v22 实测逐条对齐):
 //
-//	%AsyncGeneratorFunction%            全局 AsyncGeneratorFunction (函数对象)
+//	%AsyncGeneratorFunction% (AGF, 函数对象)
 //	  .prototype = %AsyncGeneratorFunction.prototype% (AGFFP)
-//	  AGFFP.prototype = %AsyncGeneratorPrototype%      (AGP)
-//	%AsyncGeneratorPrototype% (AGP): constructor = AGFFP, @@toStringTag = "AsyncGenerator"
-//	async function* 实例: [[Prototype]] = AGP
+//	    { [[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: false }
+//	  .length = 1, .name = "AsyncGeneratorFunction" (均不可写可枚举、可配置)
+//	  [[Prototype]] = %Function%
 //
-// 已知边界 (牵扯函数对象公共模型, 本版未接入): 本运行时的函数对象尚未建立
-// [[Prototype]] (Object.getPrototypeOf(fn) 对闭包返回 null), 因此
-// `Object.getPrototypeOf(async function*(){}) === AGFFP` 尚不成立, 且
-// `%AsyncGeneratorFunction%` 目前不可真正构造。这里先保证三块内建对象存在且
-// 互相正确链接, 并把 async generator 实例的 [[Prototype]] 指向 AGP。
+//	AGFFP (普通对象, [[Prototype]] = %Function.prototype%)
+//	  .prototype = %AsyncGeneratorPrototype% (AGP)
+//	    { writable: false, enumerable: false, configurable: true }
+//	  .constructor = AGF { writable: false, enumerable: false, configurable: true }
+//	  @@toStringTag = "AsyncGeneratorFunction" (不可写, 可配置)
+//
+//	AGP (普通对象, [[Prototype]] = %Object.prototype%)
+//	  .constructor = AGFFP  ← 注意: 是 AGFFP 而非 AGF (Node 实测)
+//	  .next / .return / .throw = 内建方法 { writable: true, enumerable: false,
+//	    configurable: true }, 各方法 name/length = 1 (不可写, 可配置)
+//	  @@toStringTag = "AsyncGenerator" (不可写, 可配置)
+//
+//	async function* 实例: [[Prototype]] = 该函数自己的 .prototype
+//	  (其 [[Prototype]] 才是 AGP)。见 compileAsyncGeneratorSelf / __async_generator。
 func setupAsyncGeneratorIntrinsics(env *runtime.Environment) {
 	tagSym := object.GetGlobalSymbol("Symbol.toStringTag")
 
 	agProto := object.NewObjectWithProto(objectPrototype) // %AsyncGeneratorPrototype%
 	agFuncProto := object.NewObject()                     // %AsyncGeneratorFunction.prototype%
-	// %AsyncGeneratorFunction.prototype%.[[Prototype]] = %Function.prototype%
-	// (由 setupFunctionIntrinsics 先装配)。
+	// AGFFP.[[Prototype]] = %Function.prototype% (setupFunctionIntrinsics 已装配)。
 	if fp := object.GetFunctionPrototype(); fp != nil {
 		agFuncProto.Proto = fp
 	}
@@ -99,28 +112,80 @@ func setupAsyncGeneratorIntrinsics(env *runtime.Environment) {
 	if fv, ok := env.Get("Function"); ok {
 		agFunc.FuncPrototype = fv
 	}
+	agFunc.SetFunctionLength(1)
 
-	agProto.SetProperty("constructor", agFuncProto)
-	if tagSym != nil {
-		agProto.SetBuiltinSymbolProperty(tagSym, object.NewString("AsyncGenerator"))
+	// AGP.constructor = AGFFP (Node 实测: 不是 AGF), 不可写但可配置。
+	agProto.DefineOwnProperty("constructor", object.PropertyDescriptor{
+		Value: agFuncProto, Writable: false, Enumerable: false, Configurable: true,
+	})
+	// AGP.next / .return / .throw: 可写、不可枚举、可配置的内建方法。
+	for _, spec := range []struct {
+		name string
+		kind int
+	}{
+		{"next", object.AGNextKind},
+		{"return", object.AGReturnKind},
+		{"throw", object.AGThrowKind},
+	} {
+		agProto.DefineOwnProperty(spec.name, object.PropertyDescriptor{
+			Value: asyncGeneratorProtoMethod(spec.name, spec.kind),
+			Writable: true, Enumerable: false, Configurable: true,
+		})
 	}
-	agFuncProto.SetProperty("prototype", agProto)
-	agFuncProto.SetProperty("constructor", agFunc)
 	if tagSym != nil {
-		agFuncProto.SetBuiltinSymbolProperty(tagSym, object.NewString("AsyncGeneratorFunction"))
+		agProto.DefineOwnSymbolProperty(tagSym, object.BuiltinSymbolProperty(object.NewString("AsyncGenerator")))
 	}
-	agFunc.SetProperty("prototype", agFuncProto)
+
+	// AGFFP.prototype = AGP, 不可写但可配置 (注意: 不是不可配置)。
+	agFuncProto.DefineOwnProperty("prototype", object.PropertyDescriptor{
+		Value: agProto, Writable: false, Enumerable: false, Configurable: true,
+	})
+	agFuncProto.DefineOwnProperty("constructor", object.PropertyDescriptor{
+		Value: agFunc, Writable: false, Enumerable: false, Configurable: true,
+	})
+	if tagSym != nil {
+		agFuncProto.DefineOwnSymbolProperty(tagSym, object.BuiltinSymbolProperty(object.NewString("AsyncGeneratorFunction")))
+	}
+
+	// AGF.prototype = AGFFP, 不可写不可枚举**不可配置** (规范)。
+	agFunc.DefineOwn("prototype", object.PropertyDescriptor{
+		Value: agFuncProto, Writable: false, Enumerable: false, Configurable: false,
+	})
 
 	// 注: %AsyncGeneratorFunction% 是**内建 intrinsic**，不是全局对象属性 ——
 	// 与 %GeneratorFunction% / %AsyncFunction% 口径一致 (Node: typeof
-	// AsyncGeneratorFunction === "undefined")。此前这里 env.Declare 把它注册成
-	// 全局，导致读未声明标识符 `AsyncGeneratorFunction` 不抛 ReferenceError
-	// (rYVgne)。该对象只应经 agFuncProto.constructor 这条原型链暴露:
-	// Object.getPrototypeOf(async function*(){}).constructor。
-	// 让 AsyncGenerator 实例的 [[Prototype]] 指向 AGP (此前为 nil)。
+	// AsyncGeneratorFunction === "undefined")。该对象只应经 agFuncProto.constructor
+	// 这条原型链暴露: Object.getPrototypeOf(async function*(){}).constructor。
 	object.SetAsyncGeneratorProto(agProto)
 	// 供 vm.createClosure 给 async generator 函数对象选 [[Prototype]]。
 	object.SetAsyncGeneratorFunctionPrototype(agFuncProto)
+}
+
+// asyncGeneratorProtoMethod 构造 AGP 上的一个内建方法 (next/return/throw)。
+//
+// this 必须是真正的 AsyncGenerator (brand check): 否则按规范返回一个以
+// TypeError reject 的 Promise (而非同步抛) —— test262
+// AsyncGeneratorPrototype/*/this-val-not-* 即校验此行为。
+// name 由 NewBuiltinMethod 带上; length 显式定为 1 (不可写、可配置)。
+func asyncGeneratorProtoMethod(name string, kind int) object.Value {
+	m := object.NewBuiltinMethod(name, func(this object.Value, args ...object.Value) object.Value {
+		g, ok := this.(*object.AsyncGenerator)
+		if !ok {
+			p := object.NewPromise()
+			p.Reject(object.NewErrorWithName("TypeError",
+				"AsyncGenerator.prototype."+name+" called on incompatible receiver"))
+			return p
+		}
+		arg := object.Value(object.UndefinedSingleton)
+		if len(args) > 0 {
+			arg = args[0]
+		}
+		return object.AsyncGeneratorMethod(g, kind, arg)
+	})
+	m.DefineOwn("length", object.PropertyDescriptor{
+		Value: object.NewInt(1), Writable: false, Enumerable: false, Configurable: true,
+	})
+	return m
 }
 
 // step 驱动 generator 一步, 完成后 resolve 结果 Promise。

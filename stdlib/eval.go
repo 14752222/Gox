@@ -92,7 +92,7 @@ func setupEvalAndMisc(env *runtime.Environment) {
 		return runGlobalEval(env, src.Value, evalThis, callerStrict, evalNewTarget, evalNTAllowed, superHome)
 	})
 	evalFn.SetProperty("name", object.NewString("eval"))
-	evalFn.SetProperty("length", object.NewNumber(1))
+	evalFn.SetFunctionLength(1)
 	env.Declare("eval", evalFn, false)
 
 	// ===== AggregateError (ES2021) =====

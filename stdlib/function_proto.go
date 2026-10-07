@@ -45,7 +45,7 @@ func setupFunctionIntrinsics(env *runtime.Environment) {
 		return newDynamicFunction(env, args, dynFuncNormal)
 	})
 	funcCtor.SetProperty("name", object.NewString("Function"))
-	funcCtor.SetProperty("length", object.NewNumber(1))
+	funcCtor.SetFunctionLength(1)
 	funcCtor.FuncPrototype = funcProto // %Function%.[[Prototype]] = %Function.prototype%
 	funcCtor.SetProperty("prototype", funcProto)
 	funcProto.SetProperty("constructor", funcCtor)

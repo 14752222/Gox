@@ -3048,6 +3048,14 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				} else {
 					vm.stack.Push(object.NewBoolean(false))
 				}
+			} else if ds, ok := obj.(object.PropDeleter); ok {
+				// 函数类的 length/name 等自有属性事实来源在结构体字段,
+				// delete 需落墓碑 (见 object.PropDeleter)。
+				if s, ok := key.(*object.String); ok {
+					vm.stack.Push(object.NewBoolean(ds.DeleteOwn(s.Value)))
+				} else {
+					vm.stack.Push(object.NewBoolean(false))
+				}
 			} else {
 				vm.stack.Push(object.NewBoolean(true))
 			}

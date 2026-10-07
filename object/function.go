@@ -153,6 +153,10 @@ func (c *Closure) GetProperty(name string) (Value, bool) {
 	// 显式定义过的描述符 (Object.defineProperty) 优先: 访问器调用 getter
 	// (this = 闭包本身), 数据属性返回描述符的值。
 	if d, ok := c.PropDescs[name]; ok {
+		if d.Deleted {
+			// 该自有属性已被 delete: 跳过结构体/Props 回退, 沿原型链取 (规范)。
+			return funcProtoLookupChain(c, name)
+		}
 		if acc, isAcc := d.Value.(*Accessor); isAcc {
 			if acc.Getter != nil && IsCallable(acc.Getter) {
 				return CallFunction(acc.Getter, c), true
@@ -234,6 +238,18 @@ func (c *Closure) GetProperty(name string) (Value, bool) {
 	return nil, false
 }
 
+// writesFunctionSlot 报告一次对函数对象 length/name 的写入是否属于"类静态
+// 成员定义"语义 —— 即被写入的值是函数或访问器。规范里类成员定义用
+// DefinePropertyOrThrow (可覆盖 length/name), 而普通赋值 fn.name = "x" 因
+// [[Writable]]: false 静默失败; 二者在 Gox 共用 OP_SET_PROP, 只能靠值形态区分。
+func writesFunctionSlot(val Value) bool {
+	if IsCallable(val) {
+		return true
+	}
+	_, isAcc := val.(*Accessor)
+	return isAcc
+}
+
 func (c *Closure) SetProperty(name string, val Value) {
 	// 显式定义过的描述符优先: 访问器调用 setter (this = 闭包本身);
 	// 不可写数据属性静默失败 (与 GetProperty 的 PropDescs 分支对称)。
@@ -249,6 +265,20 @@ func (c *Closure) SetProperty(name string, val Value) {
 		}
 		d.Value = val
 		c.PropDescs[name] = d
+		return
+	}
+	// 规范: 函数对象的 length / name 是 { [[Writable]]: false } 自有属性
+	// (SetFunctionName / 内建函数定义)。普通赋值在非严格模式静默失败。
+	// Gox 把这两个值存在结构体字段 (Fn.NumParameters / Fn.Name) 里, 若放行
+	// 赋值会写进 Props 并遮蔽结构值, 于是 Object.getOwnPropertyDescriptor
+	// 报不可写、而 propertyHelper 的 isWritable 探针 (obj.length = x) 却能改
+	// 成功 —— 自相矛盾。
+	//
+	// 例外: 类静态成员定义走的是同一 OP_SET_PROP (规范里是
+	// DefinePropertyOrThrow), `class C { static name(){} }` 会把 name 落成
+	// 一个函数/访问器 —— 这种"值是函数/访问器"的写入放行 (test262
+	// *-init-fn-name-class 系列), 字符串/数字等普通赋值拒绝。
+	if (name == "length" || name == "name") && !writesFunctionSlot(val) {
 		return
 	}
 	if name == "prototype" {
@@ -303,6 +333,9 @@ func (b *BuiltinFunction) IsTruthy() bool { return true }
 func (b *BuiltinFunction) GetProperty(name string) (Value, bool) {
 	// 显式定义过的描述符 (Object.defineProperty) 优先。
 	if d, ok := b.PropDescs[name]; ok {
+		if d.Deleted {
+			return funcProtoLookupChain(b, name)
+		}
 		if acc, isAcc := d.Value.(*Accessor); isAcc {
 			if acc.Getter != nil && IsCallable(acc.Getter) {
 				return CallFunction(acc.Getter, b), true
@@ -336,6 +369,24 @@ func (b *BuiltinFunction) GetProperty(name string) (Value, bool) {
 }
 
 func (b *BuiltinFunction) SetProperty(name string, val Value) {
+	// 显式定义过的描述符优先 (与 GetProperty / OwnDescriptor 的优先级对称):
+	// 不可写则静默失败, 可写则只改值。
+	if d, ok := b.PropDescs[name]; ok {
+		if !d.Writable {
+			return
+		}
+		d.Value = val
+		b.PropDescs[name] = d
+		return
+	}
+	// 规范: length / name 是 { [[Writable]]: false } 自有属性。Gox 里内建名
+	// 由 NewBuiltin 的结构体字段给 (等价 SetFunctionName), 因此这里的赋值只
+	// 会让"描述符说不可写、isWritable 探针却能改"自相矛盾 —— 直接拒绝。
+	// 需要改内建 length 请用 DefineOwn (显式写 PropDescs)。
+	switch name {
+	case "length", "name":
+		return
+	}
 	if b.Properties == nil {
 		b.Properties = make(map[string]Value)
 	}
@@ -345,6 +396,18 @@ func (b *BuiltinFunction) SetProperty(name string, val Value) {
 // NewBuiltin 创建内建函数的便捷函数
 func NewBuiltin(name string, fn func(args ...Value) Value) *BuiltinFunction {
 	return &BuiltinFunction{Name: name, Fn: fn}
+}
+
+// SetFunctionLength 以内建语义设置函数对象的 length 自有属性:
+// 值为 n, 描述符 { [[Writable]]: false, [[Enumerable]]: false,
+// [[Configurable]]: true }。
+//
+// 必须走 DefineOwn (写 PropDescs) 而不是 SetProperty: 后者只写 Properties,
+// 而 OwnDescriptor("length") 走的是结构体分支 (恒 0), 于是会出现
+// `Function.length === 1` 但 `getOwnPropertyDescriptor(Function,"length").value
+// === 0` 的口径分裂 (built-ins/Function 类用例会因此挂)。
+func (b *BuiltinFunction) SetFunctionLength(n int) {
+	b.DefineOwn("length", PropertyDescriptor{Value: NewInt(int64(n)), Writable: false, Enumerable: false, Configurable: true})
 }
 
 // NamePropertyOf 返回函数类值 (Closure / BuiltinFunction / BuiltinMethod) 上
@@ -404,6 +467,9 @@ func (b *BuiltinMethod) IsTruthy() bool { return true }
 func (b *BuiltinMethod) GetProperty(name string) (Value, bool) {
 	// 显式定义过的描述符 (Object.defineProperty) 优先。
 	if d, ok := b.PropDescs[name]; ok {
+		if d.Deleted {
+			return funcProtoLookupChain(b, name)
+		}
 		if acc, isAcc := d.Value.(*Accessor); isAcc {
 			if acc.Getter != nil && IsCallable(acc.Getter) {
 				return CallFunction(acc.Getter, b), true

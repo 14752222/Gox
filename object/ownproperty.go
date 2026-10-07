@@ -44,11 +44,22 @@ type OwnPropertyStore interface {
 	DefineOwn(name string, desc PropertyDescriptor) bool
 }
 
+// PropDeleter 是"支持 delete 自有属性"的可选接口 (OP_DELETE 的落点扩展)。
+// 函数类的 length/name 等自有属性事实来源在结构体字段, delete 需要把
+// "已删除"落成墓碑 (PropertyDescriptor.Deleted), 故不能走 Object.DeleteProperty。
+// 返回是否删除成功 (不可配置属性返回 false; 不存在的属性按规范返回 true)。
+type PropDeleter interface {
+	DeleteOwn(name string) bool
+}
+
 // ===== *Object =====
 // 普通对象的自有属性就是 Properties map, 直接对接接口 (行为与此前
 // 内建里的 *Object 分支完全一致)。
 
 func (o *Object) OwnKeys() []string { return o.Keys() }
+
+// DeleteOwn 让 *Object 也满足 PropDeleter (删除可配置自有属性)。
+func (o *Object) DeleteOwn(name string) bool { return o.DeleteProperty(name) }
 
 func (o *Object) EnumerableOwnKeys() []string { return o.EnumerableKeys() }
 
@@ -304,14 +315,50 @@ func sortedStringKeys(m map[string]PropertyDescriptor) []string {
 	return out
 }
 
+// activePropDescs 返回 PropDescs 中"未被删除"的键 (跳过墓碑)。
+func activePropDescs(m map[string]PropertyDescriptor) []string {
+	out := make([]string, 0, len(m))
+	for k, d := range m {
+		if d.Deleted {
+			continue
+		}
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// deletedProp 报告 PropDescs[name] 是否是一枚墓碑 (该属性已被 delete)。
+func deletedProp(m map[string]PropertyDescriptor, name string) bool {
+	if m == nil {
+		return false
+	}
+	d, ok := m[name]
+	return ok && d.Deleted
+}
+
+// markDeleted 在 PropDescs 上打墓碑 (供函数类的 DeleteOwn 复用)。
+func markDeleted(m *map[string]PropertyDescriptor, name string) {
+	if *m == nil {
+		*m = make(map[string]PropertyDescriptor)
+	}
+	(*m)[name] = PropertyDescriptor{Deleted: true}
+}
+
 // --- *Closure ---
 
 func (c *Closure) OwnKeys() []string {
-	keys := []string{"length", "name"}
-	if closureHasPrototypeOwn(c) {
+	keys := []string{}
+	if !deletedProp(c.PropDescs, "length") {
+		keys = append(keys, "length")
+	}
+	if !deletedProp(c.PropDescs, "name") {
+		keys = append(keys, "name")
+	}
+	if closureHasPrototypeOwn(c) && !deletedProp(c.PropDescs, "prototype") {
 		keys = append(keys, "prototype")
 	}
-	for _, k := range sortedStringKeys(c.PropDescs) {
+	for _, k := range activePropDescs(c.PropDescs) {
 		if k == "length" || k == "name" || k == "prototype" {
 			continue
 		}
@@ -332,6 +379,9 @@ func (c *Closure) HasOwn(name string) bool {
 
 func (c *Closure) OwnDescriptor(name string) (PropertyDescriptor, bool) {
 	if d, ok := c.PropDescs[name]; ok {
+		if d.Deleted {
+			return PropertyDescriptor{}, false
+		}
 		return d, true
 	}
 	switch name {
@@ -373,14 +423,63 @@ func (c *Closure) DefineOwn(name string, desc PropertyDescriptor) bool {
 	return true
 }
 
+// DeleteOwn 删除闭包的可配置自有属性; 结构性 name/length (不可写但可配置)
+// 用墓碑占位, 使其从 OwnDescriptor / OwnKeys 视图消失。
+func (c *Closure) DeleteOwn(name string) bool {
+	if d, ok := c.PropDescs[name]; ok {
+		if d.Deleted {
+			return true
+		}
+		if !d.Configurable {
+			return false
+		}
+		markDeleted(&c.PropDescs, name)
+		return true
+	}
+	switch name {
+	case "name", "length":
+		markDeleted(&c.PropDescs, name)
+		return true
+	case "prototype":
+		// 闭包的 prototype 自有属性不可配置 (规范)。
+		if closureHasPrototypeOwn(c) {
+			return false
+		}
+	}
+	if c.Props != nil {
+		if _, ok := c.Props[name]; ok {
+			delete(c.Props, name)
+			return true
+		}
+	}
+	return true
+}
+
 // --- *BuiltinFunction ---
 
 func (b *BuiltinFunction) OwnKeys() []string {
-	keys := []string{"length", "name"}
-	rest := make([]string, 0, len(b.Properties))
+	keys := []string{}
+	if !deletedProp(b.PropDescs, "length") {
+		keys = append(keys, "length")
+	}
+	if !deletedProp(b.PropDescs, "name") {
+		keys = append(keys, "name")
+	}
+	rest := make([]string, 0, len(b.Properties)+len(b.PropDescs))
 	for k := range b.Properties {
+		if k == "length" || k == "name" || deletedProp(b.PropDescs, k) {
+			continue
+		}
+		rest = append(rest, k)
+	}
+	for _, k := range activePropDescs(b.PropDescs) {
 		if k == "length" || k == "name" {
 			continue
+		}
+		if b.Properties != nil {
+			if _, dup := b.Properties[k]; dup {
+				continue
+			}
 		}
 		rest = append(rest, k)
 	}
@@ -400,6 +499,9 @@ func (b *BuiltinFunction) HasOwn(name string) bool {
 
 func (b *BuiltinFunction) OwnDescriptor(name string) (PropertyDescriptor, bool) {
 	if d, ok := b.PropDescs[name]; ok {
+		if d.Deleted {
+			return PropertyDescriptor{}, false
+		}
 		return d, true
 	}
 	switch name {
@@ -429,11 +531,43 @@ func (b *BuiltinFunction) DefineOwn(name string, desc PropertyDescriptor) bool {
 	return true
 }
 
+// DeleteOwn 删除内建函数对象的可配置自有属性 (length/name 用墓碑占位)。
+func (b *BuiltinFunction) DeleteOwn(name string) bool {
+	if d, ok := b.PropDescs[name]; ok {
+		if d.Deleted {
+			return true
+		}
+		if !d.Configurable {
+			return false
+		}
+		markDeleted(&b.PropDescs, name)
+		return true
+	}
+	switch name {
+	case "name", "length":
+		markDeleted(&b.PropDescs, name)
+		return true
+	}
+	if b.Properties != nil {
+		if _, ok := b.Properties[name]; ok {
+			delete(b.Properties, name)
+			return true
+		}
+	}
+	return true
+}
+
 // --- *BuiltinMethod ---
 
 func (b *BuiltinMethod) OwnKeys() []string {
-	keys := []string{"length", "name"}
-	for _, k := range sortedStringKeys(b.PropDescs) {
+	keys := []string{}
+	if !deletedProp(b.PropDescs, "length") {
+		keys = append(keys, "length")
+	}
+	if !deletedProp(b.PropDescs, "name") {
+		keys = append(keys, "name")
+	}
+	for _, k := range activePropDescs(b.PropDescs) {
 		if k == "length" || k == "name" {
 			continue
 		}
@@ -451,6 +585,9 @@ func (b *BuiltinMethod) HasOwn(name string) bool {
 
 func (b *BuiltinMethod) OwnDescriptor(name string) (PropertyDescriptor, bool) {
 	if d, ok := b.PropDescs[name]; ok {
+		if d.Deleted {
+			return PropertyDescriptor{}, false
+		}
 		return d, true
 	}
 	switch name {
@@ -467,5 +604,25 @@ func (b *BuiltinMethod) DefineOwn(name string, desc PropertyDescriptor) bool {
 		b.PropDescs = make(map[string]PropertyDescriptor)
 	}
 	b.PropDescs[name] = desc
+	return true
+}
+
+// DeleteOwn 删除内建方法的可配置自有属性 (length/name 用墓碑占位)。
+func (b *BuiltinMethod) DeleteOwn(name string) bool {
+	if d, ok := b.PropDescs[name]; ok {
+		if d.Deleted {
+			return true
+		}
+		if !d.Configurable {
+			return false
+		}
+		markDeleted(&b.PropDescs, name)
+		return true
+	}
+	switch name {
+	case "name", "length":
+		markDeleted(&b.PropDescs, name)
+		return true
+	}
 	return true
 }

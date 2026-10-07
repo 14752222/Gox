@@ -63,7 +63,7 @@ func setupBigInt(env *runtime.Environment) {
 		return toBigIntValue(args[0])
 	})
 	fn.SetProperty("name", object.NewString("BigInt"))
-	fn.SetProperty("length", object.NewInt(1))
+	fn.SetFunctionLength(1)
 	fn.SetProperty("prototype", proto)
 	proto.SetBuiltinProperty("constructor", fn)
 

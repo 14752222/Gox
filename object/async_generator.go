@@ -57,6 +57,15 @@ func (g *AsyncGenerator) Inspect() string  { return "[AsyncGenerator]" }
 func (g *AsyncGenerator) IsTruthy() bool   { return true }
 
 func (g *AsyncGenerator) GetProperty(name string) (Value, bool) {
+	// next/return/throw 由 [[Prototype]] (该函数自己的 .prototype → AGP) 提供,
+	// 这样 `ag.next` 与 `AsyncGeneratorPrototype.next` 是同一个函数对象
+	// (test262 prop-desc / this-val 系列据此判定), brand check 也落在方法里。
+	if g.Proto != nil {
+		if v, ok := g.Proto.GetProperty(name); ok {
+			return v, true
+		}
+	}
+	// 无原型时的兜底 (老码路径): 仍提供绑定到本实例的 next/return/throw。
 	switch name {
 	case "next":
 		return g.method("next", AGNextKind), true
@@ -64,9 +73,6 @@ func (g *AsyncGenerator) GetProperty(name string) (Value, bool) {
 		return g.method("return", AGReturnKind), true
 	case "throw":
 		return g.method("throw", AGThrowKind), true
-	}
-	if g.Proto != nil {
-		return g.Proto.GetProperty(name)
 	}
 	return nil, false
 }

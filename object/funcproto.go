@@ -91,7 +91,7 @@ func funcProtoLookup(_ Value, name string) (Value, bool) {
 						if ln < 0 {
 							ln = 0
 						}
-						bound.SetProperty("length", NewNumber(ln))
+						bound.SetFunctionLength(int(ln))
 					}
 				}
 			}
