@@ -53,16 +53,23 @@ func (vm *VM) wrapSyncIterForAsync(iter object.Value, fromSync bool) object.Valu
 	})
 	w.SetProperty("throw", object.NewBuiltin("throw", func(args ...object.Value) object.Value {
 		fn, found := src.GetProperty("throw")
+		// get throw 是抛错的访问器: 原始抛出值优先 (规范 GetMethod 直接抛出),
+		// 不得退化成 "does not provide a 'throw' method" 的 TypeError。
+		if err := vm.checkCallbackErr(); err != nil {
+			return errToValue(err)
+		}
 		if !found || fn == object.UndefinedSingleton || fn == object.NullSingleton {
 			// 无 throw 方法 (规范 %AsyncFromSyncIteratorPrototype%.throw 步骤 7):
 			// 先 AsyncIteratorClose(syncIterator) (若其有可调 return 则调用之,
 			// 异常优先传播), 再以 TypeError reject。
-			if rf, rfound := src.GetProperty("return"); rfound &&
-				rf != object.UndefinedSingleton && rf != object.NullSingleton {
-				if object.IsCallable(rf) {
-					if _, err := vm.callFunction(rf, src, nil); err != nil {
-						return errToValue(err)
-					}
+			rf, rfound := src.GetProperty("return")
+			if err := vm.checkCallbackErr(); err != nil {
+				return errToValue(err)
+			}
+			if rfound && rf != object.UndefinedSingleton && rf != object.NullSingleton &&
+				object.IsCallable(rf) {
+				if _, err := vm.callFunction(rf, src, nil); err != nil {
+					return errToValue(err)
 				}
 			}
 			return object.NewErrorWithName("TypeError", "iterator does not provide a 'throw' method")
@@ -83,6 +90,10 @@ func (vm *VM) wrapSyncIterForAsync(iter object.Value, fromSync bool) object.Valu
 	}))
 	w.SetProperty("return", object.NewBuiltin("return", func(args ...object.Value) object.Value {
 		fn, found := src.GetProperty("return")
+		// get return 是抛错的访问器: 原始抛出值优先 (规范 GetMethod 直接抛出)。
+		if err := vm.checkCallbackErr(); err != nil {
+			return errToValue(err)
+		}
 		if !found || fn == object.UndefinedSingleton || fn == object.NullSingleton {
 			// 无 return 方法 (规范 %AsyncFromSyncIteratorPrototype%.return 步骤 7):
 			// 迭代结束以 CreateIterResultObject(value, true) 结算 —— **value 是
