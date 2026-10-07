@@ -308,6 +308,57 @@ lead 按既有恢复套路从 worktree 的 `git status` / `git diff` 捞回，**
 
 **批次二 8 条 LOST 的收尾**：其中 #1–#4（class 内 yield 计算键 / async 形参 await 早错）由 wt/ledger2 工作流（看板 `r4hv9u`）在两个提交 `23a7aa3` / `864a1e3` 修复转正；#5–#7 由批次四 `d62aaf5` 转正；#8 系批次二全量跑判定抖动、引擎无缺口。详见 `docs/batch2-lost-r4hv9u-triage.md`。
 
+## 十八、合流批次七/八（真模块入口语义揭示的三条 LOST + async generator 原型链 + promise 采纳）
+
+**批次七**（基线 `merge/batch6` 尖 `c6e6ae6` → 尖 `5030c7f`，10 引擎 + 8 文档提交）：
+`language` 全量 **16969 → 17226 = GAIN 260 / LOST 3**。
+**批次八**（基线 `merge/batch7` 尖 `5030c7f` → 尖见 git，8 提交）：
+`language` 全量 **17223 → 17430 = GAIN 210 / LOST 3（全为超时抖动，实为 LOST 0）**。
+`go build ./...` + `go vet` + `go test -count=1 ./...`（20 包）全绿。
+
+**批次七的 3 条 LOST**（逐条归因见 `docs/batch7-lost-triage.md`）全部是
+`9b001f6`（runner 改走**真模块入口** + negative 判据只取首行）**揭掉遮羞布**后
+暴露的真缺口，**非引擎回归**；其中两条已在批次八正面修复：
+
+| LOST | 根因 | 归宿 |
+|---|---|---|
+| `module-code/eval-self-abrupt.js`、`eval-export-dflt-expr-err-eval.js` | `Test262Error` 实例在 Go 侧是 `*object.Object`，**模块入口**未捕获异常渲染走 `ThrowError.Error()` → `Value.Inspect()` 得 `{ message: "" }`，构造器类型名丢失（`message` 为空是正确 JS 语义，缺的是 ToString 渲染）。script 入口走 `vm.uncaughtError` 是对的，两条入口分叉 | 批次八 `47fca04` 修（模块入口改走 `vm.uncaughtError`）⇒ 两条转 GAIN |
+| `module-code/instn-local-bndng-const.js` | **模块顶层 const 完全可变**。① `isGlobalScope()` = `depth==0 && !moduleMode`，模块模式恒 false；② 于是 const 走 `OP_STORE_CONST` 存**局部槽**；③ 赋值路径只发 `OP_STORE`，**从不查 `Symbol.IsConst`**（`compiler.go:1662` 注释直言「局部槽位根本不查」） | 批次八 `a2a671d` 修（新增 `OP_STORE_CONST_GUARD`，接到全部局部赋值位置；顺带修正 class 绑定被错标为 const）⇒ 转 GAIN |
+
+**批次八逐路线台账**：
+
+| 项 | 结果 |
+|---|---|
+| 模块顶层 const 不可变性（`a2a671d`） | ✅ 新增 `OP_STORE_CONST_GUARD = 0x2A`；`emitLocalStore(sym)` 在 IsConst 时改发守卫指令，覆盖 `=`/复合赋值/`++`·`--`/逻辑赋值/解构/for-of 目标；运行期无条件抛 `TypeError: Assignment to constant variable`（可捕获）。顺带修 `compileClassDeclaration` 把 class 绑定错标为 const（规范 CreateMutableBinding，与 let 同类）。定向 A/B（`module-code`，617 例）272 → 274，**GAIN 2 / LOST 0**；新增 13 个单测 |
+| 未捕获抛值渲染（`47fca04`） | ✅ 模块入口改走 `vm.uncaughtError`，与 script 入口同口径 ⇒ 首行由 `vm error: { message: "" }` 变 `vm error: Test262Error:`。定向 A/B（`module-code`）273 → 275，**GAIN 2 / LOST 0**；`built-ins/Error`、`language/throw` 无变化；新增 `vm/uncaught_render_test.go` |
+| AsyncGeneratorFunction 原型链装配（`a328874`） | ✅ 实例 `[[Prototype]]` = 该函数自己的 `.prototype`（其 `[[Prototype]]` 才是 `%AsyncGeneratorPrototype%`）；AGF/AGFFP/AGP 三者互链 + 属性描述符逐条对齐 Node v22。compiler 加合成自引用槽 `\x00agself` + `FunctionMeta.SelfSlot` |
+| AG 实例 `@@toStringTag` 沿原型链可达（`4c3764a`） | ✅ 根因：`AsyncGenerator.GetSymbolProperty` 只向 `g.Proto` 委托**一层**，`*Object.GetSymbolProperty` 只查自身 ⇒ 落在 AGP 上的 `@@toStringTag` 永不可达（`it[Symbol.toStringTag]` 得 undefined、`toString.call(it)` 得 `[object Object]`）。改为沿完整链查找。定向 A/B（`AsyncGenerator` built-ins / `async-generator\|generator` language）均 **GAIN 0 / LOST 0**；新增 3 个回归测试 |
+| async/generator 形参求值时机（`c7f23fe`） | ✅ **现状已正确**（探针 vs Node 22 逐行一致：async 调用后即置位 side、async generator 形参求值早于返回对象、生成器体推迟到 next()、抛错三口径）⇒ 只补 3 个钉子，无代码改动 |
+| promise 采纳（`649a8b1`） | ✅ 根因：`object.Promise.Resolve` 在「内层 promise 仍 pending」分支把 rejection 回调 `__inner_reject` 注册进 `CatchCallbacks` 时**漏标 `IsCatch`**，`invokePromiseCallbacks` 只对 `IsCatch=true` 走 rejection 分支 ⇒ 回调被静默跳过，外层 promise 永挂。修法一行语义修正。影响面：`p.then(cb)` 中 cb 返回最终 reject 的 promise 时派生 promise hang（上游 `Promise.all` / 模块图动态 import 因此不结算） |
+
+**批次八的一次真实回归及其定位（流程教训）**：`a328874` 越界改写了 `parser/parser.go`
+的 `parseYieldExpression` —— 把批次七 `5747a43` 那版整体替换成一个手写版，导致
+`function* g(x = yield) {}` 这类本该报 SyntaxError 的用例**静默通过解析**，
+全量 A/B 出 **46 条 yield 相关 LOST**（`param-dflt-yield` / `yield-ident-invalid` /
+`yield-star-after-newline` 三族）。二分定位到该提交后，`git checkout 5030c7f --
+parser/parser.go` 恢复，`dc15392` 记录。
+⇒ **纪律**：cherry-pick 前必须对每条做**净 diff 审计**，尤其警惕「改了但提交信息
+没提」的文件 —— 本次该提交共改 15 个文件，只有 3 个与「AsyncGeneratorFunction
+原型链」这一声称任务相关（`object/ownproperty.go` +171 行 tombstone、
+`stdlib/{bigint,eval,function_proto,object_methods}.go` 的 `SetFunctionLength`
+重构均属越界，已另立看板单 `rxsCia` 追踪其残留缺口）。
+
+**批次八的 3 条「LOST」**：`meth-static-dflt-ary-ptrn-elem-id-init-throws` /
+`grammar-static-private-gen-meth-super` / `async-func-dstr-const-obj-ptrn-empty`
+—— 全为 `phase: timeout`，单跑均 100% 通过（两侧 JSON 对照：base `pass=True phase=pass`，
+cand `phase=timeout`）。根因是**全量跑时机器过载**（观测到 9–14 个并发 gox 进程，
+远超 `-jobs 4`）⇒ **非回归**。定向 filter 重跑 9/9 通过确证。
+
+**批次八新增看板单**：`rLjAX9`（函数 `.length` 未按规范截断，挡 `dflt-params` 32 例）、
+`ryPk0S`（数组解构忽略被覆盖的 `Array.prototype[Symbol.iterator]`，挡
+`async-generator/dstr` 12 例）、`rxsCia`（`Object.keys(函数)` 不列出动态自有的可枚举
+属性）。前两条基线即如此，第三条由 `a328874` 的 tombstone 改动部分触及但未修完。
+
 ## 待确认（信息缺口）
 
 - `agent_doc/undecided-and-unimplemented.md` 是 **2026-09-18 快照**，其 §四 缺口清单中已有多项（cocoa 后端、iOS 后端、X11 修正、M2 IME、滚动条拖拽、tabs、table/tree、tooltip）在 09-18 后落地。本路线图已按 git 历史更正，但**建议回填该台账**，否则后续排期会继续基于过期口径。
