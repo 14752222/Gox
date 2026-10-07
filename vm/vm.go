@@ -5565,6 +5565,27 @@ func (vm *VM) getIndex(obj, index object.Value) object.Value {
 		}
 		return val
 
+	case *object.Closure, *object.BuiltinFunction, *object.BuiltinMethod:
+		// 函数对象: Symbol 键沿原型链查 (getter 展开), 数字等键型按 ToPropertyKey
+		// 转字符串 (f[1] === f["1"])。此前函数只走 default 兜底 —— 字符串键同口径,
+		// 但 Symbol 键仅自身鸭子类型查找 (拿不到原型链上的 @@hasInstance 等) 且无
+		// 统一符号键槽; 这里收口到与 *Object / 数组一致的符号键通道。
+		if sym, ok := index.(*object.Symbol); ok {
+			return vm.getSymbolIndexedValue(o, sym)
+		}
+		if s, ok := index.(*object.String); ok {
+			val, found := o.GetProperty(s.Value)
+			if !found {
+				return object.UndefinedSingleton
+			}
+			return val
+		}
+		val, found := o.GetProperty(toJSString(index))
+		if !found {
+			return object.UndefinedSingleton
+		}
+		return val
+
 	default:
 		// 其余类型 (GlobalObject / Map / Set / Closure / Error / RegExp / Promise ...)
 		// 的字符串键读取统一走 Value 接口 —— 与 setIndex 的 default 兜底分支对称。
@@ -6300,6 +6321,21 @@ func (vm *VM) setIndex(obj, index, val object.Value, inStaticInit bool) {
 			// 数字等其他键型按 ToPropertyKey 语义转字符串 (o[2] === o["2"])
 			o.SetProperty(toJSString(index), val)
 		}
+	case *object.Closure, *object.BuiltinFunction, *object.BuiltinMethod:
+		// 函数对象: Symbol 键落各自的符号键槽 (SymbolPropertyStore); 字符串键与
+		// 数字等键型 (f[1] === f["1"]) 统一走 SetProperty + 转可枚举。
+		// 此前数字键在 default 分支被静默丢弃 (default 只处理 String/Symbol),
+		// 于是 `f[1] = 4` 之后 f[1] 恒为 undefined。
+		if sym, ok := index.(*object.Symbol); ok {
+			if sp, ok := o.(object.SymbolPropertyStore); ok {
+				sp.SetSymbolProperty(sym, val)
+			}
+			return
+		}
+		name := toJSString(index)
+		o.SetProperty(name, val)
+		// 函数对象的计算键赋值: 与 OP_SET_PROP 一致地转可枚举。
+		vm.markAssignmentEnumerable(o, name, val, inStaticInit)
 	default:
 		// 其余类型 (Error/RegExp/Closure/Promise 等) 的字符串键赋值
 		// 统一走 Value 接口。基础类型 (String/Number/null/undefined) 的

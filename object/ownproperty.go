@@ -304,6 +304,96 @@ func functionNameDescriptor(v Value) (PropertyDescriptor, bool) {
 	return NamePropertyOf(v)
 }
 
+// isFunctionStructuralKey 报告键是否为函数对象的结构性自有键
+// (length / name / prototype)。这三个键由 OwnKeys 以固定前缀给出, 不参与
+// 用户键的插入顺序表。
+func isFunctionStructuralKey(name string) bool {
+	return name == "length" || name == "name" || name == "prototype"
+}
+
+// noteFuncKey 记录函数类自有字符串键的创建顺序 (已存在则保持原位)。
+// 结构性键不记入 (见 isFunctionStructuralKey)。
+func noteFuncKey(order *[]string, name string) {
+	if isFunctionStructuralKey(name) {
+		return
+	}
+	for _, k := range *order {
+		if k == name {
+			return
+		}
+	}
+	*order = append(*order, name)
+}
+
+// dropFuncKey 从函数类自有键顺序表中移除键: delete 后再定义同一键应回到末尾。
+func dropFuncKey(order *[]string, name string) {
+	for i, k := range *order {
+		if k == name {
+			*order = append((*order)[:i], (*order)[i+1:]...)
+			return
+		}
+	}
+}
+
+// orderFuncKeys 把函数类自有字符串键集合按规范的 OrdinaryOwnPropertyKeys 归一:
+// 整数索引键升序在前, 其余字符串键按 prefer 给出的创建顺序; prefer 未覆盖的键
+// 按字典序追加 (兜底: 宿主直接写 map 而漏记顺序时不至于丢键)。
+// keys 为全集 (可含重复, 内部去重), prefer 为期望顺序。
+func orderFuncKeys(keys []string, prefer []string) []string {
+	set := make(map[string]bool, len(keys))
+	for _, k := range keys {
+		set[k] = true
+	}
+	seen := make(map[string]bool, len(keys))
+	var idx, str []string
+	take := func(k string) {
+		if !set[k] || seen[k] {
+			return
+		}
+		seen[k] = true
+		if IsArrayIndexKey(k) {
+			idx = append(idx, k)
+		} else {
+			str = append(str, k)
+		}
+	}
+	for _, k := range prefer {
+		take(k)
+	}
+	rest := make([]string, 0)
+	for _, k := range keys {
+		if !seen[k] {
+			rest = append(rest, k)
+		}
+	}
+	if len(rest) > 0 {
+		sort.Strings(rest)
+		for _, k := range rest {
+			take(k)
+		}
+	}
+	if len(idx) > 1 {
+		sort.Slice(idx, func(i, j int) bool {
+			ni, _ := strconv.Atoi(idx[i])
+			nj, _ := strconv.Atoi(idx[j])
+			return ni < nj
+		})
+	}
+	out := make([]string, 0, len(idx)+len(str))
+	out = append(out, idx...)
+	out = append(out, str...)
+	return out
+}
+
+// funcPreferOrder 返回函数类自有键的期望创建顺序: 结构性键
+// (length/name/prototype) 恒在最前 (SetFunctionLength / SetFunctionName /
+// MakeConstructor 的创建序), 之后是用户键的插入顺序。
+func funcPreferOrder(userOrder []string) []string {
+	out := make([]string, 0, 3+len(userOrder))
+	out = append(out, "length", "name", "prototype")
+	return append(out, userOrder...)
+}
+
 // sortedStringKeys 返回 map 的排序键 (函数类自有键中无插入顺序信息,
 // 排序保证输出确定)。
 func sortedStringKeys(m map[string]PropertyDescriptor) []string {
@@ -368,22 +458,16 @@ func (c *Closure) OwnKeys() []string {
 	if closureHasPrototypeOwn(c) && !deletedProp(c.PropDescs, "prototype") {
 		keys = append(keys, "prototype")
 	}
-	// Props 中的普通赋值/class 静态成员 (无显式描述符): 按名排序保证确定。
-	// PropDescs 里已有的键跳过, 避免重复。
-	rest := make([]string, 0, len(c.Props))
+	// Props 中的普通赋值/class 静态成员 (无显式描述符), 以及 PropDescs 里显式
+	// 定义的键。二者都按 propKeyOrder 的插入顺序输出 (结构性键除外)。
 	for k := range c.Props {
-		if k == "length" || k == "name" || k == "prototype" {
+		if isFunctionStructuralKey(k) || deletedProp(c.PropDescs, k) {
 			continue
 		}
-		if deletedProp(c.PropDescs, k) {
-			continue
-		}
-		rest = append(rest, k)
+		keys = append(keys, k)
 	}
-	sort.Strings(rest)
-	keys = append(keys, rest...)
 	for _, k := range activePropDescs(c.PropDescs) {
-		if k == "length" || k == "name" || k == "prototype" {
+		if isFunctionStructuralKey(k) {
 			continue
 		}
 		if _, dup := c.Props[k]; dup {
@@ -391,7 +475,7 @@ func (c *Closure) OwnKeys() []string {
 		}
 		keys = append(keys, k)
 	}
-	return keys
+	return orderFuncKeys(keys, funcPreferOrder(c.propKeyOrder))
 }
 
 func (c *Closure) EnumerableOwnKeys() []string {
@@ -400,7 +484,14 @@ func (c *Closure) EnumerableOwnKeys() []string {
 	// 方法/访问器由 NonEnumProps 标记排除 (见 SetBuiltinProperty)。
 	var keys []string
 	for k := range c.Props {
-		if k == "name" || k == "length" || k == "prototype" {
+		if isFunctionStructuralKey(k) {
+			continue
+		}
+		// 显式描述符 (defineProperty) 的可枚举性优先于 NonEnumProps。
+		if d, ok := c.PropDescs[k]; ok && !d.Deleted {
+			if d.Enumerable {
+				keys = append(keys, k)
+			}
 			continue
 		}
 		if c.NonEnumProps[k] {
@@ -408,8 +499,17 @@ func (c *Closure) EnumerableOwnKeys() []string {
 		}
 		keys = append(keys, k)
 	}
-	sort.Strings(keys)
-	return keys
+	// 仅经 defineProperty 定义 (未落 Props) 的可枚举键也要列出。
+	for k, d := range c.PropDescs {
+		if d.Deleted || !d.Enumerable || isFunctionStructuralKey(k) {
+			continue
+		}
+		if _, dup := c.Props[k]; dup {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	return orderFuncKeys(keys, c.propKeyOrder)
 }
 
 func (c *Closure) HasOwn(name string) bool {
@@ -460,6 +560,7 @@ func (c *Closure) DefineOwn(name string, desc PropertyDescriptor) bool {
 	if c.PropDescs == nil {
 		c.PropDescs = make(map[string]PropertyDescriptor)
 	}
+	noteFuncKey(&c.propKeyOrder, name)
 	c.PropDescs[name] = desc
 	return true
 }
@@ -475,6 +576,7 @@ func (c *Closure) DeleteOwn(name string) bool {
 			return false
 		}
 		markDeleted(&c.PropDescs, name)
+		dropFuncKey(&c.propKeyOrder, name)
 		return true
 	}
 	switch name {
@@ -490,6 +592,7 @@ func (c *Closure) DeleteOwn(name string) bool {
 	if c.Props != nil {
 		if _, ok := c.Props[name]; ok {
 			delete(c.Props, name)
+			dropFuncKey(&c.propKeyOrder, name)
 			return true
 		}
 	}
@@ -506,15 +609,14 @@ func (b *BuiltinFunction) OwnKeys() []string {
 	if !deletedProp(b.PropDescs, "name") {
 		keys = append(keys, "name")
 	}
-	rest := make([]string, 0, len(b.Properties)+len(b.PropDescs))
 	for k := range b.Properties {
-		if k == "length" || k == "name" || deletedProp(b.PropDescs, k) {
+		if isFunctionStructuralKey(k) || deletedProp(b.PropDescs, k) {
 			continue
 		}
-		rest = append(rest, k)
+		keys = append(keys, k)
 	}
 	for _, k := range activePropDescs(b.PropDescs) {
-		if k == "length" || k == "name" {
+		if isFunctionStructuralKey(k) {
 			continue
 		}
 		if b.Properties != nil {
@@ -522,10 +624,9 @@ func (b *BuiltinFunction) OwnKeys() []string {
 				continue
 			}
 		}
-		rest = append(rest, k)
+		keys = append(keys, k)
 	}
-	sort.Strings(rest)
-	return append(keys, rest...)
+	return orderFuncKeys(keys, funcPreferOrder(b.propKeyOrder))
 }
 
 func (b *BuiltinFunction) EnumerableOwnKeys() []string {
@@ -533,7 +634,13 @@ func (b *BuiltinFunction) EnumerableOwnKeys() []string {
 	// 用户赋值新增的属性 (String.qq = 5) 可枚举。
 	var keys []string
 	for k := range b.Properties {
-		if k == "name" || k == "length" || k == "prototype" {
+		if isFunctionStructuralKey(k) {
+			continue
+		}
+		if d, ok := b.PropDescs[k]; ok && !d.Deleted {
+			if d.Enumerable {
+				keys = append(keys, k)
+			}
 			continue
 		}
 		if b.NonEnumProps[k] {
@@ -541,8 +648,18 @@ func (b *BuiltinFunction) EnumerableOwnKeys() []string {
 		}
 		keys = append(keys, k)
 	}
-	sort.Strings(keys)
-	return keys
+	for k, d := range b.PropDescs {
+		if d.Deleted || !d.Enumerable || isFunctionStructuralKey(k) {
+			continue
+		}
+		if b.Properties != nil {
+			if _, dup := b.Properties[k]; dup {
+				continue
+			}
+		}
+		keys = append(keys, k)
+	}
+	return orderFuncKeys(keys, b.propKeyOrder)
 }
 
 func (b *BuiltinFunction) HasOwn(name string) bool {
@@ -581,6 +698,7 @@ func (b *BuiltinFunction) DefineOwn(name string, desc PropertyDescriptor) bool {
 	if b.PropDescs == nil {
 		b.PropDescs = make(map[string]PropertyDescriptor)
 	}
+	noteFuncKey(&b.propKeyOrder, name)
 	b.PropDescs[name] = desc
 	return true
 }
@@ -595,6 +713,7 @@ func (b *BuiltinFunction) DeleteOwn(name string) bool {
 			return false
 		}
 		markDeleted(&b.PropDescs, name)
+		dropFuncKey(&b.propKeyOrder, name)
 		return true
 	}
 	switch name {
@@ -605,6 +724,7 @@ func (b *BuiltinFunction) DeleteOwn(name string) bool {
 	if b.Properties != nil {
 		if _, ok := b.Properties[name]; ok {
 			delete(b.Properties, name)
+			dropFuncKey(&b.propKeyOrder, name)
 			return true
 		}
 	}
@@ -622,12 +742,12 @@ func (b *BuiltinMethod) OwnKeys() []string {
 		keys = append(keys, "name")
 	}
 	for _, k := range activePropDescs(b.PropDescs) {
-		if k == "length" || k == "name" {
+		if isFunctionStructuralKey(k) {
 			continue
 		}
 		keys = append(keys, k)
 	}
-	return keys
+	return orderFuncKeys(keys, funcPreferOrder(b.propKeyOrder))
 }
 
 func (b *BuiltinMethod) EnumerableOwnKeys() []string { return nil }
@@ -657,6 +777,7 @@ func (b *BuiltinMethod) DefineOwn(name string, desc PropertyDescriptor) bool {
 	if b.PropDescs == nil {
 		b.PropDescs = make(map[string]PropertyDescriptor)
 	}
+	noteFuncKey(&b.propKeyOrder, name)
 	b.PropDescs[name] = desc
 	return true
 }
@@ -671,6 +792,7 @@ func (b *BuiltinMethod) DeleteOwn(name string) bool {
 			return false
 		}
 		markDeleted(&b.PropDescs, name)
+		dropFuncKey(&b.propKeyOrder, name)
 		return true
 	}
 	switch name {

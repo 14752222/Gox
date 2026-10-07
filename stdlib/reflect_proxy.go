@@ -233,7 +233,23 @@ func setupReflectProxy(env *runtime.Environment) {
 			}
 			keys = append(keys, object.NewString("length"))
 		default:
-			return object.NewArray(nil)
+			// 统一自有属性接口: 函数类 (length/name/prototype + 静态成员) 与
+			// 全局对象等也按 OrdinaryOwnPropertyKeys 返回自有字符串键。此前
+			// default 直接返回空数组 —— Reflect.ownKeys(fn) 恒为 []。无
+			// OwnPropertyStore 的类型 (原始值 / Map / Set 等) 维持历史行为。
+			store, ok := target.(object.OwnPropertyStore)
+			if !ok {
+				return object.NewArray(nil)
+			}
+			for _, k := range store.OwnKeys() {
+				keys = append(keys, object.NewString(k))
+			}
+		}
+		// Symbol 键按插入顺序附在字符串键之后 (OrdinaryOwnPropertyKeys 末段)。
+		if sp, ok := target.(object.SymbolPropertyStore); ok {
+			for _, sym := range sp.SymbolKeys() {
+				keys = append(keys, sym)
+			}
 		}
 		return object.NewArray(keys)
 	}))

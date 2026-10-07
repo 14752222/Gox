@@ -132,6 +132,14 @@ type Closure struct {
 	CreatedAtFrame int               // 创建时的帧索引 (用于递归自引用检测)
 	Proto          Value             // prototype 属性 (new 实例的原型; 箭头函数无)
 	Props          map[string]Value  // 其他可设置属性 (如 class 的静态方法)
+	// propKeyOrder 记录非结构性自有字符串键 (Props / PropDescs 里的键, 不含
+	// length/name/prototype) 的**插入顺序**, 供 OwnKeys / EnumerableOwnKeys 按
+	// 规范的 OrdinaryOwnPropertyKeys (整数键升序 → 字符串键插入序) 输出 —— 此前
+	// 直接对 map 名排序, 既非插入序也不满足规范。
+	propKeyOrder []string
+	// funcSymStore 是函数对象的 Symbol 键自有属性槽 (嵌入复用), 使 *Closure 满足
+	// SymbolPropertyStore —— 否则 `f[sym] = 1` 被静默丢弃。
+	funcSymStore
 	// NonEnumProps 记录 Props 中"不可枚举"的键 (内置静态成员 / class 静态
 	// 方法/访问器)。普通赋值 (f.custom = 1) 与 class 静态字段不在此列,
 	// 因此 Object.keys(fn) 能列出它们而排除掉方法/内置成员。
@@ -311,6 +319,7 @@ func (c *Closure) SetProperty(name string, val Value) {
 	if c.Props == nil {
 		c.Props = make(map[string]Value)
 	}
+	noteFuncKey(&c.propKeyOrder, name)
 	c.Props[name] = val
 	// 默认按"内建/结构性"语义记为不可枚举; 用户赋值与 class 静态字段由 VM
 	// 经 MarkEnumerable 显式转正 (见 vm OP_SET_PROP 等)。这样宿主在 setup
@@ -333,6 +342,11 @@ type BuiltinFunction struct {
 	Name       string
 	Fn         func(args ...Value) Value
 	Properties map[string]Value // 静态属性 (如 String.fromCharCode)
+	// propKeyOrder 记录 Properties / PropDescs 里非结构性自有字符串键的插入顺序
+	// (见 *Closure.propKeyOrder 的说明), 供 OwnKeys / EnumerableOwnKeys 按规范顺序输出。
+	propKeyOrder []string
+	// funcSymStore 是内建函数对象的 Symbol 键自有属性槽 (嵌入复用)。
+	funcSymStore
 	// NonEnumProps 记录 Properties 中"不可枚举"的键 (内置静态成员)。
 	// 用户赋值 (String.qq = 5) 不在此列, 故 Object.keys(String) 只列用户
 	// 新增的属性。见 OwnPropertyStore / EnumerableOwnKeys。
@@ -416,6 +430,7 @@ func (b *BuiltinFunction) SetProperty(name string, val Value) {
 	if b.Properties == nil {
 		b.Properties = make(map[string]Value)
 	}
+	noteFuncKey(&b.propKeyOrder, name)
 	b.Properties[name] = val
 	// 默认不可枚举 (内建静态成员语义); 用户赋值由 VM 经 MarkEnumerable 转正。
 	if b.NonEnumProps == nil {
@@ -487,6 +502,11 @@ func NamePropertyOf(v Value) (PropertyDescriptor, bool) {
 type BuiltinMethod struct {
 	Name string
 	Fn   func(this Value, args ...Value) Value
+	// propKeyOrder 记录 PropDescs 里非结构性自有字符串键的插入顺序 (见
+	// *Closure.propKeyOrder 的说明)。
+	propKeyOrder []string
+	// funcSymStore 是内建方法的 Symbol 键自有属性槽 (嵌入复用)。
+	funcSymStore
 	// PropDescs 存储 Object.defineProperty 显式定义过的自有属性描述符,
 	// 见 OwnPropertyStore。
 	PropDescs map[string]PropertyDescriptor

@@ -27,6 +27,76 @@ type SymbolPropertyStore interface {
 	SymbolKeys() []*Symbol
 }
 
+// funcSymStore 是函数类 (*Closure / *BuiltinFunction / *BuiltinMethod) 共享的
+// Symbol 键自有属性槽 —— 以嵌入方式复用于三个类型, 语义与 *Object.SymbolProperties
+// / *Array.SymbolProperties 完全一致 (按 sym.ID 存描述符 + 按插入顺序记键)。
+//
+// 为什么需要它: 数组/类型化数组已补 Symbol 键槽 (SymbolPropertyStore), 但函数类
+// 仍无 —— `f[sym] = 1` 在 vm.setIndex 的 default 分支只做鸭子类型断言, 函数未实现
+// SetSymbolProperty 便被**静默丢弃** (读取恒 undefined), Object.getOwnPropertySymbols
+// / Reflect.ownKeys 也无从列出。嵌入本槽 + 下面的方法即让函数类满足
+// SymbolPropertyStore, 与数组/普通对象同构。
+type funcSymStore struct {
+	props map[uint64]PropertyDescriptor
+	order []*Symbol
+}
+
+// GetSymbolProperty 查自身 Symbol 键属性值 (不沿原型链)。
+func (s *funcSymStore) GetSymbolProperty(sym *Symbol) (Value, bool) {
+	if s.props == nil {
+		return nil, false
+	}
+	desc, ok := s.props[sym.ID]
+	if !ok {
+		return nil, false
+	}
+	if desc.Value == nil {
+		return UndefinedSingleton, true
+	}
+	return desc.Value, true
+}
+
+// GetSymbolPropertyDescriptor 返回自身 Symbol 键属性描述符。
+func (s *funcSymStore) GetSymbolPropertyDescriptor(sym *Symbol) (PropertyDescriptor, bool) {
+	if s.props == nil {
+		return PropertyDescriptor{}, false
+	}
+	d, ok := s.props[sym.ID]
+	return d, ok
+}
+
+// SetSymbolProperty 用户赋值路径: 新建数据属性 (全 true) 或按既有描述符写入
+// (不可写静默失败)。与 *Object.SetSymbolProperty 语义一致 —— 访问器不在此处
+// 展开 setter (读取侧的 getter 由 getSymbolIndexedValue 展开)。
+func (s *funcSymStore) SetSymbolProperty(sym *Symbol, val Value) {
+	if s.props == nil {
+		s.props = make(map[uint64]PropertyDescriptor)
+	}
+	if d, exists := s.props[sym.ID]; exists {
+		if d.Writable {
+			d.Value = val
+			s.props[sym.ID] = d
+		}
+		return
+	}
+	s.order = append(s.order, sym)
+	s.props[sym.ID] = DataProperty(val)
+}
+
+// DefineOwnSymbolProperty 以完整描述符定义自身 Symbol 键属性。
+func (s *funcSymStore) DefineOwnSymbolProperty(sym *Symbol, desc PropertyDescriptor) {
+	if s.props == nil {
+		s.props = make(map[uint64]PropertyDescriptor)
+	}
+	if _, exists := s.props[sym.ID]; !exists {
+		s.order = append(s.order, sym)
+	}
+	s.props[sym.ID] = desc
+}
+
+// SymbolKeys 按插入顺序返回自身 Symbol 键。
+func (s *funcSymStore) SymbolKeys() []*Symbol { return s.order }
+
 // LookupSymbolPropertyDescriptorChain 沿原型链查找 Symbol 键属性描述符,
 // 同时支持 *Object (SymbolProperties) 与实现 SymbolPropertyStore 的非 *Object
 // 类型 (数组 / 类型化数组)。与 LookupSymbolPropertyDescriptor 的差别: 后者

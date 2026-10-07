@@ -154,15 +154,15 @@ func TestArrowFunctionOwnAssignEnumerable(t *testing.T) {
 
 // Object.values / entries / assign / 展开 / for-in / JSON.stringify 一致。
 //
-// 注: Gox 的 Closure.Props 是 Go map, 无插入顺序信息, 自有键按名排序输出
-// (值/条目顺序随之)。这是既有表示局限, 非本次改动引入 —— 断言的是一致性
-// 与集合内容, 顺序按 Gox 的确定性排序 (a/b/custom) 钉住。
+// 函数自有键按规范的 OrdinaryOwnPropertyKeys 输出 (整数键升序 → 字符串键
+// 插入序, 见 rS4HXt)。此处 f.custom 先于 f.b 赋值, 故顺序为 custom, b ——
+// 与普通对象同口径 (不再按名字典序)。
 func TestFunctionOwnAssignConsumers(t *testing.T) {
 	const setup = `function f(){} f.custom=1; f.b=2;`
-	assertJS(t, `(function(){`+setup+`return JSON.stringify(Object.values(f));})()`, `[2,1]`)
-	assertJS(t, `(function(){`+setup+`return JSON.stringify(Object.entries(f));})()`, `[["b",2],["custom",1]]`)
-	assertJS(t, `(function(){`+setup+`return JSON.stringify(Object.assign({},f));})()`, `{"b":2,"custom":1}`)
-	assertJS(t, `(function(){`+setup+`return JSON.stringify({...f});})()`, `{"b":2,"custom":1}`)
+	assertJS(t, `(function(){`+setup+`return JSON.stringify(Object.values(f));})()`, `[1,2]`)
+	assertJS(t, `(function(){`+setup+`return JSON.stringify(Object.entries(f));})()`, `[["custom",1],["b",2]]`)
+	assertJS(t, `(function(){`+setup+`return JSON.stringify(Object.assign({},f));})()`, `{"custom":1,"b":2}`)
+	assertJS(t, `(function(){`+setup+`return JSON.stringify({...f});})()`, `{"custom":1,"b":2}`)
 	assertJS(t, `(function(){`+setup+`var r=[];for(var k in f)r.push(k);return JSON.stringify(r.sort());})()`, `["b","custom"]`)
 }
 

@@ -330,10 +330,12 @@ func hasOwnPropertyImpl(this object.Value, key object.Value) bool {
 	if this == nil {
 		return false
 	}
-	// Symbol 键: 查 SymbolProperties (与字符串键空间隔离)。
+	// Symbol 键: 查符号键槽 (与字符串键空间隔离)。*Object 与函数类/数组/
+	// 类型化数组都经 SymbolPropertyStore 提供符号键自有属性。
 	if sym, ok := key.(*object.Symbol); ok {
-		if o, ok := this.(*object.Object); ok {
-			return o.HasOwnSymbolProperty(sym)
+		if sp, ok := this.(object.SymbolPropertyStore); ok {
+			_, found := sp.GetSymbolPropertyDescriptor(sym)
+			return found
 		}
 		return false
 	}
@@ -370,8 +372,8 @@ func propertyIsEnumerableImpl(this object.Value, key object.Value) bool {
 	}
 	// Symbol 键: 自有且 Enumerable=true。
 	if sym, ok := key.(*object.Symbol); ok {
-		if o, ok := this.(*object.Object); ok {
-			d, found := o.GetSymbolPropertyDescriptor(sym)
+		if sp, ok := this.(object.SymbolPropertyStore); ok {
+			d, found := sp.GetSymbolPropertyDescriptor(sym)
 			return found && d.Enumerable
 		}
 		return false
