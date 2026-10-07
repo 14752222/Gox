@@ -619,7 +619,7 @@ func fontStyleProbe() string {
 	// 区分不出来。所以必须把默认字体自己的**子族名**报出来。
 	if bf, err := loadBaseFont(); err == nil {
 		sub := fontNameOf(bf, &buf, sfnt.NameIDSubfamily)
-		a := axisFromFont(bf, sub)
+		a := axisFromFont(bf, 0, sub)
 		initFontCandidates()
 		names := make([]string, 0, 3)
 		for i, p := range fontCandidates {

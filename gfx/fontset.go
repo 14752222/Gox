@@ -185,7 +185,7 @@ func (ix *familyIndex) indexFileLocked(path string) {
 		if len(names) == 0 {
 			continue
 		}
-		axis := axisFromFont(ft, fontNameOf(ft, &buf, sfnt.NameIDSubfamily))
+		axis := axisFromFont(ft, i, fontNameOf(ft, &buf, sfnt.NameIDSubfamily))
 		mono := false
 		if pt := ft.PostTable(); pt != nil {
 			mono = pt.IsFixedPitch
@@ -362,12 +362,39 @@ func fontNameOf(f *opentype.Font, buf *sfnt.Buffer, id sfnt.NameID) string {
 // post 表的 ItalicAngle 是补判据 (有些字体子族名只写 "Regular" 却真的倾斜)。
 // **不看 OS/2 的 usWeightClass**: x/image 没有暴露 OS/2 表, 而且子族名
 // 里的 "bold" 已经覆盖了 SemiBold/DemiBold/ExtraBold 这一族词。
-func axisFromFont(f *opentype.Font, subfamily string) styleAxis {
+//
+// faceIndex 是面在文件里的序号 —— 它**必须**参与判定, 因为"粗"这个性质
+// 是逐面的, 而 .ttc 里每个面的 name 表是独立的, 于是同一个文件的不同面
+// 经常被登记成同一套族名/子族名。实测 (2026-10-07, CI 注解):
+//
+//	NotoSansCJK-Bold.ttc   面 0 子族名写着 "Bold", 内容却是个等宽 CJK 面
+//	                       (字形与 Regular 面 0 逐字节相同), 面 1 才是真粗体。
+//	                       NotoSansCJK-Regular.ttc 面 0 子族名恰是 "Regular"。
+//
+// 忽略面序号的后果: 该族在索引里只有两格, {b=0}→regular#0 与
+// {b=1}→bold#0 —— 而 bold#0 的内容本来就是正体, 于是"要粗体"拿到的东西
+// 与"正体"一模一样, 加粗静默失效 (TestDrawTextStyledDiffersPerAxis 就是
+// 这么红的: 两个槽位不同、掩码与墨量却逐字节相同)。
+func axisFromFont(f *opentype.Font, faceIndex int, subfamily string) styleAxis {
 	s := strings.ToLower(subfamily)
 	bold := strings.Contains(s, "bold") || strings.Contains(s, "heavy") || strings.Contains(s, "black")
 	if !bold {
 		bold = appleWeightBold(s)
 	}
+	// 本地化的字重词: 西语族把 "Bold" 写成 Negreta (加泰罗尼亚语/葡萄牙语)。
+	// 实测 msyhbd.ttc (微软雅黑粗体) 的子族名恰是 "Negreta" —— 不认它就会把
+	// 真粗体面登记成正体, 于是"加粗"永远退化成合成。
+	if !bold {
+		bold = localizedBoldNames[s]
+	}
+	// faceIndex **不参与字重判定**。曾经试过"面 0 算正体、其余面算粗体",
+	// 实测是错的: 集合字体的每个面都有自己的族名与子族名,
+	//   simsun.ttc 面0 族=SimSun 子族=Regular; 面1 族=NSimSun 子族=Regular
+	//   msyh.ttc   面0 族=Microsoft YaHei;     面1 族=Microsoft YaHei UI
+	// 即 NSimSun 是"另一个族", 不是 SimSun 的粗体面。按面序号硬判粗体的直接
+	// 后果: nsimsun 只有 {b=1} 这一格, 而 genericMono 兜底 (firstMonoLocked)
+	// 恰好返回它 ⇒ lookup("monospace") 查不到正体轴、整个泛型等宽族失效。
+	_ = faceIndex // 保留参数: 判据将来若要按面细分, 唯一入口在这里
 	italic := strings.Contains(s, "italic") || strings.Contains(s, "oblique")
 	if !italic {
 		if pt := f.PostTable(); pt != nil && pt.ItalicAngle != 0 {
@@ -375,6 +402,20 @@ func axisFromFont(f *opentype.Font, subfamily string) styleAxis {
 		}
 	}
 	return styleAxis{bold: bold, italic: italic}
+}
+
+// localizedBoldNames 是非英语的字重子族名 —— 一些字体的 name 表按造字者
+// 的母语写子族名, 完全不含 "bold" 字样。
+//
+// 目前只收实测过的: msyhbd.ttc 的子族名是 "Negreta" (加泰罗尼亚语/葡萄牙语
+// 的 Bold)。漏掉它的症状是"加粗看起来是合成的" —— 其实只是索引把真粗体面
+// 登记成了正体, 于是查表命中正体、连合成都没触发, 比合成还差。
+var localizedBoldNames = map[string]bool{
+	"negreta": true, // 加泰罗尼亚/葡萄牙语: 粗体
+	"negrito": true, // 葡萄牙语/加利西亚语: 粗体
+	"gras":    true, // 法语: 粗体 (Gras)
+	"fett":    true, // 德语: 粗体
+	"halvfet": true, // 瑞典语/挪威语: 半粗体
 }
 
 // appleWeightBold 认苹果 CJK 字体的字重子族名 (W3 / W6 / W9 …)。

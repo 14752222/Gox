@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"golang.org/x/image/font/opentype"
+	"golang.org/x/image/font/sfnt"
 )
 
 // ===== 字体与文本测量 =====
@@ -389,5 +390,111 @@ func TestFontScanNotSilentlyEmpty(t *testing.T) {
 			"(fontCandidates=%v)。静态兜底若没有 CJK 字体, 整屏中文会静默不渲染; "+
 			"先查有没有用例把 scannedFonts 清空了, 再看 fontScanLimit(%d) 是不是被位图字体目录吃光。",
 			dirs, fontCandidates, fontScanLimit)
+	}
+}
+
+// TestBaseFontIsNotBoldFace 默认字体必须是**正体面**。
+//
+// 为什么单独立一条 (2026-10-07, 看板 rXrGfu): CI 的 ubuntu runner 上目录扫描按
+// 字母序把 NotoSansCJK-Bold.ttc 排在了最前, 于是 baseFont 成了粗体面 —— 整个应用
+// 的正文全变粗, 而且"加粗"这个样式再也做不出来 (族索引里 {bold:true} 也指到它
+// 自己, 正体与粗体逐像素相同)。这条用例就是那次的护栏。
+//
+// 判据用**面内容** (子族名) 而不是文件名: Linux 上文件名与真实字重对不上的情况
+// 很常见 (实测 NotoSansCJK-Bold.ttc 的面 0 子族名写着 Bold, 内容却与 Regular 面 0
+// 逐字节相同 —— 正因如此才必须靠"跳过粗体面"来挡, 不能靠信任文件名)。
+func TestBaseFontIsNotBoldFace(t *testing.T) {
+	requireFont(t)
+	f, err := loadBaseFont()
+	if err != nil {
+		t.Fatalf("loadBaseFont: %v", err)
+	}
+	var buf sfnt.Buffer
+	sub := fontNameOf(f, &buf, sfnt.NameIDSubfamily)
+	if a := axisFromFont(f, 0, sub); a.bold {
+		t.Fatalf("默认字体不应是粗体面: 子族名=%q, 候选表前 3 条=%v。\n"+
+			"默认字体是粗体 ⇒ 正文整体变粗, 且 bold 样式再也做不出来 "+
+			"(索引里 {bold:true} 会指到同一个面, 正体与粗体逐像素相同)。\n"+
+			"查 loadBaseFontLocked 的「跳过粗体面」分支是否还在。",
+			sub, firstN(fontCandidates, 3))
+	}
+}
+
+// TestFaceIndexDoesNotImplyWeight 集合字体的面**不能**按序号判字重。
+//
+// 为什么: 曾按"面 0 正体、面 >0 粗体"来兜 TTC 里子族名不区分的族, 实测是错的 ——
+// 集合字体的**每个面都有自己的族名**:
+//
+//	simsun.ttc 面0 族=SimSun  子族=Regular;  面1 族=NSimSun  子族=Regular
+//	msyh.ttc   面0 族=Microsoft YaHei;      面1 族=Microsoft YaHei UI
+//
+// 即 NSimSun 是"另一个族", 不是 SimSun 的粗体面。按序号硬判粗体的后果: nsimsun
+// 只剩 {b=1} 一格, 而 genericMono 兜底 (firstMonoLocked) 恰好返回它 ⇒
+// lookup("monospace") 查不到正体轴, 泛型等宽族整体失效 (实测连带两条用例一起红)。
+func TestFaceIndexDoesNotImplyWeight(t *testing.T) {
+	f, err := parseFontFile(`C:\Windows\Fonts\simsun.ttc`)
+	if err != nil {
+		t.Skip("本机没有 simsun.ttc (非 Windows)")
+	}
+	var buf sfnt.Buffer
+	// 面 1 是 NSimSun: 它的子族名是 Regular, 必须判成正体。
+	sub1 := fontNameOf(f, &buf, sfnt.NameIDSubfamily)
+	if a := axisFromFont(f, 1, sub1); a.bold {
+		t.Fatalf("面序号不该影响字重判定: 面 1 子族名=%q 却判成了粗体", sub1)
+	}
+}
+
+// firstN 返回列表前 n 条 (不足则全给), 只用于错误消息。
+func firstN(list []string, n int) []string {
+	if len(list) < n {
+		n = len(list)
+	}
+	return list[:n]
+}
+
+// TestBundledFontPair 随包字体必须是"正体 + 粗体"一对, 且族名一致。
+//
+// 为什么要有随包字体 (2026-10-07, 看板 rXrGfu): 精简镜像 (CI 的 ubuntu runner) 只装
+// TTF 版 Noto CJK, 而系统里那一份 .ttc 的面序与名字并不可信 —— 实测
+// NotoSansCJK-Bold.ttc 的面 0 子族名写着 Bold, 内容却与 Regular 面 0 逐字节相同,
+// 结果"加粗"永远画不出区别。与其去猜发行版的布局, 不如自己带一对确定的。
+//
+// 断言的是"这一对能被正确识别", 不是"系统里有没有它": 缺文件时跳过, 因为随包字体
+// 是**可选兜底** (SetBaseAssetsDir 没调用就不用), 不该让没带资源的构建红。
+func TestBundledFontPair(t *testing.T) {
+	abs, err := filepath.Abs(filepath.Join("..", "assets", "fonts"))
+	if err != nil {
+		t.Skipf("定位随包字体目录失败: %v", err)
+	}
+	reg := filepath.Join(abs, "NotoSansSC-Regular.otf")
+	bold := filepath.Join(abs, "NotoSansSC-Bold.otf")
+	if _, err := os.Stat(reg); err != nil {
+		t.Skipf("本构建不带随包字体: %v", err)
+	}
+	if _, err := os.Stat(bold); err != nil {
+		t.Skipf("本构建不带随包字体: %v", err)
+	}
+
+	var buf sfnt.Buffer
+	fr, err := parseFontFile(reg)
+	if err != nil {
+		t.Fatalf("随包正体读不出: %v", err)
+	}
+	fb, err := parseFontFile(bold)
+	if err != nil {
+		t.Fatalf("随包粗体读不出: %v", err)
+	}
+	sr := fontNameOf(fr, &buf, sfnt.NameIDSubfamily)
+	sb := fontNameOf(fb, &buf, sfnt.NameIDSubfamily)
+	if axisFromFont(fr, 0, sr).bold {
+		t.Fatalf("随包正体被判成了粗体: 子族=%q；默认字体若落到这一份, 整个应用正文都会变粗。", sr)
+	}
+	if !axisFromFont(fb, 0, sb).bold {
+		t.Fatalf("随包粗体没被判成粗体: 子族=%q；后果是加粗退化成合成 (或干脆无效)。", sb)
+	}
+	familyR := fontNameOf(fr, &buf, sfnt.NameIDFamily)
+	familyB := fontNameOf(fb, &buf, sfnt.NameIDFamily)
+	if familyR != familyB {
+		t.Fatalf("随包正体(%q)与粗体(%q)的族名必须一致, 否则族索引里「加粗」查不到同一族", familyR, familyB)
 	}
 }

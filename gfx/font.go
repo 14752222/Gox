@@ -12,6 +12,7 @@ import (
 
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/opentype"
+	"golang.org/x/image/font/sfnt"
 	"golang.org/x/image/math/fixed"
 )
 
@@ -29,8 +30,51 @@ import (
 // 规律), 只能真去扫目录 —— 这就是 P3-7 修的"Linux 上文字完全不渲染"。
 
 // fontCandidates 系统字体候选, 依次尝试首个可解析者。
-// 有效顺序恒为: 宿主注入 > 目录扫描 > 静态候选 (由 rebuildCandidatesLocked 组装)。
+// 有效顺序恒为: 宿主注入 > 目录扫描 > 静态候选 > 随包兜底 (rebuildCandidatesLocked)。
 var fontCandidates = fontCandidatesForOS()
+
+// __BASE_ASSETS__ 是"随包字体"所在目录, 由宿主 (main / 平台入口) 在首次渲染前
+// 调用 SetBaseAssetsDir 填入 —— grep 这个标记名就能找到全部注入点。
+//
+// 为什么需要它: 精简镜像 (CI 的 ubuntu runner 就是) 只装了 TTF 版 Noto CJK,
+// 而系统里那一份的 .ttc 面序与名字并不可信 (见 axisFromFont 的长注释);
+// 与其去猜系统布局, 不如**自己带一对正体+粗体**, 让"默认字体是正体"与
+// "加粗看得出区别"这两条不再依赖发行版。它排在静态候选**之后** —— 桌面
+// 系统的原生字体观感更好, 随包字体只在前面都落空时才生效。
+var baseAssetsDir string
+
+// SetBaseAssetsDir 告知 gfx "随包字体"的根目录 (gox 运行时/宿主调用)。
+//
+// 留空 = 不用随包字体 (默认; 保持"只用系统字体"的旧行为)。与 SetFontPath
+// 的区别: 那个是"宿主明确指定必须用的字体"(优先级最高), 这个是"最后兜底"。
+func SetBaseAssetsDir(dir string) {
+	fontMu.Lock()
+	defer fontMu.Unlock()
+	if baseAssetsDir == dir {
+		return
+	}
+	baseAssetsDir = dir
+	rebuildCandidatesLocked()
+	// 已加载过字体才需要重置缓存; 否则下次加载自然用新候选表。
+	if baseFont != nil || len(faceBySize) > 0 {
+		baseFont = nil
+		faceBySize = map[int]font.Face{}
+		resetFontCaches()
+	}
+}
+
+// bundledFontCandidates 返回随包字体候选 (成对给出: 正体在前, 粗体在后)。
+// 未设置资源目录时返回 nil。
+func bundledFontCandidates() []string {
+	if baseAssetsDir == "" {
+		return nil
+	}
+	d := filepath.Join(baseAssetsDir, "fonts")
+	return []string{
+		filepath.Join(d, "NotoSansSC-Regular.otf"),
+		filepath.Join(d, "NotoSansSC-Bold.otf"),
+	}
+}
 
 // injectedFonts 是宿主通过 SetFontPath 注入的字体 (优先级最高)。
 // 移动端的常见用法: APK/IPA 自带字体 → 解到沙箱 → 把绝对路径交进来。
@@ -56,6 +100,8 @@ func rebuildCandidatesLocked() {
 		next = append(next, scannedFonts...)
 		next = append(next, fontCandidatesForOS()...)
 	}
+	// 随包字体永远排最后: 它是"前面全落空"时的保底, 不该抢系统字体的位置。
+	next = append(next, bundledFontCandidates()...)
 	fontCandidates = next
 }
 
@@ -158,7 +204,18 @@ func fontCandidatesForOS() []string {
 		}
 	default:
 		// 常见发行版的兜底路径; 主力候选靠目录扫描补齐。
+		//
+		// CJK 放在拉丁之前: 拉丁字体也能正常加载, 只是中文全画成豆腐块 ——
+		// 比"完全不出字"更难查。TTF 命名的 Noto CJK 在 Debian/Ubuntu 的
+		// fonts-noto-cjk 里恒存在 (扫描落空时的保底, 与 Windows 的 msyh
+		// 同一角色)。
 		return []string{
+			"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+			"/usr/share/fonts/opentype/noto/NotoSansCJK-VF.otf.ttc",
+			"/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+			"/usr/share/fonts/opentype/noto/NotoSerifCJK-Regular.ttc",
+			"/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+			"/usr/share/fonts/truetype/arphic/uming.ttc",
 			"/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
 			"/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
 		}
@@ -333,7 +390,9 @@ func loadBaseFontLocked() (*opentype.Font, error) {
 	// 会让"从不用 GUI"的脚本平白付一次开销。initFontCandidates 自带 sync.Once,
 	// 且**不取 fontMu** —— 调用方已经持有, 再取会自锁。
 	initFontCandidates()
+	var buf sfnt.Buffer
 	var lastErr error
+	var boldFallback *opentype.Font // 全是粗体面时的保底 (见下)
 	for _, path := range fontCandidates {
 		if filepath.Base(path) == "" {
 			continue
@@ -345,7 +404,25 @@ func loadBaseFontLocked() (*opentype.Font, error) {
 			lastErr = fmt.Errorf("%s: %w", filepath.Base(path), err)
 			continue
 		}
+		// 默认字体必须是**正体面**: 粗体面当正体用, 整个应用的正文都会变粗,
+		// 而且"加粗"这个样式再也做不出来 —— 索引里 {bold:true} 也会指到它
+		// 自己, 于是"正体"与"粗体"逐像素相同 (实测 CI 的 ubuntu runner:
+		// 目录扫描按字母序把 NotoSansCJK-Bold.ttc 排在了最前)。
+		// 用**面内容**判 (子族名 + 面序号), 而不是文件名 —— Linux 上文件名
+		// 与真实字重对不上的情况很常见。
+		if axisFromFont(f, 0, fontNameOf(f, &buf, sfnt.NameIDSubfamily)).bold {
+			if boldFallback == nil {
+				boldFallback = f
+			}
+			continue
+		}
 		baseFont = f
+		return baseFont, nil
+	}
+	// 整个候选表里没有一个正体面 (极端环境): 宁可退回粗体也不报错 ——
+	// 有字可渲染永远优于"整屏无字"。
+	if boldFallback != nil {
+		baseFont = boldFallback
 		return baseFont, nil
 	}
 	return nil, fmt.Errorf("no usable system font (tried %d candidates, last: %v)",

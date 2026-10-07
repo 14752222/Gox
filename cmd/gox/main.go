@@ -237,8 +237,31 @@ func createFatal(msg string) {
 	os.Exit(1)
 }
 
+// initBundledAssets 把"随包字体"目录交给 gfx (渲染前调用, 幂等)。
+//
+// 为什么需要: 纯 TTF 的 Noto CJK 只在部分发行版装了, 而 CI 的精简镜像
+// (ubuntu runner) 只提供 .ttc 版 —— 那一份的面序与名字并不可信
+// (NotoSansCJK-Bold.ttc 的面 0 子族名写着 Bold, 内容却是正体)。与其去猜系统
+// 布局, 不如自己带一对正体+粗体。它排在所有系统候选之后, 只在前面全落空时
+// 生效, 所以不会改变桌面系统的观感。
+//
+// 目录约定: <exe 所在目录>/assets/fonts/{NotoSansSC-Regular,NotoSansSC-Bold}.otf。
+// 找不到就什么都不做 —— 这条路径不能成为"启动失败"的理由。
+func initBundledAssets() {
+	exe, err := os.Executable()
+	if err != nil {
+		return
+	}
+	dir := filepath.Join(filepath.Dir(exe), "assets")
+	if st, err := os.Stat(filepath.Join(dir, "fonts")); err != nil || !st.IsDir() {
+		return
+	}
+	gfx.SetBaseAssetsDir(dir)
+}
+
 // runFile 读取并执行 JavaScript 文件。
 func runFile(path string) {
+	initBundledAssets()
 	vm, err := vm.EvalFileVM(path)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
@@ -273,6 +296,7 @@ func runFile(path string) {
 
 // startREPL 启动交互式 REPL。
 func startREPL() {
+	initBundledAssets()
 	globals := stdlib.SetupGlobals()
 
 	fmt.Println("Gox REPL (ES6 subset)")
