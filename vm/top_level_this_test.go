@@ -3,6 +3,8 @@ package vm
 import (
 	"path/filepath"
 	"testing"
+
+	"github.com/14752222/Gox/object"
 )
 
 // ===== this 绑定: 顶层 + 裸调用 sloppy 归一 (r63RpV, strict Phase 0+2) =====
@@ -139,6 +141,41 @@ globalThis.__v = v;`,
 		t.Fatal("__v 未写入")
 	} else {
 		assertNumber(t, val, 42)
+	}
+}
+
+// TestModuleEntryDefaultStrict 模块入口**默认严格** —— 顶层未声明标识符赋值
+// 必须抛 ReferenceError（sloppy script 会静默建全局），且该名不得泄漏为全局
+// 属性。这是「模块语义落地」除顶层 this=undefined 之外的另一半 (rNR2Zk)。
+func TestModuleEntryDefaultStrict(t *testing.T) {
+	v, err := runModuleEntry(t, "globalThis.__threw = false;\n"+
+		"try { __undeclared_module_var__ = 1; } catch (e) { globalThis.__threw = (e instanceof ReferenceError); }\n")
+	if err != nil {
+		t.Fatalf("EvalModuleFileVM: %v", err)
+	}
+	if val, ok := v.Globals().Get("__threw"); !ok {
+		t.Fatal("__threw 未写入")
+	} else {
+		assertBoolean(t, val, true)
+	}
+	if _, ok := v.Globals().Get("__undeclared_module_var__"); ok {
+		t.Fatal("module 顶层未声明赋值不应建全局属性（strict 语义未生效）")
+	}
+}
+
+// TestModuleEntryBareCallThisIsUndefined 模块默认严格对 `this` 归一的影响:
+// 模块顶层里裸调用的非箭头函数 this = undefined（sloppy 才会归一成 globalThis）。
+func TestModuleEntryBareCallThisIsUndefined(t *testing.T) {
+	v, err := runModuleEntry(t, "globalThis.__bareThis = (function(){ return this; })();\n")
+	if err != nil {
+		t.Fatalf("EvalModuleFileVM: %v", err)
+	}
+	val, ok := v.Globals().Get("__bareThis")
+	if !ok {
+		t.Fatal("__bareThis 未写入")
+	}
+	if _, isUndef := val.(*object.Undefined); !isUndef {
+		t.Fatalf("模块内裸调用 this 应为 undefined（strict），实得 %s", val.Inspect())
 	}
 }
 
