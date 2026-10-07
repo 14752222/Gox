@@ -6414,7 +6414,11 @@ func EvalModuleFileVMWithGlobals(path string, globals *runtime.Environment) (*VM
 	vm.mainUnit.isModule = true
 	vm.SetStmtPositions(c.StmtPositions())
 	if err := vm.RunCompiled(c); err != nil {
-		return nil, fmt.Errorf("vm error: %v", vm.AttachFrame(err))
+		// 与 script 入口 (EvalFileVM / EvalVM) 一致走 uncaughtError: 未捕获的
+		// **抛出值**按 ToString 语义渲染 (用户对象调其自定义 toString, 保住
+		// 构造器类型名), 而不是直接 %v 落到 ThrowError.Error() 的 Inspect
+		// (会把 `throw new Test262Error()` 渲染成 `{ message: "" }` 丢类型名)。
+		return nil, vm.uncaughtError(err)
 	}
 
 	return vm, nil

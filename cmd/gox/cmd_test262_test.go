@@ -17,6 +17,11 @@ func TestErrorHead(t *testing.T) {
 			"vm error: { message: \"\" }\n    --> f.js:4:16\n  |\n 4 | if (x === 0) { throw new Test262Error(); }\n  |                ^",
 			`vm error: { message: "" }`,
 		},
+		{
+			// 修复后的真实形状 (渲染走 ToString, 类型名进首行), 首行含 Test262Error。
+			"vm error: Test262Error: \n    --> f.js:4:16\n  |\n 4 | if (x === 0) { throw new Test262Error(); }\n  |                ^",
+			"vm error: Test262Error:",
+		},
 		{"", ""},
 		{"  leading trimmed  ", "leading trimmed"},
 	}
@@ -28,13 +33,18 @@ func TestErrorHead(t *testing.T) {
 }
 
 // TestJudgePhaseNegTypeUsesHeadOnly 是 r23xdR 的核心回归：
-// 期望 type: Test262Error，实际首行只有 `{ message: "" }`（类型名只出现在
+// 期望 type: Test262Error，但引擎消息首行不含该类型名（类型名只出现在
 // **被回显的源码行**里）时必须判失败；首行含类型名时才判通过。
+//
+// 注：早先这个用例拿 `vm error: { message: "" }` 当"首行无类型名"的样本 ——
+// 那是渲染走 Inspect 丢掉构造器名的 bug 产物（已修，见 vm.uncaughtError /
+// EvalModuleFileVMWithGlobals）。判据本身（只看首行、不吃源码回显）与
+// 被渲染成什么无关，故改用等价形状继续钉住判据。
 func TestJudgePhaseNegTypeUsesHeadOnly(t *testing.T) {
 	c := &test262Case{Negative: "runtime", NegType: "Test262Error"}
 
 	// 侥幸形状：首行无 Test262Error，源码回显行有。
-	echoed := errors.New("vm error: { message: \"\" }\n" +
+	echoed := errors.New("vm error: some other error\n" +
 		"    --> f.js:4:16\n" +
 		"  |\n" +
 		" 4 | if (x === 0) { throw new Test262Error(); }\n" +
