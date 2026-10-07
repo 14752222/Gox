@@ -293,6 +293,12 @@ const (
 	OP_JUMP_IF_TRUE_POP Opcode = 0xD7 // 条件真则弹出条件值并跳转; 假则不弹继续 (switch case 匹配)
 	OP_SET_GETTER_DYN   Opcode = 0xD8 // 动态键 getter: 栈 [obj, fn, key], 键为运行时值 (计算属性名)
 	OP_SET_SETTER_DYN   Opcode = 0xD9 // 动态键 setter: 栈 [obj, fn, key]
+	// OP_PUSH_RET_TRY: 在栈顶 try 条目上设置「return 完成拦截 PC」
+	// (类比 OP_PUSH_FINALLY 设 finallyPC)。供 async generator 的 yield*
+	// 异步委托: 委托期消费者 return(v) 必须转发给被委托迭代器 (规范
+	// YieldExpression: yield* 6.c)。throw 完成仍走 catchPC, 二者同条目。
+	// operand = returnPC (0 = 不拦截 return)
+	OP_PUSH_RET_TRY Opcode = 0xDA
 
 	// 0xE0-0xEF: 模块
 	OP_IMPORT Opcode = 0xE0 // import module (operand = module spec constant index)
@@ -427,6 +433,7 @@ var opcodeNames = map[Opcode]string{
 	OP_BREAK: "BREAK", OP_CONTINUE: "CONTINUE",
 	OP_PUSH_TRY: "PUSH_TRY", OP_PUSH_FINALLY: "PUSH_FINALLY",
 	OP_POP_TRY: "POP_TRY", OP_THROW: "THROW", OP_END_FINALLY: "END_FINALLY",
+	OP_PUSH_RET_TRY: "PUSH_RET_TRY",
 	OP_IMPORT: "IMPORT", OP_EXPORT: "EXPORT",
 	OP_EXPORT_BINDING: "EXPORT_BINDING", OP_EXPORT_FROM: "EXPORT_FROM", OP_EXPORT_STAR: "EXPORT_STAR",
 	OP_DISPOSE_ADD:  "DISPOSE_ADD",

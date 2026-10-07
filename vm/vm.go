@@ -138,6 +138,12 @@ type tryEntry struct {
 	stackBase int // 进入 try 时的栈高度
 	frameIdx  int // 进入 try 时的帧索引
 
+	// catchReturnPC: return 完成拦截 PC (0 = 不拦截)。由 OP_PUSH_RET_TRY 置位。
+	// 只有 async generator 的 yield* 异步委托用它 —— 委托期消费者 return(v)
+	// 必须转发给被委托迭代器 (规范 YieldExpression: yield* 6.c), 而不是直接
+	// 结束生成器。throw 完成仍走 catchPC, 二者共存于同一条目。
+	catchReturnPC int
+
 	// inFinally 标记本条目已进入自己的 finally 体 (由 handleThrowInner 置位)。
 	//
 	// 此时条目**留在 tryStack 上**, 由 pendingVal 承载挂起的异常值, 直到:
@@ -1672,6 +1678,7 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				gen.PendingTries = append([]object.GenTryEntry{{
 					CatchPC:       te.catchPC,
 					FinallyPC:     te.finallyPC,
+					CatchReturnPC: te.catchReturnPC,
 					RelStackBase:  te.stackBase - curFrame.StackBase,
 					RelFrameIdx:   te.frameIdx - vm.frameIdx,
 					InFinally:     te.inFinally,
@@ -2755,6 +2762,14 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				if nf, src, ok := vm.syncWrapperNext(it); ok {
 					nextFn, found, recv = nf, true, src
 				}
+				// get next 是访问器且抛错: 立即消费回调桥错误并按抛出流程
+				// 传播原始抛出值 (不能退化成 "no callable next()" TypeError)。
+				if err := vm.checkCallbackErr(); err != nil {
+					if terr := vm.rethrowBridgeError(err); terr != nil {
+						return terr
+					}
+					continue
+				}
 				if !found || !object.IsCallable(nextFn) {
 					if err := vm.throwNamedError("TypeError", "async iterator has no callable next()"); err != nil {
 						return err
@@ -2823,6 +2838,13 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 					if nf, src, ok := vm.syncWrapperNext(o); ok {
 						nextFn, found, recv = nf, true, src
 					}
+				}
+				// get next 抛错: 消费回调桥错误并按抛出流程传播原始抛出值。
+				if err := vm.checkCallbackErr(); err != nil {
+					if terr := vm.rethrowBridgeError(err); terr != nil {
+						return terr
+					}
+					continue
 				}
 				if !found || !object.IsCallable(nextFn) {
 					if err := vm.throwNamedError("TypeError", "async iterator has no callable next()"); err != nil {
@@ -3159,6 +3181,12 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			// operand = finallyPC，设置在栈顶 try 条目上
 			if len(vm.tryStack) > 0 {
 				vm.tryStack[len(vm.tryStack)-1].finallyPC = int(operand)
+			}
+		case bytecode.OP_PUSH_RET_TRY:
+			// operand = returnPC，设置在栈顶 try 条目上 (同 OP_PUSH_FINALLY 手法)。
+			// yield* 异步委托用: 委托期消费者 return(v) 转发给被委托迭代器。
+			if len(vm.tryStack) > 0 {
+				vm.tryStack[len(vm.tryStack)-1].catchReturnPC = int(operand)
 			}
 		case bytecode.OP_POP_TRY:
 			// try 块正常完成，弹出处理器
@@ -4161,6 +4189,14 @@ func (vm *VM) handleReturnInner(val object.Value) bool {
 
 		for vm.stack.Len() > entry.stackBase {
 			vm.stack.Pop()
+		}
+
+		// return 完成拦截 (yield* 异步委托): 把 return 值压栈并劫持 PC 到
+		// 委托的 return 处理段。条目已被弹出 —— 与 catchPC 拦截 throw 对称。
+		if entry.catchReturnPC > 0 {
+			vm.stack.Push(val)
+			vm.currentFrame().PC = entry.catchReturnPC
+			return true
 		}
 
 		if entry.finallyPC > 0 {
@@ -5227,10 +5263,11 @@ func (vm *VM) genReturn(gen *object.Generator, returnVal object.Value) (object.V
 		gen.Done = true
 		return returnVal, true, nil
 	}
-	// 只有体内挂有 finally 时才需要重建帧执行收尾; 否则直接关闭。
+	// 需要重建帧执行收尾的条件: 体内挂有 finally, 或挂有 yield* 异步委托的
+	// return 拦截 PC (委托期 return(v) 必须转发给被委托迭代器)。否则直接关闭。
 	hasFinally := false
 	for _, te := range gen.PendingTries {
-		if te.FinallyPC > 0 {
+		if te.FinallyPC > 0 || te.CatchReturnPC > 0 {
 			hasFinally = true
 			break
 		}
@@ -5306,6 +5343,7 @@ func (vm *VM) rebuildGenFrame(gen *object.Generator, reuseLocals bool) *Frame {
 		vm.tryStack = append(vm.tryStack, tryEntry{
 			catchPC:       te.CatchPC,
 			finallyPC:     te.FinallyPC,
+			catchReturnPC: te.CatchReturnPC,
 			stackBase:     frame.StackBase + te.RelStackBase,
 			frameIdx:      vm.frameIdx + te.RelFrameIdx,
 			inFinally:     te.InFinally,

@@ -342,14 +342,14 @@ func agStep(g *object.AsyncGenerator, req *object.AsyncGenRequest, kind int, arg
 		return
 	}
 
-	// yield: 先按 AsyncGeneratorYield 语义 await 值, 再对消费者结算。
-	// 值 reject 时把 reason 抛回 yield 点 (体内 try/catch 可捕获), 继续驱动。
-	agAwait(value,
-		func(resolved object.Value) {
-			req.Promise.Resolve(newAsyncIterResult(resolved, false))
-			agFinish(g, req)
-		},
-		func(reason object.Value) { agStep(g, req, object.AGThrowKind, reason) })
+	// yield: 按 AsyncGeneratorYield 语义结算 —— **不 await 值本身**
+	// (规范 AsyncGeneratorYield 直接 AsyncGeneratorResolve(generator, value,
+	// false); 只有体内显式 `yield await x` 才先 await)。若在此 await 值,
+	// `yield somePromise` 会把 promise 解包, 破坏
+	// test262 yield-star-promise-not-unwrapped (手动实现的 async 迭代器
+	// 产出 promise 时不得解包)。
+	req.Promise.Resolve(newAsyncIterResult(value, false))
+	agFinish(g, req)
 }
 
 // agRejectBridge 用原始抛出值 (优先) 结算 rejection。
@@ -414,10 +414,23 @@ func agAwait(value object.Value, onResolve, onReject func(object.Value)) {
 				return object.UndefinedSingleton
 			})
 			res := object.CallFunction(thenFn, value, fulfil, reject)
-			if errObj, isErr := res.(*object.Error); isErr && !settled {
-				// then() 自身同步抛错: 规范以该值 reject thenable。
-				settled = true
-				onReject(errObj)
+			if !settled {
+				// then() 自身同步抛错 (可能抛任意值, 非 Error): 规范以该值
+				// reject thenable。优先用原始抛出值 (callbackErrorValue),
+				// 否则退化为 Go 错误字符串 —— 与其它错误桥路径同款纪律。
+				if cbErr := object.TakeCallbackError(); cbErr != nil {
+					settled = true
+					if thrown := object.TakeCallbackErrorValue(); thrown != object.UndefinedSingleton {
+						onReject(thrown)
+					} else {
+						onReject(object.NewErrorWithName("Error", cbErr.Error()))
+					}
+					return
+				}
+				if errObj, isErr := res.(*object.Error); isErr {
+					settled = true
+					onReject(errObj)
+				}
 			}
 			return
 		}

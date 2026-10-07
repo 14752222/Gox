@@ -50,6 +50,10 @@ type GenTryEntry struct {
 	RelStackBase int // 相对 generator 帧栈基址的 try 时的栈高度
 	RelFrameIdx  int // 相对 generator 帧索引的偏移 (通常为 0)
 
+	// CatchReturnPC: return 完成拦截 PC (0 = 不拦截)。供 async generator
+	// 的 yield* 异步委托 —— 消费者 return(v) 必须转发给被委托迭代器。
+	CatchReturnPC int
+
 	// InFinally / PendingVal: 条目已进入自己的 finally 体时挂起的异常值。
 	// yield 若发生在 finally 体内 (或它的保护范围内), 这两项必须一并保存 ——
 	// 否则恢复后 OP_END_FINALLY 找不到挂起值, 原异常会被静默吞掉。

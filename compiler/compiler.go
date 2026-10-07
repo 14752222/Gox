@@ -4047,16 +4047,25 @@ func (c *Compiler) compileYieldDelegate(expr ast.Expression) error {
 }
 
 // compileYieldDelegateAsync 编译 async generator 体内的 yield* 异步委托
-// (规范 AsyncGeneratorYieldDelegate)。
+// (规范 AsyncGeneratorYieldDelegate / YieldExpression: yield*)。
 //
-// 与同步版 (compileYieldDelegate) 的关键差异:
-//   - 每步取 next() 的结果可能是 Promise, 必须 await (OP_AWAIT) 后再读 .done/.value;
-//   - 消费者 next(v) 传入的值要转发给被委托迭代器的 next(v) (经 ASYNC_ITER_NEXT_ARG);
-//   - 委托结束时 yield* 表达式的值是被委托迭代器末次结果的 .value (而非 undefined)。
+// 三种完成类型都必须在挂起点被拦截 (规范 7.a/7.b/7.c):
+//   - normal: step = Await(iter.next(recv)); 未完成则 yield step.value;
+//             恢复值作为下一轮 recv。done 时 yield* 表达式的值 = step.value。
+//   - throw:  step = Await(GetMethod(iter,"throw").call(iter, e)); 继续循环;
+//             无 throw 方法 ⇒ AsyncIteratorClose(iter) 后抛 TypeError。
+//   - return: step = Await(GetMethod(iter,"return").call(iter, v));
+//             done ⇒ 完成生成器 (值 Await(step.value));
+//             未完成 ⇒ yield step.value 继续循环 (received 归为 normal);
+//             无 return 方法 ⇒ Await(v) 后以 v 完成生成器。
 //
-// 被委托迭代器与递归状态一律放隐藏局部槽 (iter/recv/step), 绝不留在操作数栈
-// 上跨挂起点 —— OP_AWAIT/OP_YIELD 挂起时只保存帧基之上的栈值, 跨挂起存活
-// 的迭代器会成为残缺值, 污染调用方栈 (见重建帧语义)。
+// return 完成的拦截不能走 catch (规范: catch 不拦 return), 故用新增的
+// OP_PUSH_RET_TRY 在委托条目上注册一个 return 处理 PC —— 与 catchPC 拦截
+// throw 对称 (见 vm.handleReturnInner)。
+//
+// 被委托迭代器与递归状态一律放隐藏局部槽 (iter/recv/step/out/err/retv),
+// 绝不留在操作数栈上跨挂起点 —— OP_AWAIT/OP_YIELD 挂起时只保存帧基之上的
+// 栈值, 跨挂起存活的迭代器会成为残缺值, 污染调用方栈 (见重建帧语义)。
 func (c *Compiler) compileYieldDelegateAsync(expr ast.Expression) error {
 	if err := c.compileExpression(expr); err != nil {
 		return err
@@ -4065,17 +4074,19 @@ func (c *Compiler) compileYieldDelegateAsync(expr ast.Expression) error {
 	c.emitter.EmitNoOperand(bytecode.OP_GET_ASYNC_ITERATOR)
 	iterSym := c.scope.Define("%yield*async-iter%", false)
 	c.emitter.Emit(bytecode.OP_STORE, uint16(iterSym.Slot)) // []
+	recvSym := c.scope.Define("%yield*async-recv%", false)  // next() 传来的 normal 值
+	stepSym := c.scope.Define("%yield*async-step%", false)
+	outSym := c.scope.Define("%yield*async-out%", false) // 待 yield 的值 (跨挂在槽)
+	errSym := c.scope.Define("%yield*async-err%", false)
+	retvSym := c.scope.Define("%yield*async-retv%", false)
 	// received 初值 undefined (首次 next() 传 undefined)
-	recvSym := c.scope.Define("%yield*async-recv%", false)
 	c.emitter.EmitNoOperand(bytecode.OP_UNDEFINED)
 	c.emitter.Emit(bytecode.OP_STORE, uint16(recvSym.Slot))
-	stepSym := c.scope.Define("%yield*async-step%", false)
-	outSym := c.scope.Define("%yield*async-out%", false) // 待 yield 的值 (跨挂在槽, 不占栈)
-	errSym := c.scope.Define("%yield*async-err%", false)
 
 	doneIdx := c.constants.AddConstant(object.NewString("done"))
 	valueIdx := c.constants.AddConstant(object.NewString("value"))
 	throwIdx := c.constants.AddConstant(object.NewString("throw"))
+	returnIdx := c.constants.AddConstant(object.NewString("return"))
 
 	// ---- 循环头: step = await iter.next(received), 校验为对象 ----
 	loopStart := c.emitter.Pos()
@@ -4083,15 +4094,14 @@ func (c *Compiler) compileYieldDelegateAsync(expr ast.Expression) error {
 	c.emitter.Emit(bytecode.OP_LOAD, uint16(recvSym.Slot))
 	c.emitter.EmitNoOperand(bytecode.OP_ASYNC_ITER_NEXT_ARG) // [step]
 	c.emitter.EmitNoOperand(bytecode.OP_AWAIT)               // [resolvedStep]
-	// Await 之后结果必须是对象, 否则 TypeError (__async_iter_check 校验)
 	c.emitGlobalLoad("__async_iter_check")
 	c.emitter.Emit(bytecode.OP_CALL, 1)                     // [checkedStep]
 	c.emitter.Emit(bytecode.OP_STORE, uint16(stepSym.Slot)) // []
 	toProcess := c.emitter.EmitJump(bytecode.OP_JUMP)
 
 	// ---- 消费者 throw(e) 的转发落点 (栈顶 = 抛入的 e) ----
-	// 规范: received 为 throw 时调用 iterator.throw(e) 并把其结果当作步进结果
-	// 继续循环; throw 方法缺失则原样重抛。
+	// 规范 7.b: received 为 throw 时调 iter.throw(e), 结果当作步进结果继续;
+	// throw 方法缺失 ⇒ AsyncIteratorClose(iter) 后抛 TypeError。
 	throwHandler := c.emitter.Pos()
 	c.emitter.Emit(bytecode.OP_STORE, uint16(errSym.Slot)) // []
 	c.emitter.Emit(bytecode.OP_LOAD, uint16(iterSym.Slot))
@@ -4110,41 +4120,124 @@ func (c *Compiler) compileYieldDelegateAsync(expr ast.Expression) error {
 
 	c.emitter.PatchJump(noThrow)
 	c.emitter.EmitNoOperand(bytecode.OP_POP) // 弹掉 DUP 的 tfn
-	c.emitter.EmitNoOperand(bytecode.OP_POP) // 弹掉原 tfn
-	c.emitter.Emit(bytecode.OP_LOAD, uint16(errSym.Slot))
-	c.emitter.EmitNoOperand(bytecode.OP_THROW) // 无 throw 方法: 原样重抛
+	// AsyncIteratorClose(iter): GetMethod(iter,"return"), 可调用则以 iter 为
+	// this 调之 (参数 undefined), 丢弃结果。再抛 TypeError。
+	c.emitAsyncIteratorClose(iterSym.Slot, returnIdx)
+	c.emitThrowNamedError("TypeError", "iterator does not provide a 'throw' method")
+
+	// ---- 消费者 return(v) 的转发落点 (栈顶 = 传入的 v) ----
+	// 规范 7.c: 调 iter.return(v), 结果 awaited; done ⇒ 完成生成器; 未完成 ⇒
+	// 把结果 value yield 给消费者, 恢复值作为 normal received 继续循环;
+	// return 方法缺失 ⇒ Await(v) 后以 v 完成生成器。
+	returnHandler := c.emitter.Pos()
+	c.emitter.Emit(bytecode.OP_STORE, uint16(retvSym.Slot)) // []
+	c.emitter.Emit(bytecode.OP_LOAD, uint16(iterSym.Slot))
+	c.emitter.Emit(bytecode.OP_GET_PROP, returnIdx) // [rfn]
+	c.emitter.EmitNoOperand(bytecode.OP_DUP)        // [rfn, rfn]
+	noReturn := c.emitter.EmitJump(bytecode.OP_JUMP_IF_NULL)
+	c.emitter.EmitNoOperand(bytecode.OP_POP) // [rfn]
+	c.emitter.Emit(bytecode.OP_LOAD, uint16(iterSym.Slot))
+	c.emitter.Emit(bytecode.OP_LOAD, uint16(retvSym.Slot))
+	c.emitter.Emit(bytecode.OP_CALL_METHOD, 1) // [result]
+	c.emitter.EmitNoOperand(bytecode.OP_AWAIT)
+	c.emitGlobalLoad("__async_iter_check")
+	c.emitter.Emit(bytecode.OP_CALL, 1)
+	c.emitter.Emit(bytecode.OP_STORE, uint16(stepSym.Slot))
+	// step.done ?
+	c.emitter.Emit(bytecode.OP_LOAD, uint16(stepSym.Slot))
+	c.emitter.Emit(bytecode.OP_GET_PROP, doneIdx) // [done]
+	retDone := c.emitter.EmitJump(bytecode.OP_JUMP_IF_TRUE)
+	c.emitter.EmitNoOperand(bytecode.OP_POP) // 未完成: 弹掉 done
+	c.emitter.Emit(bytecode.OP_LOAD, uint16(stepSym.Slot))
+	c.emitter.Emit(bytecode.OP_GET_PROP, valueIdx)
+	c.emitter.Emit(bytecode.OP_STORE, uint16(outSym.Slot))
+	yieldAgain := c.emitter.EmitJump(bytecode.OP_JUMP) // 回到挂起点再 yield
+
+	c.emitter.PatchJump(retDone)
+	c.emitter.EmitNoOperand(bytecode.OP_POP) // 弹掉 done (true)
+	c.emitter.Emit(bytecode.OP_LOAD, uint16(stepSym.Slot))
+	c.emitter.Emit(bytecode.OP_GET_PROP, valueIdx)
+	c.emitter.EmitNoOperand(bytecode.OP_AWAIT) // 规范: 完成值需 Await
+	c.emitter.EmitNoOperand(bytecode.OP_RETURN)
+
+	c.emitter.PatchJump(noReturn)
+	c.emitter.EmitNoOperand(bytecode.OP_POP) // 弹掉 DUP 的 rfn
+	c.emitter.Emit(bytecode.OP_LOAD, uint16(retvSym.Slot))
+	c.emitter.EmitNoOperand(bytecode.OP_AWAIT) // 规范: 缺 return 方法时 Await(v)
+	c.emitter.EmitNoOperand(bytecode.OP_RETURN)
 
 	// ---- 处理已取得的 step ----
-	// 循环头与该 throw 转发结果两条路径都汇到这里 (stepSym 已就绪)。
 	c.emitter.PatchJump(toProcess)
 	c.emitter.PatchJump(toProcess2)
 	c.emitter.Emit(bytecode.OP_LOAD, uint16(stepSym.Slot))
 	c.emitter.Emit(bytecode.OP_GET_PROP, doneIdx) // [done]
 	endJump := c.emitter.EmitJump(bytecode.OP_JUMP_IF_TRUE)
 	c.emitter.EmitNoOperand(bytecode.OP_POP) // 假值路径: 弹出 done
-	// 未完成: 把 step.value yield 给消费者。值先入隐藏槽 —— 挂起点的值若
-	// 留在操作数栈上, try 条目的 stackBase 会被抬高, throw 恢复时残留。
 	c.emitter.Emit(bytecode.OP_LOAD, uint16(stepSym.Slot))
 	c.emitter.Emit(bytecode.OP_GET_PROP, valueIdx)
 	c.emitter.Emit(bytecode.OP_STORE, uint16(outSym.Slot)) // []
-	// try { yield out } —— 消费者 throw(e) 由此转发给 iterator.throw。
-	// handler 在更前处 (throwHandler), PUSH_TRY 直接用其绝对地址; 正常完成
-	// 路径 POP_TRY 后落回循环尾。
+
+	// ---- 挂起点: 一个 try 条目同时拦截 throw (catchPC) 与 return (retPC) ----
+	c.emitter.PatchJump(yieldAgain)
 	c.emitter.Emit(bytecode.OP_PUSH_TRY, uint16(throwHandler))
+	c.emitter.Emit(bytecode.OP_PUSH_RET_TRY, uint16(returnHandler))
 	c.emitter.Emit(bytecode.OP_LOAD, uint16(outSym.Slot))
 	c.emitter.EmitNoOperand(bytecode.OP_YIELD) // [received]
 	c.emitter.EmitNoOperand(bytecode.OP_POP_TRY)
-	// 正常路径: 恢复值即消费者的 next(v)
 	c.emitter.Emit(bytecode.OP_STORE, uint16(recvSym.Slot))
 	c.emitter.Emit(bytecode.OP_LOOP, uint16(loopStart))
 
-	// 结束路径: JUMP_IF_TRUE 只窥视不弹出 → 弹掉 done, 取 step.value 作为
-	// yield* 表达式的值。
+	// ---- 结束路径: 取 step.value 作为 yield* 表达式的值 ----
 	c.emitter.PatchJump(endJump)
-	c.emitter.EmitNoOperand(bytecode.OP_POP)
+	c.emitter.EmitNoOperand(bytecode.OP_POP) // 弹掉 done
 	c.emitter.Emit(bytecode.OP_LOAD, uint16(stepSym.Slot))
 	c.emitter.Emit(bytecode.OP_GET_PROP, valueIdx)
 	return nil
+}
+
+// emitThrowNamedError 发射「无条件抛出某个全局命名错误」的指令序列:
+//
+//	CONST "<msg>"                ; [msg]
+//	LOAD_GLOBAL "<name>"         ; [msg, ctor]
+//	CALL 1                       ; [errObj]
+//	THROW                        ; 抛出
+func (c *Compiler) emitThrowNamedError(name, msg string) {
+	idx := c.constants.AddConstant(object.NewString(msg))
+	c.emitter.Emit(bytecode.OP_CONST, idx)
+	c.emitGlobalLoad(name)
+	c.emitter.Emit(bytecode.OP_CALL, 1)
+	c.emitter.EmitNoOperand(bytecode.OP_THROW)
+}
+
+// emitAsyncIteratorClose 发射 AsyncIteratorClose(iter) (规范 7.4.11 的简化):
+// GetMethod(iter,"return"); 为 null/undefined 则跳过, 否则以 iter 为 this
+// 调用之 (参数 undefined), 丢弃返回值。iter 取局部槽 slot。
+//
+//	LOAD iter                     ; [iter]
+//	GET_PROP "return"             ; [rfn]
+//	DUP                           ; [rfn, rfn]
+//	JUMP_IF_NULL done             ; (窥视)
+//	POP                           ; [rfn]
+//	LOAD iter                     ; [rfn, iter]
+//	CALL_METHOD 0                 ; [result]
+//	AWAIT                         ; [resolved]
+//	POP                           ; []
+//	done:
+//	... (JUMP_IF_NULL 只窥视, 跳转时栈上残留 [rfn], 需在 done 处弹掉)
+func (c *Compiler) emitAsyncIteratorClose(iterSlot int, returnIdx uint16) {
+	c.emitter.Emit(bytecode.OP_LOAD, uint16(iterSlot))
+	c.emitter.Emit(bytecode.OP_GET_PROP, returnIdx)
+	c.emitter.EmitNoOperand(bytecode.OP_DUP)
+	done := c.emitter.EmitJump(bytecode.OP_JUMP_IF_NULL)
+	c.emitter.EmitNoOperand(bytecode.OP_POP)
+	c.emitter.Emit(bytecode.OP_LOAD, uint16(iterSlot))
+	c.emitter.Emit(bytecode.OP_CALL_METHOD, 0)
+	c.emitter.EmitNoOperand(bytecode.OP_AWAIT)
+	c.emitter.EmitNoOperand(bytecode.OP_POP)
+	after := c.emitter.EmitJump(bytecode.OP_JUMP)
+	c.emitter.PatchJump(done)
+	c.emitter.EmitNoOperand(bytecode.OP_POP) // 栈上残留的 rfn (null/undefined)
+	c.emitter.PatchJump(after)
 }
 
 // isGlobalScope 返回当前是否处于全局作用域 (depth 0) 且非模块模式。

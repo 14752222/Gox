@@ -42,15 +42,18 @@ func (vm *VM) wrapSyncIterForAsync(iter object.Value) object.Value {
 	w.SetProperty("throw", object.NewBuiltin("throw", func(args ...object.Value) object.Value {
 		fn, found := src.GetProperty("throw")
 		if !found || fn == object.UndefinedSingleton || fn == object.NullSingleton {
-			// 无 throw 方法: 规范把 received 异常原样重抛。received 是
-			// Error 实例时经 errToValue 保留 (throwIfError 只认
-			// *object.Error; 非 Error 实例降级 —— 已知限制)。
-			if len(args) > 0 {
-				if e, isErr := args[0].(*object.Error); isErr {
-					return e
+			// 无 throw 方法 (规范 %AsyncFromSyncIteratorPrototype%.throw 步骤 7):
+			// 先 AsyncIteratorClose(syncIterator) (若其有可调 return 则调用之,
+			// 异常优先传播), 再以 TypeError reject。
+			if rf, rfound := src.GetProperty("return"); rfound &&
+				rf != object.UndefinedSingleton && rf != object.NullSingleton {
+				if object.IsCallable(rf) {
+					if _, err := vm.callFunction(rf, src, nil); err != nil {
+						return errToValue(err)
+					}
 				}
 			}
-			return object.NewErrorWithName("Error", "iterator has no throw method")
+			return object.NewErrorWithName("TypeError", "iterator does not provide a 'throw' method")
 		}
 		if !object.IsCallable(fn) {
 			return object.NewErrorWithName("TypeError", "iterator throw is not a function")
@@ -64,9 +67,14 @@ func (vm *VM) wrapSyncIterForAsync(iter object.Value) object.Value {
 	w.SetProperty("return", object.NewBuiltin("return", func(args ...object.Value) object.Value {
 		fn, found := src.GetProperty("return")
 		if !found || fn == object.UndefinedSingleton || fn == object.NullSingleton {
-			// 无 return 方法: IteratorClose 语义是**跳过** (不调不抛),
-			// 结果视作迭代结束。
-			return object.NewIteratorResult(object.UndefinedSingleton, true)
+			// 无 return 方法 (规范 %AsyncFromSyncIteratorPrototype%.return 步骤 7):
+			// 迭代结束以 CreateIterResultObject(value, true) 结算 —— **value 是
+			// 传入参数**, 不是 undefined。yield* 委托据此拿到 return(v) 的 v。
+			v := object.Value(object.UndefinedSingleton)
+			if len(args) > 0 {
+				v = args[0]
+			}
+			return object.NewIteratorResult(v, true)
 		}
 		if !object.IsCallable(fn) {
 			return object.NewErrorWithName("TypeError", "iterator return is not a function")
