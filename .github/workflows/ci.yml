@@ -144,9 +144,36 @@ jobs:
           if [ -n "$gstats" ]; then echo "::error::linux/xvfb 画廊实测=[${gstats}]"; fi
           exit "$rc"
 
+      # 证据纪律（看板 rXrGfu，2026-10-07 补）：本步曾在 macos-latest 上持续红，
+      # 而 check-run 注解只有 `Process completed with exit code 1.`（未登录读不到
+      # job 日志）⇒ 与 Linux 那条同款处理：自己把「失败包 + 失败用例名 + 断言明细」
+      # 写成 ::error:: 注解，否则永远无法归因。Windows/macOS 都要能自证。
       - name: go test ./...
         if: runner.os != 'Linux'
-        run: go test ./...
+        run: |
+          set +e
+          log="$(mktemp)"
+          (
+            set -e
+            echo "===== go version ====="; go version
+            echo "===== go test ./... (${{ runner.os }}) ====="
+            go test ./...
+          ) >"$log" 2>&1
+          rc=$?
+          echo "---- 原始输出尾部（末 60 行）----"
+          tail -n 60 "$log"
+          if [ "$rc" -eq 0 ]; then
+            exit 0
+          fi
+          failpkgs="$(grep -aE '^FAIL[[:space:]]' "$log" | awk '{print $2}' | sort -u | tr '\n' ',' | cut -c1-600)"
+          failtests="$(grep -aE '^[[:space:]]*--- FAIL:' "$log" | sed -E 's/^[[:space:]]+//' | tr '\n' ';' | cut -c1-900)"
+          sigcount="$(grep -acE 'panic:|fatal error:|test timed out|DATA RACE' "$log")"
+          echo "::error::${{ runner.os }} go test 失败 rc=${rc}｜失败包=[${failpkgs:-（无 FAIL 行，可能红在构建期）}]｜失败用例=[${failtests:-（无 --- FAIL 行）}]｜panic或超时命中=${sigcount}"
+          failmsg="$(grep -aE '_test\.go:[0-9]+:' "$log" | grep -av '非底色像素' | sed -E 's/^[[:space:]]+//' | tr '\n' '|' | cut -c1-1200)"
+          gstats="$(grep -aE '非底色像素' "$log" | sed -E 's/^[[:space:]]+//' | tr '\n' '|' | cut -c1-1600)"
+          echo "::error::${{ runner.os }} 断言明细=[${failmsg:-（无 _test.go 行）}]"
+          if [ -n "$gstats" ]; then echo "::error::${{ runner.os }} 画廊实测=[${gstats}]"; fi
+          exit "$rc"
 
       - name: 冒烟：命令行能起来并报版本号
         run: |
