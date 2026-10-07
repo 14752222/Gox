@@ -216,6 +216,23 @@ func (p *Parser) setAllowYield(isGenerator bool) func() {
 	return func() { p.allowYield = prev }
 }
 
+// yieldIsIdentifier 报告当前上下文里 yield 是否按**普通标识符**处理
+// (IdentifierReference / BindingIdentifier), 而非保留字/关键字。
+//
+// 规范: yield 只在三种情形下是保留字 —— ① 生成器/async-generator 函数体
+// (含其中箭头的继承) [+Yield]; ② 严格模式代码; ③ 模块代码 (模块恒严格)。
+// 其余 (sloppy script / 普通函数体 / eval sloppy) 里 yield 是合法标识符
+// (test262 language/expressions/{generators,async-generator,object/method-
+// definition,class}/**/yield-identifier-non-strict.js 一族: 生成器**内部
+// 嵌套的普通函数**体里 yield 仍可作 var 名/标识符引用)。
+//
+// 判据即上述三种语境取非: 既非生成器体 (allowYield), 又非严格 (strict),
+// 也非模块 (module/moduleEE; 模块顶层恒严格, 故 module 为真时 strict 也应为真,
+// 这里再并列 moduleEE/module 以稳妥)。
+func (p *Parser) yieldIsIdentifier() bool {
+	return !p.allowYield && !p.strict && !p.moduleEE && !p.module
+}
+
 // SetModule 标记本编译单元是 ES module (模块顶层恒严格, 无需 "use strict")。
 // 必须在 ParseProgram 之前调用。
 func (p *Parser) SetModule(v bool) {
@@ -250,6 +267,13 @@ func (p *Parser) isBindingName() bool {
 	// 直接否掉, 由调用方报 "expected parameter name" 类 SyntaxError。
 	if p.awaitReservedInParams && p.curTokenIs(lexer.AWAIT) {
 		return false
+	}
+	// yield 在 sloppy 非生成器代码里是合法绑定名 (var yield = 1 / function
+	// f(yield){} / for (var yield of xs); test262 generators 一族
+	// yield-identifier-non-strict.js)。生成器体 / 严格 / 模块里仍是保留字,
+	// 由 yieldIsIdentifier 判据否掉 —— 调用方随后报 "expected identifier."
+	if p.curTokenIs(lexer.YIELD) {
+		return p.yieldIsIdentifier()
 	}
 	return p.curTokenIs(lexer.IDENTIFIER) || p.curTokenIs(lexer.AWAIT) ||
 		p.curTokenIs(lexer.ASYNC)
@@ -1222,7 +1246,11 @@ func (p *Parser) isForOfLHS() bool {
 // 「expected = after destructuring, got OF」—— 照这句话排查会以为自己少写了等号。
 func (p *Parser) forBindingKeyword() lexer.TokenType {
 	peek := p.peekToken()
-	if peek.Type == lexer.IDENTIFIER {
+	// 绑定名可以是标识符, 也可以是上下文关键字 (yield 在 sloppy 非生成器代码里
+	// 是合法绑定名: `for (var yield of xs)`; async 同理)。这三种 token 之后
+	// peek2 若是 of/in 即对应形态。
+	if peek.Type == lexer.IDENTIFIER ||
+		(peek.Type == lexer.YIELD && p.yieldIsIdentifier()) {
 		if p.peek2TokenIs(lexer.OF) {
 			return lexer.OF
 		}
@@ -2625,9 +2653,37 @@ func (p *Parser) finishAsyncArrow(expr ast.Expression) ast.Expression {
 	return af
 }
 
-// parseYieldExpression 解析 yield 表达式。
-// yield; 或 yield expr;
+// parseYieldExpression 解析 yield 表达式
+// (YieldExpression : yield [no LineTerminator here] AssignmentExpression /
+//  yield * AssignmentExpression)。
+//
+// 在 sloppy 非生成器代码里 yield **恒**是普通标识符 (IdentifierReference),
+// 不开启 yield 表达式 —— node 22 实测: `var yield=4; yield+1 / yield-1 /
+// yield*2 / yield/2 / yield(1) / yield[0] / yield.x / yield++` 全是标识符用法,
+// 而 `yield 1` / `yield !x` 是 SyntaxError (标识符后直接跟操作数, 同行不能 ASI)。
+// 故此处直接返回 Identifier{cur=YIELD}, 不消费任何 token, 由中缀循环继续处理
+// (调用/索引/成员/二元/更新/箭头……)。`yield 1` 这种非法形态自会在后续解析中
+// 因「表达式后跟多余 token」报错, 与 node 口径一致。
+//
+// 判据只在 yieldIsIdentifier() 为真时启用 (sloppy 非生成器非模块);
+// 生成器/严格/模块里 yield 恒是关键字, 走下面的表达式路径 (含空 yield)。
+//
+// ⚠ 不改「parseExpression 返回后 curToken 是表达式最后一个 token」的全局不变量
+// —— 标识符分支 cur 就停在 YIELD 上; 表达式路径本体一行未动。历史上改写空-yield
+// 提前 return 导致过 46 例回归 (dc15392/aeaf943), 故这里只在**进入表达式路径
+// 之前**做分派。
 func (p *Parser) parseYieldExpression() ast.Expression {
+	if p.yieldIsIdentifier() {
+		// 单参数箭头: yield => body (node 实测合法, yield 是合法绑定名)
+		if p.peekTokenIs(lexer.ARROW) {
+			ident := &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
+			p.nextToken() // consume =>
+			return p.parseArrowFunctionBody([]*ast.Parameter{{
+				Token: ident.Token, Name: ident.Value,
+			}}, false)
+		}
+		return &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
+	}
 	ye := &ast.YieldExpression{Token: p.curToken()}
 	// 模块顶层不是 generator 上下文, 裸 yield 是 SyntaxError
 	// (spec: ModuleItem : StatementListItem[~Yield, ~Return], parse-err-yield.js)。
