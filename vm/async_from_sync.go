@@ -30,9 +30,10 @@ const wrapperFromSyncKey = "__async_from_sync_value_await__"
 //     next 第二次起不再触发 get next (同步委托与原生 @@asyncIterator
 //     都一样); 缓存在首次步进时由 ASYNC_ITER_NEXT[_ARG] 完成 (见 vm.go);
 //   - own "throw"/"return" 是 builtin, 内部每次 GetMethod(src) +
-//     Call —— 用例断言 get throw 每次都出现;
-//   - 步进结果原样交回外层 (OP_AWAIT/定时器泵负责解包), wrapper 不做
-//     thenable 深解。
+//     Call —— 用例断言 get throw 每次都出现; 同步源 (fromSync) 时结果按
+//     %AsyncFromSyncIteratorPrototype% 语义把 value PromiseResolve 后再交回
+//     (原生 @@asyncIterator 与裸 next 对象不解包);
+//   - next 的步进结果由 ASYNC_ITER_NEXT[_ARG] 侧统一解包 (见 asyncFromSyncAwaitedStep)。
 //
 // 只对 *object.Object 包装; Generator / runtime.Iterator / JSIterator
 // 形状无 JS getter 参与, 原样返回 (Generator 的委托本就走 genResume)。
@@ -73,6 +74,11 @@ func (vm *VM) wrapSyncIterForAsync(iter object.Value, fromSync bool) object.Valu
 		if err != nil {
 			return errToValue(err)
 		}
+		// 同步源: 结果按 %AsyncFromSyncIteratorPrototype%.throw 步骤 10-14
+		// 结算 (value 须 PromiseResolve), 由调用方 (yield* 的 throw 段) AWAIT。
+		if fromSync {
+			return vm.asyncFromSyncAwaitedStep(res)
+		}
 		return res
 	}))
 	w.SetProperty("return", object.NewBuiltin("return", func(args ...object.Value) object.Value {
@@ -85,7 +91,12 @@ func (vm *VM) wrapSyncIterForAsync(iter object.Value, fromSync bool) object.Valu
 			if len(args) > 0 {
 				v = args[0]
 			}
-			return object.NewIteratorResult(v, true)
+			res := object.Value(object.NewIteratorResult(v, true))
+			if fromSync {
+				// 规范同款: IteratorClose 的 normal 完成值也要 PromiseResolve。
+				return vm.asyncFromSyncAwaitedStep(res)
+			}
+			return res
 		}
 		if !object.IsCallable(fn) {
 			return object.NewErrorWithName("TypeError", "iterator return is not a function")
@@ -93,6 +104,11 @@ func (vm *VM) wrapSyncIterForAsync(iter object.Value, fromSync bool) object.Valu
 		res, err := vm.callFunction(fn, src, args)
 		if err != nil {
 			return errToValue(err)
+		}
+		// 同步源: 结果按 %AsyncFromSyncIteratorPrototype%.return 步骤 10-16
+		// 结算 (value 须 PromiseResolve), 由调用方 (yield* 的 return 段) AWAIT。
+		if fromSync {
+			return vm.asyncFromSyncAwaitedStep(res)
 		}
 		return res
 	}))
@@ -105,7 +121,7 @@ func (vm *VM) wrapSyncIterForAsync(iter object.Value, fromSync bool) object.Valu
 // 解包成 promise, 返回一个结算为 { value: resolvedValue, done } 的 promise。
 //
 // 仅 yield* 委托**同步**可迭代时使用 (native @@asyncIterator 的值不解包)。
-// done 为真时按规范直接以原 step 结算 (值不解包), 此处仍返回同形对象。
+// done 为真也照样解包 (规范对 done 无例外)。
 func (vm *VM) asyncFromSyncAwaitedStep(step object.Value) object.Value {
 	o, ok := step.(*object.Object)
 	if !ok {
@@ -127,15 +143,16 @@ func (vm *VM) asyncFromSyncAwaitedStep(step object.Value) object.Value {
 		return errToValue(err)
 	}
 	done := doneV.IsTruthy()
-	if done {
-		// 已结束: 规范不以 PromiseResolve 包 value, 直接给同形 step。
-		return object.NewIteratorResult(valV, true)
-	}
+	// 规范步骤 14 (next/return/throw 三处同款): valueWrapper =
+	// PromiseResolve(%Promise%, value) —— 与 done 无关。done 为真时同样要
+	// PromiseResolve: %AsyncFromSyncIteratorPrototype% 一律以
+	// CreateIterResultObject(resolvedValue, done) 结算, 故 `yield* 同步迭代器`
+	// 的表达式值 (done 那一步的 value) 也是已解包的值。
 	p := object.NewPromise()
 	p.Resolve(valV) // PromiseResolve 语义: promise/thenable 值被采纳 (reject 会传染)
 	out := object.NewPromise()
 	p.Then(object.NewBuiltin("__afs_value", func(args ...object.Value) object.Value {
-		out.Resolve(object.NewIteratorResult(firstArg(args), false))
+		out.Resolve(object.NewIteratorResult(firstArg(args), done))
 		return object.UndefinedSingleton
 	}))
 	p.Catch(object.NewBuiltin("__afs_value_err", func(args ...object.Value) object.Value {

@@ -538,6 +538,47 @@ func TestAsyncGeneratorYieldStarNativeAsyncSourceDoesNotUnwrap(t *testing.T) {
 	}
 }
 
+// (l) 同步源 (CreateAsyncFromSyncIterator) 的三条路径都要把步进结果的 value
+// 按 PromiseResolve 解包: next 的 done 步 (yield* 表达式值)、return、throw。
+// 规范 %AsyncFromSyncIteratorPrototype%.{next,return,throw} 步骤同款
+// (valueWrapper = PromiseResolve(%Promise%, value), 与 done 无关)。
+func TestAsyncGeneratorYieldStarSyncWrapperResolvesStepValue(t *testing.T) {
+	got := runAsyncEval(t, `
+		function mkIter() {
+			return {
+				next() { return { done: false, value: 1 }; },
+				return(v) { return { done: false, value: Promise.resolve("RV") }; },
+				throw(e) { return { done: false, value: Promise.resolve("TV") }; },
+			};
+		}
+		var src = { [Symbol.iterator]() { return mkIter(); } };
+		var doneSrc = { [Symbol.iterator]() { return { next() { return { done: true, value: Promise.resolve("XV") }; } }; } };
+		async function* gRet() { yield* src; }
+		async function* gThr() { yield* src; }
+		async function* gDone() { const r = yield* doneSrc; __out.push("doneValue:" + r); }
+		(async function(){
+			const it = gRet();
+			await it.next();
+			const r = await it.return("z");
+			__out.push("R done:" + r.done + " eqRV:" + (r.value === "RV"));
+			const it2 = gThr();
+			await it2.next();
+			const t = await it2.throw("boom");
+			__out.push("T done:" + t.done + " eqTV:" + (t.value === "TV"));
+			await gDone().next();
+		})();
+	`)
+	for _, want := range []string{
+		"R done:false eqRV:true",
+		"T done:false eqTV:true",
+		"doneValue:XV",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("同步源步进值应解包, 缺少 %q, got:\n%s", want, got)
+		}
+	}
+}
+
 // ===== 子项3: @@toStringTag 沿原型链可达 (r6e5qp) =====
 //
 // async generator 实例的 @@toStringTag 落在 %AsyncGeneratorPrototype% (AGP) 上,
