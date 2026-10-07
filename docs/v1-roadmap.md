@@ -394,6 +394,39 @@ cherry-pick 8 条 —— `f121d25`（未捕获抛值渲染）、`9dd6dac`（`OP_
    因同一提交撤回同一处 parser 改写）。
 
 
+## 二十、§十九 勘误：gfx 字体修复的补入（非零 diff）
+
+§十九 称「parser 与 gfx 与 main 零 diff」——**该断言在补入字体修复后不再成立**，特此更正并留档。
+
+发现：做 `git cherry -v Gox/main merge/batch8` 的**完整**差集时，还有第 9 条 `5030c7f`
+（`fix(gfx): 默认字体优先选正体面 —— 修 Linux 上"正文整屏变粗/bold 不生效" (rXrGfu)`）。
+它在批次八的差集里排最后（是批次七分支的尾部提交，被批次八继承），前一次合流把它**漏掉了**
+——`merge/final2` 当时 `gfx/` 目录零改动。这是「只看差集前几屏就动手」的代价。
+
+**不能整文件 cherry-pick**：main 已走过 `7168945`/`c8613e0` 那条线，两侧对同两个文件
+各有独有改动 ——
+
+| 文件 | main 独有 | `5030c7f` 独有 |
+|---|---|---|
+| `gfx/font.go` | `SetBaseAssetsDir` / `bundledFontCandidates` / 随包候选注入 / CJK 静态候选（`NotoSansCJK-VF.otf.ttc`、`wqy-microhei.ttc`、`uming.ttc`） | `regularFaceOf` / `baseFaceRank` / `subIsPlain` / `chooseBaseFont`；`parseFontFile` 改走 `regularFaceOf` |
+| `gfx/fontset.go` | `axisFromFont(f, faceIndex, subfamily)` 三参数 + `localizedBoldNames` + 面序号长注释（**比 `5030c7f` 的版本更新**） | `subfamilyOf` / `fontAxisOf` |
+
+故**手工合并**（提交 `9877fff`）：`font.go` 采纳 `5030c7f` 的选面逻辑、保留 main 的随包
+字体能力；`fontset.go` **只增量补**两个函数并适配三参数签名；`font_test.go` 追加其 124 行
+测试（只增不改）；顺带移除不再使用的 `sfnt` 导入。
+
+**验收**：`go vet ./gfx/` 干净；`go test ./gfx/...` 全绿；`TestBaseFontPrefersRegularFace`
+（`5030c7f` 新增）与 `TestDrawTextStyledDiffersPerAxis`（CI 上红过的那个）均通过。
+全量 test262 **逐用例**比对补入前后：23726 例 **0 差异**（`17477/23726 = 73.6618%`）。
+
+**诚实结论**：把 `chooseBaseFont` 判据降级回 main 内联版的「只排粗体不分档」后，
+`TestBaseFontPrefersRegularFace` **在本机仍绿** —— 因为 Windows 字体库只有 Regular/Bold
+两档、没有 DemiLight/Light/Medium，而 `baseFaceRank` 的**分档增量恰恰只在后者上现形**。
+故这条修复的正确性**仍以 CI 的 ubuntu runner 为准**，本地只能说「没引入回归」。
+
+**流程纪律（第三条，本次新增）**：`git cherry -v` 的输出**必须读到最后一行**再决定
+cherry-pick 清单 —— 差集末尾的提交最容易因「看到前面几条就以为齐了」而漏掉。
+
 ## 待确认（信息缺口）
 
 - `agent_doc/undecided-and-unimplemented.md` 是 **2026-09-18 快照**，其 §四 缺口清单中已有多项（cocoa 后端、iOS 后端、X11 修正、M2 IME、滚动条拖拽、tabs、table/tree、tooltip）在 09-18 后落地。本路线图已按 git 历史更正，但**建议回填该台账**，否则后续排期会继续基于过期口径。
