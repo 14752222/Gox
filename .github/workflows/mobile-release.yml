@@ -1,0 +1,501 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# 移动端「成品 App」发布：Android APK / HarmonyOS HAP / iOS 壳工程 zip
+#                     —— GitHub Releases 两档（nightly + release）
+#
+# 本作业只做「成品示例 App」这一路。移动端的**预编译库**（libgox.so / libgox.a）
+# 走另一条完全不同的渠道：npm 平台子包 @goxjs/goxjs-mobile-<platform>-<abi>，
+# 由 .github/workflows/release.yml 发布 —— 两条不要混，判据见
+# docs/mobile-distribution-decision.md §1（产物形态）与 §2（分发渠道）。
+#
+# 两档是什么：
+#   * nightly —— 每日 UTC 18:00（= 北京 02:00）定时跑，产物挂到一个
+#                `nightly-<yyyy-mm-dd>` 的 prerelease；用于「每日尝鲜 / 发布前验证」。
+#   * release —— 有人发布 GitHub Release（release: published）时跑，产物挂到
+#                该 Release 的 tag 上；tag 版本必须等于引擎版本。
+#   两档共用同一份版本真源（cmd/gox/main.go 的 const version），只是标签前缀不同。
+#
+# ⚠️ 本工作流**当前拿不到**这些外部前提，因此全是「检测不到就优雅跳过 + 留证据」：
+#   * Android NDK   —— 托管 runner 镜像自带，能编（这条路是通的）；
+#   * Android 签名  —— 仓库里没有 keystore.properties，release 不签名。
+#                      所以 release 档降级成 debug APK（debug 签名，仅试用、不可上架）；
+#   * HarmonyOS HAP —— 要 DevEco SDK 的 OHOS clang + musl sysroot（需华为账号/许可、
+#                      体积大），托管 runner 装不了 ⇒ **总是跳过**。要真出 HAP，
+#                      必须把这些作业换成一台装了 DevEco 的自建 runner
+#                      （改 runs-on + 设 DEVECO_SDK_HOME，见 harmony 作业内注释）；
+#   * iOS           —— 壳工程 zip 只需 source + XcodeGen，macos runner 上可产出，
+#                      不需要签名材料（真机签名/TestFlight 不在本作业范围）。
+#
+# 证据纪律（与 docs/npm-release.md §6 同一条）：**每个跳过步骤与每个校验步骤都
+# `echo "::error::<带证据的消息>"`**（把实际文件清单 / 原始输出 / 缺失路径塞进去）。
+#   原因：本机没有 gh / token，读不了 job 日志（未登录 403），失败时只能靠
+#   check-run 的 Annotations 反推。不写 ::error:: 就只剩一句 `exit code 1`。
+#   注意：跳过步骤用 ::error:: 级别是**刻意**的 —— 它只是让跳过在 Annotations 里
+#   无法被忽略，步骤本身仍 `exit 0`（优雅跳过，不把 nightly 判红）。
+#
+# 幂等：nightly 重复跑同一日期用 --clobber 覆盖；产物一件都没有时不建空 Release。
+# 不真发版：本工作流不会在 push main 时触发 —— 只有 schedule / release / 手动触发。
+# ─────────────────────────────────────────────────────────────────────────────
+name: mobile-release
+
+on:
+  schedule:
+    # 每日 UTC 18:00 = 北京 02:00。GitHub 的 schedule 只认默认分支上的这份文件。
+    - cron: '0 18 * * *'
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tier:
+        description: 档位（nightly 挂 nightly-<date> prerelease；release 挂到 v<version>）
+        type: choice
+        options: [nightly, release]
+        default: nightly
+
+permissions:
+  contents: write # 建 nightly prerelease / 往 Release 挂 assets，放 tag 都用它
+
+# 发布是串行资源：nightly 与 release 撞上时排队，不并行改同一个 Release
+concurrency:
+  group: mobile-release
+  cancel-in-progress: false
+
+jobs:
+  # ───────────────────────────────────────────────────────────────────────────
+  # 判档 + 版本真源（唯一真源 = cmd/gox/main.go 的 const version）
+  # ───────────────────────────────────────────────────────────────────────────
+  version:
+    name: 解析档位与版本
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tier: ${{ steps.resolve.outputs.tier }}
+      version: ${{ steps.resolve.outputs.version }}
+      tag: ${{ steps.resolve.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 解析 tier / version / tag
+        id: resolve
+        env:
+          EVENT: ${{ github.event_name }}
+          DISPATCH_TIER: ${{ inputs.tier }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+
+          # 版本真源：cmd/gox/main.go 的 const version（与 check-registries.py 检查3 同一处）。
+          LINE=$(grep -nE '^const version = ' cmd/gox/main.go | head -1 || true)
+          ENGINE_VER=$(printf '%s' "$LINE" | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ -z "$ENGINE_VER" ]; then
+            echo "::error::读不到 cmd/gox/main.go 的 const version；grep 原始输出：${LINE:-<空>}"
+            exit 1
+          fi
+          echo "引擎版本（真源 cmd/gox/main.go）：$ENGINE_VER"
+
+          case "$EVENT" in
+            release)
+              TIER=release
+              TAG="$RELEASE_TAG"
+              if [ -z "$TAG" ]; then
+                echo "::error::release 事件没带 tag_name（证据：github.event.release.tag_name 为空），无法定位 Release"
+                exit 1
+              fi
+              if [ "${TAG#v}" != "$ENGINE_VER" ]; then
+                echo "::error::Release tag $TAG 与引擎版本 $ENGINE_VER 不一致（tag 去掉 v 后应逐字符相等）"
+                exit 1
+              fi
+              ;;
+            schedule)
+              TIER=nightly
+              TAG="nightly-$(date -u +%Y-%m-%d)"
+              ;;
+            workflow_dispatch)
+              TIER="${DISPATCH_TIER:-nightly}"
+              if [ "$TIER" = release ]; then TAG="v$ENGINE_VER"; else TAG="nightly-$(date -u +%Y-%m-%d)"; fi
+              ;;
+            *)
+              echo "::error::未知触发事件 $EVENT（本工作流只认 schedule / release / workflow_dispatch）"
+              exit 1
+              ;;
+          esac
+
+          echo "tier=$TIER"   >> "$GITHUB_OUTPUT"
+          echo "version=$ENGINE_VER" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG"     >> "$GITHUB_OUTPUT"
+          echo "::notice::档位 $TIER，引擎版本 $ENGINE_VER，目标 Release $TAG"
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 成对发布闸门（决策三第 4 层）：引擎版本 ↔ 子包定义 ↔ 壳工程版本引用 三者一致
+  #
+  # 壳工程 ↔ 引擎版本错配是 JNI / NAPI 契约不匹配、**运行时才崩**，编译期拦不住，
+  # 所以宁可在发布前就此卡住。三层里前两层已由 check-registries.py 覆盖，这里补：
+  #   ① 引擎版本 == npm/package.json 版本（在主仓与 gox-npm 子模块之间）
+  #   ② 平台子包定义已同步（packaging/npm-mobile/ → npm/packages/，防手改生成物）
+  #   ③ 壳工程里声明的 engineVersion / engineVersionRange 与引擎版本相符
+  #      —— 壳工程**目前还没有这个声明文件**，所以本条当前以「证据式跳过」呈现，
+  #         机制落地（在 app/<platform>/ 下加 gox-engine.json）后自动开始生效。
+  # ───────────────────────────────────────────────────────────────────────────
+  gate:
+    name: 成对发布闸门（版本一致性）
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # npm/ 是独立仓库（gox-npm）的子模块，不显式拉取就是空目录 ——
+      # 版本一致性、子包定义同步都要读到里面的 package.json。
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: ①+② 注册表 / 版本号 / 子包定义一致性
+        run: |
+          set -euo pipefail
+          if ! python3 scripts/check-registries.py; then
+            echo "::error::注册表一致性未通过（含检查3 版本号、检查5 移动端子包自洽）—— 具体缺哪个站点见上一条输出"
+            exit 1
+          fi
+          if ! python3 scripts/gen-npm-mobile-pkgs.py --check; then
+            echo "::error::平台子包定义与生成物不同步（packaging/npm-mobile/ 是单一真源，npm/packages/ 是生成物）—— 跑 python3 scripts/gen-npm-mobile-pkgs.py 后提交"
+            exit 1
+          fi
+          echo "::notice::注册表 / 版本号 / 子包定义一致性通过（引擎版本 ${{ needs.version.outputs.version }}）"
+
+      - name: ③ 壳工程版本引用 ↔ 引擎版本
+        # 逻辑在脚本里（可本地跑、可单测），本步骤只当 CI 入口：
+        #   app/<platform>/gox-engine.json 声明 engineVersion / engineVersionRange；
+        #   声明存在但不符 ⇒ 退出码 1（硬闸门）；声明缺失 ⇒ 带证据的 ::error:: + 退出码 0
+        #   （暴露待办而不判红，机制落地后可加 --require 升级为硬性要求）。
+        run: |
+          set -euo pipefail
+          if ! python3 scripts/check-shell-engine-version.py --engine-version "${{ needs.version.outputs.version }}"; then
+            echo "::error::壳工程版本引用与引擎版本不符 —— 版本错配只在运行时崩（UnsatisfiedLinkError 一类），发布前必须对齐；证据见上一条输出"
+            exit 1
+          fi
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Android：libgox.so（NDK）→ gradle assemble → APK
+  # 姿势与 mobile-smoke.yml 的 android 作业一致（AGP 8.6.1 + Gradle 8.9 + JDK 17 实测组合）
+  # ───────────────────────────────────────────────────────────────────────────
+  android:
+    name: Android APK
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      built: ${{ steps.apk.outputs.built }}
+      variant: ${{ steps.sign.outputs.variant }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: 探测 Android NDK
+        id: ndk
+        run: |
+          set -euo pipefail
+          if [ -z "${ANDROID_NDK_HOME:-}" ]; then
+            export ANDROID_NDK_HOME="$(ls -d "${ANDROID_HOME:-/usr/local/lib/android/sdk}"/ndk/* 2>/dev/null | sort -V | tail -1 || true)"
+          fi
+          if [ -z "${ANDROID_NDK_HOME:-}" ] || [ ! -d "$ANDROID_NDK_HOME" ]; then
+            echo "::error::找不到 Android NDK —— 跳过 APK 构建；证据：ANDROID_HOME=${ANDROID_HOME:-<未设>}，ls -d \${ANDROID_HOME}/ndk/* 无输出。若是 runner 镜像变了，别改这里，查镜像说明"
+            echo "has_ndk=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "has_ndk=true" >> "$GITHUB_OUTPUT"
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME" >> "$GITHUB_ENV"
+          echo "::notice::NDK = $ANDROID_NDK_HOME"
+
+      - name: 交叉编译 libgox.so (arm64-v8a)
+        if: steps.ndk.outputs.has_ndk == 'true'
+        run: |
+          set -euo pipefail
+          bash scripts/build-android.sh
+          test -f dist/android/arm64-v8a/libgox.so || {
+            echo "::error::build-android.sh 跑完但 dist/android/arm64-v8a/libgox.so 不在；证据：$(ls -laR dist/android 2>&1 | head -30)"
+            exit 1
+          }
+          ls -la dist/android/arm64-v8a/
+
+      - name: 拷贝 libgox.so 进壳工程 jniLibs
+        if: steps.ndk.outputs.has_ndk == 'true'
+        run: |
+          set -euo pipefail
+          # 只放 arm64-v8a（真机档）。壳工程 abiFilters 里还有 x86_64（模拟器），
+          # 但缺该档 jniLibs 不会让 assemble 失败（mobile-smoke 同姿势实测通过），
+          # 代价是这份 APK 在 x86_64 模拟器上起不来 —— 试用档可以接受，这里写明。
+          mkdir -p app/android/app/src/main/jniLibs/arm64-v8a
+          cp dist/android/arm64-v8a/libgox.so app/android/app/src/main/jniLibs/arm64-v8a/
+          ls -la app/android/app/src/main/jniLibs/arm64-v8a/
+
+      - name: 判定签名档位（无签名材料 → debug）
+        id: sign
+        run: |
+          set -euo pipefail
+          KS="app/android/app/keystore.properties"
+          if [ -f "$KS" ]; then
+            echo "variant=release" >> "$GITHUB_OUTPUT"
+            echo "::notice::发现 $KS，走 assembleRelease"
+          else
+            echo "variant=debug" >> "$GITHUB_OUTPUT"
+            echo "::error::无 Android 签名材料，release 档降级为 debug APK（debug 签名，仅供试用、不可上架）；证据：$KS 不存在（app/android/app/build.gradle.kts 第 8-9 行注释：\"没有它 release 不签名\"）。要出可上架的 APK，需提供 keystore.properties（storeFile/storePassword/keyAlias/keyPassword）"
+          fi
+
+      - name: gradle assemble（${{ steps.sign.outputs.variant }}）
+        if: steps.ndk.outputs.has_ndk == 'true'
+        id: apk
+        working-directory: app/android
+        run: |
+          set -euo pipefail
+          VARIANT="${{ steps.sign.outputs.variant }}"
+          if ! gradle "assemble${VARIANT^}" --no-daemon; then
+            echo "::error::gradle assemble${VARIANT^} 失败；证据：壳工程 app/android，见本步骤原始日志；libgox.so 是否就位：$(ls -la app/android/app/src/main/jniLibs/arm64-v8a 2>&1 || echo '<缺>')"
+            exit 1
+          fi
+          APK=$(ls app/build/outputs/apk/"$VARIANT"/*.apk 2>/dev/null | head -1 || true)
+          if [ -z "$APK" ]; then
+            echo "::error::gradle 成功但找不到 APK；证据：$(ls -laR app/build/outputs/apk 2>&1 | head -40)"
+            exit 1
+          fi
+          echo "APK=$APK（$(wc -c < "$APK") 字节）"
+          echo "== 包内是否含 libgox.so（证据）=="
+          unzip -l "$APK" | grep -E "libgox\.so|lib/" || echo "::error::APK 里没有 lib/ 或 libgox.so —— JNI 会 UnsatisfiedLinkError"
+          echo "apk_path=$APK" >> "$GITHUB_OUTPUT"
+          echo "built=true" >> "$GITHUB_OUTPUT"
+
+      - name: 归档 APK
+        if: steps.ndk.outputs.has_ndk == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gox-mobile-android-apk
+          path: app/android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # HarmonyOS：HAP 需要 DevEco SDK（OHOS clang + musl sysroot），
+  # 托管 runner 装不了 ⇒ 当前**总是跳过**。要真出 HAP：把这行的 runs-on 换成
+  # 一台装了 DevEco Studio 的**自建 runner**（并保证 DEVECO_SDK_HOME / NODE_HOME
+  # 指向 DevEco 的 sdk / node），下面的 hvigor 命令即可直接生效。
+  # 命令行姿势出处：app/harmony/README.md §构建。
+  # ───────────────────────────────────────────────────────────────────────────
+  harmony:
+    name: HarmonyOS HAP（需 DevEco，托管 runner 跳过）
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      built: ${{ steps.build.outputs.built }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: 探测 DevEco SDK
+        id: sdk
+        run: |
+          set -euo pipefail
+          SDK="${DEVECO_SDK_HOME:-}"
+          if [ -z "$SDK" ] || [ ! -d "$SDK" ]; then
+            echo "::error::找不到 DevEco SDK（DEVECO_SDK_HOME=${SDK:-<未设>}）—— 跳过 HAP；这是当前**预期内**的跳过：OHOS clang + musl sysroot 来自 DevEco Studio，需华为账号/许可且体积大，GitHub 托管 runner 装不了。要出 HAP 必须改用自建 runner（见本作业头部注释与 docs/mobile-distribution-decision.md §4）"
+            echo "has_sdk=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "has_sdk=true" >> "$GITHUB_OUTPUT"
+          echo "::notice::DevEco SDK = $SDK"
+
+      - name: 交叉编译 libgox.so + hvigor assembleHap
+        id: build
+        if: steps.sdk.outputs.has_sdk == 'true'
+        run: |
+          set -euo pipefail
+          bash scripts/build-harmony.sh || {
+            echo "::error::build-harmony.sh 失败；证据：DEVECO_SDK_HOME=${DEVECO_SDK_HOME:-<未设>}，见原始日志"
+            exit 1
+          }
+          test -f dist/harmony/arm64-v8a/libgox.so || {
+            echo "::error::缺少 dist/harmony/arm64-v8a/libgox.so；证据：$(ls -laR dist/harmony 2>&1 | head -30)"
+            exit 1
+          }
+          mkdir -p app/harmony/entry/libs/arm64-v8a
+          cp dist/harmony/arm64-v8a/libgox.so app/harmony/entry/libs/arm64-v8a/
+          cd app/harmony
+          node "${NODE_HOME:?需要 DevEco 自带 node（NODE_HOME）}/bin/ohpm" install --all
+          node "${NODE_HOME}/bin/hvigorw" --mode module \
+            -p product=default -p module=entry@default \
+            assembleHap --no-daemon
+          HAP=$(ls entry/build/default/outputs/default/*.hap 2>/dev/null | head -1 || true)
+          if [ -z "$HAP" ]; then
+            echo "::error::hvigor 跑完但找不到 HAP；证据：$(ls -laR entry/build/default/outputs 2>&1 | head -40)"
+            exit 1
+          fi
+          echo "HAP=$HAP（$(wc -c < "$HAP") 字节）"
+          echo "::error::注意：命令行 hvigor 产出的 HAP **未签名**（app/harmony/README.md：装机签名要在 DevEco GUI 里配华为账号），仅供验证，不可直接安装分发"
+          echo "built=true" >> "$GITHUB_OUTPUT"
+
+      - name: 归档 HAP
+        if: steps.sdk.outputs.has_sdk == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gox-mobile-harmony-hap
+          path: app/harmony/entry/build/default/outputs/default/*.hap
+          if-no-files-found: error
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # iOS：壳工程 zip（source + XcodeGen 生成的 .xcodeproj）。
+  # 为什么只发壳工程、不在这里 xcodebuild：真机 .app 要签名证书（runner 没有），
+  #   模拟器 .app 只是冒烟产物（mobile-smoke.yml 已在每次 main 推送时产出）。
+  #   对外可交付的「iOS 那半边」就是壳工程本身 —— 用户拿它 + npm 的 libgox.a 自己 build。
+  # ───────────────────────────────────────────────────────────────────────────
+  ios:
+    name: iOS 壳工程 zip
+    needs: version
+    runs-on: macos-latest
+    timeout-minutes: 20
+    outputs:
+      built: ${{ steps.zip.outputs.built }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 安装 XcodeGen 并生成壳工程
+        run: |
+          set -euo pipefail
+          brew install xcodegen || {
+            echo "::error::brew install xcodegen 失败 —— 跳过 iOS 壳工程 zip；证据：见原始日志"
+            exit 1
+          }
+          ( cd app/ios && xcodegen generate ) || {
+            echo "::error::xcodegen generate 失败；证据：app/ios 下内容 = $(ls -la app/ios 2>&1)"
+            exit 1
+          }
+          test -d app/ios/Gox.xcodeproj || {
+            echo "::error::xcodegen 跑完但 app/ios/Gox.xcodeproj 不在；证据：$(ls -la app/ios 2>&1)"
+            exit 1
+          }
+          echo "::notice::壳工程生成完成"
+
+      - name: 打包壳工程 zip
+        id: zip
+        env:
+          VERSION: ${{ needs.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist/mobile-release
+          OUT="dist/mobile-release/gox-ios-shell-$VERSION.zip"
+          # 排除本地构建产物与派生数据，只留壳工程源码 + 生成的工程文件
+          zip -qry "$OUT" app/ios \
+            -x '*/build/*' -x '*/.build/*' -x '*/DerivedData/*' -x '*.xcuserstate' -x '*/xcuserdata/*'
+          test -s "$OUT" || { echo "::error::壳工程 zip 为空；证据：$(ls -la dist/mobile-release 2>&1)"; exit 1; }
+          echo "== zip 内容（前 40 条，证据）=="
+          unzip -l "$OUT" | head -40
+          # 关键文件必须在：项目生成源 + 壳源码
+          unzip -l "$OUT" | grep -q "app/ios/project.yml" || { echo "::error::zip 里没有 app/ios/project.yml（XcodeGen 的生成源），壳工程不完整"; exit 1; }
+          unzip -l "$OUT" | grep -q "Gox.xcodeproj" || { echo "::error::zip 里没有 Gox.xcodeproj（用户拿到后还得自己装 XcodeGen）"; exit 1; }
+          echo "::notice::iOS 壳工程 zip = $OUT（$(wc -c < "$OUT") 字节）"
+          echo "built=true" >> "$GITHUB_OUTPUT"
+
+      - name: 归档 iOS 壳工程 zip
+        if: steps.zip.outputs.built == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gox-mobile-ios-shell
+          path: dist/mobile-release/gox-ios-shell-*.zip
+          if-no-files-found: error
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # 汇总 → 挂到 GitHub Release（nightly 建/更新 prerelease；release 挂既有 tag）
+  #
+  # 一件产物都没有时：**不建空 Release**，打证据 + ::error:: 后优雅退出（exit 0）。
+  # 这与 release-post--checklist.md §2 的「v0.7.0 及更早是 0 assets」是两回事 ——
+  # 那条说的是历史桌面 Release，这里说的是移动端作业全跳过时故意不建壳。
+  # ───────────────────────────────────────────────────────────────────────────
+  publish:
+    name: 汇总产物并挂 Release
+    needs: [version, gate, android, harmony, ios]
+    if: |
+      always() && needs.gate.result == 'success' &&
+      (needs.android.outputs.built == 'true' || needs.harmony.outputs.built == 'true' || needs.ios.outputs.built == 'true')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 下载全部移动端产物
+        uses: actions/download-artifact@v4
+        with:
+          pattern: gox-mobile-*
+          merge-multiple: true
+          path: dist/mobile-release
+
+      - name: 清点产物（一件都没有就优雅退出，不建空 Release）
+        id: assets
+        run: |
+          set -euo pipefail
+          echo "== dist/mobile-release 实际内容 =="
+          ls -laR dist/mobile-release || true
+          N=$(find dist/mobile-release -type f \( -name '*.apk' -o -name '*.hap' -o -name '*.zip' \) | wc -l)
+          echo "产物件数：$N"
+          if [ "$N" = 0 ]; then
+            echo "::error::没有任何移动端产物可挂（APK/HAP/壳工程 zip 全缺）；证据：find dist/mobile-release 无匹配文件，ls -laR 输出见上。逐一排查：android 作业是否因无 NDK 跳过、harmony 是否因无 DevEco 跳过、ios 是否失败"
+            echo "has_assets=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "has_assets=true" >> "$GITHUB_OUTPUT"
+
+      - name: 挂到 Release（nightly 建/更新 prerelease；release 挂既有 tag）
+        if: steps.assets.outputs.has_assets == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TIER: ${{ needs.version.outputs.tier }}
+          VERSION: ${{ needs.version.outputs.version }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # 收集产物（合并 multiple 后是扁平目录，可能还带子目录，find 更稳）
+          mapfile -t FILES < <(find dist/mobile-release -type f \( -name '*.apk' -o -name '*.hap' -o -name '*.zip' \))
+          printf '待挂 %d 件：\n' "${#FILES[@]}"
+          printf '  %s\n' "${FILES[@]}"
+
+          if [ "$TIER" = nightly ]; then
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              echo "::notice::nightly Release $TAG 已存在，覆盖资产（--clobber）"
+            else
+              gh release create "$TAG" \
+                --title "mobile nightly $TAG" \
+                --prerelease \
+                --target "$GITHUB_SHA" \
+                --notes "移动端每日产物（引擎 $VERSION，commit $GITHUB_SHA）。Android APK 为 debug 签名，仅供试用；HarmonyOS HAP 需自建 runner 才会出现；iOS 为壳工程 zip。桌面二进制与 npm 平台子包见 @goxjs/goxjs（npm）。" \
+              || { echo "::error::gh release create $TAG 失败；证据：见原始日志（token 权限 contents: write？tag 冲突？）"; exit 1; }
+            fi
+          else
+            # release 档：tag 必须已存在（由 release.yml 的 publish 或人工建）
+            if ! gh release view "$TAG" >/dev/null 2>&1; then
+              echo "::error::Release $TAG 不存在，无法挂载；证据：gh release view $TAG 返回非 0。release 档要求先由 release.yml 建出 v\$VERSION 的 Release"
+              exit 1
+            fi
+          fi
+
+          gh release upload "$TAG" "${FILES[@]}" --clobber \
+            || { echo "::error::gh release upload $TAG 失败；证据：见原始日志（token / 资产名冲突 / 网络）"; exit 1; }
+
+          echo "== 挂载后的 assets（证据）=="
+          gh release view "$TAG" --json tagName,isPrerelease,assets -q '"tag=" + .tagName + " prerelease=" + (.isPrerelease|tostring)' || true
+          gh release view "$TAG" --json assets -q '.assets[] | "  " + .name + "  " + (.size|tostring)' || true
+          echo "::notice::$TIER 档产物已挂到 $TAG（${{ needs.version.outputs.version }}）"
