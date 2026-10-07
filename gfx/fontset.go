@@ -363,18 +363,22 @@ func fontNameOf(f *opentype.Font, buf *sfnt.Buffer, id sfnt.NameID) string {
 // **不看 OS/2 的 usWeightClass**: x/image 没有暴露 OS/2 表, 而且子族名
 // 里的 "bold" 已经覆盖了 SemiBold/DemiBold/ExtraBold 这一族词。
 //
-// faceIndex 是面在文件里的序号 —— 它**必须**参与判定, 因为"粗"这个性质
-// 是逐面的, 而 .ttc 里每个面的 name 表是独立的, 于是同一个文件的不同面
-// 经常被登记成同一套族名/子族名。实测 (2026-10-07, CI 注解):
+// faceIndex 是面在文件里的序号。**它不参与字重判定** —— 保留参数只是为了让
+// 调用点显式写出"这是第几个面", 将来真要按面细分时唯一入口在这里。
 //
-//	NotoSansCJK-Bold.ttc   面 0 子族名写着 "Bold", 内容却是个等宽 CJK 面
-//	                       (字形与 Regular 面 0 逐字节相同), 面 1 才是真粗体。
-//	                       NotoSansCJK-Regular.ttc 面 0 子族名恰是 "Regular"。
+// 为什么不能用面序号判字重 (2026-10-07 踩过): 曾按"面 0 正体、面 >0 粗体"来兜
+// 子族名不区分字重的族, 实测是错的 —— 集合字体的每个面都有自己的族名:
 //
-// 忽略面序号的后果: 该族在索引里只有两格, {b=0}→regular#0 与
-// {b=1}→bold#0 —— 而 bold#0 的内容本来就是正体, 于是"要粗体"拿到的东西
-// 与"正体"一模一样, 加粗静默失效 (TestDrawTextStyledDiffersPerAxis 就是
-// 这么红的: 两个槽位不同、掩码与墨量却逐字节相同)。
+//	simsun.ttc 面0 族=SimSun 子族=Regular; 面1 族=NSimSun 子族=Regular
+//	msyh.ttc   面0 族=Microsoft YaHei;     面1 族=Microsoft YaHei UI
+//
+// 即 NSimSun 是"另一个族", 不是 SimSun 的粗体面。按序号硬判的后果: nsimsun
+// 只剩 {b=1} 一格, 而 genericMono 兜底 (firstMonoLocked) 恰好返回它 ⇒
+// lookup("monospace") 查不到正体轴, 泛型等宽族整体失效。
+//
+// 真正需要提防的是**名字写错的那种字体**: NotoSansCJK-Bold.ttc 的面 0 子族名
+// 写着 "Bold", 内容却是个等宽 CJK 面 (字形与 Regular 面 0 逐字节相同)。那种
+// 情况靠"默认字体跳过粗体面"来挡 (见 loadBaseFontLocked), 不靠面序号猜。
 func axisFromFont(f *opentype.Font, faceIndex int, subfamily string) styleAxis {
 	s := strings.ToLower(subfamily)
 	bold := strings.Contains(s, "bold") || strings.Contains(s, "heavy") || strings.Contains(s, "black")
