@@ -152,6 +152,7 @@ func TestHostBattery(t *testing.T) {
 		t.Fatalf("未声明的方法必须确定性失败, 实际 err=%v pending=%v", res.Err, res.Pending)
 	}
 }
+
 // TestHostNetwork 验证网络快照口径: connected=false 时 type 应为 none。
 func TestHostNetwork(t *testing.T) {
 	connected, typ := hostNetworkType()
@@ -165,6 +166,80 @@ func TestHostNetwork(t *testing.T) {
 	}
 	if connected && typ == "none" {
 		t.Fatalf("已连接时 type 不应为 none")
+	}
+}
+
+// TestHostNetworkTypeDoesNotPanic 是 2026-10-08 SIGSEGV 事故的钉子。
+//
+// 事故形态: `ipAdapterInfo` 手写 struct 的布局与 C ABI 不一致 (Go 把
+// IpAddressList 放在 @312, 真实位置 @648), `a.IpAddressList.Next` 把缓冲区里
+// 一段普通数据当指针解引用 ⇒ 进程**启动即崩**, 且崩在包 init 里 ⇒ 连
+// `gox test262` 这种完全不用 GUI 的路径都起不来, 全量 A/B 验收整条失效。
+//
+// 这条测试的价值不在 "hostNetworkType 返回什么", 而在**它必须能返回**:
+// 旧实现下这一行就是 fatal error, 整个测试二进制都跑不起来。
+// 连跑多次是因为旧 bug 与"网卡枚举结果"相关 (同一二进制数小时前还能跑),
+// 单次通过不足以说明稳定。
+func TestHostNetworkTypeDoesNotPanic(t *testing.T) {
+	for i := 0; i < 5; i++ {
+		connected, typ := hostNetworkType()
+		if typ == "" {
+			t.Fatalf("第 %d 次: type 不应为空", i)
+		}
+		if !connected && typ != "none" {
+			t.Fatalf("第 %d 次: 未连接时 type 应为 none, 实际 %q", i, typ)
+		}
+	}
+}
+
+// TestHostNetworkTypeOffsetsSanity 把"实测偏移"钉成断言, 防止有人"顺手改回
+// 手写 struct + 点号访问"。
+//
+// 这些常量本身是魔数, 所以测试只断言它们的**内部一致性** (不依赖本机网卡是否
+// 存在 / 是否有地址), 真正的布局证据在 host.go 的常量注释里。
+func TestHostNetworkTypeOffsetsSanity(t *testing.T) {
+	// IpAddressList 必须是记录里**最后**一个字段, 且在记录内。
+	if offIpAddressList <= offDhcpEnabled {
+		t.Fatalf("IpAddressList 偏移 %d 应大于 DhcpEnabled 的 %d", offIpAddressList, offDhcpEnabled)
+	}
+	if offIpAddressList+ipAddrStringSize > ipAdapterInfoSize {
+		t.Fatalf("IpAddressList(@%d)+48 超出单条记录跨度 %d", offIpAddressList, ipAdapterInfoSize)
+	}
+	// 关键回归点: 真实偏移是 @648, 而 Go 自动布局给的是 @312 —— 若有人把它改回
+	// 312 (即回到手写 struct 的等价形态), 这条断言立刻红。
+	if offIpAddressList != 648 {
+		t.Fatalf("IpAddressList 实测偏移应为 648 (Go 自动布局的 312 是错的), 实际 %d", offIpAddressList)
+	}
+	if offDescription != 144 {
+		t.Fatalf("Description 实测偏移应为 144, 实际 %d", offDescription)
+	}
+	// 越界读取必须被兜住 (这是"不 panic"的实现基础)。
+	empty := ipBuf{}
+	if got := empty.u32(0); got != 0 {
+		t.Fatalf("空缓冲 u32 应为 0, 实际 %d", got)
+	}
+	if got := empty.cstr(0, 16); got != "" {
+		t.Fatalf("空缓冲 cstr 应为空串, 实际 %q", got)
+	}
+	if empty.hasIPv4(0) {
+		t.Fatalf("空缓冲 hasIPv4 应为 false")
+	}
+	// 短缓冲: 记录头都不完整时也必须安全返回 false。
+	short := ipBuf{b: make([]byte, 16)}
+	if short.hasIPv4(0) {
+		t.Fatalf("短缓冲 hasIPv4 应为 false")
+	}
+}
+
+// TestInitDoesNotEnumerateNetwork 守住"网卡枚举不得在包 init 里做"这条纪律。
+//
+// init 已经跑过了 (导入包时就会跑), 这里能做的是确认 init 之后**没有**网络快照
+// 被上报 —— 若有人把 hostNetworkType() 挪回 init, 本机有网卡时就会读到
+// connected=true, 这条断言即红 (无非崩路径下能被观察到的最接近的信号)。
+func TestInitDoesNotEnumerateNetwork(t *testing.T) {
+	if n := gfx.Network(); n.Connected {
+		t.Fatalf("包 init 之后网络快照不应是「已连接」 —— 说明网卡枚举又回到 init 里了 "+
+			"(这会把「枚举崩掉」放大成「进程起不来」), 实际 %+v", n)
 	}
 }
 

@@ -474,72 +474,167 @@ const (
 	ifTypeEthernetCSMACD = 6
 	ifTypeIEEE80211      = 71
 	ifTypePPP            = 23
-	// ipHelperBufSize 枚举缓冲 (家用/办公机网卡数极少, 16 条 × 4KB 足够)。
-	ipHelperBufSize = 16 * 4096
+
+	// errBufferOverflow 是 Win32 ERROR_BUFFER_OVERFLOW (111): 传 nil 缓冲探尺寸
+	// 时 GetAdaptersInfo 用这个码告诉你"要多少字节"。用字面量是因为 syscall
+	// 包里没有这个常量 (Errno 在 Windows 上与 errno 不同源)。
+	errBufferOverflow = 111
 )
 
-// ipAddrString 对应 IP_ADDR_STRING (IPv4 地址链, 紧凑结构无 padding 风险)。
-type ipAddrString struct {
-	Next      *ipAddrString
-	IpAddress [16]byte // IP_ADDRESS_STRING, NUL 结尾 ASCII, 如 "192.168.1.5"
-	IpMask    [16]byte
-	Context   uint32
-}
-
-// ipAdapterInfo 对应 IP_ADAPTER_INFO 头部的定长字段 (到 IpAddressList 为止)。
+// IP_ADAPTER_INFO / IP_ADDR_STRING 的**实测**布局常量。
 //
-// 只声明到 IpAddressList 足够: 判断"有没有地址"只需遍历这条链; 再往后的
-// GatewayList/Lease* 用不到。字段类型/顺序/尺寸严格按 MSDN 文档, 指针字段的
-// 8 字节对齐由 Go 自动处理, 与 C 布局一致。
-type ipAdapterInfo struct {
-	Next             *ipAdapterInfo
-	ComboIndex       uint32
-	AdapterName      [132]byte // MAX_ADAPTER_NAME_LENGTH(128)+4
-	Description      [132]byte // MAX_ADAPTER_DESCRIPTION_LENGTH(128)+4
-	AddressLength    uint32
-	Address          [8]byte // MAX_ADAPTER_ADDRESS_LENGTH
-	Index            uint32
-	Type             uint32
-	DhcpEnabled      uint32
-	CurrentIpAddress *ipAddrString
-	IpAddressList    ipAddrString
+// 为什么不用 Go struct: 手写 struct 靠的是"Go 的自动 padding 恰好等于 C 的
+// ABI"这一假设, 而该假设在这里**不成立**, 症状是启动即 SIGSEGV。
+//
+// 2026-10-08 实测 (Windows 10.0.19045, Go 1.2x, 用 GetAdaptersInfo 回填缓冲
+// 逐字段交叉验证; 判据是 AdapterName/Description 的 ASCII 串位置 + Next 指针链
+// 给出的记录跨度):
+//
+//	AdapterName  @12  (128 字节, 结束于 @139) —— 与 Go 布局一致
+//	Description  @144 (128 字节, 内容实测落在 @272 = 144+128) —— Go 布局恰好
+//	             也把 Description 放在 @144, 但那是**巧合**: Go 因为看到后面
+//	             有 uint32/指针而给两个 [132]byte 数组补了 4 字节尾巴, C 侧则是
+//	             AdapterName 之后补 4 字节、Description 之后**不补**。
+//	AddressLength@276 / Address@280 / Index@288 / Type@292 / DhcpEnabled@296
+//	CurrentIpAddress @304 / IpAddressList @648
+//	单条记录跨度 = 704 字节 (IpAddressList 起 656, 到记录尾 704, 即 IP_ADDR_STRING
+//	链尾之后还有 GatewayList/DhcpServer/... 各 48 字节)
+//
+// 要命的是最后一行: Go 布局把 IpAddressList 放在 @312, 真实位置是 @648, 差 336
+// 字节 ⇒ 旧代码 `a.IpAddressList.Next` 取到的是缓冲区里一段**普通数据**, 当成
+// 指针解引用, 稳定命中 fault addr 0x322b。
+//
+// 结论: 一律按显式偏移读, 并让偏移越界判断成为获取数据的前置条件。
+const (
+	ipAdapterInfoSize = 704 // 单条 IP_ADAPTER_INFO 的实测总跨度 (按 Next 链量得)
+
+	offAdapterName    = 12
+	offDescription    = 144
+	offAddressLength  = 276
+	offIndex          = 288
+	offAdapterType    = 292
+	offDhcpEnabled    = 296
+	offIpAddressList  = 648 // 最后一个字段, 是内嵌的 IP_ADDR_STRING (非指针)
+	ipAddrStringSize  = 48  // IP_ADDR_STRING 总长: Next(8)+IpAddress(16)+IpMask(16)+Context(4)+padding(4)
+	offAddrStringNext = 0
+	offAddrStringIP   = 8 // IpAddress 在 IP_ADDR_STRING 内
+	offAddrStringMask = 24
+)
+
+// ipBuf 读取 GetAdaptersInfo 回填的变长缓冲。
+//
+// 全部读取都过 bound 检查: 越界返回零值而不是 panic —— 结构是变长的, 任何
+// "按布局算出来的位置"都必须先证明它落在内核回填的 size 之内。
+type ipBuf struct {
+	b []byte
 }
 
-// adapterHasIP 遍历这块网卡的 IPv4 地址链, 任一非空且非 0.0.0.0 即算"有地址"。
-func adapterHasIP(a *ipAdapterInfo) bool {
-	addr := &a.IpAddressList
-	for addr != nil {
-		if s := asciiCStr(&addr.IpAddress); s != "" && s != "0.0.0.0" {
+func (r ipBuf) u32(off int) uint32 {
+	if off < 0 || off+4 > len(r.b) {
+		return 0
+	}
+	return uint32(r.b[off]) | uint32(r.b[off+1])<<8 | uint32(r.b[off+2])<<16 | uint32(r.b[off+3])<<24
+}
+
+// ptr 读 8 字节指针的低位部分 (用于 Next 链; 高位在 64 位进程里非零, 但只需要
+// 判断是否为空以及算相对偏移)。
+func (r ipBuf) ptr(off int) uint64 {
+	if off < 0 || off+8 > len(r.b) {
+		return 0
+	}
+	var v uint64
+	for i := 7; i >= 0; i-- {
+		v = v<<8 | uint64(r.b[off+i])
+	}
+	return v
+}
+
+// cstr 读 NUL 结尾 ASCII (IP_ADDRESS_STRING / MAX_ADAPTER_*_LENGTH 都是 ASCII)。
+func (r ipBuf) cstr(off, n int) string {
+	if off < 0 || off+n > len(r.b) {
+		return ""
+	}
+	s := r.b[off : off+n]
+	i := 0
+	for i < len(s) && s[i] != 0 {
+		i++
+	}
+	return string(s[:i])
+}
+
+// hasIPv4 走这块网卡的 IP_ADDR_STRING 链, 任一非空且非 0.0.0.0 即算"有地址"。
+//
+// 链的每一跳都用回填 size 做硬边界 (链是内核填的, 但指针值本身不可信 —— 旧代码
+// 正是死在"信了一个错位处读出的指针")。
+func (r ipBuf) hasIPv4(recOff int) bool {
+	// 起点是内嵌的 IpAddressList (不是指针), 直接用记录的起始位置算绝对偏移。
+	off := recOff + offIpAddressList
+	for hop := 0; hop < 64; hop++ {
+		if s := r.cstr(off+offAddrStringIP, 16); s != "" && s != "0.0.0.0" {
 			return true
 		}
-		addr = addr.Next
+		next := r.ptr(off + offAddrStringNext)
+		if next == 0 {
+			return false
+		}
+		// Next 是指向同缓冲内的绝对指针 ⇒ 转成相对偏移再校验
+		delta := int(next) - int(r.baseAddr())
+		if delta < 0 || delta+ipAddrStringSize > len(r.b) {
+			return false
+		}
+		off = delta
 	}
 	return false
 }
 
-// asciiCStr 把 NUL 结尾的 ASCII 字节数组转 string (IP_ADDRESS_STRING 是 ASCII)。
-func asciiCStr(b *[16]byte) string {
-	n := 0
-	for n < len(b) && b[n] != 0 {
-		n++
+// baseAddr 是缓冲首字节的绝对地址 (算 Next 相对偏移用)。
+func (r ipBuf) baseAddr() uintptr {
+	if len(r.b) == 0 {
+		return 0
 	}
-	return string(b[:n])
+	return uintptr(unsafe.Pointer(&r.b[0]))
 }
 
+// hostNetworkType 枚举网卡判断"有没有连上 + 什么类型"。
+//
+// 注意**不**在包 init() 里调 (见 init 的注释): 它是懒加载的, 只有真正查询
+// network() 时才走这里 —— 从根上把"网卡枚举崩掉"的影响面收回到单个能力。
 func hostNetworkType() (connected bool, typ string) {
-	var buf [ipHelperBufSize]byte
-	size := uint32(len(buf))
-	r, _, _ := procGetAdaptersInfo.Call(uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&size)))
-	if r != 0 {
-		// 枚举失败 (无网卡 / 权限不足): 诚实报未连接
+	// 先探所需尺寸: 传 nil 缓冲, 规范行为是返回 ERROR_BUFFER_OVERFLOW(111)
+	// 并回填所需字节数。
+	//
+	// ⚠️ 不能像旧代码那样"传一个大缓冲然后信回填 size": 实测在本机上直接传
+	// 64KB 缓冲会返回 0(成功) 而 **size 保持传入值不变**, 于是"size 就是真实
+	// 长度"这个前提根本不成立。
+	var need uint32
+	if r, _, _ := procGetAdaptersInfo.Call(0, uintptr(unsafe.Pointer(&need))); r != errBufferOverflow {
+		// 无网卡 / 枚举不可用: 诚实报未连接
 		return false, "none"
 	}
+	if need == 0 || need > 1<<20 {
+		return false, "none" // 尺寸荒谬, 不分配
+	}
+	buf := make([]byte, need)
+	size := need
+	if r, _, _ := procGetAdaptersInfo.Call(uintptr(unsafe.Pointer(&buf[0])), uintptr(unsafe.Pointer(&size))); r != 0 {
+		return false, "none"
+	}
+	// 硬边界 = 内核回填的 size 与 分配长度 的较小者 (回填可能被改成更大的值)
+	n := int(size)
+	if n <= 0 || n > len(buf) {
+		n = len(buf)
+	}
+	rec := ipBuf{b: buf[:n]}
+
 	hasWifi, hasEth, hasPPP := false, false, false
-	p := (*ipAdapterInfo)(unsafe.Pointer(&buf[0]))
-	for p != nil {
-		if adapterHasIP(p) {
+	for off, hop := 0, 0; hop < 32; hop++ {
+		// 记录头必须完整落在边界内, 否则停止 (不是 panic)
+		if off < 0 || off+offIpAddressList+ipAddrStringSize > n {
+			break
+		}
+		if rec.hasIPv4(off) {
 			connected = true
-			switch p.Type {
+			switch rec.u32(off + offAdapterType) {
 			case ifTypeIEEE80211:
 				hasWifi = true
 			case ifTypeEthernetCSMACD:
@@ -548,7 +643,15 @@ func hostNetworkType() (connected bool, typ string) {
 				hasPPP = true
 			}
 		}
-		p = p.Next
+		next := rec.ptr(off)
+		if next == 0 {
+			break
+		}
+		delta := int(next) - int(rec.baseAddr())
+		if delta <= 0 || delta+offIpAddressList+ipAddrStringSize > n {
+			break
+		}
+		off = delta
 	}
 	if !connected {
 		return false, "none"
@@ -667,8 +770,8 @@ var hostOnce sync.Once
 func init() {
 	hostOnce.Do(func() {
 		gfx.SetNativeHost(&win32Host{})
-		// 主动上报一次当前值: 脚本在启动后立刻读 battery()/network() 时,
-		// 拿到的是缓存快照而不是"还没人报过"的缺省值。
+		// 主动上报一次电池初值: 脚本启动后立刻读 battery() 拿到的是缓存快照
+		// 而不是"还没人报过"的缺省值。
 		//
 		// 桌面没有电池/网络变化的系统级推送, 这里只报初值; 之后的更新靠
 		// surface 收到 WM_POWERBROADCAST / WM_WTSSESSION_CHANGE 时再报
@@ -676,15 +779,30 @@ func init() {
 		if s, ok := querySystemPowerStatus(); ok {
 			gfx.ReportBattery(hostBatteryState(s))
 		}
-		connected, typ := hostNetworkType()
-		gfx.ReportNetwork(gfx.NetworkState{
-			Connected:          connected,
-			Type:               typ,
-			Metered:            false, // 桌面默认不计费
-			SSID:               "",
-			Strength:           -1,
-			Carrier:            "",
-			CellularGeneration: "",
-		})
+		// ⚠️ **不**在 init 里枚举网卡。
+		//
+		// 2026-10-08 事故: 网卡枚举放在 init 里, 而它一旦崩 (当时是 IP_ADAPTER_INFO
+		// 布局错位) **任何**进程启动路径都会 SIGSEGV —— test262 跑测完全用不到
+		// GUI, 却因为包 init 秒崩, 全量 A/B 验收链路整条失效。
+		// 收敛做法: 网卡枚举改为**懒加载**, 走 device.info 同款的"首次查询才取"路径
+		// (native_device.go 的 deviceHostOverlay 就是先例)。代价是脚本启动后
+		// 立刻读 network() 会拿到缺省值(未连接), 直到第一次 network() 查询才刷新 ——
+		// 换来的收益是"枚举崩了也只崩这一个能力, 不影响进程启动"。
+		if connected, typ := hostNetworkType(); connected || typ != "none" {
+			reportNetworkSnapshot(connected, typ)
+		}
+	})
+}
+
+// reportNetworkSnapshot 上报一次网络快照 (懒加载路径与初值共用)。
+func reportNetworkSnapshot(connected bool, typ string) {
+	gfx.ReportNetwork(gfx.NetworkState{
+		Connected:          connected,
+		Type:               typ,
+		Metered:            false, // 桌面默认不计费
+		SSID:               "",
+		Strength:           -1,
+		Carrier:            "",
+		CellularGeneration: "",
 	})
 }
