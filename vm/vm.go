@@ -1321,6 +1321,42 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			if err := vm.throwNamedError("TypeError", "Assignment to constant variable: %s", name); err != nil {
 				return err
 			}
+		case bytecode.OP_STORE_LEXICAL:
+			// 对局部 let 绑定赋值 —— 槽位若仍为 nil 说明尚未求值到声明语句
+			// (TDZ), 抛 ReferenceError; 否则与 OP_STORE 同。与 OP_LOAD 的 TDZ
+			// 守卫对称。弹出值以保持栈平衡 (编译器在存储前 DUP 保留了表达式结果)。
+			slot := int(operand)
+			val := vm.stack.Pop()
+			if slot < len(frame.Locals) && frame.Locals[slot] == nil {
+				if terr := vm.throwJSError(&jsThrow{
+					"ReferenceError",
+					"Cannot access lexical declaration before initialization",
+				}); terr != nil {
+					return terr
+				}
+				continue
+			}
+			if slot >= len(frame.Locals) {
+				for len(frame.Locals) <= slot {
+					frame.Locals = append(frame.Locals, object.UndefinedSingleton)
+				}
+			}
+			frame.Locals[slot] = val
+			if slot < len(frame.SharedCells) {
+				frame.SharedCells[slot] = val
+			}
+			if frame.Closure != nil && slot < len(frame.Closure.CapturedLocals) {
+				frame.Closure.CapturedLocals[slot] = val
+			}
+			for _, c := range frame.CreatedClosures {
+				if slot < len(c.CapturedLocals) {
+					c.CapturedLocals[slot] = val
+				}
+			}
+			if frame.ModifiedSlots == nil {
+				frame.ModifiedSlots = make(map[int]bool)
+			}
+			frame.ModifiedSlots[slot] = true
 		case bytecode.OP_LOAD_GLOBAL:
 			name := frame.Constants.Get(operand)
 			if s, ok := name.(*object.String); ok {
@@ -1359,6 +1395,31 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			if s, ok := name.(*object.String); ok {
 				// 弹出值 (与 OP_STORE 语义一致)。若需保留表达式结果, 编译器会在存储前 DUP。
 				val := vm.stack.Pop()
+				if vm.globals.IsConst(s.Value) {
+					if err := vm.throwNamedError("TypeError", "Assignment to constant variable: %s", s.Value); err != nil {
+						return err
+					}
+					continue
+				}
+				if err := vm.storeGlobalBinding(s.Value, val); err != nil {
+					return err
+				}
+			}
+		case bytecode.OP_STORE_LEXICAL_GLOBAL:
+			// 对脚本顶层 let 绑定赋值 [name_idx]: 尚无绑定即 TDZ, 抛 ReferenceError;
+			// 否则按 OP_STORE_GLOBAL 写入。弹出值保持栈平衡 (编译器在存储前 DUP)。
+			name := frame.Constants.Get(operand)
+			if s, ok := name.(*object.String); ok {
+				val := vm.stack.Pop()
+				if _, exists := vm.globals.Get(s.Value); !exists {
+					if err := vm.throwJSError(&jsThrow{
+						"ReferenceError",
+						"Cannot access lexical declaration before initialization",
+					}); err != nil {
+						return err
+					}
+					continue
+				}
 				if vm.globals.IsConst(s.Value) {
 					if err := vm.throwNamedError("TypeError", "Assignment to constant variable: %s", s.Value); err != nil {
 						return err

@@ -4449,13 +4449,20 @@ func (c *Compiler) emitGlobalStore(name string) {
 	c.emitter.Emit(bytecode.OP_STORE_GLOBAL, idx)
 }
 
-// emitAssignmentStore 发射对**名字**的赋值存储。
-//   - 已解析的全局符号 (unresolved=false) → OP_STORE_GLOBAL;
-//   - 未声明名 (unresolved=true) 在严格模式下 → OP_STORE_UNDECLARED
+// emitAssignmentStore 发射对**名字**的赋值存储 (脚本/全局语境)。
+//   - 顶层 let 绑定 (sym 非 nil 且非 const 非 var): 走 OP_STORE_LEXICAL_GLOBAL
+//     —— 绑定尚未由声明语句创建时抛 TDZ ReferenceError;
+//   - 未声明名 (sym==nil) 在严格模式下 → OP_STORE_UNDECLARED
 //     (运行期无同名绑定则抛 ReferenceError); sloppy 下仍走 OP_STORE_GLOBAL
-//     (隐式建全局属性, 规范 sloppy 语义)。
-func (c *Compiler) emitAssignmentStore(name string, unresolved bool) {
-	if unresolved && c.strict {
+//     (隐式建全局属性, 规范 sloppy 语义);
+//   - 其余已解析全局绑定 → OP_STORE_GLOBAL (const 由运行期 IsConst 拦)。
+func (c *Compiler) emitAssignmentStore(name string, sym *Symbol) {
+	if sym != nil && !c.moduleMode && !sym.IsConst && !sym.IsVarLike {
+		idx := c.constants.AddConstant(object.NewString(name))
+		c.emitter.Emit(bytecode.OP_STORE_LEXICAL_GLOBAL, idx)
+		return
+	}
+	if sym == nil && c.strict {
 		idx := c.constants.AddConstant(object.NewString(name))
 		c.emitter.Emit(bytecode.OP_STORE_UNDECLARED, idx)
 		return
@@ -4531,6 +4538,13 @@ func (c *Compiler) emitLocalStore(sym *Symbol) {
 		c.emitter.Emit(bytecode.OP_STORE_CONST_GUARD, nameIdx)
 		return
 	}
+	// let 绑定 (非 var 非 const): 赋值位置若槽位仍为 nil 即处于 TDZ,
+	// 须抛 ReferenceError —— 发 OP_STORE_LEXICAL (槽位仍为 nil 即 TDZ,
+	// 抛 ReferenceError); var / 其它发 OP_STORE (var 提升即 undefined, 无 TDZ)。
+	if !sym.IsVarLike {
+		c.emitter.Emit(bytecode.OP_STORE_LEXICAL, uint16(sym.Slot))
+		return
+	}
 	c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
 }
 
@@ -4544,7 +4558,7 @@ func (c *Compiler) emitIdentifierAssign(name string) {
 		return
 	}
 	if sym == nil || (sym.Depth == 0 && !c.moduleMode) {
-		c.emitAssignmentStore(name, sym == nil)
+		c.emitAssignmentStore(name, sym)
 	} else {
 		c.emitLocalStore(sym)
 	}
@@ -4828,13 +4842,12 @@ func (c *Compiler) compileAssignmentExpression(node *ast.AssignmentExpression) e
 		}
 		if sym == nil || (sym.Depth == 0 && !c.moduleMode) {
 			// 全局变量: 读写共享全局环境
-			unresolved := sym == nil
 			if node.Operator == "=" {
 				if err := c.compileNamedExpression(node.Right, left.Value); err != nil {
 					return err
 				}
 				c.emitter.EmitNoOperand(bytecode.OP_DUP)
-				c.emitAssignmentStore(left.Value, unresolved)
+				c.emitAssignmentStore(left.Value, sym)
 			} else {
 				// 复合赋值: x += val → LOAD old, 编译右值, OP, DUP, STORE_GLOBAL
 				c.emitGlobalLoad(left.Value)
@@ -4843,7 +4856,7 @@ func (c *Compiler) compileAssignmentExpression(node *ast.AssignmentExpression) e
 				}
 				c.emitCompoundOp(node.Operator)
 				c.emitter.EmitNoOperand(bytecode.OP_DUP)
-				c.emitAssignmentStore(left.Value, unresolved)
+				c.emitAssignmentStore(left.Value, sym)
 			}
 			return nil
 		}
@@ -5687,13 +5700,13 @@ func (c *Compiler) compileIncDec(target ast.Expression, isInc, isPrefix bool) er
 				c.emitter.Emit(bytecode.OP_INT, 1)
 				c.emitIncDecOp(isInc)
 				c.emitter.EmitNoOperand(bytecode.OP_DUP)
-				c.emitAssignmentStore(ident.Value, true)
+				c.emitAssignmentStore(ident.Value, nil)
 			} else {
 				c.emitter.EmitNoOperand(bytecode.OP_DUP)
 				c.emitter.EmitNoOperand(bytecode.OP_TO_NUMBER)
 				c.emitter.Emit(bytecode.OP_INT, 1)
 				c.emitIncDecOp(isInc)
-				c.emitAssignmentStore(ident.Value, true)
+				c.emitAssignmentStore(ident.Value, nil)
 			}
 			return nil
 		}

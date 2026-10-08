@@ -72,6 +72,24 @@ const (
 	// operand = 常量池索引, 指向名字 (*object.String), 仅用于报错消息。
 	OP_STORE_CONST_GUARD Opcode = 0x2A
 
+	// OP_STORE_LEXICAL: 对**局部 let 绑定槽位**赋值 [slot]。
+	// 与 OP_STORE 的区别: 若目标槽当前为 nil (绑定尚未求值到声明语句,
+	// 即处于 TDZ), 抛 ReferenceError "Cannot access lexical declaration
+	// before initialization" —— 与 OP_LOAD 的 TDZ 守卫对称。
+	// 用于赋值位置 (`x = v`、复合赋值、++/--、解构/for-of 赋值目标) 落到
+	// let 绑定 (非 const, 非 var) 的情形; const 走 OP_STORE_CONST_GUARD,
+	// var 走 OP_STORE (var 提升即初始化为 undefined, 无 TDZ)。
+	// operand = 槽位号 (与 OP_STORE 同形)。
+	OP_STORE_LEXICAL Opcode = 0x2B
+
+	// OP_STORE_LEXICAL_GLOBAL: 对**脚本顶层的 let 绑定**赋值 [name_idx]。
+	// 与 OP_STORE_GLOBAL 的区别: 名字在全局环境里尚无绑定时 (声明语句尚未
+	// 执行到, 即处于 TDZ) 抛 ReferenceError; 否则按 OP_STORE_GLOBAL 写入。
+	// 用于赋值位置落到顶层 let 绑定 (`x = v` / 解构目标) 的情形 —— 顶层 let
+	// 的绑定要到声明语句执行才创建, 在此之前赋值必须报 TDZ。
+	// operand = 常量池索引, 指向名字 (*object.String)。
+	OP_STORE_LEXICAL_GLOBAL Opcode = 0x2C
+
 	// 0x30-0x3F: 算术运算
 	OP_ADD     Opcode = 0x30 // 栈顶两值相加 (弹出 a, b, 推入 a+b)
 	OP_SUB     Opcode = 0x31
@@ -374,6 +392,8 @@ var opcodeNames = map[Opcode]string{
 	OP_TRUE: "TRUE", OP_FALSE: "FALSE", OP_INT: "INT",
 	OP_LOAD: "LOAD", OP_STORE: "STORE", OP_STORE_CONST: "STORE_CONST",
 	OP_STORE_CONST_GUARD: "STORE_CONST_GUARD",
+	OP_STORE_LEXICAL: "STORE_LEXICAL",
+	OP_STORE_LEXICAL_GLOBAL: "STORE_LEXICAL_GLOBAL",
 	OP_LOAD_GLOBAL: "LOAD_GLOBAL", OP_STORE_GLOBAL: "STORE_GLOBAL", OP_DECLARE: "DECLARE", OP_DECLARE_CONST: "DECLARE_CONST",
 	OP_STORE_UNDECLARED: "STORE_UNDECLARED",
 	OP_DECLARE_VAR:      "DECLARE_VAR",
