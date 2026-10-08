@@ -91,6 +91,12 @@ func (vm *VM) callToString(fn *object.Closure, this object.Value) (result string
 	}()
 	rv := object.CallFunction(fn, this)
 	if object.TakeCallbackError() != nil {
+		// 出错即弃用结果 (回退 Inspect)，但**值槽必须跟着清** (看板 rZNsX9):
+		// 本处不重抛、上游也看不到这个错误，只清错误槽的话 `throw x` 的 x 会
+		// 一直挂着 —— object.CallFunction 每次只重置错误槽、不重置值槽，于是
+		// 它能跨任意多次后续桥调用存活，直到被某个两槽消费者当成"本次抛出的
+		// 值"读走 (静默错值)。
+		object.TakeCallbackErrorValue()
 		return "", false
 	}
 	if s, isStr := rv.(*object.String); isStr {
@@ -3515,8 +3521,31 @@ func (vm *VM) unwindFramesTo(startIdx int) {
 
 // checkCallbackErr 检查回调执行中是否产生了错误，如有则返回并清除。
 // 错误信号由 object 层持有 (消费即清除)，这里只做读取转发。
+//
+// **两槽必须同步消费** (看板 rZNsX9): 回调桥写两个槽 —— 错误槽 (Go error)
+// 与值槽 (`throw x` 的 x，object.SetCallbackErrorValue)。桥**只在错误类型是
+// *ThrowError / *jsThrow 时才写值槽** (见 setCallbackErrorValueFromThrow)，
+// 其余错误只写错误槽 ⇒ 只消费错误槽时，上一次的抛出值会原封不动留在值槽里。
+//
+// 而 object.CallFunction 每次进入只重置**错误槽** (callbackError = nil)、
+// **不重置值槽** —— 残留值于是能跨任意多次后续桥调用存活，直到某个「只写
+// 错误槽」的桥失败被两槽消费者 (stdlib/{async,promise,eval,solid}.go) 读走
+// ⇒ 用户 catch 到的是**上一次的抛出值**: 不报错，只是值错 (静默错值)。
+//
+// 这里刻意**只在真的消费到错误时才连带消费值槽**: err == nil 说明本次桥调用
+// 没有失败，值槽里的东西不由本次负责，抢先清空会夺走尚未被真正的消费方读走
+// 的值。本函数是 vm 侧全部同形态位点的**唯一汇聚点**：vm.go 28 处 +
+// async_from_sync.go 3 处 = 31 处调用点，改一处即全覆盖 —— 这是 rr1O8P
+// 记下的流程教训（先找汇聚点，再改调用点）。
 func (vm *VM) checkCallbackErr() error {
-	return object.TakeCallbackError()
+	err := object.TakeCallbackError()
+	if err == nil {
+		return nil
+	}
+	// 本次确有一次桥失败: 两槽同进同出。此处是我们亲手把错误信号取走的地方，
+	// 值槽若留着，之后任何一个两槽消费者都会把它当成"本次抛出的值"。
+	object.TakeCallbackErrorValue()
+	return err
 }
 
 // throwIfError 判断内建函数的返回值是否应作为异常抛出，是则执行 throw 流程。
