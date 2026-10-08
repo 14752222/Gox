@@ -379,6 +379,12 @@ Options:
 各平台的分发注意事项（Windows 图标与签名、Linux 打包格式、macOS `.app` bundle）见
 [docs/desktop-distribution.md](docs/desktop-distribution.md)。
 
+> **命令行参数**：打包产物与 `gox <file> <args>` 保持同一口径 —— `process.argv` 恒为
+> `[可执行文件, 脚本路径, ...用户参数]`，用户参数**始终从索引 2 开始**
+> （打包产物没有“脚本路径”这个宿主参数，运行时会补上提取后的入口路径占位）。
+> 于是同一份脚本源码跑和打包跑都能用 `process.argv[2]` 取到第一个用户参数，
+> 支持「拖拽文件到 exe 上打开」「带参数启动」这类桌面工具的基本预期。
+
 ### 多平台配置（gox.json / 权限 / 图标）
 
 `gox create` 生成的工程自带 `gox.json`（应用名、appId、版本、权限、各平台子配置）

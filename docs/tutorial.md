@@ -174,6 +174,10 @@ gox testdata/tutorial_api.js
 
 真实输出(节选):
 
+> `process.argv` 的形状是 `[可执行文件, 脚本路径, ...用户参数]`: 用户参数从**索引 2** 起。
+> `jsbuild` 打包出的单文件 exe 遵循同一口径 (运行时补上提取后的入口路径占位),
+> 所以同一份脚本源码跑与打包跑读到的位置一致。
+
 ```
 == 1.1 全局对象: 不用 import, 直接可用 ==
 process.platform = windows

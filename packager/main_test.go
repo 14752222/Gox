@@ -1,6 +1,8 @@
 package main
 
 import (
+	goparser "go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"sort"
@@ -157,6 +159,39 @@ func TestPrepareAppFilesScaffoldTS(t *testing.T) {
 		_ = p.ParseProgram()
 		if p.Errors().HasErrors() {
 			t.Errorf("%s 转译产物解析失败:\n%s\n--- JS ---\n%s", rel, p.Errors().String(), data)
+		}
+	}
+}
+
+// ===== 打包产物的 process.argv 注入 (看板 r1q3Gy) =====
+//
+// 生成的宿主 main.go 必须把宿主的 os.Args 补齐成
+// [可执行文件, 脚本路径, ...用户参数] 再注入 process.argv —— 打包产物没有
+// "脚本路径" 这个宿主参数, 不补的话用户参数会从索引 1 起, 与源码跑
+// (`gox app.js a.log`, 索引 2 起) 错一位, 同一份脚本两种跑法读到的不一样。
+//
+// 宿主 main.go 的生成者就是本包; packager 是 main 包、不能被产物 import,
+// 所以这段补位逻辑只能以**模板字面量**存在 ⇒ 这里靠文本断言看住它:
+// 1) 两个模板都注入了; 2) 注入在建 VM 之前 (process.argv 是进程级快照);
+// 3) 模板仍是语法合法的 Go (用 go/parser 兜住手改模板时的低级错误)。
+
+const haveProcessArgvInjection = "stdlib.SetProcessArgv(append([]string{os.Args[0], entry}, os.Args[1:]...))"
+
+func TestAppTemplatesForwardProcessArgv(t *testing.T) {
+	templates := map[string]string{"cli": appMainGo, "gui": appMainGoGUI}
+	for name, tmpl := range templates {
+		if !strings.Contains(tmpl, haveProcessArgvInjection) {
+			t.Errorf("%s 模板缺 process.argv 注入 %q —— 打包版会把用户参数放在索引 1 (源码跑在索引 2)",
+				name, haveProcessArgvInjection)
+		}
+		// 注入必须早于 VM 构造: process.argv 是模块构建期快照
+		if inj, vmNew := strings.Index(tmpl, "SetProcessArgv"), strings.Index(tmpl, "stdlib.SetupGlobals()"); inj < 0 || vmNew < 0 || inj > vmNew {
+			t.Errorf("%s 模板里注入位置不对 (inject@%d, VM 构造@%d): 快照先落下就改不动了",
+				name, inj, vmNew)
+		}
+		// 模板手改必须有语法兜底: go/parser 只解析, 不做类型检查/依赖解析
+		if _, err := goparser.ParseFile(token.NewFileSet(), "main.go", tmpl, goparser.SkipObjectResolution); err != nil {
+			t.Errorf("%s 模板不是合法的 Go 源码: %v", name, err)
 		}
 	}
 }

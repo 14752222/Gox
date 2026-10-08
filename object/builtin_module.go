@@ -44,6 +44,20 @@ func RegisterBuiltinModule(name string, builder BuiltinModuleBuilder) {
 	delete(builtinModuleCache, name)
 }
 
+// InvalidateBuiltinModuleCache 丢弃某个内置模块已构建好的导出表, 使下一次
+// LookupBuiltinModule 重新调用 builder。
+//
+// 用途: 宿主改动了**模块可见的进程级状态**之后 (典型是打包产物注入
+// process.argv —— 见 stdlib.SetProcessArgv 与看板 r1q3Gy), 缓存里的旧导出表
+// 会把变更挡住。builder 必须幂等, 重建一次是安全的。
+//
+// 未注册的模块名无副作用。
+func InvalidateBuiltinModuleCache(name string) {
+	builtinModulesMu.Lock()
+	defer builtinModulesMu.Unlock()
+	delete(builtinModuleCache, name)
+}
+
 // LookupBuiltinModule 查询内置模块的导出表; 未注册时 ok 为 false。
 //
 // 锁的粒度: builder() 必须**在锁外**调用 —— 聚合模块 "gox" 的 builder 会

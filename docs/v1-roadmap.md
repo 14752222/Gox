@@ -610,6 +610,21 @@ this 是 undefined，都会把删除落到错误的基上。
 - **判据用例必须能复现危害、而不只是断言"槽被清了"**：`TestStaleValueSlotDoesNotLeakIntoNextBridgeError` 走完「阶段1 抛 `PHASE1` → 阶段2 只写错误槽的桥失败 → 取两槽」整条链路，修复前失败信息直接是 `读到了阶段1 的过期值 PHASE1`。只写"槽残留"断言的话，读起来像是卫生问题，看不出危害。
 - **test262 A/B 在本沙箱不可执行**：套件不在仓库内（`.gitmodules` 只有 npm/website/logo 三个子模块，`testdata/` 下无 test262）。本单的「全量 language + built-ins 两套 A/B 均 LOST 0」验收**未做**，需在具备套件的环境补跑；已提交的是单元级 A/B 反证。
 
+## 二十七、打包产物转发命令行参数（`r1q3Gy`）
+
+**本轮形状**：`rr1O8P` 收尾后接着挑的是**与缺陷证据无关、能直接端到端兑付**的一条 —— `r1q3Gy`（打包后的单文件 exe 不把 CLI 参数转给内嵌脚本）。它是「_UNIX TOOLBOX KILLER FEATURE_（双击能开、拖文件上去能开）」的直接缺口，且**不依赖 Windows/真机**，可以在沙箱里真打包、真跑、真对照。
+
+| 路线 | 单 | 处置 | 要点 | 证据 |
+|---|---|---|---|---|
+| j1/argvbridge | `r1q3Gy` | **合入** | 打包产物把脚本嵌进二进制 ⇒ `os.Args` 里没有「脚本路径」这一项，用户参数从**索引 1** 起，而源码跑（`gox app.js a.log`）从**索引 2** 起 ⇒ 同一份脚本两种跑法错位。修法：新增 `stdlib.SetProcessArgv`（宿主在建 VM 前注入 argv，并连带 `object.InvalidateBuiltinModuleCache("process")` 清掉模块导出表缓存 —— 只改包级变量会被缓存挡住）；两个 `appMainGo*` 模板在建 VM 前注入 `[os.Args[0], entry, os.Args[1:]...]`，使 `process.argv` 恒为 `[可执行文件, 脚本路径, ...用户参数]` | 真打包实跑 A/B：修复前 `argvapp_old error.log --tail=20` → `process.argv[2] = "--tail=20"`（错位）；修复后 → `process.argv[2] = "error.log"`，与 `go run ./cmd/gox main.js error.log --tail=20` **逐项一致**。新增 `stdlib/process_argv_test.go` 3 例 + `packager.TestAppTemplatesForwardProcessArgv`；`go test ./...` 全绿 |
+
+**实锤（流程教训）**：
+
+- **模板是字符串 ⇒ 里面不能出现反引号**：`appMainGo` 用 raw string（反引号）定界，注释里写 `` `gox <file> <args>` `` 会**提前闭合字面量**，`go build` 报 `syntax error: unexpected name gox`。补位注释改用双引号后即通过。生成型模板必须配一个语法兜底测试 —— 本轮在 `packager` 测试里用标准库 `go/parser` 解析两个模板，即可抓住这类低级错误（不做类型检查、不解析依赖，纯语法层）。
+- **打包熟路的判断必须"真打包、真跑"**：本单的成因（差一位）靠读代码容易想当然写成"打包版完全没有参数"，真跑一次才发现是**错位**而不是**缺失** —— 错位比缺失更隐蔽（脚本能读到东西，只是读错）。
+- **宿主注入型 API 必须同时清模块缓存**：`process.argv` 是 `RegisterBuiltinModule` 的**惰性快照**（`builtinModuleCache`），宿主改了全局状态而缓存不清 ⇒ 脚本读到的仍是旧值。测试里**刻意先 `LookupBuiltinModule("process")` 把缓存喂热**再注入，才能顶住这一点（去掉 `InvalidateBuiltinModuleCache` 后该用例立即 FAIL）。
+- **本单不适用 test262 A/B**（同 §二十六 的沙箱约束）：不是语言层语义，改的是宿主接线；判据是上面那组打包实跑对照。
+
 ## 待确认（信息缺口）
 
 - `agent_doc/undecided-and-unimplemented.md` 是 **2026-09-18 快照**，其 §四 缺口清单中已有多项（cocoa 后端、iOS 后端、X11 修正、M2 IME、滚动条拖拽、tabs、table/tree、tooltip）在 09-18 后落地。本路线图已按 git 历史更正，但**建议回填该台账**，否则后续排期会继续基于过期口径。
