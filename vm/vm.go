@@ -1348,7 +1348,15 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			if frame.Closure != nil && slot < len(frame.Closure.CapturedLocals) {
 				frame.Closure.CapturedLocals[slot] = val
 			}
+			// 向子闭包传播的判据必须与 OP_STORE 一致 (见 Frame.cellFloor):
+			// 迭代边界内每轮新建的词法绑定 (slot >= sealFrom) 只传播给同一
+			// 轮次的闭包 —— 否则 `for (let j…)` 的 `++j` 会回溯改写更早轮次
+			// 已定版闭包捕获的 j, 闭包全部读到终值 (0,1,2,3,4 → 5,5,5,5,5)。
+			floor := frame.cellFloor(slot)
 			for _, c := range frame.CreatedClosures {
+				if floor >= 0 && c.IterEpoch < floor {
+					continue // 更早轮次的闭包已定版, 不回溯
+				}
 				if slot < len(c.CapturedLocals) {
 					c.CapturedLocals[slot] = val
 				}
