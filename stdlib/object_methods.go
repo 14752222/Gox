@@ -784,6 +784,21 @@ func setupErrorTypes(env *runtime.Environment) {
 		object.RegisterErrorConstructor("SuppressedError", f)
 		return f
 	}(), false)
+
+	// URIError: 此前完全缺失, 用例里 `new URIError()` 会退化成 ReferenceError
+	// (test262 dynamic-import eval-rqstd-abrupt-err-uri 断言 error.name)。
+	env.Declare("URIError", func() *object.BuiltinFunction {
+		f := object.NewBuiltin("URIError", func(args ...object.Value) object.Value {
+			msg := ""
+			if len(args) > 0 {
+				msg = toStr(args[0])
+			}
+			return &object.Error{Message: msg, Name: "URIError"}
+		})
+		f.ReturnIsValue = true
+		object.RegisterErrorConstructor("URIError", f)
+		return f
+	}(), false)
 }
 
 // newParseIntBuiltin 构造 parseInt 内建函数。
