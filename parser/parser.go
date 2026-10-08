@@ -302,6 +302,13 @@ func (p *Parser) isBindingName() bool {
 	if p.curTokenIs(lexer.YIELD) {
 		return p.yieldIsIdentifier()
 	}
+	// 转义拼出的保留字不是关键字也不是合法 Identifier, 不得作绑定名
+	// (test262 identifiers/val-*-via-escape-hex*.js、future-reserved-words/
+	// *-strict-escaped.js、{await,yield}-as-binding-identifier-escaped.js 一族)。
+	if p.curTokenIs(lexer.IDENTIFIER) && p.curToken().IdentHasEscape &&
+		p.escapedNameForbiddenAsIdent(p.curToken().Literal, p.strict) {
+		return false
+	}
 	return p.curTokenIs(lexer.IDENTIFIER) || p.curTokenIs(lexer.AWAIT) ||
 		p.curTokenIs(lexer.ASYNC)
 }
@@ -1822,6 +1829,15 @@ func (p *Parser) parseLabeledStatement() *ast.LabeledStatement {
 			p.addError("SyntaxError: yield is a reserved word and may not be used as a label in strict mode code")
 		}
 	}
+	// 转义拼出的保留字作标签名同样是早错 (LabelIdentifier : Identifier):
+	// test262 reserved-words/label-ident-{false,null,true}-escaped.js、
+	// */{await,yield}-as-label-identifier-escaped.js、labeled/value-{await-module,
+	// yield-strict}-escaped.js; sloppy 的 value-{await-non-module,yield-non-strict}-
+	// escaped.js 必须放行 (由 escapedNameForbiddenAsIdent 的上下文判据区分)。
+	if p.curTokenIs(lexer.IDENTIFIER) && p.curToken().IdentHasEscape &&
+		p.escapedNameForbiddenAsIdent(p.curToken().Literal, p.strict) {
+		p.addError("SyntaxError: Keyword must not contain escaped characters")
+	}
 	stmt := &ast.LabeledStatement{
 		Token: p.curToken(),
 		Label: &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal},
@@ -2285,8 +2301,9 @@ func (p *Parser) parseIdentifier() ast.Expression {
 // rejectEscapedReservedIdentifier 报告「用 unicode 转义拼出保留字作
 // IdentifierReference」的早错 (11.6.1: Identifier : IdentifierName but not
 // ReservedWord; 转义拼出的保留字不是关键字但也不是合法 Identifier)。
-// 只在**引用**位置调用 —— 属性名 (IdentifierName) / 成员名 / 标签允许转义拼出
-// 保留字, 那些路径不经过 parseIdentifier, 不受影响。
+// 只在**引用**位置调用 —— 属性名 (IdentifierName) / 成员名允许转义拼出保留字,
+// 那些路径不经过 parseIdentifier。绑定名 (isBindingName) 与标签名
+// (parseLabeledStatement) 各自有同口径的调用点。
 func (p *Parser) rejectEscapedReservedIdentifier() {
 	tok := p.curToken()
 	if tok.Type != lexer.IDENTIFIER || !tok.IdentHasEscape {
@@ -2296,13 +2313,50 @@ func (p *Parser) rejectEscapedReservedIdentifier() {
 }
 
 // rejectEscapedReservedName 判定一个 (由转义拼出的) 名字是否为保留字并记错。
-// 经典保留字与 enum/extends/debugger/nul/true/false 恒保留; strict-only 保留字
-// (implements/interface/let/package/private/protected/public/static) 仅在严格
-// 模式记错 (node 22 实测: sloppy 下 `var x = 1; x; l\u0065t;` 合法)。
+// 语境按当前 p.strict 取; 类名/类体恒严格, 见 rejectEscapedReservedNameIn。
 func (p *Parser) rejectEscapedReservedName(name string) {
-	if isAlwaysReservedWordName(name) || (p.strict && isStrictReservedWordName(name)) {
+	p.rejectEscapedReservedNameIn(name, p.strict)
+}
+
+// rejectEscapedReservedNameIn 与 rejectEscapedReservedName 同义, strict 允许
+// 调用方覆盖模式判定 —— 类名/类体恒严格 (规范 10.2.1: ClassDeclaration /
+// ClassExpression 整体是严格模式代码), 而类名的解析发生在 setStrict(true) 之前
+// (test262 class-name-ident-{let,static,yield}-escaped.js)。
+func (p *Parser) rejectEscapedReservedNameIn(name string, strict bool) {
+	if p.escapedNameForbiddenAsIdent(name, strict) {
 		p.addError("SyntaxError: Keyword must not contain escaped characters")
 	}
+}
+
+// escapedNameForbiddenAsIdent 报告「用 unicode 转义拼出的名字」能否作
+// Identifier (BindingIdentifier / IdentifierReference / LabelIdentifier)。
+// 关键字不得含转义 (规范 5.1.5: 终结符必须原样出现), 故转义拼出的保留字既不是
+// 关键字也不是合法 Identifier。**属性名**位置 (IdentifierName: 成员访问 .name /
+// 对象键 / 方法名 / get·set 的 name) 不受此限 —— 那些路径不经过本函数。
+//
+// 与 isAlwaysReservedWordName 的差别: 后者只覆盖「任何模式恒保留」的词, 这里还
+// 按上下文接纳 yield / await 两个 [+Yield]·[+Await] 参数化的保留字, 以及 strict
+// 专属的一档 (implements/interface/let/package/private/protected/public/static/yield)。
+func (p *Parser) escapedNameForbiddenAsIdent(name string, strict bool) bool {
+	if isAlwaysReservedWordName(name) {
+		return true
+	}
+	if strict && isStrictReservedWordName(name) {
+		return true
+	}
+	switch name {
+	case "yield":
+		// yield 是 [+Yield] 上下文保留字: 生成器/async-generator 体内、严格模式、
+		// 模块里作 Identifier 是早错; sloppy 非生成器里是普通标识符
+		// (test262 labeled/value-yield-non-strict-escaped.js 必须放行)。
+		return !p.yieldIsIdentifier()
+	case "await":
+		// await 在模块 (顶层 +Await) 与 async 上下文 (函数体 / 形参窗口) 里是
+		// 保留字; sloppy script / 普通函数里是普通标识符
+		// (test262 labeled/value-await-non-module-escaped.js 必须放行)。
+		return p.allowAwait || p.awaitReservedInParams || p.module || p.moduleEE
+	}
+	return false
 }
 
 // isAlwaysReservedWordName 报告名字是否为**任何模式**下都不可作 Identifier 的
@@ -3030,7 +3084,8 @@ func (p *Parser) parseProperty() *ast.Property {
 	// **名字** (`{ async(){} }` 是名为 async 的方法, `{ async: 1 }` 是键)。
 	// 判据见 asyncModifierAhead (r81aQt: 名字可以是任意 PropertyName, 含 async)。
 	if (p.curTokenIs(lexer.ASYNC) ||
-		(p.curTokenIs(lexer.IDENTIFIER) && p.curToken().Literal == "async")) &&
+		(p.curTokenIs(lexer.IDENTIFIER) && p.curToken().Literal == "async" &&
+			!p.curToken().IdentHasEscape)) &&
 		p.asyncModifierAhead() {
 		isAsync = true
 		p.nextToken()
@@ -3045,7 +3100,7 @@ func (p *Parser) parseProperty() *ast.Property {
 	// 仅在 "get"/"set" 后紧跟 名字+( 或 [ 时识别为访问器,
 	// 避免与 { get: 1 }, { get() {} }, { get } 混淆。
 	if !isGenerator && !isAsync &&
-		(p.curTokenIs(lexer.IDENTIFIER) &&
+		(p.curTokenIs(lexer.IDENTIFIER) && !p.curToken().IdentHasEscape &&
 			(p.curToken().Literal == "get" || p.curToken().Literal == "set")) &&
 		((p.peekTokenIs(lexer.IDENTIFIER) || isKeywordProperty(p.peekToken().Type)) &&
 			p.peek2TokenIs(lexer.LPAREN) ||
@@ -4262,6 +4317,12 @@ func (p *Parser) parseClassDeclaration() *ast.ClassDeclaration {
 		return nil
 	}
 	cls.Name = &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
+	// 类名恒按严格模式判 (规范 10.2.1: 类整体是严格模式代码), 而此处尚未
+	// setStrict(true) —— 显式传 strict=true
+	// (test262 class-name-ident-{let,static,yield,await-module}-escaped.js)。
+	if cls.Name.Token.IdentHasEscape {
+		p.rejectEscapedReservedNameIn(cls.Name.Value, true)
+	}
 
 	// 可选 extends 子句 (extends 作为标识符处理, 无专用 token)
 	if p.peekTokenIs(lexer.IDENTIFIER) && p.peekToken().Literal == "extends" {
@@ -4350,6 +4411,10 @@ func (p *Parser) parseClassExpression() ast.Expression {
 	if p.peekTokenIs(lexer.IDENTIFIER) && p.peekToken().Literal != "extends" {
 		p.nextToken()
 		cls.Name = &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
+		// 类名恒严格, 见 parseClassDeclaration 同款说明。
+		if cls.Name.Token.IdentHasEscape {
+			p.rejectEscapedReservedNameIn(cls.Name.Value, true)
+		}
 	}
 
 	// 可选 extends 子句 (与声明一致: 仅支持 Identifier 形式)
@@ -4434,6 +4499,7 @@ func (p *Parser) parseClassMember() *ast.ClassMethod {
 
 	// static 关键字
 	if p.curTokenIs(lexer.IDENTIFIER) && p.curToken().Literal == "static" &&
+		!p.curToken().IdentHasEscape &&
 		!p.peekTokenIs(lexer.LPAREN) && !p.peekTokenIs(lexer.ASSIGN) {
 		member.IsStatic = true
 		p.nextToken()
@@ -4455,7 +4521,8 @@ func (p *Parser) parseClassMember() *ast.ClassMethod {
 	// 它是成员名 (`async(){}` 是名为 async 的方法, `async = 1` 是名为 async
 	// 的字段)。名字可以是任意 PropertyName, 含 `async` / `await` (r81aQt)。
 	isAsyncTok := p.curTokenIs(lexer.ASYNC) ||
-		(p.curTokenIs(lexer.IDENTIFIER) && p.curToken().Literal == "async")
+		(p.curTokenIs(lexer.IDENTIFIER) && p.curToken().Literal == "async" &&
+			!p.curToken().IdentHasEscape)
 	if isAsyncTok && p.asyncModifierAhead() {
 		member.IsAsync = true
 		if p.peekTokenIs(lexer.ASTERISK) {
@@ -4496,7 +4563,7 @@ func (p *Parser) parseClassMember() *ast.ClassMethod {
 	// get/set 后跟 IDENTIFIER+( 或 [ 时按访问器处理, 其余情况它是字段名。
 	// get #name() / set #name(v): 私有访问器 —— 分发进 parsePrivateMember
 	// 之前的特判 (其内部按访问器形状解析)。
-	if p.curTokenIs(lexer.IDENTIFIER) &&
+	if p.curTokenIs(lexer.IDENTIFIER) && !p.curToken().IdentHasEscape &&
 		(p.curToken().Literal == "get" || p.curToken().Literal == "set") &&
 		p.peekTokenIs(lexer.PRIVATE_NAME) {
 		isGet := p.curToken().Literal == "get"
@@ -4508,7 +4575,7 @@ func (p *Parser) parseClassMember() *ast.ClassMethod {
 		p.nextToken() // cur = #name
 		return p.parsePrivateAccessor(member)
 	}
-	if p.curTokenIs(lexer.IDENTIFIER) &&
+	if p.curTokenIs(lexer.IDENTIFIER) && !p.curToken().IdentHasEscape &&
 		(p.curToken().Literal == "get" || p.curToken().Literal == "set") &&
 		((p.peekTokenIs(lexer.IDENTIFIER) && p.peek2TokenIs(lexer.LPAREN)) ||
 			p.peekTokenIs(lexer.LBRACKET)) {
@@ -4672,7 +4739,8 @@ func (p *Parser) parseImportDeclaration() *ast.ImportDeclaration {
 	// import * as ns from "..."
 	if p.curTokenIs(lexer.ASTERISK) {
 		p.nextToken()
-		if !p.curTokenIs(lexer.IDENTIFIER) || p.curToken().Literal != "as" {
+		if !p.curTokenIs(lexer.IDENTIFIER) || p.curToken().Literal != "as" ||
+			p.curToken().IdentHasEscape {
 			p.addError("expected 'as' after '*' in import")
 			return nil
 		}
@@ -4696,7 +4764,8 @@ func (p *Parser) parseImportDeclaration() *ast.ImportDeclaration {
 			// 名字 [x, as, y], y 永远绑不上 (见 ast.NamedImport 的注释)。
 			item := ast.NamedImport{Imported: p.curToken().Literal, Local: p.curToken().Literal}
 			p.nextToken()
-			if p.curTokenIs(lexer.IDENTIFIER) && p.curToken().Literal == "as" {
+			if p.curTokenIs(lexer.IDENTIFIER) && p.curToken().Literal == "as" &&
+				!p.curToken().IdentHasEscape {
 				p.nextToken()
 				if !p.curTokenIs(lexer.IDENTIFIER) {
 					p.addError("expected name after 'as' in import")
@@ -4706,9 +4775,17 @@ func (p *Parser) parseImportDeclaration() *ast.ImportDeclaration {
 				p.nextToken()
 			}
 			stmt.NamedImports = append(stmt.NamedImports, item)
-			// `{ a, }` / `{ a, b }` 都允许
+			// `{ a, }` / `{ a, b }` 都允许; 但 specifier 之间必须有逗号分隔 ——
+			// 缺分隔符时若继续循环, 会把转义拼出的 `as` (`{a \u0061s b}`) 当成
+			// 第二个 ImportedBinding 静默接受 (test262
+			// import/escaped-as-import-specifier.js 要求早错)。
 			if p.curTokenIs(lexer.COMMA) {
 				p.nextToken()
+				continue
+			}
+			if !p.curTokenIs(lexer.RBRACE) {
+				p.addError(fmt.Sprintf("expected ',' or '}' in import, got %s", p.curToken().Type))
+				return nil
 			}
 		}
 		if !p.curTokenIs(lexer.RBRACE) {
@@ -4719,7 +4796,8 @@ func (p *Parser) parseImportDeclaration() *ast.ImportDeclaration {
 	}
 
 	// from
-	if p.curTokenIs(lexer.IDENTIFIER) && p.curToken().Literal == "from" {
+	if p.curTokenIs(lexer.IDENTIFIER) && p.curToken().Literal == "from" &&
+		!p.curToken().IdentHasEscape {
 		p.nextToken()
 	} else {
 		p.addError("expected 'from' in import")
@@ -4955,7 +5033,8 @@ func (p *Parser) parseAnonymousFunctionExpression(isAsync bool) *ast.FunctionExp
 func (p *Parser) parseExportStar(stmt *ast.ExportDeclaration) *ast.ExportDeclaration {
 	p.nextToken() // 越过 *
 
-	if p.curTokenIs(lexer.IDENTIFIER) && p.curToken().Literal == "as" {
+	if p.curTokenIs(lexer.IDENTIFIER) && p.curToken().Literal == "as" &&
+		!p.curToken().IdentHasEscape {
 		// export * as ns from "m": 以命名空间对象的形式再导出。
 		p.nextToken()
 		if !p.curTokenIs(lexer.IDENTIFIER) {
@@ -4968,7 +5047,8 @@ func (p *Parser) parseExportStar(stmt *ast.ExportDeclaration) *ast.ExportDeclara
 		stmt.IsStar = true
 	}
 
-	if !p.curTokenIs(lexer.IDENTIFIER) || p.curToken().Literal != "from" {
+	if !p.curTokenIs(lexer.IDENTIFIER) || p.curToken().Literal != "from" ||
+		p.curToken().IdentHasEscape {
 		p.addError(fmt.Sprintf("expected 'from' in export *, got %s", p.curToken().Type))
 		return nil
 	}
@@ -4999,7 +5079,8 @@ func (p *Parser) parseExportNamed(stmt *ast.ExportDeclaration) *ast.ExportDeclar
 		}
 		sp := ast.ExportSpecifier{Local: p.curToken().Literal, Exported: p.curToken().Literal}
 		p.nextToken()
-		if p.curTokenIs(lexer.IDENTIFIER) && p.curToken().Literal == "as" {
+		if p.curTokenIs(lexer.IDENTIFIER) && p.curToken().Literal == "as" &&
+			!p.curToken().IdentHasEscape {
 			p.nextToken()
 			if !p.curTokenIs(lexer.IDENTIFIER) && !p.curTokenIs(lexer.DEFAULT) {
 				p.addError("expected name after 'as' in export")
@@ -5029,7 +5110,8 @@ func (p *Parser) parseExportNamed(stmt *ast.ExportDeclaration) *ast.ExportDeclar
 	p.nextToken()
 
 	// 可选 `from "..."` → 具名再导出
-	if p.curTokenIs(lexer.IDENTIFIER) && p.curToken().Literal == "from" {
+	if p.curTokenIs(lexer.IDENTIFIER) && p.curToken().Literal == "from" &&
+		!p.curToken().IdentHasEscape {
 		p.nextToken()
 		if !p.curTokenIs(lexer.STRING_LITERAL) {
 			p.addError("expected module path in export from")

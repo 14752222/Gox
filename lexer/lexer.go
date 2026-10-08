@@ -992,11 +992,23 @@ func isHexDigit(ch rune) bool {
 	return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f') || (ch >= 'A' && ch <= 'F')
 }
 
+// isIdentifierStart / isIdentifierPart 判定 ID_Start / ID_Continue 的字母数字
+// 部分。规范 (11.6.2) 的 ID_Start 是 Unicode ID_Start 属性, 它**排除**
+// Pattern_Syntax / Pattern_White_Space 字符 —— 而 Go 的 unicode.IsLetter 会把
+// Lm 类里的 U+2E2F VERTICAL TILDE (既是 Lm 又属 Pattern_Syntax) 也算作字母。
+// test262 language/identifiers/vertical-tilde-{start,continue}.js 要求它非法,
+// 转义形态 (\u2E2F) 同理 (vertical-tilde-{start,continue}-escaped.js)。
 func isIdentifierStart(ch rune) bool {
+	if ch == 0x2E2F { // VERTICAL TILDE: Lm 但属 Pattern_Syntax, 非 ID_Start/ID_Continue
+		return false
+	}
 	return unicode.IsLetter(ch) || ch == '_' || ch == '$'
 }
 
 func isIdentifierPart(ch rune) bool {
+	if ch == 0x2E2F {
+		return false
+	}
 	return unicode.IsLetter(ch) || unicode.IsDigit(ch) || ch == '_' || ch == '$'
 }
 

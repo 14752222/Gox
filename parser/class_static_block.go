@@ -240,11 +240,54 @@ func scanClassStaticBlock(n ast.Node, s *classStaticBlockScan, allowReturn, awai
 		}
 		scanClassStaticBlock(node.Body, s, false, false)
 		return
-	case *ast.FunctionExpression, *ast.FunctionDeclaration, *ast.ClassDeclaration, *ast.ClassExpression:
+	case *ast.FunctionExpression, *ast.FunctionDeclaration:
 		return // 完整边界
+	case *ast.ClassDeclaration:
+		scanNestedClassComputedAndHeritage(node.SuperClass, node.Methods, node.Statics, node.Fields,
+			s, allowReturn, awaitForbidden)
+		return
+	case *ast.ClassExpression:
+		scanNestedClassComputedAndHeritage(node.SuperClass, node.Methods, node.Statics, node.Fields,
+			s, allowReturn, awaitForbidden)
+		return
 	}
 	for _, child := range childNodes(n) {
 		scanClassStaticBlock(child, s, allowReturn, awaitForbidden)
+	}
+}
+
+// scanNestedClassComputedAndHeritage 把嵌套类定义里**仍处外层静态块上下文**的
+// 片段纳入扫描: heritage (extends 表达式) 与各成员的计算属性名 [expr]。方法体是
+// 函数边界 (有自己的 arguments/return/yield 语境), 不下钻; 字段初始化器由嵌套类
+// 自身的 checkClassEarlyErrors 早错覆盖, 无需重复。
+//
+// 规范 ClassDefinition 的 Static Semantics (ContainsArguments 等) 只在「非函数体」
+// 构成部分上递归 —— Node 22 实测:
+//
+//	class C { static { class X extends arguments {} } }   → SyntaxError
+//	class C { static { class X { [arguments](){} } } }     → SyntaxError
+//	class C { static { class X { m(){ arguments } } } }    → 合法
+//
+// (test262 language/statements/class/static-init-invalid-arguments.js: 转义拼出的
+// `argument\u0073` 在嵌套类计算属性名里同样命中 ContainsArguments。)
+func scanNestedClassComputedAndHeritage(super ast.Expression,
+	methods []*ast.ClassMethod, statics []*ast.ClassMethod, fields []*ast.ClassField,
+	s *classStaticBlockScan, allowReturn, awaitForbidden bool) {
+	scanClassStaticBlock(super, s, allowReturn, awaitForbidden)
+	for _, m := range methods {
+		if m != nil {
+			scanClassStaticBlock(m.ComputedKey, s, allowReturn, awaitForbidden)
+		}
+	}
+	for _, m := range statics {
+		if m != nil {
+			scanClassStaticBlock(m.ComputedKey, s, allowReturn, awaitForbidden)
+		}
+	}
+	for _, f := range fields {
+		if f != nil {
+			scanClassStaticBlock(f.ComputedKey, s, allowReturn, awaitForbidden)
+		}
 	}
 }
 
