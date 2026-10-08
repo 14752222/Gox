@@ -33,6 +33,37 @@ type PromiseCallback struct {
 	IsFinally   bool     // 是否是 finally 回调
 }
 
+// CallPromiseHandler 调用一个 Promise 处理回调 (onFulfilled/onRejected/
+// onFinally), 并把"回调返回的值"或"回调抛出的原始值"归一为结算结果。
+// 返回 (result, ok):
+//   - ok=true  : 回调正常返回, result 是返回值 (供 next.Resolve);
+//   - ok=false : 回调抛出了异常, result 是**原始抛出值** (供 next.Reject)。
+//
+// 为什么必须在这里消费回调错误信号: 回调桥 (object.CallFunction) 把 JS
+// 抛出以 callbackError/callbackErrorValue 形式记录, 而调用它的内建
+// (`then`/`catch`/`finally`/内部结算路径) 若不当场取走, VM 会在内建返回后
+// 的 checkCallbackErr 处把它当作"逃逸的未捕获异常"重新抛出 —— 于是
+// `.then(onFulfilled)` 里 onFulfilled 抛错会终止整个脚本, 而不是让派生
+// promise reject (规范 25.6.5.4.1 ThenableJob / PerformPromiseThen)。
+//
+// 原始值保真: TakeCallbackErrorValue 给出 throw x 的 x 本身 (字符串/数字/
+// 对象均可), 保留 === 身份; 仅在拿不到原始值时降级为 Error(Go 错误字符串)。
+func CallPromiseHandler(fn Value, args ...Value) (Value, bool) {
+	if !IsCallable(fn) {
+		return UndefinedSingleton, true
+	}
+	result := CallFunction(fn, nil, args...)
+	cbErr := TakeCallbackError()
+	if cbErr == nil {
+		return result, true
+	}
+	thrown := TakeCallbackErrorValue()
+	if thrown == nil || thrown == UndefinedSingleton {
+		return NewErrorWithName("Error", cbErr.Error()), false
+	}
+	return thrown, false
+}
+
 func (p *Promise) Type() ObjectType { return PROMISE_OBJ }
 func (p *Promise) Inspect() string {
 	switch p.State {
@@ -162,7 +193,14 @@ func invokePromiseCallbacks(p *Promise, callbacks []PromiseCallback) {
 	for _, cb := range callbacks {
 		if cb.IsFinally {
 			if IsCallable(cb.Callback) {
-				CallFunction(cb.Callback, nil)
+				// finally 回调抛错: 覆盖原结算结果 (规范: 仅当回调正常返回
+				// 才透传原值/原因)。
+				if res, ok := CallPromiseHandler(cb.Callback); !ok {
+					if cb.NextPromise != nil {
+						cb.NextPromise.Reject(res)
+					}
+					continue
+				}
 			}
 			if cb.NextPromise != nil {
 				if p.State == PromiseFulfilled {
@@ -173,25 +211,27 @@ func invokePromiseCallbacks(p *Promise, callbacks []PromiseCallback) {
 			}
 		} else if p.State == PromiseFulfilled && !cb.IsCatch {
 			if cb.NextPromise != nil {
-				if IsCallable(cb.Callback) {
-					result := CallFunction(cb.Callback, nil, p.Value)
-					cb.NextPromise.Resolve(result)
+				res, ok := CallPromiseHandler(cb.Callback, p.Value)
+				if ok {
+					cb.NextPromise.Resolve(res)
 				} else {
-					cb.NextPromise.Resolve(p.Value)
+					cb.NextPromise.Reject(res)
 				}
 			} else if IsCallable(cb.Callback) {
-				CallFunction(cb.Callback, nil, p.Value)
+				// 无 next: 结果被丢弃, 但必须消费回调错误信号, 否则
+				// 内建返回后 VM 会把它当逃逸异常重抛。
+				CallPromiseHandler(cb.Callback, p.Value)
 			}
 		} else if p.State == PromiseRejected && cb.IsCatch {
 			if cb.NextPromise != nil {
-				if IsCallable(cb.Callback) {
-					result := CallFunction(cb.Callback, nil, p.Reason)
-					cb.NextPromise.Resolve(result)
+				res, ok := CallPromiseHandler(cb.Callback, p.Reason)
+				if ok {
+					cb.NextPromise.Resolve(res)
 				} else {
-					cb.NextPromise.Reject(p.Reason)
+					cb.NextPromise.Reject(res)
 				}
 			} else if IsCallable(cb.Callback) {
-				CallFunction(cb.Callback, nil, p.Reason)
+				CallPromiseHandler(cb.Callback, p.Reason)
 			}
 		}
 	}
@@ -209,7 +249,12 @@ func (p *Promise) Then(onFulfilled Value) *Promise {
 	case PromiseFulfilled:
 		p.mu.Unlock()
 		if IsCallable(onFulfilled) {
-			next.Resolve(CallFunction(onFulfilled, nil, p.Value))
+			// onFulfilled 抛错 ⇒ next reject (原始抛出值), 而非逃逸未捕获。
+			if res, ok := CallPromiseHandler(onFulfilled, p.Value); ok {
+				next.Resolve(res)
+			} else {
+				next.Reject(res)
+			}
 		} else {
 			next.Resolve(p.Value)
 		}
@@ -240,7 +285,11 @@ func (p *Promise) Catch(onRejected Value) *Promise {
 	case PromiseRejected:
 		p.mu.Unlock()
 		if IsCallable(onRejected) {
-			next.Resolve(CallFunction(onRejected, nil, p.Reason))
+			if res, ok := CallPromiseHandler(onRejected, p.Reason); ok {
+				next.Resolve(res)
+			} else {
+				next.Reject(res)
+			}
 		} else {
 			next.Reject(p.Reason)
 		}
@@ -270,7 +319,9 @@ func (p *Promise) OnFulfilled(fn Value) {
 	if p.State == PromiseFulfilled {
 		p.mu.Unlock()
 		if IsCallable(fn) {
-			CallFunction(fn, nil, p.Value)
+			// 内部 API (Promise.all/race 等自管结算): 仍须消费错误信号,
+			// 否则内建返回后 VM 会把回调抛出当作逃逸异常。
+			CallPromiseHandler(fn, p.Value)
 		}
 		return
 	}
@@ -284,7 +335,7 @@ func (p *Promise) OnRejected(fn Value) {
 	if p.State == PromiseRejected {
 		p.mu.Unlock()
 		if IsCallable(fn) {
-			CallFunction(fn, nil, p.Reason)
+			CallPromiseHandler(fn, p.Reason)
 		}
 		return
 	}
@@ -305,7 +356,11 @@ func (p *Promise) Finally(onFinally Value) *Promise {
 		state := p.State
 		p.mu.Unlock()
 		if IsCallable(onFinally) {
-			CallFunction(onFinally, nil)
+			// onFinally 抛错: 覆盖原结算结果 (next reject 原始抛出值)。
+			if res, ok := CallPromiseHandler(onFinally); !ok {
+				next.Reject(res)
+				return next
+			}
 		}
 		if state == PromiseFulfilled {
 			next.Resolve(val)

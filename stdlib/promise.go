@@ -406,16 +406,27 @@ func setupPromiseProto() *object.Object {
 		if promise.State == object.PromiseFulfilled {
 			promise.Unlock()
 			if object.IsCallable(onFulfilled) {
-				result := object.CallFunction(onFulfilled, nil, promise.Value)
-				next.Resolve(result)
+				// onFulfilled 抛错必须让派生 promise reject (原始抛出值),
+				// 而不是逃逸成未捕获异常终止脚本 —— 回调桥把抛出记在
+				// callbackError 上, 此处不消费则 VM 返回后会重抛。
+				result, ok := object.CallPromiseHandler(onFulfilled, promise.Value)
+				if ok {
+					next.Resolve(result)
+				} else {
+					next.Reject(result)
+				}
 			} else {
 				next.Resolve(promise.Value)
 			}
 		} else if promise.State == object.PromiseRejected {
 			promise.Unlock()
 			if object.IsCallable(onRejected) {
-				result := object.CallFunction(onRejected, nil, promise.Reason)
-				next.Resolve(result)
+				result, ok := object.CallPromiseHandler(onRejected, promise.Reason)
+				if ok {
+					next.Resolve(result)
+				} else {
+					next.Reject(result)
+				}
 			} else {
 				next.Reject(promise.Reason)
 			}
