@@ -53,6 +53,9 @@ func collectPatternBoundNames(pattern Expression, out *[]string) {
 				collectPatternBoundNames(prop.Value, out)
 			}
 		}
+		if p.RestTarget != nil {
+			collectPatternBoundNames(p.RestTarget, out)
+		}
 	case *AssignmentExpression:
 		// 带默认值的元素: [a = 1] / {a = 1}
 		collectPatternBoundNames(p.Left, out)

@@ -649,6 +649,27 @@ func (c *Compiler) collectVarBindings(stmts []ast.Statement, out *[]varBinding, 
 	return nil
 }
 
+// collectVarDeclaratorNames 收集一个 var 声明项的绑定名并登记提升。
+//
+// 解构声明项 (Name 是合成名 "__destructure__") 收集的是模式里的**真实绑定名**
+// —— var 解构的目标与普通 var 一样提升到函数作用域层 (r4McL4): 不提升的话
+// 绑定槽位会在块/循环内部才分配 (晚于循环的 sealFrom), 会被 OP_ITER_BOUNDARY
+// 当作每轮词法绑定克隆, 且块外读取退化成 OP_LOAD_GLOBAL → ReferenceError。
+func (c *Compiler) collectVarDeclaratorNames(name *ast.Identifier, value ast.Expression, declare func(string) error) error {
+	if name == nil {
+		return nil
+	}
+	if name.Value == destructureSyntheticName {
+		for _, n := range ast.PatternBoundNames(value) {
+			if err := declare(n); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return declare(name.Value)
+}
+
 func (c *Compiler) collectVarBindingsStmt(stmt ast.Statement, out *[]varBinding, depth int) error {
 	declare := func(name string) error {
 		fn := c.scope.FuncLayer()
@@ -669,16 +690,14 @@ func (c *Compiler) collectVarBindingsStmt(stmt ast.Statement, out *[]varBinding,
 
 	switch node := stmt.(type) {
 	case *ast.VarStatement:
-		if node.Name != nil && node.Name.Value != destructureSyntheticName {
-			if err := declare(node.Name.Value); err != nil {
+		if node.Name != nil {
+			if err := c.collectVarDeclaratorNames(node.Name, node.Value, declare); err != nil {
 				return err
 			}
 		}
 		for _, d := range node.More {
-			if d.Name != nil && d.Name.Value != destructureSyntheticName {
-				if err := declare(d.Name.Value); err != nil {
-					return err
-				}
+			if err := c.collectVarDeclaratorNames(d.Name, d.Value, declare); err != nil {
+				return err
 			}
 		}
 	case *ast.ExportDeclaration:
@@ -714,9 +733,22 @@ func (c *Compiler) collectVarBindingsStmt(stmt ast.Statement, out *[]varBinding,
 			}
 		}
 	case *ast.ForOfStatement:
-		if _, isVarDecl := node.VarDecl.(*ast.VarStatement); isVarDecl && node.Variable != nil {
-			if err := declare(node.Variable.Value); err != nil {
-				return err
+		if _, isVarDecl := node.VarDecl.(*ast.VarStatement); isVarDecl {
+			if node.Variable != nil {
+				if err := declare(node.Variable.Value); err != nil {
+					return err
+				}
+			}
+			// 解构 var (for (var [p] of …)): Variable 为 nil, 真实绑定名只在
+			// Pattern 里 —— 同样提升到函数作用域层 (r4McL4)。
+			if node.Pattern != nil {
+				var names []string
+				collectBindingNames(node.Pattern, &names)
+				for _, n := range names {
+					if err := declare(n); err != nil {
+						return err
+					}
+				}
 			}
 		}
 		if node.Body != nil {
@@ -851,7 +883,7 @@ func (c *Compiler) compileLetStatement(stmt *ast.LetStatement) error {
 		if !ok {
 			return fmt.Errorf("compiler: malformed destructuring declaration")
 		}
-		if err := c.compileDestructureAssignment(assign, true); err != nil {
+		if err := c.compileDestructureAssignment(assign, bindLexical); err != nil {
 			return err
 		}
 	} else if stmt.Value != nil {
@@ -896,7 +928,7 @@ func (c *Compiler) compileLetStatement(stmt *ast.LetStatement) error {
 			if !ok {
 				return fmt.Errorf("compiler: malformed destructuring declarator")
 			}
-			if err := c.compileDestructureAssignment(assign, true); err != nil {
+			if err := c.compileDestructureAssignment(assign, bindLexical); err != nil {
 				return err
 			}
 			continue
@@ -932,6 +964,53 @@ func (c *Compiler) compileLetStatement(stmt *ast.LetStatement) error {
 	return nil
 }
 
+// declareFuncLayerVar 在**函数作用域层**登记一个 var 绑定 (var 语义)。
+//
+//	- 块里声明的 var 在块外可见 (绑定在函数层);
+//	- 重复声明合法 (函数层已有同名 → 复用绑定);
+//	- 提升 (compileStatements 的 emitVarHoistInits 已在函数层发射 undefined)。
+//
+// var/var、var/函数声明、var/参数 → 复用绑定; let/const 与 var 同层同名 →
+// SyntaxError。解构 var 的目标名一律走这里 (见 bindKind/bindPatternTarget),
+// 而不是 let 的块级 declareOnce —— 这是 r4McL4 的核心修复点。
+func (c *Compiler) declareFuncLayerVar(name string) (*Symbol, error) {
+	fn := c.scope.FuncLayer()
+	if sym := fn.ResolveLocal(name); sym != nil {
+		// let/const 与 var 同层同名 → SyntaxError;
+		// var/var、var/fn、var/参数 → 复用绑定
+		if !sym.IsVarLike && !sym.IsFnDecl {
+			return nil, fmt.Errorf("SyntaxError: Identifier '%s' has already been declared", name)
+		}
+		if sym.IsConst {
+			return nil, fmt.Errorf("SyntaxError: Identifier '%s' has already been declared", name)
+		}
+		return sym, nil
+	}
+	sym := fn.Define(name, false)
+	sym.IsVarLike = true
+	sym.Declared = true
+	return sym, nil
+}
+
+// emitVarAssign 发射 var 绑定的赋值指令 (栈顶值写入该绑定并消费)。
+//
+// with 体内: var 赋值同样先查 with 对象 (var 绑定在函数层, 属被遮蔽范围)。
+// 全局函数层: var 是全局属性。提升初始化已 OP_DECLARE_VAR 过一次, 这里必须
+// 走 STORE_GLOBAL (存在则赋值) —— 再发 OP_DECLARE 会撞运行时的重声明检查。
+func (c *Compiler) emitVarAssign(name string, sym *Symbol) {
+	if c.withAffects(sym) {
+		c.emitter.Emit(bytecode.OP_WITH_STORE, c.emitWithRef(c.buildWithRef(name, sym)))
+		return
+	}
+	fn := c.scope.FuncLayer()
+	if fn.Parent() == nil && !c.moduleMode {
+		nameIdx := c.constants.AddConstant(object.NewString(name))
+		c.emitter.Emit(bytecode.OP_STORE_GLOBAL, nameIdx)
+	} else {
+		c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
+	}
+}
+
 // compileVarStatement 编译 var 声明。
 //
 // 与 let 的根本分野: 绑定登记在**函数作用域层** (FuncLayer), 而不是当前块。
@@ -942,57 +1021,24 @@ func (c *Compiler) compileLetStatement(stmt *ast.LetStatement) error {
 //
 // 无初始化器的 var 语句不发射任何指令: 提升初始化已把槽位写成 undefined,
 // 而同名函数声明的提升值 (函数对象) 也不能被 var 语句覆盖。
-// 解构 var 借用 let 的合成名路径: 绑定落点经 compileDestructureAssignment
-// 的 declare 分支沿 FuncLayer 登记 (见 patternBindVar 辅助)。
+// 解构 var 借用 let 的合成名路径 (合成名 "__destructure__"), 但绑定落点与
+// let 不同: 经 bindPatternTarget 的 bindVar 分支沿 FuncLayer 登记 (见
+// bindKind / declareFuncLayerVar)。
 func (c *Compiler) compileVarStatement(stmt *ast.VarStatement) error {
 	// 解构首项: var [a, b] = arr / var { x } = obj。
 	// 首项是解构时不走下面的普通绑定登记, 但**不能**直接 return —— 逗号续接项
 	// (stmt.More) 还没编译, 如 `var [p] = [1], [q] = [2];` / `var [p] = [1], x = 2;`。
 	firstIsDestructure := stmt.Name.Value == destructureSyntheticName
 
-	fn := c.scope.FuncLayer()
-
-	declareVar := func(name string) (*Symbol, error) {
-		if sym := fn.ResolveLocal(name); sym != nil {
-			// let/const 与 var 同层同名 → SyntaxError;
-			// var/var、var/fn、var/参数 → 复用绑定
-			if !sym.IsVarLike && !sym.IsFnDecl {
-				return nil, fmt.Errorf("SyntaxError: Identifier '%s' has already been declared", name)
-			}
-			if sym.IsConst {
-				return nil, fmt.Errorf("SyntaxError: Identifier '%s' has already been declared", name)
-			}
-			return sym, nil
-		}
-		sym := fn.Define(name, false)
-		sym.IsVarLike = true
-		sym.Declared = true
-		return sym, nil
-	}
-
-	emitAssign := func(name string, sym *Symbol) {
-		// with 体内: var 赋值同样先查 with 对象 (var 绑定在函数层, 属被遮蔽范围)。
-		if c.withAffects(sym) {
-			c.emitter.Emit(bytecode.OP_WITH_STORE, c.emitWithRef(c.buildWithRef(name, sym)))
-			return
-		}
-		// 全局函数层: var 是全局属性。提升初始化已 OP_DECLARE 过一次,
-		// 这里必须走 STORE_GLOBAL (存在则赋值) —— 再发 OP_DECLARE 会撞
-		// 运行时的重声明检查。
-		if fn.Parent() == nil && !c.moduleMode {
-			nameIdx := c.constants.AddConstant(object.NewString(name))
-			c.emitter.Emit(bytecode.OP_STORE_GLOBAL, nameIdx)
-		} else {
-			c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
-		}
-	}
+	declareVar := c.declareFuncLayerVar
+	emitAssign := c.emitVarAssign
 
 	if firstIsDestructure {
 		assign, ok := stmt.Value.(*ast.AssignmentExpression)
 		if !ok {
 			return fmt.Errorf("compiler: malformed destructuring declaration")
 		}
-		if err := c.compileDestructureAssignment(assign, true); err != nil {
+		if err := c.compileDestructureAssignment(assign, bindVar); err != nil {
 			return err
 		}
 	} else if stmt.Value != nil {
@@ -1012,7 +1058,7 @@ func (c *Compiler) compileVarStatement(stmt *ast.VarStatement) error {
 			if !ok {
 				return fmt.Errorf("compiler: malformed destructuring declarator")
 			}
-			if err := c.compileDestructureAssignment(assign, true); err != nil {
+			if err := c.compileDestructureAssignment(assign, bindVar); err != nil {
 				return err
 			}
 			continue
@@ -1042,7 +1088,7 @@ func (c *Compiler) compileConstStatement(stmt *ast.ConstStatement) error {
 		if !ok {
 			return fmt.Errorf("compiler: malformed destructuring declaration")
 		}
-		if err := c.compileDestructureAssignment(assign, true); err != nil {
+		if err := c.compileDestructureAssignment(assign, bindLexical); err != nil {
 			return err
 		}
 	} else {
@@ -1070,7 +1116,7 @@ func (c *Compiler) compileConstStatement(stmt *ast.ConstStatement) error {
 			if !ok {
 				return fmt.Errorf("compiler: malformed destructuring declarator")
 			}
-			if err := c.compileDestructureAssignment(assign, true); err != nil {
+			if err := c.compileDestructureAssignment(assign, bindLexical); err != nil {
 				return err
 			}
 			continue
@@ -1526,7 +1572,7 @@ func (c *Compiler) compileCatchBodyWithParam(param ast.Expression, body *ast.Blo
 	if id, ok := param.(*ast.Identifier); ok {
 		sym := c.scope.Define(id.Value, false)
 		c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
-	} else if err := c.compilePatternBind(param, true); err != nil {
+	} else if err := c.compilePatternBind(param, bindLexical); err != nil {
 		return err
 	}
 	// catch 作用域内新分配的槽 (含解构隐藏槽抬高的函数层 nextSlot) 要回灌,
@@ -1769,13 +1815,22 @@ func (c *Compiler) compileForOfStatement(stmt *ast.ForOfStatement) error {
 	if stmt.Pattern != nil {
 		// 解构绑定 vs 解构赋值目标, 靠 VarDecl 是否为 nil 区分:
 		//   声明绑定 for (const [a, b] of pairs) → VarDecl 是 __destructure__
-		//     空壳, isDecl=true: 每轮迭代是新的块作用域 (上面已 PUSH_SCOPE),
+		//     空壳, kind=bindLexical: 每轮迭代是新的块作用域 (上面已 PUSH_SCOPE),
 		//     解构出来的名字声明进这个作用域, 所以各轮的绑定互不影响 ——
 		//     闭包捕获到的是各自的槽位。
-		//   赋值目标 for ([a, b] of xs) → VarDecl 为 nil, isDecl=false:
+		//   赋值目标 for ([a, b] of xs) → VarDecl 为 nil, kind=bindAssign:
 		//     每轮是**赋值**, 写入外部已声明的绑定 (node 实测: for ([a,b] of …)
 		//     修改的就是外层 a/b)。
-		if err := c.compilePatternBind(stmt.Pattern, stmt.VarDecl != nil); err != nil {
+		// 三态分流: VarDecl 为 nil 是**赋值**目标 (for ([a, b] of xs) 写外部
+		// 已有绑定); var 声明落函数作用域层; let/const 落每轮块作用域。
+		pattKind := bindAssign
+		if stmt.VarDecl != nil {
+			pattKind = bindLexical
+			if _, isVar := stmt.VarDecl.(*ast.VarStatement); isVar {
+				pattKind = bindVar
+			}
+		}
+		if err := c.compilePatternBind(stmt.Pattern, pattKind); err != nil {
 			c.tryScopes = c.tryScopes[:savedTryLen]
 			return err
 		}
@@ -1973,7 +2028,16 @@ func (c *Compiler) compileForAwaitOfStatement(stmt *ast.ForOfStatement) error {
 	}
 	if stmt.Pattern != nil {
 		// 与同步 for-of 同口径: VarDecl 为 nil 的解构是**赋值**目标
-		if err := c.compilePatternBind(stmt.Pattern, stmt.VarDecl != nil); err != nil {
+		// 三态分流: VarDecl 为 nil 是**赋值**目标 (for ([a, b] of xs) 写外部
+		// 已有绑定); var 声明落函数作用域层; let/const 落每轮块作用域。
+		pattKind := bindAssign
+		if stmt.VarDecl != nil {
+			pattKind = bindLexical
+			if _, isVar := stmt.VarDecl.(*ast.VarStatement); isVar {
+				pattKind = bindVar
+			}
+		}
+		if err := c.compilePatternBind(stmt.Pattern, pattKind); err != nil {
 			c.tryScopes = c.tryScopes[:savedTryLen]
 			return err
 		}
@@ -3367,7 +3431,7 @@ func (c *Compiler) compileParamBinding(params []*ast.Parameter, paramSlots []int
 		}
 		slot := paramSlots[i]
 		c.emitter.Emit(bytecode.OP_LOAD, uint16(slot))
-		if err := c.compilePatternBind(param.Pattern, true); err != nil {
+		if err := c.compilePatternBind(param.Pattern, bindLexical); err != nil {
 			return err
 		}
 	}
@@ -4729,10 +4793,10 @@ func (c *Compiler) compileAssignmentExpression(node *ast.AssignmentExpression) e
 
 	// 处理解构赋值: [a, b] = arr  或  { a, b } = obj
 	if _, ok := node.Left.(*ast.ArrayPattern); ok {
-		return c.compileDestructureAssignment(node, false)
+		return c.compileDestructureAssignment(node, bindAssign)
 	}
 	if _, ok := node.Left.(*ast.ObjectPattern); ok {
-		return c.compileDestructureAssignment(node, false)
+		return c.compileDestructureAssignment(node, bindAssign)
 	}
 
 	switch left := node.Left.(type) {
@@ -5143,31 +5207,49 @@ func (c *Compiler) emitLogicalSkip(op string) int {
 	return c.emitter.EmitJump(bytecode.OP_JUMP)
 }
 
+// bindKind 区分解构模式的三种绑定登记口径 —— 解构编译里唯一的语义分叉点。
+//
+//	- bindAssign:  赋值解构 `[a] = x` —— 不声明, 写已有绑定;
+//	- bindLexical: let/const 声明解构 —— 绑定登记在**当前 (块) 作用域**;
+//	- bindVar:     var 声明解构 —— 绑定登记在**函数作用域层** (FuncLayer),
+//	  并参与 var 提升 (emitVarHoistInits)。
+//
+// bindVar 的必要性 (r4McL4): `for (var [p] of …) {}` 之后循环外读 p 必须拿到
+// 值; 若按 bindLexical 走, p 落在循环体的块作用域里, 块退出即消失 → 读 p 退化
+// 成 OP_LOAD_GLOBAL → 运行期 ReferenceError (Node 全程有值, 是 Gox 的缺陷)。
+type bindKind int
+
+const (
+	bindAssign  bindKind = iota // [a] = x
+	bindLexical                 // let/const [a] = x
+	bindVar                     // var [a] = x
+)
+
 // compileDestructureAssignment 处理解构。
-// isDecl=true: 声明解构 (let/const [a] = x)，目标按声明登记 (含重声明检查)；
-// isDecl=false: 赋值解构 ([a] = x)，目标按普通赋值处理 (写已有绑定)。
-func (c *Compiler) compileDestructureAssignment(node *ast.AssignmentExpression, isDecl bool) error {
+// kind 决定解构目标的绑定登记口径 (见 bindKind): bindLexical (let/const 声明)、
+// bindVar (var 声明, 落函数作用域层)、bindAssign (赋值解构, 写已有绑定)。
+func (c *Compiler) compileDestructureAssignment(node *ast.AssignmentExpression, kind bindKind) error {
 	// 编译右值 (被解构的值)
 	if err := c.compileExpression(node.Right); err != nil {
 		return err
 	}
-	if !isDecl {
+	if kind == bindAssign {
 		// 赋值表达式的值是右值: 留一份副本，解构只消耗另一份
 		c.emitter.EmitNoOperand(bytecode.OP_DUP)
 	}
 
-	return c.compilePatternBind(node.Left, isDecl)
+	return c.compilePatternBind(node.Left, kind)
 }
 
 // compilePatternBind 对栈顶的值执行解构绑定。
 // 解构后栈顶的被解构值被消费, 栈回到进入前的高度。
 // 支持 ArrayPattern (迭代器驱动 + IteratorClose) / ObjectPattern / 嵌套模式。
-func (c *Compiler) compilePatternBind(pattern ast.Expression, isDecl bool) error {
+func (c *Compiler) compilePatternBind(pattern ast.Expression, kind bindKind) error {
 	switch pattern := pattern.(type) {
 	case *ast.ArrayPattern:
-		return c.compileArrayPatternBind(pattern, isDecl)
+		return c.compileArrayPatternBind(pattern, kind)
 	case *ast.ObjectPattern:
-		if err := c.compileObjectPatternBind(pattern, isDecl); err != nil {
+		if err := c.compileObjectPatternBind(pattern, kind); err != nil {
 			return err
 		}
 		c.emitter.EmitNoOperand(bytecode.OP_POP) // 弹出被解构的值
@@ -5190,7 +5272,7 @@ func (c *Compiler) compilePatternBind(pattern ast.Expression, isDecl bool) error
 // 异常路径复用 try/finally 基础设施: PUSH_TRY 0 + PUSH_FINALLY closePC 包住
 // 绑定段, 异常落到 closePC 后套一层 swallow-try 跑 close (close 自身异常丢弃,
 // 原异常经 END_FINALLY 重抛)。
-func (c *Compiler) compileArrayPatternBind(pattern *ast.ArrayPattern, isDecl bool) error {
+func (c *Compiler) compileArrayPatternBind(pattern *ast.ArrayPattern, kind bindKind) error {
 	iterSlot := c.allocHiddenSlot()
 	c.emitter.EmitNoOperand(bytecode.OP_GET_ITERATOR)   // [iter]; 非可迭代 → TypeError
 	c.emitter.Emit(bytecode.OP_STORE, uint16(iterSlot)) // []
@@ -5203,12 +5285,12 @@ func (c *Compiler) compileArrayPatternBind(pattern *ast.ArrayPattern, isDecl boo
 
 	for _, elem := range pattern.Elements {
 		if elem.Rest {
-			if err := c.compileArrayRestCollect(iterSlot, elem.Target, isDecl, doneIdx, valueIdx); err != nil {
+			if err := c.compileArrayRestCollect(iterSlot, elem.Target, kind, doneIdx, valueIdx); err != nil {
 				return err
 			}
 			break
 		}
-		if err := c.emitArrayElementBind(iterSlot, elem, isDecl, doneIdx, valueIdx); err != nil {
+		if err := c.emitArrayElementBind(iterSlot, elem, kind, doneIdx, valueIdx); err != nil {
 			return err
 		}
 	}
@@ -5234,11 +5316,11 @@ func (c *Compiler) compileArrayPatternBind(pattern *ast.ArrayPattern, isDecl boo
 }
 
 // emitArrayElementBind 取一个数组元素 (elision 也取一次), 解默认值并绑定目标。
-func (c *Compiler) emitArrayElementBind(iterSlot int, elem *ast.PatternElement, isDecl bool, doneIdx, valueIdx uint16) error {
+func (c *Compiler) emitArrayElementBind(iterSlot int, elem *ast.PatternElement, kind bindKind, doneIdx, valueIdx uint16) error {
 	// 成员目标: 目标引用的求值必须先于 IteratorStepValue (规范 13.15.5
 	// AssignmentElement 步骤 1, rvdPPH)。先把 obj/key 求值进隐藏槽, 取到值后再写回。
 	objSlot, keySlot := -1, -1
-	if !isDecl {
+	if kind == bindAssign {
 		if m, ok := elem.Target.(*ast.MemberExpression); ok {
 			var err error
 			objSlot, keySlot, err = c.emitMemberRefStash(m)
@@ -5289,15 +5371,15 @@ func (c *Compiler) emitArrayElementBind(iterSlot int, elem *ast.PatternElement, 
 		c.emitMemberRefStoreStashed(objSlot, keySlot)
 		return nil
 	}
-	return c.bindPatternTarget(elem.Target, isDecl)
+	return c.bindPatternTarget(elem.Target, kind)
 }
 
 // compileArrayRestCollect 把迭代器剩余值收集成新数组, 绑定到 rest 目标。
 // 收集到 done 为止 (耗尽), 故 rest 之后迭代器已全部消费、无需再 close。
-func (c *Compiler) compileArrayRestCollect(iterSlot int, target ast.Expression, isDecl bool, doneIdx, valueIdx uint16) error {
+func (c *Compiler) compileArrayRestCollect(iterSlot int, target ast.Expression, kind bindKind, doneIdx, valueIdx uint16) error {
 	// 成员 rest 目标: 引用同样先于 rest 收集求值 (规范 AssignmentRestElement)。
 	objSlot, keySlot := -1, -1
-	if !isDecl {
+	if kind == bindAssign {
 		if m, ok := target.(*ast.MemberExpression); ok {
 			var err error
 			objSlot, keySlot, err = c.emitMemberRefStash(m)
@@ -5337,7 +5419,7 @@ func (c *Compiler) compileArrayRestCollect(iterSlot int, target ast.Expression, 
 		c.emitMemberRefStoreStashed(objSlot, keySlot)
 		return nil
 	}
-	return c.bindPatternTarget(target, isDecl)
+	return c.bindPatternTarget(target, kind)
 }
 
 // compileObjectPatternBind 对栈顶对象执行对象解构绑定 (属性遍历, 不走迭代器)。
@@ -5347,7 +5429,7 @@ func (c *Compiler) compileArrayRestCollect(iterSlot int, target ast.Expression, 
 //   - 入口先 RequireObjectCoercible (null/undefined → TypeError), 空模式也要;
 //   - 每个属性: 求键 (计算键求值) → 记入 excludedNames → GetV → 默认值 → 绑定;
 //   - rest: 新建对象复制源的自有可枚举属性, 跳过 excludedNames。
-func (c *Compiler) compileObjectPatternBind(pattern *ast.ObjectPattern, isDecl bool) error {
+func (c *Compiler) compileObjectPatternBind(pattern *ast.ObjectPattern, kind bindKind) error {
 	c.emitter.EmitNoOperand(bytecode.OP_REQUIRE_OBJECT_COERCIBLE)
 
 	hasRest := pattern.RestTarget != nil
@@ -5382,7 +5464,7 @@ func (c *Compiler) compileObjectPatternBind(pattern *ast.ObjectPattern, isDecl b
 		// 成员目标: 目标引用的求值先于 GetV (规范 ObjectAssignmentPattern 的
 		// AssignmentProperty 求值序, rvdPPH)。先把 obj/key 求值进隐藏槽。
 		objSlot, keySlot := -1, -1
-		if !isDecl {
+		if kind == bindAssign {
 			if m, ok := prop.Value.(*ast.MemberExpression); ok {
 				var err error
 				objSlot, keySlot, err = c.emitMemberRefStash(m)
@@ -5404,7 +5486,7 @@ func (c *Compiler) compileObjectPatternBind(pattern *ast.ObjectPattern, isDecl b
 		// 存储到目标 (标识符 / 成员 / 嵌套模式; nil 表示无)
 		if objSlot >= 0 {
 			c.emitMemberRefStoreStashed(objSlot, keySlot)
-		} else if err := c.bindPatternTarget(prop.Value, isDecl); err != nil {
+		} else if err := c.bindPatternTarget(prop.Value, kind); err != nil {
 			return err
 		}
 	}
@@ -5412,7 +5494,7 @@ func (c *Compiler) compileObjectPatternBind(pattern *ast.ObjectPattern, isDecl b
 	if hasRest {
 		// 成员 rest 目标: 引用先于 CopyDataProperties (rest 拷贝) 求值。
 		objSlot, keySlot := -1, -1
-		if !isDecl {
+		if kind == bindAssign {
 			if m, ok := pattern.RestTarget.(*ast.MemberExpression); ok {
 				var err error
 				objSlot, keySlot, err = c.emitMemberRefStash(m)
@@ -5426,7 +5508,7 @@ func (c *Compiler) compileObjectPatternBind(pattern *ast.ObjectPattern, isDecl b
 		c.emitter.EmitNoOperand(bytecode.OP_OBJECT_REST)
 		if objSlot >= 0 {
 			c.emitMemberRefStoreStashed(objSlot, keySlot)
-		} else if err := c.bindPatternTarget(pattern.RestTarget, isDecl); err != nil {
+		} else if err := c.bindPatternTarget(pattern.RestTarget, kind); err != nil {
 			return err
 		}
 	}
@@ -5444,32 +5526,43 @@ func patternStaticKey(prop *ast.PatternProperty) string {
 
 // bindPatternTarget 把栈顶的值绑定到解构目标 (消费该值, 栈平衡)。
 // target == nil 表示数组模式里的空洞 (elision): 直接丢弃值。
-func (c *Compiler) bindPatternTarget(target ast.Expression, isDecl bool) error {
+func (c *Compiler) bindPatternTarget(target ast.Expression, kind bindKind) error {
 	if target == nil {
 		c.emitter.EmitNoOperand(bytecode.OP_POP)
 		return nil
 	}
 	switch t := target.(type) {
 	case *ast.Identifier:
-		if isDecl {
-			sym, err := c.declareOnce(t.Value, false, false)
+		if kind == bindAssign {
+			// 赋值解构: 写入已有绑定 (与 x = v 语义一致)
+			c.emitIdentifierAssign(t.Value)
+			return nil
+		}
+		if kind == bindVar {
+			// var 声明解构: 绑定登记到**函数作用域层** (块外可见 / 重复声明复用
+			// / 被 emitVarHoistInits 提升为 undefined) —— r4McL4 的核心修复点。
+			sym, err := c.declareFuncLayerVar(t.Value)
 			if err != nil {
 				return err
 			}
-			if c.isGlobalScope() {
-				nameIdx := c.constants.AddConstant(object.NewString(t.Value))
-				c.emitter.Emit(bytecode.OP_DECLARE, nameIdx)
-			} else {
-				c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
-			}
+			c.emitVarAssign(t.Value, sym)
+			return nil
+		}
+		// let/const 声明解构: 登记在当前 (块) 作用域
+		sym, err := c.declareOnce(t.Value, false, false)
+		if err != nil {
+			return err
+		}
+		if c.isGlobalScope() {
+			nameIdx := c.constants.AddConstant(object.NewString(t.Value))
+			c.emitter.Emit(bytecode.OP_DECLARE, nameIdx)
 		} else {
-			// 赋值解构: 写入已有绑定 (与 x = v 语义一致)
-			c.emitIdentifierAssign(t.Value)
+			c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
 		}
 		return nil
 	case *ast.MemberExpression:
 		// 声明模式不允许成员目标 (parser 为 for-of 赋值 LHS 放行, 这里兜早错)。
-		if isDecl {
+		if kind != bindAssign {
 			return fmt.Errorf("SyntaxError: invalid destructuring binding target")
 		}
 		// 赋值模式的成员目标 (x.y / x[k]): 值已在栈顶 [val]。
@@ -5480,7 +5573,7 @@ func (c *Compiler) bindPatternTarget(target ast.Expression, isDecl bool) error {
 		c.emitMemberRefStoreFromStack()
 		return nil
 	case *ast.ArrayPattern, *ast.ObjectPattern:
-		return c.compilePatternBind(target, isDecl)
+		return c.compilePatternBind(target, kind)
 	}
 	return fmt.Errorf("compiler: unsupported destructuring target %T", target)
 }
