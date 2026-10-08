@@ -159,6 +159,11 @@ type GuiNode struct {
 	scrollGrabX, scrollGrabY       int
 	scrollGrabOffX, scrollGrabOffY int
 
+	// 滚动位置**写入口** (看板 r846P0): scrollTop / scrollLeft 上一次已经施加
+	// 过的目标 (归一化成可比较的键, 见 applyScrollCommand)。用它做去重 ——
+	// 没有它, prop 会在**每一帧**把偏移拽回脚本给的值, 表现是"滚轮滚不动"。
+	scrollCmdY, scrollCmdX string
+
 	// tabs 状态 (S4): tabsActive 是非受控激活页下标 (有 value prop 时以它
 	// 为准, 受控点击不改它); tabStrip 是布局期算出的标签条按钮区 (窗口坐标,
 	// 命中与绘制共用同一份几何)。

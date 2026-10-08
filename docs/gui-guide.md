@@ -189,7 +189,7 @@ macOS 后端（cocoa）已知限制：
 | `search` | 同 `input` + `onSearch` | `input` 的字段变体：左侧放大镜，获焦按 `Enter` 整段提交 `onSearch({value})`（逐键 `onInput` 照旧），其余与 `input` 一致 |
 | `rating` | `value` / `max` / `onChange` / `color` / `disabled` | 星级评分：**完全受控**（显示只看 `value`，点击第几格就派发 `onChange({value})`，值不变不派发）。`max` 缺省 5、上限 10；每颗星占 20px 方格（缺省 100×20），星形半径按 min(格宽, 高) 自适应；实心星走 `color` prop（缺省主题强调色），其余空心描边。`model` 口径与 `select` 相同 |
 | `textarea` | `value` / `onInput` / `rows` / `placeholder` / `disabled` / `wrap` | 多行受控编辑器；光标 `{行,列}` 二维移动（↑↓←→/Home/End/Backspace/Delete），**`Enter` 插入换行**（不同于 input）；**软换行缺省开**（按内容区宽度折行，`wrap={false}` 关掉），↑↓/Home/End/点击定位都按**屏幕上的行**走；选区与 `Ctrl/Cmd`+`A`/`C`/`X`/`V` 与 `input` 同一套；内容超高时纵向滚动并跟随光标；同样支持 IME。缺省 4 行 × 240px |
-| `scroll` | `width` / `height` / `onWheel` / `vlist` / `itemHeight` / `buffer` | 滚动容器：内容超高时右侧、超宽时底部出现 8px 轨道 + 比例滑块；滚轮滚动（一格 60px，`Shift+滚轮`走横向），滑块可拖拽，到边界后滚轮才冒泡给 `onWheel`；溢出的内容既画不出来也点不中。缺省高 200。加 `vlist itemHeight={N}` 即变成[虚拟化长列表](#_6-6-虚拟化长列表-vlist)：只物化可见的行，十万行与十行的成本一样 |
+| `scroll` | `width` / `height` / `scrollTop` / `scrollLeft` / `onScroll` / `onWheel` / `vlist` / `itemHeight` / `buffer` | 滚动容器：内容超高时右侧、超宽时底部出现 8px 轨道 + 比例滑块；滚轮滚动（一格 60px，`Shift+滚轮`走横向），滑块可拖拽，到边界后滚轮才冒泡给 `onWheel`；溢出的内容既画不出来也点不中。缺省高 200。**写入口**（见下）：`scrollTop` / `scrollLeft` 把滚动位置写进去（数字 = 绝对像素，另有别名 `top`/`bottom` 与 `start`/`end`），用户手势滚动时派发 `onScroll({offsetX, offsetY})`。加 `vlist itemHeight={N}` 即变成[虚拟化长列表](#_6-6-虚拟化长列表-vlist)：只物化可见的行，十万行与十行的成本一样 |
 | `image` | `src` / `width` / `height` / `disabled` | 显示 png / jpeg / gif 图片（Go 标准库解码，无新增依赖）；不给 `width`/`height` 时用图片自然尺寸，给了就按最近邻缩放；`src` 相对**进程工作目录**解析，加载失败画灰底交叉线占位（stderr 每个路径只警告一次），不中断其它内容 |
 | `video` | `src` / `poster` / `playing` / `autoplay` / `muted` / `loop` / `volume` / `controls` / `fit` | 视频框：**标签与宿主契约**（S8）。内核**不解码** —— 播放交给窗口后端可选实现的 `nativeVideoHost`（平台视频层：MF / AVPlayerLayer / SurfaceView），决策见 [video-decision.md](video-decision.md)。后端没这块能力时画 `poster` 封面（没封面就深色底 + 播放三角），并**诚实报错**：stderr 告警一次 + 对该节点派发一次 `onError({code:"unsupported"})`，`canIUse("video")` 照实回答 `false`。`playing`（等价 `autoplay`）、`muted` / `loop` / `volume` 都是**受控**属性，宿主上报的状态经 `onReady` / `onPlay` / `onPause` / `onEnded` / `onTimeUpdate({currentTime, duration})` 回到脚本。`fit` 取 `contain`（缺省）/ `cover` / `fill`；不给尺寸时用封面自然尺寸，兜底 320×180 |
 | `canvas` | `width` / `height` / `onDraw(ctx)` / `background` / `border` | 自绘画布：`onDraw` 收到一个 ctx，用 `ctx.fillRect/strokeRect/fillCircle/strokeCircle/line/drawText/clear` 直接落笔，坐标是**画布局部坐标**（0,0 = 左上角），越界部分自动裁掉；`ctx.width` / `ctx.height` 是画布尺寸。`onDraw` 里读到的 signal 变化会自动重绘（缺省 200×120） |
@@ -489,6 +489,40 @@ h("scroll", { width: 240, height: 120, onWheel: () => setOverscroll(n => n + 1) 
   也会横向兜底。默认铺满（stretch）的子节点是"跟随容器"，不会触发横向滚动条。
 - **滚动条可拖拽**：按住滑块直接拖（拖拽期间鼠标捕获，划过别的控件不会误触）；
   纵向与横向滑块都支持，行程按"可滚范围 / 滑块行程"等比换算。
+
+**滚动位置的写入口**：上面这些都是"用户手势驱动"，脚本此前没有任何把滚动位置写
+进去的办法 —— 于是「跳到底部」「跳到第 N 行」「跟随最新一条」全都做不出来。两个受控
+prop 补上这个方向：
+
+| prop | 取值 | 含义 |
+| --- | --- | --- |
+| `scrollTop` | number | 竖直方向的**绝对像素**偏移，按内容总高钳位（写 `99999` 等于滚到底） |
+| | `"top"` / `"bottom"` | 别名。`"bottom"` 是**粘性**的：内容变长时会重新贴底，正好给"跟随最新"用 |
+| `scrollLeft` | number / `"start"` / `"end"` | 同上，横向版本（`start` 对应 `top`、`end` 对应 `bottom`） |
+
+```jsx
+// 聊天/日志那种"尾巴跟随": 内容一长就自动贴到底
+<scroll height={140} scrollTop={follow() ? "bottom" : 0} onScroll={(e) => setPos(e.offsetY)}>
+  {() => lines().map((t) => <rect height={28}><text>{t}</text></rect>)}
+</scroll>
+```
+
+三条必须记住的口径：
+
+1. **一帧只认一次新目标**：同一个目标值不会被反复施加。这条是刻意的 —— 否则每帧都会
+   把偏移拽回脚本给的值，用户用滚轮往上翻之后**下一帧就被抢回去**，表现为"滚不动"。
+   要重新定位请换一个新的值；要一直贴底请用粘性别名 `"bottom"`（它的去重键带上了
+   解出的最大值，内容变长才算"新目标"）。
+2. **写入与上报是两回事**：手势滚动会派发 `onScroll({offsetX, offsetY})`，
+   布局期写 prop **不派发** —— 写是一次内部搬指针，再回调脚本等于布局过程中重入，会把脏区
+   和布局状态搅在一起。读当前位置请自己记住，或用 `onScroll` 跟着更。
+3. **写入发生在布局期**：先把这一屏的内容量出来才知道能滚多远，所以 `scrollTop` 是在
+   内容测量之后、钳位与 vlist 开窗之前施加的 —— 同一帧内写进去的偏移立刻参与钳位和开窗，
+   不会"慢一帧"。
+
+配合方向（手势 → 脚本）就是 `onScroll`：拿到 `offsetY` 就能判断"用户是不是还在底部"，
+从而决定要不要继续跟随 —— 两个方向凑齐才是完整的 `tail -f` 交互。完整演示见
+[testdata/scroll_to_demo.js](../testdata/scroll_to_demo.js)。
 
 ### 6.6 虚拟化长列表（vlist）
 
@@ -1269,6 +1303,7 @@ import { devSnapshot } from "gx/dev";
 | [textarea_demo.js](../testdata/textarea_demo.js) | 多行编辑器 |
 | [ime_demo.js](../testdata/ime_demo.js) | 输入法：候选词整批提交与光标跨批 |
 | [scroll_demo.js](../testdata/scroll_demo.js) | 滚动容器与边界冒泡 |
+| [scroll_to_demo.js](../testdata/scroll_to_demo.js) | 滚动位置**写入口**：`scrollTop` 跟随最新 / 回到顶部 / 跳到第 N 行 + `onScroll` 回读 |
 | [vlist_demo.js](../testdata/vlist_demo.js) | 虚拟化长列表：十万行只物化十几行，滚动条与全量版一致 |
 | [image_demo.js](../testdata/image_demo.js) | 图片五态：自然尺寸 / 放大 / 缩小 / 坏路径占位 / 禁用 |
 | [video_demo.js](../testdata/video_demo.js) | 视频框三态：封面 contain / 无封面占位 / `fit=cover` + 用户 background（桌面后端降级为封面 + 一次 `onError`） |

@@ -625,6 +625,28 @@ this 是 undefined，都会把删除落到错误的基上。
 - **宿主注入型 API 必须同时清模块缓存**：`process.argv` 是 `RegisterBuiltinModule` 的**惰性快照**（`builtinModuleCache`），宿主改了全局状态而缓存不清 ⇒ 脚本读到的仍是旧值。测试里**刻意先 `LookupBuiltinModule("process")` 把缓存喂热**再注入，才能顶住这一点（去掉 `InvalidateBuiltinModuleCache` 后该用例立即 FAIL）。
 - **本单不适用 test262 A/B**（同 §二十六 的沙箱约束）：不是语言层语义，改的是宿主接线；判据是上面那组打包实跑对照。
 
+## 二十八、合流批次十四（VM 回调桥值槽 `rZNsX9` + `<scroll>` 滚动位置写入口 `r846P0`）
+
+**本轮形状**：`r1q3Gy` 收尾后接着清 `running`，挑的两条都是**确定形态、且在沙箱内可端到端验证**的单 —— 一条是 §二十六 `rr1O8P` 的同机制另一半（改到 VM 侧），一条是 GUI 侧功能缺口。刻意避开依赖 Windows / 真机 / test262 套件的单。
+
+| 路线 | 单 | 处置 | 要点 | 证据 |
+|---|---|---|---|---|
+| b14/slotvm | `rZNsX9` | **合入** | 回调桥值槽的**VM 侧**版本。`checkCallbackErr()` 是 vm 包全部同形态位点的唯一汇聚点（vm.go 28 处 + async_from_sync.go 3 处 = 31 处），在其内部**仅当真的取到错误时**连带 `TakeCallbackErrorValue()`（两槽同进同出）；`callToString()` 不属于该句型，单独补消费（它走的是 `CallFunction` → 直接判 `TakeCallbackError()`） | A/B 反证：撤掉修复后新增 5 例中 4 例 FAIL（`值槽未被消费, 残留 PHASE1` / `VM 主循环消费掉错误槽后值槽仍残留 PHASE1` / `callToString 未消费值槽, 残留 TOSTRING-PHASE1` / `相位2 的桥失败后值槽残留 PHASE1`）；新增 `vm/callback_slot_test.go` 5 例；`go test ./...` 全绿 |
+| b14/scrollto | `r846P0` | **合入** | `<scroll>` 只有读入口（滚轮 / 拖滑块改 offset），脚本没有任何**写**滚动位置的办法 ⇒ 「跳到底部」「跳到第 N 行」「跟随最新一条」全做不出来。补两个受控 prop：`scrollTop` / `scrollLeft`（数字 = 绝对像素、按内容钳位；别名 `top`/`bottom` 与 `start`/`end`，`bottom`/`end` **粘性**：去重键带解出的最大值，内容变长即算新目标）；以及反向通道 `onScroll({offsetX, offsetY})` | A/B 反证：撤掉写入口 ⇒ `TestScrollWritePropEndToEnd`（`scrollTop={200} 后 offsetY = 0, want 200`）与 `TestScrollWriteDemoScript`（`bottom 别名未贴底: offsetY = 0, max = 196`）FAIL；去掉**去重** ⇒ `TestScrollTopDoesNotFightUserScroll`、`TestScrollTopBottomAliasFollowsGrowingContent` FAIL；去掉 `notifyScroll` ⇒ `TestOnScrollFiresOnUserScroll` FAIL。新增 `gfx/scroll_write_test.go` 9 例；`go test ./...` 全绿 |
+
+**两条各自的根因一环（防复发）**：
+
+- **「契约已存在、实现却缺席」是静默失败**：`testdata/vlist_demo.js` 早就写了 `onScroll: (e) => { setScrollTop(e.offsetY); … }`，而内核从未实现 `onScroll` ⇒ 脚本一个错误都不报，只是那个读数恒为 0。**demo / 文档里已经写出来的 API 比没写文档的更危险** —— 它会让人以为是自己脚本写错了。本次顺手把这个坑填上。
+- **写入必须去重、还不能顺手派发**：写入口 `applyScrollCommand` 放在 `layoutScroll` 里（内容量出来之后、钳位与 vlist 开窗之前），所以同一帧内写进去的偏移立刻参与钳位和开窗，不会慢一帧；但也正因为每帧都走一遍，**不去重就等于每帧把用户拽回脚本给的值**（表现是"滚不动"）。反过来，**派发 `onScroll` 不能挂在写入路径上** —— 那是在布局过程中回调脚本，属于重入。写 = 搬指针（哑），手势 = 上报（响），两条路必须分开。
+
+**本轮实锤（流程教训）**：
+
+- **`<button label="…">` 在本仓库不成立**：只有 `menu` / `menuitem` 读 `label` prop（`gfx/menu.go`），`<button>` 的文案是**文本子节点**。按 DOM 直觉写出来的按钮不报错，只是个宽 16px 的空白壳；测试侧 `buttonWithText` 找不到它 ⇒ `click(fake, nil)` 直接 nil 解引用。这是本轮唯一一次卡住的坑，代价不低：错误信息是 `InternalError: VM panic: nil pointer`，栈里指向的是**测试辅助函数**而不是根因。写 demo 先照抄一个现有 demo 的写法。
+- **VM panic 的第一现场要主动取**：默认只给 `InternalError: VM panic: …` 一行，看不出在哪。`GOX_PANIC_TRACE=1` 会打出 Go 调用栈 + panic 帧附近的字节码窗口（`vm/vm.go` 的 `runProtected`）；上面那个 nil 解引用就是靠它一眼定位到辅助函数里的。
+- **端到端 demo 用例的价值在这里兑现**：`scroll_write_test.go` 前 8 例都是 Go 侧直接调布局，**绕过了 gfx/solid signal → h() 建树这一整段**；`TestScrollWriteDemoScript` 跑真脚本，才把「按钮点下去 → signal → prop 名落在节点上 → 布局期读到」整链接通。
+- **驱动 GUI demo 的时序口径**：一次点击一轮 pump（受控 prop 要等 signal 写回 + 下一轮 pump 才落回节点）；断言写在**点击的下一轮** —— 本轮第一版写成"先连点 9 次再断言"，结果断言全部打空，必须先 readout 一轮真实的树才知道差在哪。
+- **本批次不适用 test262 A/B**（同 §二十六 的沙箱约束）：一条改的是宿主↔VM 的边界接线，一条是 GUI 组件语义，都没有语言层计分项。
+
 ## 待确认（信息缺口）
 
 - `agent_doc/undecided-and-unimplemented.md` 是 **2026-09-18 快照**，其 §四 缺口清单中已有多项（cocoa 后端、iOS 后端、X11 修正、M2 IME、滚动条拖拽、tabs、table/tree、tooltip）在 09-18 后落地。本路线图已按 git 历史更正，但**建议回填该台账**，否则后续排期会继续基于过期口径。

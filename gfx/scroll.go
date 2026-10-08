@@ -2,6 +2,9 @@ package gfx
 
 import (
 	"image"
+	"strconv"
+
+	"github.com/14752222/Gox/object"
 )
 
 // scroll 滚动容器 (P2-5; 横向滚动与滚动条拖拽 rSkhXA / RELEASE_NOTES 已知问题 2)。
@@ -100,6 +103,27 @@ func (n *GuiNode) scrollMaxOffsetX() int {
 	return max
 }
 
+// notifyScroll 在一次**用户交互**造成的滚动之后派发 onScroll({offsetX, offsetY})。
+//
+// 刻意只挂在 scrollBy / scrollDragTo 上, **不挂** applyScrollCommand: 后者跑在
+// 布局期, 在那儿回调脚本等于允许"布局还没排完就重建子树" (子节点正在被就地量取,
+// 脚本却在重排列表)。DOM 里脚本触发的滚动同样会发 scroll 事件, 这里是刻意的取舍:
+// 脚本自己发起的跳转它自己是知道的, 不差这条回调。
+func (n *GuiNode) notifyScroll() {
+	a := appOfNode(n)
+	if a == nil {
+		return
+	}
+	h := n.PropHandler("onScroll")
+	if h == nil {
+		return
+	}
+	arg := object.NewObject()
+	arg.SetProperty("offsetX", object.NewNumber(float64(n.offsetX)))
+	arg.SetProperty("offsetY", object.NewNumber(float64(n.offsetY)))
+	a.callHandler(n, "onScroll", arg)
+}
+
 // scrollBy 按给定像素滚动 (正数 = 内容上移/左移, 即向右/向下滚)。返回值表示
 // 偏移是否**任一方向**真的改变了 —— 两个方向都已到边界时返回 false, 调用方
 // 据此决定要不要把滚轮事件继续往外传 (与 DOM 的滚动链一致)。
@@ -126,6 +150,10 @@ func (n *GuiNode) scrollBy(dx, dy int) bool {
 		// 40 次重算, 虚拟化反而比全量更慢 (2026-10-01)。布局是唯一知道"视口高、
 		// 轨道、钳位后偏移"的地方, 由它调 vlistPrepare 决定窗口即可; 这里只标脏
 		// (要重绘), 窗口的重算交给紧随其后的 Layout。
+		//
+		// 用户手势导致的偏移变化还要回报脚本: onScroll({offsetX, offsetY})。
+		// 只挂在手势路径上, 布局期写 prop 那条路不派发 (见 applyScrollCommand)。
+		n.notifyScroll()
 	}
 	return moved
 }
@@ -266,6 +294,7 @@ func (n *GuiNode) scrollDragTo(x, y int) {
 		markNodeDirty(n)
 		// 与 scrollBy 同一条纪律: 窗口重算交给紧随其后的布局 (vlistPrepare),
 		// 这里只标脏。两处都 bump 的话每次拖动会重算两遍窗口 (2026-10-01 实测)。
+		n.notifyScroll()
 	}
 }
 
@@ -283,6 +312,116 @@ func (n *GuiNode) scrollThumbW() int {
 	}
 	return 0
 }
+
+// ===== 滚动位置写入口 (看板 r846P0) =====
+//
+// <scroll> 此前只有**读**能力: 偏移由滚轮与滑块拖拽维护, 脚本没有任何把它写
+// 进去的入口 ⇒ "跳到底部 / 跳到指定行" 做不出来 (日志查看器的 tail -f、聊天
+// 消息流、表格定位都是同一个诉求)。本次补两个受控 prop:
+//
+//	<scroll scrollTop={atBottom ? "bottom" : 0} scrollLeft={0}>…</scroll>
+//
+// 取值两种形状:
+//   - 数字: 绝对像素, 随后按 [0, max] 钳位 —— 所以写一个很大的数就是"跳到底部";
+//   - 字符串别名: "top" (0) / "bottom" (内容末端); 横向是 "start" / "end"。
+//
+// **为什么写入口做在这里 (布局期) 而不是让应用自己算**: contentH 与视口扣除
+// 轨道的宽度是布局才知道的量, 应用拿不到 max, 自己算必然与滚动条/钳位脱节;
+// vlist 下还牵扯窗口物化 —— 只有布局知道"可见区间在哪"。写在 layoutScroll 里,
+// scrollBy / scrollDragTo / vlistPrepare 三条既有路径一条都不用改。
+//
+// **为什么是"目标变了才施加"而不是每帧强制同步**: offsetY 同时也是**用户交互**
+// 在写的 runtime 状态。每帧把 prop 灌进 offsetY, 用户刚滚开就被拽回, 表现是
+// "滚不动"。改成只在目标变化时跳一次, 两者得以共存 (详见 applyScrollCommand)。
+//
+// **关于反向通道 onScroll**: 用户滚动会派发 onScroll({offsetX, offsetY})
+// (见 notifyScroll), 于是"用户是不是已经贴底"这类判断做得出来; 而**脚本发起的
+// 跳转不重复派发** —— applyScrollCommand 跑在布局期, 在那里回调脚本等于允许
+// "布局还没排完就重建子树"。DOM 里脚本触发的滚动也发 scroll 事件, 这里是刻意
+// 的取舍: 脚本自己发起的跳转它自己是知道的。
+//
+// 要把"仅当用户贴底时才跟随最新"做成 switch, 现在两块积木都齐了: 用
+// scrollTop={"bottom"} 的粘性语义 (内容变长才重新贴底) 配合 onScroll 判断。
+
+// applyScrollCommand 在每次布局、内容尺寸已量完之后施加脚本给出的滚动目标。
+//
+// 位置是**死要求**:
+//   - 必须在 contentH/contentW 写回之后 —— "bottom"/"end" 要按 scrollMaxOffset 算;
+//   - 必须在钳位与 vlist 窗口重算之前 —— 跳过去之后, 钳位、窗口
+//     (layoutScroll 里 `plan.offsetY != n.offsetY` 那个判据) 都按新偏移走。
+func (n *GuiNode) applyScrollCommand() {
+	moved := false
+	if v, ok := n.Props["scrollTop"]; ok {
+		target, key, ok := n.scrollTargetY(v)
+		if ok && key != n.scrollCmdY && target != n.offsetY {
+			n.offsetY = target
+			n.scrollCmdY = key
+			moved = true
+		}
+	}
+	if v, ok := n.Props["scrollLeft"]; ok {
+		target, key, ok := n.scrollTargetX(v)
+		if ok && key != n.scrollCmdX && target != n.offsetX {
+			n.offsetX = target
+			n.scrollCmdX = key
+			moved = true
+		}
+	}
+	if moved {
+		markNodeDirty(n)
+	}
+}
+
+// scrollTargetY 解出一个纵向滚动目标与其去重键; 值不认识时 ok=false。
+//
+// 去重键的两种取法是本设计的要点:
+//   - **数字 → 按原值去重**: "一次性跳", 只有值真的变了才再跳 (写常量 200
+//     就是"跳到 200 一次", 之后用户爱滚哪滚哪);
+//   - **"bottom" → 按解析后的像素去重**: 内容变长 ⇒ max 变大 ⇒ 目标变化 ⇒
+//     自动重新贴底。这正是日志流要的"跟随最新": 用户往上翻期间内容没变就
+//     不打扰, 新行一来把视口带回末端。
+//   - "top" 按原值去重 (它在意图上就是"回到顶部", 不该有粘性)。
+func (n *GuiNode) scrollTargetY(v object.Value) (target int, key string, ok bool) {
+	switch t := v.(type) {
+	case *object.Number:
+		tv := clampScrollOffset(int(t.Value), n.scrollMaxOffset())
+		return tv, numKey(tv), true
+	case *object.String:
+		switch t.Value {
+		case "top":
+			return 0, "top", true
+		case "bottom":
+			max := n.scrollMaxOffset()
+			return max, "bottom:" + numKey(max), true
+		}
+	}
+	return 0, "", false
+}
+
+// scrollTargetX 是横向版本 (规则与 scrollTargetY 对称: "start" 一次性、
+// "end" 随内容变宽粘性贴右)。
+func (n *GuiNode) scrollTargetX(v object.Value) (target int, key string, ok bool) {
+	switch t := v.(type) {
+	case *object.Number:
+		tv := clampScrollOffset(int(t.Value), n.scrollMaxOffsetX())
+		return tv, numKey(tv), true
+	case *object.String:
+		switch t.Value {
+		case "start":
+			return 0, "start", true
+		case "end":
+			max := n.scrollMaxOffsetX()
+			return max, "end:" + numKey(max), true
+		}
+	}
+	return 0, "", false
+}
+
+// numKey 把目标变成去重键。取整有意以**整数像素**为粒度: 200 与 200.4 钳位后
+// 落在同一个像素, 不该被判成两次跳转。
+func numKey(i int) string { return strconv.Itoa(i) }
+
+// ===== 两遍布局 =====
 
 // layoutScroll 布局滚动容器。
 //
@@ -361,6 +500,11 @@ func layoutScroll(n *GuiNode) {
 
 	n.contentH = contentH
 	n.contentW = contentW
+
+	// 滚动位置**写入口** (看板 r846P0): 必须落在"内容尺寸已量完"之后
+	// (解析 "bottom" 要用 scrollMaxOffset)、"钳位与窗口重算"之前 (新偏移要
+	// 参与后续两步)。详见 applyScrollCommand 的说明。
+	n.applyScrollCommand()
 
 	// 钳位偏移 (内容变短/变窄后旧的偏移可能越界)
 	n.offsetY = clampScrollOffset(n.offsetY, n.scrollMaxOffset())
