@@ -55,16 +55,16 @@ func (vm *VM) wrapSyncIterForAsync(iter object.Value, fromSync bool) object.Valu
 		fn, found := src.GetProperty("throw")
 		// get throw 是抛错的访问器: 原始抛出值优先 (规范 GetMethod 直接抛出),
 		// 不得退化成 "does not provide a 'throw' method" 的 TypeError。
-		if err := vm.checkCallbackErr(); err != nil {
-			return errToValue(err)
+		if v, ok := vm.callbackErrAsThrownValue(); ok {
+			return v
 		}
 		if !found || fn == object.UndefinedSingleton || fn == object.NullSingleton {
 			// 无 throw 方法 (规范 %AsyncFromSyncIteratorPrototype%.throw 步骤 7):
 			// 先 AsyncIteratorClose(syncIterator) (若其有可调 return 则调用之,
 			// 异常优先传播), 再以 TypeError reject。
 			rf, rfound := src.GetProperty("return")
-			if err := vm.checkCallbackErr(); err != nil {
-				return errToValue(err)
+			if v, ok := vm.callbackErrAsThrownValue(); ok {
+				return v
 			}
 			if rfound && rf != object.UndefinedSingleton && rf != object.NullSingleton &&
 				object.IsCallable(rf) {
@@ -91,8 +91,8 @@ func (vm *VM) wrapSyncIterForAsync(iter object.Value, fromSync bool) object.Valu
 	w.SetProperty("return", object.NewBuiltin("return", func(args ...object.Value) object.Value {
 		fn, found := src.GetProperty("return")
 		// get return 是抛错的访问器: 原始抛出值优先 (规范 GetMethod 直接抛出)。
-		if err := vm.checkCallbackErr(); err != nil {
-			return errToValue(err)
+		if v, ok := vm.callbackErrAsThrownValue(); ok {
+			return v
 		}
 		if !found || fn == object.UndefinedSingleton || fn == object.NullSingleton {
 			// 无 return 方法 (规范 %AsyncFromSyncIteratorPrototype%.return 步骤 7):
@@ -213,6 +213,36 @@ func (vm *VM) syncWrapperNext(w *object.Object) (fn, src object.Value, ok bool) 
 		return nil, nil, false
 	}
 	return nf, srcObj, true
+}
+
+// callbackErrAsThrownValue 把内建函数体内 GetProperty 触发的回调桥错误按
+// **抛出值类型**分流 —— 两个通道的可表达范围不同, 不能一律走同一条:
+//
+//   - 抛出值确为 *object.Error: 走内建函数**返回值**通道 (由 throwIfError
+//     识别并抛出), 桥信号随之消费。test262 AsyncFromSyncIteratorPrototype
+//     的 poisoned-get-throw 一族靠它拿到原始抛出值。
+//   - 其余任意 JS 值 (普通对象 / 原始值, test262 惯用
+//     `throw { name: "inner error" }`): 返回值通道**不认**非 Error 值 ——
+//     errToValue 会把它当正常返回值, 于是「该 reject」退化成「正常完成」
+//     (test262 for-await-of/iterator-close-non-throw-get-method-abrupt)。
+//     这类值改为**原样退回桥信号**(错误槽 + 值槽一并还原, 两槽缺一不可),
+//     由外层异步驱动按原始抛出值 reject。
+//
+// 返回值 ok=true 表示调用方应 `return v`; ok=false 表示调用方按原有正常
+// 路径继续 (桥信号仍在, 不得当作「无错误」)。
+func (vm *VM) callbackErrAsThrownValue() (object.Value, bool) {
+	err := vm.checkCallbackErr()
+	if err == nil {
+		return object.UndefinedSingleton, false
+	}
+	v := errToValue(err)
+	if _, ok := v.(*object.Error); ok {
+		object.TakeCallbackErrorValue() // 值槽同步清空, 两槽保持一致
+		return v, true
+	}
+	object.SetCallbackError(err)
+	object.SetCallbackErrorValue(v)
+	return object.UndefinedSingleton, false
 }
 
 // errToValue 把 VM 调用返回的 Go error 转成可沿 builtin 返回值传播的
