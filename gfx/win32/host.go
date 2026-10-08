@@ -44,10 +44,15 @@ package win32
 //
 // ## 主动上报
 //
-// 电池/网络是推送型, 但桌面没有系统级推送事件。所以 init 时主动报一次当前值,
-// 让脚本启动后立刻读 battery()/network() 就能拿到真值 (而不是"没人报过"的
-// 缺省)。之后不再主动重报 —— 桌面场景电量/网络变化不频繁, 需要实时性时由
-// 应用自己定时 Report (或等后续接 WM_POWERBROADCAST)。
+// 电池/网络是推送型, 但桌面没有系统级推送事件, 所以由宿主补一次当前值。
+// 两者**时机不同** (2026-10-08 事故后分裂):
+//
+//	battery —— init 时主动报一次。GetSystemPowerStatus 是纯读、不会崩, 让脚本
+//	           启动后立刻读 battery() 就拿到真值。
+//	network —— **懒加载**, 不在 init 里枚举。网卡枚举要动 GetAdaptersInfo 的变长
+//	           缓冲, 一旦布局或边界判断出错就是 SIGSEGV; 放在 init 里会把"这个
+//	           能力崩了"放大成"进程起不来"。改到宿主首次被 Call 时才枚举
+//	           (reportNetworkLazy), CLI/test262 路径因此完全不触碰网卡。
 //
 // ## 线程纪律
 //
@@ -100,6 +105,9 @@ func (h *win32Host) Capabilities() []string { return win32Capabilities }
 // 绝不用 Pending 吊着脚本 (桌面没有异步回填路径, Pending 只会让 Promise 永远
 // 悬着)。所有分支都返回确定性结果 —— 与"降级口径"一致 (native.go 文件头)。
 func (h *win32Host) Call(method string, args object.Value) gfx.NativeCallResult {
+	// 网卡枚举的懒加载点: 走到这里说明宿主能力真的被用到了 (CLI/跑测路径
+	// 从不 Call 宿主 ⇒ 永不枚举, 见 reportNetworkLazy 的注释)。
+	reportNetworkLazy()
 	switch method {
 	case "device.info":
 		return gfx.NativeResult(hostDeviceInfoJS())
@@ -779,15 +787,35 @@ func init() {
 		if s, ok := querySystemPowerStatus(); ok {
 			gfx.ReportBattery(hostBatteryState(s))
 		}
-		// ⚠️ **不**在 init 里枚举网卡。
+		// ⚠️ **不**在 init 里枚举网卡 —— 网络快照走懒加载 (reportNetworkLazy)。
 		//
 		// 2026-10-08 事故: 网卡枚举放在 init 里, 而它一旦崩 (当时是 IP_ADAPTER_INFO
 		// 布局错位) **任何**进程启动路径都会 SIGSEGV —— test262 跑测完全用不到
 		// GUI, 却因为包 init 秒崩, 全量 A/B 验收链路整条失效。
-		// 收敛做法: 网卡枚举改为**懒加载**, 走 device.info 同款的"首次查询才取"路径
-		// (native_device.go 的 deviceHostOverlay 就是先例)。代价是脚本启动后
-		// 立刻读 network() 会拿到缺省值(未连接), 直到第一次 network() 查询才刷新 ——
-		// 换来的收益是"枚举崩了也只崩这一个能力, 不影响进程启动"。
+		// 收敛做法: 枚举推迟到**宿主第一次被真正调用**时 (Call 入口), CLI/跑测
+		// 路径根本不触碰 ⇒ 枚举崩了也只崩这一个能力, 不影响进程启动。
+		//
+		// 代价 (已知并接受): 脚本在做过任何一次 native 调用之前读 network() 会
+		// 拿到缺省值(未连接)。换来的收益是"进程一定起得来"。
+	})
+}
+
+// networkOnce 保证网卡枚举**至多一次**, 且只在宿主首次被真正调用时才发生。
+var networkOnce sync.Once
+
+// reportNetworkLazy 懒加载版的上报网络快照: 枚举网卡并上报一次。
+//
+// 只有 win32Host.Call 会走这里 —— 即"宿主能力真的被用到"的时刻。CLI / test262
+// 跑测从不 Call 宿主, 于是网卡枚举在这些路径上**根本不发生**, 这是把 2026-10-08
+// 那次"包 init 里枚举 ⇒ 进程起不来"的崩溃面收回来的关键。
+//
+// 之所以不做成"读 network() 时才枚举": network 是**上报型** (内核从不 Call 宿主,
+// 只由 ReportNetwork 喂缓存, 见文件头), 而 gfx.Network() 是持 nativeMu 的纯读
+// —— 在它里面回调宿主会与 ReportNetwork 的加锁**重入死锁**。要真正做到"读时才
+// 枚举"得改内核加无锁钩子, 属后续项; 当前取舍是"宁可首次读拿到缺省值, 也要保
+// 证进程能起来"。
+func reportNetworkLazy() {
+	networkOnce.Do(func() {
 		if connected, typ := hostNetworkType(); connected || typ != "none" {
 			reportNetworkSnapshot(connected, typ)
 		}
