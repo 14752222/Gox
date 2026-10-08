@@ -114,6 +114,9 @@ func SetupGlobals() *runtime.Environment {
 	// ===== RegExp =====
 	setupRegExp(env)
 
+	// ===== Date / performance (看板 ryGXAJ: 此前全仓零注册) =====
+	setupDate(env)
+
 	// ===== setTimeout / setInterval 定时器 =====
 	setupTimers(env)
 
@@ -246,7 +249,7 @@ func linkBuiltinPrototypes(env *runtime.Environment) {
 		"Function", "Array", "String", "Number", "Boolean", "Symbol", "BigInt",
 		"RegExp", "Map", "Set", "WeakMap", "WeakSet", "Promise",
 		"AggregateError", "WeakRef", "FinalizationRegistry", "Iterator",
-		"ArrayBuffer", "DataView",
+		"ArrayBuffer", "DataView", "Date",
 	}
 	for _, k := range object.TAKindList() {
 		names = append(names, k.Name)

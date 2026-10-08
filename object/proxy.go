@@ -49,7 +49,7 @@ func NewProxy(target, handler Value) (*Proxy, *Error) {
 func IsObjectLike(v Value) bool {
 	switch v.Type() {
 	case OBJECT_OBJ, ARRAY_OBJ, MAP_OBJ, SET_OBJ, ERROR_OBJ, ITERATOR_OBJ,
-		CLOSURE_OBJ, BUILTIN_OBJ, PROXY_OBJ, REGEXP_OBJ, PROMISE_OBJ:
+		CLOSURE_OBJ, BUILTIN_OBJ, PROXY_OBJ, REGEXP_OBJ, PROMISE_OBJ, DATE_OBJ:
 		return true
 	}
 	return false

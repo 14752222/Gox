@@ -232,6 +232,16 @@ func setupObjectGlobal() *object.BuiltinFunction {
 			}
 			return object.NullSingleton
 		}
+		// Date 实例的 [[Prototype]] 取自包级注册表 (object.DateProto),
+		// 与 Temporal 各类型同法 —— 缺这条分支会退化成 null, 于是
+		// `Object.getPrototypeOf(new Date()) === Date.prototype` 为 false
+		// (ryGXAJ)。
+		if d, ok := args[0].(*object.Date); ok {
+			if p := d.GetProto(); p != nil {
+				return p
+			}
+			return object.NullSingleton
+		}
 		// async generator 实例的 [[Prototype]] = 该 async generator 函数
 		// 自己的 .prototype 对象 (其 [[Prototype]] 才是 %AsyncGeneratorPrototype%)。
 		if ag, ok := args[0].(*object.AsyncGenerator); ok {

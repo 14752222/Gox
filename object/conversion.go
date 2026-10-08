@@ -40,6 +40,10 @@ func toString(v Value, depth int) string {
 			}
 		}
 		return b.String()
+	case *Date:
+		// ToString(date) 取宿主本地时区的墙钟形态 (即 Date.prototype.toString),
+		// 而非 Inspect 用的 UTC ISO 串 —— 后者是 console.log 的调试表现。
+		return t.ToString()
 	case *Object:
 		// 用户对象: 优先调用其 toString 方法
 		if tv, ok := t.GetProperty("toString"); ok && IsCallable(tv) {

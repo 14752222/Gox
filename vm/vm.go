@@ -3794,6 +3794,9 @@ func protoOf(v object.Value) object.Value {
 		return t.GetProto()
 	case *object.TemporalCalendar:
 		return t.GetProto()
+	// Date 的原型同样放在类型注册表里 (见 object.SetDateProto)。
+	case *object.Date:
+		return t.GetProto()
 	}
 	return nil
 }
@@ -6567,6 +6570,13 @@ func toNumber(v object.Value) float64 {
 		return math.NaN()
 	case *object.String:
 		return object.ParseJSNumber(val.Value)
+	case *object.Date:
+		// 规范 ToPrimitive(date, number): Date 的 @@toPrimitive 在 number
+		// 提示下返回其 time value —— 这正是 `d1 - d2` / `+d` / 关系比较
+		// 拿到毫秒差的唯一路径。本运行时的 toNumber 尚未实现通用的
+		// ToPrimitive(@@toPrimitive → valueOf → toString) 协议, 这里按
+		// Date 的规范语义定点补全: *.Date 的内部 time value 即 ToNumber 结果。
+		return val.TimeValue()
 	default:
 		return math.NaN()
 	}

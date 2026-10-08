@@ -59,6 +59,9 @@ const (
 	// 正则
 	REGEXP_OBJ ObjectType = "REGEXP" // RegExp (正则表达式)
 
+	// 日期
+	DATE_OBJ ObjectType = "DATE" // Date (时间点, 内部 time value 对 JS 层不可见)
+
 	// Proxy
 	PROXY_OBJ ObjectType = "PROXY" // Proxy (代理)
 
@@ -151,7 +154,7 @@ func TypeOf(v Value) string {
 		return "object" // JavaScript 历史遗留: typeof null === "object"
 	case UNDEFINED_OBJ:
 		return "undefined"
-	case ARRAY_OBJ, OBJECT_OBJ, ERROR_OBJ, ITERATOR_OBJ, MAP_OBJ, SET_OBJ, PROMISE_OBJ, REGEXP_OBJ, PROXY_OBJ, GENERATOR_OBJ, ASYNC_GENERATOR_OBJ:
+	case ARRAY_OBJ, OBJECT_OBJ, ERROR_OBJ, ITERATOR_OBJ, MAP_OBJ, SET_OBJ, PROMISE_OBJ, REGEXP_OBJ, PROXY_OBJ, GENERATOR_OBJ, ASYNC_GENERATOR_OBJ, DATE_OBJ:
 		return "object"
 	case SYMBOL_OBJ:
 		return "symbol"

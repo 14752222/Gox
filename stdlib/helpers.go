@@ -38,6 +38,10 @@ func toFloat(v object.Value) float64 {
 		return 0
 	case *object.Undefined:
 		return math.NaN()
+	case *object.Date:
+		// ToNumber(date) = 其 time value (同 ToPrimitive 的 number 提示,
+		// 见 vm.toNumber 的同名分支 —— 两条路径必须一致)。
+		return val.TimeValue()
 	case *object.String:
 		return stringToNumber(val.Value)
 	case *object.Array:
