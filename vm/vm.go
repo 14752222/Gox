@@ -2175,12 +2175,18 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			if err != nil {
 				// 加载失败: reject Promise。模块**语法错误** (解析/编译失败)
 				// 的 reject 名是 SyntaxError, 其余 (解析不到模块等) 为 Error。
+				// 求值期拒绝 (moduleEvalError) 直接透传原始 JS 值, 保住
+				// 模块顶层 throw 的对象类型 (如 TypeError)。
 				name := "Error"
 				if _, ok := err.(*moduleSyntaxError); ok {
 					name = "SyntaxError"
 				}
 				p := object.NewPromise()
-				p.Reject(object.NewErrorWithName(name, err.Error()))
+				if me, ok := err.(*moduleEvalError); ok && me.val != nil {
+					p.Reject(me.val)
+				} else {
+					p.Reject(object.NewErrorWithName(name, err.Error()))
+				}
 				vm.stack.Push(p)
 				continue
 			}
@@ -3272,7 +3278,7 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			modExports, err := vm.loadModule(spec)
 			if err != nil {
 				// 模块加载失败作为异常
-				errVal := object.NewErrorWithName("Error", err.Error())
+				errVal := moduleLoadErrorValue(err)
 				if !vm.handleThrow(errVal) {
 					return &ThrowError{Value: errVal}
 				}
@@ -3315,7 +3321,7 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			}
 			src, err := vm.loadModule(spec)
 			if err != nil {
-				errVal := object.NewErrorWithName("Error", err.Error())
+				errVal := moduleLoadErrorValue(err)
 				if !vm.handleThrow(errVal) {
 					return &ThrowError{Value: errVal}
 				}
@@ -3332,7 +3338,7 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			}
 			src, err := vm.loadModule(spec)
 			if err != nil {
-				errVal := object.NewErrorWithName("Error", err.Error())
+				errVal := moduleLoadErrorValue(err)
 				if !vm.handleThrow(errVal) {
 					return &ThrowError{Value: errVal}
 				}
@@ -4321,11 +4327,35 @@ type moduleSyntaxError struct{ msg string }
 
 func (e *moduleSyntaxError) Error() string { return e.msg }
 
+// moduleEvalError 携带模块**求值期**拒绝的原始 JS 值 (rec.errVal) 与文本。
+//
+// 为什么需要独立的错误类型: loadModuleFile 过去用 fmt.Errorf 把拒绝原因压成
+// 字符串, 使动态 import 只能拿 err.Error() 重新包一个 name="Error" 的对象 ——
+// 模块顶层 `throw new TypeError()` 到 catch 侧就退化成通用 Error (test262
+// nested-async-function-*-eval-rqstd-abrupt-typeerror 断言 error.name）。
+// 这里把 JS 值带出来, 由 OP_DYNAMIC_IMPORT 直接用 errVal 作 rejection reason。
+type moduleEvalError struct {
+	val  object.Value
+	text string
+}
+
+func (e *moduleEvalError) Error() string { return e.text }
+
+// moduleLoadErrorValue 把模块加载错误归一为要抛出的 JS 值。
+// moduleEvalError 携带模块求值期的原始拒绝值 (保住 throw 的对象类型),
+// 其余情况维持旧的 name="Error" 包装 (SyntaxError 由调用点另行判定)。
+func moduleLoadErrorValue(err error) object.Value {
+	if me, ok := err.(*moduleEvalError); ok && me.val != nil {
+		return me.val
+	}
+	return object.NewErrorWithName("Error", err.Error())
+}
+
 func (vm *VM) loadModuleFile(spec, absPath string) (*ModuleExports, error) {
 	// 检查缓存
 	if mod, ok := vm.modules[absPath]; ok {
 		if r := mod.rec; r != nil && r.status == moduleRejected {
-			return nil, fmt.Errorf("%s", r.errText)
+			return nil, &moduleEvalError{val: r.errVal, text: r.errText}
 		}
 		return mod, nil
 	}
@@ -4405,7 +4435,7 @@ func (vm *VM) loadModuleFile(spec, absPath string) (*ModuleExports, error) {
 	vm.moduleBase = savedBase
 	if rec.status == moduleRejected {
 		// 依赖求值失败 (编译错误 / 依赖被拒): 本体不运行。
-		return nil, fmt.Errorf("Module execution error: %v", rec.errText)
+		return nil, &moduleEvalError{val: rec.errVal, text: fmt.Sprintf("Module execution error: %v", rec.errText)}
 	}
 	if rec.pendingDeps == 0 {
 		vm.runModuleBody(mod, rec, modVM, c)
@@ -4415,7 +4445,7 @@ func (vm *VM) loadModuleFile(spec, absPath string) (*ModuleExports, error) {
 		rec.runBody = func() { vm.runModuleBody(mod, rec, modVM, c) }
 	}
 	if rec.status == moduleRejected {
-		return nil, fmt.Errorf("Module execution error: %v", rec.errText)
+		return nil, &moduleEvalError{val: rec.errVal, text: fmt.Sprintf("Module execution error: %v", rec.errText)}
 	}
 	return mod, nil
 }
