@@ -763,58 +763,83 @@ func (p *Parser) parseVarStatement() *ast.VarStatement {
 	stmt := &ast.VarStatement{Token: p.curToken()}
 	p.nextToken()
 
-	if p.curTokenIs(lexer.LBRACKET) || p.curTokenIs(lexer.LBRACE) {
-		// 解构: 借用 let 的合成名路径, 编译器按 AssignmentExpression 接手。
-		pattern := p.parseDestructuringPattern(p.curTokenIs(lexer.LBRACKET))
-		if pattern == nil {
-			return nil
-		}
-		if !p.peekTokenIs(lexer.ASSIGN) {
-			p.addError(fmt.Sprintf("expected = after destructuring, got %s", p.peekToken().Type))
-			return nil
-		}
-		p.nextToken()
-		p.nextToken()
-		stmt.Name = &ast.Identifier{Token: stmt.Token, Value: "__destructure__"}
-		stmt.Value = &ast.AssignmentExpression{
-			Token: stmt.Token, Left: pattern, Operator: "=", Right: p.parseExpression(LOWEST),
-		}
-		p.checkSameLineASI()
-		p.consumeSemicolon()
-		return stmt
-	}
-
-	if !p.isBindingName() {
-		p.addError(fmt.Sprintf("expected identifier, got %s", p.curToken().Type))
+	// 首项: 普通标识符, 或解构模式 ([...] / {...})。解构首项借用合成名路径,
+	// 真实绑定名在模式树里 (与历来的 parseDestructuringLet 同构); 之后的
+	// 逗号续接项统一走 parseDeclaratorItem, 于是
+	// `var [p] = [1], [q] = [2];` / `var p = 1, [q] = [2];` 都能正确解析。
+	first, ok := p.parseDeclaratorItem(stmt.Token, false)
+	if !ok {
 		return nil
 	}
-	stmt.Name = &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
+	stmt.Name = first.Name
+	stmt.Value = first.Value
 
-	if p.peekTokenIs(lexer.ASSIGN) {
-		p.nextToken()
-		p.nextToken()
-		stmt.Value = p.parseExpression(LOWEST)
-	}
-
-	// 多条声明: var a = 1, b = 2;
+	// 多条声明: var a = 1, b = 2; / var [p] = [1], [q] = [2];
 	for p.peekTokenIs(lexer.COMMA) {
 		p.nextToken() // 移到 ,
-		p.nextToken() // 移到下一个名字
-		if !p.isBindingName() {
-			p.addError(fmt.Sprintf("expected identifier, got %s", p.curToken().Type))
+		p.nextToken() // 移到下一个声明项开头
+		decl, ok := p.parseDeclaratorItem(stmt.Token, false)
+		if !ok {
 			return nil
-		}
-		decl := ast.Declarator{Name: &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}}
-		if p.peekTokenIs(lexer.ASSIGN) {
-			p.nextToken()
-			p.nextToken()
-			decl.Value = p.parseExpression(LOWEST)
 		}
 		stmt.More = append(stmt.More, decl)
 	}
 	p.checkSameLineASI()
 	p.consumeSemicolon()
 	return stmt
+}
+
+// parseDeclaratorItem 解析一条声明项 (逗号后的续接项), 返回时 cur 停在该项的
+// 最后一个 token (普通项是名字/初始值末尾, 解构项是 '=' 右侧表达式末尾)。
+//
+// 进入时 cur 停在声明项开头。两种形态:
+//   - 普通绑定标识符: Declarator{Name: 标识符, Value: 初始值或 nil};
+//   - 解构模式 ([...] / {...}): 借用声明脱糖约定 —— Name 置合成名
+//     ast.DestructureSyntheticName, Value 为 AssignmentExpression{Left: 模式},
+//     真实绑定名只存在于模式树里 (与首项的解构路径, 以及 let/const 的既有
+//     处理完全同构; 编译器 More 循环据此路由到 compilePatternBind)。
+//
+// mustInit 为 true 时解构项必须有初始化器 (spec: 解构声明不得无初始化器)。
+// declToken 是所在声明语句的引导 token (var/let/const), 用作合成名字面位置的
+// 兜底 (合成项无真实标识符 token)。解析出错时返回 ok=false。
+func (p *Parser) parseDeclaratorItem(declToken lexer.Token, mustInit bool) (ast.Declarator, bool) {
+	if p.curTokenIs(lexer.LBRACKET) || p.curTokenIs(lexer.LBRACE) {
+		pattern := p.parseDestructuringPattern(p.curTokenIs(lexer.LBRACKET))
+		if pattern == nil {
+			return ast.Declarator{}, false
+		}
+		if !p.peekTokenIs(lexer.ASSIGN) {
+			p.addError(fmt.Sprintf("expected = after destructuring, got %s", p.peekToken().Type))
+			return ast.Declarator{}, false
+		}
+		p.nextToken() // 移到 '='
+		p.nextToken() // 移到初始值开头
+		value := p.parseExpression(LOWEST)
+		if value == nil {
+			return ast.Declarator{}, false
+		}
+		return ast.Declarator{
+			Name: &ast.Identifier{Token: declToken, Value: ast.DestructureSyntheticName},
+			Value: &ast.AssignmentExpression{
+				Token: declToken, Left: pattern, Operator: "=", Right: value,
+			},
+		}, true
+	}
+
+	if !p.isBindingName() {
+		p.addError(fmt.Sprintf("expected identifier, got %s", p.curToken().Type))
+		return ast.Declarator{}, false
+	}
+	decl := ast.Declarator{Name: &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}}
+	if p.peekTokenIs(lexer.ASSIGN) {
+		p.nextToken()
+		p.nextToken()
+		decl.Value = p.parseExpression(LOWEST)
+	} else if mustInit {
+		p.addError("const declaration must have an initializer")
+		return ast.Declarator{}, false
+	}
+	return decl, true
 }
 
 func (p *Parser) parseLetStatement() *ast.LetStatement {
@@ -831,60 +856,26 @@ func (p *Parser) parseLetStatement() *ast.LetStatement {
 		p.addError("SyntaxError: 'let' followed by '[' on a new line is not allowed as an expression statement")
 		return nil
 	}
-	if p.curTokenIs(lexer.LBRACKET) {
-		return p.parseDestructuringLet(stmt, true)
-	}
-	if p.curTokenIs(lexer.LBRACE) {
-		return p.parseDestructuringLet(stmt, false)
-	}
 
-	if !p.isBindingName() {
-		p.addError(fmt.Sprintf("expected identifier, got %s", p.curToken().Type))
+	// 首项: 普通标识符或解构模式。解构首项 (含 `let [a] = x` / `let {a} = x`)
+	// 借用合成名路径; 之后的逗号续接项统一走 parseDeclaratorItem, 于是
+	// `let [a] = [1], [b] = [2];` / `let {x} = o, z = 3;` 都能解析。
+	first, ok := p.parseDeclaratorItem(stmt.Token, false)
+	if !ok {
 		return nil
 	}
-	stmt.Name = &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
+	stmt.Name = first.Name
+	stmt.Value = first.Value
 
-	if p.peekTokenIs(lexer.ASSIGN) {
-		p.nextToken()
-		p.nextToken()
-		stmt.Value = p.parseExpression(LOWEST)
-	}
-
-	// 多条声明: let a = 1, b = 2;
+	// 多条声明: let a = 1, b = 2; / let {x} = o, [y] = a, z = 3;
 	for p.peekTokenIs(lexer.COMMA) {
 		p.nextToken() // 移到 ,
-		p.nextToken() // 移到下一个名字
-		if !p.isBindingName() {
-			p.addError(fmt.Sprintf("expected identifier, got %s", p.curToken().Type))
+		p.nextToken() // 移到下一个声明项开头
+		decl, ok := p.parseDeclaratorItem(stmt.Token, false)
+		if !ok {
 			return nil
 		}
-		decl := ast.Declarator{Name: &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}}
-		if p.peekTokenIs(lexer.ASSIGN) {
-			p.nextToken()
-			p.nextToken()
-			decl.Value = p.parseExpression(LOWEST)
-		}
 		stmt.More = append(stmt.More, decl)
-	}
-	p.checkSameLineASI()
-	p.consumeSemicolon()
-	return stmt
-}
-
-func (p *Parser) parseDestructuringLet(stmt *ast.LetStatement, isArray bool) *ast.LetStatement {
-	pattern := p.parseDestructuringPattern(isArray)
-	if pattern == nil {
-		return nil
-	}
-	if !p.peekTokenIs(lexer.ASSIGN) {
-		p.addError(fmt.Sprintf("expected = after destructuring, got %s", p.peekToken().Type))
-		return nil
-	}
-	p.nextToken()
-	p.nextToken()
-	stmt.Name = &ast.Identifier{Token: stmt.Token, Value: "__destructure__"}
-	stmt.Value = &ast.AssignmentExpression{
-		Token: stmt.Token, Left: pattern, Operator: "=", Right: p.parseExpression(LOWEST),
 	}
 	p.checkSameLineASI()
 	p.consumeSemicolon()
@@ -895,55 +886,28 @@ func (p *Parser) parseConstStatement() *ast.ConstStatement {
 	stmt := &ast.ConstStatement{Token: p.curToken()}
 	p.nextToken()
 
-	if p.curTokenIs(lexer.LBRACKET) || p.curTokenIs(lexer.LBRACE) {
-		letStmt := &ast.LetStatement{Token: stmt.Token}
-		letStmt = p.parseDestructuringLet(letStmt, p.curTokenIs(lexer.LBRACKET))
-		if letStmt == nil {
-			return nil
-		}
-		stmt.Name = letStmt.Name
-		stmt.Value = letStmt.Value
-		// 此处**不能**再调一次 consumeSemicolon: parseDestructuringLet 末尾已经调过。
-		// 而 consumeSemicolon 只在 peek 是 ';' 时才前进 (见文件末尾的定义), 于是
-		// 第二次调用时 cur 正停在那一个 ';' 上, 一旦**紧跟另一个 ';'** 就会多走一步。
-		// 典型写法就是传统 for 的头部 `for (const [a] = [1];;)`: 空 condition 被
-		// 跳过一格, ')' 落进 parseExpression, 报 "no prefix parse function for
-		// RPAREN found" —— 错在"少写了个分号"上, 而写法本身没问题; 若是空 update
-		// 那一支 (`for (const {a} = {a: 1};; n = n + 1)`) 更糟: 不报错, 而是把
-		// update 表达式静默吃成 condition。
-		return stmt
-	}
-
-	if !p.isBindingName() {
-		p.addError(fmt.Sprintf("expected identifier, got %s", p.curToken().Type))
+	// 首项: 普通标识符或解构模式 (const 的每一项都必须有初始化器)。
+	// 解构首项借用合成名路径; 之后逗号续接项统一走 parseDeclaratorItem,
+	// 于是 `const [a] = [1], [b] = [2];` / `const {x} = o, [y] = a;` 都能解析。
+	//
+	// 注意: parseDeclaratorItem **不**消费分号, 分号只在下面统一消费一次 ——
+	// 这修掉了旧 parseDestructuringLet 在解构首项分支里先消费一次的隐患
+	// (`for (const [a] = [1];;)` 空 condition 被多走一格)。
+	first, ok := p.parseDeclaratorItem(stmt.Token, true)
+	if !ok {
 		return nil
 	}
-	stmt.Name = &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
+	stmt.Name = first.Name
+	stmt.Value = first.Value
 
-	if !p.peekTokenIs(lexer.ASSIGN) {
-		p.addError("const declaration must have an initializer")
-		return nil
-	}
-	p.nextToken()
-	p.nextToken()
-	stmt.Value = p.parseExpression(LOWEST)
-
-	// 多条声明: const a = 1, b = 2;
+	// 多条声明: const a = 1, b = 2; / const [a, b] = x, {c} = y;
 	for p.peekTokenIs(lexer.COMMA) {
 		p.nextToken() // 移到 ,
-		p.nextToken() // 移到下一个名字
-		if !p.isBindingName() {
-			p.addError(fmt.Sprintf("expected identifier, got %s", p.curToken().Type))
+		p.nextToken() // 移到下一个声明项开头
+		decl, ok := p.parseDeclaratorItem(stmt.Token, true)
+		if !ok {
 			return nil
 		}
-		decl := ast.Declarator{Name: &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}}
-		if !p.peekTokenIs(lexer.ASSIGN) {
-			p.addError("const declaration must have an initializer")
-			return nil
-		}
-		p.nextToken()
-		p.nextToken()
-		decl.Value = p.parseExpression(LOWEST)
 		stmt.More = append(stmt.More, decl)
 	}
 	p.checkSameLineASI()

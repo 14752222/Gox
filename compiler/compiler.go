@@ -844,17 +844,21 @@ func (c *Compiler) compileStatement(stmt ast.Statement) error {
 
 func (c *Compiler) compileLetStatement(stmt *ast.LetStatement) error {
 	// 解构赋值: let [a, b] = arr  或  let { x, y } = obj
-	if stmt.Name.Value == "__destructure__" {
-		if assign, ok := stmt.Value.(*ast.AssignmentExpression); ok {
-			return c.compileDestructureAssignment(assign, true)
+	// 首项是解构时不走下面的普通绑定登记 —— 但仍必须继续编译逗号续接项
+	// (stmt.More), 如 `let [a] = [1], b = 2;` / `let [a] = [1], [b] = [2];`。
+	if stmt.Name.Value == destructureSyntheticName {
+		assign, ok := stmt.Value.(*ast.AssignmentExpression)
+		if !ok {
+			return fmt.Errorf("compiler: malformed destructuring declaration")
 		}
-	}
-
-	// 无初始化器 (let x;) 也必须注册符号，
-	// 否则后续 x = ... 会被当作全局变量处理。
-	// 规范: let x; 等价于 let x = undefined —— 必须显式写入 undefined，
-	// 否则局部槽保持未初始化态 (读取触发 TDZ 报错)、全局则根本未声明。
-	if stmt.Value != nil {
+		if err := c.compileDestructureAssignment(assign, true); err != nil {
+			return err
+		}
+	} else if stmt.Value != nil {
+		// 无初始化器 (let x;) 也必须注册符号，
+		// 否则后续 x = ... 会被当作全局变量处理。
+		// 规范: let x; 等价于 let x = undefined —— 必须显式写入 undefined，
+		// 否则局部槽保持未初始化态 (读取触发 TDZ 报错)、全局则根本未声明。
 		if err := c.compileNamedExpression(stmt.Value, stmt.Name.Value); err != nil {
 			return err
 		}
@@ -883,8 +887,20 @@ func (c *Compiler) compileLetStatement(stmt *ast.LetStatement) error {
 		}
 	}
 
-	// 多条声明: let a = 1, b = 2;
+	// 多条声明: let a = 1, b = 2; / let [x] = a, z = 3;
 	for _, d := range stmt.More {
+		if d.Name != nil && d.Name.Value == destructureSyntheticName {
+			// 解构声明项 (let [x] = a, {y} = b): Value 是合成形态的
+			// AssignmentExpression{Left: 模式}, 与首项解构路径同构。
+			assign, ok := d.Value.(*ast.AssignmentExpression)
+			if !ok {
+				return fmt.Errorf("compiler: malformed destructuring declarator")
+			}
+			if err := c.compileDestructureAssignment(assign, true); err != nil {
+				return err
+			}
+			continue
+		}
 		if d.Value != nil {
 			if err := c.compileNamedExpression(d.Value, d.Name.Value); err != nil {
 				return err
@@ -929,12 +945,10 @@ func (c *Compiler) compileLetStatement(stmt *ast.LetStatement) error {
 // 解构 var 借用 let 的合成名路径: 绑定落点经 compileDestructureAssignment
 // 的 declare 分支沿 FuncLayer 登记 (见 patternBindVar 辅助)。
 func (c *Compiler) compileVarStatement(stmt *ast.VarStatement) error {
-	// 解构: var [a, b] = arr / var { x } = obj
-	if stmt.Name.Value == destructureSyntheticName {
-		if assign, ok := stmt.Value.(*ast.AssignmentExpression); ok {
-			return c.compileDestructureAssignment(assign, true)
-		}
-	}
+	// 解构首项: var [a, b] = arr / var { x } = obj。
+	// 首项是解构时不走下面的普通绑定登记, 但**不能**直接 return —— 逗号续接项
+	// (stmt.More) 还没编译, 如 `var [p] = [1], [q] = [2];` / `var [p] = [1], x = 2;`。
+	firstIsDestructure := stmt.Name.Value == destructureSyntheticName
 
 	fn := c.scope.FuncLayer()
 
@@ -973,7 +987,15 @@ func (c *Compiler) compileVarStatement(stmt *ast.VarStatement) error {
 		}
 	}
 
-	if stmt.Value != nil {
+	if firstIsDestructure {
+		assign, ok := stmt.Value.(*ast.AssignmentExpression)
+		if !ok {
+			return fmt.Errorf("compiler: malformed destructuring declaration")
+		}
+		if err := c.compileDestructureAssignment(assign, true); err != nil {
+			return err
+		}
+	} else if stmt.Value != nil {
 		if err := c.compileNamedExpression(stmt.Value, stmt.Name.Value); err != nil {
 			return err
 		}
@@ -984,6 +1006,17 @@ func (c *Compiler) compileVarStatement(stmt *ast.VarStatement) error {
 		emitAssign(stmt.Name.Value, sym)
 	}
 	for _, d := range stmt.More {
+		if d.Name != nil && d.Name.Value == destructureSyntheticName {
+			// 解构声明项 (var [p] = [1], [q] = [2]): 与首项解构路径同构。
+			assign, ok := d.Value.(*ast.AssignmentExpression)
+			if !ok {
+				return fmt.Errorf("compiler: malformed destructuring declarator")
+			}
+			if err := c.compileDestructureAssignment(assign, true); err != nil {
+				return err
+			}
+			continue
+		}
 		if d.Value != nil {
 			if err := c.compileNamedExpression(d.Value, d.Name.Value); err != nil {
 				return err
@@ -1001,30 +1034,47 @@ func (c *Compiler) compileVarStatement(stmt *ast.VarStatement) error {
 }
 
 func (c *Compiler) compileConstStatement(stmt *ast.ConstStatement) error {
-	// 解构赋值: const [a, b] = arr  或  const { x, y } = obj
-	if stmt.Name.Value == "__destructure__" {
-		if assign, ok := stmt.Value.(*ast.AssignmentExpression); ok {
-			return c.compileDestructureAssignment(assign, true)
+	// 解构赋值: const [a, b] = arr  或  const { x, y } = obj。
+	// 首项是解构时不走下面的普通绑定登记, 但**不能**直接 return —— 逗号续接项
+	// (stmt.More) 还没编译, 如 `const [a] = [1], [b] = [2];`。
+	if stmt.Name.Value == destructureSyntheticName {
+		assign, ok := stmt.Value.(*ast.AssignmentExpression)
+		if !ok {
+			return fmt.Errorf("compiler: malformed destructuring declaration")
+		}
+		if err := c.compileDestructureAssignment(assign, true); err != nil {
+			return err
+		}
+	} else {
+		if err := c.compileNamedExpression(stmt.Value, stmt.Name.Value); err != nil {
+			return err
+		}
+		sym, err := c.declareOnce(stmt.Name.Value, true, false)
+		if err != nil {
+			return err
+		}
+		if c.isGlobalScope() {
+			// 全局作用域: 声明写入共享全局环境 (const 绑定)
+			nameIdx := c.constants.AddConstant(object.NewString(stmt.Name.Value))
+			c.emitter.Emit(bytecode.OP_DECLARE_CONST, nameIdx)
+		} else {
+			c.emitter.Emit(bytecode.OP_STORE_CONST, uint16(sym.Slot))
 		}
 	}
 
-	if err := c.compileNamedExpression(stmt.Value, stmt.Name.Value); err != nil {
-		return err
-	}
-	sym, err := c.declareOnce(stmt.Name.Value, true, false)
-	if err != nil {
-		return err
-	}
-	if c.isGlobalScope() {
-		// 全局作用域: 声明写入共享全局环境 (const 绑定)
-		nameIdx := c.constants.AddConstant(object.NewString(stmt.Name.Value))
-		c.emitter.Emit(bytecode.OP_DECLARE_CONST, nameIdx)
-	} else {
-		c.emitter.Emit(bytecode.OP_STORE_CONST, uint16(sym.Slot))
-	}
-
-	// 多条声明: const a = 1, b = 2;
+	// 多条声明: const a = 1, b = 2; / const [a, b] = x, {c} = y;
 	for _, d := range stmt.More {
+		if d.Name != nil && d.Name.Value == destructureSyntheticName {
+			// 解构声明项: 与首项解构路径同构 (全部声明项都是绑定名, 不可重复)。
+			assign, ok := d.Value.(*ast.AssignmentExpression)
+			if !ok {
+				return fmt.Errorf("compiler: malformed destructuring declarator")
+			}
+			if err := c.compileDestructureAssignment(assign, true); err != nil {
+				return err
+			}
+			continue
+		}
 		if err := c.compileNamedExpression(d.Value, d.Name.Value); err != nil {
 			return err
 		}
