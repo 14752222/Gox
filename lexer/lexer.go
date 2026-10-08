@@ -522,8 +522,11 @@ func (l *Lexer) scanRegexLiteral(line, col int) Token {
 	}
 
 	// 完整的正则字面量: pattern + flags
-	// Literal 中存储格式: pattern|flags (用 | 分隔，因为 | 不会出现在合法正则标志中)
-	literal := pattern + "|" + flags.String()
+	// Literal 中存储格式: pattern\x00flags。分隔符必须是 pattern 里**不可能出现**
+	// 的字符 —— `|` 本身就是合法的正则字符 (或运算/字符类/转义)，用它分隔会让
+	// `/a|b/` 被解码成 pattern="a"、flags="b|"。NUL (`\x00`) 不可能出现在源码的
+	// 正则体里 (源码是文本，字面上的 `\0` 是两个字符 backslash+0)，故用 NUL。
+	literal := pattern + "\x00" + flags.String()
 	return Token{Type: REGEX_LITERAL, Literal: literal, Line: line, Column: col}
 }
 

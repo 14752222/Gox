@@ -2434,13 +2434,14 @@ func (p *Parser) parseUndefinedLiteral() ast.Expression {
 }
 
 func (p *Parser) parseRegexLiteral() ast.Expression {
-	// Literal 格式: "pattern|flags"
+	// Literal 格式: "pattern\x00flags" (NUL 分隔，见 lexer.scanRegexLiteral：
+	// `|` 是合法正则字符，不能用作分隔符)。
 	literal := p.curToken().Literal
-	parts := strings.SplitN(literal, "|", 2)
-	pattern := parts[0]
+	pattern := literal
 	flags := ""
-	if len(parts) > 1 {
-		flags = parts[1]
+	if i := strings.IndexByte(literal, 0); i >= 0 {
+		pattern = literal[:i]
+		flags = literal[i+1:]
 	}
 	return &ast.RegexLiteral{
 		Token:   p.curToken(),
