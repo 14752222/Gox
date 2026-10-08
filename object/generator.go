@@ -98,6 +98,44 @@ func (g *Generator) GetProperty(name string) (Value, bool) {
 			},
 		}, true
 	}
+	// return(value): 从挂起点注入一个 return 完成, 展开体内 finally,
+	// 返回 { value, done: true } (§27.5.3.4 Generator.prototype.return)。
+	// 体内 finally 抛错时由 VM 回调桥经 SetCallbackError 上报, VM 调用点
+	// checkCallbackErr 会自动重抛 —— 这里与 next 一样无需自行处理。
+	if name == "return" {
+		return &BuiltinFunction{
+			Name: "return",
+			Fn: func(args ...Value) Value {
+				arg := Value(UndefinedSingleton)
+				if len(args) > 0 {
+					arg = args[0]
+				}
+				val, done := GeneratorReturn(g, arg)
+				res := NewObject()
+				res.SetProperty("value", val)
+				res.SetProperty("done", NewBoolean(done))
+				return res
+			},
+		}, true
+	}
+	// throw(exception): 把异常抛入挂起中的生成器, 从 yield 点恢复 (§27.5.3.3)。
+	// 体内未捕获时同样经 SetCallbackError 上报, 由 VM 调用点重抛。
+	if name == "throw" {
+		return &BuiltinFunction{
+			Name: "throw",
+			Fn: func(args ...Value) Value {
+				arg := Value(UndefinedSingleton)
+				if len(args) > 0 {
+					arg = args[0]
+				}
+				val, done := GeneratorThrow(g, arg)
+				res := NewObject()
+				res.SetProperty("value", val)
+				res.SetProperty("done", NewBoolean(done))
+				return res
+			},
+		}, true
+	}
 	return nil, false
 }
 func (g *Generator) SetProperty(name string, val Value) {}

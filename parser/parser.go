@@ -3327,13 +3327,21 @@ func (p *Parser) literalToPattern(expr ast.Expression) ast.Expression {
 					p.addError("invalid rest target in destructuring assignment")
 					return expr
 				}
-			case *ast.AssignmentExpression: // [a = 默认值] / [x.y = 默认值]
+			case *ast.AssignmentExpression: // [a = 默认值] / [x.y = 默认值] / [{a} = 默认值] / [[a] = 默认值]
 				if id, ok := e.Left.(*ast.Identifier); ok {
 					pattern.Elements = append(pattern.Elements, &ast.PatternElement{Token: e.Token, Target: id, Default: e.Right})
 					continue
 				}
 				if m, ok := e.Left.(*ast.MemberExpression); ok {
 					pattern.Elements = append(pattern.Elements, &ast.PatternElement{Token: e.Token, Target: m, Default: e.Right})
+					continue
+				}
+				// 嵌套模式作赋值元素左值并带默认值: [ {a} = 默认值 ] / [ [a] = 默认值 ]
+				// 内层 `{}`/`[]` 已在 parseAssignmentExpression 里被转成
+				// ObjectPattern/ArrayPattern (cover 转模式), 这里直接复用。
+				switch e.Left.(type) {
+				case *ast.ArrayPattern, *ast.ObjectPattern:
+					pattern.Elements = append(pattern.Elements, &ast.PatternElement{Token: e.Token, Target: e.Left, Default: e.Right})
 					continue
 				}
 				p.addError("invalid destructuring assignment target")
