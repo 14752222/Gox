@@ -1156,21 +1156,31 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			vm.stack.Push(a)
 			vm.stack.Push(b)
 		case bytecode.OP_ITER_BOUNDARY:
-			// 迭代边界: 换一组 binding cell，本轮迭代创建的闭包就此"定版"。
+			// 迭代边界: 把**本轮迭代新分配的词法绑定** (slot >= sealFrom) 定版,
+			// 使本轮创建的闭包保留本轮的值, 后续迭代的写入不再回溯影响它们。
 			//
-			// 闭包共享创建帧的 Locals 数组 (而非快照)，所以每一次 STORE 都会被
-			// 前几轮创建的闭包看到。这里把 Locals 换成当前值的一份拷贝:
-			//   - 已创建的闭包仍引用旧数组 → 保留本轮迭代的值；
-			//   - 后续迭代写入新数组 → 不再回溯影响它们。
-			// 即 ECMAScript 的 per-iteration binding，在本 VM 的 cell 模型下的等价实现。
+			// sealFrom 由编译器给出 = 循环块作用域内首个新槽位 (循环变量 +
+			// 体内 let/const)。**slot < sealFrom 的是共享绑定** —— 函数作用域
+			// 的 var (已提升, 槽位在块之前分配) 与外层 let: 所有轮次的闭包必须
+			// 共享同一颗 cell, 它们的写入照常传播 (见 OP_STORE 的传播判据)。
+			//
+			// 实现: 克隆 Locals 数组 (尾部随新数组走, 旧数组留给已定版闭包);
+			// 不清空 CreatedClosures —— 保留全部已创建闭包供共享前缀传播,
+			// 靠 Epoch/SealMarks 区分"哪些闭包该收到这次写入"。
+			sealFrom := int(operand)
+			if sealFrom < 0 {
+				sealFrom = 0
+			}
+			if sealFrom > len(frame.Locals) {
+				sealFrom = len(frame.Locals)
+			}
 			old := frame.Locals
 			fresh := make([]object.Value, len(old))
 			copy(fresh, old)
 			frame.Locals = fresh
-			// 同时切断 OP_STORE 的"向本帧创建的子闭包传播"这条更老的路径:
-			// 它会直接写 c.CapturedLocals[slot]，而那正是旧数组，等同于把后续
-			// 迭代的值写回已经定版的闭包。
-			frame.CreatedClosures = nil
+			// 记录本次边界: slot >= sealFrom 只传播给 epoch >= 新值的闭包。
+			frame.Epoch++
+			frame.setSealMark(sealFrom, frame.Epoch)
 		case bytecode.OP_DUP_BELOW2:
 			// [a, b, c] → [c, a, b, c]: 栈顶值复制一份并插到下方两个值之下
 			cVal := vm.stack.Pop()
@@ -1248,8 +1258,14 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			if frame.Closure != nil && slot < len(frame.Closure.CapturedLocals) {
 				frame.Closure.CapturedLocals[slot] = val
 			}
-			// 2. 向本帧创建的子闭包传播外层变量修改 (outer → closure)
+			// 2. 向本帧创建的子闭包传播外层变量修改 (outer → closure)。
+			// 判据见 Frame.cellFloor: 共享绑定 (var / 外层 let) 传播给全部
+			// 已创建闭包; 迭代边界的尾段 slot 只传播给同一轮次的闭包 (floor)。
+			floor := frame.cellFloor(slot)
 			for _, c := range frame.CreatedClosures {
+				if floor >= 0 && c.IterEpoch < floor {
+					continue // 更早轮次的闭包已定版, 不回溯
+				}
 				if slot < len(c.CapturedLocals) {
 					c.CapturedLocals[slot] = val
 				}
@@ -1276,8 +1292,12 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			if frame.Closure != nil && slot < len(frame.Closure.CapturedLocals) {
 				frame.Closure.CapturedLocals[slot] = val
 			}
-			// 2. 向子闭包传播
+			// 2. 向子闭包传播 (判据同 OP_STORE: 见 Frame.cellFloor)
+			floor := frame.cellFloor(slot)
 			for _, c := range frame.CreatedClosures {
+				if floor >= 0 && c.IterEpoch < floor {
+					continue
+				}
 				if slot < len(c.CapturedLocals) {
 					c.CapturedLocals[slot] = val
 				}
@@ -1873,6 +1893,7 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 					IsArrow:        closure.IsArrow,
 					CapturedLocals: closure.CapturedLocals,
 					CreatedAtFrame: closure.CreatedAtFrame,
+					IterEpoch:      closure.IterEpoch,
 				}
 				// 调用构造函数 (同步执行到返回)
 				//
@@ -4896,7 +4917,11 @@ func (vm *VM) storeLocalSlot(frame *Frame, slot int, val object.Value) {
 	if frame.Closure != nil && slot < len(frame.Closure.CapturedLocals) {
 		frame.Closure.CapturedLocals[slot] = val
 	}
+	floor := frame.cellFloor(slot)
 	for _, cl := range frame.CreatedClosures {
+		if floor >= 0 && cl.IterEpoch < floor {
+			continue
+		}
 		if slot < len(cl.CapturedLocals) {
 			cl.CapturedLocals[slot] = val
 		}
@@ -5003,6 +5028,7 @@ func (vm *VM) createClosure(meta *bytecode.FunctionMetadata, frame *Frame) *obje
 		IsArrow:        meta.IsArrow,
 		CapturedLocals: captured,
 		CreatedAtFrame: vm.frameIdx,
+		IterEpoch:      frame.Epoch,
 		FuncPrototype:  funcProto,
 	}
 }

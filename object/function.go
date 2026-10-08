@@ -130,6 +130,11 @@ type Closure struct {
 	IsArrow        bool              // 是否为箭头函数
 	CapturedLocals []Value           // 捕获的外层局部变量
 	CreatedAtFrame int               // 创建时的帧索引 (用于递归自引用检测)
+	// IterEpoch 是创建该闭包时, 创建帧已执行的迭代边界次数 (见 vm.Frame.Epoch)。
+	// 迭代边界只应定版"每轮新建"的词法绑定 (LoopEpoch 之后的 slot), 共享绑定
+	// (var / 外层 let) 的写入仍需传播给更早迭代的闭包 —— 靠它与帧的 SealMarks
+	// 比较来判定 (rUm0q6)。
+	IterEpoch      int
 	Proto          Value             // prototype 属性 (new 实例的原型; 箭头函数无)
 	Props          map[string]Value  // 其他可设置属性 (如 class 的静态方法)
 	// propKeyOrder 记录非结构性自有字符串键 (Props / PropDescs 里的键, 不含

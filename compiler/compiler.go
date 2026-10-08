@@ -1592,6 +1592,9 @@ func (c *Compiler) compileWhileStatement(stmt *ast.WhileStatement) error {
 	c.emitter.EmitNoOperand(bytecode.OP_PUSH_SCOPE)
 	prevScope := c.scope
 	c.scope = NewSymbolScope(prevScope)
+	// 迭代边界只克隆块内新分配的槽位 (body 的 let/const)。函数层 var 与外层
+	// let 保持单实例共享 (见 for-of 处详解)。
+	sealFrom := c.scope.NumLocals()
 
 	ctx := c.pushControl(c.takePendingLabel(), true)
 
@@ -1603,7 +1606,7 @@ func (c *Compiler) compileWhileStatement(stmt *ast.WhileStatement) error {
 	c.emitter.EmitNoOperand(bytecode.OP_POP_SCOPE)
 
 	// 迭代边界: 提交本轮创建的闭包 (body 内 let 的 per-iteration 语义)
-	c.emitter.EmitNoOperand(bytecode.OP_ITER_BOUNDARY)
+	c.emitter.Emit(bytecode.OP_ITER_BOUNDARY, uint16(sealFrom))
 	iterPos := c.emitter.Pos()
 	// continue 跳回循环头
 	for _, jmp := range ctx.continueJumps {
@@ -1632,6 +1635,9 @@ func (c *Compiler) compileDoWhileStatement(stmt *ast.DoWhileStatement) error {
 	c.emitter.EmitNoOperand(bytecode.OP_PUSH_SCOPE)
 	prevScope := c.scope
 	c.scope = NewSymbolScope(prevScope)
+	// 迭代边界只克隆块内新分配的槽位 (body 的 let/const); 函数层 var 与外层
+	// let 保持单实例共享 (见 for-of 处详解)。
+	sealFrom := c.scope.NumLocals()
 
 	ctx := c.pushControl(c.takePendingLabel(), true)
 
@@ -1644,7 +1650,7 @@ func (c *Compiler) compileDoWhileStatement(stmt *ast.DoWhileStatement) error {
 	c.emitter.EmitNoOperand(bytecode.OP_POP_SCOPE)
 
 	// continue 跳到条件检查 (body 之后); 此处同时是迭代边界
-	c.emitter.EmitNoOperand(bytecode.OP_ITER_BOUNDARY)
+	c.emitter.Emit(bytecode.OP_ITER_BOUNDARY, uint16(sealFrom))
 	condPos := c.emitter.Pos()
 	for _, jmp := range ctx.continueJumps {
 		c.emitter.ReplaceJumpTarget(jmp, uint16(condPos))
@@ -1741,6 +1747,15 @@ func (c *Compiler) compileForOfStatement(stmt *ast.ForOfStatement) error {
 	savedTryLen := len(c.tryScopes)
 	c.tryScopes = append(c.tryScopes, tryScope{hasFinally: true, closeSlot: closeSlot, closeSync: true})
 
+	// 本对象的作用域槽位全部在 PUSH_SCOPE 之后分配 —— 但只有 **[块作用域内
+	// 新分配]** 的槽位才属于"每轮新建的词法绑定"(循环变量 + 循环体内的
+	// let/const/函数声明)。函数作用域层的 var (已提升, 槽位在块之前分配)
+	// 与外层块的 let 都是**单实例**, 闭包必须共享同一颗 cell —— 绝不能被
+	// 迭代边界克隆。sealFrom 记下块作用域内首个新槽位, 迭代边界只克隆
+	// [sealFrom:] (见 vm.go OP_ITER_BOUNDARY)。
+	// 注: 上面的 try/finally 建立代码不分配 locals 槽位, 故与 sealFrom 取值无涉。
+	sealFrom := c.scope.NumLocals()
+
 	// 绑定本次迭代的值 (栈顶)。三种形状:
 	//   简单绑定 for (let x of arr)          → 直接存进新建的槽位
 	//   解构绑定 for (const [a, b] of pairs) → 交给 compilePatternBind 按模式拆开
@@ -1805,8 +1820,8 @@ func (c *Compiler) compileForOfStatement(stmt *ast.ForOfStatement) error {
 	c.scope = prevScope
 	c.emitter.EmitNoOperand(bytecode.OP_POP_SCOPE)
 
-	// 循环底: continue 跳回迭代头 (先摘掉本轮 close handler 再回跳)
-	c.emitter.EmitNoOperand(bytecode.OP_ITER_BOUNDARY)
+	// continue 跳回迭代头 (经过迭代边界: 每次迭代的绑定互不影响)
+	c.emitter.Emit(bytecode.OP_ITER_BOUNDARY, uint16(sealFrom))
 	iterPos := c.emitter.Pos()
 	for _, jmp := range ctx.continueJumps {
 		c.emitter.ReplaceJumpTarget(jmp, uint16(iterPos))
@@ -1937,6 +1952,9 @@ func (c *Compiler) compileForAwaitOfStatement(stmt *ast.ForOfStatement) error {
 	c.emitter.EmitNoOperand(bytecode.OP_PUSH_SCOPE)
 	prevScope := c.scope
 	c.scope = NewSymbolScope(prevScope)
+	// 迭代边界只克隆块内新分配的槽位 (循环变量 + body 的 let/const), 函数层
+	// var 与外层 let 保持单实例共享 —— 与同步 for-of 同口径 (见其处详解)。
+	sealFrom := c.scope.NumLocals()
 	// 运行时: 纯 finally 形状 (catchPC=0), 异常走 finallyPC → closePC。
 	c.emitter.Emit(bytecode.OP_PUSH_TRY, 0)
 	closeFin := c.emitter.EmitJump(bytecode.OP_PUSH_FINALLY)
@@ -1997,7 +2015,7 @@ func (c *Compiler) compileForAwaitOfStatement(stmt *ast.ForOfStatement) error {
 	c.emitter.EmitNoOperand(bytecode.OP_POP_SCOPE)
 
 	// 循环底: continue 跳回迭代头 (先摘掉本轮 close handler 再回跳)
-	c.emitter.EmitNoOperand(bytecode.OP_ITER_BOUNDARY)
+	c.emitter.Emit(bytecode.OP_ITER_BOUNDARY, uint16(sealFrom))
 	iterPos := c.emitter.Pos()
 	for _, jmp := range ctx.continueJumps {
 		c.emitter.ReplaceJumpTarget(jmp, uint16(iterPos))
@@ -2084,6 +2102,9 @@ func (c *Compiler) compileForInStatement(stmt *ast.ForInStatement) error {
 	c.emitter.EmitNoOperand(bytecode.OP_PUSH_SCOPE)
 	prevScope := c.scope
 	c.scope = NewSymbolScope(prevScope)
+	// 同 for-of: 迭代边界只克隆块作用域内新分配的槽位 (每轮新建的词法绑定),
+	// var (函数作用域, 槽位在块之前分配) 与外层 let 保持单实例共享。
+	sealFrom := c.scope.NumLocals()
 
 	// 声明循环变量
 	varKind := bytecode.OP_STORE
@@ -2121,7 +2142,7 @@ func (c *Compiler) compileForInStatement(stmt *ast.ForInStatement) error {
 	c.emitter.EmitNoOperand(bytecode.OP_POP_SCOPE)
 
 	// 迭代边界: 本轮迭代创建的闭包定版
-	c.emitter.EmitNoOperand(bytecode.OP_ITER_BOUNDARY)
+	c.emitter.Emit(bytecode.OP_ITER_BOUNDARY, uint16(sealFrom))
 	iterPos := c.emitter.Pos()
 	for _, jmp := range ctx.continueJumps {
 		c.emitter.ReplaceJumpTarget(jmp, uint16(iterPos))
@@ -2165,6 +2186,9 @@ func (c *Compiler) compileForStatementCore(stmt *ast.ForStatement) error {
 	c.emitter.EmitNoOperand(bytecode.OP_PUSH_SCOPE)
 	prevScope := c.scope
 	c.scope = NewSymbolScope(prevScope)
+	// 迭代边界只克隆本块作用域内新分配的槽位 (init 的 let 循环变量 + body 的
+	// let/const)。函数层 var 与外层 let 必须保持单实例共享 —— 见 for-of 处详解。
+	sealFrom := c.scope.NumLocals()
 
 	// init
 	if stmt.Init != nil {
@@ -2198,7 +2222,7 @@ func (c *Compiler) compileForStatementCore(stmt *ast.ForStatement) error {
 		c.emitter.EmitNoOperand(bytecode.OP_POP_SCOPE)
 
 		// continue 跳到 update; 此处同时是迭代边界 (per-iteration 绑定)
-		c.emitter.EmitNoOperand(bytecode.OP_ITER_BOUNDARY)
+		c.emitter.Emit(bytecode.OP_ITER_BOUNDARY, uint16(sealFrom))
 		continueStart := c.emitter.Pos()
 		// update
 		if stmt.Update != nil {
@@ -2234,7 +2258,7 @@ func (c *Compiler) compileForStatementCore(stmt *ast.ForStatement) error {
 		c.emitter.EmitNoOperand(bytecode.OP_POP_SCOPE)
 
 		// continue 跳到 update; 此处同时是迭代边界 (per-iteration 绑定)
-		c.emitter.EmitNoOperand(bytecode.OP_ITER_BOUNDARY)
+		c.emitter.Emit(bytecode.OP_ITER_BOUNDARY, uint16(sealFrom))
 		continueStart := c.emitter.Pos()
 		// update (无条件循环同样需要编译 update 段)
 		if stmt.Update != nil {

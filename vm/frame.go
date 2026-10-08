@@ -5,6 +5,41 @@ import (
 	"github.com/14752222/Gox/object"
 )
 
+// sealMark 记录一次迭代边界: 该边界起, slot >= SealFrom 的是"每轮新建"的
+// 词法绑定, 只传播给 Epoch >= Epoch 的闭包; slot < SealFrom 的共享绑定不受限。
+type sealMark struct {
+	SealFrom int
+	Epoch    int
+}
+
+// setSealMark 登记一次迭代边界。同一 sealFrom 只保留最新 Epoch (旧边界对该
+// 槽位而言已被新边界取代 —— 任何更早的闭包都已被正确排除), 条目数 = 循环
+// 嵌套层数, 有界。
+func (f *Frame) setSealMark(sealFrom, epoch int) {
+	for i := range f.SealMarks {
+		if f.SealMarks[i].SealFrom == sealFrom {
+			f.SealMarks[i].Epoch = epoch
+			return
+		}
+	}
+	f.SealMarks = append(f.SealMarks, sealMark{SealFrom: sealFrom, Epoch: epoch})
+}
+
+// cellFloor 返回写入 slot 时应遵循的"cell 下界" epoch:
+//   - 若存在 sealFrom <= slot 的迭代边界 (该 slot 是每轮新建的尾段), 返回
+//     其中最晚边界的 Epoch —— 只有创建于该边界之后的闭包才与写入者共享 cell;
+//   - 否则返回 -1, 表示该 slot 是共享绑定 (var / 外层 let / 边界前分配),
+//     写入应传播给**全部**已创建闭包。
+func (f *Frame) cellFloor(slot int) int {
+	floor := -1
+	for i := range f.SealMarks {
+		if f.SealMarks[i].SealFrom <= slot && f.SealMarks[i].Epoch > floor {
+			floor = f.SealMarks[i].Epoch
+		}
+	}
+	return floor
+}
+
 // Frame 表示 VM 调用栈中的一个帧。
 // 每次函数调用创建一个新帧，函数返回时弹出。
 //
@@ -16,8 +51,7 @@ import (
 //   - Constants: 常量池引用 (所有帧共享同一个)
 //   - ModifiedSlots: 本帧中修改过的 slot 集合 (用于 popFrame 时向上一帧传播闭包变量修改)
 //   - CreatedClosures: 在本帧中创建的闭包列表 (用于 OP_STORE 时向子闭包传播外层变量修改)
-type Frame struct {
-	Instructions    bytecode.Instructions
+type Frame struct {	Instructions    bytecode.Instructions
 	PC              int
 	Locals          []object.Value
 	Closure         *object.Closure
@@ -36,6 +70,20 @@ type Frame struct {
 	ModifiedSlots   map[int]bool      // 修改过的 slot (用于 popFrame 传播)
 	CreatedClosures []*object.Closure // 本帧创建的闭包 (用于 STORE 传播)
 	SharedCells     []object.Value    // 外层 binding cell (== 创建它的帧的 Locals 数组)
+
+	// ===== 迭代边界的共享前缀模型 (rUm0q6) =====
+	//
+	// OP_ITER_BOUNDARY 只应"定版"**每轮新建的词法绑定** (循环变量 + 循环体内
+	// 的 let/const), 而 var (函数作用域) 与外层 let 是**单实例**, 所有轮次的
+	// 闭包必须共享同一颗 cell。旧实现直接清空 CreatedClosures + 克隆整个 Locals
+	// 数组, 把不该定版的共享绑定也一并封死 ⇒ 闭包看到的是各自轮次的快照
+	// (for(var x of …) 得到 [1,2,3] 而非规范要求的 [3,3,3])。
+	//
+	// 现模型: 迭代边界携带 sealFrom (块作用域内首个新槽位), 只把该边界之后的
+	// 写入视为"新 cell"; 边界之前的 slot (< sealFrom) 视为共享, 照常传播给
+	// 全部已创建闭包。Epoch 每过一次边界 +1; 闭包记录创建时的 Epoch。
+	Epoch     int          // 已执行的迭代边界次数
+	SealMarks []sealMark   // 各边界的 (sealFrom → 过界后的 Epoch), 按 sealFrom 去重取最新
 	StackBase       int               // 进入本帧时栈高度 (返回时截断到此处)
 
 	// PendingGen 非 nil 表示本帧是生成器/异步生成器的"形参前导帧":
