@@ -547,6 +547,33 @@ this 是 undefined，都会把删除落到错误的基上。
 - **agent 的最终报告会随父回合中断而丢失，但提交正文留了验收数字** ⇒ 回收成果的标准动作是 `git log --format='%h %s%n%b'` 读提交正文 + `git status`（只看 `git log` 会漏掉未提交的半成品）。本轮 9 条里 8 条有产出，**1 条（b10-runner）零提交零改动**，等于白跑一轮，已重开为 b10-runner2。
 - **agent 自报的「LOST 0」不能当验收**：asyncgen 路线自报 `for-await` LOST 0，实际引入了一条稳定回归；只有 lead 的全量逐用例 diff 才抓得到。
 - **「单子里的因果链」又一次被证伪**：`rNR2Zk`/`r23xdR`/`roiE5Z`/`r63RpV 子项4` 四张单的主体**都已在 main**，看板却仍挂着 running（没有关闭动作）。⇒ 开工前必须先按 patch-id + 内容双核对账。
+
+## 二十四、合流批次十一（解构绑定 prescan 真实名 / 基线身份订正 / 三路废弃）
+
+**本轮形状**：13 张 `running` 单的推进过程中，**绝大多数被并行会话抢在合流前修完并推上 `main`**，本轮真正非冗余的产出只有 1 条（`rLGyHa`）。合并前 `Gox/main` 已被并行会话推进到 `154b8c4`（相对 `b381cbc` +13 提交）。
+
+| 路线 | 单 | 处置 | 要点 | 证据 |
+|---|---|---|---|---|
+| b11-linkfix | `rLGyHa` | **合入** | `prescanScope` 对**解构声明项**只跳过合成名 `__destructure__`、没有登记模式里的**真实绑定名**。而 `compileStatements` 会先把语句列表里所有函数声明**提升编译**（编译函数体），函数体解析"列表后面才出现的词法绑定"全靠 prescan 预登记 ⇒ `const [x] = …; function f(){ return x; }` 里 `f` 提升编译时 `x` 尚未入作用域 → `emitGlobalLoad` 退化 → 运行期在**非全局作用域**抛 `ReferenceError`（脚本顶层因顶层绑定是全局属性而侥幸可用）。修法：新增 `prescanDeclarator`，用 `ast.PatternBoundNames` 取真实名逐个 `prescanDeclare` | 探针（Node v22 对照）：`const [x]` + 提升函数 `fDestr=1` ✅、`let [a]`/`const {b}` 混用 `a=3 b=5` ✅（修复前均 `ReferenceError`）；per-iteration 语义 0 回归 |
+| b11-hostinit | `rMWHi1` | **废弃（冗余）** | gfx `IP_ADAPTER_INFO` 布局错位致启动即 `SIGSEGV`（fault addr 恒 `0x322b`）。修复内容与并行会话已推的 `2bb3bd5` 同源同效 ⇒ 不再重复合入 | — |
+| b11-ergslot | `rqAkgl` | **废弃（被取代）** | Promise 回调抛错归属派生 promise。本路线变体净 **GAIN 170 / LOST 8**（8 条 `dynamic-import` + async 嵌套回归，11 轮收口未果）；并行会话以更完整方案修完（`d53ff69` + `a2320a2` 动态/静态 import 透传原始拒绝值 + `a4bf644` + `4c0e116`）⇒ 弃本路线 | — |
+| b11-linkfix | `rUm0q6` | **废弃（冗余）** | 本路线只产出"零回归护栏"；`rUm0q6` 本身已由并行会话 `06e25e7` 修复 | — |
+
+**A/B（lead 独立实测，基线 = 合流时点的 `Gox/main` = `154b8c4`，由 `git worktree add --detach` 自建并逐项验证身份）**：
+
+- **全量 23726 例：18126（76.3972%）→ 18126（76.3972%）**；
+- 逐用例 diff 三项：`only_a = 0` / `only_b = 0` / `pass_differs = 0` ⇒ **严格零回归**；
+- `go build ./...` 干净、`go vet ./...` 干净、`go test ./vm/... ./compiler/... ./parser/...` 全绿；
+- 徽章 `docs/test262-compliance.json` = **76.4%**（并行会话 `154b8c4` 已更新，与本次实测逐位吻合，未再改动）。
+
+> 注：`rLGyHa` 的缺陷面**不在 test262 `language` 套件的计分范围内**（该套件无"函数提升 + 解构绑定于非全局作用域"的用例），故全量数字 +0；其价值由 Node v22 对照探针与新增回归测试（`vm/destructure_scope_binding_test.go`）保证。
+
+**基线身份订正（本轮最重要的教训）**：
+
+- 本会话曾据 `D:/tmp/real-base.json`（17929）判定"批次十的 18098 不可复现、台账与徽章需订正"——**该判定错误**。
+- 决定性实验（全新 worktree + `git rev-parse HEAD` + `git status --porcelain` + `git diff --stat -- parser/` 四重确认）：纯净 `b381cbc` **通过**三条 `yield` 族争议用例（各 1/1），`b381cbc` + 脏 parser（把 yield 修复整体 revert 的 +45/-208）则**三条全挂**（0/1）；纯净 `b381cbc` 全量 = **18098 / 76.2792%**。
+- ⇒ `real-base.json` 的 `17929` **恰是"`b381cbc` + 脏 parser"的数**，被误标为"真 `b381cbc`"。**台账批次十的 `18098（76.2792%）` 与徽章 `76.3%` 本来正确，无需订正**。
+- **纪律**：基准二进制的身份必须用 CM 验证（`git worktree add --detach <tmp> <sha>` → 确认 HEAD/工作区/关键目录三重干净 → 才 `go build`），**不能靠文件名、不能靠"上次是谁编的"**。本会话两次在基线身份上翻车，两次都是因为信了一个未验证来源的 JSON。
 ## 待确认（信息缺口）
 
 - `agent_doc/undecided-and-unimplemented.md` 是 **2026-09-18 快照**，其 §四 缺口清单中已有多项（cocoa 后端、iOS 后端、X11 修正、M2 IME、滚动条拖拽、tabs、table/tree、tooltip）在 09-18 后落地。本路线图已按 git 历史更正，但**建议回填该台账**，否则后续排期会继续基于过期口径。
