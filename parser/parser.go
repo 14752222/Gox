@@ -43,6 +43,12 @@ type Parser struct {
 	depth      int // 当前语法嵌套深度 (表达式/语句递归层数)
 	depthExceeded bool // 已触发嵌套深度上限 (后续解析短路，防错误洪水)
 
+	// coverInitPending 收集本语句中遇到的 CoverInitializedName 属性
+	// (`{ x = 默认值 }`)。它是解构赋值目标 cover grammar 的一部分, 只有被
+	// literalToPattern 消费才合法; 语句收尾时仍有残留即 SyntaxError
+	// (真正的对象字面量不得含初始化名, sec-object-initializer-early-errors)。
+	coverInitPending []*ast.Property
+
 	// awaitReservedInParams 标记正在解析 **async 函数/箭头/方法的形参列表**
 	// (含默认表达式)。此窗口内 await 是保留字: `async f(x = await)` 与
 	// `({ async m(x = await) {} })` / `class C { async m(x = await) {} }` 必须
@@ -494,6 +500,28 @@ func (p *Parser) addError(msg string) {
 	p.errors.Add(msg, tok.Line, tok.Column)
 }
 
+// clearCoverInit 从待报错清单移除一个已被解构目标消费的 CoverInitializedName 属性。
+func (p *Parser) clearCoverInit(prop *ast.Property) {
+	for i, e := range p.coverInitPending {
+		if e == prop {
+			p.coverInitPending = append(p.coverInitPending[:i], p.coverInitPending[i+1:]...)
+			return
+		}
+	}
+}
+
+// reportUnconsumedCoverInit 在语句收尾时对仍未被消费的 CoverInitializedName 报早错。
+func (p *Parser) reportUnconsumedCoverInit() {
+	for _, prop := range p.coverInitPending {
+		if key, ok := prop.Key.(*ast.Identifier); ok {
+			p.addError(fmt.Sprintf("SyntaxError: CoverInitializedName '%s' is only valid in destructuring assignment target", key.Value))
+		} else {
+			p.addError("SyntaxError: CoverInitializedName is only valid in destructuring assignment target")
+		}
+	}
+	p.coverInitPending = p.coverInitPending[:0]
+}
+
 // isBlockStart 判断当前 LBRACE 是否开始块语句 (而非对象字面量)。
 //
 // 规范 (Statement : BlockStatement) 与 12.2 ExpressionStatement 的
@@ -608,7 +636,11 @@ func isUseStrictDirective(sl *ast.StringLiteral) bool {
 // 每条语句都有位置。
 func (p *Parser) parseStatement() ast.Statement {
 	startLine, startCol := p.curToken().Line, p.curToken().Column
+	p.coverInitPending = p.coverInitPending[:0]
 	stmt := p.parseStatementBody()
+	// 语句收尾: 未被解构赋值目标消费的 CoverInitializedName 即早错
+	// (真正的对象字面量不得含 `{ x = 默认值 }`, 见 object/cover-initialized-name.js)。
+	p.reportUnconsumedCoverInit()
 	if !isNilStmt(stmt) {
 		if p.stmtPos == nil {
 			p.stmtPos = ast.PositionTable{}
@@ -3028,8 +3060,9 @@ func (p *Parser) parseProperty() *ast.Property {
 		prop.Key = &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
 	}
 
-	// 简写: { name }
-	if p.peekTokenIs(lexer.COMMA) || p.peekTokenIs(lexer.RBRACE) {
+	// 简写: { name } 或 CoverInitializedName: { name = 默认值 }
+	if p.peekTokenIs(lexer.COMMA) || p.peekTokenIs(lexer.RBRACE) ||
+		p.peekTokenIs(lexer.ASSIGN) {
 		prop.Shorthand = true
 		id, ok := prop.Key.(*ast.Identifier)
 		if !ok {
@@ -3045,6 +3078,27 @@ func (p *Parser) parseProperty() *ast.Property {
 			return nil
 		}
 		prop.Value = id
+		// CoverInitializedName `{ x = 默认值 }`: 仅当整个对象字面量被用作解构
+		// 赋值目标时才合法 (ObjectAssignmentPattern 的 cover grammar)。这里先
+		// 按 cover 形态生成 AssignmentExpression{x = 默认值}, 并登记到
+		// coverInitPending; 若最终没被 literalToPattern 消费 (即它是真正的
+		// 对象字面量), 由 parseExpressionStatement 收尾时报
+		// "CoverInitializedName in object literal" 早错
+		// (test262 object/cover-initialized-name.js)。
+		if p.peekTokenIs(lexer.ASSIGN) {
+			p.nextToken() // cur = '='
+			p.nextToken() // cur = 默认值首 token
+			def := p.parseExpression(LOWEST)
+			assign := &ast.AssignmentExpression{
+				Token:    prop.Token,
+				Left:     id,
+				Operator: "=",
+				Right:    def,
+			}
+			prop.Value = assign
+			prop.CoverInitialized = true
+			p.coverInitPending = append(p.coverInitPending, prop)
+		}
 		return prop
 	}
 
@@ -3141,6 +3195,12 @@ func (p *Parser) parseAssignmentExpression(left ast.Expression) ast.Expression {
 		switch left.(type) {
 		case *ast.ArrayLiteral, *ast.ObjectLiteral:
 			left = p.literalToPattern(left)
+			// 严格模式下解构赋值目标的绑定名不得是 eval/arguments
+			// (sec-assignment-operators-static-semantics-early-errors:
+			//  AssignmentPattern 的 It is a Syntax Error if ... 含 eval/arguments)。
+			// test262 dstr/{array-elem-target-simple-strict,obj-id-simple-strict,
+			// obj-id-init-simple-strict}.js (flags: onlyStrict, negative/parse)。
+			p.checkStrictPatternTargets(left)
 		}
 	}
 	// 赋值左值校验 (AssignmentTargetType): 解构模式与简单/成员目标合法,
@@ -3255,6 +3315,11 @@ func (p *Parser) literalToPattern(expr ast.Expression) ast.Expression {
 			// ({ default } = x / ({ extends } = x) 都是 SyntaxError)。
 			if pp.Shorthand && !p.checkShorthandKey(pp) {
 				return expr
+			}
+			// CoverInitializedName 被解构目标消费掉了 ⇒ 从待报错清单移除。
+			if prop.CoverInitialized {
+				pp.CoverInitialized = true
+				p.clearCoverInit(prop)
 			}
 			switch v := prop.Value.(type) {
 			case *ast.Identifier:
@@ -3694,6 +3759,38 @@ func shorthandKeyIsReserved(tok lexer.Token) bool {
 		}
 	}
 	return false
+}
+
+// checkStrictPatternTargets 对严格模式下的解构赋值模式做早错校验:
+// 任一绑定目标名是 eval / arguments ⇒ SyntaxError
+// (sec-assignment-operators-static-semantics-early-errors, AssignmentPattern:
+// "It is a Syntax Error if AssignmentTargetType ... is not simple" 与
+// 严格模式下 eval/arguments 不得作为赋值目标)。
+// 只在 p.strict 为真时报错; sloppy 下 `{ eval = 0 } = {}` 合法。
+func (p *Parser) checkStrictPatternTargets(pattern ast.Expression) {
+	if !p.strict {
+		return
+	}
+	switch n := pattern.(type) {
+	case *ast.ArrayPattern:
+		for _, e := range n.Elements {
+			if e == nil || e.Target == nil {
+				continue
+			}
+			p.checkStrictPatternTargets(e.Target)
+		}
+	case *ast.ObjectPattern:
+		for _, pr := range n.Properties {
+			if pr == nil || pr.Value == nil {
+				continue
+			}
+			p.checkStrictPatternTargets(pr.Value)
+		}
+	case *ast.Identifier:
+		if n.Value == "eval" || n.Value == "arguments" {
+			p.addError(fmt.Sprintf("SyntaxError: Unexpected eval or arguments in strict mode"))
+		}
+	}
 }
 
 // checkShorthandKey 在对象模式的 shorthand 分支校验键不是保留字。

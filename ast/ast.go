@@ -908,6 +908,12 @@ type Property struct {
 	Kind      PropertyKind
 	Computed  bool // [表达式] 形式的计算属性名
 	Shorthand bool // { name } 等价于 { name: name }
+	// CoverInitialized 标记 CoverInitializedName 形态: `{ x = 默认值 }`
+	// (仅作解构赋值目标的 cover grammar 合法)。此时 Key 与 Shorthand 已置位,
+	// Value 是 AssignmentExpression{x = 默认值}。真正的对象字面量里出现即为
+	// 早错 (sec-object-initializer-static-semantics-early-errors) —— 由 parser
+	// 在字面量未被转成解构模式时统一报出 (见 Parser.coverInitPending)。
+	CoverInitialized bool
 }
 
 func (p *Property) String() string {
@@ -1204,6 +1210,9 @@ type PatternProperty struct {
 	Default   Expression // 默认值 (nil = 无)
 	Shorthand bool       // { name } 等价于 { name: name }
 	Computed  bool       // [表达式] 形式的计算属性名
+	// CoverInitialized 标记该属性来自 CoverInitializedName 形态
+	// `{ x = 默认值 }` (解构赋值目标 cover grammar)。
+	CoverInitialized bool
 }
 
 func (pp *PatternProperty) String() string {
