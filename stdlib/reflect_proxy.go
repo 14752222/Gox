@@ -327,8 +327,11 @@ func setupReflectProxy(env *runtime.Environment) {
 			callTarget = &c2
 		}
 		result := object.CallFunction(callTarget, obj, ctorArgs...)
-		if cbErr := object.TakeCallbackError(); cbErr != nil {
-			return object.NewErrorWithName("Error", cbErr.Error())
+		// 与 r6OWbQ 同口径: 优先回传**原始抛出值** (保住错误类型与 catch 侧
+		// === 语义), 并**同时消费值槽** —— 过去只消费错误槽, 残留的原值会
+		// 污染之后任意一次桥错误的抛出值 (rr1O8P)。
+		if thrown := callbackThrown(); thrown != nil {
+			return thrown
 		}
 
 		// 3) 构造器返回对象时用返回值，否则用新创建的对象

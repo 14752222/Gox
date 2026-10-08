@@ -594,6 +594,22 @@ this 是 undefined，都会把删除落到错误的基上。
 - **裸环境（`testEval`，不装 stdlib）下、函数体内的 `arr.push(...)` 报 `TypeError: undefined is not a function`**（`Array.prototype.push` 由 stdlib 提供）。为排除"是本轮改动引起"，在**干净 `438b29a` worktree** 上跑同一探针 —— 失败完全一致 ⇒ 既有现象、与本轮无关；护栏测试改用完整管线 `evalJS`。
 - **"缺陷是否在计分范围内"必须实测、不能照抄**：开工前的记录是"该缺陷不在 test262 `language` 计分范围内"，实测 A/B 拿到 **+1 GAIN**。
 
+## 二十六、合流批次十三（回调桥「两槽同步消费」= `rr1O8P`）
+
+**本轮形状**：批次十二收尾后，`running` 单里挑的是缺陷形态最确定、且**不依赖 Windows/真机**的一条 —— `rr1O8P`。批次十一 `ergslot` 路线已修好 `throwIfError` 只认 `*object.Error` 的那一族，本单是**同一机制的明面**：内建回调桥的**值槽**没人消费。
+
+| 路线 | 单 | 处置 | 要点 | 证据 |
+|---|---|---|---|---|
+| b13/ergslot2 | `rr1O8P` | **合入** | 回调桥写**两个**槽：错误槽（`TakeCallbackError`，Go `error`）+ 值槽（`TakeCallbackErrorValue`，`throw x` 的 x）。8 处 `reportUncaught` 位点（fs/http/update_module）只消费错误槽 ⇒ 过期原值滞留值槽。修法：8 处**全部汇聚到同一个 `reportUncaught`**，故改一处即全覆盖 —— 内部无条件 `TakeCallbackErrorValue()`（两槽同步）并**优先用原值渲染**文本；顺带同族位点：`reflect_proxy.go`（`Reflect.construct` 丢原值）改用既有 `callbackThrown()` 口径；`object/observable.go`（`Computed.recompute`）只做值槽消费的**卫生修复**，返回值语义**刻意不动**（属 `rvE6lH` 的 Rx 语义决策范围） | A/B 反证：旧实现下 3 例全 FAIL（`阶段2 读到了阶段1 的过期值 PHASE1`）；新增 `stdlib/callback_slot_test.go` 3 例；`go test ./...` 全绿 |
+
+**根因的关键一环（易被忽略，写在这里防复发）**：只消费错误槽之所以有害，是因为桥**并不保证两槽同时被写** —— `vm.setCallbackErrorValueFromThrow` **只在错误类型是 `*vm.ThrowError` / `*vm.jsThrow` 时才写值槽**（`vm/vm.go:422/426`），其余 4 处 `SetCallbackError`（`vm.go:446/460/473/486`）**只写错误槽**。所以「上一次的抛出值」会一直挂着，直到下一次**只写错误槽**的桥失败被某个取两槽的位点（`stdlib/async.go`、`promise.go`、`eval.go`、`solid.go`）读走 ⇒ 用户 `catch` 到**上一次的值**：不报错，只是值错（静默错值）。
+
+**本轮实锤（流程教训）**：
+
+- **「改一处覆盖 8 处」优于「8 处各加一行」**：8 个位点全都是同一个句型且都调 `reportUncaught`，在函数内部消费值槽即全覆盖，不会再出现"改了 7 处漏 1 处"。审计时先看**汇聚点**再改调用点。
+- **判据用例必须能复现危害、而不只是断言"槽被清了"**：`TestStaleValueSlotDoesNotLeakIntoNextBridgeError` 走完「阶段1 抛 `PHASE1` → 阶段2 只写错误槽的桥失败 → 取两槽」整条链路，修复前失败信息直接是 `读到了阶段1 的过期值 PHASE1`。只写"槽残留"断言的话，读起来像是卫生问题，看不出危害。
+- **test262 A/B 在本沙箱不可执行**：套件不在仓库内（`.gitmodules` 只有 npm/website/logo 三个子模块，`testdata/` 下无 test262）。本单的「全量 language + built-ins 两套 A/B 均 LOST 0」验收**未做**，需在具备套件的环境补跑；已提交的是单元级 A/B 反证。
+
 ## 待确认（信息缺口）
 
 - `agent_doc/undecided-and-unimplemented.md` 是 **2026-09-18 快照**，其 §四 缺口清单中已有多项（cocoa 后端、iOS 后端、X11 修正、M2 IME、滚动条拖拽、tabs、table/tree、tooltip）在 09-18 后落地。本路线图已按 git 历史更正，但**建议回填该台账**，否则后续排期会继续基于过期口径。

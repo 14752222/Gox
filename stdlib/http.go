@@ -89,8 +89,41 @@ func dispatchToLoop(fn func()) {
 // reportUncaught 报告投递回调里未被 JS 捕获的异常。
 // VM 对内建函数返回的 *Error 不做抛出处理 (只有 JS 闭包抛出的异常会
 // 通过 error 传回事件循环)，因此这里显式打到 stderr，避免错误被静默吞掉。
-func reportUncaught(err error) {
-	fmt.Fprintf(os.Stderr, "Uncaught %s\n", err.Error())
+//
+// **两槽必须一起消费** (rr1O8P)。回调桥在 JS 抛出时会写两个槽:
+// object.TakeCallbackError 是 Go 侧 error, object.TakeCallbackErrorValue 是
+// `throw x` 的 x 本身。但桥**只在错误类型是 *vm.ThrowError / *vm.jsThrow 时**
+// 才写值槽 (见 vm.setCallbackErrorValueFromThrow) —— 其余错误只写错误槽,
+// 值槽原封不动地留着**上一次**的抛出值。
+//
+// 而本函数过去只接一个 Go error 参数、根本不摸值槽 ⇒ 8 处调用点全部只消费
+// 了一半: 残留的原值会一直挂着, 直到之后某个取两槽的位点
+// (stdlib/async.go / promise.go / eval.go 等) 把它当成"本次抛出的值"消费
+// ⇒ 用户 catch 到的是**上一次的、过期的值** (静默错值: 不报错, 只是值错)。
+//
+// 覆盖的 8 处调用点 (它们都经由本函数, 故改一处即全覆盖):
+// fs.go:622 / fs.go:638 / http.go:206 / http.go:427 / http.go:457 /
+// update_module.go:137 / update_module.go:184 / update_module.go:208。
+func reportUncaught(cbErr error) {
+	fmt.Fprintf(os.Stderr, "Uncaught %s\n", uncaughtMessage(cbErr))
+}
+
+// uncaughtMessage 渲染未捕获异常的文本, **并在返回前消费值槽** (两槽同步)。
+// 优先用原始抛出值渲染: 非 Error 抛出值 (字符串/数字/对象) 只有值槽里才有,
+// 一律走 cbErr.Error() 会拿到 Go 侧包装后的文本, 丢失原值形态。
+func uncaughtMessage(cbErr error) string {
+	thrown := object.TakeCallbackErrorValue()
+	if thrown == nil || thrown == object.UndefinedSingleton {
+		return cbErr.Error()
+	}
+	switch t := thrown.(type) {
+	case *object.String:
+		return t.Value // `throw "boom"` 渲染成 boom, 不带引号
+	case *object.Error:
+		return t.Inspect() // "TypeError: xxx", 与 JS 侧 toString 同形
+	default:
+		return thrown.Inspect()
+	}
 }
 
 // ===== HTTP 服务器 =====

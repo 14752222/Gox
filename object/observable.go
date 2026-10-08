@@ -672,6 +672,13 @@ func (c *Computed) recompute() Value {
 	ret := CallFunction(c.fn, UndefinedSingleton)
 	if err := TakeCallbackError(); err != nil {
 		rxPopTracker(t)
+		// 值槽同步消费: 只清错误槽会把原值留在原地, 之后任一取两槽的位点
+		// 会把它当成"本次抛出的值" ⇒ 静默错值 (rr1O8P)。
+		//
+		// 这里**刻意不改**返回值语义 —— "Computed 求值抛错时读回的什么"
+		// 是独立的 Rx 语义决策, 不宜照搬 r6OWbQ 的值保真修法 (看板 rvE6lH)。
+		// 本单只做卫生修复: 两槽同步, 消除跨调用污染。
+		TakeCallbackErrorValue()
 		return NewErrorWithName("Error", err.Error())
 	}
 	rxPopTracker(t)
