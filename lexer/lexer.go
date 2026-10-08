@@ -387,10 +387,7 @@ func (l *Lexer) nextToken() Token {
 			return Token{Type: DOLLAR_BRACE, Literal: "${", Line: line, Column: col}
 		}
 		// 否则 $ 是标识符的一部分 ($foo, $$bar 等)
-		ident := l.readIdentifier()
-		tokType := LookupIdentifier(ident)
-		tok = Token{Type: tokType, Literal: ident, Line: line, Column: col}
-		return tok
+		return l.lexIdentifierToken(line, col)
 
 	case '"':
 		tok = l.readString('"', line, col)
@@ -420,11 +417,8 @@ func (l *Lexer) nextToken() Token {
 		if isDigit(l.ch) {
 			return l.readNumber(false, line, col)
 		}
-		if isIdentifierStart(l.ch) {
-			ident := l.readIdentifier()
-			tokType := LookupIdentifier(ident)
-			tok = Token{Type: tokType, Literal: ident, Line: line, Column: col}
-			return tok
+		if isIdentifierStart(l.ch) || (l.ch == '\\' && l.peekChar() == 'u') {
+			return l.lexIdentifierToken(line, col)
 		}
 		// 无法识别的字符
 		tok = Token{Type: ILLEGAL, Literal: string(l.ch), Line: line, Column: col}
@@ -541,11 +535,107 @@ func isRegexFlag(ch rune) bool {
 
 // 标识符以字母、下划线或 $ 开头，后续可包含字母、数字、下划线或 $。
 func (l *Lexer) readIdentifier() string {
+	name, _, _ := l.readIdentifierWithEscapes()
+	return name
+}
+
+// readIdentifierWithEscapes 读取一个标识符, 支持内嵌 unicode 转义序列
+// (`\uXXXX` / `\u{XXXX}`)。返回解码后的名字与「是否含过转义」标志。
+//
+// 规范 (11.6.2 / 11.6.1): IdentifierName 的任意字符都可写成 \uXXXX 转义;
+// 但**关键字不得含转义** —— 一个拼作保留字的转义标识符不是关键字, 只能作
+// PropertyName (IdentifierName), 不能作 Identifier 引用/绑定。
+// 调用方据 escaped 决定: 置 IDENTIFIER 类型 (绝不 LookupIdentifier 成关键字),
+// 并在作绑定/引用时校验是否恰好拼成保留字。
+func (l *Lexer) readIdentifierWithEscapes() (name string, escaped bool, bad bool) {
+	var sb strings.Builder
+	first := true
+	for {
+		if l.ch == '\\' && l.peekChar() == 'u' {
+			r, ok := l.readUnicodeEscapeSequence()
+			if !ok {
+				return sb.String(), escaped, true
+			}
+			if first {
+				if !isIdentifierStart(r) && !isIdentifierPart(r) {
+					return sb.String(), escaped, true
+				}
+			} else if !isIdentifierPart(r) {
+				return sb.String(), escaped, true
+			}
+			escaped = true
+			sb.WriteRune(r)
+			first = false
+			continue
+		}
+		if first {
+			if !isIdentifierStart(l.ch) {
+				break
+			}
+		} else if !isIdentifierPart(l.ch) {
+			break
+		}
+		sb.WriteRune(l.ch)
+		l.readChar()
+		first = false
+	}
+	return sb.String(), escaped, false
+}
+
+// readUnicodeEscapeSequence 在 l.ch == '\\' 且 peek == 'u' 时消费一个
+// `\uXXXX` 或 `\u{XXXX}` 序列并返回解码出的码点。成功时 l.ch 停在序列
+// 之后的第一个字符上。失败返回 ok=false 且不推进位置。
+func (l *Lexer) readUnicodeEscapeSequence() (rune, bool) {
+	// l.ch='\\', peek='u'
+	l.readChar() // 消费 \
+	l.readChar() // 消费 u
+	if l.ch == '{' {
+		l.readChar() // 消费 {
+		start := l.position
+		for isHexDigit(l.ch) {
+			l.readChar()
+		}
+		if l.ch != '}' || l.position == start {
+			return 0, false
+		}
+		r, err := hexToRune(l.input[start:l.position])
+		if err != nil || r > 0x10FFFF {
+			return 0, false
+		}
+		l.readChar() // 消费 }
+		return r, true
+	}
+	// \uXXXX: 恰好 4 位十六进制
+	if !isHexDigit(l.ch) {
+		return 0, false
+	}
 	start := l.position
-	for isIdentifierPart(l.ch) {
+	for i := 0; i < 4; i++ {
+		if !isHexDigit(l.ch) {
+			return 0, false
+		}
 		l.readChar()
 	}
-	return l.input[start:l.position]
+	r, err := hexToRune(l.input[start : start+4])
+	if err != nil {
+		return 0, false
+	}
+	return r, true
+}
+
+// lexIdentifierToken 读取一个 (可含 unicode 转义) 标识符并产 token。
+// 含转义的标识符恒为 IDENTIFIER —— 绝不 LookupIdentifier 成关键字
+// (关键字不得含转义); Token.IdentHasEscape 置位供 parser 判定
+// 「转义拼出的保留字」是否非法 (作绑定/引用名时非法, 作 PropertyName 合法)。
+func (l *Lexer) lexIdentifierToken(line, col int) Token {
+	name, escaped, bad := l.readIdentifierWithEscapes()
+	if bad {
+		return Token{Type: ILLEGAL, Literal: name, Line: line, Column: col}
+	}
+	if escaped {
+		return Token{Type: IDENTIFIER, Literal: name, Line: line, Column: col, IdentHasEscape: true}
+	}
+	return Token{Type: LookupIdentifier(name), Literal: name, Line: line, Column: col}
 }
 
 // readNumber 读取一个数字字面量。

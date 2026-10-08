@@ -154,6 +154,12 @@ type Token struct {
 	// use strict 指令 (Directive 要求源码里是精确的 "use strict" 字符序列,
 	// 含转义即不匹配)。指令序言识别必须靠这个标志。
 	HadEscape bool
+	// IdentHasEscape 仅对 IDENTIFIER 有意义: 报告该标识符的词素里出现过
+	// unicode 转义 (\uXXXX / \u{XXXX})。Literal 是解码后的名字, 单看无法区分
+	// `if` 与 `\u0069f` —— 而后者是 IdentifierName 不是关键字, 作 PropertyName
+	// 合法、作 Identifier 绑定/引用则非法的 "Keyword must not contain escaped
+	// characters"。有此标志的 token 恒为 IDENTIFIER (lexer 不查关键字表)。
+	IdentHasEscape bool
 }
 
 // keywords 将关键字字符串映射到 TokenType。

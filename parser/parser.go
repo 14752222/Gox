@@ -2272,12 +2272,62 @@ func (p *Parser) parseIdentifier() ast.Expression {
 	// 单参数箭头函数: identifier => body
 	if p.peekTokenIs(lexer.ARROW) {
 		ident := &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
+		p.rejectEscapedReservedIdentifier()
 		p.nextToken() // consume =>
 		return p.parseArrowFunctionBody([]*ast.Parameter{{
 			Token: ident.Token, Name: ident.Value,
 		}}, false)
 	}
+	p.rejectEscapedReservedIdentifier()
 	return &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
+}
+
+// rejectEscapedReservedIdentifier 报告「用 unicode 转义拼出保留字作
+// IdentifierReference」的早错 (11.6.1: Identifier : IdentifierName but not
+// ReservedWord; 转义拼出的保留字不是关键字但也不是合法 Identifier)。
+// 只在**引用**位置调用 —— 属性名 (IdentifierName) / 成员名 / 标签允许转义拼出
+// 保留字, 那些路径不经过 parseIdentifier, 不受影响。
+func (p *Parser) rejectEscapedReservedIdentifier() {
+	tok := p.curToken()
+	if tok.Type != lexer.IDENTIFIER || !tok.IdentHasEscape {
+		return
+	}
+	p.rejectEscapedReservedName(tok.Literal)
+}
+
+// rejectEscapedReservedName 判定一个 (由转义拼出的) 名字是否为保留字并记错。
+// 经典保留字与 enum/extends/debugger/nul/true/false 恒保留; strict-only 保留字
+// (implements/interface/let/package/private/protected/public/static) 仅在严格
+// 模式记错 (node 22 实测: sloppy 下 `var x = 1; x; l\u0065t;` 合法)。
+func (p *Parser) rejectEscapedReservedName(name string) {
+	if isAlwaysReservedWordName(name) || (p.strict && isStrictReservedWordName(name)) {
+		p.addError("SyntaxError: Keyword must not contain escaped characters")
+	}
+}
+
+// isAlwaysReservedWordName 报告名字是否为**任何模式**下都不可作 Identifier 的
+// 保留字 (含 IdentifierName 层保留字 enum/extends/debugger 与字面量 null/true/false)。
+func isAlwaysReservedWordName(name string) bool {
+	switch name {
+	case "break", "case", "catch", "class", "const", "continue", "debugger",
+		"default", "delete", "do", "else", "enum", "export", "extends", "false",
+		"finally", "for", "function", "if", "import", "in", "instanceof", "new",
+		"null", "return", "super", "switch", "this", "throw", "true", "try",
+		"typeof", "var", "void", "while", "with":
+		return true
+	}
+	return false
+}
+
+// isStrictReservedWordName 报告名字是否为严格模式专属保留字
+// (FutureReservedWord 中非 always 的一档)。
+func isStrictReservedWordName(name string) bool {
+	switch name {
+	case "implements", "interface", "let", "package", "private", "protected",
+		"public", "static", "yield":
+		return true
+	}
+	return false
 }
 
 func (p *Parser) parseIntegerLiteral() ast.Expression {
@@ -2844,9 +2894,10 @@ func (p *Parser) parseNewExpression() ast.Expression {
 	// 元属性 new.target: `new` 后紧跟 `.target`。token 之间的空白/换行/注释
 	// 都只是分隔 (规范里 NewTarget 无 [no LineTerminator here] 限制, 见 test262
 	// new.target/asi.js), 词法层已把它们剥掉, 这里只需看 cur/peek 两个 token。
-	// `target` 必须是**未转义**的标识符: 词法层不处理 \u 转义, 所以
-	// `new.t\u0061rget` 会拆成 IDENTIFIER("t") + ILLEGAL, 天然落空 (早错)。
-	if p.curTokenIs(lexer.DOT) && p.peekTokenIs(lexer.IDENTIFIER) && p.peekToken().Literal == "target" {
+	// `target` 必须是**未转义**的标识符 (test262 new.target 早错: 关键字不得含
+	// 转义)。词法层现在会解码 \u 转义, 故显式排除 IdentHasEscape。
+	if p.curTokenIs(lexer.DOT) && p.peekTokenIs(lexer.IDENTIFIER) &&
+		p.peekToken().Literal == "target" && !p.peekToken().IdentHasEscape {
 		p.nextToken() // cur: DOT → target
 		if p.newTargetForbidden || !p.newTargetAllowed {
 			p.addError("SyntaxError: new.target expression is not allowed here")
@@ -3076,6 +3127,15 @@ func (p *Parser) parseProperty() *ast.Property {
 		if p.curTokenIs(lexer.YIELD) && !p.yieldIsIdentifier() {
 			p.addError("SyntaxError: 'yield' cannot be used as a shorthand property in strict mode code")
 			return nil
+		}
+		// 转义拼出的保留字作 shorthand (`{ bre\u0061k }`): shorthand 键同时是
+		// IdentifierReference, 转义标识符 token 类型是 IDENTIFIER 但仍非法。
+		if id.Token.IdentHasEscape {
+			before := len(p.errors.Errors)
+			p.rejectEscapedReservedName(id.Value)
+			if len(p.errors.Errors) > before {
+				return nil
+			}
 		}
 		prop.Value = id
 		// CoverInitializedName `{ x = 默认值 }`: 仅当整个对象字面量被用作解构
@@ -3742,6 +3802,10 @@ func (p *Parser) parseMemberSuffix(left ast.Expression) (ast.Expression, bool) {
 // 只拦「总是保留」的词: let / yield / await / async / of / undefined 是上下文
 // 关键字或普通标识符, 在对应 sloppy 语境里可作标识符, 不在此列。extends / enum /
 // debugger 在词法层是 IDENTIFIER (未关键字化), 需按文本判。
+// isReservedWordName 报告一个**名字字符串**是否为保留字 (含 IdentifierName
+// 层面的保留字 enum/extends/debugger 与严格保留字 implements 等)。
+// 与 shorthandKeyIsReserved 的差别: 后者靠 token 类型, 此处靠解码后的名字,
+// 用于「转义拼出的保留字」判定 (转义标识符的 token 类型是 IDENTIFIER)。
 func shorthandKeyIsReserved(tok lexer.Token) bool {
 	switch tok.Type {
 	case lexer.BREAK, lexer.CASE, lexer.CATCH, lexer.CLASS, lexer.CONST,
@@ -3799,6 +3863,15 @@ func (p *Parser) checkShorthandKey(prop *ast.PatternProperty) bool {
 	if id, ok := prop.Key.(*ast.Identifier); ok && shorthandKeyIsReserved(id.Token) {
 		p.addError(fmt.Sprintf("SyntaxError: '%s' cannot be used as a shorthand binding name", id.Value))
 		return false
+	}
+	// 转义拼出的保留字 shorthand (`{ bre\u0061k }`): token 类型是 IDENTIFIER
+	// (非关键字), 但作 IdentifierReference 仍非法 —— 见 rejectEscapedReservedName。
+	if id, ok := prop.Key.(*ast.Identifier); ok && id.Token.IdentHasEscape {
+		before := len(p.errors.Errors)
+		p.rejectEscapedReservedName(id.Value)
+		if len(p.errors.Errors) > before {
+			return false
+		}
 	}
 	// yield 是上下文保留字: 严格模式/生成器/模块里作 shorthand 绑定/引用名是早错
 	// (sloppy 非生成器里合法)。
