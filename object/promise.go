@@ -211,11 +211,16 @@ func invokePromiseCallbacks(p *Promise, callbacks []PromiseCallback) {
 			}
 		} else if p.State == PromiseFulfilled && !cb.IsCatch {
 			if cb.NextPromise != nil {
-				res, ok := CallPromiseHandler(cb.Callback, p.Value)
-				if ok {
-					cb.NextPromise.Resolve(res)
+				if IsCallable(cb.Callback) {
+					res, ok := CallPromiseHandler(cb.Callback, p.Value)
+					if ok {
+						cb.NextPromise.Resolve(res)
+					} else {
+						cb.NextPromise.Reject(res)
+					}
 				} else {
-					cb.NextPromise.Reject(res)
+					// nil 回调: 原样透传 fulfillment (catch 注册的透传位)
+					cb.NextPromise.Resolve(p.Value)
 				}
 			} else if IsCallable(cb.Callback) {
 				// 无 next: 结果被丢弃, 但必须消费回调错误信号, 否则
@@ -224,11 +229,16 @@ func invokePromiseCallbacks(p *Promise, callbacks []PromiseCallback) {
 			}
 		} else if p.State == PromiseRejected && cb.IsCatch {
 			if cb.NextPromise != nil {
-				res, ok := CallPromiseHandler(cb.Callback, p.Reason)
-				if ok {
-					cb.NextPromise.Resolve(res)
+				if IsCallable(cb.Callback) {
+					res, ok := CallPromiseHandler(cb.Callback, p.Reason)
+					if ok {
+						cb.NextPromise.Resolve(res)
+					} else {
+						cb.NextPromise.Reject(res)
+					}
 				} else {
-					cb.NextPromise.Reject(res)
+					// nil 回调: 原样透传 rejection (then 注册的透传位)
+					cb.NextPromise.Reject(p.Reason)
 				}
 			} else if IsCallable(cb.Callback) {
 				CallPromiseHandler(cb.Callback, p.Reason)
