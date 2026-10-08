@@ -4826,37 +4826,30 @@ func (c *Compiler) compileAssignmentExpression(node *ast.AssignmentExpression) e
 // 同一作用域内的重复声明 (let/let、let/const、let/function 等) 在此
 // 即为编译期 SyntaxError；函数声明与函数声明同名除外 (函数重定义语义)。
 // destructureSyntheticName 是解构声明在 AST 中的合成名。
-// 解构目标 (let [a, b] = x) 不经 prescan 登记 symbolic 名字，
-// 真正的绑定名在 compilePatternBind 阶段登记。
+// 解构目标 (let [a, b] = x) 的合成名不登记，但其模式里的**真实绑定名**
+// 必须在此登记 (见 prescanDeclarator) —— 否则列表顶部提升编译的函数体
+// 解析不到列表后面解构声明的绑定，在非全局作用域退化成 ReferenceError。
 const destructureSyntheticName = "__destructure__"
 
 func (c *Compiler) prescanScope(stmts []ast.Statement) error {
 	for _, stmt := range stmts {
 		switch s := stmt.(type) {
 		case *ast.LetStatement:
-			if s.Name != nil && s.Name.Value != destructureSyntheticName {
-				if err := c.prescanDeclare(s.Name.Value, false, false); err != nil {
-					return err
-				}
+			if err := c.prescanDeclarator(s.Name, s.Value, false); err != nil {
+				return err
 			}
 			for _, d := range s.More {
-				if d.Name != nil && d.Name.Value != destructureSyntheticName {
-					if err := c.prescanDeclare(d.Name.Value, false, false); err != nil {
-						return err
-					}
+				if err := c.prescanDeclarator(d.Name, d.Value, false); err != nil {
+					return err
 				}
 			}
 		case *ast.ConstStatement:
-			if s.Name != nil && s.Name.Value != destructureSyntheticName {
-				if err := c.prescanDeclare(s.Name.Value, true, false); err != nil {
-					return err
-				}
+			if err := c.prescanDeclarator(s.Name, s.Value, true); err != nil {
+				return err
 			}
 			for _, d := range s.More {
-				if d.Name != nil && d.Name.Value != destructureSyntheticName {
-					if err := c.prescanDeclare(d.Name.Value, true, false); err != nil {
-						return err
-					}
+				if err := c.prescanDeclarator(d.Name, d.Value, true); err != nil {
+					return err
 				}
 			}
 		case *ast.UsingStatement:
@@ -4883,6 +4876,36 @@ func (c *Compiler) prescanScope(stmts []ast.Statement) error {
 		}
 	}
 	return nil
+}
+
+// prescanDeclarator 预登记一个声明项的名字。
+//
+// 普通声明项 (Name 是真实标识符) 直接登记; 解构声明项 (Name 是合成名
+// "__destructure__") 登记的是模式里的真实绑定名 —— 它们只存在于
+// Value 的 AssignmentExpression 左值 (模式) 中, 靠 ast.PatternBoundNames 取出。
+//
+// 为什么解构也必须预登记: compileStatements 先把列表里所有函数声明提升编译,
+// 再按源码序编译其余语句。于是「function f(){ return x; } 出现在 const [x]=… 之前」
+// 时, f 的函数体在 x 被登记之前就要解析 x。全局作用域 (脚本顶层) 靠按名查全局
+// 侥幸可用, 但非全局作用域 (模块顶层 / 函数体 / 块) 必须靠预登记, 否则解析失败
+// 退化成 OP_LOAD_GLOBAL → 运行期 ReferenceError。
+//
+// isConst 只作用于**普通**名: 解构声明项一律按 let 语义 (isConst=false) 预登记,
+// 与 bindPatternTarget 的解构声明登记口径保持一致 (该路径本就按 let 登记,
+// 是既有边界, 不在本次修复范围)。
+func (c *Compiler) prescanDeclarator(name *ast.Identifier, value ast.Expression, isConst bool) error {
+	if name == nil {
+		return nil
+	}
+	if name.Value == destructureSyntheticName {
+		for _, n := range ast.PatternBoundNames(value) {
+			if err := c.prescanDeclare(n, false, false); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	return c.prescanDeclare(name.Value, isConst, false)
 }
 
 // prescanDeclare 在声明提升预登记阶段登记绑定名。
