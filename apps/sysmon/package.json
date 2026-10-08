@@ -1,0 +1,13 @@
+{
+  "name": "gox-sysmon",
+  "version": "0.1.0",
+  "private": true,
+  "description": "系统资源监视器 —— Gox 实用应用（运行时资源实时折线 / 指标卡片 / 多屏模式）",
+  "scripts": {
+    "dev": "goxjs dev src/main.js",
+    "start": "goxjs src/main.js"
+  },
+  "devDependencies": {
+    "@goxjs/goxjs": "^0.9.0"
+  }
+}

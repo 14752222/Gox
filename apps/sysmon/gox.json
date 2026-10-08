@@ -1,0 +1,10 @@
+{
+  "name": "sysmon",
+  "title": "系统资源监视器",
+  "appId": "com.gox.apps.sysmon",
+  "version": "0.1.0",
+  "permissions": [],
+  "desktop": {
+    "windowed": true
+  }
+}
