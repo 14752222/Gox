@@ -1515,6 +1515,52 @@ func TestTrailingCommaInArgumentAndParameterLists(t *testing.T) {
 	}
 }
 
+// TestMultiDeclaratorWithDestructuring (rWLQcV) 钉住「一条声明里多个声明项,
+// 其中含解构模式」的解析。
+//
+// 回归背景: parse{Var,Let,Const}Statement 只在**首项**处理解构模式, 逗号续接
+// 循环仅接受普通标识符 —— 于是 `var [p] = [1], [q] = [2];` 这类写法全体
+// SyntaxError (「missing semicolon before COMMA」/「expected identifier, got
+// LBRACKET」)。解构项现走合成名脱糖 (Name=__destructure__ +
+// Value=AssignmentExpression{Left: 模式}), More 里也不例外。
+func TestMultiDeclaratorWithDestructuring(t *testing.T) {
+	ok := []string{
+		`var [p] = [1], [q] = [2];`,
+		`var [p] = [1], q = 2;`,
+		`var p = 1, [q] = [2];`,
+		`var {a} = ({a: 1}), {b} = ({b: 2});`,
+		`var a = 1, [b] = [2], c = 3;`,
+		`let [p] = [1], [q] = [2];`,
+		`let {x} = {x: 1}, [y] = [2], z = 3;`,
+		`const [a, b] = [1, 2], {c} = {c: 3};`,
+		`const {a} = {a: 1}, {b} = {b: 2};`,
+		`var [[a]] = [[1]], [b] = [2];`,
+		`var [...r] = [1, 2], [q] = [3];`,
+	}
+	for _, src := range ok {
+		p := New(lexer.New(src))
+		p.ParseProgram()
+		if p.Errors().HasErrors() {
+			t.Fatalf("%q: 应当解析通过, 却报: %s", src, p.Errors().String())
+		}
+	}
+
+	// 负例: 缺初始化器 / 重复绑定, 必须仍报错。
+	bad := []string{
+		`var [p];`,
+		`var p = 1, [q];`,
+		`let [p], [q];`,
+		`const [a] = [1], b;`,
+	}
+	for _, src := range bad {
+		p := New(lexer.New(src))
+		p.ParseProgram()
+		if !p.Errors().HasErrors() {
+			t.Fatalf("%q: 应当报错却通过了", src)
+		}
+	}
+}
+
 // checkParserErrors 检查解析器是否有错误，如果有则失败测试。
 func checkParserErrors(t *testing.T, p *Parser) {
 	t.Helper()
