@@ -574,6 +574,26 @@ this 是 undefined，都会把删除落到错误的基上。
 - 决定性实验（全新 worktree + `git rev-parse HEAD` + `git status --porcelain` + `git diff --stat -- parser/` 四重确认）：纯净 `b381cbc` **通过**三条 `yield` 族争议用例（各 1/1），`b381cbc` + 脏 parser（把 yield 修复整体 revert 的 +45/-208）则**三条全挂**（0/1）；纯净 `b381cbc` 全量 = **18098 / 76.2792%**。
 - ⇒ `real-base.json` 的 `17929` **恰是"`b381cbc` + 脏 parser"的数**，被误标为"真 `b381cbc`"。**台账批次十的 `18098（76.2792%）` 与徽章 `76.3%` 本来正确，无需订正**。
 - **纪律**：基准二进制的身份必须用 CM 验证（`git worktree add --detach <tmp> <sha>` → 确认 HEAD/工作区/关键目录三重干净 → 才 `go build`），**不能靠文件名、不能靠"上次是谁编的"**。本会话两次在基线身份上翻车，两次都是因为信了一个未验证来源的 JSON。
+## 二十五、合流批次十二（`var` 解构绑定落点 = 函数作用域层）
+
+**本轮形状**：批次十一收尾后，13 张 `running` 单里剩下的唯一真缺口是 `r4McL4`（`var` 解构作用域），其余单已由并行会话修完并在前几轮核销。本轮单线程推进这一条。
+
+| 路线 | 单 | 处置 | 要点 | 证据 |
+|---|---|---|---|---|
+| b12/var-destr | `r4McL4` | **合入** | `var` 解构与 `let` 共用 `compileDestructureAssignment(assign, true)` 一条路径，而 `bindPatternTarget` 在 `isDecl=true` 时统一走**当前块**的 `declareOnce` ⇒ `for (var [p] of …) {}` 的 `p` 落在循环体块作用域，块退出即消失，块外读 `p` 退化成 `OP_LOAD_GLOBAL` → 运行期 `ReferenceError`（同作用域内声明+读取因共享同一块而侥幸可用）。修法：`isDecl bool` → **三态 `bindKind`**（`bindAssign`/`bindLexical`/`bindVar`），`bindVar` 走新增的 `declareFuncLayerVar`/`emitVarAssign`（FuncLayer 登记）；`for`-of/`for await`-of 的 `Pattern` 分支按 `VarDecl` **三态**分流（`nil` → `bindAssign` 赋值形态）；`collectVarBindingsStmt` 补齐解构声明项真实名的提升（否则槽位晚于循环 `sealFrom` 分配，会被 `OP_ITER_BOUNDARY` 当每轮词法绑定克隆）；`ast.PatternBoundNames` 补 `ObjectPattern.RestTarget` | 全量 A/B **+1 GAIN / 0 LOST**（唯一翻转 `statements/for-of/head-var-bound-names-dup.js`）；node v22 对照探针 21 例全对齐；新增 `vm/var_destructure_scope_test.go` 9 例 |
+
+**A/B（lead 独立实测，基线 = 修复前的 `Gox/main` = `438b29a`）**：
+
+- 全量 23726 例：`18126（76.3972%）` → **`18127（76.4014%）`**；
+- 逐用例 diff 三项：`only_a = 0` / `only_b = 0` / `pass_differs = 1`（**GAIN 1 / LOST 0**）；
+- `go test ./...`（20 包）全绿；徽章 `docs/test262-compliance.json` 仍为 `76.4%`（76.4014% 四舍五入同位，未改动）。
+
+**本轮实锤（流程教训）**：
+
+- **三态分流实现时漏了 `VarDecl == nil`**：`for ([a, b] of xs)` 是**赋值**形态，应落 `bindAssign`，第一版误写成 `bindLexical` ⇒ 既有测试 `TestForOfLHSAssignment`（`a*100+b` 期望 `908`、错则得 `102`）当场拦下。**"改完先跑全量 `go test ./...`"这一步不能省**。
+- **裸环境（`testEval`，不装 stdlib）下、函数体内的 `arr.push(...)` 报 `TypeError: undefined is not a function`**（`Array.prototype.push` 由 stdlib 提供）。为排除"是本轮改动引起"，在**干净 `438b29a` worktree** 上跑同一探针 —— 失败完全一致 ⇒ 既有现象、与本轮无关；护栏测试改用完整管线 `evalJS`。
+- **"缺陷是否在计分范围内"必须实测、不能照抄**：开工前的记录是"该缺陷不在 test262 `language` 计分范围内"，实测 A/B 拿到 **+1 GAIN**。
+
 ## 待确认（信息缺口）
 
 - `agent_doc/undecided-and-unimplemented.md` 是 **2026-09-18 快照**，其 §四 缺口清单中已有多项（cocoa 后端、iOS 后端、X11 修正、M2 IME、滚动条拖拽、tabs、table/tree、tooltip）在 09-18 后落地。本路线图已按 git 历史更正，但**建议回填该台账**，否则后续排期会继续基于过期口径。
