@@ -644,7 +644,7 @@ this 是 undefined，都会把删除落到错误的基上。
 - **`<button label="…">` 在本仓库不成立**：只有 `menu` / `menuitem` 读 `label` prop（`gfx/menu.go`），`<button>` 的文案是**文本子节点**。按 DOM 直觉写出来的按钮不报错，只是个宽 16px 的空白壳；测试侧 `buttonWithText` 找不到它 ⇒ `click(fake, nil)` 直接 nil 解引用。这是本轮唯一一次卡住的坑，代价不低：错误信息是 `InternalError: VM panic: nil pointer`，栈里指向的是**测试辅助函数**而不是根因。写 demo 先照抄一个现有 demo 的写法。
 - **VM panic 的第一现场要主动取**：默认只给 `InternalError: VM panic: …` 一行，看不出在哪。`GOX_PANIC_TRACE=1` 会打出 Go 调用栈 + panic 帧附近的字节码窗口（`vm/vm.go` 的 `runProtected`）；上面那个 nil 解引用就是靠它一眼定位到辅助函数里的。
 - **端到端 demo 用例的价值在这里兑现**：`scroll_write_test.go` 前 8 例都是 Go 侧直接调布局，**绕过了 gfx/solid signal → h() 建树这一整段**；`TestScrollWriteDemoScript` 跑真脚本，才把「按钮点下去 → signal → prop 名落在节点上 → 布局期读到」整链接通。
-- **驱动 GUI demo 的时序口径**：一次点击一轮 pump（受控 prop 要等 signal 写回 + 下一轮 pump 才落回节点）；断言写在**点击的下一轮** —— 本轮第一版写成"先连点 9 次再断言"，结果断言全部打空，必须先 readout 一轮真实的树才知道差在哪。
+- **驱动 GUI demo 的时序口径**：一次点击一轮 pump（受控 prop 要等 signal 写回 + 下一轮 pump 才落回节点）；断言写在**点击的下一轮** —— 本轮第一版写成"先连点 9 次再断言"，结果断言全部打空，必须先把真实的树打出来看一轮才知道差在哪。
 - **本批次不适用 test262 A/B**（同 §二十六 的沙箱约束）：一条改的是宿主↔VM 的边界接线，一条是 GUI 组件语义，都没有语言层计分项。
 
 ## 二十九、vlist 在「数据源持续追加」下的实测（`rYffwm`）
