@@ -512,6 +512,41 @@ this 是 undefined，都会把删除落到错误的基上。
 不调 `IteratorClose`（既有 bug）；③ 函数 Symbol 键枚举缺失（`*Closure` 无
 `SymbolProperties`）+ 函数自有键顺序（Go map 无插入序）。
 
+
+## 二十三、合流批次十（空 yield 表达式位置 / for-of IteratorClose / 函数 Symbol 键与键序 / async generator `yield*` 异步委托 / 移动端分发决策 / WASM 可行性探针）
+
+**本轮形状与往批不同**：13 张 `running` 单里 **8 张的实现早已躺在未合入分支上**（单子挂着 running 只是因为交付没合进 `main`）
+⇒ 本轮主体是「**审计既有交付 → 在干净基线上重放 → lead 独立复核**」，只有 3 条是从零实现（空 yield / for-of IteratorClose / 函数 Symbol 键）。
+派发 9 条并行路线（同一条消息里并列前台 Agent，各占独立 worktree，基线 `Gox/main` = `e17baeb`；远端中途由并行会话推进到 `9bfab1f`，
+该提交只加 `apps/` 12 个文件、**不含引擎代码**，故合流基线与 A/B 不受影响）。
+
+| 路线 | 单 | 类型 | 要点 | 定向 A/B（agent 自报，lead 抽查过族用例） |
+|---|---|---|---|---|
+| b10-yld | `rmiC4k` | 新实现 | 空 `yield` 在**表达式位置**可解析：根因是 `parseYieldExpression` 先 `nextToken()` ⇒ 空-yield 早退时 `curToken` 越位，破坏「返回后 cur 停在表达式末 token」的全局约定；改为一律基于 `peekToken` 判定、空 yield **不消费** token；另显式承接「形参窗口内不得出现 YieldExpression」早错（此前靠终结符越位侥幸触发） | filter `yield` 1109/1395 → 1207（**GAIN 98 / LOST 0**）；`generators` +9、`async-generator` +9、`yield-ident` +8 |
+| b10-iterclose | `rseS4J` | 新实现 | for-of 语句 abrupt 完成调 **IteratorClose**：迭代器改存隐藏槽、`OP_ITER_STEP` 按 `.done` 判结束（替掉「值 === undefined/null 即结束」的启发式，连带修掉 for-of 产 `null`/`undefined` 提前退出）；复用 for-await 的 try/finally 基础设施（新增 `closeSync` 区分同步/异步收尾） | `iterator-close` 5/15 → **15/15**（GAIN 10 / LOST 0）；`statements/for-of` GAIN 36 |
+| b10-funcprop | `rS4HXt` | 新实现 | `*Closure`/`*BuiltinFunction`/`*BuiltinMethod` 嵌入 `funcSymStore`（Symbol 键不再静默丢弃）；函数自有字符串键改按 **OrdinaryOwnPropertyKeys**（整数升序 → 插入序，用 `propKeyOrder` 取代 map 字典序）；`*BuiltinFunction.prototype` 必须照常列出（否则 `getOwnPropertyNames(Object)` 丢 `prototype`） | 随全量 A/B 一并验收（未单独留定向数字） |
+| b10-asyncgen | `r6e5qp` 子项1 | 审计+补完 | async generator `yield*` **异步委托**：新增 `OP_PUSH_RET_TRY`（try 条目上的「return 完成拦截 PC」）使 return 完成可透传；`throw` 缺方法时先 AsyncIteratorClose 再 TypeError；`yield X` 的 await 移到**编译期**（值须 await，但结算不 await）；Async-from-Sync wrapper 的 next/return/throw 三处一律 PromiseResolve 解包 | `yield-star` 666/720 → **719/720**（GAIN 53 / LOST 0）；`generators`/`async-function`/`async-arrow`/`await` 逐条 0/0 |
+| b10-strict | `r63RpV` 子项4 | 核实+补钉 | **核实结论：子项2（`x++` 运行期 ReferenceError）与子项4（顶层 sloppy `this`=globalThis）的实现都已在 `main`**（`wt/strict-p0` 的 `84b7f43` 半成品内容已被别的 sha 合入）⇒ 本轮只补**严格半边**回归测试（严格裸调用 this=undefined、严格 call/apply(null)、严格性向嵌套函数传播、class 体恒严格、箭头词法继承、generator、`new` 不受影响），**无引擎代码改动** | 纯测试（0 行为改动） |
+| b10-evalsuper | `roiE5Z` | 核实+补边界 | **核实结论：`super.x` 在直接 eval 里不再误报的实现已在 `main`**（`a7ef20e`，与分支 `6532cf2` 同源，diff 为分支超集）⇒ 本轮只补同族**计算式 SuperProperty** `super[expr]`（前缀解析只认 `super(`/`super.` 的纯解析缺口；中缀下标与两条编译路径早已处理 Computed） | `contains-superproperty` GAIN 8 / `super` GAIN 12，**LOST 0** |
+| b10-wasm | `rzTQml` | 实测探针 | `GOOS=js GOARCH=wasm` **真编出来并在 Node 里跑通**（`cmd/goxwasm/`）。体积 **strip 26.01 MiB / plain 26.51 MiB**（比桌面宿主 24.57 MiB **还大**：js/wasm 目标少若干原生优化 + stdlib 全量）。**编译层面无阻塞包**；体积层面唯一候选 = `update`（连带 `net/http`）。**新增致命阻塞点：`process.exit()` 会打死实例**（`stdlib/process.go` 的 `os.Exit`）⇒ Playground 必须宿主屏蔽或让 stdlib 在 wasm 下降级为可捕获异常；`setTimeout` 需宿主驱动 `RunTimers` | 不需要 test262 A/B |
+| b10-mobdist | `rgnRC4`/`r8DoFS` | 审计+决策 | **推翻「零实现」前提**：`scripts/build-npm-mobile.sh`、`gen-npm-mobile-pkgs.py`、`docs/mobile-distribution-decision.md` 等已在 `main`。本轮补：`docs/mobile-distribution-decision.md` 定稿（三项决策：产物形态 / 分发渠道 / 版本兼容矩阵四层机制）、`.github/workflows/mobile-release.yml`（nightly + release 两档，产物 APK/HAP/壳工程 zip，缺 NDK/签名时优雅跳过且跳过步骤一律 `::error::` 带证据）、`scripts/check-shell-engine-version.py`（壳工程↔引擎版本闸门，`--require` 可升级为硬性）、`docs/npm-release.md`/`desktop-distribution.md`/`release-post--checklist.md` 口径同步 | 不需要 test262 A/B |
+| b10-runner2 | `rNR2Zk`/`r23xdR` | 核实+补钉 | **两张单的主体都已由并行会话合入 `main`**：真模块入口 `EvalModuleFileVMWithGlobals`（`isModule` 分支）+ negative 判据只取首行（`errorHead`/`firstLine`，注释里写明正是「回显源码行侥幸判过」）⇒ 本轮只补「模块默认严格」两条回归测试（模块顶层赋值抛 ReferenceError 且不建全局 / 模块内裸调用 this=undefined） | 纯测试（0 行为改动） |
+| **lead 修回归** | — | 独立复核产物 | 全量 A/B 抓到**唯一 LOST**：`for-await-of/iterator-close-non-throw-get-method-abrupt.js`（3/3 稳定复现）。逐条 A/B 定位到 **`9c5123a` 一个提交**（asyncgen 路线）：它把 `GetProperty` 触发的回调桥错误一律消费后交给 `errToValue` 走**返回值**通道，而 `throwIfError` **只认 `*object.Error`** ⇒ 抛出值是普通对象时被当成正常返回值，「该 reject」退化成「正常完成」。改法：按抛出值类型分流（`*object.Error` 走返回值通道保持原 GAIN；其余任意 JS 值**原样退回桥信号**——`callbackError` 与 `callbackErrorValue` **两槽一并还原**，只还原值槽等于没还原） | `iterator-close-non-throw` 3/6 → **6/6**（修复前 5/6）；`AsyncFromSyncIteratorPrototype`(built-ins) 16/38 → **28/38**（GAIN 12 保持）；`yield-star` 666/720 → **719/720**（GAIN 53 保持） |
+
+**A/B（lead 独立实测，基线 = `Gox/main` 的 `9bfab1f`；基线二进制由 `git archive 9bfab1f` 自建）**：
+
+- **全量 23726 例：17742（74.7787%）→ 18098（76.2792%），GAIN 356 / LOST 0**；
+- 逐用例 diff 三项：`only_a = 0` / `only_b = 0`（专项 `pass_differs` 见上表修复行）；
+- **LOST 0**
+- `go build ./...` / `go vet ./...` / `go test -count=1 ./...`（20 包）全绿；
+- 徽章 `docs/test262-compliance.json`：74.8% → **76.3%**。
+
+**流程实锤（本轮新增，值得记牢）**：
+
+- **`fullab` 共享锁的 stale 清理判据有 bug**：`find "$LOCK" -maxdepth 1 -mmin +12` 只看**目录内条目**，空目录永远匹配不上 ⇒ 遇到隔夜僵锁会**永久自旋**（本轮实测卡 9 分钟，锁是 14 小时前留下的）。正解：`find "$LOCK" -maxdepth 0 -mmin +12`（判目录自身）或直接比目录 mtime。
+- **agent 的最终报告会随父回合中断而丢失，但提交正文留了验收数字** ⇒ 回收成果的标准动作是 `git log --format='%h %s%n%b'` 读提交正文 + `git status`（只看 `git log` 会漏掉未提交的半成品）。本轮 9 条里 8 条有产出，**1 条（b10-runner）零提交零改动**，等于白跑一轮，已重开为 b10-runner2。
+- **agent 自报的「LOST 0」不能当验收**：asyncgen 路线自报 `for-await` LOST 0，实际引入了一条稳定回归；只有 lead 的全量逐用例 diff 才抓得到。
+- **「单子里的因果链」又一次被证伪**：`rNR2Zk`/`r23xdR`/`roiE5Z`/`r63RpV 子项4` 四张单的主体**都已在 main**，看板却仍挂着 running（没有关闭动作）。⇒ 开工前必须先按 patch-id + 内容双核对账。
 ## 待确认（信息缺口）
 
 - `agent_doc/undecided-and-unimplemented.md` 是 **2026-09-18 快照**，其 §四 缺口清单中已有多项（cocoa 后端、iOS 后端、X11 修正、M2 IME、滚动条拖拽、tabs、table/tree、tooltip）在 09-18 后落地。本路线图已按 git 历史更正，但**建议回填该台账**，否则后续排期会继续基于过期口径。
