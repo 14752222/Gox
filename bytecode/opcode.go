@@ -182,6 +182,12 @@ const (
 	OP_EVAL_MARK_HOME_THIS  Opcode = 0x6F
 	OP_EVAL_MARK_SUPER      Opcode = 0x56
 
+	// OP_NEW_SPREAD: `new C(...args)` —— 构造调用的实参在运行期才知道个数,
+	// OP_NEW 的 argc 是编译期常量表达不了, 与 OP_CALL_SPREAD 同理单独开一条。
+	// 实参先由 OP_NEW_ARRAY/OP_ARRAY_PUSH/OP_ARRAY_SPREAD 收集成数组压在栈上
+	// (栈: [argsArray, callee]), VM 摊平后复用 OP_NEW 的分派主体。
+	OP_NEW_SPREAD Opcode = 0x57
+
 	// OP_NEW_TARGET_MARK: 无操作数。编译器在 super(...) 调用前发射, 把调用者帧
 	// 生效的 new.target 记为「下一次调用要继承的构造目标」。VM 在紧随其后的
 	// OP_CALL_METHOD / OP_CALL_METHOD_SPREAD 装配父构造器帧时消费: 父构造器里
@@ -422,7 +428,7 @@ var opcodeNames = map[Opcode]string{
 	OP_LOOP: "LOOP",
 	OP_CALL: "CALL", OP_RETURN: "RETURN", OP_RETURN_VOID: "RETURN_VOID",
 	OP_FUNCTION: "FUNCTION", OP_ARROW_FUNC: "ARROW_FUNC", OP_CLOSURE: "CLOSURE",
-	OP_NEW: "NEW", OP_CALL_SPREAD: "CALL_SPREAD", OP_CALL_METHOD: "CALL_METHOD",
+	OP_NEW: "NEW", OP_NEW_SPREAD: "NEW_SPREAD", OP_CALL_SPREAD: "CALL_SPREAD", OP_CALL_METHOD: "CALL_METHOD",
 	OP_CALL_METHOD_SPREAD: "CALL_METHOD_SPREAD",
 	OP_EVAL_MARK:          "EVAL_MARK",
 	OP_EVAL_MARK_INIT:     "EVAL_MARK_INIT",

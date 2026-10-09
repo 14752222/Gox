@@ -2958,7 +2958,14 @@ func (p *Parser) parseNewExpression() ast.Expression {
 		}
 		return &ast.MetaProperty{Token: newTok}
 	}
-	expr.Callee = p.parseExpression(MEMBER)
+	// 被 new 的表达式必须是 MemberExpression —— 即「属性链要吃到, 但调用括号要
+	// 留在外面」。`new obj.Ctor(1)` 若在这里用 MEMBER 层解析, 中缀循环的条件是
+	// `优先级 < 下一 token 优先级`, `.` 恰好也是 MEMBER ⇒ 不吃 ⇒ Callee 停在
+	// `obj`, 出来的树是 `(new obj).Ctor(1)` —— 运行期报 "obj is not a
+	// constructor", 把本该成立的构造调用整族打掉 (built-ins 里 Temporal.* /
+	// 命名空间上的构造器受影响最大)。CALL 层刚好: 比 `.`/`[` 松 ⇒ 属性链照
+	// 常吃进去; 与 `(` 同层 ⇒ 参数列表留给下面自己拼, 不会变成 new 一个调用结果。
+	expr.Callee = p.parseExpression(CALL)
 	if expr.Callee == nil {
 		return nil
 	}

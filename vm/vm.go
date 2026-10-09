@@ -2096,6 +2096,22 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				vm.pendingNewTarget = f.NewTarget
 				vm.hasPendingNewTarget = true
 			}
+		case bytecode.OP_NEW_SPREAD:
+			// 构造调用但实参在数组里: 栈 [argsArray, callee]。
+			// argc 是运行期值 —— 摊平回栈上后交给 OP_NEW 的分派主体统一处理
+			// (两条指令唯一的差别就是实参来源)。
+			callee := vm.stack.Pop()
+			arr := vm.stack.Pop()
+			if array, ok := arr.(*object.Array); ok {
+				for _, arg := range array.Elements {
+					vm.stack.Push(arg)
+				}
+				operand = uint16(len(array.Elements))
+			} else {
+				operand = 0
+			}
+			vm.stack.Push(callee)
+			fallthrough
 		case bytecode.OP_NEW:
 			// new Constructor(args...) — 简化实现
 			numArgs := int(operand)

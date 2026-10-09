@@ -7234,6 +7234,22 @@ func getBlockFromBody(body ast.Node) *ast.BlockStatement {
 }
 
 func (c *Compiler) compileNewExpression(node *ast.NewExpression) error {
+	// new C(...args): 实参个数要运行期才知道, 而 OP_NEW 的 argc 是编译期常量
+	// —— 与 OP_CALL_SPREAD 同辙: 先把实参收成一个数组 (栈: [argsArray, callee]),
+	// 再由 OP_NEW_SPREAD 摊平。此前这里直接逐个编译实参, 遇到 spread 就掉到
+	// "unsupported expression type: *ast.SpreadElement" 编译错 —— built-ins 里
+	// Temporal 的官方 harness (temporalHelpers.js) 全靠 `new construct(...args)`
+	// 转发实参, 一整族用例因为这一句停在编译期, 连引擎实现都摸不到。
+	if hasSpreadArgs(node.Arguments) {
+		if err := c.compileArgumentsArray(node.Arguments); err != nil {
+			return err
+		}
+		if err := c.compileExpression(node.Callee); err != nil {
+			return err
+		}
+		c.emitter.Emit(bytecode.OP_NEW_SPREAD, 0)
+		return nil
+	}
 	// 编译参数
 	for _, arg := range node.Arguments {
 		if err := c.compileExpression(arg); err != nil {
