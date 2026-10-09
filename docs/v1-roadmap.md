@@ -1120,3 +1120,82 @@ press / drag 同一条线程、同一套字段纪律）才能让任意节点都�
 新增 `gfx/gesture.go` + `gfx/gesture_test.go`（16 例）；`gfx/render.go` 接线
 按下 / 移动 / 抬起 / 离窗四个入口并合成等待预算。`go test -count=1 ./...`
 全绿（2m03s）。
+
+## 四十、捕获前缀必须覆盖嵌套闭包：`CapturePrefixLen` 只算自己（rtWB7N）
+
+### 1. 症状
+
+「跨模块工厂返回 + 解构 + JSX，且闭包引用跨模块 import 绑定」抛
+`ReferenceError: Cannot access lexical declaration before initialization`，
+报错行落在**入口的 render 调用**上 —— 与真正的出事地点（另一个模块里的
+工厂函数）隔了一整个模块。
+
+### 2. 定位：把单子里的「怀疑方向」证伪了一半
+
+单子怀疑 prescan 没穿透到 JSX 子组件闭包那一层。实测不是：
+
+| 形态 | 结果 |
+|---|---|
+| 只引用跨模块 import 绑定（`bump`），没有工厂局部 | **OK** |
+| 只引用工厂局部（signal / 普通箭头 / 普通数组解构） | **TDZ** |
+| 工厂局部在**模块顶层**（不解构、不跨模块） | OK |
+| 工厂局部在函数内，闭包**不经**工厂返回（同模块直接调用） | OK |
+| 工厂局部在函数内，闭包被**对象字面量**携带再被调用 | **TDZ** |
+
+即：与解构无关、与 signal 无关、与跨模块 import 无关。真条件是
+**「函数作用域内的绑定，被两层之内的嵌套闭包引用，而中间层自己不引用它」**。
+最小复现（纯 JS，不需窗口）：
+
+```js
+function callWith(fn) { return fn(1); }
+export function make() {
+  const n = () => 7;                          // slot 3
+  const W = () => callWith((ctx) => n());     // W 自己只引用 slot 0
+  return { W };
+}
+```
+
+### 3. 真因
+
+`computeCapturePrefixLen` 只扫描**本函数**的指令流，得出它自己引用的外层
+槽位上界。而嵌套闭包是在**本函数的帧里**创建的，它要的外层槽位必须由本
+函数代为捕获 —— 否则 `createClosure` 里
+`prefixLen <= len(frame.SharedCells)` 判据落空，退到读本函数帧的 `Locals`，
+那里对应的是本函数**自己的**局部（尚未初始化）⇒ `nil` ⇒ TDZ 误报。
+
+上例里 W 的前缀是 1，而体内的箭头需要 4，少捕获的 slot 1..3 就是那三个
+`nil`。修复：对每条建函数指令取子函数元数据，把它的前缀并入上界。
+
+### 4. 为什么必须 clamp 到 `baseSlot`
+
+第一版没有 clamp，直接并入子函数前缀 —— 于是 `gfx` 的
+`TestScaffoldTemplateProject`（脚手架模板待办应用）当场挂掉：
+`toggle` 的前缀从 9 膨胀到 21，越过它自己的 `baseSlot=20`，把**本函数自己
+的局部**也算进了捕获前缀，捕获源随之从 `SharedCells`（活 cell）退回帧数组
+（拷贝），与外层 cell 失联。
+
+子函数引用的、≥ 父 `baseSlot` 的槽位是父自己的局部，父帧的 `Locals` 里
+直接就有，不需要（也不能）由父"捕获"。所以并入时截断到 `baseSlot`。
+
+### 5. 证据
+
+| 项 | 结果 |
+|---|---|
+| `go test -count=1 ./...` | 全绿 |
+| test262 `language` 全量 A/B | GAIN 2 / **LOST 0** |
+| test262 `built-ins` 全量 A/B | 与干净 HEAD 逐用例比对无差异 |
+| 单子里 8 条「OK」形态 | 全部照旧 OK（`xvfb-run` 真 X11 逐个跑过） |
+| 原 TDZ 复现 `grun2.js` | `RERENDER_OK`（修复前必抛 TDZ） |
+
+新增 `vm/capture_prefix_test.go`（6 例，纯 JS）+ `gfx/jsx_capture_test.go`
+（JSX + canvas + 真渲染的端到端）。
+
+### 6. 反向验证（3 组注入，全部如期 FAIL）
+
+| 注入 | 如期 FAIL |
+|---|---|
+| 不并入嵌套函数前缀（等价修复前） | vm 的 6 例 + `TestJSXFactoryCallbackCapturesLocal` |
+| 并入但不 clamp 到 `baseSlot` | `TestScaffoldTemplateProject` |
+
+> 反向验证里"去掉 clamp"这一组是**先靠回归测试发现、再补成反向用例**的：
+> 第一版修复就是这么挂的。留着它，免得后人"顺手优化"掉这个截断。

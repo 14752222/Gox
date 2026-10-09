@@ -3001,7 +3001,7 @@ func (c *Compiler) compileStaticInitFn(className, superName string, statics []*a
 	}
 	meta := bytecode.NewFunctionMetadata("__static_init__", fnIns, fnScope.NumLocals(), numParams, initParams, false)
 	meta.BaseSlot = baseSlot
-	meta.CapturePrefixLen = computeCapturePrefixLen(fnIns, baseSlot)
+	meta.CapturePrefixLen = computeCapturePrefixLen(fnIns, baseSlot, c.constants)
 	meta.ArgumentsSlot = argumentsSlot
 	meta.IsStrict = true
 	meta.Positions = toSrcPosList(fnSrcPositions)
@@ -3376,7 +3376,7 @@ func (c *Compiler) compileClassConstructor(fields []*ast.ClassField, ctor *ast.C
 	}
 	meta := bytecode.NewFunctionMetadata(ctorName, fnIns, fnScope.NumLocals(), len(paramSpecs), paramSpecs, false)
 	meta.BaseSlot = baseSlot
-	meta.CapturePrefixLen = computeCapturePrefixLen(fnIns, baseSlot)
+	meta.CapturePrefixLen = computeCapturePrefixLen(fnIns, baseSlot, c.constants)
 	meta.ArgumentsSlot = argumentsSlot
 	meta.IsStrict = c.strict
 	meta.Positions = toSrcPosList(fnSrcPositions)
@@ -4491,7 +4491,33 @@ func (c *Compiler) emitGlobalDeclare(name string) {
 // 只统计「槽位语义」的指令 (LOAD/STORE/STORE_CONST), 且仅取 operand <
 // baseSlot 的 (本函数自身的槽位不属外层引用)。上界偏大只会保守回退帧
 // 数组 (旧行为), 不会错。
-func computeCapturePrefixLen(ins bytecode.Instructions, baseSlot int) int {
+//
+// ===== 嵌套函数的前缀必须并入 (ryB64Z 同族, rtWB7N) =====
+//
+// 只扫本函数指令流是不够的: 本函数体内**定义的嵌套函数**也会引用外层槽,
+// 而它是在**本函数的帧里**创建的 —— createClosure 取捕获源的判据是
+// `prefixLen <= len(frame.SharedCells)`, SharedCells 就是本函数闭包捕获
+// 到的那段外层 cell。本函数若没把内层需要的槽位捕获进来, 内层就退化到
+// 读本函数帧的 Locals —— 那里对应的是本函数**自己**的槽位 (尚未初始化),
+// 于是内层读外层变量读到 nil, 表现为
+// "Cannot access lexical declaration before initialization"。
+//
+// 最小复现 (工厂 + JSX 回调):
+//
+//	function myh(tag, props) { props.onDraw(1); return 1; }
+//	export function make() {
+//	  const n = () => 7;                                  // 外层 slot 3
+//	  const W = () => myh("canvas", { onDraw: () => n() }); // W 自己不引用 n
+//	  return { W };
+//	}
+//
+// W 自己只引用 slot 0 ⇒ 旧算法 prefix=1; 而 W 体内的 onDraw 要 slot 3 ⇒
+// 需要 prefix=4。W 少捕获的 slot 1..3 让 onDraw 读到 W 帧的 nil 槽位。
+//
+// 所以这里对每条建函数的指令取它的元数据, 把子函数的 CapturePrefixLen
+// 并入上界。子函数的元数据在它 finalize 时已算好 (含它自己的嵌套), 而父子
+// 共用同一套 slot 编号, 直接取 max 即可 —— 不需要再递归扫一遍子函数体。
+func computeCapturePrefixLen(ins bytecode.Instructions, baseSlot int, consts *bytecode.ConstantPool) int {
 	maxRef := 0
 	for off := 0; off+bytecode.InstructionSize <= len(ins); off += bytecode.InstructionSize {
 		op, operand := bytecode.ReadInstruction(ins, off)
@@ -4499,6 +4525,29 @@ func computeCapturePrefixLen(ins bytecode.Instructions, baseSlot int) int {
 		case bytecode.OP_LOAD, bytecode.OP_STORE, bytecode.OP_STORE_CONST, bytecode.OP_DECLARE_VAR:
 			if int(operand) < baseSlot && int(operand)+1 > maxRef {
 				maxRef = int(operand) + 1
+			}
+		case bytecode.OP_FUNCTION, bytecode.OP_ARROW_FUNC, bytecode.OP_CLOSURE:
+			// 本函数体内定义的嵌套函数: 它引用的外层槽必须由本函数代为捕获。
+			// 常量池里不是函数元数据 (理论上不该发生) 就跳过 —— 保守取 0。
+			if consts == nil {
+				continue
+			}
+			sub, ok := consts.Get(uint16(operand)).(*bytecode.FunctionMetadata)
+			if !ok || sub == nil {
+				continue
+			}
+			// 只并入 < baseSlot 的那一段: >= baseSlot 的槽位是**本函数自己的
+			// 局部**, 由本函数帧的 Locals 直接提供 (内层闭包在本帧里创建时
+			// 正是从 frame.Locals 取它们), 不需要也不该由本函数"捕获" ——
+			// 把它们算进来会让前缀膨胀过 baseSlot, 捕获源随之从
+			// SharedCells (活 cell) 退回帧数组 (拷贝), 与外层 cell 失联
+			// (r6e5qp 那类"读不到更新"的问题)。
+			n := sub.CapturePrefixLen
+			if n > baseSlot {
+				n = baseSlot
+			}
+			if n > maxRef {
+				maxRef = n
 			}
 		}
 	}
@@ -6776,7 +6825,7 @@ func (c *Compiler) compileFunctionSelf(name, selfName string, params []*ast.Para
 		isArrow,
 	)
 	meta.BaseSlot = baseSlot
-	meta.CapturePrefixLen = computeCapturePrefixLen(fnIns, baseSlot)
+	meta.CapturePrefixLen = computeCapturePrefixLen(fnIns, baseSlot, c.constants)
 	meta.ArgumentsSlot = argumentsSlot
 	meta.SelfSlot = selfSlot
 	meta.IsGenerator = isGenerator
@@ -6917,7 +6966,7 @@ func (c *Compiler) compileAsyncFunctionSelf(name, selfName string, params []*ast
 
 	meta := bytecode.NewFunctionMetadata(name, wrapperIns, wrapperScope.NumLocals(), len(params), paramSpecs, isArrow)
 	meta.BaseSlot = baseSlot
-	meta.CapturePrefixLen = computeCapturePrefixLen(wrapperIns, baseSlot)
+	meta.CapturePrefixLen = computeCapturePrefixLen(wrapperIns, baseSlot, c.constants)
 	meta.ArgumentsSlot = argumentsSlot
 	meta.IsAsync = true
 	meta.IsMethod = isMethod
@@ -7039,7 +7088,7 @@ func (c *Compiler) compileAsyncGeneratorSelf(name, selfName string, params []*as
 
 	meta := bytecode.NewFunctionMetadata(name, wrapperIns, wrapperScope.NumLocals(), len(params), paramSpecs, isArrow)
 	meta.BaseSlot = baseSlot
-	meta.CapturePrefixLen = computeCapturePrefixLen(wrapperIns, baseSlot)
+	meta.CapturePrefixLen = computeCapturePrefixLen(wrapperIns, baseSlot, c.constants)
 	meta.ArgumentsSlot = argumentsSlot
 	meta.SelfSlot = selfSlot
 	meta.IsAsync = true
