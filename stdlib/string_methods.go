@@ -16,6 +16,42 @@ const jsWhitespace = "\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004" +
 // 超大 count 触发 OOM 或 panic (规范中对应 RangeError: Invalid string length)。
 const maxStringLength = 1 << 30
 
+// thisStringValue 实现规范的 ThisStringValue 抽象操作。
+//
+// 返回 (*object.String, true) 表示 this 合法；返回 (nil, false) 表示调用方
+// 该抛 TypeError。三条分支：
+//
+//  1. this 是 String 原始值或 String 对象 → 它本身
+//  2. this 是 **String.prototype 本身** → 空串
+//  3. 其余（普通对象、数字、null、undefined、以及 Object.create(String.prototype)
+//     这种"只有原型没有 [[StringData]]"的对象）→ 非法
+//
+// 第 2 条是这里最容易被漏掉、也最危险的一条。String.prototype 就是一个
+// String 对象，其 [[StringData]] 是空串 —— 它不是"普通对象"。Node v22 实测：
+//
+//	String.prototype.toString()  === ""
+//	String.prototype.valueOf()   === ""
+//	String.prototype.concat("a") === "a"
+//
+// 于是漏掉它有**两重后果**，而第二重正是这次 built-ins 跑批崩溃的根因：
+//   - 规范偏差：该返回 "" 的地方抛了 TypeError；
+//   - 无限递归：一旦按"普通对象"兜底去 ToString(this)，就会掉进
+//     ToString ↔ String.prototype.toString 的跨边界循环（详见 toString 的注释）。
+//
+// 之所以单独抽成函数：本文件里 ThisStringValue 被手抄了 30 处，其中只有
+// 少数几处走了这里。抽出来后，其余那些的统一是纯粹的机械替换 —— 那次统一
+// 待 built-ins 聚类数据出来后按簇的权重决定排期（见看板 rnm4C5）。
+func thisStringValue(this object.Value, proto *object.Object) (*object.String, bool) {
+	if s, ok := this.(*object.String); ok {
+		return s, true
+	}
+	// String.prototype: 一个 [[StringData]] 为空串的 String 对象。
+	if this == object.Value(proto) {
+		return object.NewString(""), true
+	}
+	return nil, false
+}
+
 // setupStringProto 创建 String.prototype 对象。
 func setupStringProto() *object.Object {
 	p := object.NewObject()
@@ -575,7 +611,11 @@ func setupStringProto() *object.Object {
 
 	// concat(...strings)
 	p.SetBuiltinProperty("concat", object.NewBuiltinMethod("concat", func(this object.Value, args ...object.Value) object.Value {
-		result := toStr(this)
+		s, ok := thisStringValue(this, p)
+		if !ok {
+			return thisTypeError("String", "concat", this)
+		}
+		result := s.Value
 		for _, arg := range args {
 			result += toStr(arg)
 		}
@@ -583,19 +623,38 @@ func setupStringProto() *object.Object {
 	}))
 
 	// toString()
+	//
+	// this **必须**过 ThisStringValue，不能退化成 toStr(this)：那会造出一条
+	// **跨语言边界的无限递归**，Go 侧的递归防御完全拦不住：
+	//
+	//	ToString(String.prototype)             // object/conversion.go:49
+	//	  → CallFunction(obj.toString)         // 跨进 JS 侧
+	//	    → String.prototype.toString()      // 旧实现: toStr(this)
+	//	      → ToString(String.prototype)     // 跨回 Go 侧, depth **从 0 重算**
+	//
+	// 关键点在最后一行：object.ToString 的 maxToStringDepth=8 只在**同一侧**
+	// 的递归里累加，每绕一圈 JS 边界 depth 都从 0 重新数起，于是计数器永远
+	// 到不了阈值。实测一行 `String.prototype.toString()` 就能把进程打挂
+	// (fatal error: stack overflow)，built-ins 套件整轮跑批正是被它崩掉。
+	//
+	// 这类跨边界循环没有"一处防御全覆盖"的解法 —— 必须在**每一侧各自的入口**
+	// 做类型校验。规范也正要求如此（见 thisStringValue 的说明）。
 	p.SetBuiltinProperty("toString", object.NewBuiltinMethod("toString", func(this object.Value, args ...object.Value) object.Value {
-		if s, ok := this.(*object.String); ok {
+		if s, ok := thisStringValue(this, p); ok {
 			return s
 		}
-		return object.NewString(toStr(this))
+		return thisTypeError("String", "toString", this)
 	}))
 
 	// valueOf()
+	//
+	// 与 toString 同款：ThisStringValue 的校验是一样的，崩溃路径也是一样的。
+	// 返回值必须是**原始字符串**而非包装对象，故统一走 thisStringValue。
 	p.SetBuiltinProperty("valueOf", object.NewBuiltinMethod("valueOf", func(this object.Value, args ...object.Value) object.Value {
-		if s, ok := this.(*object.String); ok {
+		if s, ok := thisStringValue(this, p); ok {
 			return s
 		}
-		return object.NewString(toStr(this))
+		return thisTypeError("String", "valueOf", this)
 	}))
 
 	// at(index): 支持负索引 (-1 表示最后一个码元)

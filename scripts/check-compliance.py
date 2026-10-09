@@ -170,7 +170,9 @@ def main():
                              or datetime.datetime.now(datetime.timezone.utc)
                              .strftime("%Y-%m-%dT%H:%M:%SZ")),
             "commit": os.environ.get("GITHUB_SHA", ""),
-            "suite": "language",
+            # suite 取自跑批结果，不由脚本写死 —— language 与 built-ins 共用
+            # 这一个脚本，各自一份基线文件（rnm4C5 起 built-ins 也要有下限闸门）。
+            "suite": cur.get("suite", "language"),
             "rate_pct": float(cur["rate_pct"]),
             "passed": int(cur["passed"]),
             "total": int(cur["total"]),
