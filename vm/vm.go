@@ -27,6 +27,14 @@ const MaxFrames = 2048
 // stackTraceOn: GOX_TRACE_STACK=1 时逐指令打印 op/pc/栈深 (T04 栈失衡定位)。
 var stackTraceOn = os.Getenv("GOX_TRACE_STACK") == "1"
 
+// minPumpWait 是 GUI 模式下"有定时器已到期"时交给 pump 的最小等待 (看板
+// rczZT2)。gfx.Pump 把 maxWait<=0 当成"无限期等待外部事件", 真机后端据此会
+// 永久睡进 WaitEvents —— 于是那个已到期的定时器再也派发不出去 (界面僵住、
+// 后续定时器停摆、无任何报错)。这里必须给一个正等待, 让泵马上交回事件循环。
+// 1ms 的代价是每轮最多睡 1ms, 比"永久阻塞"便宜得多; 也不影响空闲期那条
+// 刻意传 0 (无限期) 的路径。
+const minPumpWait = time.Millisecond
+
 // ThrowError 包装 JS throw 抛出的值，用于在 Go 错误返回链中传递。
 type ThrowError struct {
 	Value object.Value
@@ -818,6 +826,22 @@ func (vm *VM) runTimersLoop(until time.Time, pump func(maxWait time.Duration) bo
 		if pump != nil {
 			// GUI 模式: 等待期间由 pump 处理窗口消息; 严格定时器信号在
 			// 循环顶部下一轮消费, 不会积压丢失。
+			//
+			// **wait==0 不能原样交给 pump** (看板 rczZT2): wait==0 在这条分支上
+			// 的含义是"已经有定时器到期了, 别等", 而 gfx.Pump 的契约把
+			// maxWait<=0 解释成"无限期等待外部事件" —— 真机后端 (X11/win32) 收到
+			// 0 就永久睡进 WaitEvents, 于是**那个到期的定时器永远派发不出去**:
+			// 界面僵住、后续定时器全部停摆, 且没有任何报错。
+			//
+			// 触发它只需要一个 0ms 定时器: 异步 fs / fetch 的回调都是
+			// SetTimeout(..., 0) 注册的 (见 stdlib/fs.go 的 fsSchedule), 所以
+			// "GUI + 定时器 + 异步 I/O" 这个组合一撞上就是必现。钳到一个最小
+			// 正等待: 既保住"马上交回事件循环", 又不会让等外部事件的那条路
+			// (上面 !found 分支刻意传 0 表示无限期) 被误伤 —— 那条路必须
+			// 原样保留, 否则 GUI 空闲期会退化成忙轮询。
+			if wait <= 0 {
+				wait = minPumpWait
+			}
 			if !pump(wait) {
 				return nil
 			}
