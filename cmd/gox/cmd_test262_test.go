@@ -1,7 +1,12 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -62,5 +67,79 @@ func TestJudgePhaseNegTypeUsesHeadOnly(t *testing.T) {
 	// 阶段不符仍要失败：期望 runtime，实际 parse。
 	if ok, _, _ := judgePhase(c, errors.New("parser errors:\nboom")); ok {
 		t.Fatalf("phase 不符不应判通过")
+	}
+}
+
+// ===== CLI 启动路径回归 (rMWHi1) =====
+
+// test262Root 找 test262 仓库: 优先 $GOX_TEST262, 否则按常见位置猜。
+//
+// 找不到就 skip —— 这条断言要的是"套件在的时候 CLI 必须能跑完", 套件不在时它
+// 无从断言 (CI 上没克隆 test262 的环境不该因此红)。
+func test262Root(t *testing.T) string {
+	t.Helper()
+	if v := os.Getenv("GOX_TEST262"); v != "" {
+		return v
+	}
+	for _, c := range []string{"test262", "../test262", "../../test262", "../../../test262"} {
+		if dirExists(filepath.Join(c, "test")) && dirExists(filepath.Join(c, "harness")) {
+			return c
+		}
+	}
+	t.Skip("未找到 test262 仓库: 设 GOX_TEST262 指向它 (或把 test262 克隆到仓库根)")
+	return ""
+}
+
+// captureStdout 跑 fn 并接住它打到 os.Stdout 的东西 (用例结果就是打在那里的)。
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	saved := os.Stdout
+	os.Stdout = w
+	done := make(chan string, 1)
+	go func() {
+		data, _ := io.ReadAll(r)
+		done <- string(data)
+	}()
+	fn()
+	os.Stdout = saved
+	w.Close()
+	out := <-done
+	r.Close()
+	return out
+}
+
+// TestTest262CLIStartsWithoutGUIHost 是 rMWHi1 (win32 网卡枚举 SIGSEGV) 的 CLI 侧
+// 回归。
+//
+// 事故形态值得记住: 崩发生在 win32 后端的**包 init** 里, 所以 `gox test262` 这种
+// 一行 GUI 代码都不碰的路径也是 100% 启动即崩 —— "用不用 GUI"根本不影响它, 只
+// 要二进制链进了那个包。修复后枚举是懒加载的 (host.go 的 reportNetworkLazy),
+// 且"init 里不许有平台 IO"由 tools/initpurity 的 CI 闸门守住。
+//
+// 这条测试跑在 Linux 上, 而 Linux 根本不编译 win32 后端, 所以它钉住的其实是另一
+// 半性质: **CLI 路径不依赖 GUI 后端** —— 哪天有人把宿主/后端初始化挪进 CLI 的
+// 公共路径 (在 Windows 上才会红的那种错误), 它会在 Linux 上先红一次。
+func TestTest262CLIStartsWithoutGUIHost(t *testing.T) {
+	root := test262Root(t)
+	// -one 模式在**本进程**内直跑单个用例, 不 spawn 分片子进程 —— 断言的就是
+	// "这条 CLI 路径自己能不能起来" (分片子进程走 os.Executable(), 在 go test 里
+	// 那是测试二进制, 不是 gox)。
+	const one = "language/expressions/addition/bigint-and-number.js"
+	out := captureStdout(t, func() {
+		runTest262([]string{"-root", root, "-one", one})
+	})
+	var got test262Result
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &got); err != nil {
+		t.Fatalf("-one 应输出单个用例的 JSON, 实际 %q (%v)", out, err)
+	}
+	if got.RelPath != one {
+		t.Fatalf("用例路径应为 %q, 实际 %q", one, got.RelPath)
+	}
+	if !got.Pass {
+		t.Fatalf("CLI 应跑完该用例并判通过, 实际 phase=%s err=%s", got.Phase, got.Err)
 	}
 }
