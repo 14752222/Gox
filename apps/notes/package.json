@@ -1,0 +1,14 @@
+{
+  "name": "gox-notes",
+  "version": "0.1.0",
+  "private": true,
+  "description": "笔记 —— Markdown 预览 + 图表（折线/条形/饼图/环形），Gox 实用应用",
+  "scripts": {
+    "dev": "goxjs dev src/main.js",
+    "start": "goxjs src/main.js",
+    "probe": "goxjs demo/probe.js"
+  },
+  "devDependencies": {
+    "@goxjs/goxjs": "^0.9.0"
+  }
+}

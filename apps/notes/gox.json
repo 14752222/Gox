@@ -1,0 +1,10 @@
+{
+  "name": "notes",
+  "title": "笔记",
+  "appId": "com.gox.apps.notes",
+  "version": "0.1.0",
+  "permissions": [],
+  "desktop": {
+    "windowed": true
+  }
+}
