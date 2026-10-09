@@ -50,7 +50,25 @@ go run ./packager apps/json-toolbox/src/main.js --gui -o json-toolbox.exe
 
 ## 写应用时必须守的几条
 
-这几条**违反了不会报错**，只会静默失效 —— 所以放在这里当清单：
+这几条**违反了不会报错**，只会静默失效 —— 所以放在这里当清单。
+
+前四条已经机器化了，跑 `gox lint`（CI 里也会跑 `gox lint apps`）：
+
+```bash
+gox lint apps            # 扫整个 apps/
+gox lint src/app.js      # 只扫一个文件
+gox lint --skip=each-no-key    # 临时跳过某条规则
+```
+
+| 规矩 | lint 规则 |
+|------|-----------|
+| 子节点写成快照（`{sig()}`） | `snapshot-child` |
+| 子节点区的 `//` 不是注释 | `slash-comment` |
+| 列表用 `each` 时必须 `key` | `each-no-key` |
+| `lib/` 不 import `gox` | `lib-imports-gox` |
+
+第 5 条（新增应用后登记冒烟用例）涉及 `gfx/apps_smoke_test.go` 的用例表，
+还没机器化 —— 改了那边记得同步。
 
 1. **JSX 属性与子节点在调用当场求值一次**。需要响应式就必须传**函数**：`value={() => sig()}`，
    子节点写 `{() => sig()}` 而不是 `{sig()}`。**子节点写成快照是全静默的**（属性误用有警告，子节点没有）。

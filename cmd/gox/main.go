@@ -78,6 +78,9 @@ func main() {
 		case "test262":
 			runTest262(args[1:])
 			return
+		case "lint":
+			runLint(args[1:])
+			return
 		case "update":
 			runUpdate(args[1:])
 			return
@@ -147,6 +150,8 @@ func printUsage(w io.Writer) {
   gox build <android|ios|windows|macos>  统一构建入口（sync → icon → 平台打包）
   gox types [输出文件]          生成内置模块 .d.ts（缺省 src/gox.d.ts）
   gox test262 [-suite language]  Test262 合规率 runner（-h 看全部选项）
+  gox lint [路径]              静态检查: 抓"违反了不报错、只会静默失效"的几条规矩
+                               （子节点写成快照 / 子节点区 // / each 无 key / lib 引 gox）
   gox update [--check] [--pre] [--manifest URL]  gox 自更新（流式下载/断点续传/pre 通道）
   gox                          启动交互式 REPL
   gox help                     显示这份帮助

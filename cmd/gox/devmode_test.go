@@ -23,7 +23,7 @@ func TestInitDevMode(t *testing.T) {
 	}{
 		{"1", true},
 		{"true", true},
-		{"TRUE", true},  // 大小写不敏感: 手敲环境变量没人记得住大小写
+		{"TRUE", true}, // 大小写不敏感: 手敲环境变量没人记得住大小写
 		{"yes", true},
 		{"on", true},
 		{" 1 ", true}, // 前后空格: shell 里 export GOX_DEV=1 很容易带进来

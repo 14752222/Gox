@@ -97,6 +97,43 @@ jobs:
             exit 1
           fi
 
+  # ── apps/ 静默陷阱 lint（看板 rG73bo 3/3）──────────────────────────────────
+  # 为什么单独一个作业：它扫的是 apps/ 的 **JS 源码**，与 registries 的注册表
+  #   文本分析、init-purity 的 Go AST 分析三者失败归因完全不同，混在一起会互相
+  #   淹没。
+  #
+  # 守的是 apps/README.md §写应用时必须守的几条 —— 那几条的共同点是「违反了不会
+  #   报错，只会静默失效」。其中**快照子节点**运行期判不出来（实测：{sig()} 求值
+  #   成字符串后，与手写字面量在类型上无法区分 —— gui-guide §8.1 因此写下"这条
+  #   只能靠纪律，不能靠工具兜底"），只有静态分析看得到源码里那是一次调用。
+  #   gox lint 用 Gox 自己的 parser 做这件事，不引入任何外部 JS 解析器依赖。
+  app-lint:
+    name: apps/ 静默陷阱 lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: gox lint apps
+        run: |
+          set -euo pipefail
+          # 守卫自身也要有守卫 —— 而且必须跑在 lint 之前。一条永远输出 "ok"
+          # 的规则比没有规则更糟：它给人虚假的安全感（apps/ 跑一遍零命中，
+          # 既可能是代码干净，也可能是规则已经死了）。每条规则都配了"正确写法
+          # 不许误报"的反例，误报是 lint 的头号死因。
+          if ! go test ./cmd/gox/ -run 'TestLint' -count=1; then
+            echo "::error::gox lint 自测未通过 —— 规则或负向样本失效，它可能已经不再拦任何东西"
+            exit 1
+          fi
+          if ! go run ./cmd/gox lint apps; then
+            echo "::error::apps/ 命中静默陷阱规则 —— 文件与行号见上一条输出；四条规则全部出自 apps/README.md §写应用时必须守的几条"
+            exit 1
+          fi
+
   build-test:
     name: 编译 / vet / 测试 (${{ matrix.os }})
     # 三平台矩阵 (T02)：Gox 的三个桌面后端各守一个平台 —— win32 / cocoa / x11。
