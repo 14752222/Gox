@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"os"
 	"runtime"
 	"runtime/debug"
 	"strings"
@@ -230,6 +231,26 @@ func TestNewJSONReportAlwaysHasEngine(t *testing.T) {
 	cur := currentEngineInfo()
 	if rep.Engine != cur {
 		t.Fatalf("engine 不是当前进程身份:\n got %+v\nwant %+v", rep.Engine, cur)
+	}
+}
+
+// TestNoBareJSONReportLiteral 钉住"两条落盘路径都走 newJSONReport"。
+//
+// 为什么需要它: 反向验证 D 组把分片聚合路径改回 `jsonReport{...}` 字面量
+// (不写 Engine), 所有结构体级用例**全绿** —— 那些用例测的是构造函数, 而
+// 构造函数没被改; 真正被改的是**调用点**。只有盯着调用点才抓得住, 故这里
+// 直接扫描源码: 本文件里不允许再出现裸的 `jsonReport{` 字面量。
+func TestNoBareJSONReportLiteral(t *testing.T) {
+	src, err := os.ReadFile("cmd_test262.go")
+	if err != nil {
+		t.Skipf("读不到 cmd_test262.go (不在包目录内运行): %v", err)
+	}
+	if n := strings.Count(string(src), "jsonReport{"); n != 0 {
+		t.Fatalf("cmd_test262.go 里出现 %d 处裸 jsonReport{ 字面量; 一律走 newJSONReport —— 否则那条落盘路径产出的账本没有引擎身份", n)
+	}
+	// 反向也钉: newJSONReport 必须真的被用到 (否则前一条形同虚设)。
+	if n := strings.Count(string(src), "newJSONReport("); n < 2 {
+		t.Fatalf("cmd_test262.go 只用了 %d 次 newJSONReport, 期望 >= 2 (分片聚合 + 单进程顺序两条路径)", n)
 	}
 }
 
