@@ -8,7 +8,8 @@
 [![npm](https://img.shields.io/npm/v/@goxjs/goxjs)](https://www.npmjs.com/package/@goxjs/goxjs)
 [![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20Linux%20%7C%20macOS-lightgrey)](#环境要求)
 [![Release](https://github.com/14752222/Gox/actions/workflows/release.yml/badge.svg)](https://github.com/14752222/Gox/actions/workflows/release.yml)
-[![test262](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2F14752222%2FGox%2Fmain%2Fdocs%2Ftest262-compliance.json)](docs/test262-t04-report.md)
+[![test262 language](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2F14752222%2FGox%2Fmain%2Fdocs%2Ftest262-compliance.json)](docs/test262-t04-report.md)
+[![test262 built-ins](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2F14752222%2FGox%2Fmain%2Fdocs%2Ftest262-compliance-builtins.json)](docs/test262-builtins-clusters.md)
 
 📖 **[官网与使用教程](https://14752222.github.io/Gox/)** ｜ **[GUI 开发指南](docs/gui-guide.md)** ｜ **[npm 包](https://www.npmjs.com/package/@goxjs/goxjs)**
 
