@@ -978,19 +978,11 @@ func (n *GuiNode) PropHandler(name string) object.Value {
 //
 // 桌面 1x (x11/win32 Scale=1) 不变; 没有活动窗口 (纯节点测试) 也不变 ——
 // font_inherit_test 的"默认 16"口径依赖这一点。
+//
+// 换算系数走 displayScale() (见 density.go): 与显式 font **同一条**换算链,
+// 于是 `font={16}` 与"没写 font"在任何屏上都得到同一个物理字号。
 func defaultFontSize() int {
-	a := currentApp()
-	if a == nil || a.surface == nil {
-		return 16
-	}
-	if dp, ok := defaultFactory.(displayProvider); ok {
-		if id, hit := dp.DisplayOf(a.surface); hit && id != "" {
-			if d, found := findDisplay(id); found && d.Scale > 1.0 {
-				return int(16*d.Scale + 0.5)
-			}
-		}
-	}
-	return 16
+	return roundHalf(16 * displayScale())
 }
 
 // FontSize 返回节点字号 (prop "font", 未写则**沿父链继承**, 都没有才落默认)。
@@ -1002,13 +994,17 @@ func defaultFontSize() int {
 // 一致地"错", 不会自己暴露出来。
 //
 // 继承是"最近祖先优先": 显式 font 就近生效, 中间任何一层都能覆盖。
+//
+// 显式 font 也按显示器 Scale 换算 (density.go): 脚本写的 20 是"20 磅那么大",
+// 不是"20 个物理像素" —— 不换算的话 3x 屏上只剩 6.7pt。`v >= 8` 的合法性
+// 判定在**换算前**按逻辑值做 (那样门槛才是稳定语义的"8dp")。
 func (n *GuiNode) FontSize() int {
 	if v, ok := n.PropNum("font"); ok && v >= 8 {
-		return int(v)
+		return dpToPx(v)
 	}
 	for p := n.Parent; p != nil; p = p.Parent {
 		if v, ok := p.PropNum("font"); ok && v >= 8 {
-			return int(v)
+			return dpToPx(v)
 		}
 	}
 	return defaultFontSize()
@@ -1112,10 +1108,11 @@ const (
 	buttonPadY = 6
 )
 
-// buttonPadding 返回 button 的内容内边距: padding prop 优先, 缺省 8/6。
+// buttonPadding 返回 button 的内容内边距: padding prop 优先, 缺省 8/6
+// (缺省值是内核内置度量, 按设备像素算, 不参与 dp 换算 —— 见 density.go)。
 func (n *GuiNode) buttonPadding() (padX, padY int) {
 	if v, ok := n.PropNum("padding"); ok {
-		p := int(v)
+		p := dpToPx(v)
 		if p < 0 {
 			p = 0
 		}

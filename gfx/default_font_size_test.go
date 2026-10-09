@@ -61,9 +61,14 @@ func TestDefaultFontSizeScalesWithDisplay(t *testing.T) {
 		t.Fatalf("无 font prop 的节点在 3x 屏上应落 48, got %d", got)
 	}
 
-	// 显式 font 优先于缩放兜底 (dp→px 是脚本侧 pixelRatio 换算的事, 不碰)。
+	// 显式 font 也走同一条换算链 (rpr9zf §1: 高密度屏上 font={20} 曾经就是
+	// 20 个物理像素 —— 界面小到没法用)。20dp × 3 = 60px。
 	explicit := mkNode("text", map[string]float64{"font": 20})
-	if got := explicit.FontSize(); got != 20 {
-		t.Fatalf("显式 font=20 应原样返回, got %d", got)
+	if got := explicit.FontSize(); got != 60 {
+		t.Fatalf("3x 屏上显式 font=20 应为 60, got %d", got)
+	}
+	// 于是"没写 font"与"写 font={16}"在任何屏上都是同一个物理字号。
+	if got := mkNode("text", map[string]float64{"font": 16}).FontSize(); got != 48 {
+		t.Fatalf("3x 屏上 font=16 应与兜底一致 (48), got %d", got)
 	}
 }

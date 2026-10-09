@@ -173,7 +173,7 @@ iconSize         = 16 | 20 | 24
 | 断点 | `widthClass` / `isCompactWidth` / `isMediumWidth` / `isTabletLayout` 已注册（三档，600/840） | 无 |
 | 折叠屏 | 内核数据模型 + `reportPosture` 通道已通；`gx/viewport` 有 `reservedRegions()` / `hasFold()` / `layoutMode()`；Android / iOS / 鸿蒙**三端宿主均已接上报**（鸿蒙已交叉编译 + 契约测试 + assembleHap 构建通过，模拟器验收未做） | 折叠态**接续**（页面栈/滚动位置）v1 不做；鸿蒙模拟器验收待做（**口径：模拟器即可**，2026-10-02 拍板） |
 | 长按手势 | 内核无 `onLongPress` | S3 前如组件评审要求长按，先在 gfx 内核立项 |
-| 逻辑像素 | 换算靠脚本侧 `pixelRatio`（gx/device） | 内核收编 dp 单位是 P1 候选项 |
+| 逻辑像素 | **内核已收编**：显式尺寸属性按 `Display.Scale` 换算（见 §11） | 剩余项见 §11.3（内置度量、窗口几何、阴影等）；脚本侧 `pixelRatio` 仍可用 |
 | IME | 结果提交制；Android 光标/文本快照回传已接（M2，模拟器验收 2026-10-02：ASCII 提交、候选词栏、光标同步）；中文拼音组合行为模拟器无法验证 | 组合输入逐键上报属 P1 |
 
 ## 10. 验收（对齐任务验收标准）
@@ -189,3 +189,58 @@ iconSize         = 16 | 20 | 24
 
 移动断点冒烟统一用 iOS 模拟器 + Android 模拟器（构建链路见
 `.github/workflows/mobile-smoke.yml`，T22）。
+
+## 11. 密度换算口径（dp → 设备像素）
+
+内核坐标是**设备像素**（后端 `Size` / 事件坐标都是它），脚本写的数字是**按
+dp/pt 直觉**写的。二者在 1x 屏上相等，在 2x/3x 屏上差一倍到三倍 —— 看板
+`rpr9zf §1` 的现场就是：Android 高密度屏上 `font={20}` 曾经就是 20 个物理
+像素，界面小到没法用。
+
+换算实现集中在 `gfx/density.go`（`displayScale()` / `dpToPx()`）：取值时乘
+窗口所在显示器的 `Display.Scale`，**每帧在 `Layout()` 开头刷新一次**。
+
+### 11.1 会被换算（脚本写出来的尺寸/偏移）
+
+`font`、`width` / `height`、`minWidth` / `maxWidth` / `minHeight` /
+`maxHeight`、`padding`（含四边覆盖值）、`gap`、`margin`、`borderWidth`、
+`radius`、`lineHeight`、`letterSpacing`、`left` / `top`（绝对定位偏移）、
+`itemHeight`、`<icon size>`。
+
+判定规则一句话：**脚本写在标签上的长度值一律按逻辑单位解释。**
+例：2x 屏上 `<column padding={12} gap={8}>` → padding 24px / gap 16px。
+
+### 11.2 不会被换算
+
+| 项 | 为什么 |
+|---|---|
+| 百分比尺寸（`width="50%"`） | 相对量，再乘一次 Scale 是重复换算 |
+| `flexGrow` / `flexShrink`、`opacity`、`zIndex` | 无量纲 |
+| 屏幕/窗口尺寸、图片自然尺寸、滚动偏移 | 内核自己算的，本来就是设备像素 |
+| `safeAreaStyle()` | 宿主上报的 insets / 键盘高是设备像素，产出时**已除回 dp**（否则会被换算两次） |
+| `<window width/height/x/y>` | 后端窗口坐标系（位置另有 `posScale` 处理） |
+| 计数类（`rows` / `columns` / `max` / `pageSize`） | 不是长度 |
+
+### 11.3 剩余项（本次刻意没做，留给后续）
+
+- **内置组件度量常量**（`menuItemH`、`listRowH`、`buttonPadX`、`inputMinW`、
+  `cpCellSize` …，约百处）：是内核硬编码的设备像素，`buttonPadding()` 的
+  缺省 8/6、`formDefaultGap` 同理。后果是**显式值被放大、缺省值不放大**时
+  两者比例会随 Scale 变化（2x 屏上写 `padding={8}` 得到 16，而不写仍是 8）。
+  收编它们要动上百个调用点，风险远大于收益，故单独立项。
+- **阴影**（`shadow` 的 `x` / `y` / `blur`）、**手势阈值**
+  （`longPressSlop` / `swipeThreshold`）：也是长度，但 `blur` 被钳在 24、
+  阈值与事件坐标强耦合，改前要先定新口径。
+- **多窗口混合 DPI**：系数按 `currentApp()` 的窗口解析，两个窗口各在
+  不同 Scale 的屏上时，非活跃窗口那一侧会用到活跃窗口的系数。
+
+### 11.4 真机验收要点
+
+`Scale` 由宿主上报（Android/iOS 侧 `Display.Scale`）。代码侧已覆盖
+Scale=1（恒等，桌面渲染零漂移）/ Scale=2（翻倍）/ 跨屏（拖屏后下一帧生效）
+三条回归（`gfx/density_test.go`）。真机上**只需目视确认**：
+
+1. 字号、间距、圆角看起来与桌面 1x 时**物理大小一致**（不是"像素数一致"）；
+2. 显式写了尺寸的元素与用缺省值的元素**没有出现明显的比例失衡**（§11.3
+   第一条的已知后果，判断要不要提前收编内置度量）；
+3. 折叠屏展开/合起、旋转后同一套尺寸不跳变。

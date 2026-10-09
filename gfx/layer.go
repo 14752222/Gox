@@ -68,9 +68,10 @@ func (n *GuiNode) isFlowChild() bool {
 // absoluteOffset 读取绝对定位的 left/top 偏移 (默认 0, 相对父内容区)。
 // 走 effectivePropNum: left/top 是可动画属性 (P3-2), 过渡期间要读插值。
 func (n *GuiNode) absoluteOffset() (left, top int) {
+	// 逻辑值 → 设备像素 (density.go): 偏移量与 width/height 同一把尺子
 	l := effectivePropNum(n, "left")
 	t := effectivePropNum(n, "top")
-	return int(l), int(t)
+	return dpToPx(l), dpToPx(t)
 }
 
 // ===== 遍历顺序 =====

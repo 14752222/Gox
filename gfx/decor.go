@@ -485,8 +485,9 @@ func boxBlurAlpha(mask []uint8, w, h, b int) {
 
 // paintBoxDecor 是通用盒子分支的统一装饰出口 (shadow → background → border)。
 func paintBoxDecor(img *image.RGBA, n *GuiNode, disabled bool) {
+	// 逻辑值 → 设备像素 (density.go)
 	rad, _ := n.PropNum("radius")
-	radius := int(rad)
+	radius := dpToPx(rad)
 	if radius < 0 {
 		radius = 0
 	}
@@ -508,8 +509,9 @@ func paintBoxDecor(img *image.RGBA, n *GuiNode, disabled bool) {
 	}
 	if bd, ok := n.borderFor(); ok {
 		bd = tint(bd, disabled)
+		// 逻辑值 → 设备像素 (density.go)
 		w, _ := n.PropNum("borderWidth")
-		bw := int(w)
+		bw := dpToPx(w)
 		if bw <= 0 {
 			bw = 1
 		}

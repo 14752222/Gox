@@ -83,13 +83,15 @@ func resolveTextStyle(n *GuiNode) TextStyle {
 			}
 		}
 		if !lineSet {
+			// 逻辑值 → 设备像素 (density.go)
 			if v, ok := p.PropNum("lineHeight"); ok && v > 0 {
-				st.LineH, lineSet = int(v), true
+				st.LineH, lineSet = dpToPx(v), true
 			}
 		}
 		if !spSet {
+			// 逻辑值 → 设备像素 (density.go)
 			if v, ok := p.PropNum("letterSpacing"); ok {
-				st.LetterSp, spSet = int(v), true
+				st.LetterSp, spSet = dpToPx(v), true
 			}
 		}
 		// 五根轴都定下了就不必再往上走 (链长通常 <10, 但每层要读 5 个 prop)。
