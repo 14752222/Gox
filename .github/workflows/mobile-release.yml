@@ -132,8 +132,9 @@ jobs:
   #   ① 引擎版本 == npm/package.json 版本（在主仓与 gox-npm 子模块之间）
   #   ② 平台子包定义已同步（packaging/npm-mobile/ → npm/packages/，防手改生成物）
   #   ③ 壳工程里声明的 engineVersion / engineVersionRange 与引擎版本相符
-  #      —— 壳工程**目前还没有这个声明文件**，所以本条当前以「证据式跳过」呈现，
-  #         机制落地（在 app/<platform>/ 下加 gox-engine.json）后自动开始生效。
+  #      —— 声明文件 app/{android,harmony,ios}/gox-engine.json 已落地（2026-10-10 自动化轮次，
+  #         见 docs/mobile-distribution-decision.md §6 拍板结论 6.4），故本条带 --require 跑：
+  #         声明缺失或不符均退出码 1，闸门真正判红。
   # ───────────────────────────────────────────────────────────────────────────
   gate:
     name: 成对发布闸门（版本一致性）
@@ -167,12 +168,12 @@ jobs:
       - name: ③ 壳工程版本引用 ↔ 引擎版本
         # 逻辑在脚本里（可本地跑、可单测），本步骤只当 CI 入口：
         #   app/<platform>/gox-engine.json 声明 engineVersion / engineVersionRange；
-        #   声明存在但不符 ⇒ 退出码 1（硬闸门）；声明缺失 ⇒ 带证据的 ::error:: + 退出码 0
-        #   （暴露待办而不判红，机制落地后可加 --require 升级为硬性要求）。
+        #   声明缺失或不符 ⇒ 退出码 1（硬闸门）。声明文件已在三个壳工程落地，
+        #   所以用 --require 把「缺失」也升级为失败 —— 防止新壳工程忘了写声明就溜过闸门。
         run: |
           set -euo pipefail
-          if ! python3 scripts/check-shell-engine-version.py --engine-version "${{ needs.version.outputs.version }}"; then
-            echo "::error::壳工程版本引用与引擎版本不符 —— 版本错配只在运行时崩（UnsatisfiedLinkError 一类），发布前必须对齐；证据见上一条输出"
+          if ! python3 scripts/check-shell-engine-version.py --engine-version "${{ needs.version.outputs.version }}" --require; then
+            echo "::error::壳工程版本引用与引擎版本不符（或声明文件缺失）—— 版本错配只在运行时崩（UnsatisfiedLinkError 一类），发布前必须对齐；证据见上一条输出"
             exit 1
           fi
 

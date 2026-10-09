@@ -1,10 +1,12 @@
 # 移动端分发策略决策文档（rgnRC4 / r8DoFS）
 
-> **状态：建议已定稿，决策待用户拍板 —— 拍板点集中在 §6。** 本文只出建议，不替用户做决定。
+> **状态：建议已定稿；§6 的 7 条拍板项中 6 条已于 2026-10-10 由自动化轮次按推荐项 ① 执行**
+> **（§6.5 凭证为人工项，仍需人工）—— 结论见新增的「§6 拍板结论」一节，最终由维护者复核。**
+> 本轮为无人值守自动化轮次，按本文档的推荐项执行并在文中标注，**不替维护者做终局决定**。
 >
 > 本文是看板单 **rgnRC4（[M11] 移动端分发策略）** 及其子单 **r8DoFS（npm 移动端产物）** 的
-> **权威决策文档**。`app/MOBILE-DISTRIBUTION.md` 是 M11 当时的**落地记录**（写它时该工作流只允许
-> 改 `app/`，所以没能落在 `docs/`），两者关系见 §0.2 —— 本文拍板后以本文为准。
+> **权威决策文档**。`app/MOBILE-DISTRIBUTION.md` 是 M11 的**落地记录**（写它时该工作流只允许
+> 改 `app/`，所以没能落在 `docs/`），两者关系见 §0.2 —— 以本文为准。
 >
 > 基线：`Gox/main` = `e17baeb`（引擎 `0.9.0`，`cmd/gox/main.go:28`）。
 > 凡标「已落地」的都给了文件路径 + 行数或 sha 作为证据（证据怎么取的见 §0.3）。
@@ -37,7 +39,7 @@ M5 已定稿（`docs/npm-compat.md`）：**`@goxjs/goxjs` = 桌面二进制分�
 | 文档 | 定位 | 处置 |
 |---|---|---|
 | `docs/mobile-distribution-decision.md`（本文） | rgnRC4 的**权威决策**（含成品 App 公开渠道，是父任务的另一半） | 拍板后以此为准 |
-| `app/MOBILE-DISTRIBUTION.md`（218 行） | M11 的**落地记录**（子包布局、`optionalDependencies` 论证、改动清单） | 内容与本文一致，不冲突；拍板后建议瘦身为「指向本文」的落地记录（该改动不在本工作流文件区，列 §6 待办） |
+| `app/MOBILE-DISTRIBUTION.md` | M11 的**落地记录**（子包布局、`optionalDependencies` 论证、改动清单、壳工程声明文件） | 内容与本文一致，不冲突；**2026-10-10 轮次已瘦身**为「指向本文 + 只留落地记录」（§6.6 已按推荐 ① 执行） |
 | `packaging/npm-mobile/README.md`（71 行） | 子包**定义**的单一真源说明 | 保持 |
 | `docs/npm-release.md`（158 行） | 桌面发版手册 | 本轮补移动端小节（见 §5） |
 
@@ -52,11 +54,11 @@ M5 已定稿（`docs/npm-compat.md`）：**`@goxjs/goxjs` = 桌面二进制分�
 | 3 | `packaging/npm-mobile/`（单一真源） | ✅ 有 | `README.md` + 4 个 `<dirname>/metadata.json`（各 19–20 行） |
 | 4 | `scripts/fetch-mobile-libs.sh`（消费端） | ✅ 有 | 218 行；校验 `manifest.goxVersion` + 逐产物 sha256；有 `--check-only` |
 | 5 | `scripts/check-registries.py` 检查4/检查5 | ✅ 有 | 721 行；检查4 `:523` 卡「主包不含 `mobile/`」；检查5 `:534` 卡子包命名/版本/清单/sha256 |
-| 6 | `docs/mobile-distribution-decision.md` | 🟡 半成品 | 131 行；三项决策都有**建议**，但①未正面回答「进 npm 是否要带整套壳工程源码」②未把「两者并存」作为定稿选项③缺第 4 层机制；且把成品 App 两档留空。本轮修订 |
+| 6 | `docs/mobile-distribution-decision.md` | ✅ 已定稿（2026-10-10 轮次） | 三项决策都有**建议 + 理由 + 代价 + 反面选项**；①已正面回答「只发预编译库、壳工程源码不进 npm」；②「两者并存」已定为拍板结论；③第 4 层机制**已落在三个壳工程**（§6 拍板结论）；成品 App 两档已由 `mobile-release.yml` 补齐 |
 | 7 | `docs/mobile-adaptation.md` | ✅ 有（**但同名不同事**） | 191 行，是 **T23 移动端适配规范**（触控/安全区/键盘），与分发无关 |
 | 8 | `docs/npm-compat.md` | ✅ 有（**同名不同事**） | 187 行，M5 的 npm 兼容面（语言/Node API/native addon），不是分发 |
-| 9 | `docs/npm-release.md` | 🟡 半成品 | 158 行；§1/§5 验收口径仍是「5 平台二进制」，**未含移动端子包**。本轮补 |
-| 10 | `docs/desktop-distribution.md` | 🟡 半成品 | 76 行，纯桌面；**无移动端对照**，用户看不出两端获取方式的差异。本轮补 |
+| 9 | `docs/npm-release.md` | ✅ 已补 | 验收口径从「5 平台二进制」扩到含 4 个移动端子包 + 指向 `mobile-release.yml`；§6.7 已认可（本轮复查确认在位） |
+| 10 | `docs/desktop-distribution.md` | ✅ 已补 | 开头即声明「本文不适用移动端」+ 桌面/移动对照表 + 交叉链接本文；§6.7 已认可（本轮复查确认在位） |
 | 11 | `.github/workflows/release.yml` | ✅ 有（覆盖 npm 侧） | 545 行；`mobile-ios` 作业（`:518`）产 iOS 子包，`publish` 编 android 子包（`:228`）并逐子包 `npm publish`（`:378`） |
 | 12 | `.github/workflows/mobile-smoke.yml` | ✅ 有（但**只产出 CI artifact**） | 310 行；android 出 `app-debug.apk` 归档（`:97`）、iOS 出模拟器 `.app` zip（`:174`）、`npm-package` 作业核对包内容（`:199`）。**都不挂 Release** |
 | 13 | `docs/release-post--checklist.md` | ✅ 有 | 81 行；§2（`:28`）**已写明**「v0.7.0 及更早 0 assets、v0.8.0 起才挂产物」 |
@@ -195,17 +197,19 @@ app/<platform>/gox-engine.json
 | 1 发布约定 | 子包 `version` 恒等于主包 `version`（同号） | `check-registries.py` 检查5 | ✅ 已落地 |
 | 2 产出端 | 每子包生成 `manifest.json`：`goxVersion` + 每产物 `kind/sha256/size` | `scripts/build-npm-mobile.sh` | ✅ 已落地 |
 | 3 消费端 | 取库前校验 `manifest.goxVersion == 引擎版本` + 逐产物 sha256，不符拒绝拷贝 | `scripts/fetch-mobile-libs.sh`（含 `--check-only`） | ✅ 已落地 |
-| **4 成对发布闸门** | CI 断言「引擎版本 ↔ 子包定义 ↔ **壳工程版本声明**」三者一致 | `scripts/check-shell-engine-version.py` + `mobile-release.yml` 的 `gate` 作业 | 🟡 **闸门已就位，声明文件未落地**（见 §3.3） |
+| **4 成对发布闸门** | CI 断言「引擎版本 ↔ 子包定义 ↔ **壳工程版本声明**」三者一致 | `scripts/check-shell-engine-version.py` + `mobile-release.yml` 的 `gate` 作业 | ✅ **已落地并判红**（2026-10-10 轮次：三个壳工程各加 `gox-engine.json`，gate 带 `--require`，见 §3.3） |
 
 闸门的具体判据（`scripts/check-shell-engine-version.py`，135 行）：
 
 - 引擎版本真源 = `cmd/gox/main.go` 的 `const version`（与 `check-registries.py` 检查3 同一处）；
 - 声明**存在且相符** → 通过；
 - 声明**存在但不符** → **退出码 1（硬闸门）** —— 这是发布契约被破坏，必须挡住；
-- 声明**缺失** → 打印带证据的 `::error::`（列出 `app/<platform>/` 实际文件清单）+ **退出码 0**。
+- 声明**缺失** → 打印带证据的 `::error::`（列出 `app/<platform>/` 实际文件清单）+ 退出码
+  **0（默认）／1（带 `--require`）**。
 
-> 「缺失时不判红」是刻意的：机制还没在三处落地，此时判红只会让人把闸门关掉。所以先
-> **响而不红**，并用 `--require` 提供了「机制落地后升级为硬性要求」的开关。
+> 「缺失时默认不判红」是分阶段的：机制还没在三处落地时判红只会让人把闸门关掉，所以先
+> **响而不红**，并用 `--require` 提供升级开关。**2026-10-10 轮次机制已落地**，`mobile-release.yml`
+> 的 `gate` 作业因此常带 `--require`：缺失与不符都判红（§6 拍板结论 6.4）。
 
 发布链条上的两个落点：
 
@@ -225,26 +229,36 @@ app/<platform>/gox-engine.json
 
 矩阵维护方式：每行由发布时**从声明文件与 `manifest.json` 自动取数**，不手写，避免漂移。
 
-### 3.3 现状与待办（重要）
+### 3.3 现状（2026-10-10 轮次已激活）
 
-**三个壳工程目前都没有 `gox-engine.json`** —— 所以第 4 层**当前形同虚设**。
-`mobile-release.yml` 的 `gate` 作业在 CI 上会为每个平台打一条 `::error::`（带 `ls` 证据），
-但**不会判红**。要把第 4 层真正激活，需要在 `app/{android,harmony,ios}/` 各加一个
-`gox-engine.json`（内容按 §3.1）—— **该改动不在本工作流的文件区**（本轮只允许改
-`.github/workflows/`、`scripts/`、`docs/`、`packaging/`），已列 §6 待办。
+**三个壳工程都已带上 `gox-engine.json`**，内容（按 §3.1，绑定到引擎 `0.9.0` 这一代）：
 
-本地实测（`scripts/check-shell-engine-version.py`）：
+```
+app/{android,harmony,ios}/gox-engine.json
+{"engineVersionRange": "0.9.x"}
+```
+
+`mobile-release.yml` 的 `gate` 作业因此改为常带 `--require`：**声明缺失或不符都退出码 1**，
+新壳工程忘了写声明也溜不过闸门。
+
+本地实测（`scripts/check-shell-engine-version.py --require`，正向）：
 
 ```
 引擎版本（真源 cmd/gox/main.go）：0.9.0
-::error::壳工程 android 没有版本声明文件 app/android/gox-engine.json —— …
-::error::壳工程 harmony 没有版本声明文件 app/harmony/gox-engine.json —— …
-::error::壳工程 ios 没有版本声明文件 app/ios/gox-engine.json —— …
-::error::壳工程 android/harmony/ios 尚无 gox-engine.json，第 4 层闸门对其未生效（待办，不是失败）
+  [ok] app/android/gox-engine.json：engineVersionRange=0.9.x，引擎=0.9.0
+  [ok] app/harmony/gox-engine.json：engineVersionRange=0.9.x，引擎=0.9.0
+  [ok] app/ios/gox-engine.json：engineVersionRange=0.9.x，引擎=0.9.0
+::notice::壳工程版本引用校验通过（3 个平台）
 exit=0
 ```
 
-负向自测（临时目录造一个 `{"engineVersion":"0.8.3"}` 声明）→ `exit=1`，并按设计报出不符原因。
+负向自测（两类，均已复现后还原）：
+
+- 把 `app/android/gox-engine.json` 临时改成 `{"engineVersionRange":"0.8.x"}` → `exit=1`（判为不符）；
+- 临时移走 `app/ios/gox-engine.json` → `exit=1`（`--require` 把「缺失」也升级为失败，并打出现有文件清单作证据）。
+
+维护纪律：引擎 minor 推进（`0.9.x` → `0.10.x`）时，三个壳工程的声明**必须同 commit 一起改**，
+否则 `gate` 会挡住发布 —— 这正是本层存在的意义。
 
 ### 3.4 反面选项
 
@@ -328,9 +342,11 @@ exit=0
 
 ---
 
-## 6. 待用户拍板清单（本单**真正的出口条件**）
+## 6. 拍板清单（本单**真正的出口条件**）
 
-> 每条给「要决策什么 / 选项 / 推荐 / 不决策会卡住什么」。**本文不替用户拍板。**
+> §6.1–6.7 是待拍板的原始项（每条给「要决策什么 / 选项 / 推荐 / 不决策会卡住什么」）。
+> **结论见 §6.8**：2026-10-10 的无人值守自动化轮次按推荐项 ① 执行并落笔，**最终由维护者复核**；
+> 其中 6.5（凭证）是人工项，无法自动化。
 
 ### 6.1 产物形态：壳工程源码要不要进 npm 子包？
 
@@ -387,6 +403,31 @@ exit=0
 - **推荐**：①
 - **不决策会卡住**：发版手册的验收口径还是「5 平台二进制」，会把移动端子包当成「不在验收范围内」。
 
+### 6.8 拍板结论（2026-10-10 自动化轮次）
+
+> **本小节由无人值守的自动化轮次按上文的「推荐项 ①」执行并落笔，最终由维护者复核。**
+> 若维护者要改结论，改这里并同步受影响的落地物（下面每行给了「落在哪」）。
+
+| # | 拍板项 | 结论 | 落在哪 | 状态 |
+|---|---|---|---|---|
+| 6.1 | 产物形态 | **① 只发预编译库**（壳工程源码不进 npm 子包、不进主包） | 子包 `files` 清单已按此定稿（`packaging/npm-mobile/*/metadata.json`）；`check-registries.py` 检查4/5 判据不因此变动 | ✅ 认可 |
+| 6.2 | 分发渠道 | **① 两者并存**：npm 平台子包（开发者）+ GitHub Releases 两档（试用者） | `.github/workflows/mobile-release.yml`（nightly cron + `release: published`）与 `release.yml` 的 npm 子包发布链并存 | ✅ 认可 |
+| 6.3 | nightly 形态 | **① 每日 cron + `nightly-<date>` prerelease**（子包仍只走 release 档，不污染 `@next`） | `mobile-release.yml` 的 `on.schedule` / `version` / `publish` 三处**保持现状，无需改动** | ✅ 认可 |
+| 6.4 | 第 4 层版本闸门 | **① 落地并让闸门硬起来** | 新增 `app/{android,harmony,ios}/gox-engine.json`（`{"engineVersionRange": "0.9.x"}`）；`mobile-release.yml` 的 `gate` 作业调用改为带 `--require` | ✅ **本轮落地**（验证见 §3.3） |
+| 6.5 | 对外渠道凭证 | **仍为人工项，本轮无法自动化** | 见下「仍需人工」 | ⚠️ **仍需人工** |
+| 6.6 | 文档关系 | **① 以本文为准**，`app/MOBILE-DISTRIBUTION.md` 瘦身 | 该文件已改为「指向本文 + 只保留落地记录（子包布局 / `optionalDependencies` 论证 / 改动清单）」 | ✅ 本轮落地 |
+| 6.7 | `npm-release.md` / `desktop-distribution.md` 口径修订 | **① 认可** | 两处移动端口径已复查在位（§0.3 第 9/10 项），本轮不再改动 | ✅ 认可 |
+
+#### 6.5 仍需人工（不假装完成）
+
+自动化轮次**拿不到任何凭证**，以下三项卡住的是「成品 App 公开渠道」能否真正交付：
+
+| 人工项 | 谁做 | 卡住什么 | 怎么做 |
+|---|---|---|---|
+| 4 个 npm 子包的 **Trusted Publishing** | 维护者到 npmjs.com | 子包**首次发布必然 404**（误导性失败） | 为每个 `@goxjs/goxjs-mobile-*` 配一次：org/user=`14752222`、repo=`Gox`、workflow=`release.yml` |
+| **Android keystore**（`app/android/app/keystore.properties`：storeFile/storePassword/keyAlias/keyPassword，或以 secret 注入） | 维护者持有 | `assembleRelease` 出的 APK **不签名** ⇒ 只能发 debug APK，**仅供试用、不可上架** | 补 keystore 后 `mobile-release.yml` 自动从 debug 切到 release 变体 |
+| **DevEco SDK**（需华为账号/许可） | 维护者提供**自建 runner** + `DEVECO_SDK_HOME`/`NODE_HOME` | harmony **HAP 恒缺**，harmony 子包 CI 也产不出（托管 runner 装不了） | 改 `mobile-release.yml` harmony 作业的 `runs-on` 并设两个环境变量 |
+
 ---
 
 ## 7. 本轮改动清单（含文件路径，供 review）
@@ -400,10 +441,23 @@ exit=0
 | `docs/desktop-distribution.md` | 修订 | 补「移动端不适用本指南，另见」的对照与交叉链接 |
 | `docs/release-post--checklist.md` | 修订 | 三平台口径表补「移动端渠道」一行 + 移动端产物首次出现的分界说明 |
 
+### 7.1 收尾轮次改动清单（2026-10-10 自动化轮次，分支 `fix/rgnRC4`）
+
+| 文件 | 动作 | 要点 |
+|---|---|---|
+| `app/{android,harmony,ios}/gox-engine.json` | **新增** | 各 1 份 `{"engineVersionRange": "0.9.x"}`，对应引擎真源 `cmd/gox/main.go` 的 `const version = "0.9.0"` |
+| `.github/workflows/mobile-release.yml` | 修订 | `gate` 作业的第 ③ 步改为 `check-shell-engine-version.py … --require`（缺失/不符均判红）；同步更新两处注释 |
+| `app/MOBILE-DISTRIBUTION.md` | 瘦身（重写） | 顶部声明本文为唯一真源；只留落地记录（子包布局、`optionalDependencies` 论证、改动清单、未完成边界）+ 壳工程声明文件的维护纪律 |
+| `docs/mobile-distribution-decision.md` | 修订 | 新增 §6.8 拍板结论（含 6.5 仍需人工清单）、§7.1 本表；§0.2 / §0.3 第 6/9/10 项、§3.1 第 4 层、§3.3、§8 第 1 条同步为已落地 |
+
 ## 8. 未覆盖边界与已知问题（逐条）
 
-1. **第 4 层闸门未激活**：三个壳工程缺 `gox-engine.json`（§3.3），闸门当前只响不红。
-2. **`mobile-release.yml` 从未真实运行**：本轮不 push、不触发；YAML 与脚本分支仅本地验证（§4.2）。
+1. ~~**第 4 层闸门未激活**~~ → **已解决**（2026-10-10 轮次）：三个壳工程已各加 `gox-engine.json`，
+   `gate` 作业带 `--require`，缺失/不符都判红（§3.3、§6.8 的 6.4）。
+   遗留副作用：引擎 minor 推进时必须同步改三份声明，否则发布被挡 —— 这是设计意图，不是缺陷。
+2. **`mobile-release.yml` 从未真实运行**：不真发版、不触发；YAML 与脚本分支仅本地验证（§4.2）。
+   2026-10-10 轮次补充：本次改动后用 PyYAML 复解析通过（6 个作业键齐全）+ `gate` 的第 ③ 步
+   做了正/负向本地自测（§3.3），但**整条工作流仍未在 CI 上跑过**。
 3. **harmony 全链路缺口**：CI 产不出 HAP，也产不出 harmony 子包（`release.yml` 明确不含）；
    `gox create` 脚手架还缺 harmony 骨架 —— 三者都需要「自建 runner + DevEco」或另立单。
 4. **Android 只有 debug 签名**：无 keystore.properties ⇒ 不可上架（§4.1）。
