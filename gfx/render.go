@@ -78,6 +78,14 @@ type app struct {
 	tooltipHost     *GuiNode
 	tooltipDeadline time.Time
 
+	// 手势状态 (ryB64Z): gest 是"按下 → 移动 → 抬起"这一趟的追踪,
+	// lpNode / lpDeadline 是长按计时 (与 tooltip 同一套 deadline 机制 ——
+	// 泵睡死时 AfterFunc 唤不醒, 只能靠等待预算钳制)。
+	// 见 gesture.go 的文件头。
+	gest       gesture
+	lpNode     *GuiNode
+	lpDeadline time.Time
+
 	// 全局快捷键表 (P3-5): 从树上 menuitem 的 shortcut prop 收集而来。
 	// 惰性重建 (表为空时按键触发一次), 因为它只在"菜单项集合变化"时需要更新。
 	shortcuts []menuShortcutEntry
@@ -470,6 +478,11 @@ func Pump(maxWait time.Duration) bool {
 	if d, ok := nextTooltipWake(); ok && (wait <= 0 || wait > d) {
 		wait = d
 	}
+	// 长按计时 (ryB64Z): 与 tooltip 同源 —— 不钳等待预算的话, "按住不动等
+	// 长按" 时泵会睡死在 WaitEvents 里, 长按永远不成立。
+	if d, ok := nextLongPressWake(); ok && (wait <= 0 || wait > d) {
+		wait = d
+	}
 	for _, a := range list {
 		if !a.surfaceAlive() {
 			continue
@@ -602,6 +615,9 @@ func (a *app) processEvents() bool {
 	// tooltip 计时到期 (S4): 泵被等待预算钳到 deadline (见 nextTooltipWake),
 	// 醒来后在这里完成显示。
 	a.tickTooltip()
+	// 长按计时到期 (ryB64Z): 与 tooltip 同款 —— 泵被等待预算钳到 deadline
+	// (见 nextLongPressWake), 醒来后在这里派发 onLongPress。
+	a.tickLongPress()
 	a.mu.Lock()
 	need := a.needDraw
 	a.mu.Unlock()
@@ -639,6 +655,7 @@ func (a *app) dispatchEvent(ev Event) {
 		// 光标离开客户区 / 窗口失活: 清掉悬停与按压态
 		a.setHover(nil)
 		a.releasePress()
+		a.gestureCancel() // 光标离开窗口: 这一趟手势没有"抬起"可收尾, 直接丢弃
 		a.tooltipHide()
 		// 拖动中 (P2-8): 支持鼠标捕获的后端会在窗口外继续送事件, 可以
 		// 安心等 MouseUp; 不支持的后端则**永远等不到**, 只能在这里放弃,
@@ -968,6 +985,9 @@ func (a *app) handleMouseMove(x, y int) {
 		a.dragMove(drag, x, y)
 		return
 	}
+	// 手势位移累积 (ryB64Z): 必须在下面的 hover / tooltip 之前 —— 超过 slop
+	// 时要立刻作废长按计时, 晚了就可能"手指已经划走了还弹出长按"。
+	a.gestureMove(x, y)
 	target := HitTestDeep(a.rootNode(), x, y)
 	a.setHover(target)
 	a.tooltipTrack(target)
@@ -1168,6 +1188,9 @@ func (a *app) handleMouseDown(x, y int) {
 			return
 		}
 	}
+	// 手势追踪起点 (ryB64Z): 走到这里说明是通用按压路径 —— 组件自绘区
+	// (slider / tabs / rating / …) 都在上面各自 return 了, 不参与手势。
+	a.gestureBegin(target, x, y)
 	a.setPress(pressChainOf(target))
 }
 
@@ -1308,6 +1331,13 @@ func (a *app) endDrag() {
 func (a *app) handleMouseUp(x, y int) {
 	a.endDrag()
 	a.releasePress()
+	// 手势收尾 (ryB64Z): 判定滑动并派发 onSwipe。成立时吞掉 click ——
+	// 移动端语义里滑动不是点击。没成立则完全走原有的 handleClick 路径。
+	if a.gestureEnd(x, y) {
+		a.mu.Lock()
+		a.swallowClick = true
+		a.mu.Unlock()
+	}
 	a.handleClick(x, y)
 }
 

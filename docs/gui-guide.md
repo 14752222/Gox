@@ -112,6 +112,8 @@ macOS 后端（cocoa）已知限制：
 | `onContextMenu` | `{x, y}` | 右键抬起时触发；常配合 `openContextMenu(e.x, e.y, items)` 弹右键菜单 |
 | `onKeyDown` / `onKeyUp` | `{key, ctrl, shift, alt}` | 从焦点节点沿祖先链找第一个处理器 |
 | `onFocus` / `onBlur` | 无 | 焦点切换时触发，沿祖先链找第一个处理器；焦点节点会画 1px 蓝色虚线框（根节点 `hideFocusRing` 可关闭） |
+| `onLongPress` | `{x, y, duration}` | 按住不动到 `longPressDelay`（缺省 500ms）时触发；触发后抬起**不再派发 `onClick`**。详见 [3.2](#32-手势长按与滑动) |
+| `onSwipe` | `{direction, dx, dy, distance, duration, x, y}` | 抬起时位移超过 `swipeThreshold`（缺省 40px）触发，`direction` 取主导轴（`left`/`right`/`up`/`down`）；触发后**不再派发 `onClick`**。详见 [3.2](#32-手势长按与滑动) |
 | `onResize` | `{width, height}` | **窗口级**事件：窗口尺寸变化时派发给**布局根**（挂非根节点不触发），不走焦点链；尺寸为物理像素。拖窗口边缘或脚本调 `win.resize()` 都会触发 |
 | `shortcut`（属性，非事件） | 回调收 `{x, y, shortcut}` | `<menuitem shortcut="Ctrl+S">`：不必展开菜单，快捷键表在事件泵层直接匹配。只认带 `Ctrl`/`Alt` 的组合，且修饰键**全等**（`Ctrl+S` 不会被 `Ctrl+Shift+S` 触发） |
 
@@ -150,6 +152,45 @@ macOS 后端（cocoa）已知限制：
 - **脚本侧接口**：`gx/a11y` 的 `focusOrder()`（当前遍历序快照，含 role / name / tabIndex /
   box）、`focusNode(el)`、`focusNext()` / `focusPrev()`（与 Tab 同一条路径）、`roles()`。
   用途是**回归与自检**：`focusOrder()` 里出现 `name` 为空的按钮，就是漏了 `aria-label`。
+
+### 3.2 手势：长按与滑动
+
+长按与滑动都是"按下 → 移动 → 抬起"这条序列上的**整体判定**，所以它们不挂在某个
+组件上，而是落地在事件泵层（`gfx/gesture.go`）—— 任何节点都白拿这两个手势，包括
+`<rect>` 这种没有自带行为的盒子。回调与 `onClick` 同口径：从命中节点沿祖先链找第一个
+处理器，所以写在父容器上就对整个子树生效。
+
+| prop | 含义 | 缺省 |
+|---|---|---|
+| `longPressDelay` | 按住多久算长按（ms） | 500（与 tooltip 同值） |
+| `longPressSlop` | 长按期间容许的抖动（px）；超过就作废长按 | 10 |
+| `swipeThreshold` | 判定成滑动的最小位移（px） | 40 |
+
+```jsx
+<rect width={260} height={180}
+      longPressDelay={400} swipeThreshold={60}
+      onClick={() => log.push("click")}
+      onLongPress={(e) => log.push(`lp:${e.x},${e.y},${e.duration}`)}
+      onSwipe={(e) => log.push(`swipe:${e.direction},${e.dx},${e.dy}`)} />
+```
+
+**手势与 click 互斥**：长按或滑动一旦成立，抬起时**不再派发 `onClick`**（移动端语义里
+长按不是点击、滑动也不是点击）。没成立 —— 没到时长、或位移没到阈值 —— 则完全走原有的
+click 路径，行为不变。这一条是长按多选 / 滑动删除能用的前提：否则每次长按都会顺带
+触发一次选中。
+
+`onSwipe` 的 `direction` 取**位移较大的那个轴**（dominant axis，与移动端惯例一致），
+斜着划也只报一个方向；`dx` / `dy` 保留符号（向右为正、向下为正），想要"划了多远"用
+`distance`（欧氏距离）。`duration` 是从按下到判定的毫秒数。
+
+两条边界值得记住：
+
+- **长按期间挪开手指就作废**：超过 `longPressSlop` 判定为"这不是按住不动"，长按不再
+  触发（缺省 10px 的余量是给手指漂移的）。作废之后如果位移够大，抬起时仍会判成滑动。
+- **长按已触发就不再判滑动**：长按后手指挪一下不算滑动，免得两个手势打架。
+
+组件自绘区（`slider` / `tabs` / `rating` 等带几何命中分支的）不参与手势 —— 它们的
+`mousedown` 本身就是一次性动作，再叠一层长按 / 滑动只会互相干扰。
 
 ## 4. 内置元素参考
 

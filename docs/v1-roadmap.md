@@ -1066,3 +1066,57 @@ Rx 分支，否则 `RxValue` 写入的信号没人取，会残留到之后不相
 | 错误路径不布线依赖 | `FailureRecovers…`、`NestedThrowPropagates` |
 
 `go test -count=1 ./...` 全绿（2m10s，零失败）。语义已落到 `docs/gui-guide.md` §8.5。
+
+## 三十九、组件级手势：长按与滑动（ryB64Z）
+
+移动端应用的地基 —— 图片整理的「长按多选」、列表滑动删除、下拉刷新全靠它。
+在此之前全仓零命中，手势完全不存在。
+
+### 1. 为什么放在事件泵层而不是组件里
+
+长按要**计时**，滑动要**跨事件累积位移**，两者都是「按下 → 移动 → 抬起」这条
+序列上的整体判定，任何单个组件都看不到完整序列。放在事件泵层（与 hover /
+press / drag 同一条线程、同一套字段纪律）才能让任意节点都白拿这两个手势。
+
+### 2. 长按计时为什么不用 `time.AfterFunc`
+
+与 tooltip 同源的限制：泵没有事件、没有 JS 定时器时会睡死在 `WaitEvents` 里，
+`AfterFunc` 里 `Post` 的任务唤醒不了它。沿用同一套解法 —— `Pump` 的等待预算
+被 `nextLongPressWake()` 钳到 deadline，泵到点自然醒来，`processEvents` 里的
+`tickLongPress` 完成派发。全程单线程，不引入并发路径。
+
+### 3. 与 click 的关系
+
+长按或滑动一旦成立，抬起时**不再派发 click** —— 移动端语义里长按不是点击、
+滑动也不是点击。没成立（没移动、没到时长）则完全走原有的 click 路径，行为不变。
+
+### 4. 阈值
+
+| prop | 含义 | 缺省 |
+|---|---|---|
+| `longPressDelay` | 按住多久算长按（ms） | 500（与 tooltip 同值） |
+| `longPressSlop` | 长按期间容许的抖动（px） | 10 |
+| `swipeThreshold` | 判定成滑动的最小位移（px） | 40 |
+
+`onSwipe` 的 `direction` 取**位移较大的那个轴**（dominant axis）；`dx`/`dy`
+保留符号，`distance` 是欧氏距离。
+
+### 5. 反向验证（6 组注入，全部如期 FAIL）
+
+| 注入 | 期望 FAIL 的用例 |
+|---|---|
+| 长按不吞 click（两处路径一起禁） | `TestLongPressSwallowsClick` |
+| 滑动不吞 click | `TestSwipeSwallowsClick` |
+| 方向判定恒 right | `TestSwipeDirections/{向左,向上,向下}` |
+| 位移不取消长按 | `TestLongPressCancelledByMovement`、`TestLongPressSlopProp` |
+| 不判滑动阈值 | `TestSwipeBelowThreshold` |
+| 长按计时不判处理器存在 | `TestLongPressNoHandler` |
+
+> 第一版反向验证里 A / B 两组「注入后没 FAIL」，查下来不是注入失败，而是
+> **语义掩盖**：长按吞 click 有两条路径（派发时置 `swallowClick`，以及
+> `gestureEnd` 的 `g.fired` 分支返回 true），只禁一条另一条仍生效。改成两处
+> 一起禁之后如期 FAIL。这条记下来，免得下次又把它当成「注入没生效」。
+
+新增 `gfx/gesture.go` + `gfx/gesture_test.go`（16 例）；`gfx/render.go` 接线
+按下 / 移动 / 抬起 / 离窗四个入口并合成等待预算。`go test -count=1 ./...`
+全绿（2m03s）。
