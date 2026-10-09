@@ -1286,10 +1286,17 @@ yield 三分支），两个入口共用一套语义。
 | 项 | 结果 |
 |---|---|
 | `go test -count=1 ./...` | 全绿 |
-| test262 `built-ins` 全量 A/B | GAIN 125 / **LOST 0** |
-| test262 `language` 全量 A/B | GAIN 10 / **LOST 0** |
+| test262 `built-ins` 全量 A/B（`fdd1620` → `8db9b1d`） | GAIN 9 / **LOST 0** |
+| test262 `language` 全量 A/B（`fdd1620` → `8db9b1d`） | GAIN 8 / **LOST 0** |
 | 三条 broken-promise 用例 | base 全 FAIL → fix 全 PASS |
 | Node v22 对照（suspendedStart / suspendedYield × 抛错 / 被拒） | 逐条一致 |
+
+> 基准订正（2026-10-09）：初版 A/B 用的 `/tmp/goxbase` 是 `ryB64Z` **之前**
+> 编译的旧二进制，GAIN 里混进了 `60d59dc`（ryB64Z）与 `fdd1620`（rtWB7N）两个
+> 提交的收益，于是报成 GAIN 125 / GAIN 10。改用 `fdd1620` worktree 现编的
+> `/tmp/goxprev` 重跑，真实增量为 **GAIN 9 / GAIN 8（合计 17）**，LOST 仍为 0。
+> 教训：A/B 的 base 必须是被核销提交的**直接父提交**现编的二进制，缓存的旧
+> 二进制不能当基准。
 
 新增 `object/promise_ownprop_test.go`（4 例，描述符存储机制）、
 `vm/promise_firstclass_test.go`（6 例，JS 侧一等对象契约）、
@@ -1319,3 +1326,148 @@ yield 三分支），两个入口共用一套语义。
 - `*object.Error` 还不是一等属性存储：`Object.defineProperty(new Error(), …)`
   会抛（干净 HEAD 上同样如此）。本次用例因此改用普通对象作 rejection reason。
 
+## 四十二、模块命名空间落成活绑定：`d53ff69` 的「回归」其实是假阳性（r8tHPv）
+
+### 1. 症状
+
+`language/expressions/dynamic-import/usage/*gtbndng-indirect-update*` 一族
+36 条（18 对：命名导出 + `default`）此前 **0 条 PASS**：
+
+```js
+import('./eval-gtbndng-indirect-update_FIXTURE.js').then(imported => {
+  assert.sameValue(imported.x, 1);
+  fnGlobalObject().test262update();   // FIXTURE 里 x = 2
+  assert.sameValue(imported.x, 2);    // ← 这里仍是 1
+});
+```
+
+报错 `Expected SameValue("1", "2")`（命名导出）与
+`Expected SameValue("«[Function: fn]»", "«2»")`（`default`）。
+
+### 2. 先定位：Promise 链还是活绑定？
+
+按单子要求写**不用 `async function`** 的最小探针：
+
+```js
+import('./fix.js').then(function(imported) {
+  console.log("before:", imported.x);                    // 1
+  Function('return this;')().test262update();            // x = 2
+  console.log("after:", imported.x);                     // Gox 给 1, Node 给 2
+});
+```
+
+探针在 `8db9b1d` 上直接复现 ⇒ 与 `.then` 链无关，问题在**模块导出侧**。
+
+### 3. 再核 `d53ff69`：是「引入回归」还是「拆掉了假阳性」？
+
+单子给的二分是「第 7 个 `b54beee` PASS / 第 8 个 `d53ff69` FAIL」。用两个
+worktree 现编二进制实测后，结论要反过来：
+
+| 版本 | `-one` 结果 | 耗时 |
+|---|---|---|
+| `b54beee` | pass | **3.002 s**（异步泵 deadline 跑满） |
+| `d53ff69` | FAIL `Expected SameValue("1", "2")` | 0.002 s |
+
+`3.002 s` 是 `cmd/gox/cmd_test262.go` 的异步泵把 deadline 走完 —— 即
+**`$DONE` 从头到尾没被调用**。为什么？探针 p5（`.then` 回调里抛错）：
+
+| 版本 | `Promise.resolve(1).then(() => { throw e }).then(ok, err)` |
+|---|---|
+| `b54beee` | `vm error: Error: boom`（抛出值冒到 VM 顶层，派生 promise **没被 reject**） |
+| `d53ff69` | `rejected (GOOD): boom` |
+
+于是真实因果是：
+
+- `b54beee`：断言 `assert.sameValue(imported.x, 2)` 在 `.then` 回调里抛错，
+  而当时的 promise 语义**不把回调抛错归属给派生 promise**，尾部
+  `.then($DONE, $DONE)` 永远不跑 ⇒ `$DONE` 不触发 ⇒ 异步泵空转到 deadline
+  且 `oc.err == nil` ⇒ runner 判 **pass**。这是一次**假阳性**，不是真通过。
+- `d53ff69`（rqAkgl）修好了「回调抛错归属派生 promise」，断言错误终于经
+  `$DONE` 传回宿主，把**一直存在**的活绑定缺陷暴露出来。
+
+⇒ 二分结论订正：**引入点不是 `d53ff69`**；它只是让 runner 不再假放行。活绑定
+缺陷在 `b54beee` 上同样存在（探针 p1 在 `b54beee` 二进制上就是 `after: 1`）。
+
+> 顺带暴露 runner 的一个洞：async 用例在 deadline 内没等到 `$DONE` 且
+> `oc.err == nil` 时被判 pass（`cmd_test262.go` 的 module 分支与
+> `judgePhase(nil)`）。凡「异步链断掉」的用例都会假放行。本次不修，单开记录。
+
+### 4. 真因：命名空间被物化成了快照
+
+`vm/vm.go` 的 `buildNamespace` 逐名 `resolveWith` 后直接
+`obj.SetProperty(name, v)` —— 注释自称「取值时读取源模块导出槽」，实际是
+**物化那一刻的一次性拷贝**。规范 11.4.6 里模块命名空间是 exotic object，
+`[[Get]]` 每次都回绑定槽取值。
+
+另一处同源缺陷在 `compiler/compiler.go` 的 `compileDefaultExport`：具名默认
+导出（`export default function fn(){}`）被编译成「取值 + `OP_EXPORT`」快照，
+而规范 16.2.3.7 记的是
+`LocalExportEntry { [[ExportName]]: "default", [[LocalName]]: "fn" }`
+—— `default` 是**指向局部绑定 `fn` 的活绑定**。
+
+### 5. 修复
+
+| 位置 | 改动 |
+|---|---|
+| `vm/vm.go` `isLiveExport` | 判定导出名是否「活」：来自 `bindings`（顶层帧槽位）/ 具名 `forwards` / `stars` 即活；静态塞进 `Named` / `Default` 的不活；`export * as ns`（`f.name == "*"`）不活 —— 保持物化，否则每次读 `ns.inner` 都新建对象，破坏 `ns.inner === ns.inner` 的同一性 |
+| `vm/vm.go` `liveExportDesc` | 活导出落成读取器属性：getter 每次 `resolveWith` 回源模块导出槽；无 setter 对应规范 `[[Set]]` 返回 false；描述符取 `enumerable:true / configurable:false` |
+| `vm/vm.go` `buildNamespace` | 活导出走 `DefineOwnProperty(desc)`，其余照旧 `SetProperty` |
+| `compiler/compiler.go` `compileDefaultExport` | 具名 function / class 默认导出在模块模式下走 `emitLocalExport(d.Name.Value, "default")`（`OP_EXPORT_BINDING`）；匿名 / 表达式形态仍取值导出 |
+
+只给「活」的导出装读取器是刻意的收敛：内置模块（`fs` / `path` …）的导出是
+直接塞进 `Named` 的常量，保持数据属性可避免 `console.log(ns)` 之类路径看到
+访问器而退化。
+
+### 6. 证据
+
+| 项 | 结果 |
+|---|---|
+| `go test -count=1 ./...` | 全绿（含新增 10 例） |
+| gtbndng-indirect-update 一族 | base **0/36** → **36/36** |
+| test262 `language` 全量 A/B（`8db9b1d` → 本次） | **GAIN 37 / LOST 0** |
+| test262 `built-ins` 全量 A/B | 逐用例零差异（2 条经双二进制自比确认为抖动） |
+| Node v22 对照（同一脚本 6 项观测） | 取值行为逐项一致（描述符形态差异见遗留） |
+
+`built-ins` 的 2 条差异（`Array/prototype/every/15.4.4.16-7-c-ii-2.js`、
+`Array/prototype/forEach/15.4.4.18-7-c-ii-1.js`）都是造 100 万元素数组的慢
+用例（单跑 0.8~1.0 s）。用**同一二进制跑两遍**自比：`goxfix` 自比出现
+`every/…ii-2` 波动、`goxns` 自比出现 `forEach/…ii-1` 反向波动 ⇒ 8 并发下撞
+runner 单例超时，属抖动，与本次改动无关。
+
+Node v22 对照（同一脚本，`/tmp/nodecheck`）：
+
+| 观测 | Node v22 | Gox（修复后） | Gox（修复前） |
+|---|---|---|---|
+| `ns.x` 改前 / 改后 | 1 / 2 | 1 / 2 | 1 / **1** |
+| `desc(ns,'x').configurable` | false | false | **true** |
+| `desc(ns,'x').enumerable` | true | true | true |
+| 具名 `default` 调用后再读 `ns.default` | 1 → 2 | 1 → 2 | 1 → **[Function: fn]** |
+| 匿名 `default` 描述符 `value` / `get` | function / undefined | function / undefined | function / undefined |
+| `Object.keys(ns)` | 完整枚举 | 完整枚举 | 完整枚举 |
+
+### 7. 反向验证（5 组注入，全部如期 FAIL）
+
+| 注入 | 如期 FAIL |
+|---|---|
+| A 命名空间物化退回 `SetProperty` 快照 | 6 例单测 + 同族 **0/36** |
+| B 具名 default 退回取值导出（function + class） | `TestNamespaceDefaultLiveBinding` / `…DefaultClassLiveBinding` + 同族 **18/36** |
+| C `isLiveExport` 恒假（读取器永不装入） | 6 例单测 + 同族 **0/36** |
+| D 只修 class 不修 function（半修） | `TestNamespaceDefaultLiveBinding` + 同族 **18/36** |
+| E getter 不回读（返回物化时常量） | 7 例单测 + 同族 **0/36** |
+
+> 反向脚本第一版用 `git checkout` + `git clean -fdq` 还原，把**未提交**的修复
+> 一起清掉了（`git clean` 还删了新建的测试文件）。订正：反向验证前**先
+> commit**，还原只用 `git checkout -- <具体文件>`，脚本内不再用 `git clean`。
+
+### 8. 遗留（如实记录）
+
+- **活导出描述符形态**：Node 的 `[[GetOwnProperty]]` 合成**数据**描述符
+  `{value, writable:true, enumerable:true, configurable:false}`，Gox 给的是
+  **访问器**描述符 `{get, set:undefined, enumerable:true, configurable:false}`。
+  取值行为一致，但 `Object.getOwnPropertyDescriptor(ns,'x').value` 在 Gox 上是
+  `undefined`。要完全一致需把命名空间做成真正的 exotic object（新对象类型），
+  改动面大，本次不做。
+- **runner 假放行**：async 用例没等到 `$DONE` 且无异常时判 pass（见 §3）。
+  建议单开条目：让「未确认 `$DONE`」直接判 fail，或至少标 `phase: timeout`。
+- 命名空间对象每次 `buildNamespace` 都新建；`export * as ns` 的源被读两次会
+  拿到两个不同对象。本次只保证不因改活绑定而加剧。
