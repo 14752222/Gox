@@ -690,6 +690,41 @@ this 是 undefined，都会把删除落到错误的基上。
 - **反向护栏必须一起写**：只写「0 不能传」会诱导后来人把钳位加到所有 pump 调用上，那会毁掉空闲期语义 —— 没有定时任务时泵本该无限期等待外部事件，一旦被钳成 1ms 就退化成忙轮询（CPU 空转）。所以 `TestPumpStillGetsInfiniteWaitWhenIdle` 显式断言**空闲期仍必须收到 0**，与正向用例成对存在。
 - **测试里的泵要建模契约、不要建模实现**：第一版泵把 `maxWait` 睡满，结果 `TestPumpIntervalKeepsTicking` 在**无修复时也通过** —— 睡满恰好让泵在定时器到期那一刻才回来，`wait` 永远轮不到 0。这个假阴性比没有测试更危险。改成「立刻返回」的急切泵才现形。
 
+## 三十一、`%AsyncIteratorPrototype%` 装配 + 内建方法的调用语义（`rGmSsi` + `rYFTlt` 阶段二）
+
+**本轮形状**：`rczZT2` 之后挑的两条同域单 —— 一条是**确定形态的装配缺口**（`rGmSsi`，13 例 test262），一条是**它的前置依赖**（`rYFTlt` 的调用侧）。本轮的一个关键基建动作：**把官方 test262 稀疏检出到沙箱里**（`--filter=blob:none --sparse`，只取 `test/built-ins` + `harness`），于是第一次能拿**真用例 + 逐用例 A/B** 说事，不再靠手写探针推断。
+
+| 项 | 内容 |
+|---|---|
+| `rGmSsi` | 装配 `%AsyncIteratorPrototype%`（AIP）及其两个语义成员 `@@asyncIterator` / `@@asyncDispose`，并把 `%AsyncGeneratorPrototype%` 的 `[[Prototype]]` 从 `%Object.prototype%` 改指向 AIP |
+| `rYFTlt` 阶段二（调用侧） | ① `OP_CALL` / `OP_CALL_SPREAD` 补 `*BuiltinMethod` 分支；② 编译器让 `obj[k](args)` 也发射 `OP_CALL_METHOD`（绑接收者） |
+| 连带修正 | 内建方法裸调用的 `this` 是 **undefined**（内建函数按 strict 语义），此前缺失的 `ToObject(nullish)` 校验补在 `Object.prototype.valueOf` / `toLocaleString` 与 `Array.prototype.concat` 上 |
+| 证据 | `built-ins` 全量 **A/B：LOST 0 / GAINED 17**；`language` 子集 **LOST 0 / GAINED 0**；`AsyncIteratorPrototype` **0/13 → 13/13** |
+
+**为什么 `rGmSsi` 必须连着 `rYFTlt` 一起做**：13 例里 2 例（`invokes-return` / `return-val`）要**调用** `AIP[Symbol.asyncDispose]`。只做装配能拿到 11/13 —— 卡住的正是 `obj[k]()` 不绑接收者 + `OP_CALL` 不认 `*BuiltinMethod`。**标着「9 例」的单实际是 13 例**（还有 `Symbol.asyncIterator` 的 4 例），且**装配前 AIP 根本不存在**（只有 `%AsyncGeneratorPrototype%`）。
+
+**实锤（三条，都值得写下来）**：
+
+- **修调用侧时最易踩的一坑：裸调用的 `this` 不能按 sloppy 归一**。第一版把 `this` 传成 `globalThis`，结果 `Object.prototype.valueOf()` 该抛的 TypeError 不抛（`ToObject(globalThis)` 成功了）。Node v22 实测：**内建函数是 strict 的**，裸调用拿到的就是 `undefined` —— `var v = Object.prototype.valueOf; v()` 抛 TypeError，而 `v.call(globalThis)` 正常返回。**探针写错会得出相反结论**：`d.value()` 是成员调用（`this = d`），不是裸调用；第一版探针就是这么写错的，白查一轮。
+- **「修对了反而掉 3 条」是假阳性在退潮**。`valueOf` A14/A15、`Array/prototype/methods-called-as-functions` 在基线通过，靠的是「内建方法裸调用 → *is not a function*」这个**错误的 TypeError**。修好调用侧后它们才暴露真问题（缺 `ToObject(nullish)` 校验）。**基线里靠错误原因通过的用例，比失败用例更危险** —— 修对了就掉，归因时极易误判成新回归。
+- **test262 有并发抖动，判 LOST 前先单独复跑**。全量 `-jobs 8` 下 `Array/prototype/every/15.4.4.16-9-c-ii-2` 等慢用例（999999 长度的稀疏数组，单跑约 1 秒）会假性失败；`-jobs 4` 或 `-one` 单跑即通过。**用基线二进制对同一批可疑用例逐个复跑**（`git stash` + `go build -o /tmp/goxbase`），才能把真回归和抖动分开。
+
+**`rYFTlt` 阶段一（读取侧）尚未落地**，缺口已实测量化（Node v22 对照）：
+
+| 探针 | Node v22 | Gox 现状 |
+|---|---|---|
+| `typeof [][Symbol.iterator]` | `function` | `undefined` |
+| `[1,2][Symbol.iterator]().next().value` | `1` | TypeError |
+| `"abc"[Symbol.iterator]().next().value` | `a` | TypeError |
+| `new Map()[Symbol.iterator]()` / `new Set()[...]` | `object` | TypeError |
+| `Array.prototype[Symbol.iterator].call([1,2])` | 可用 | TypeError |
+| `typeof Array/Promise/Map/Set/RegExp[Symbol.species]` | `function` | `undefined` |
+| `typeof Symbol.prototype[Symbol.toPrimitive]` | `function` | `undefined` |
+| `typeof Function.prototype[Symbol.hasInstance]` | `function` | `undefined` |
+| `typeof Math/JSON[Symbol.toStringTag]` | `string` | 一致（已注册） |
+
+注意 `for (x of arr)` / 数组解构 / `for-of` Map·Set·String **全部正常** —— 它们走 VM 内部通道，不经过 `@@iterator` 属性查找。所以阶段一是**纯增量装配**，最大风险面是「新暴露的 `Array.prototype[@@iterator]` 会不会被迭代快路径误接」，动手时必须带 `AsyncFromSyncIteratorPrototype 28/38`、`yield-star 719/720`、`iterator-close-non-throw 6/6` 三个基准点一起验。
+
 ## 待确认（信息缺口）
 
 - `agent_doc/undecided-and-unimplemented.md` 是 **2026-09-18 快照**，其 §四 缺口清单中已有多项（cocoa 后端、iOS 后端、X11 修正、M2 IME、滚动条拖拽、tabs、table/tree、tooltip）在 09-18 后落地。本路线图已按 git 历史更正，但**建议回填该台账**，否则后续排期会继续基于过期口径。

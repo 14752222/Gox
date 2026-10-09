@@ -99,7 +99,29 @@ func setupAsync(env *runtime.Environment) {
 func setupAsyncGeneratorIntrinsics(env *runtime.Environment) {
 	tagSym := object.GetGlobalSymbol("Symbol.toStringTag")
 
-	agProto := object.NewObjectWithProto(objectPrototype) // %AsyncGeneratorPrototype%
+	// %AsyncIteratorPrototype%: 异步迭代器原型链的顶端, AGP 挂在它下面。
+	// 它承载两个"取迭代器自身"的语义成员 —— @@asyncIterator (返回 this)
+	// 与 @@asyncDispose (await using 的释放入口), 二者都是 writable: true /
+	// enumerable: false / configurable: true (规范 17 章的默认值)。
+	aip := object.NewObjectWithProto(objectPrototype)
+	if itSym := object.GetGlobalSymbol("Symbol.asyncIterator"); itSym != nil {
+		aip.DefineOwnSymbolProperty(itSym, object.PropertyDescriptor{
+			Value: asyncIteratorProtoAsyncIterator(),
+			Writable: true, Enumerable: false, Configurable: true,
+		})
+	}
+	if adSym := object.SymbolAsyncDispose(); adSym != nil {
+		aip.DefineOwnSymbolProperty(adSym, object.PropertyDescriptor{
+			Value: asyncIteratorProtoAsyncDispose(),
+			Writable: true, Enumerable: false, Configurable: true,
+		})
+	}
+	object.SetAsyncIteratorProto(aip)
+
+	// 注意: AGP 的 [[Prototype]] 是 AIP, **不是** %Object.prototype% ——
+	// 规范里 Object.getPrototypeOf(Object.getPrototypeOf(gen.prototype))
+	// 必须拿到 AIP (test262 AsyncIteratorPrototype/* 就是这么取它的)。
+	agProto := object.NewObjectWithProto(aip) // %AsyncGeneratorPrototype%
 	agFuncProto := object.NewObject()                     // %AsyncGeneratorFunction.prototype%
 	// AGFFP.[[Prototype]] = %Function.prototype% (setupFunctionIntrinsics 已装配)。
 	if fp := object.GetFunctionPrototype(); fp != nil {
@@ -186,6 +208,146 @@ func asyncGeneratorProtoMethod(name string, kind int) object.Value {
 		Value: object.NewInt(1), Writable: false, Enumerable: false, Configurable: true,
 	})
 	return m
+}
+
+// ===== %AsyncIteratorPrototype% 的两个语义成员 (看板 rGmSsi) =====
+
+// asyncIteratorProtoAsyncIterator 构造 %AsyncIteratorPrototype%[@@asyncIterator]。
+//
+// 规范全文只有一步: "Return the this value." —— 它是所有异步迭代器的
+// 「我自己就是可迭代对象」入口 (for await 的 GetIterator 拿到异步迭代器后,
+// 再对它取 @@asyncIterator 应原样返回)。this 不做任何装箱/校验, 所以
+// `getAsyncIterator.call(4n)` 也返回 4n (test262 return-val.js)。
+// name 为 "[Symbol.asyncIterator]", length 为 0 (NewBuiltinMethod 默认)。
+func asyncIteratorProtoAsyncIterator() object.Value {
+	return object.NewBuiltinMethod("[Symbol.asyncIterator]",
+		func(this object.Value, args ...object.Value) object.Value {
+			if this == nil {
+				return object.UndefinedSingleton
+			}
+			return this
+		})
+}
+
+// asyncIteratorProtoAsyncDispose 构造 %AsyncIteratorPrototype%[@@asyncDispose]。
+//
+// 规范 %AsyncIteratorPrototype%[@@asyncDispose]():
+//
+//	1. Let O be the this value.
+//	2. Let promiseCapability be ! NewPromiseCapability(%Promise%).
+//	3. Let return be GetMethod(O, "return").        ← getter 抛错在此中断
+//	4. IfAbruptRejectPromise(return, promiseCapability).
+//	5. return 为 undefined ⇒ resolve(undefined)
+//	6. 否则 Call(return, O) ⇒ PromiseResolve ⇒ then(unwrap ⇒ undefined)
+//	7. Return promiseCapability.[[Promise]].
+//
+// 关键: **它永不同步抛**。三条错误路径 (getter 抛 / 调用抛 / 返回的 promise
+// 被 reject) 全部折成 rejection, 且 rejection reason 必须是**原始抛出值**
+// —— `throw new CatchError()` 要让调用方 `assert.throwsAsync(CatchError)`
+// 成立, 换成新 Error 对象就过不去 (同 r6OWbQ 的口径)。
+func asyncIteratorProtoAsyncDispose() object.Value {
+	return object.NewBuiltinMethod("[Symbol.asyncDispose]",
+		func(this object.Value, args ...object.Value) object.Value {
+			p := object.NewPromise()
+			// 3) GetMethod(O, "return"): 属性读取会触发 getter。
+			m, thrown := getMethodForAsyncDispose(this)
+			if thrown != nil {
+				p.Reject(thrown)
+				return p
+			}
+			// 5) 没有 return 方法: resolve(undefined)。null/undefined 都按
+			//    "没有"处理 (规范 GetMethod 的 nullish 分支), 不是 TypeError。
+			if isNullishValue(m) {
+				p.Resolve(object.UndefinedSingleton)
+				return p
+			}
+			if !object.IsCallable(m) {
+				// 有 return 属性但不可调用 ⇒ TypeError (GetMethod 的第 6 步)。
+				p.Reject(object.NewErrorWithName("TypeError",
+					"this.return is not a function"))
+				return p
+			}
+			// 6.a) Call(return, O, « ») —— 零参数。
+			res := object.CallFunction(m, this)
+			if cbErr := object.TakeCallbackError(); cbErr != nil {
+				p.Reject(bridgeThrownValue(cbErr))
+				return p
+			}
+			// 6.c) PromiseResolve(%Promise%, result): result 是 promise 时
+			//      采纳它 (Resolve 自带解包), 否则包成已完成的 promise。
+			wrapper := object.NewPromise()
+			wrapper.Resolve(res)
+			// 6.e/g) unwrap: 无论 return 交回什么, 最终都以 undefined 兑现;
+			//        wrapper 被 reject 时把 reason 原样传给 capability。
+			wrapper.OnFulfilled(object.NewBuiltin("unwrap",
+				func(a ...object.Value) object.Value {
+					p.Resolve(object.UndefinedSingleton)
+					return object.UndefinedSingleton
+				}))
+			wrapper.OnRejected(object.NewBuiltin("__asyncDispose_reject",
+				func(a ...object.Value) object.Value {
+					reason := object.Value(object.UndefinedSingleton)
+					if len(a) > 0 && a[0] != nil {
+						reason = a[0]
+					}
+					p.Reject(reason)
+					return object.UndefinedSingleton
+				}))
+			return p
+		})
+}
+
+// getMethodForAsyncDispose 取 this 上的 "return" 属性 (GetMethod 的前半)。
+//
+// 返回 (方法值, 中断值): 中断值非 nil 表示属性读取 (getter) 抛出, 调用方
+// 应把它作为 rejection reason。属性读取**必须**展开 getter —— test262
+// throw-return-getter.js 就是把 throw 写在 getter 里的。
+func getMethodForAsyncDispose(this object.Value) (object.Value, object.Value) {
+	if this == nil {
+		return object.UndefinedSingleton, nil
+	}
+	var v object.Value = object.UndefinedSingleton
+	// 用字符串键读取口而不是只认 *Object: 数组 / TypedArray / Promise 等
+	// 也都有自己的 GetProperty, 而且**都会展开访问器 getter** —— 这正是
+	// GetMethod 要的语义。
+	if o, ok := this.(interface {
+		GetProperty(string) (object.Value, bool)
+	}); ok {
+		if got, found := o.GetProperty("return"); found && got != nil {
+			v = got
+		}
+	}
+	// 回调桥: getter 抛出时这里才有值, 必须**紧跟**属性读取检查 ——
+	// 下一次 CallFunction 会把错误槽清空。
+	if cbErr := object.TakeCallbackError(); cbErr != nil {
+		return nil, bridgeThrownValue(cbErr)
+	}
+	return v, nil
+}
+
+// bridgeThrownValue 把回调桥的 Go error 还原成**原始抛出值**。
+//
+// 优先用值槽 (throw x 的 x): 非 Error 抛出值也必须原样传出, 否则
+// `assert.throwsAsync(CatchError)` 这类按构造函数断言的用例过不去。
+// 值槽为空时才退回用 error 文本造一个 Error (与 agRejectBridge 同口径)。
+func bridgeThrownValue(cbErr error) object.Value {
+	if thrown := object.TakeCallbackErrorValue(); thrown != nil &&
+		thrown != object.UndefinedSingleton {
+		return thrown
+	}
+	return object.NewErrorWithName("Error", cbErr.Error())
+}
+
+// isNullishValue 报告值是否为 null / undefined (GetMethod 的 nullish 分支)。
+func isNullishValue(v object.Value) bool {
+	if v == nil {
+		return true
+	}
+	switch v.(type) {
+	case *object.Null, *object.Undefined:
+		return true
+	}
+	return false
 }
 
 // step 驱动 generator 一步, 完成后 resolve 结果 Promise。

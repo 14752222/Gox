@@ -5920,6 +5920,41 @@ func (c *Compiler) compileCallExpression(node *ast.CallExpression) error {
 		return nil
 	}
 
+	// 计算成员调用: obj[k](args) (看板 rYFTlt)。
+	//
+	// 与 obj.m(args) 完全同形, **必须绑定接收者** —— 规范里 CallExpression 的
+	// 被调是 Reference (有 base), `arr[Symbol.iterator]()` 的 this 就是 arr。
+	// 此前只有 `!member.Computed` 走方法路径, 计算成员一律退化成裸调用
+	// (先算实参、再算 obj[k]、最后 OP_CALL 不传 this), 于是
+	// `arr[Symbol.iterator]()` 直接 TypeError。
+	//
+	// 取成员用 GET_INDEX 而非 GET_PROP, 其余与方法调用逐条对齐:
+	//   [obj] → DUP → [obj, obj] → key → GET_INDEX → [obj, fn] → SWAP →
+	//   [fn, obj] → 实参 → CALL_METHOD。
+	// 求值序也顺带修正: 旧路径先算实参再算 obj[k], 规范是 obj → k → 实参。
+	if member, ok := node.Function.(*ast.MemberExpression); ok && member.Computed &&
+		member.Private == "" && !hasSpreadArgs(node.Arguments) {
+		if _, isSuperObj := member.Object.(*ast.SuperExpression); !isSuperObj {
+			if err := c.compileExpression(member.Object); err != nil {
+				return err
+			} // [obj]
+			c.emitter.EmitNoOperand(bytecode.OP_DUP) // [obj, obj]
+			if err := c.compileExpression(member.Property); err != nil {
+				return err
+			} // [obj, obj, key]
+			c.emitter.EmitNoOperand(bytecode.OP_GET_INDEX) // [obj, fn]
+			c.emitter.EmitNoOperand(bytecode.OP_SWAP)      // [fn, obj]
+			for _, arg := range node.Arguments {
+				if err := c.compileExpression(arg); err != nil {
+					return err
+				}
+			} // [fn, obj, arg1, ..., argN]
+			c.emitter.Emit(bytecode.OP_CALL_METHOD, uint16(len(node.Arguments)))
+			return nil
+		}
+		// super[k]() 不在本单范围内, 落到下面的通用路径 (维持原行为)。
+	}
+
 	// 检查是否是方法调用: obj.method(args)
 	if member, ok := node.Function.(*ast.MemberExpression); ok && !member.Computed && !hasSpreadArgs(node.Arguments) {
 	// super.method(args): 从父 prototype 取方法, this 绑定当前 this

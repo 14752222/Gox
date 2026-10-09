@@ -47,6 +47,21 @@ func SetAsyncGeneratorProto(v Value) { asyncGeneratorProto = v }
 // GetAsyncGeneratorProto 返回全局 AsyncGenerator 原型。
 func GetAsyncGeneratorProto() Value { return asyncGeneratorProto }
 
+// asyncIteratorProto 是全局共享的 %AsyncIteratorPrototype%。
+//
+// 它是异步迭代器原型链的**顶端**: %AsyncGeneratorPrototype% 的
+// [[Prototype]] 就是它, 上面挂着 @@asyncIterator (返回 this) 与
+// @@asyncDispose (explicit-resource-management)。由 stdlib 在装配
+// %AsyncGeneratorPrototype% 时一并注册 —— 两者是同一条链上的两段,
+// 分开装配必然出现"链断在中间"。
+var asyncIteratorProto Value
+
+// SetAsyncIteratorProto 注册 %AsyncIteratorPrototype% (由 stdlib 调用)。
+func SetAsyncIteratorProto(v Value) { asyncIteratorProto = v }
+
+// GetAsyncIteratorProto 返回 %AsyncIteratorPrototype%, 未装配时为 nil。
+func GetAsyncIteratorProto() Value { return asyncIteratorProto }
+
 // NewAsyncGenerator 创建异步生成器对象。
 func NewAsyncGenerator(gen *Generator) *AsyncGenerator {
 	return &AsyncGenerator{Gen: gen}

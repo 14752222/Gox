@@ -153,6 +153,14 @@ func setupArrayProto() *object.Object {
 
 	// concat(...arrays): 连接多个数组
 	p.SetBuiltinProperty("concat", object.NewBuiltinMethod("concat", func(this object.Value, args ...object.Value) object.Value {
+		// 规范第一步是 ToObject(this): null / undefined 必须抛 TypeError。
+		// 此前非数组 this 被静默当成"空数组", 于是 `var c = Array.prototype
+		// .concat; c()` 返回一个新数组而不是抛 (test262
+		// Array/prototype/methods-called-as-functions.js)。这条以前被
+		// "内建方法裸调用 → is not a function" 那个假象遮住了 (rYFTlt)。
+		if isUndefinedValue(this) || isNullValue(this) {
+			return thisTypeError("Array", "concat", this)
+		}
 		var result []object.Value
 		if arr, ok := this.(*object.Array); ok {
 			result = append(result, arr.Elements...)

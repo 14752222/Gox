@@ -1708,6 +1708,34 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 					}
 					continue
 				}
+			case *object.BuiltinMethod:
+				// 内建方法被**裸调用** (看板 rYFTlt): `const m = arr.map; m(fn)`
+				// 或 `AIP[Symbol.asyncDispose]` 取出来再调。此前本分支缺失,
+				// 于是落到 default 报 "xxx is not a function" —— 而同一个值
+				// `typeof` 明明是 "function", 极难归因。
+				//
+				// this 是 **undefined**, 不按 sloppy 归一成 globalThis ——
+				// 内建函数是 strict 的, 裸调用拿到的就是 undefined
+				// (Node 实测: `var v = Object.prototype.valueOf; v()` 抛
+				// TypeError, 而 `v.call(globalThis)` 正常返回)。照 sloppy
+				// 归一会让 ToObject 成功, 于是该抛的 TypeError 不抛。
+				result := callee.Fn(object.UndefinedSingleton, args...)
+				if result == nil {
+					result = object.UndefinedSingleton
+				}
+				if thrown, err := vm.throwIfError(result, false); thrown {
+					if err != nil {
+						return err
+					}
+					continue
+				}
+				vm.stack.Push(result)
+				if err := vm.checkCallbackErr(); err != nil {
+					if terr := vm.rethrowBridgeError(err); terr != nil {
+						return terr
+					}
+					continue
+				}
 			case *object.Closure:
 				// generator 函数调用: 不执行函数体, 返回 Generator 对象。
 				// 有形参前导段 (默认值/解构) 时, 先建立前导帧 —— 由主循环
@@ -1834,6 +1862,26 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 					result = object.UndefinedSingleton
 				}
 				if thrown, err := vm.throwIfError(result, callee.ReturnIsValue); thrown {
+					if err != nil {
+						return err
+					}
+					continue
+				}
+				vm.stack.Push(result)
+				if err := vm.checkCallbackErr(); err != nil {
+					if terr := vm.rethrowBridgeError(err); terr != nil {
+						return terr
+					}
+					continue
+				}
+			case *object.BuiltinMethod:
+				// 同 OP_CALL: 内建方法的 spread 裸调用 (看板 rYFTlt)。
+				// this 同为 undefined (内建函数按 strict 语义, 不做 sloppy 归一)。
+				result := callee.Fn(object.UndefinedSingleton, args...)
+				if result == nil {
+					result = object.UndefinedSingleton
+				}
+				if thrown, err := vm.throwIfError(result, false); thrown {
 					if err != nil {
 						return err
 					}

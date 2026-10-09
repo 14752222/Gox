@@ -34,8 +34,16 @@ func setupObjectPrototype(o *object.BuiltinFunction) {
 		return object.NewString(objectPrototypeStringOf(this))
 	}))
 
-	// toLocaleString: 本运行时无 Intl，语义与 toString 相同。
+	// toLocaleString: 本运行时无 Intl，语义与 toString 相同 —— **除了第一步**。
+	// 规范 Object.prototype.toLocaleString 是 "Let O be ? ToObject(this
+	// value)", 所以 null / undefined 必须抛 TypeError; 而 toString 走的是
+	// "this 为 undefined/null 时返回 [object Undefined]" 的特例通道, 不抛。
+	// (Node 实测: `var t = Object.prototype.toLocaleString; t()` 抛 TypeError,
+	//  而 `var s = Object.prototype.toString; s()` 返回 "[object Undefined]"。)
 	proto.SetBuiltinProperty("toLocaleString", object.NewBuiltinMethod("toLocaleString", func(this object.Value, args ...object.Value) object.Value {
+		if isUndefinedValue(this) || isNullValue(this) {
+			return object.NewTypeError("Object.prototype.toLocaleString called on null or undefined")
+		}
 		if revokedProxyIn(this) {
 			return object.NewTypeError("Cannot perform 'IsArray' on a proxy that has been revoked")
 		}
@@ -43,9 +51,15 @@ func setupObjectPrototype(o *object.BuiltinFunction) {
 	}))
 
 	// valueOf(): 返回对象本身。
+	//
+	// 规范第一步是 ToObject(this): null / undefined 要抛 TypeError ——
+	// `var v = Object.prototype.valueOf; v()` 在 Node 里就是 TypeError
+	// (内建函数按 strict 语义拿 this, 裸调用拿到的是 undefined, 不会
+	// 归一成 globalThis)。这条以前被"内建方法裸调用 → is not a function"
+	// 的假象遮住 (rYFTlt), 修掉它之后才现形。
 	proto.SetBuiltinProperty("valueOf", object.NewBuiltinMethod("valueOf", func(this object.Value, args ...object.Value) object.Value {
-		if this == nil {
-			return object.UndefinedSingleton
+		if isUndefinedValue(this) || isNullValue(this) {
+			return object.NewTypeError("Object.prototype.valueOf called on null or undefined")
 		}
 		return this
 	}))
