@@ -257,7 +257,18 @@ func taColAtX(rs []rune, v taVisual, x int, st TextStyle) int {
 	cur := 0
 	for i := v.start; i < v.end && i < len(rs); i++ {
 		w := runeAdvanceStyled(st, rs[i])
-		if x < cur+w/2 {
+		// 判据写成 2*x < 2*cur+w 而不是 x < cur+w/2：后者是**整数除法**，
+		// 窄字形的 w/2 会被截断（macOS 16pt 下 'l' 的 advance 实测是 3 ⇒ w/2=1）
+		// ⇒ 「落在该格左半」永不成立 ⇒ 列→x→列 的往返算到隔壁列
+		// （实测列 6 → x 56 → 回读列 7，macOS CI 上稳定红）。
+		//
+		// 为什么只有 mac 红：同一串 "Wim hello 中文" 在 Linux（DejaVu 16pt）实测
+		// 最小 advance 是 4（'i' 与空格），w/2=2 尚能区分左右半；macOS 的字形更
+		// 窄，截断直接吃掉整个左半。所以这条在 Linux 上反向验证不出来 ——
+		// 只能靠同乘 2 消除截断本身，而不是去调字体相关的阈值。
+		//
+		// 两边同乘 2 保留了中点的真实位置，又不引入浮点。
+		if 2*x < 2*cur+w {
 			return i
 		}
 		cur += w

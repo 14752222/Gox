@@ -942,7 +942,11 @@ func TestSeparatorPaintedInMiddle(t *testing.T) {
 
 // 禁用项用灰色字 (与可点项区分开)。
 func TestDisabledMenuItemDimmed(t *testing.T) {
-	file := mkMenu("File", mkMenuItem("Save", menuItemDisabledProp()))
+	// 同一个弹层里放**一对**项：禁用 + 启用。下面断言的是两者的**可分性**，
+	// 不是绝对色值 —— 见断言处的说明。
+	file := mkMenu("File",
+		mkMenuItem("Save", menuItemDisabledProp()),
+		mkMenuItem("Copy"))
 	bar := mkMenuBar(file)
 	root := mkAppTree(bar)
 	_, a := mountTestApp(t, root, 400, 300)
@@ -950,10 +954,34 @@ func TestDisabledMenuItemDimmed(t *testing.T) {
 	relayout(a)
 
 	img := renderTree(root, 400, 300)
-	row := menuItemRowOf(t, file.menuPopup, 0)
-	// 标签区域的"最深像素"应是灰 (placeholder 色) 而不是近黑
-	if n := countColor(img, row.Box, colorPlaceholder); n == 0 {
-		t.Fatalf("禁用项的标签未用灰字")
+	disRow := menuItemRowOf(t, file.menuPopup, 0)
+	enRow := menuItemRowOf(t, file.menuPopup, 1)
+
+	// 为什么不用 countColor(img, row.Box, colorPlaceholder) != 0：
+	// 字形是抗锯齿的，"存在恰好等于 placeholder 的像素"取决于字形笔画粗细与
+	// 底色 —— macOS 的 Hiragino 笔画细，整根与弹层底色混合后一个纯色像素都不剩
+	// （实测区域最暗 154，而 placeholder 是 153），**实现是对的、断言却在 mac 上
+	// 一直红**。这与仓库既有结论一致（textarea_test.go 的 placeholder 那条早写明
+	// "不能断言存在恰好等于 placeholder 的像素"）。
+	//
+	// 改断言最暗像素的亮度，并用同弹层的启用项做对照：灰字明显比黑字浅，这个
+	// 关系跨平台稳定，具体数值不稳定 —— 所以阈值取相对差，失败信息里把两个实测
+	// 值都打出来（换平台、换字体时照着数字调，不用猜）。
+	disLuma := minLuma(img, disRow.Box)
+	enLuma := minLuma(img, enRow.Box)
+
+	// 上界：整片都是底色说明标签根本没画（那"更浅"就是假阳性）
+	if disLuma > 700 {
+		t.Fatalf("禁用项区域整片偏亮 (最暗亮度 %d > 700)：标签可能没画出来", disLuma)
+	}
+	// 下界（对照）：启用项的正文色必须明显更深，否则这一对就没有可比性
+	if enLuma > 300 {
+		t.Fatalf("启用项的标签应是深色正文 (最暗亮度 %d > 300)：字没画出来？", enLuma)
+	}
+	const minGap = 80
+	if disLuma < enLuma+minGap {
+		t.Fatalf("禁用项没有明显比启用项浅 (禁用最暗 %d vs 启用最暗 %d，差 < %d)："+
+			"说明没有用 placeholder 灰字", disLuma, enLuma, minGap)
 	}
 }
 

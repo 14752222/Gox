@@ -347,7 +347,25 @@ func intrinsicTag(n *GuiNode) (w, h int) {
 
 // layoutTag 布局标签: 子节点横排靠左, 关闭叉在右侧留位。
 func layoutTag(n *GuiNode) {
-	area := inner(n)
+	// 这里**不能借 inner(n)**：inner 只读节点自己的 padding prop，而 <tag> 的
+	// 内边距是 tagPadX/tagPadY 这一对常量（intrinsicTag 撑盒子用的也是它）。
+	// 两处口径不一致的后果：盒子按「内容 + 2*tagPadX」被撑大，布局却把内容摆
+	// 在 Box 原点 ⇒ 文字贴着左边框、右侧凭空多出一截空白（观感先坏），进而
+	// 让「贴着边框内侧取样」的像素断言撞进字形抗锯齿边缘 —— macOS 上字形顶得
+	// 更高，于是只有 mac 那一档红（见 TestTagDefaultAndCustomColor 的注释）。
+	b := n.Box
+	area := Rect{
+		X: b.X + tagPadX,
+		Y: b.Y + tagPadY,
+		W: b.W - 2*tagPadX,
+		H: b.H - 2*tagPadY,
+	}
+	if area.W < 0 {
+		area.W = 0
+	}
+	if area.H < 0 {
+		area.H = 0
+	}
 	w := area.W
 	if n.tagClosable() {
 		w -= tagCloseSize + tagGap
