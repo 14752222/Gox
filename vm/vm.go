@@ -2784,6 +2784,26 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				}
 				continue
 			}
+		case bytecode.OP_ITER_CLOSE_ABRUPT:
+			// 控制转移穿出路径的 IteratorClose: 与 OP_ITER_CLOSE 同款收尾,
+			// 但 close 自身的错按「挂起完成的类型」决定吞还是传 (见
+			// pendingCompletionIsThrow 与 opcode 注释)。栈: [] → []
+			// 直读隐藏槽 (不经过栈): finally 入口已把栈截断到条目栈基,
+			// 走栈需要先补一次 LOAD, 而槽内值在挂起期间始终有效。
+			var iterVal object.Value
+			if int(operand) < len(frame.Locals) {
+				iterVal = frame.Locals[operand]
+			}
+			if err := vm.iteratorClose(iterVal); err != nil {
+				if vm.pendingCompletionIsThrow() {
+					// 原完成是 throw ⇒ 丢弃 close 的错 (规范 7.4.6 步骤 6)。
+					continue
+				}
+				if terr := vm.rethrowBridgeError(err); terr != nil {
+					return terr
+				}
+				continue
+			}
 		case bytecode.OP_DISPOSE_ADD:
 			// using 资源登记 (见 bytecode.DisposeResource 与 AddDisposableResource)。
 			res, _ := frame.Constants.Get(operand).(*bytecode.DisposeResource)
@@ -3697,6 +3717,31 @@ func (vm *VM) throwNamedError(name, format string, a ...any) error {
 //   - *ThrowError: 恢复其原始抛出值 (throw x 的 x)
 //   - *jsThrow:    构造命名错误 (如栈溢出 RangeError)
 //   - 其余:        非 JS 语言级异常，原样返回
+
+// pendingCompletionIsThrow 判断「当前正在执行的 finally 体」所服务的挂起
+// 完成是否为 **throw 完成**。
+//
+// 只用于 IteratorClose 的异常取舍 (规范 7.4.6):
+//
+//  6. If completion.[[type]] is throw, return Completion(completion).
+//  7. If innerResult.[[type]] is throw, return Completion(innerResult).
+//  8. If Type(innerResult.[[value]]) is not Object, throw a TypeError.
+//
+// 即 throw 穿出时 close 的错要丢 (步骤 6 早于 7/8), 而 return / break /
+// continue 穿出时 close 的错必须传。判据取自栈顶那条 inFinally 条目:
+// pendingReturn 为真 ⇒ return 完成; pendingVal 非空且非 pendingReturn ⇒
+// throw 完成; 两者皆无 ⇒ break/continue 完成 (非 throw, 要传)。
+func (vm *VM) pendingCompletionIsThrow() bool {
+	for i := len(vm.tryStack) - 1; i >= 0; i-- {
+		e := &vm.tryStack[i]
+		if !e.inFinally {
+			continue
+		}
+		return e.pendingVal != nil && !e.pendingReturn
+	}
+	return false
+}
+
 func (vm *VM) rethrowBridgeError(err error) error {
 	if te, ok := err.(*ThrowError); ok {
 		if !vm.handleThrow(te.Value) {

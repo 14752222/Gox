@@ -1896,19 +1896,16 @@ func (c *Compiler) compileForOfStatement(stmt *ast.ForOfStatement) error {
 	}
 	exitJump := c.emitter.EmitJump(bytecode.OP_JUMP) // 正常出口: 跳过 closePC 块
 
-	// ---- 异常路径的 close 落点 ----
-	// handleThrowInner 的 finallyPC 分支: 栈已截回 entry.stackBase, 错误值记在
-	// tryStack 条目的 pendingVal 上。跑 close 序列 (套一层 catch 丢弃 close
-	// 自身的异常 —— node: 原异常优先), 然后 END_FINALLY 重抛原异常。
+	// ---- 控制转移 / 异常穿出的 close 落点 ----
+	// handleThrowInner / handleReturnInner 的 finallyPC 分支: 栈已截回
+	// entry.stackBase, 挂起完成记在 tryStack 条目的 pendingVal / pendingReturn
+	// 上。用 OP_ITER_CLOSE_ABRUPT 跑 close —— close 自身的异常按挂起完成
+	// 的类型取舍 (throw 穿出丢弃, return/break/continue 穿出传播, 规范
+	// 7.4.6 步骤 6~8), 然后 END_FINALLY 重抛挂起完成。
+	// (此前这里是无条件 swallow, 把 generator return() 穿出时应报的
+	//  TypeError 也一起吞了。)
 	c.emitter.PatchJump(closeFin)
-	swallowTry := c.emitter.EmitJump(bytecode.OP_PUSH_TRY)
-	c.emitSyncIterClose(closeSlot)
-	c.emitter.EmitNoOperand(bytecode.OP_POP_TRY)
-	overSwallow := c.emitter.EmitJump(bytecode.OP_JUMP)
-	// close 序列自己抛异常: 丢弃它, 让 END_FINALLY 重抛原异常
-	c.emitter.PatchJump(swallowTry)
-	c.emitter.EmitNoOperand(bytecode.OP_POP)
-	c.emitter.PatchJump(overSwallow)
+	c.emitter.Emit(bytecode.OP_ITER_CLOSE_ABRUPT, uint16(closeSlot))
 	c.emitter.EmitNoOperand(bytecode.OP_END_FINALLY)
 	c.emitter.PatchJump(exitJump)
 
@@ -5313,15 +5310,13 @@ func (c *Compiler) compileArrayPatternBind(pattern *ast.ArrayPattern, kind bindK
 	c.emitSyncIterClose(iterSlot)
 	exit := c.emitter.EmitJump(bytecode.OP_JUMP)
 
-	// 异常路径落点: close 自身异常丢弃, 原异常经 END_FINALLY 重抛。
+	// 控制转移/异常穿出落点: OP_ITER_CLOSE_ABRUPT 按挂起完成的类型决定
+	// close 自身异常的取舍 —— throw 穿出丢弃 (规范 7.4.6 步骤 6), return /
+	// break / continue 穿出则传播 (步骤 7/8)。此前这里是无条件 swallow
+	// (PUSH_TRY + POP), 把「return 穿出时 return() 返回非对象 → TypeError」
+	// 也一起吞了, 表现为 generator 的 return() 不抛 TypeError。
 	c.emitter.PatchJump(closeFin)
-	swallowTry := c.emitter.EmitJump(bytecode.OP_PUSH_TRY)
-	c.emitSyncIterClose(iterSlot)
-	c.emitter.EmitNoOperand(bytecode.OP_POP_TRY)
-	overSwallow := c.emitter.EmitJump(bytecode.OP_JUMP)
-	c.emitter.PatchJump(swallowTry)
-	c.emitter.EmitNoOperand(bytecode.OP_POP)
-	c.emitter.PatchJump(overSwallow)
+	c.emitter.Emit(bytecode.OP_ITER_CLOSE_ABRUPT, uint16(iterSlot))
 	c.emitter.EmitNoOperand(bytecode.OP_END_FINALLY)
 
 	c.emitter.PatchJump(exit)

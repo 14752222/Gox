@@ -379,6 +379,14 @@ const (
 	// 未绑定名) 时发射; 词法绑定 (顶层 let/const/class 与内层局部) 由
 	// 编译期直接压 false, 不走这里。
 	OP_DELETE_GLOBAL Opcode = 0xF3
+	// OP_ITER_CLOSE_ABRUPT: IteratorClose 的「控制转移穿出」变体 (规范
+	// 7.4.6 步骤 6~8)。与 OP_ITER_CLOSE 的差别**只在** close 自身抛错时:
+	//   - 挂起完成是 throw  ⇒ 丢弃 close 的错, 保留原完成 (步骤 6);
+	//   - 挂起完成是 return / break / continue ⇒ **传播** close 的错
+	//     (步骤 7 的 innerResult throw, 步骤 8 的「return() 返回非对象 →
+	//     TypeError」)。
+	// operand = 迭代器所在隐藏槽号; 栈: [] → [] (自己 LOAD 自己弹)。
+	OP_ITER_CLOSE_ABRUPT Opcode = 0xF4
 )
 
 // InstructionSize 是每条指令的字节长度 (固定 3 字节)。
@@ -462,6 +470,7 @@ var opcodeNames = map[Opcode]string{
 	OP_TO_PROPERTY_KEY: "TO_PROPERTY_KEY",
 	OP_GET_PROTO:          "GET_PROTO",
 	OP_DELETE_GLOBAL:      "DELETE_GLOBAL",
+	OP_ITER_CLOSE_ABRUPT: "ITER_CLOSE_ABRUPT",
 }
 
 // Name 返回操作码的可读名称。

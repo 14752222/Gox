@@ -783,3 +783,53 @@ this 是 undefined，都会把删除落到错误的基上。
 那 8 个 RegExp LOST 的真缺口是：**`RegExp` 在 Gox 里还不是一等对象** —— `RegExp.prototype` 是 `undefined`，`Object.getOwnPropertyDescriptor(/a/g, 'lastIndex')` 直接报 `called on non-object`，`Object.defineProperty` 对它是 no-op（它不满足 `OwnPropertyStore`）。于是规范里「`Set(rx, "lastIndex", 0, true)` 写不进去就抛 `TypeError`」无从实现。
 
 修好它要让 RegExp 具备完整的自有属性接口（prototype 装配 + `OwnPropertyStore` 五件套 + 描述符语义），是**独立的工程**，不是本单范围 —— 已开单跟踪。本轮尝试中途撤回，不留半成品。
+
+## 三十三、`rHijPa` 收口 + IteratorClose 穿出语义（基线身份独立复核）
+
+**本轮形状**：`rHijPa`（批次十 `4d90b5d` 引入的 yield 回归）在 `b381cbc..HEAD` 之间已被 4 个后续提交（`ad3b237` / `ff63cc1` / `8549834` / `88467d8`）分段处理，本轮做的是**核销验收**而不是重新修。验收过程中挖出一个**此前从未被识别**的收尾语义缺陷，一并修掉。
+
+| 项 | 内容 |
+|---|---|
+| `rHijPa` 验收 | 单里点名的 11 条 dstr 用例 **11/11 通过**（`obj-id-identifier-yield-expr` … `obj-id-identifier-yield-ident-valid`） |
+| 定向 A/B | `expressions/assignment/dstr`：`b381cbc` 285 → 357；族内 vs `b381cbc` **GAIN 86 / LOST 0** |
+| 全量 A/B | `language` 23726 例：`b381cbc` 18094 → **18546**；**GAIN 454 / LOST 2**（2 条属 `dynamic-import`，见下） |
+| `built-ins` | **GAIN 0 / LOST 0**，逐用例 diff 严格零差异（7836/23823 两侧一致） |
+| 单测 | 新增 4 个用例（`vm/iterator_close_abrupt_test.go`）；去掉修复后核心用例失败 |
+
+### 两个最小复现（修复前 vs Node v22）
+
+| 形态 | Node v22 | Gox（`4f1c7cc`） |
+|---|---|---|
+| `function* g(){ var x = yield; return x; }` | `{done:false}` → `{value:42,done:true}` | 一致 ✅ |
+| `result = [ x = yield ] = vals` | `{done:false}` | 一致 ✅ |
+
+⇒ 单里描述的两个形态**都已通过**。它列的 11 条 dstr 用例也全部通过 —— 即 `4d90b5d` 的回归在 `b381cbc` 之后已被消掉。
+
+### 新发现：IteratorClose 在「控制转移穿出」时无条件吞异常
+
+上面那个「GAIN 454 / LOST 2」里原本是 **LOST 3**，其中 1 条是 dstr 族：`array-elem-trlg-iter-rest-rtrn-close-null.js`。它要求 generator 的 `return()` 从 yield 点穿出解构赋值时，`iterator.return()` 返回 `null`（非对象）必须抛 `TypeError`。
+
+根因在 `compileArrayPatternBind` 与同步 `for-of` 的**收尾落点**：两者都用 `PUSH_TRY + POP` 把 close 自身的异常**无条件吞掉**。规范 7.4.6 的步骤 6~8 要求按挂起完成的类型分流：
+
+- 步骤 6：挂起完成是 **throw** ⇒ 丢弃 close 的错，保留原完成；
+- 步骤 7/8：挂起完成是 **return / break / continue** ⇒ **传播** close 的错（含「`return()` 返回非对象 → TypeError」）。
+
+修法：新增 `OP_ITER_CLOSE_ABRUPT`（带槽号操作数，直读隐藏槽不经栈），把「该吞还是该传」下沉到运行时的 `pendingCompletionIsThrow` —— 判据取自栈顶那条 `inFinally` 条目（`pendingVal != nil && !pendingReturn` 为 throw 完成）。两处收尾落点各由 8 条指令收敛成 2 条。
+
+> 这条缺陷在 `b381cbc` 上是**假通过**：那时 `*Generator` 还没暴露 `return`，`iter.return()` 抛的是 `TypeError: undefined is not a function`，刚好也满足 `assert.throws(TypeError)`。`8549834`（Generator 暴露 return/throw）把它变成了真失败。
+
+### 基线身份独立复核（顺带结掉 `rHEQlb`）
+
+`rHEQlb` 判定「台账的 `18098 / 76.2792%` 不可复现，真 `b381cbc` = 17929」。本轮用 §二十四 立下的纪律重做了一遍 —— `git worktree add --detach /tmp/wt-b381cbc b381cbc`，确认 HEAD / 工作区双干净后才 `go build`：
+
+| 基线 | 通过 | 合规率 |
+|---|---|---|
+| 纯净 `b381cbc`（本轮实测，23726 例） | **18094** | **76.26%** |
+| 台账记的 `b381cbc` | 18098 | 76.2792% |
+| `rHEQlb` 主张的「真 `b381cbc`」 | 17929 | 75.5669% |
+
+差 4 例属 test262 快照微差。**台账的 `18098` 是对的，`rHEQlb` 的 `17929` 才是脏基线的产物** —— 与 §二十四 的结论一致，无需订正。
+
+### 遗留（新开 `r8tHPv` 跟踪）
+
+`b381cbc` → 现在仍有 **2 条 `dynamic-import` LOST**：`nested-async-function-eval-gtbndng-indirect-update{,-dflt}.js`。二分锁定引入点是 **`d53ff69`**（`.then/.catch/.finally` 回调抛错归属派生 promise，`rqAkgl`），与本轮 yield / IteratorClose 工作**不同域**，属模块活绑定 + Promise 结算，另行跟踪。
