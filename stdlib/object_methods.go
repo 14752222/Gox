@@ -242,6 +242,16 @@ func setupObjectGlobal() *object.BuiltinFunction {
 			}
 			return object.NullSingleton
 		}
+		// RegExp 实例的 [[Prototype]] = %RegExp.prototype% (rEXjyz)。
+		// *RegExp 的原型放在包级注册表 (object.RegExpProto), 缺这条分支会
+		// 退化成 null, 于是 `Object.getPrototypeOf(/a/) === RegExp.prototype`
+		// 为 false —— 与 *Date 同法。
+		if re, ok := args[0].(*object.RegExp); ok {
+			if p := re.GetProto(); p != nil {
+				return p
+			}
+			return object.NullSingleton
+		}
 		// async generator 实例的 [[Prototype]] = 该 async generator 函数
 		// 自己的 .prototype 对象 (其 [[Prototype]] 才是 %AsyncGeneratorPrototype%)。
 		if ag, ok := args[0].(*object.AsyncGenerator); ok {

@@ -61,6 +61,13 @@ type canvasTarget struct {
 	img      *image.RGBA // nil = 只执行不落笔 (依赖收集)
 	box      Rect        // 画布在屏幕上的位置 (坐标换算 + 宽度限制)
 	disabled bool        // 禁用态: 每个颜色过一遍 tint
+
+	// 路径 / 变换状态 (rIowkb)。空操作与真绘制共用同一套状态机推进逻辑,
+	// 保证"依赖收集时报 undefined 方法、真绘制时正常"这类只有一半路径能跑
+	// 到的问题不会出现。
+	state canvasState   // 当前变换 + 线宽
+	stack []canvasState // save / restore 的栈
+	path  canvasPath    // 当前路径 (beginPath 清空)
 }
 
 // origin 返回画布局部坐标 → 屏幕坐标的偏移量。
@@ -72,6 +79,8 @@ func (t *canvasTarget) ink(c color.RGBA) color.RGBA { return tint(c, t.disabled)
 // makeCtx 构造 ctx 对象。空操作与真绘制共用它, 差别只在 t.img 是否为 nil。
 func makeCtx(t *canvasTarget) *object.Object {
 	ctx := object.NewObject()
+	t.state = defaultCanvasState()
+	t.stack = nil
 
 	// 尺寸以**属性**而不是方法暴露: 脚本里 `ctx.width` 比 `ctx.width()` 自然,
 	// 也与 HTML canvas 的 `canvas.width` 一致。
@@ -154,6 +163,9 @@ func makeCtx(t *canvasTarget) *object.Object {
 		FillRect(t.img, t.box, t.ink(canvasColor(args, 0)))
 		return object.UndefinedSingleton
 	}))
+
+	// 路径 / 弧 / 变换 / 像素读写 (rIowkb: 饼图・环形图・取色的前置)。
+	addCanvasPathPrimitives(ctx, t)
 
 	return ctx
 }

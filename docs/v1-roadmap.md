@@ -871,3 +871,75 @@ this 是 undefined，都会把删除落到错误的基上。
 ### 已知缺口（未修，3 例）
 
 `return-{suspendedStart,suspendedYield,state-completed}-broken-promise*.js` 仍失败。它们要求规范 `PromiseResolve` 步骤 2.a 的 `Get(x, "constructor")` —— 用例用 `Object.defineProperty(promise, 'constructor', {get(){throw ...}})` 造一个「坏 promise」，取 constructor 时抛错要结算成 reject。而 `*Promise.GetProperty` 目前只认 `then`/`catch`/`finally` 三个名字，其余一律返回「不存在」，`SetProperty` 也是 no-op —— **Promise 还不是一等对象**。这与 `rEXjyz`（RegExp 同样不是一等对象）是同一类改造，另行跟踪。
+
+
+## 三十五、RegExp 提为一等对象（rEXjyz）
+
+### 现象：8 例「假阳性通过」退潮
+
+`rYFTlt` 阶段一（`4f1c7cc`）把内建对象的 well-known Symbol 成员装配好之后，`RegExp.prototype[@@match]` 变得可读了，于是 8 个用例由「通过」变「失败」。逐个核实：**这 8 个此前是假阳性** —— `r[Symbol.match]` 是 `undefined`，`undefined('')` 正好抛 `TypeError`，`assert.throws(TypeError, ...)` 一路绿灯。
+
+| 探针 | Node v22 | 修前 Gox | 修后 Gox |
+|---|---|---|---|
+| `typeof RegExp.prototype` | `object` | ❌ `undefined` | ✅ `object` |
+| `typeof RegExp.prototype.exec` | `function` | ❌ `TypeError` | ✅ `function` |
+| `Object.getOwnPropertyDescriptor(/a/g,'lastIndex')` | 描述符对象 | ❌ `called on non-object` | ✅ `{value:0,writable:true,enumerable:false,configurable:false}` |
+| `Object.defineProperty(r,'lastIndex',{writable:false})` | 生效 | ❌ no-op | ✅ 生效（`r.lastIndex = 5` 不再改写） |
+| `Object.getOwnPropertyNames(/a/g)` | `["lastIndex"]` | ❌ — | ✅ `["lastIndex"]` |
+| `Object.keys(/a/g)` | `[]` | — | ✅ `[]` |
+| `Object.getPrototypeOf(/a/g) === RegExp.prototype` | `true` | ❌ `false` | ✅ `true` |
+| `Object.prototype.toString.call(/a/g)` | `[object RegExp]` | ❌ — | ✅ `[object RegExp]` |
+
+### 根因：三件事，都指向「RegExp 不是一等对象」
+
+1. `setupRegExpProto()` 造出的原型只塞进了 `object.RegExpProto`，**没写成构造器的 `prototype` 属性** ⇒ `RegExp.prototype` 是 `undefined`。
+2. `*object.RegExp` 不满足 `object.OwnPropertyStore` ⇒ `defineProperty` / `getOwnPropertyDescriptor` 对它一律 no-op 或报 non-object。
+3. `lastIndex` 是裸结构体字段，无法表达「不可写」「访问器」⇒ 规范里 `Set(rx,"lastIndex",v,true)` 写不进去就抛 `TypeError` 这一步无从实现。
+
+### 修法
+
+* `object/regexp.go`：加 `PropDescs` / `propKeyOrder`，实现 `OwnPropertyStore` 五件套 + `PropDeleter`；补 `GetProto()`（此前原型链在实例处断掉）；`GetProperty` / `SetProperty` 走描述符（访问器调 getter/setter、不可写拒绝赋值、用户键值照常落地）；新增 `SetLastIndexStrict`（规范严格 Set 的落点，写不进去返回 false）。
+* `stdlib/regexp.go`：`regexpFn.SetProperty("prototype", regexpProto)` + `constructor` 反向引用 + `@@toStringTag = "RegExp"`；`@@match` / `@@replace` 改成规范的「读 `rx.exec` → 逐轮 exec → 严格 Set lastIndex」；抽出 `regExpBuiltinExec` 与 `%RegExp.prototype%.exec` 共用；补 `regExpThis` 做 this 校验。
+* `stdlib/object_methods.go` / `object/proto.go`：给 `*RegExp` 补 `getPrototypeOf` 与 `ProtoOf` 分支。
+
+### 两个实现陷阱（都踩过）
+
+1. **`object.CallFunction` 会清空回调错误槽**。`ToString(参数)` 阶段挂起的抛出正记在这个槽里，无谓地调一次 `CallFunction`（去调原型上的 `exec`）就把那个抛出抹掉了 —— `coerce-arg-err` 一族因此由通过转失败。修法：只有实例上存在**自有** `exec` 时才走 `CallFunction`，并在调用前后用 `TakeCallbackError` / `SetCallbackError` 保护已挂起的抛出。
+2. **内建方法「返回」的 `*object.Error` 不会自动变成 JS 抛出**。经 `CallFunction` 调用时它只是普通 Value，会被当成一次「匹配结果」继续往下走。修法：`isErrorResult` 判定后原样返回。
+
+### 验收
+
+* 工单点名的 8 例 **8/8 通过**；
+* `built-ins/RegExp` 族 **672 → 763**（`GAIN 91 / LOST 0`）；
+* `built-ins` 全量 **7844 → 7961**（`GAIN 117 / LOST 0`）；
+* `String.prototype.match` / `replace` / `split` / `search` 常规路径不回归（新增 `TestRegExpLastIndexSemanticsUnchanged` 守着）；
+* 新增 `vm/regexp_firstclass_test.go` 8 组测试；反向验证（把 `SetLastIndexStrict` 改成恒真）后 `TestRegExpSymbolMatchSetLastIndexErr` / `TestRegExpSymbolReplaceSetLastIndexErr` 立刻 FAIL。
+
+## 三十六、canvas 补路径 / 弧 / 变换 / 像素读写（rIowkb）
+
+### 缺口
+
+`ctx` 此前只有 7 个原语（`fillRect` / `strokeRect` / `fillCircle` / `strokeCircle` / `line` / `drawText` / `clear`），`gfx/canvas.go` 内 `arc|getImageData|setTransform` **零命中** ⇒ 饼图 · 环形图 · 面积图做不了（apps #5 系统资源监视器、#8 记账本被卡在这里，只能退成横向条形图）。
+
+### 补的东西
+
+| 类别 | 新增 | 说明 |
+|---|---|---|
+| 即时原语 | `fillArc` / `strokeArc` / `fillRing` | 饼图 = `fillArc`，环形图 = `fillRing(cx,cy,rOuter,rInner,start,end,color)` |
+| 路径 | `beginPath` / `moveTo` / `lineTo` / `closePath` / `arc` / `fill` / `stroke` | HTML canvas 子集；`fill` 走扫描线 even-odd |
+| 变换 | `save` / `restore` / `translate` / `scale` / `rotate` / `setTransform` / `resetTransform` | 仿射矩阵 `[[a c e],[b d f]]`，参数序与 `setTransform` 一致 |
+| 像素 | `getImageData` / `putImageData` / `createImageData` | `data` 是 `Uint8ClampedArray`（RGBA，非预乘），与 HTML canvas 一致 |
+| 状态 | `ctx.lineWidth` | 普通属性（**刻意不用访问器**，见下） |
+
+角度一律**弧度**，0 指向 +x 轴、正向顺时针（屏幕 y 朝下）—— 与 HTML canvas 的 `arc` 约定一致，现成图表代码可直接搬。
+
+### 两个刻意的取舍
+
+1. **`lineWidth` 用普通属性而不是访问器**：访问器的 getter 要走 `object.CallFunction`，而回调桥在没有 VM 时静默返回 `undefined`（见 `canvas.go` 的 `callScriptFn` 说明）⇒ 纯 Go 嵌入（无 VM）读 `ctx.lineWidth` 会拿到 `undefined`。改成普通属性后两阶段行为一致，线宽的真值来源就是这个属性（`lineWidthOf`），`save` / `restore` 也按它存取。
+2. **非等比变换下的圆按 `sqrt(|det|)` 换算半径**（会失真成椭圆的部分情形）。真 canvas 会把圆变成椭圆，v1 不追求；`scaleFactor` 的注释里写明了。
+
+### 验收
+
+* 新增 `gfx/canvas_path_test.go` 12 组测试，全部**按像素**断言（画完直接数颜色，不比对中间结构）；
+* 全链路用例 `TestCanvasPieChartFromJS` 用**真 VM + 真 JS `onDraw`** 画一张环形图，断言环带有色、内孔与未扫过侧无色；
+* `TestNoopCtxHasAllPrimitives` / `TestNoopCtxRunsWithoutPanic` 守「两阶段同构」—— 空操作 ctx 必须挂齐全部新方法，否则依赖收集阶段会报 `ctx.fillArc is not a function` 而真绘制时却是好的，这类只有一半路径能跑到的问题极难排查。
