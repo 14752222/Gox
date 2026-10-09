@@ -4,7 +4,12 @@
 > 让移动端问题在发版前暴露，而不是等用户反馈。
 > 关联文档：`docs/platform-config.md`（构建与验收步骤）、
 > `docs/mobile-adaptation.md`（T23 适配规范，回归项的判定依据）、
+> `docs/mobile-perf-baseline.md`（真机性能基线：指标口径与空表，基线数字待采集）、
 > `.github/workflows/mobile-smoke.yml`（T22，CI 构建冒烟——真机回归的前置）。
+>
+> **一次只插一次设备**：接上设备后按 §1→§6 顺序一次跑完（看板单 rpr9zf）。为此
+> §1~§3 需要的真机数据（密度 / 触控与多指手势 / 帧率·内存·冷启动）由
+> `scripts/mobile-device-accept.sh` 一条命令取完，见 §4 末尾。
 
 ## 1. 触发时机
 
@@ -40,6 +45,12 @@
 
 执行方式：每项通过打 ✅，失败记 ❌ + 一行现象 + issue 链接。**任何一项 ❌
 即阻断 release**（明确豁免的 v1 边界除外，见 §6）。
+
+其中**数据类**条目（屏幕密度、触控/多指证据、帧率、内存、冷启动）不要靠人肉眼
+估 —— 交给 `scripts/mobile-device-accept.sh` 采集，结果落在
+`bench-results/device-accept-<日期>-<机型>.json`，口径与空表见
+`docs/mobile-perf-baseline.md`。本节其余条目（功能/交互/权限/生命周期）仍需人工
+按下面逐条打勾。
 
 ### 3.1 安装与启动
 - [ ] 全新安装（先卸载）后首次启动不崩溃，3 秒内出画面
@@ -130,9 +141,29 @@ CI 已出每日冒烟产物（T22 工作流 artifact：gox-android-debug-apk /
 gox-ios-simulator-app），可用于快速装机，但 **release 回归必须用 release 流水线
 的正式包**（含签名链路验证，见 T17 文档，落地后互链于此）。
 
+### 4.1 真机数据一键采集（Android，插一次设备跑完）
+
+装好包后，**一次插设备**把 §1~§3 需要的真机数据全取走 —— 别验到一半才发现漏采：
+
+```bash
+bash scripts/mobile-device-accept.sh --package <appId>            # 全量采集 + 落 JSON + 打印摘要
+bash scripts/mobile-device-accept.sh --dry-run                    # 没设备也能跑：只列命令，退出 0
+bash scripts/mobile-device-accept.sh --device <serial>            # 多台在线时指定
+```
+
+- 前置自检：adb 不在 PATH 报「先装 Android platform-tools」并退出 2；设备
+  offline/unauthorized 给对应处理提示并退出 3；非 arm64 ABI 会警告（模拟器数据
+  **不能**当真机基线）。
+- 采不到的项写 `null` + 原因，并汇总「本次未完成项」（退出 1）—— 补齐方式见
+  `docs/mobile-perf-baseline.md` §5。**不要**用桌面数字或上一轮旧值填空。
+- 采集完把数字回填 `docs/mobile-perf-baseline.md` 的空表（写清机型/系统/日期），
+  存档 JSON 随 §5 的执行记录一起提交。
+- iOS / 鸿蒙的等价采集方法**待补**（分别依赖 Xcode/Instruments 与 hdc + 签名材料）。
+
 ## 5. 执行记录
 
-每轮回归在 release PR/issue 中留档，格式：
+每轮回归在 release PR/issue 中留档，格式（另附本轮
+`bench-results/device-accept-<日期>-<机型>.json` 存档，见 §4.1）：
 
 | 日期 | 构建 commit | 包类型 | 机型（矩阵编号） | 结果 | 问题 |
 |---|---|---|---|---|---|

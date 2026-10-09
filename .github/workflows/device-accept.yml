@@ -1,0 +1,67 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# 真机采集脚本的语法与 dry-run 自检（看板单 rpr9zf）
+#
+# 为什么需要这个文件：scripts/mobile-device-accept.sh 只在「真机在手」时才真正
+# 执行 —— 平时没人跑它，语法错、依赖写错、--dry-run 退化成非 0 退出都发现不了，
+# 等真机到位那天才发现脚本烂了，正好卡住验收。这里用 ubuntu runner 做三件不依赖
+# 设备的事：bash -n 语法检查、--dry-run 必须退出 0、shellcheck（装得上就跑）。
+#
+# 设计取舍：
+#   1. 只 workflow_dispatch —— 不挂 push/PR：真机数据不在 CI 上产生，挂上去只会
+#      每次提交白跑一个 job。
+#   2. 只读、无 secret、不改动既有 workflow（mobile-smoke/release/mobile-release
+#      都不动）。
+#   3. shellcheck 是「装得上就跑」：runner 镜像自带时直接用，没有就 apt 装，
+#      装不上就跳过并明确打印 —— 不因为 lint 工具缺失让整个 job 变红。
+# ─────────────────────────────────────────────────────────────────────────────
+name: device-accept
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  script-selfcheck:
+    name: 真机采集脚本自检（bash -n / --dry-run / shellcheck）
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 语法检查（bash -n）
+        run: bash -n scripts/mobile-device-accept.sh
+
+      - name: --dry-run 必须退出 0（无 adb / 无设备也要能跑）
+        run: |
+          set -uo pipefail
+          bash scripts/mobile-device-accept.sh --dry-run
+          rc=$?
+          echo "dry-run 退出码: $rc"
+          [ "$rc" -eq 0 ] || { echo "::error::--dry-run 退出码 $rc ≠ 0（脚本必须在无设备上也能跑通）"; exit 1; }
+
+      - name: 前置自检必须报可操作的失败（无 adb → 2 / 无设备 → 3）
+        run: |
+          set -uo pipefail
+          # 用一个不含 adb 的 PATH 目录打头，模拟开发机上没装 platform-tools 的情形。
+          # runner 镜像自带 Android SDK 时会走到「无设备」分支（退出 3），同样要给出
+          # 可操作提示 —— 所以这里断言的是「给提示 + 退出码非 0」，而不是写死 2。
+          mkdir -p /tmp/no-adb-bin
+          bash -c 'PATH=/tmp/no-adb-bin:/usr/bin:/bin bash scripts/mobile-device-accept.sh' 2>&1 | tee /tmp/noadb.log
+          rc=${PIPESTATUS[0]}
+          echo "退出码: $rc（期望 2=缺 adb / 3=无设备）"
+          [ "$rc" -eq 2 ] || [ "$rc" -eq 3 ] || { echo "::error::前置失败时退出码 $rc 不是 2/3"; exit 1; }
+          grep -qE "platform-tools|adb devices" /tmp/noadb.log \
+            || { echo "::error::前置失败但没给出可操作的提示（应提示装 platform-tools 或 adb devices）"; exit 1; }
+
+      - name: shellcheck（可用时）
+        run: |
+          if ! command -v shellcheck >/dev/null 2>&1; then
+            sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck || true
+          fi
+          if command -v shellcheck >/dev/null 2>&1; then
+            shellcheck --severity=warning scripts/mobile-device-accept.sh && echo "shellcheck 通过"
+          else
+            echo "::warning::shellcheck 不可用，跳过 lint（不影响本 job 结论）"
+          fi
