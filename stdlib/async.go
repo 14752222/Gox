@@ -454,11 +454,34 @@ func agResumeNext(g *object.AsyncGenerator) {
 	agStep(g, req, req.Kind, req.Arg)
 }
 
+// agResolveIterResult 结算一个请求的 iterResult { value, done }。
+//
+// unwrap 为真时 value 先过 **PromiseResolve** 再进 iterResult —— 规范
+// AsyncGeneratorAwaitReturn 步骤 6「Let promise be Completion(PromiseResolve
+// (%Promise%, completion.[[Value]]))」，步骤 9+ 再 PerformPromiseThen 把
+// 解包后的值放进 iterResult。故 `it.return(somePromise)` 拿到的是**解包后**
+// 的值, 而不是 promise 本身 (test262 return-{suspendedStart,suspendedYield,
+// state-completed}-promise.js)。
+//
+// 对照地 **yield 的值不解包**: 规范 AsyncGeneratorYield 直接
+// AsyncGeneratorResolve(generator, value, false), 只有体内显式
+// `yield await x` 才先 await (test262 yield-star-promise-not-unwrapped:
+// 手动实现的 async 迭代器产出 promise 时不得解包)。
+func agResolveIterResult(req *object.AsyncGenRequest, value object.Value, done, unwrap bool) {
+	if !unwrap {
+		req.Promise.Resolve(newAsyncIterResult(value, done))
+		return
+	}
+	agAwait(value,
+		func(v object.Value) { req.Promise.Resolve(newAsyncIterResult(v, done)) },
+		func(reason object.Value) { req.Promise.Reject(reason) })
+}
+
 // agSettleCompleted 结算一个针对"已完成生成器"的请求。
 func agSettleCompleted(req *object.AsyncGenRequest) {
 	switch req.Kind {
 	case object.AGReturnKind:
-		req.Promise.Resolve(newAsyncIterResult(req.Arg, true))
+		agResolveIterResult(req, req.Arg, true, true)
 	case object.AGThrowKind:
 		req.Promise.Reject(req.Arg)
 	default:
@@ -491,7 +514,9 @@ func agStep(g *object.AsyncGenerator, req *object.AsyncGenRequest, kind int, arg
 
 	if done {
 		g.Done = true
-		req.Promise.Resolve(newAsyncIterResult(value, true))
+		// return 请求的结算值要过 PromiseResolve 解包 (见 agResolveIterResult);
+		// next / throw 的完成值不解包。
+		agResolveIterResult(req, value, true, req.Kind == object.AGReturnKind)
 		agFinish(g, req)
 		return
 	}

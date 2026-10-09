@@ -833,3 +833,41 @@ this 是 undefined，都会把删除落到错误的基上。
 ### 遗留（新开 `r8tHPv` 跟踪）
 
 `b381cbc` → 现在仍有 **2 条 `dynamic-import` LOST**：`nested-async-function-eval-gtbndng-indirect-update{,-dflt}.js`。二分锁定引入点是 **`d53ff69`**（`.then/.catch/.finally` 回调抛错归属派生 promise，`rqAkgl`），与本轮 yield / IteratorClose 工作**不同域**，属模块活绑定 + Promise 结算，另行跟踪。
+
+## 三十四、`r6e5qp` 四项兑付 + AsyncGeneratorResolve 解包
+
+**本轮形状**：`r6e5qp` 是 AsyncGenerator 的五项遗留清单（2026-10-05 立的）。本轮先**逐项测现状**再动手 —— 结果发现 1/2/3/4 四项在后续批次里已被消掉大半，真正的缺口只剩 5 例，且都集中在同一个收敛点上。
+
+### 五项现状（`language` / `built-ins` 全量实测）
+
+| # | 项 | 立单时 | 现在 | 结论 |
+|---|---|---|---|---|
+| 1 | `yield*` 异步委托 | 约 120 例中 54 例失败 | `expressions/async-generator` 里 yield-star 族 **0 失败** | ✅ 已兑付 |
+| 2 | AsyncGeneratorFunction 原型链 | `getPrototypeOf(async function*(){})` 返回 null | 与 Node v22 **逐项一致**（`proto.constructor.name: AsyncGeneratorFunction`、`instanceof true`）；`AsyncGeneratorPrototype` 22/48 → **39/48**、`AsyncGeneratorFunction` **21/23**、`AsyncIteratorPrototype` **13/13** | ✅ 已兑付 |
+| 3 | prop-desc 系列 | 约 14 例失败 | `AsyncGeneratorPrototype` 剩余失败里 **无 prop-desc** | ✅ 已兑付 |
+| 4 | 形参求值时机（dstr） | 约 200+ 例失败 | `expressions/async-generator` 里 dstr 族 **0 失败** | ✅ 已兑付 |
+| 5 | 微任务顺序 | request-queue 约 5 例 | 仍 **3 例**失败 | ⛔ 模型级限制，转新单 |
+
+### 第 5 项为什么本轮不做
+
+`request-queue-order{,-state-executing}.js` 要求 AsyncGenerator 的请求队列按**微任务**顺序推进。已实测确认 Gox **没有微任务队列**（全仓仅 `gfx/router_view.go` 一处注释提到 microtask），Promise 是「结算即回调」的同步模型。单里自己也写了「（模型级限制）……**做微任务队列时一并处理**」，属依赖前置未完成 —— 已转独立单跟踪。
+
+另：第 2 项剩的 2 例 `AsyncGeneratorFunction/proto-from-ctor-realm{,-prototype}.js` 失败原因是 `$262 is not defined` —— 是 **test262 harness 缺 `$262.createRealm()`**，不是引擎缺陷，不计入本单。
+
+### 本轮真修的东西：AsyncGeneratorResolve 的值要过 PromiseResolve
+
+`built-ins/AsyncGeneratorPrototype` 从 39/48 提到 **41/48**（`built-ins` 全量 7836 → 7838，**GAIN 2 / LOST 0**）。
+
+规范 `AsyncGeneratorAwaitReturn` 步骤 6：
+
+> Let promise be Completion(PromiseResolve(%Promise%, completion.[[Value]])).
+
+即 `it.return(v)` 的 `v` 要**先过 PromiseResolve 再进 iterResult** —— `it.return(somePromise)` 拿到的是**解包后**的值。此前 `agSettleCompleted` 与 `agStep` 的完成分支都直接 `Resolve(newAsyncIterResult(value, true))`，把 promise 原样塞进了 `ret.value`。
+
+修法：抽 `agResolveIterResult(req, value, done, unwrap)`，只有 **`AGReturnKind`** 传 `unwrap=true`（next / throw 的完成值不解包 —— throw 走 `AsyncGeneratorCompleteStep` 直接 reject 原值）。
+
+反向验证：新增 `TestAsyncGeneratorThrowDoesNotUnwrapPromise` 守住「throw 的 promise 不得解包」；Node v22 实测 `it.throw(pr)` 的 rejection reason === `pr` 本身，与本轮实现一致。
+
+### 已知缺口（未修，3 例）
+
+`return-{suspendedStart,suspendedYield,state-completed}-broken-promise*.js` 仍失败。它们要求规范 `PromiseResolve` 步骤 2.a 的 `Get(x, "constructor")` —— 用例用 `Object.defineProperty(promise, 'constructor', {get(){throw ...}})` 造一个「坏 promise」，取 constructor 时抛错要结算成 reject。而 `*Promise.GetProperty` 目前只认 `then`/`catch`/`finally` 三个名字，其余一律返回「不存在」，`SetProperty` 也是 no-op —— **Promise 还不是一等对象**。这与 `rEXjyz`（RegExp 同样不是一等对象）是同一类改造，另行跟踪。
