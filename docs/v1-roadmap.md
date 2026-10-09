@@ -1471,3 +1471,144 @@ Node v22 对照（同一脚本，`/tmp/nodecheck`）：
   建议单开条目：让「未确认 `$DONE`」直接判 fail，或至少标 `phase: timeout`。
 - 命名空间对象每次 `buildNamespace` 都新建；`export * as ns` 的源被读两次会
   拿到两个不同对象。本次只保证不因改活绑定而加剧。
+
+## 四十三、构建产物来源元数据：让账本知道自己是谁生的（rFf4lR）
+
+### 1. 先纠正诊断：缺口不是「二进制没有元数据」
+
+Go 默认 `-buildvcs=true` **已经**把来源元数据嵌进二进制：
+
+```
+$ go version -m Gox.exe
+    build   vcs=git
+    build   vcs.revision=1c201ec3606f5396a6b8216469dbaefb5e1f58ad
+    build   vcs.time=2026-09-21T04:50:22Z
+    build   -trimpath=true
+```
+
+脏工作树时还会多出 `vcs.modified=true`（没有该行即干净）。所以真正的缺口是
+**没人把它交到使用者手上**，三处：
+
+| # | 缺口 |
+|---|---|
+| ① | `gox version` 只报手写常量 `0.9.0`，人拿不到 commit |
+| ② | 没有任何闸门断言它 |
+| ③ | **test262 结果 JSON 完全不记录产出它的引擎身份** —— `jsonReport` 只有 suite/root/total/passed/failed/skipped/rate/seconds/by_group/results |
+
+③ 是两次翻车的共同根因：账本（`.json`）离开产出它的二进制就永久失去身份。
+
+| 翻车 | 形态 |
+|---|---|
+| 历史 | `base-b381cbc.json` / `real-base.json` 的**内容**与文件名声称的提交不符 |
+| 本轮 | 拿 `ryB64Z` **之前**编译的缓存二进制 `/tmp/goxbase` 当 rj9MwH 的 base，GAIN 里混进两个不相干提交的收益，报成 125 / 10（真实为 9 / 8，见 §四十一 的订正） |
+
+### 2. 改动
+
+刻意**不引入 `-ldflags -X` 注入** —— Go 自带的 vcs stamping 已经是唯一真相
+来源，再注入一份就是第二个真相。全部读自 `runtime/debug.ReadBuildInfo()`。
+
+| 位置 | 改动 |
+|---|---|
+| `cmd/gox/buildinfo.go`（新） | `engineInfo` 结构 + `currentEngineInfo()` + `parseVCSSettings()` + `binaryMtime()` + `printVersion()` + `printEngineBanner()` |
+| `cmd/gox/cmd_test262.go` | `jsonReport` 增加 `Engine engineInfo \`json:"engine"\``；两条落盘路径（分片聚合 / 单进程顺序）**都**写入；人读的汇总头也打印身份 |
+| `cmd/gox/main.go` | `gox version` 改走 `printVersion()` |
+| `.github/workflows/release.yml` | 新增两个闸门步骤（见 §4） |
+
+`engineInfo` 字段：`version` / `vcs_revision` / `vcs_modified` / `vcs_time` /
+`vcs_present` / `goos` / `goarch` / `go_version` / `built_at`。
+
+三个设计选择，都是被翻车教出来的：
+
+- **`vcs_present` 必须显式报**。revision 为空 = 这次构建没有 vcs stamping
+  （仓库外构建 / `-buildvcs=false` / tarball 分发）。这种 JSON 不可当基准，
+  必须标出来，而不是留空字符串让人读成「干净」。
+- **「键不存在」与「值为 false」都按干净处理**。Go 只在脏树时写
+  `vcs.modified`，干净树干脆不写这一项。
+- **`built_at` 用可执行文件 mtime 作近似**。`debug.BuildInfo` 里没有「构建
+  时刻」这一项（只有 `vcs.time` = 提交时刻），mtime 足以区分同一 commit 的
+  不同次构建；取不到就留空，不伪造。
+
+### 3. 效果
+
+```
+$ gox version
+gox 0.9.0
+commit  c3cc0b8ec61c49333dc904d1716256b47d39927a (dirty)
+commit-time 2026-10-09T09:04:07Z
+built   2026-10-09T09:15:19Z
+toolchain go1.26.2 linux/amd64
+```
+
+```
+===== 合规率汇总 =====
+引擎: gox 0.9.0  commit c3cc0b8ec61c (dirty)  linux/amd64  go1.26.2  built 2026-10-09T09:17:12Z
+  ⚠ 工作树是脏的, 结果不可作 A/B 基准
+执行 6 | 通过 6 | 失败 0 | runner 跳过 0
+```
+
+JSON 侧（脏树实跑一次）：
+
+```json
+"engine": {
+  "version": "0.9.0",
+  "vcs_revision": "c3cc0b8ec61c49333dc904d1716256b47d39927a",
+  "vcs_modified": true,
+  "vcs_time": "2026-10-09T09:04:07Z",
+  "vcs_present": true,
+  "goos": "linux", "goarch": "amd64",
+  "go_version": "go1.26.2",
+  "built_at": "2026-10-09T09:15:19Z"
+}
+```
+
+### 4. CI 闸门（release.yml，两个新步骤）
+
+1. **「校验构建来源元数据（commit / 脏树）」**：逐个平台二进制跑
+   `go version -m`，要求 `vcs.revision` 非空且 `vcs.modified != true`；失败
+   逐条写 `::error::`（含是哪个二进制、缺什么），不留裸 exit code。
+2. **「校验 gox version 能唯一确定工作树」**：跑
+   `./npm/binaries/linux-x64/gox version`，断言输出含 40 位十六进制 commit
+   且不含 `dirty`。
+
+本地干跑闸门脚本（用当前脏树二进制）如期命中：
+`::error::脏树构建，禁止发布`。
+
+### 5. 证据
+
+| 项 | 结果 |
+|---|---|
+| `go test -count=1 ./...` | 全绿（新增 6 例） |
+| `gox version` | 报出 commit + dirty + commit-time + built + toolchain |
+| 脏树跑 test262 落盘 | `engine.vcs_modified = true` |
+| 两条落盘路径 | 分片聚合与单进程顺序**都**带 engine 段（单测钉住） |
+| YAML 解析 | `yaml.safe_load` OK，两个步骤落在 `publish` job |
+| A/B | 纯观测/输出侧改动，不触碰 VM 语义；无需 test262 A/B |
+
+新增 `cmd/gox/buildinfo_test.go`（6 例）：`vcs` 三元组解析口径（5 子例，
+含「干净树不写 modified 键」「值带空白」「无 stamping」）、平台身份恒非空、
+`engine` 段 JSON 键面（含脏树必须序列化成 `true`）、两条落盘路径都带 engine、
+`shortRev` 边界、无 vcs 时摘要必须显式告警。
+
+### 6. 反向验证（3 组注入，全部如期 FAIL）
+
+| 注入 | 如期 FAIL |
+|---|---|
+| A 去掉 `jsonReport.Engine` 字段 | `TestJSONReportAlwaysCarriesEngine` —— JSON 缺 engine 段 |
+| B `parseVCSSettings` 不再识别 `vcs.modified` | 脏树判定全 false，`TestParseVCSSettings` 两个子例 |
+| C `printVersion` 退回只打一行版本号 | `gox version` 输出无 commit，闸门第 2 步必然不过 |
+
+### 7. 遗留
+
+- `test262.yml`（CI 上的合规率 workflow）尚未把 `engine` 段写进 job summary；
+  建议下一步把「基线 commit」与「本次 commit」并排显示，让 PR 上的合规率
+  数字自带身份。
+- `-one` 的单用例输出仍是裸 `test262Result`，不带 engine。刻意不改：批量
+  脚本（`-one` 循环）已有自己的身份记录方式，加字段会动到外部工具的面。
+- 移动端子包（`dist/npm-mobile-pkgs/*`）未纳入元数据校验 —— 它们是 .a/.xcframework，
+  不经过 `go version -m`。
+
+### 8. 一条方法论（写给自己）
+
+> **A/B 的 base 必须是被核销提交的直接父提交现编的二进制；缓存的旧二进制
+> 不能当基准。** 本条就是这个纪律被破坏两次之后的产物 —— 有了它，下次再犯
+> 时 JSON 自己会说清楚是谁跑的。

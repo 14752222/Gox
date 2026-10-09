@@ -590,6 +590,13 @@ type groupStat struct {
 }
 
 type jsonReport struct {
+	// Engine 是产出本次结果的引擎身份 (rFf4lR)。
+	//
+	// 没有它, 一份 test262 JSON 离开产出它的二进制就永久失去身份 —— 账本
+	// 无法回答"这份基线是哪个 commit 跑出来的"。历史两次 A/B 误判 (base
+	// 与文件名声称的提交不符 / 拿缓存的旧二进制当 base) 都是这个洞造成的。
+	// 对比两份 JSON 之前必须先比对 Engine.Revision 与 Engine.Modified。
+	Engine  engineInfo           `json:"engine"`
 	Suite   string               `json:"suite"`
 	Root    string               `json:"root"`
 	Total   int                  `json:"total"`
@@ -850,7 +857,10 @@ func runSharded(cases []test262Case, parentArgs []string, jobs, maxFail int, wan
 	elapsed := time.Since(start)
 
 	// 聚合: JSONL 逐行读取, 不依赖子进程完整存活
-	report := jsonReport{Suite: readSuiteArg(parentArgs), ByGroup: map[string]groupStat{}}
+	//
+	// 引擎身份取**本进程** (派发方) 的 —— 子进程是同一个二进制, 身份一致;
+	// 且聚合落盘只发生在这一处, 这里不写就没有第二次机会 (rFf4lR)。
+	report := jsonReport{Engine: currentEngineInfo(), Suite: readSuiteArg(parentArgs), ByGroup: map[string]groupStat{}}
 	var results []test262Result
 	seen := map[string]bool{}
 	for i := 0; i < shardTotal; i++ {
@@ -971,6 +981,7 @@ func runSharded(cases []test262Case, parentArgs []string, jobs, maxFail int, wan
 	report.Seconds = elapsed.Seconds()
 
 	fmt.Printf("\n===== 合规率汇总 =====\n")
+	printEngineBanner(report.Engine)
 	fmt.Printf("执行 %d | 通过 %d | 失败 %d | runner 跳过 %d\n", report.Total, report.Passed, report.Failed, report.Skipped)
 	fmt.Printf("合规率: %.2f%%   耗时: %s\n", report.Rate, elapsed.Round(time.Millisecond))
 	keys := make([]string, 0, len(report.ByGroup))
@@ -1158,7 +1169,8 @@ func executeCases(root string, cases []test262Case, suite string, jobs, timeoutS
 	os.Stdout = saved
 	devnull.Close()
 
-	report := jsonReport{Suite: suite, Root: root, Seconds: elapsed.Seconds(), ByGroup: map[string]groupStat{}}
+	eng := currentEngineInfo()
+	report := jsonReport{Engine: eng, Suite: suite, Root: root, Seconds: elapsed.Seconds(), ByGroup: map[string]groupStat{}}
 	var failedList []test262Result
 	for _, r := range results {
 		if r.RelPath == "" {
@@ -1193,6 +1205,7 @@ func executeCases(root string, cases []test262Case, suite string, jobs, timeoutS
 	}
 
 	fmt.Printf("\n===== 合规率汇总 (%s) =====\n", suite)
+	printEngineBanner(eng)
 	fmt.Printf("执行 %d | 通过 %d | 失败 %d | runner 跳过 %d\n", report.Total, report.Passed, report.Failed, report.Skipped)
 	fmt.Printf("合规率: %.2f%%   耗时: %s\n", report.Rate, elapsed.Round(time.Millisecond))
 	fmt.Println("\n----- 按目录分组 -----")

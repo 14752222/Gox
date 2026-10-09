@@ -78,7 +78,9 @@ func main() {
 			printUsage(os.Stdout)
 			return
 		case "version", "--version":
-			fmt.Printf("gox %s\n", version)
+			// 除手写版本号, 还要报 commit / 脏树 / 平台 / 构建时刻 ——
+			// 目标是"一行输出能唯一确定一棵工作树" (rFf4lR)。
+			printVersion()
 			return
 		}
 		if strings.HasPrefix(arg, "-") {

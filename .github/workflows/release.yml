@@ -276,6 +276,61 @@ jobs:
             ls -lh "dist/npm-mobile-pkgs/$d/"
           done
 
+      - name: 校验构建来源元数据（commit / 脏树）
+        # rFf4lR: release 产物必须能 `go version -m` 读到 vcs.revision, 且
+        # vcs.modified 不为 true —— 否则这份产物无法唯一定位源码, 线上出问题时
+        # 也复现不了。失败原因逐条写进 ::error::, 不留一个裸 exit code 让人猜。
+        #
+        # 背景: Go 默认 -buildvcs=true 已经把元数据嵌进二进制, 缺口从来不是
+        # "二进制没有元数据", 而是没人校验它、也没人把它交给使用者。
+        run: |
+          set -euo pipefail
+          FAILED=0
+          for d in darwin-x64 darwin-arm64 linux-x64 linux-arm64 windows-x64; do
+            BIN="npm/binaries/$d/gox"
+            if [ "$d" = windows-x64 ]; then BIN="$BIN.exe"; fi
+            if [ ! -f "$BIN" ]; then
+              echo "::error::缺少 $BIN"
+              FAILED=1
+              continue
+            fi
+            M=$(go version -m "$BIN" 2>/dev/null || true)
+            REV=$(printf '%s\n' "$M" | awk '/vcs[.]revision=/{sub(/.*vcs[.]revision=/,"");print;exit}')
+            MOD=$(printf '%s\n' "$M" | awk '/vcs[.]modified=/{sub(/.*vcs[.]modified=/,"");print;exit}')
+            if [ -z "$REV" ]; then
+              echo "::error::$BIN 无 vcs.revision(未带来源元数据, 发布后无法定位提交)"
+              FAILED=1
+              continue
+            fi
+            if [ "$MOD" = "true" ]; then
+              echo "::error::$BIN 由脏工作树构建(vcs.modified=true), 禁止发布"
+              FAILED=1
+              continue
+            fi
+            echo "  $BIN -> $REV"
+          done
+          if [ "$FAILED" -ne 0 ]; then
+            echo "::error::构建来源元数据校验未通过: release 产物必须带 vcs.revision 且不得由脏树构建"
+            exit 1
+          fi
+
+      - name: 校验 gox version 能唯一确定工作树
+        # 同一条的两个出口: 二进制元数据要能被人读到, 不能只活在 `go version -m`
+        # 里。`gox version` 必须打印 commit, 且不得标 dirty。
+        run: |
+          set -euo pipefail
+          OUT=$(./npm/binaries/linux-x64/gox version)
+          echo "$OUT"
+          echo "$OUT" | grep -Eq '^commit  [0-9a-f]{40}$' || {
+            echo "::error::gox version 未打印 40 位 commit(无法唯一定位工作树)"
+            exit 1
+          }
+          echo "$OUT" | grep -q 'dirty' && {
+            echo "::error::gox version 标了 dirty, 产物由脏工作树构建"
+            exit 1
+          }
+          echo "  gox version 身份输出 OK"
+
       - name: 冒烟测试（跑打包后的入口，而不是裸二进制）
         run: |
           set -euo pipefail
