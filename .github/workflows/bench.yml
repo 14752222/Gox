@@ -1,0 +1,84 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# 性能基准闸门（看板 rKpKpD）
+#
+# 为什么需要它：bench 工具链（scripts/bench-all.sh / bench-compare.sh /
+#   scripts/bench/*.js）和结果存档（bench-results/）早就有了，但六个 workflow 里
+#   **没有一个跑 bench** —— 性能回归只能靠人记得手动跑、手动比数字。而最近
+#   test262 冲刺大量动了 vm / compiler 的热路径，正是最容易「悄悄变慢」的时候。
+#
+# 为什么只在 nightly + 手动，不进 PR：
+#   云上 runner 的机器负载本身有波动，每次 PR 都跑会让红变成噪声，噪声性红一次
+#   之后这条闸门就没人再看了。nightly 一条 + 需要时手动触发，是「发现退化」与
+#   「不制造噪声」之间的平衡。
+#
+# 判什么（scripts/check-bench.py 文件头有完整说明）：
+#   主力判 **gox/node 的比值**（同源脚本，机器差异被约掉，跨平台可比）；
+#   绝对值只在同一机型下才判，不一致时降级为「只记录」。所以换 runner 机型不会
+#   把这条刷红 —— 一个永远红的闸门比没有闸门更糟。
+#
+# 失败时怎么查：脚本把「哪个指标 × 多少、基线值、现值、比值」写进 ::error:: 注解
+#   （未登录读不到 job 日志，注解是唯一的归因入口），逐次结果 JSON 存 artifact。
+# ─────────────────────────────────────────────────────────────────────────────
+name: bench
+
+on:
+  schedule:
+    # 每天 UTC 03:17（北京时间 11:17）：避开整点，GitHub 的排队高峰通常在整点前后
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 基准是串行资源：手动触发与定时撞车时排队，且不该互相取消（跑一半被取消=白跑）
+concurrency:
+  group: bench
+  cancel-in-progress: false
+
+jobs:
+  perf-gate:
+    name: 性能基准闸门（gox / node / goja + UI 帧率）
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # 闸门自检必须放在**跑基准之前**：万一判据失效（永远输出 ok），先知道，
+      # 而不是白跑五分钟之后得到一条假绿。
+      - name: 闸门自检（负向样本必须真的红）
+        run: |
+          set -euo pipefail
+          if ! python3 scripts/check-bench.py --self-test; then
+            echo "::error::bench 闸门自测未通过 —— 判据或负向样本失效，它可能已经不再拦任何东西"
+            exit 1
+          fi
+
+      - name: 无头环境（perf 包的帧率基准要连 X）
+        run: |
+          set -euo pipefail
+          sudo apt-get update -q
+          sudo apt-get install -yq xvfb fonts-dejavu-core fonts-noto-cjk
+
+      - name: 跑基准（bench-compare + UI 帧率/GC 毛刺）
+        run: |
+          set -euo pipefail
+          xvfb-run -a -s "-screen 0 1280x800x24" bash scripts/bench-all.sh --runs 3
+
+      - name: 比对基线
+        run: |
+          set -euo pipefail
+          # 失败原因（哪个指标 × 多少、基线/现值/比值）由脚本自己写成 ::error::，
+          # 这里不再补一句笼统的话 —— 那会让注解里出现两条信息量不对等的红。
+          python3 scripts/check-bench.py --github
+
+      - name: 上传结果存档
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results
+          path: bench-results/*.json
+          retention-days: 90
