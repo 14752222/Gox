@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# 常规检查闸门：注册表一致性 + 编译 + 静态检查 + 测试
+# 常规检查闸门：注册表一致性 + 包级 init() 纯度 + 编译 + 静态检查 + 测试
 #
 # 为什么需要这个文件：Gox 有几处**必须手工同步**的注册表，漏改一律不报错 ——
 #   内置组件漏登记某个站点 → 渲染成空盒子；gx/* 模块漏进 submodules → 聚合入口
@@ -59,6 +59,41 @@ jobs:
           # 文档/示例 import 与内置模块导出表一致（编译期报错级 + 静默 undefined 级）
           if ! python3 scripts/check-imports.py; then
             echo "::error::文档/示例 import 检查未通过 —— 具体哪个文件哪一行 import 了不存在的名字见上一条输出；故意写错的示例须登记进脚本头部 ALLOW 豁免表"
+            exit 1
+          fi
+
+  # ── 包级 init() 纯度（看板 rKjHCl）─────────────────────────────────────────
+  # 为什么单独一个作业：它是 Go 侧的 AST 分析（要 Go 工具链），而 registries 是
+  #   Python 侧的纯文本分析；两者的失败归因完全不同，混在一条里会互相淹没。
+  #
+  # 守的是 2026-10-08 那次事故：gfx/win32 的 init() 在进程启动阶段枚举网卡，
+  #   结构体布局错位时连 test262 跑批都启动即 SIGSEGV —— 单点已修（改懒加载），
+  #   但**没有任何机制阻止下一次**。init() 没有调用点、没有开关、也没有 recover
+  #   的机会：往里放一次平台调用，就等于要求所有二进制在 main 之前先成功完成它。
+  init-purity:
+    name: 包级 init() 纯度（禁平台 IO / 宏内核调用）
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: init() 纯度检查 + 工具自测
+        run: |
+          set -euo pipefail
+          # 判据与输出（文件:行号 + 调用链）都在 tools/initpurity 里，这里只补
+          # 一句 ::error:: —— 未登录时 job 日志读不到，注解是唯一的归因入口。
+          if ! go run ./tools/initpurity ./...; then
+            echo "::error::包级 init() 里出现平台 IO / 宏内核调用 —— 文件与行号见上一条输出；确属必要的加 // initpurity:allow 理由：…（理由必填）"
+            exit 1
+          fi
+          # 守卫自身也要有守卫：负向样本必须真的红（tools/initpurity/testdata/）。
+          # 一个永远输出 ok 的守卫比没有守卫更危险 —— 它会让人误以为有防线。
+          if ! go test ./tools/initpurity/; then
+            echo "::error::initpurity 自测未通过 —— 判据或负向样本失效，闸门可能已经不再拦任何东西"
             exit 1
           fi
 
