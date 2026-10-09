@@ -40,6 +40,18 @@
 #   进 CI；harmony 需要 DevEco SDK，托管 runner 装不了 —— 见 mobile-ios 作业注释。
 #   ⚠️ 每个子包都要在 npmjs.com 上单独配 Trusted Publishing（同一组 org/repo/workflow）。
 #
+# 桌面签名 / 公证（r8ErgP）：同一条流水线上的**可选增强**，配了 secrets 才生效，
+#   缺凭证一律优雅跳过（::notice:: 说明原因，不阻塞发布）：
+#   * Windows —— publish 作业里用 osslsigncode 给 npm/binaries/windows-x64/gox.exe
+#     做 Authenticode 签名（纯 OpenSSL 实现，签 PE 与宿主平台无关，所以不必为盖章
+#     再开一个 windows runner；缺 WINDOWS_PFX_BASE64 则跳过）；
+#   * macOS —— sign-macos 作业（npm 包里的 darwin 二进制，必须赶在 npm pack 之前）
+#     与 universal 作业（Release Assets 的三个 darwin 产物）共用
+#     scripts/sign-macos.sh 走 codesign → notarytool → stapler
+#     （缺 MACOS_CERT_P12_BASE64 则整个作业跳过，publish 用自己编的未签名产物）。
+#   判空与「为什么跳过」集中在 scripts/check-signing-creds.sh（三处调用同一份判据），
+#   跳过逻辑有没有被改坏由 scripts/check-signing-workflow.py 静态校验（ci.yml 里跑）。
+#
 # 发版动作：改 npm/package.json 的 version（子包版本须同号）→ 提交 → push 到 main
 #           （或打 tag），registry 上出现带 provenance 证明的新版本即成功。
 # ─────────────────────────────────────────────────────────────────────────────
@@ -181,7 +193,9 @@ jobs:
     name: 构建并发布
     # mobile-ios 先生成 iOS 平台子包（macOS 专属工具链），本作业下载后与 android
     # 子包一起发布 —— 单一 runner 编不出全部移动端目标。
-    needs: [decide, mobile-ios]
+    # sign-macos 同理：darwin 二进制要在 macOS 上签名/公证，签完以 artifact 交回来，
+    # 所以本作业必须等它（它因缺凭证跳过时 result=skipped，这里照常往下走）。
+    needs: [decide, mobile-ios, sign-macos]
     if: needs.decide.outputs.publish == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -228,6 +242,67 @@ jobs:
       # 产物先落在 dist/npm/binaries/，再复制一份进包目录（发布后由最后一步清掉）
       - name: 交叉编译五平台二进制并放进包目录
         run: bash ./scripts/build-npm.sh --into-package
+
+      # ── 桌面签名（r8ErgP）：Windows Authenticode ────────────────────────────
+      # 为什么签在这一步：windows 产物就是上一步在**这台 ubuntu runner** 上交叉编译
+      #   出来的，而 npm pack 在很后面 —— 盖章必须卡在两者之间，否则发出去的包里
+      #   还是未签名那份。osslsigncode 是纯 OpenSSL 实现，签 PE 与宿主平台无关
+      #   （electron-builder 就是这么在 Linux 上签 Windows 包的），所以不用为一次
+      #   盖章再开一个 windows runner 来回传产物。
+      #
+      # 缺 WINDOWS_PFX_BASE64 → 优雅跳过 + ::notice::，发布照跑：桌面签名是
+      #   「配了凭证才生效」的增强项，不能反过来成为发版硬门槛（否则凭证一丢就发不出去了）。
+      # 配了凭证却签失败 → 判红：静默发出未签名包比发不出更糟。
+      - name: 探测 Windows 签名材料
+        id: win-cred
+        env:
+          # 判空在 YAML 侧做：GitHub 未配置的 secret 求值为空串，只有表达式能区分
+          # 「没配」与「配了空串」；把值传进探测脚本只会让凭证多一次暴露机会。
+          HAS_WIN_PFX: ${{ secrets.WINDOWS_PFX_BASE64 != '' }}
+        run: bash scripts/check-signing-creds.sh windows
+
+      - name: Windows Authenticode 签名（npm/binaries/windows-x64/gox.exe）
+        if: steps.win-cred.outputs.enabled == 'true'
+        env:
+          WINDOWS_PFX_BASE64: ${{ secrets.WINDOWS_PFX_BASE64 }}
+          WINDOWS_PFX_PASSWORD: ${{ secrets.WINDOWS_PFX_PASSWORD }}
+        run: |
+          set -euo pipefail
+          # osslsigncode 不在 ubuntu 镜像里，装它比换 runner 便宜
+          sudo apt-get update -qq
+          sudo apt-get install -y osslsigncode
+          command -v osslsigncode
+          # base64 → 文件的动作在脚本内完成（600 + 用完即删），这里只把 secret 交给它
+          bash scripts/sign-windows.sh npm/binaries/windows-x64/gox.exe
+
+      # ── macOS 签名产物回灌（r8ErgP）─────────────────────────────────────────
+      # sign-macos 作业在 macos runner 上编 + 签 darwin 二进制，这里用签过的那份
+      # 换掉包内产物 —— npm 是 macOS 用户的主要安装渠道，Gatekeeper 拦的正是它。
+      # 作业因缺凭证跳过时 result=skipped → 两步都不跑，继续用本作业编的未签名产物。
+      # 判据用 sign-macos 的**作业输出**而不是 `result == 'success'`：缺凭证时那个
+      # 作业照样跑完（只是内部步骤全跳过、不传 artifact），result 也是 success ——
+      # 拿 result 判会让本作业去下一个不存在的 artifact，反而把发布搞挂。
+      - name: 下载 macOS 签名产物
+        if: needs.sign-macos.outputs.signed == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: gox-darwin-signed
+          path: dist/darwin-signed
+
+      - name: 用签名后的 darwin 二进制替换包内产物
+        if: needs.sign-macos.outputs.signed == 'true'
+        run: |
+          set -euo pipefail
+          for d in darwin-x64 darwin-arm64; do
+            SRC="dist/darwin-signed/$d/gox"
+            if [ ! -f "$SRC" ]; then
+              echo "::error::sign-macos 成功了但缺少 $SRC；证据：$(ls -laR dist/darwin-signed 2>&1 | head -20)"
+              exit 1
+            fi
+            cp "$SRC" "npm/binaries/$d/gox"
+            chmod +x "npm/binaries/$d/gox"   # artifact 不保留可执行位
+            ls -lh "npm/binaries/$d/gox"
+          done
 
       # ── 移动端「平台子包」（M11）───────────────────────────────────────────
       # 移动端按「平台 × ABI」拆成独立子包 @goxjs/goxjs-mobile-<platform>-<abi>，
@@ -519,7 +594,9 @@ jobs:
     needs: [decide, publish]
     if: ${{ needs.decide.outputs.publish == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && !inputs.dry_run }}
     runs-on: macos-latest
-    timeout-minutes: 15
+    # 15 → 30：公证是等 Apple 回执的，三个产物各提交一次，超时太紧会把正常的
+    # 排队时间误判成失败（签名/公证没跑时仍是十几秒的原开销）。
+    timeout-minutes: 30
     env:
       VERSION: ${{ needs.decide.outputs.version }}
     steps:
@@ -558,6 +635,35 @@ jobs:
             echo "::error::universal 产物版本输出「$OUT」与发版版本 gox $VERSION 不一致"
             exit 1
           }
+
+      # ── 桌面签名（r8ErgP）：macOS codesign + 公证 ────────────────────────────
+      # 签在这里而不另开作业：这三个 darwin 产物本来就在本作业里编出来（lipo 要
+      #   Apple 工具链），签名/公证用到的也是同一台机器上的 Apple 工具链 ——
+      #   与其把产物传出去再传回来，不如就地在上传 Release 之前盖完章。
+      #
+      # npm 包里的 darwin 二进制由 sign-macos 作业负责（要赶在 npm pack 之前），
+      # 两者共用 scripts/sign-macos.sh 与同一组 secrets。
+      - name: 探测 macOS 签名材料
+        id: macos-cred
+        env:
+          HAS_MACOS_CERT: ${{ secrets.MACOS_CERT_P12_BASE64 != '' }}
+          HAS_APPLE_API: ${{ secrets.APPLE_API_KEY != '' && secrets.APPLE_API_ISSUER != '' && secrets.APPLE_API_KEY_CONTENT != '' }}
+        run: bash scripts/check-signing-creds.sh macos
+
+      - name: macOS 签名与公证（Release Assets 的 darwin 产物）
+        if: steps.macos-cred.outputs.enabled == 'true'
+        env:
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+        run: |
+          set -euo pipefail
+          bash scripts/sign-macos.sh \
+            dist/universal/gox-darwin-universal \
+            dist/universal/gox-darwin-amd64 \
+            dist/universal/gox-darwin-arm64
 
       - name: 上传 Release Assets（universal + 单 arch 两个）
         env:
@@ -617,4 +723,88 @@ jobs:
         with:
           name: gox-mobile-ios-pkgs
           path: dist/npm-mobile-pkgs/**
+          if-no-files-found: error
+
+  # ─────────────────────────────────────────────────────────────────────────────
+  # 桌面签名（r8ErgP）：macOS —— npm 包里的 darwin 二进制
+  #
+  # 为什么单独一个 macos 作业：codesign / notarytool / stapler 全是 Apple 工具链，
+  #   只有 macOS runner 有；而 npm 包是在 ubuntu 的 publish 作业里打的，所以必须
+  #   在 pack 之前把签好的二进制交回去 —— 于是本作业先编（与 build-npm.sh 同一组
+  #   flag：darwin 是纯 Go 交叉编译，在哪编都一样）再签，产物以 artifact 回传。
+  #   代价是 darwin 两个架构多编一次（几十秒），换来的是 publish 那边不用重排顺序。
+  #
+  # 缺凭证 → 整体跳过（一步都不跑，也不传 artifact），publish 用它自己编的未签名
+  #   产物，发布不阻塞。凭证配齐但签名/公证失败 → 判红并连带挡住 publish：配了凭证
+  #   就说明要签名产物，静默发出未签名包比发不出更糟。Apple 服务长时间不可用时
+  #   的逃生口是临时把 MACOS_CERT_P12_BASE64 置空，退回跳过路径。
+  #
+  # 公证凭证与 TestFlight 同一套（App Store Connect API 密钥）：APPLE_API_KEY /
+  #   APPLE_API_ISSUER / APPLE_API_KEY_CONTENT；签名证书要 Developer ID Application
+  #   的 p12（MACOS_CERT_P12_BASE64 + MACOS_CERT_PASSWORD）。
+  # ─────────────────────────────────────────────────────────────────────────────
+  sign-macos:
+    name: macOS 签名与公证（npm darwin 二进制）
+    needs: decide
+    if: needs.decide.outputs.publish == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 30
+    outputs:
+      # publish 靠这个判断「有没有签名产物可拿」。它必须来自探测步骤而不是
+      # `result`：缺凭证时本作业仍然是 success（只是内部步骤全跳过、不传 artifact）。
+      signed: ${{ steps.macos-cred.outputs.enabled }}
+    steps:
+      # 探测放在最前：缺凭证时连 checkout / setup-go 都不必跑，省一次 runner 开销；
+      # 后面每一步都用同一个闸门，拿到的是同一个结论（不会各步各判一次而漂移）。
+      - name: 探测 macOS 签名材料
+        id: macos-cred
+        env:
+          HAS_MACOS_CERT: ${{ secrets.MACOS_CERT_P12_BASE64 != '' }}
+          HAS_APPLE_API: ${{ secrets.APPLE_API_KEY != '' && secrets.APPLE_API_ISSUER != '' && secrets.APPLE_API_KEY_CONTENT != '' }}
+        run: bash scripts/check-signing-creds.sh macos
+
+      - uses: actions/checkout@v7
+        if: steps.macos-cred.outputs.enabled == 'true'
+
+      - uses: actions/setup-go@v7
+        if: steps.macos-cred.outputs.enabled == 'true'
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: 交叉编译 darwin 两个架构
+        if: steps.macos-cred.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p dist/darwin-signed/darwin-x64 dist/darwin-signed/darwin-arm64
+          # flag 与 scripts/build-npm.sh 逐字一致：签名产物必须与未签名产物同源，
+          # 否则「签过的包」和「没签的包」行为不同就无从排查。
+          CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 \
+            go build -trimpath -ldflags "-s -w" -o dist/darwin-signed/darwin-x64/gox ./cmd/gox
+          CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 \
+            go build -trimpath -ldflags "-s -w" -o dist/darwin-signed/darwin-arm64/gox ./cmd/gox
+          ls -lh dist/darwin-signed/*/gox
+
+      - name: codesign → notarytool → stapler
+        if: steps.macos-cred.outputs.enabled == 'true'
+        env:
+          MACOS_CERT_P12_BASE64: ${{ secrets.MACOS_CERT_P12_BASE64 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY_CONTENT: ${{ secrets.APPLE_API_KEY_CONTENT }}
+        run: |
+          set -euo pipefail
+          bash scripts/sign-macos.sh \
+            dist/darwin-signed/darwin-x64/gox \
+            dist/darwin-signed/darwin-arm64/gox
+
+      # 目录名 darwin-x64 / darwin-arm64 与 npm/binaries/ 下的名字逐字对应：
+      # publish 那边按同名替换，不用再维护一张映射表。
+      - name: 归档签名后的 darwin 二进制
+        if: steps.macos-cred.outputs.enabled == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: gox-darwin-signed
+          path: dist/darwin-signed/**
           if-no-files-found: error
