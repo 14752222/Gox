@@ -161,6 +161,78 @@ func TestJSONReportAlwaysCarriesEngine(t *testing.T) {
 	}
 }
 
+// TestPrintVersionCarriesIdentity 钉住 `gox version` 的**输出面**, 而不只是
+// 结构体字段。
+//
+// 为什么需要它: 反向验证 C 组把 printVersion 退化成"只打一行版本号", 只测
+// 结构体的用例全绿 —— 因为身份确实读出来了, 只是没打印。字段对而输出不对,
+// 使用者照样拿不到 commit。
+func TestPrintVersionCarriesIdentity(t *testing.T) {
+	clean := engineInfo{
+		Version: "0.9.0", Revision: "c3cc0b8ec61c49333dc904d1716256b47d39927a",
+		VcsPresent: true, VcsTime: "2026-10-09T09:04:07Z",
+		GOOS: "linux", GOARCH: "amd64", GoVersion: "go1.26.2", BuiltAt: "2026-10-09T09:15:19Z",
+	}
+	var buf strings.Builder
+	printVersionTo(&buf, clean)
+	out := buf.String()
+	for _, want := range []string{
+		"gox 0.9.0",
+		"commit  c3cc0b8ec61c49333dc904d1716256b47d39927a", // 完整 40 位, 不缩写
+		"commit-time 2026-10-09T09:04:07Z",
+		"built   2026-10-09T09:15:19Z",
+		"toolchain go1.26.2 linux/amd64",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("gox version 输出缺 %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "dirty") {
+		t.Fatalf("干净树不该标 dirty:\n%s", out)
+	}
+
+	dirty := clean
+	dirty.Modified = true
+	buf.Reset()
+	printVersionTo(&buf, dirty)
+	if !strings.Contains(buf.String(), "(dirty)") {
+		t.Fatalf("脏树必须标 dirty:\n%s", buf.String())
+	}
+}
+
+// TestPrintVersionFlagsMissingVCS 无 vcs stamping 时, `gox version` 必须
+// **写出来**而不是少打一行 —— 少一行会被读成"忘了打印", 而不是"这个二进制
+// 没有身份"。
+func TestPrintVersionFlagsMissingVCS(t *testing.T) {
+	var buf strings.Builder
+	printVersionTo(&buf, engineInfo{Version: "0.9.0", GOOS: "linux", GOARCH: "amd64", GoVersion: "go1.26.2"})
+	out := buf.String()
+	if !strings.Contains(out, "无 vcs 元数据") {
+		t.Fatalf("无 vcs stamping 时必须显式告警:\n%s", out)
+	}
+}
+
+// TestNewJSONReportAlwaysHasEngine 钉住"两条落盘路径都带 engine"这件事本身。
+//
+// 它测的是**构造函数**而不是手写字面量: 只要 newJSONReport 丢了 Engine,
+// 这条就红。反向验证 D 组 (把分片聚合路径改回字面量、不写 Engine) 在改成
+// 构造函数之后就无法编译 —— "忘记"从"等某次 A/B 翻车才发现"变成编译错误。
+func TestNewJSONReportAlwaysHasEngine(t *testing.T) {
+	rep := newJSONReport("language", "/tmp/test262")
+	if rep.Suite != "language" || rep.Root != "/tmp/test262" {
+		t.Fatalf("构造函数没带 suite/root: %+v", rep)
+	}
+	if rep.ByGroup == nil {
+		t.Fatal("ByGroup 必须初始化, 否则聚合写入 panic")
+	}
+	// 身份必须与"当前进程"一致 —— 换成一个写死的空 engineInfo 会让账本
+	// 永远指向同一个伪身份。
+	cur := currentEngineInfo()
+	if rep.Engine != cur {
+		t.Fatalf("engine 不是当前进程身份:\n got %+v\nwant %+v", rep.Engine, cur)
+	}
+}
+
 // TestShortRev 短提交号别越界, 也别把短串截坏。
 func TestShortRev(t *testing.T) {
 	cases := map[string]string{

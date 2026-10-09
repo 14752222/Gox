@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"runtime"
 	"runtime/debug"
@@ -137,6 +138,16 @@ func shortRev(rev string) string {
 	return rev
 }
 
+// newJSONReport 是 jsonReport 的**唯一**构造入口。
+//
+// 刻意收口成构造函数而不是让两处各自写字面量: 分片聚合与单进程顺序是两条
+// 独立的落盘路径, 只要有一处忘了 Engine, 那条路径产出的账本就永久失去身份
+// —— 而"那份 JSON 少了 engine 段"要等某次 A/B 翻车才会被发现 (反向验证 D
+// 组实测: 字面量写法下, 单测照样全绿)。构造函数让"忘记"变成编译错误。
+func newJSONReport(suite, root string) jsonReport {
+	return jsonReport{Engine: currentEngineInfo(), Suite: suite, Root: root, ByGroup: map[string]groupStat{}}
+}
+
 // printEngineBanner 是 test262 汇总头里的引擎身份行。
 //
 // 引擎身份必须出现在**人读的汇总里**, 不能只在 -json 里: 一次跑完的结论往往
@@ -156,19 +167,23 @@ func printEngineBanner(e engineInfo) {
 // printVersion 是 `gox version` 的输出。
 //
 // 除了手写常量, 还要把 commit / 脏树 / 平台 / 构建时刻一并打印 —— 目标是
-// **一行输出能唯一确定一棵工作树**。缺 vcs 元数据时明确写出来, 而不是安静
+// **一次输出能唯一确定一棵工作树**。缺 vcs 元数据时明确写出来, 而不是安静
 // 地少打一行。
-func printVersion() {
-	e := currentEngineInfo()
-	fmt.Printf("gox %s\n", e.Version)
+//
+// 拆出 printVersionTo 是为了让"输出面"可被单测钉住: 只测结构体字段的话,
+// 退化成"少打几行"照样全绿 (反向验证 C 组实测过)。
+func printVersion() { printVersionTo(os.Stdout, currentEngineInfo()) }
+
+func printVersionTo(w io.Writer, e engineInfo) {
+	fmt.Fprintf(w, "gox %s\n", e.Version)
 	if e.VcsPresent {
-		fmt.Printf("commit  %s%s\n", e.Revision, e.dirtyLabel())
+		fmt.Fprintf(w, "commit  %s%s\n", e.Revision, e.dirtyLabel())
 		if e.VcsTime != "" {
-			fmt.Printf("commit-time %s\n", e.VcsTime)
+			fmt.Fprintf(w, "commit-time %s\n", e.VcsTime)
 		}
 	} else {
-		fmt.Printf("commit  <无 vcs 元数据: 该二进制不可作 A/B 基准>\n")
+		fmt.Fprintf(w, "commit  <无 vcs 元数据: 该二进制不可作 A/B 基准>\n")
 	}
-	fmt.Printf("built   %s\n", e.BuiltAt)
-	fmt.Printf("toolchain %s %s/%s\n", e.GoVersion, e.GOOS, e.GOARCH)
+	fmt.Fprintf(w, "built   %s\n", e.BuiltAt)
+	fmt.Fprintf(w, "toolchain %s %s/%s\n", e.GoVersion, e.GOOS, e.GOARCH)
 }

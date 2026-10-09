@@ -860,7 +860,7 @@ func runSharded(cases []test262Case, parentArgs []string, jobs, maxFail int, wan
 	//
 	// 引擎身份取**本进程** (派发方) 的 —— 子进程是同一个二进制, 身份一致;
 	// 且聚合落盘只发生在这一处, 这里不写就没有第二次机会 (rFf4lR)。
-	report := jsonReport{Engine: currentEngineInfo(), Suite: readSuiteArg(parentArgs), ByGroup: map[string]groupStat{}}
+	report := newJSONReport(readSuiteArg(parentArgs), "")
 	var results []test262Result
 	seen := map[string]bool{}
 	for i := 0; i < shardTotal; i++ {
@@ -1169,8 +1169,9 @@ func executeCases(root string, cases []test262Case, suite string, jobs, timeoutS
 	os.Stdout = saved
 	devnull.Close()
 
-	eng := currentEngineInfo()
-	report := jsonReport{Engine: eng, Suite: suite, Root: root, Seconds: elapsed.Seconds(), ByGroup: map[string]groupStat{}}
+	report := newJSONReport(suite, root)
+	report.Seconds = elapsed.Seconds()
+	eng := report.Engine
 	var failedList []test262Result
 	for _, r := range results {
 		if r.RelPath == "" {
