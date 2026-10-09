@@ -134,6 +134,36 @@ jobs:
             exit 1
           fi
 
+  # ── gfx 属性/事件白名单 golden（看板 rgQsDD）────────────────────────────────
+  # 为什么单独一个作业：它是「Go AST 抽取 → Python 合成 → JSON 比对」三段式，
+  #   失败归因与注册表（纯文本）、init-purity（Go AST）都不同；而且它要 Go
+  #   工具链（跑 tools/propdump），与纯 Python 的 registries 不该绑在一条里。
+  #
+  # 守的是 docs/props.golden.json 与 gfx 的**读取点**同步：新增/删除一个属性
+  #   读取点而没更新 golden，dev 模式的"未注册属性"警告就会白报（或漏报），
+  #   而白名单一旦失信，strictAPI 就会被整体关掉 —— 那本单就白做了。
+  #
+  # 与 r3FFt6 的导出名单 golden 同一哲学：CI 只 diff，**不自动刷新** ——
+  #   自动刷新等于把 API 变化藏起来，golden 就退化成一份永远与代码一致的冗余文件。
+  props-golden:
+    name: 属性/事件白名单 golden
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: 实抽 vs docs/props.golden.json
+        run: |
+          set -euo pipefail
+          if ! python3 scripts/gen-props-golden.py --check; then
+            echo "::error::属性白名单 golden 与代码不一致 —— 差在哪一组（标签/属性）见上一条输出；确认无误后本地跑 python3 scripts/gen-props-golden.py 重新生成并随代码一起提交"
+            exit 1
+          fi
+
   build-test:
     name: 编译 / vet / 测试 (${{ matrix.os }})
     # 三平台矩阵 (T02)：Gox 的三个桌面后端各守一个平台 —— win32 / cocoa / x11。

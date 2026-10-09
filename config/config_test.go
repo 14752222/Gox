@@ -21,7 +21,8 @@ func TestLoadFullConfig(t *testing.T) {
 		],
 		"android": { "minSdk": 26, "adaptiveBackground": "#112233" },
 		"ios": { "deploymentTarget": "16.0" },
-		"desktop": { "windowed": false }
+		"desktop": { "windowed": false },
+		"strictAPI": true
 	}`)
 
 	cfg, err := Load(dir)
@@ -45,6 +46,9 @@ func TestLoadFullConfig(t *testing.T) {
 	}
 	if cfg.Desktop.IsWindowed() {
 		t.Error("windowed 应为 false")
+	}
+	if !cfg.StrictAPI {
+		t.Error("strictAPI = false, want true")
 	}
 	perms := cfg.Permissions.List()
 	if len(perms) != 2 || perms[0].Name != "camera" || perms[1].Name != "location" {
@@ -99,6 +103,10 @@ func TestLoadDefaults(t *testing.T) {
 	}
 	if cfg.Permissions.Len() != 0 {
 		t.Errorf("缺省权限应为空（最小权限原则）: %+v", cfg.Permissions.List())
+	}
+	// strictAPI 缺省必须关: 它是"误报就起不来应用"的那档开关, 只能显式打开
+	if cfg.StrictAPI {
+		t.Error("strictAPI 应缺省为 false（opt-in）")
 	}
 }
 

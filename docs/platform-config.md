@@ -72,6 +72,7 @@ my-app/
 | `android.adaptiveBackground` | string | `#18243B` | 自适应图标背景色（`#RRGGBB`）；单图源自动兜底时背景铺这个纯色 |
 | `ios.deploymentTarget` | string | `15.0` | 最低 iOS 版本 |
 | `desktop.windowed` | bool | `true` | Windows 打包是否隐藏控制台窗口（显式写 `false` 才关掉） |
+| `strictAPI` | bool | `false` | gfx 严格模式：脚本写了"内核不读的属性"或"内核还没实现的事件"时**报错**（默认只报 warning，且只在 dev 模式）。白名单见 `docs/props.golden.json` —— 打开前先在 dev 模式下跑干净 |
 
 > **安全约定**: gox.json 只做数据，不允许出现脚本/命令字段 —— 配置文件
 > 永远不会成为任意命令执行的入口。
