@@ -5,14 +5,24 @@
 #   合规现状量化出来，docs/test262-t04-report.md 记录了两轮提分工程（15.32% →
 #   31.56%），但那个数字是手跑的 —— 引擎后来又变了，README 上却看不到实时值。
 #   本工作流把四件事钉死在 CI 上：
-#     1. 定期/引擎变更时跑全量 language 套件（本地 15s，CI 上分钟级）；
-#     2. 把合规率写成 shields.io endpoint 徽章格式提交回 docs/test262-compliance.json
-#        —— README 的徽章直接读这份 JSON，每次跑完自动更新，无需人手；
-#     3. **合规率下限闸门**（scripts/check-compliance.py）：跑完先跟
-#        docs/test262-baseline.json 比，掉了就红。以前只有徽章上的数字在变，
-#        合规率从 78% 掉到 74% CI 依然是绿的，只有人去读数字才会发现 —— 现在不
-#        会了。闸门过了才刷新基线，所以基线恒等于「上次通过闸门时的合规率」；
+#     1. 定期/引擎变更时跑全量 language 与 built-ins 两个套件（language 本地
+#        20s、built-ins 约 60s，CI 上分钟级）。built-ins 是 rnm4C5 起的第二个
+#        观测面：language 做到 78% 后边际收益在掉，built-ins 实测 35.7%
+#        （约 2.4 万例）是下一个明确洼地；
+#     2. 把合规率写成 shields.io endpoint 徽章格式提交回
+#        docs/test262-compliance.json（language）与
+#        docs/test262-compliance-builtins.json（built-ins）—— README 的徽章
+#        直接读这两份 JSON，每次跑完自动更新，无需人手；
+#     3. **合规率下限闸门**（scripts/check-compliance.py）：跑完先跟各自的基线
+#        （docs/test262-baseline.json / docs/test262-baseline-builtins.json）
+#        比，掉了就红。以前只有徽章上的数字在变，合规率从 78% 掉到 74% CI 依然
+#        是绿的，只有人去读数字才会发现 —— 现在不会了。闸门过了才刷新基线，所以
+#        基线恒等于「上次通过闸门时的合规率」。**两个套件必须各用一份基线**：
+#        分母不同（2.37 万 vs 2.38 万但构成完全不同），共用一份会让一边的波动
+#        触发另一边的红；
 #     4. 完整逐用例结果上传为 artifact，供回归排查（哪个子集掉了、掉在哪条）。
+#        built-ins 的逐用例结果还能直接喂 scripts/test262-cluster.py 做失败面
+#        聚类（"目录族 × 失败形态"Top 簇），排期按簇开单而不是按条修。
 #
 # 闸门判据（完整说明见 scripts/check-compliance.py 文件头）：
 #   用例集没变（total 变化 ≤1%）⇒ 直接比率，跌过 0.5pp 即红；
@@ -27,8 +37,8 @@
 #     上游加用例导致合规率波动也能被发现；
 #   - 推送触碰引擎核心（parser/compiler/vm/object/stdlib/runner 本身）时 ——
 #     "每修一个引擎缺陷，合规率涨了多少"要能立刻在 README 上看到；
-#   - 本 workflow 自己提交的 docs/test262-compliance.json 与
-#     docs/test262-baseline.json 都不在 paths 里，天然不会自触发死循环。
+#   - 本 workflow 自己提交的四份 docs/test262-*.json（两个徽章 + 两个基线）
+#     都不在 paths 里，天然不会自触发死循环。
 #
 # 与 ci.yml 的关系：ci.yml 是推送闸门（注册表/构建/测试，windows-latest）；
 #   本工作流是趋势观测 + 合规率下限，慢一点、提交回 main 都不阻塞别人。互不依赖。
@@ -60,7 +70,7 @@ on:
       - '.github/workflows/test262.yml'
 
 permissions:
-  contents: write # 把更新后的 docs/test262-compliance.json 提交回 main
+  contents: write # 把更新后的徽章数据（docs/test262-compliance*.json）与基线提交回 main
 
 concurrency:
   group: test262-${{ github.ref }}
@@ -68,9 +78,25 @@ concurrency:
 
 jobs:
   compliance:
-    name: language 套件合规率
+    # 两个套件各跑一遍、各写一份徽章、各守一条下限闸门。用 matrix 而不是复制
+    # 第二个 job：跑批→徽章→闸门→提交这条链有 8 步，复制一遍必然在某一次改动
+    # 里漏同步（一边加闸门另一边没加）。两套件分母不同，必须各用自己的基线
+    # 文件 —— 共用一份会让一边的波动触发另一边的红。
+    name: ${{ matrix.label }} 套件合规率
     runs-on: ubuntu-latest # runner 是一次性 CLI，纯语言语义无 GUI 依赖，Linux 最快
     timeout-minutes: 30
+    strategy:
+      fail-fast: false # built-ins 红不许把 language 的成果一起取消
+      matrix:
+        include:
+          - suite: language
+            label: language
+            badge: docs/test262-compliance.json
+            baseline: docs/test262-baseline.json
+          - suite: built-ins
+            label: built-ins
+            badge: docs/test262-compliance-builtins.json
+            baseline: docs/test262-baseline-builtins.json
     steps:
       - uses: actions/checkout@v4
 
@@ -85,28 +111,34 @@ jobs:
       - name: 构建 gox
         run: go build -o "$RUNNER_TEMP/gox" ./cmd/gox
 
-      # -suite language 是 T04 报告的口径（分母 = 实际执行的用例，跳过不计入）。
+      # 口径：language 是 T04 报告的口径；built-ins 是 rnm4C5 起新增的第二个
+      # 观测面（约 2.4 万例，实测 35.7% —— 下一个明确洼地）。两者分母都是
+      # "实际收集到的用例"（runner 侧跳过的计入分母不计通过）。
       # -jobs 拉满 runner 核数；runner 内部按目录分片并行。
-      - name: 跑 language 套件
+      - name: 跑 ${{ matrix.label }} 套件
         run: |
           "$RUNNER_TEMP/gox" test262 \
             -root "$RUNNER_TEMP/test262" \
-            -suite language \
+            -suite "${{ matrix.suite }}" \
             -jobs "$(nproc)" \
-            -json test262-results.json
+            -json "test262-results-${{ matrix.suite }}.json"
 
       - name: 合规率汇总
+        env:
+          BADGE: ${{ matrix.badge }}
+          LABEL: ${{ matrix.label }}
+          RESULTS: test262-results-${{ matrix.suite }}.json
         run: |
           python3 - <<'PY'
           import json, os
-          d = json.load(open("test262-results.json"))
+          d = json.load(open(os.environ["RESULTS"]))
           rate = d["rate_pct"]
           color = ("brightgreen" if rate >= 90 else "yellowgreen" if rate >= 70
                    else "yellow" if rate >= 50 else "orange" if rate >= 30 else "red")
-          badge = {"schemaVersion": 1, "label": "test262 language",
+          badge = {"schemaVersion": 1, "label": "test262 " + os.environ["LABEL"],
                    "message": f"{rate:.1f}%", "color": color}
           os.makedirs("docs", exist_ok=True)
-          with open("docs/test262-compliance.json", "w") as f:
+          with open(os.environ["BADGE"], "w") as f:
               json.dump(badge, f, indent=2)
               f.write("\n")
 
@@ -115,7 +147,7 @@ jobs:
               raise SystemExit
           groups = sorted(d["by_group"].items(), key=lambda kv: kv[1]["rate_pct"])
           lines = [
-              f"# Test262 language 合规率：{rate:.2f}%",
+              f"# Test262 {os.environ['LABEL']} 合规率：{rate:.2f}%",
               "",
               f"通过 {d['passed']} / {d['total']}（跳过 {d['skipped']}），"
               f"耗时 {d['seconds']:.0f}s",
@@ -149,16 +181,16 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/check-compliance.py \
-            --current test262-results.json \
-            --baseline docs/test262-baseline.json \
+            --current "test262-results-${{ matrix.suite }}.json" \
+            --baseline "${{ matrix.baseline }}" \
             --github
 
       - name: 上传逐用例结果
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: test262-results
-          path: test262-results.json
+          name: test262-results-${{ matrix.suite }}
+          path: test262-results-${{ matrix.suite }}.json
           retention-days: 90
 
       # 只有闸门过了才刷新基线 —— 所以基线恒等于「上一次通过闸门时的合规率」，
@@ -168,8 +200,8 @@ jobs:
         run: |
           set -euo pipefail
           python3 scripts/check-compliance.py \
-            --current test262-results.json \
-            --baseline docs/test262-baseline.json \
+            --current "test262-results-${{ matrix.suite }}.json" \
+            --baseline "${{ matrix.baseline }}" \
             --update-baseline
 
       - name: 提交徽章数据与基线回 main
@@ -177,7 +209,8 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add docs/test262-compliance.json docs/test262-baseline.json
+          git add docs/test262-compliance.json docs/test262-baseline.json \
+                  docs/test262-compliance-builtins.json docs/test262-baseline-builtins.json
           if git diff --cached --quiet; then
             echo "合规率无变化，跳过提交"
           else

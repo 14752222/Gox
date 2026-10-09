@@ -101,7 +101,8 @@ recover 的机会。往里放一次平台调用，就等于要求**所有**二�
 
 | 闸门 | 跑的时机 | 基线 | 判据 |
 |------|----------|------|------|
-| `scripts/check-compliance.py` | test262.yml（周一 03:00 UTC + 引擎核心变更） | `docs/test262-baseline.json` | 用例集没变 ⇒ 合规率跌过 0.5pp 即红；用例集变了 ⇒ 改看通过数跌过 1% |
+| `scripts/check-compliance.py`（language） | test262.yml（周一 03:00 UTC + 引擎核心变更） | `docs/test262-baseline.json` | 用例集没变 ⇒ 合规率跌过 0.5pp 即红；用例集变了 ⇒ 改看通过数跌过 1% |
+| `scripts/check-compliance.py`（built-ins） | 同上 | `docs/test262-baseline-builtins.json` | 同上。**两个套件各一份基线**：分母不同，共用会让一边的波动触发另一边的红 |
 | `scripts/check-bench.py` | bench.yml（每天 03:17 UTC + 手动） | `bench-results/baseline.json` | 主力判 gox/node **比值**（机器差异被约掉）；绝对值只在机型一致时启用 |
 
 - **基线只在闸门通过后才刷新** —— 所以基线恒等于「上一次通过时的数字」。一次
