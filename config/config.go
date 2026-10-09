@@ -60,6 +60,13 @@ type Config struct {
 	// gx/theme 模块首次被 import 时应用; 脚本随后显式 setTheme 可覆盖,
 	// <window theme="..."> 的优先级也在它之上 (T07)。
 	Theme string `json:"theme,omitempty"`
+	// StrictAPI 打开 gfx 的严格模式 (rgQsDD): 脚本写了"内核不读的属性"或
+	// "内核还没实现的事件"时**报错** (h() 直接抛), 而不是像默认那样一声不响。
+	//
+	// 这是一档**显式 opt-in**: 白名单 (docs/props.golden.json) 是从 gfx 的读取
+	// 点反推出来的, 漏抽一个就是一次误报 —— 而严格模式下误报 = 应用起不来。
+	// 所以默认关 (dev 模式下才发 warning), 打开前先确认 dev 模式跑干净了。
+	StrictAPI bool `json:"strictAPI,omitempty"`
 	// Icon 是 1024×1024 源图标路径（相对项目根）。缺省 assets/icon.png。
 	Icon string `json:"icon"`
 	// Permissions 是声明的权限清单。**未声明的权限一律不写入清单文件**。

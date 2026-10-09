@@ -385,7 +385,12 @@ func JSBuiltinH(args ...object.Value) object.Value {
 					if isReactiveProp(name, desc.Value) != reactive {
 						continue
 					}
-					node.wireProp(name, desc.Value)
+					// strictAPI 下 wireProp 会返回一条错误: 直接抛给脚本 ——
+					// "写了没人读的属性"在严格模式下就该拦在建树这一步, 而不是
+					// 让它安安静静地渲染出一个错的界面。
+					if err := node.wireProp(name, desc.Value); err != nil {
+						return err
+					}
 				}
 			}
 		}
@@ -447,7 +452,12 @@ func JSBuiltinH(args ...object.Value) object.Value {
 //   - on* 开头且值为函数 → 事件回调, 原样存储
 //   - 其他函数值 → 响应式 prop: createEffect 求值写回
 //   - 其余 → 静态值
-func (n *GuiNode) wireProp(name string, val object.Value) {
+//
+// 返回 nil 或一条错误（只有 strictAPI 打开时才可能非 nil，见 knownprops.go）。
+// 校验排在分派**之前**: 响应式 prop 也要查 —— `width={() => w()}` 拼成
+// `widht` 同样是一个"写了没人读"的废键，而且它比静态值更难发现（effect 每次
+// 都跑得好好地，只是写进了一个没人读的键）。
+func (n *GuiNode) wireProp(name string, val object.Value) object.Value {
 	// onDraw 必须排在最前: 它虽然也以 "on" 开头, 但语义不是"事件回调"
 	// (没有事件源), 而是"响应式绘制函数" —— 要包 effect 收集依赖, 不能
 	// 当成普通 prop 存下来 (存下来就只是躺着, 画布永远不刷新)。
@@ -455,13 +465,22 @@ func (n *GuiNode) wireProp(name string, val object.Value) {
 	// 而我们要的是"函数体执行一遍以登记 signal 依赖"。
 	if name == "onDraw" {
 		n.wireDraw(val)
-		return
+		return nil
+	}
+	// 未注册的属性 / 内核没实现的事件: dev 模式报 warning, strictAPI 下报错。
+	// 放在落库之前, strict 模式下就不把废键写进 Props。
+	if msg := propDiagnostic(n.Tag, name); msg != "" {
+		if StrictAPI() {
+			return propError(n.Tag, name, msg)
+		}
+		propWarnOnce(n.Tag, name, msg)
 	}
 	if isReactiveProp(name, val) {
 		n.reactiveProp(name, val)
-		return
+		return nil
 	}
 	n.Props[name] = val
+	return nil
 }
 
 // isReactiveProp 报告这个 prop 会不会走 reactiveProp (包 effect 求值)。

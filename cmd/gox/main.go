@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/14752222/Gox/config"
 	"github.com/14752222/Gox/gfx"
 	"github.com/14752222/Gox/object"
 	"github.com/14752222/Gox/scaffold"
@@ -31,6 +32,8 @@ func main() {
 	// 开发模式诊断: 由 CLI 边界读环境变量并显式传给 gfx (为什么不让 gfx 自己
 	// 读, 见 gfx/devmode.go 的说明 —— 库不该因为"被链接进某个进程"就改变行为)。
 	initDevMode()
+	// 严格模式: 同 CLI 边界, 从 gox.json 读 (库不自己读配置)。
+	initStrictAPI()
 
 	args := os.Args[1:]
 	if len(args) == 0 {
@@ -120,6 +123,23 @@ func initDevMode() {
 	case "1", "true", "yes", "on":
 		gfx.SetDevMode(true)
 	}
+}
+
+// initStrictAPI 按 gox.json 的 strictAPI 字段打开 gfx 的严格模式。
+//
+// 打开后，脚本写了"内核不读的属性"或"内核还没实现的事件"时 gfx 会**报错**
+// （h() 直接抛），而不是像默认那样一声不响（见 gfx/knownprops.go）。默认关：
+// 白名单是从 gfx 的读取点反推的，误报在严格模式下等于应用起不来，所以它只能
+// 是显式 opt-in（dev 模式下先只报 warning）。
+//
+// 读不到 gox.json（不在工程目录里跑单文件脚本）就当关 —— 严格模式是工程级
+// 设定，不该因为"当前目录碰巧有个文件"就生效。
+func initStrictAPI() {
+	cfg, err := config.Load(".")
+	if err != nil {
+		return
+	}
+	gfx.SetStrictAPI(cfg.StrictAPI)
 }
 
 // looksLikeScriptPath 报告这个参数是否应该按"脚本路径"处理（而不是子命令）。
