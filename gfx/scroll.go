@@ -565,11 +565,7 @@ func flowContentWidth(n *GuiNode) int {
 			continue
 		}
 		cw, _ := c.intrinsicSize()
-		m, _ := c.PropNum("margin")
-		mg := int(m)
-		if mg < 0 {
-			mg = 0
-		}
+		mg := marginOf(c)
 		if r := cw + 2*mg; r > right {
 			right = r
 		}
@@ -592,11 +588,7 @@ func layoutContentColumn(n *GuiNode, x, y, w int) int {
 			continue // 绝对定位/弹层: 不占内容高度 (由 placeAbsoluteIn 摆放)
 		}
 		cw, ch := c.intrinsicSize()
-		m, _ := c.PropNum("margin")
-		mg := int(m)
-		if mg < 0 {
-			mg = 0
-		}
+		mg := marginOf(c)
 		if !first {
 			pos += g
 		}

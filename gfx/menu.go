@@ -902,7 +902,7 @@ func layoutMenuBar(n *GuiNode) {
 // menuTitleWidth 菜单标题的宽度 (文字宽 + 两侧留白)。
 func (n *GuiNode) menuTitleWidth() int {
 	if w, ok := effectivePropNumOk(n, "width"); ok && w > 0 {
-		return int(w)
+		return dpToPx(w) // 逻辑值 → 设备像素 (density.go)
 	}
 	tw, _ := MeasureText(n.menuTitle(), n.FontSize())
 	return tw + 2*menuTitlePadX

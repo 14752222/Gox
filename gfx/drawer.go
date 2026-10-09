@@ -48,10 +48,11 @@ func (n *GuiNode) drawerSide() string {
 	return "right"
 }
 
-// drawerWidth 读取 width prop (像素); 非法/缺省回落 drawerDefaultW。
+// drawerWidth 读取 width prop (逻辑单位, 内核换算成设备像素 —— 见 density.go);
+// 非法/缺省回落 drawerDefaultW (内置度量, 设备像素)。
 func (n *GuiNode) drawerWidth() int {
 	if v, ok := n.PropNum("width"); ok && v > 0 {
-		return int(v)
+		return dpToPx(v) // 逻辑值 → 设备像素 (density.go)
 	}
 	return drawerDefaultW
 }

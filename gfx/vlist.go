@@ -611,7 +611,7 @@ func vlistConfigOf(n *GuiNode) (vlistConfig, bool) {
 	}
 	itemH := 0
 	if h, ok := n.PropNum("itemHeight"); ok && h > 0 {
-		itemH = int(h)
+		itemH = dpToPx(h) // 逻辑值 → 设备像素 (density.go)
 	}
 	if itemH <= 0 {
 		viewWarnOnce("vlist:itemHeight",

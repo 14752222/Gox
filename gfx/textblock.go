@@ -59,7 +59,7 @@ func (n *GuiNode) maxLines() int {
 // 期间文字会按"终值宽度"排版, 看起来跟盒子错位。
 func (n *GuiNode) blockWrapWidth(constraint int) int {
 	if v, ok := effectivePropNumOk(n, "width"); ok && int(v) > 0 {
-		return int(v)
+		return dpToPx(v) // 逻辑值 → 设备像素 (density.go)
 	}
 	if constraint < 0 {
 		return 0

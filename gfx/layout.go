@@ -19,6 +19,10 @@ import (
 
 // Layout 以给定画布尺寸对根节点做一次布局 (自顶向下写 Box)。
 func Layout(root *GuiNode, w, h int) {
+	// 本帧的密度系数在这里刷新一次 (见 density.go): 布局与随后的绘制要读
+	// 上千次尺寸属性, 每次去问后端 DisplayOf 会吃掉帧预算。放在最前面,
+	// 连下面的 vlist 物化也用得上同一个系数。
+	refreshDensity()
 	if root == nil {
 		return
 	}
@@ -44,12 +48,16 @@ func Layout(root *GuiNode, w, h int) {
 //
 // 返回值取 int 而不是 float64: 像素是整数, 且历史上这个包的四则运算里
 // float 反复被误当成 int 用 (见 raster.go 的历史记录)。
+//
+// 单位是**逻辑值 (dp)** → 设备像素 (density.go): 基准值与四边覆盖值各自
+// 换算, 不用"先相加再换算" —— 两个口径在 Scale=1 时相同, 但 Scale=2 时
+// 只有"各自换算"才保住"覆盖语义" (上 40 / 其余 12 的比值不变)。
 func paddingOf(n *GuiNode) (top, right, bottom, left int) {
 	base, _ := n.PropNum("padding")
 	if base < 0 {
 		base = 0
 	}
-	p := int(base)
+	p := dpToPx(base)
 	side := func(name string) int {
 		v, ok := n.PropNum(name)
 		if !ok {
@@ -58,9 +66,21 @@ func paddingOf(n *GuiNode) (top, right, bottom, left int) {
 		if v < 0 {
 			return 0
 		}
-		return int(v)
+		return dpToPx(v)
 	}
 	return side("paddingTop"), side("paddingRight"), side("paddingBottom"), side("paddingLeft")
+}
+
+// marginOf 读节点的外边距 (对称值, 像素, 非负)。
+//
+// 逻辑值 → 设备像素 (density.go)。收成一个函数而不是在 5 个排布点各写一遍
+// "读 prop + 钳负 + 换算", 是为了让密度的口径只有一处可改。
+func marginOf(n *GuiNode) int {
+	m, _ := n.PropNum("margin")
+	if m < 0 {
+		return 0
+	}
+	return dpToPx(m)
 }
 
 // inner 返回节点内容区 (减去四边内边距)。
@@ -226,11 +246,14 @@ func layoutNode(n *GuiNode) {
 // 读的是 effectivePropNumOk (P3-2): 过渡动画期间尺寸走插值, 而且"有动画"
 // 必须算作"有显式尺寸" —— 否则动画中途会突然回退到内容尺寸再跳回来。
 func (n *GuiNode) intrinsicSize() (w, h int) {
+	// 显式 width/height 是逻辑值 → 设备像素 (density.go)。百分比写法
+	// ("50%") 在这里天然落 ok=false (PropNum 只认数字), 不受影响 —— 它本来
+	// 就是相对量, 再乘一次 Scale 就重复换算了。
 	if v, ok := effectivePropNumOk(n, "width"); ok {
-		w = int(v)
+		w = dpToPx(v)
 	}
 	if v, ok := effectivePropNumOk(n, "height"); ok {
-		h = int(v)
+		h = dpToPx(v)
 	}
 	switch n.Tag {
 	case "column", "row":
@@ -721,12 +744,19 @@ func (n *GuiNode) percentProp(name string) (float64, bool) {
 
 // clampDim 用 min/max prop 钳位一个轴的最终尺寸 (0 或缺省 = 不约束)。
 // min 优先于 max 语义上由调用顺序保证 (先钳下限再钳上限, 同 CSS)。
+//
+// min/max 也是逻辑值 → 设备像素 (density.go); base 进来时已经是设备像素,
+// 所以先把界限换算到同一把尺子上再比。
 func clampDim(n *GuiNode, base int, minName, maxName string) int {
-	if v, ok := n.PropNum(minName); ok && v > 0 && float64(base) < v {
-		base = int(v)
+	if v, ok := n.PropNum(minName); ok && v > 0 {
+		if lim := dpToPx(v); base < lim {
+			base = lim
+		}
 	}
-	if v, ok := n.PropNum(maxName); ok && v > 0 && float64(base) > v {
-		base = int(v)
+	if v, ok := n.PropNum(maxName); ok && v > 0 {
+		if lim := dpToPx(v); base > lim {
+			base = lim
+		}
 	}
 	return base
 }
@@ -782,11 +812,7 @@ func stackContentSize(n *GuiNode, horizontal bool) (w, h int) {
 			continue
 		}
 		cw, ch := c.intrinsicSize()
-		m, _ := c.PropNum("margin")
-		mg := int(m)
-		if mg < 0 {
-			mg = 0
-		}
+		mg := marginOf(c)
 		if placed > 0 {
 			contentMain += g
 		}
@@ -839,7 +865,9 @@ func (n *GuiNode) gapOf() int {
 	if v < 0 {
 		return 0
 	}
-	return int(v)
+	// 逻辑值 → 设备像素 (density.go)。formDefaultGap 是内核内置度量 (设备
+	// 像素), 不走换算 —— 见 density.go 的口径说明。
+	return dpToPx(v)
 }
 
 // layoutButton 摆放 button 的内容区: 内边距走 buttonPadding (缺省 8/6)。
@@ -1154,11 +1182,7 @@ func layoutStack(n *GuiNode, horizontal bool) {
 		} else {
 			ch = clampDim(c, ch, "minHeight", "maxHeight")
 		}
-		m, _ := c.PropNum("margin")
-		mg := int(m)
-		if mg < 0 {
-			mg = 0
-		}
+		mg := marginOf(c)
 		grow, _ := c.PropNum("flexGrow")
 		shrink, _ := c.PropNum("flexShrink")
 		s := slot{child: c, margin: mg, grow: grow, shrink: shrink}
@@ -1510,11 +1534,7 @@ func wrapCollect(n *GuiNode, areaW, areaH int) []wrapSlot {
 			ch = int(float64(areaH) * p)
 		}
 		cw = clampDim(c, cw, "minWidth", "maxWidth")
-		m, _ := c.PropNum("margin")
-		mg := int(m)
-		if mg < 0 {
-			mg = 0
-		}
+		mg := marginOf(c)
 		grow, _ := c.PropNum("flexGrow")
 		shrink, _ := c.PropNum("flexShrink")
 		slots = append(slots, wrapSlot{

@@ -575,16 +575,27 @@ func contentAreaToJS(win *Window, v Viewport) object.Value {
 // 它把"给定像素内边距"这件事从每个应用手里收回来。注意**只有内边距**: 定位
 // (top/left) 与尺寸 (width/height) 不该由它决定 —— 那取决于应用自己的布局
 // (固定头 + 可滚内容, 还是全屏叠层), 替应用做决定必然有一半场景是错的。
-func safeAreaStyleToJS(v Viewport, includeKeyboard bool) object.Value {
+//
+// **单位是 dp 而不是设备像素**: 宿主上报的 insets / 键盘高是设备像素
+// (Android WindowInsetsCompat 的口径 —— 模拟器实测键盘 883px), 而这里产出的
+// 是要铺到 props 上的 padding。padding 自 rpr9zf §1 起按逻辑单位解释 (见
+// density.go), 所以必须先除回 dp —— 不除的话 hi-dpi 上安全区会被再放大
+// 一倍/三倍。换算基准与 windowWidthDP 同一口径 (窗口所在显示器的 Scale)。
+func safeAreaStyleToJS(win *Window, v Viewport, includeKeyboard bool) object.Value {
 	bottom := v.Insets.Bottom
 	if includeKeyboard && v.Keyboard > bottom {
 		bottom = v.Keyboard
 	}
+	scale := 1.0
+	if d, ok := displayOfWorkWindow(win); ok && d.Scale > 0 {
+		scale = d.Scale
+	}
+	dp := func(px int) float64 { return float64(px) / scale }
 	o := object.NewObject()
-	o.SetProperty("paddingTop", object.NewNumber(float64(v.Insets.Top)))
-	o.SetProperty("paddingLeft", object.NewNumber(float64(v.Insets.Left)))
-	o.SetProperty("paddingRight", object.NewNumber(float64(v.Insets.Right)))
-	o.SetProperty("paddingBottom", object.NewNumber(float64(bottom)))
+	o.SetProperty("paddingTop", object.NewNumber(dp(v.Insets.Top)))
+	o.SetProperty("paddingLeft", object.NewNumber(dp(v.Insets.Left)))
+	o.SetProperty("paddingRight", object.NewNumber(dp(v.Insets.Right)))
+	o.SetProperty("paddingBottom", object.NewNumber(dp(bottom)))
 	return o
 }
 
@@ -1159,7 +1170,8 @@ func init() {
 			"safeAreaStyle": scr("safeAreaStyle", func(args ...object.Value) object.Value {
 				// 第 2 个参数可以是 true, 表示"把键盘高度也算进下边距"。
 				withKeyboard := len(args) > 1 && nativeBool(args[1])
-				return safeAreaStyleToJS(viewportResolved(windowArg(args)), withKeyboard)
+				win := windowArg(args)
+				return safeAreaStyleToJS(win, viewportResolved(win), withKeyboard)
 			}),
 
 			"widthClass": scr("widthClass", func(args ...object.Value) object.Value {

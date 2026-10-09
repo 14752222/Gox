@@ -30,10 +30,11 @@ const (
 	iconGrid = 24
 )
 
-// iconSize 读 size prop (像素), 非法/缺省回落 iconDefaultSize。
+// iconSize 读 size prop (逻辑单位, 内核换算成设备像素 —— 见 density.go),
+// 非法/缺省回落 iconDefaultSize (内置度量, 设备像素)。
 func (n *GuiNode) iconSize() int {
 	if v, ok := n.PropNum("size"); ok && v > 0 {
-		return int(v)
+		return dpToPx(v) // 逻辑值 → 设备像素 (density.go)
 	}
 	return iconDefaultSize
 }
