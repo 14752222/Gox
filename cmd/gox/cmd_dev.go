@@ -55,7 +55,10 @@ func defaultDevSpawn(entry string) (*exec.Cmd, error) {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Stdin = os.Stdin
-	cmd.Env = os.Environ()
+	// 子进程必须继承开发模式: 热重启跑的是"同一个入口的另一个 gox 进程",
+	// 它自己读不到"我是被 dev 拉起来的"这件事 —— 环境变量是唯一的传递通道。
+	// 缺了它, 重启后的窗口会失去全部静默失败诊断, 而那正是 dev 模式存在的理由。
+	cmd.Env = append(os.Environ(), "GOX_DEV=1")
 	return cmd, nil
 }
 

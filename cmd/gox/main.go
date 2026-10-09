@@ -28,6 +28,10 @@ import (
 const version = "0.9.0"
 
 func main() {
+	// 开发模式诊断: 由 CLI 边界读环境变量并显式传给 gfx (为什么不让 gfx 自己
+	// 读, 见 gfx/devmode.go 的说明 —— 库不该因为"被链接进某个进程"就改变行为)。
+	initDevMode()
+
 	args := os.Args[1:]
 	if len(args) == 0 {
 		// 没有参数: 启动 REPL
@@ -51,6 +55,9 @@ func main() {
 			runNpmAdd(args[1:])
 			return
 		case "dev":
+			// gox dev 的语义就是"开发模式": 本进程直接开 (进程内热重载走这条),
+			// 进程级热重启的子进程则由 devSpawn 注入 GOX_DEV=1 继承 (见 cmd_dev.go)。
+			gfx.SetDevMode(true)
 			runDev(args[1:])
 			return
 		case "sync":
@@ -95,6 +102,23 @@ func main() {
 	runFile(arg)
 }
 
+// initDevMode 按 GOX_DEV 环境变量打开 gfx 的开发模式诊断。
+//
+// 打开后 gfx 会对几类"写错了但不报错"的陷阱发警告（第一类是 JSX 子节点位置
+// 写了响应式对象本身，见 gfx/devmode.go）。生产口径（默认）下一声不响 ——
+// 打包成 exe 的应用既没有 stderr 可看，也不该为内部细节刷屏。
+//
+// 用法：GOX_DEV=1 gox app.js；`gox dev` 自动打开。
+func initDevMode() {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("GOX_DEV")))
+	// 只认明确的"开"，其余（含 0/false）一律关 —— 否则 CI 里设了个 GOX_DEV=0
+	// 会因为"设了"就被当成开，正好反着来。
+	switch v {
+	case "1", "true", "yes", "on":
+		gfx.SetDevMode(true)
+	}
+}
+
 // looksLikeScriptPath 报告这个参数是否应该按"脚本路径"处理（而不是子命令）。
 func looksLikeScriptPath(arg string) bool {
 	lower := strings.ToLower(arg)
@@ -127,6 +151,11 @@ func printUsage(w io.Writer) {
   gox                          启动交互式 REPL
   gox help                     显示这份帮助
   gox version                  显示版本号
+
+环境变量:
+  GOX_DEV=1                    打开开发模式诊断: gfx 会对"写错了但不报错"的陷阱
+                               发警告（第一类是 JSX 子节点位置写了响应式对象本身,
+                               界面会停在初始值且一声不响）。gox dev 自动打开。
 
 create 选项:
   --name <名字>                指定项目名（缺省取目录名）

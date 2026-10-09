@@ -2,6 +2,7 @@ package gfx
 
 import (
 	"image/color"
+	"strconv"
 	"sync"
 
 	"github.com/14752222/Gox/object"
@@ -556,9 +557,87 @@ func (n *GuiNode) wireChild(val object.Value) {
 			}
 			return
 		}
+		// dev 模式: 响应式对象**未调用** —— 这是 gfx 最常见的一类静默失败。
+		//
+		// `{sig}` 与 `{sig()}` 只差一对括号: 后者是函数子节点 (走上面的
+		// wireReactiveChild, 包 effect 订阅), 前者是信号对象本身 —— 它不是
+		// callable, 于是落到这里被 ToString 成一次性静态文本。**之后 signal
+		// 怎么变, 界面都不动, 而且控制台一声不响。**
+		//
+		// 只有在这一行才判得出来: 走到这里说明它既不是函数 (没有订阅能力)、
+		// 也不是数组, 即将变成一段再也不会更新的文本。放在 switch 的 default
+		// 而不是 wireChild 入口, 是为了不给"正常路径"加任何判断。
+		if DevMode() {
+			if kind := uncalledReactiveKind(val); kind != "" {
+				warnUncalledReactive(n, kind)
+			}
+		}
 		// 其余类型: 退化为文本
 		n.appendTextNode(object.ToString(val))
 	}
+}
+
+// uncalledReactiveKind 报告 val 是不是"响应式对象本身"而不是它的值。
+// 返回空串表示不是 (调用方据此跳过警告)。
+//
+// 四种响应式容器 (obs / obs([]) / obs({}) / computed) 的 Type() 都是
+// OBSERVABLE_OBJ, 所以要按具体 Go 类型细分 —— 给用户看的文案得说清是哪一种,
+// "你传了个响应式对象"这种话等于没说。
+func uncalledReactiveKind(v object.Value) string {
+	if v.Type() != object.OBSERVABLE_OBJ {
+		return ""
+	}
+	switch v.(type) {
+	case *object.Observable:
+		return "obs() 信号对象"
+	case *object.ObservableList:
+		return "obs([]) 列表对象"
+	case *object.ObservableMap:
+		return "obs({}) 映射对象"
+	case *object.Computed:
+		return "computed() 计算对象"
+	}
+	return "响应式对象"
+}
+
+// warnUncalledReactive 发出"子节点是响应式对象而非其值"的警告。
+//
+// **定位信息**: JSX 在 parser 层就降级成了 h(...) 调用, JS 侧没有行列号可报,
+// 所以能给的最好定位是"哪个元素的第几个子节点" —— 配合 tag 名, 用户足以在
+// 自己的模板里一眼找到那一行。
+func warnUncalledReactive(parent *GuiNode, kind string) {
+	// 索引取"即将挂上去的位置": 响应式子节点换代时会反复走 wireChild,
+	// 不去重会在长列表里刷出成百上千条同内容警告。
+	idx := len(parent.Children)
+	key := parent.Tag + "#" + strconv.Itoa(idx) + "|" + kind
+
+	warnSeenReactiveMu.Lock()
+	defer warnSeenReactiveMu.Unlock()
+	if _, seen := warnSeenReactive[key]; seen {
+		return
+	}
+	warnSeenReactive[key] = struct{}{}
+	warnUncalledReactiveOut(parent.Tag, idx, kind)
+}
+
+var (
+	warnSeenReactiveMu sync.Mutex
+	warnSeenReactive   = map[string]struct{}{}
+)
+
+// warnUncalledReactiveOut 是"未调用的响应式子节点"的警告出口。做成变量
+// (与 warnUnknownTag / warnEventError 同款纪律), 便于单测替换断言。
+var warnUncalledReactiveOut = func(tag string, idx int, kind string) {
+	recordWarn("<%s> 的第 %d 个子节点是 %s, 不是它的值 —— 这样写只在建树时取一次"+
+		"当前值当静态文本, 之后界面永不刷新。想订阅更新请写成 {sig()}"+
+		"(列表用 {() => list.items})", tag, idx, kind)
+}
+
+// resetReactiveWarns 清空去重表 (仅测试用)。
+func resetReactiveWarns() {
+	warnSeenReactiveMu.Lock()
+	warnSeenReactive = map[string]struct{}{}
+	warnSeenReactiveMu.Unlock()
 }
 
 // wireReactiveChild 接线"函数子节点": 每次求值把结果挂进一个 slot 占位节点。
