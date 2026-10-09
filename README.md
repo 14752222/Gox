@@ -232,7 +232,7 @@ count = 2
 
 ### 宿主能力模块
 
-`fs` / `path` / `http` / `fetch` / `process` / `stats` 以**全局对象**形式注入，直接使用，无需 `import`：
+`fs` / `path` / `http` / `fetch` / `process` / `stats` / `crypto` / `hash` 以**全局对象**形式注入，直接使用，无需 `import`：
 
 ```js
 const text = fs.readFileSync("a.txt")          // 同步：失败抛 JS 异常
@@ -255,6 +255,34 @@ console.log(res.status, await res.text())
 一份完整的 HTTP 示例（起服务于端口 0、路由/查询参数/JSON 请求体/404-405-500 各状态码、
 回调式 `http.get`·`http.request` 与 Promise 式 `fetch` 对照、异步响应与 `server.close` 收尾）：
 [`testdata/http_demo.js`](testdata/http_demo.js) —— `gox testdata/http_demo.js` 即可运行。
+
+### 摘要与随机数 `crypto` / `hash`
+
+`crypto` 与 `hash` 是全局对象/函数（与浏览器同形，无需 `import`），底层走 Go 标准库
+`crypto/*`，零 cgo。同一批实现也注册为内置模块 `gx/crypto`，可以 `import`：
+
+```js
+hash("gox");                                 // 同步 → 小写 hex (缺省 SHA-256)
+hash("gox", "SHA-512");                      // 算法名大小写/连字符不敏感
+hash(new Uint8Array([103, 111, 120]));       // 入参: string / ArrayBuffer / TypedArray / 字节数组
+hash([103, 111, 120]);                       // fs.readBytesSync 的返回形也能直接喂
+
+const ab = await crypto.subtle.digest("SHA-256", "gox");   // Promise → ArrayBuffer (32 字节)
+crypto.randomUUID();                                       // RFC 4122 v4
+crypto.getRandomValues(new Uint8Array(16));                // 原地填充, 上限 64KB
+```
+
+口径与边界：
+
+| 项 | 说明 |
+|---|---|
+| 算法 | `hash()` 支持 MD5 / SHA-1 / SHA-256 / SHA-512；`crypto.subtle.digest()` **只认 SHA-1 / SHA-256 / SHA-512**（WebCrypto 没有 MD5，抄过来的代码不该在这里通过） |
+| 参数序 | `hash(data, algo)` 而 `crypto.subtle.digest(algo, data)` —— 前者是 Gox 的同步糖，后者与浏览器同形 |
+| 字符串编码 | 按 UTF-8 编码（与 `TextEncoder.encode` 同口径） |
+| 不做的事 | 加解密 / 签名 / KDF 不在本模块内 —— 那需要密钥管理上的产品设计 |
+| 错误 | 不支持的算法或入参一律 `TypeError`（`digest` 走 Promise reject），不会静默回退到别的算法 |
+
+完整演示：[`testdata/crypto_demo.js`](testdata/crypto_demo.js) —— `gox testdata/crypto_demo.js` 即可运行。
 
 ### 原生能力模块 `gx/*`
 
