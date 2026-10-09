@@ -183,6 +183,10 @@ func setupReflectProxy(env *runtime.Environment) {
 			return t.Proto
 		case *object.Array:
 			return t.GetProto()
+		// Promise 实例的 [[Prototype]] = %Promise.prototype% (rj9MwH)。
+		// 与 Object.getPrototypeOf 同一缺口: 缺这条分支会退化成 null。
+		case *object.Promise:
+			return t.GetProto()
 		}
 		// 函数对象 (Closure/BuiltinFunction/BuiltinMethod) 的 [[Prototype]]。
 		if fp := object.FuncPrototypeOf(target); fp != nil {

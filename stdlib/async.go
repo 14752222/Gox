@@ -472,7 +472,16 @@ func agResolveIterResult(req *object.AsyncGenRequest, value object.Value, done, 
 		req.Promise.Resolve(newAsyncIterResult(value, done))
 		return
 	}
-	agAwait(value,
+	// 规范 AsyncGeneratorAwaitReturn 步骤 6: PromiseResolve(%Promise%, value),
+	// 步骤 7 规定 abrupt completion 要 reject。PromiseResolve 的 Get(x,
+	// "constructor") 会触发用户定义的 getter —— broken-promise 系列靠这条
+	// 路径 reject (见 agPromiseResolve)。
+	p, ok, thrown := agPromiseResolve(value)
+	if !ok {
+		req.Promise.Reject(thrown)
+		return
+	}
+	agAwait(p,
 		func(v object.Value) { req.Promise.Resolve(newAsyncIterResult(v, done)) },
 		func(reason object.Value) { req.Promise.Reject(reason) })
 }
@@ -491,16 +500,20 @@ func agSettleCompleted(req *object.AsyncGenRequest) {
 
 // agStep 用 (kind, arg) 驱动内层 generator 一步, 并按挂起类型决定后续。
 func agStep(g *object.AsyncGenerator, req *object.AsyncGenRequest, kind int, arg object.Value) {
-	var value object.Value
-	var done bool
-	switch kind {
-	case object.AGNextKind:
-		value, done = object.GeneratorNext(g.Gen, arg)
-	case object.AGReturnKind:
-		value, done = object.GeneratorReturn(g.Gen, arg)
-	default:
-		value, done = object.GeneratorThrow(g.Gen, arg)
+	// return 请求 + 生成器正挂起于 yield (已启动且未完成): 参数必须在**体
+	// 内的 yield 挂起点** await (规范 AsyncGeneratorUnwrapYieldResumption) ——
+	// 于是 await 的抛出/被拒都是"回灌进体"的异常, 体内的 try/catch 能捕获
+	// 并继续 return (test262 return-suspendedYield-broken-promise-try-catch.js
+	// 断言 caughtErr.message 与 {value:1, done:true})。
+	//
+	// 对照地 suspendedStart / completed 是**体外**交割 (规范
+	// AsyncGeneratorAwaitReturn 步骤 7): 抛出直接 reject 请求, 体不被恢复
+	// —— 另两个 broken-promise 用例正是断言"体一定不能跑"。
+	if kind == object.AGReturnKind && g.Gen.Started && !g.Gen.Done {
+		agReturnIntoSuspendedYield(g, req, arg)
+		return
 	}
+	value, done := agDrive(g, kind, arg)
 
 	// 体内未捕获的异常: 回调桥记为 callbackError。必须优先用原始抛出值
 	// 作为 rejection reason —— 否则 catch 侧拿到 "Error: Error: x" 双前缀
@@ -512,6 +525,24 @@ func agStep(g *object.AsyncGenerator, req *object.AsyncGenRequest, kind int, arg
 		return
 	}
 
+	agTail(g, req, value, done)
+}
+
+// agDrive 用 (kind, arg) 驱动内层 generator 一步, 返回 (值, 是否完成)。
+func agDrive(g *object.AsyncGenerator, kind int, arg object.Value) (object.Value, bool) {
+	switch kind {
+	case object.AGNextKind:
+		return object.GeneratorNext(g.Gen, arg)
+	case object.AGReturnKind:
+		return object.GeneratorReturn(g.Gen, arg)
+	default:
+		return object.GeneratorThrow(g.Gen, arg)
+	}
+}
+
+// agTail 处理一次驱动之后的收尾: 完成 / await / yield 三分支。
+// 完成值是否再过 PromiseResolve 由请求种类决定 (见 agResolveIterResult)。
+func agTail(g *object.AsyncGenerator, req *object.AsyncGenRequest, value object.Value, done bool) {
 	if done {
 		g.Done = true
 		// return 请求的结算值要过 PromiseResolve 解包 (见 agResolveIterResult);
@@ -539,6 +570,75 @@ func agStep(g *object.AsyncGenerator, req *object.AsyncGenRequest, kind int, arg
 	agFinish(g, req)
 }
 
+// agReturnIntoSuspendedYield 处理 suspendedYield 状态下的 return(v)。
+//
+// 规范 AsyncGeneratorUnwrapYieldResumption: yield 挂起点收到的 return 完成
+// 要先 Await(v) (即 PromiseResolve(%Promise%, v)), 且
+//   - PromiseResolve 的 Get(v, "constructor") 抛错 ⇒ 该抛出值在 yield 点抛出;
+//   - Await 被拒 ⇒ 拒绝原因在 yield 点抛出;
+//   - 兑现为 w ⇒ 以 return(w) 完成恢复体 (finally 等照常展开)。
+// 前两条都是"回灌进体", 故体内的 catch 能接住并改写返回值 (Node v22 实测:
+// `it.return(Promise.reject(new Error('X')))` 在 suspendedYield 下产出
+// {value:1, done:true} 且 caught=X; 在 suspendedStart 下直接 reject X)。
+func agReturnIntoSuspendedYield(g *object.AsyncGenerator, req *object.AsyncGenRequest, arg object.Value) {
+	p, ok, thrown := agPromiseResolve(arg)
+	if !ok {
+		// PromiseResolve 抛错: 以原始抛出值 throw 进体 (体不被跳过)。
+		agResumeSuspended(g, req, object.AGThrowKind, thrown)
+		return
+	}
+
+	// 取 awaited 值, 但**绝不在回调帧里驱动 generator**。
+	//
+	// 为什么: Gox 没有微任务队列 —— 已结算的 promise 的 then 回调是同步跑
+	// 的, 于是"在回调里恢复体"会让 VM 按**回调帧**的栈深换算挂起状态
+	// (PendingTries 的 RelStackBase / RelFrameIdx, 以及 finally 展开期间挂
+	// 起的 PendingVal)。实测后果: return-suspendedYield-try-finally.js 的
+	// 第三跳应产出 'sent-value', 却退化成 undefined —— 挂起的 return 值在
+	// 换算中丢了。故这里只**记录**结果, 回到 agStep 的本帧再驱动。
+	//
+	// 真正异步的 promise (回调在将来才触发) 没有本帧可用, 只能由回调自己
+	// 驱动 —— 此时 syncPhase 已为假。
+	var settled, isThrow bool
+	var res object.Value
+	syncPhase := true
+	agAwait(p,
+		func(v object.Value) {
+			settled, res, isThrow = true, v, false
+			if !syncPhase {
+				agResumeSuspended(g, req, object.AGReturnKind, v)
+			}
+		},
+		func(reason object.Value) {
+			settled, res, isThrow = true, reason, true
+			if !syncPhase {
+				agResumeSuspended(g, req, object.AGThrowKind, reason)
+			}
+		})
+	syncPhase = false
+	if settled {
+		if isThrow {
+			agResumeSuspended(g, req, object.AGThrowKind, res)
+		} else {
+			agResumeSuspended(g, req, object.AGReturnKind, res)
+		}
+	}
+}
+
+// agResumeSuspended 从 yield 挂起点用 (kind, arg) 恢复已挂起的生成器体,
+// 之后与 agStep 走同一套收尾 (完成 / await / yield)。
+func agResumeSuspended(g *object.AsyncGenerator, req *object.AsyncGenRequest, kind int, arg object.Value) {
+	value, done := agDrive(g, kind, arg)
+	if cbErr := object.TakeCallbackError(); cbErr != nil {
+		// 体内未接住: 抛出值作为 rejection (与 agStep 同款错误桥纪律)。
+		g.Done = true
+		agRejectBridge(req, cbErr)
+		agFinish(g, req)
+		return
+	}
+	agTail(g, req, value, done)
+}
+
 // agRejectBridge 用原始抛出值 (优先) 结算 rejection。
 func agRejectBridge(req *object.AsyncGenRequest, cbErr error) {
 	if thrown := object.TakeCallbackErrorValue(); thrown != object.UndefinedSingleton {
@@ -562,6 +662,48 @@ func agFinish(g *object.AsyncGenerator, req *object.AsyncGenRequest) {
 	}
 	g.Running = false
 	agResumeNext(g)
+}
+
+// agPromiseResolve 实现规范 **PromiseResolve(%Promise%, x)** (27.2.1.1):
+//
+//	1. If IsPromise(x) is true, then
+//	   a. Let xConstructor be ? Get(x, "constructor").
+//	   b. If SameValue(xConstructor, C) is true, return x.
+//	2. Let promiseCapability be ? NewPromiseCapability(C).
+//	3. Perform ? Call(promiseCapability.[[Resolve]], undefined, « x »).
+//	4. Return promiseCapability.[[Promise]].
+//
+// 返回 (promise, ok, thrown):
+//   - ok=true  : promise 是可用的结算源;
+//   - ok=false : 步骤 1.a 的 Get 抛了错, thrown 是**原始抛出值** —— 调用方
+//     据此走 AsyncGeneratorAwaitReturn 步骤 7 (以该值 reject)。
+//
+// 为什么单独开一个函数: 步骤 1.a 是 broken-promise 系列用例唯一的一条路径
+// —— `Object.defineProperty(p, 'constructor', { get(){ throw … } })` 造出
+// "取 constructor 会抛错" 的 promise, 规范要求 reject 那个抛出值。此前
+// agAwait 看到 *Promise 就直接 .then(), 这一步压根没实现 (rj9MwH)。
+func agPromiseResolve(x object.Value) (object.Value, bool, object.Value) {
+	if p, ok := x.(*object.Promise); ok {
+		ctor, _ := p.GetProperty("constructor")
+		// getter 抛错: 取走原始抛出值 (与 CallPromiseHandler / agAwait 同款
+		// 错误桥纪律 —— 保真 throw x 的 x 本身, 而不是 Go 错误字符串)。
+		if cbErr := object.TakeCallbackError(); cbErr != nil {
+			thrown := object.TakeCallbackErrorValue()
+			if thrown == nil || thrown == object.UndefinedSingleton {
+				thrown = object.NewErrorWithName("Error", cbErr.Error())
+			}
+			return nil, false, thrown
+		}
+		// SameValue(xConstructor, %Promise%) ⇒ 原样返回
+		if ctor == promiseCtor {
+			return p, true, nil
+		}
+	}
+	// 非 Promise, 或 constructor 被换成了别的东西 ⇒ NewPromiseCapability + resolve。
+	// Gox 的同步 Promise 模型下, resolve(x) 若 x 是 promise 会自行挂接。
+	np := object.NewPromise()
+	np.Resolve(x)
+	return np, true, nil
 }
 
 // agAwait 按 await 语义处理一个值: Promise 等待其结算, thenable 调其

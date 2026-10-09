@@ -1199,3 +1199,123 @@ export function make() {
 
 > 反向验证里"去掉 clamp"这一组是**先靠回归测试发现、再补成反向用例**的：
 > 第一版修复就是这么挂的。留着它，免得后人"顺手优化"掉这个截断。
+
+## 四十一、Promise 提为一等对象：`return(v)` 的「体内 / 体外」交割（rj9MwH）
+
+### 1. 症状
+
+`built-ins/AsyncGeneratorPrototype/return/` 下三条 `*-broken-promise*` 全红：
+
+| 用例 | 报错 |
+|---|---|
+| `return-suspendedStart-broken-promise.js` | `$DONE(Expected rejection)` |
+| `return-suspendedYield-broken-promise-try-catch.js` | `Cannot read properties of undefined (reading 'message')` |
+| `return-state-completed-broken-promise.js` | `$DONE(Expected rejection)` |
+
+三条共用同一个手法 —— 给 promise 装一个**会抛错**的 `constructor` getter：
+
+```js
+var bp = Promise.resolve(42);
+Object.defineProperty(bp, 'constructor', {
+  get: function() { throw new Error('broken promise'); }
+});
+```
+
+规范 `PromiseResolve(%Promise%, x)` 的步骤 1.a 是 `Get(x, "constructor")`，
+它一抛就要以**那个抛出值**收场。Gox 里这条路径压根不存在。
+
+### 2. 真因一：Promise 不是一等对象
+
+`*Promise` 此前：`GetProperty` 只认 `then/catch/finally` 三个键，
+`SetProperty` 是空函数，**没有任何自有属性存储**。于是 `defineProperty`
+落不下去、getter 取不到、`p.constructor` 一律"不存在"。
+
+补齐（`object/promise.go`）：`PropDescs` + `propKeyOrder` 自有属性存储、
+`GetProto`、`GetProperty` 两级查找（自有 → `%Promise.prototype%`）、
+与 `*RegExp` 同口径的 `SetProperty`、以及 `OwnPropertyStore` 六件套
+（OwnKeys / EnumerableOwnKeys / HasOwn / OwnDescriptor / DefineOwn / DeleteOwn）。
+
+顺带补上 `Object.getPrototypeOf` 与 `Reflect.getPrototypeOf` 的 `*Promise`
+分支 —— 此前二者都退化成 `null`，于是 `Object.getPrototypeOf(Promise.resolve())
+=== Promise.prototype` 为 `false`。与 `*Date`（ryGXAJ）、`*RegExp`（rEXjyz）
+是同一个缺口家族：原型走包级注册表，类型穷举里漏一个就退化成 null。
+
+### 3. 真因二：交割地点错了 —— 体内还是体外
+
+光有一等对象还不够。规范里 `return(v)` 的 `v` 都要过一次 `PromiseResolve`，
+但**交割地点**取决于挂起状态：
+
+| 状态 | 交割地点 | PromiseResolve 抛错 ⇒ |
+|---|---|---|
+| suspendedStart / completed | **体外**（`AsyncGeneratorAwaitReturn` 步骤 7） | 直接 reject 请求，**体绝不恢复** |
+| suspendedYield | **体内**（`AsyncGeneratorUnwrapYieldResumption`，yield 挂起点） | 抛出值在 yield 点抛出 ⇒ 体内 `catch` 能接住并改写返回值 |
+
+Node v22 实测（implementations 侧事实）：
+
+| 形态 | Node v22 |
+|---|---|
+| suspendedYield + `it.return(Promise.reject(X))` | `{value:1, done:true}`，`caught=X` |
+| suspendedStart + `it.return(Promise.reject(X))` | reject `X`，体一次都没跑 |
+
+Gox 此前**只有"体外"一条路**（先恢复体、再解包完成值），所以
+`return-suspendedYield-broken-promise-try-catch.js` 期望的
+`{value:1, done:true}` + `caughtErr` 变成了对外 reject。
+
+修复在 `stdlib/async.go`：`agStep` 对「return 请求 + 已启动且未完成」走
+`agReturnIntoSuspendedYield` —— 先 `agPromiseResolve(arg)`，
+抛出/被拒都以 `AGThrowKind` **回灌进体**，兑现才以 `AGReturnKind` 恢复。
+
+### 4. 一条实现纪律：绝不在 promise 回调帧里恢复生成器
+
+第一版直接在 `agAwait` 的回调里 `GeneratorReturn` / `GeneratorThrow`，
+当场挂掉 `return-suspendedYield-try-finally.js`：第三跳应产出 `'sent-value'`，
+实得 `undefined`。
+
+原因：Gox 没有微任务队列，已结算 promise 的 then 回调是**同步**跑的 ——
+在回调里恢复体，VM 就按**回调帧**的栈深换算挂起状态
+（`PendingTries` 的 `RelStackBase` / `RelFrameIdx`，以及 finally 展开期间
+挂起的 `PendingVal`），挂起的 return 值在换算中丢了。
+
+所以 `agReturnIntoSuspendedYield` 只**记录** awaited 结果，回到 `agStep`
+的本帧再驱动；真正异步（回调在将来才触发）的 promise 没有本帧可用，
+才由回调自己驱动。为此把 `agStep` 的收尾抽成 `agTail`（完成 / await /
+yield 三分支），两个入口共用一套语义。
+
+### 5. 证据
+
+| 项 | 结果 |
+|---|---|
+| `go test -count=1 ./...` | 全绿 |
+| test262 `built-ins` 全量 A/B | GAIN 125 / **LOST 0** |
+| test262 `language` 全量 A/B | GAIN 10 / **LOST 0** |
+| 三条 broken-promise 用例 | base 全 FAIL → fix 全 PASS |
+| Node v22 对照（suspendedStart / suspendedYield × 抛错 / 被拒） | 逐条一致 |
+
+新增 `object/promise_ownprop_test.go`（4 例，描述符存储机制）、
+`vm/promise_firstclass_test.go`（6 例，JS 侧一等对象契约）、
+`vm/async_gen_return_test.go`（6 例，体内 / 体外交割与 finally 保持）。
+
+### 6. 反向验证（5 组注入，全部如期 FAIL）
+
+| 注入 | 如期 FAIL |
+|---|---|
+| 取消体内交割（全走体外 unwrap） | `return-suspendedYield-broken-promise-try-catch.js` |
+| `GetProperty` 退回只认三个键 | 三条 broken-promise **全红** |
+| 去掉 `syncPhase`（改回在回调帧里恢复体） | `return-suspendedYield-try-finally.js` + `TestAGReturnValueSurvivesFinallyYield` |
+| 去掉 `Object.getPrototypeOf` 的 Promise 分支 | `TestPromiseProtoChain` |
+| `agPromiseResolve` 不再识别 getter 抛错 | 三条 broken-promise **全红** |
+
+> 反向验证脚本一开始就踩了个坑：注入针 `"\t\tif cbErr := ..."` 在文件里
+> **子串匹配到 3 处**（缩进更深的同类语句也含这个前缀），注入打到了别的函数
+> 上，于是"注入后仍然 PASS"被误读成"修复与用例无因果关系"。已给脚本加
+> **针唯一性断言**（`count != 1` 即报错中止）。
+
+### 7. 遗留（不在本次范围，如实记录）
+
+- async generator **体内** `return <promise>` 的完成值不解包：
+  `async function* g(){ yield 1; return Promise.resolve(42) }` 的末跳，
+  Node 给 `42`，Gox 给 `undefined`。属"完成值是否需要再过一次
+  `PromiseResolve`"的另一条分支，与本次的 broken-promise 无关。
+- `*object.Error` 还不是一等属性存储：`Object.defineProperty(new Error(), …)`
+  会抛（干净 HEAD 上同样如此）。本次用例因此改用普通对象作 rejection reason。
+

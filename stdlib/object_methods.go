@@ -252,6 +252,16 @@ func setupObjectGlobal() *object.BuiltinFunction {
 			}
 			return object.NullSingleton
 		}
+		// Promise 实例的 [[Prototype]] = %Promise.prototype% (rj9MwH)。
+		// *Promise 的原型同样在包级注册表 (object.PromiseProto), 缺这条分支
+		// 会退化成 null —— 于是 `Object.getPrototypeOf(Promise.resolve())
+		// === Promise.prototype` 为 false。与 *Date / *RegExp 同法。
+		if pr, ok := args[0].(*object.Promise); ok {
+			if p := pr.GetProto(); p != nil {
+				return p
+			}
+			return object.NullSingleton
+		}
 		// async generator 实例的 [[Prototype]] = 该 async generator 函数
 		// 自己的 .prototype 对象 (其 [[Prototype]] 才是 %AsyncGeneratorPrototype%)。
 		if ag, ok := args[0].(*object.AsyncGenerator); ok {

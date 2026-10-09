@@ -5,6 +5,13 @@ import (
 	"github.com/14752222/Gox/runtime"
 )
 
+// promiseCtor 是 %Promise% 构造器 —— 规范 PromiseResolve(C, x) 的 C。
+//
+// 为什么需要它: 步骤 1.b 要判 `SameValue(xConstructor, C)`, 而 C 是内建的
+// %Promise%, 不是从某个对象上现取的。此前没有这个包级引用, PromiseResolve
+// 的"取 x.constructor"那一步干脆没实现 (rj9MwH)。
+var promiseCtor object.Value
+
 // setupPromise 设置 Promise 构造器。
 func setupPromise(env *runtime.Environment) {
 	promiseProto := setupPromiseProto()
@@ -349,6 +356,7 @@ func setupPromise(env *runtime.Environment) {
 
 	promiseFn.SetProperty("prototype", promiseProto)
 	promiseProto.SetBuiltinProperty("constructor", promiseFn)
+	promiseCtor = promiseFn
 
 	env.Declare("Promise", promiseFn, false)
 }

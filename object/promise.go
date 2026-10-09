@@ -23,6 +23,20 @@ type Promise struct {
 	ThenCallbacks    []PromiseCallback // then 回调队列
 	CatchCallbacks   []PromiseCallback // catch 回调队列
 	FinallyCallbacks []PromiseCallback // finally 回调队列
+
+	// PropDescs 承载 defineProperty / 赋值落在实例上的自有属性描述符。
+	//
+	// 为什么需要它: Promise 此前不是一等对象 —— GetProperty 只认
+	// then/catch/finally, SetProperty 是 no-op。于是
+	// `Object.defineProperty(p, 'constructor', { get(){ throw … } })` 落不
+	// 下去也取不到, 规范里"取 constructor 抛错 ⇒ reject"这条路径根本走不到
+	// (built-ins/AsyncGeneratorPrototype/return/*broken-promise* 3 例, rj9MwH)。
+	//
+	// 与 RegExp 的差别: Promise 没有规范自带的实例字段属性 (不像 lastIndex),
+	// 所以这里只装**用户后加**的键 —— 缺省为空, 不影响既有行为。
+	PropDescs map[string]PropertyDescriptor
+	// propKeyOrder 记录自有键的创建顺序 (OwnKeys 口径)。
+	propKeyOrder []string
 }
 
 // PromiseCallback 存储回调函数和创建的后续 Promise。
@@ -78,17 +92,133 @@ func (p *Promise) Inspect() string {
 }
 func (p *Promise) IsTruthy() bool { return true }
 
+// GetProto 返回实例的 [[Prototype]] = %Promise.prototype%。
+//
+// 事实来源是鸭子类型入口 `interface{ GetProto() Value }`。此前 *Promise 缺
+// 这个方法 (只靠 object_proto.go 的类型穷举兜底), 链式查找 (symbol 成员 /
+// Object.getPrototypeOf 的统一通道) 在实例处断掉。
+func (p *Promise) GetProto() Value { return PromiseProto }
+
+// GetProperty 两级查找: 自有属性 (含 getter 触发) → %Promise.prototype%。
 func (p *Promise) GetProperty(name string) (Value, bool) {
-	switch name {
-	case "then", "catch", "finally":
-		if PromiseProto != nil {
-			return PromiseProto.GetProperty(name)
+	// (1) 自有属性: 访问器调 getter (this = 实例), 数据属性取描述符里的值。
+	//     broken-promise 用例的 `constructor` getter 就在这一层抛出。
+	if d, ok := p.PropDescs[name]; ok && !d.Deleted {
+		if acc, isAcc := d.Value.(*Accessor); isAcc {
+			if acc.Getter != nil && IsCallable(acc.Getter) {
+				return CallFunction(acc.Getter, p), true
+			}
+			return UndefinedSingleton, true
 		}
+		if d.Value == nil {
+			return UndefinedSingleton, true
+		}
+		return d.Value, true
+	}
+	// (2) 原型: 全量委托。此前只认 then/catch/finally, 于是 p.constructor /
+	//     p[@@toStringTag] 一律"不存在" —— 与 *Object / *RegExp 的口径不一致。
+	if PromiseProto != nil {
+		return PromiseProto.GetProperty(name)
 	}
 	return nil, false
 }
 
-func (p *Promise) SetProperty(name string, val Value) {}
+// SetProperty 与 *RegExp.SetProperty 同口径: 自有访问器调 setter, 不可写数据
+// 属性静默失败 (非严格模式), 其余落成普通自有数据属性。
+//
+// 此前是 no-op —— `p.foo = 1` 与 `p.constructor = X` 都被静默丢弃。
+func (p *Promise) SetProperty(name string, val Value) {
+	if d, ok := p.PropDescs[name]; ok && !d.Deleted {
+		if acc, isAcc := d.Value.(*Accessor); isAcc {
+			if acc.Setter != nil && IsCallable(acc.Setter) {
+				CallFunction(acc.Setter, p, val)
+			}
+			return
+		}
+		if !d.Writable {
+			return
+		}
+		d.Value = val
+		p.PropDescs[name] = d
+		return
+	}
+	p.DefineOwn(name, DataProperty(val))
+}
+
+// ===== OwnPropertyStore 五件套 (Object.defineProperty /
+// getOwnPropertyDescriptor / getOwnPropertyNames / hasOwn 的统一落点) =====
+
+func (p *Promise) OwnKeys() []string {
+	keys := make([]string, 0, len(p.propKeyOrder))
+	for _, k := range p.propKeyOrder {
+		if deletedProp(p.PropDescs, k) {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+func (p *Promise) EnumerableOwnKeys() []string {
+	var keys []string
+	for _, k := range p.propKeyOrder {
+		d, ok := p.PropDescs[k]
+		if !ok || d.Deleted || !d.Enumerable {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	return keys
+}
+
+func (p *Promise) HasOwn(name string) bool {
+	_, ok := p.OwnDescriptor(name)
+	return ok
+}
+
+func (p *Promise) OwnDescriptor(name string) (PropertyDescriptor, bool) {
+	if d, ok := p.PropDescs[name]; ok {
+		if d.Deleted {
+			return PropertyDescriptor{}, false
+		}
+		return d, true
+	}
+	return PropertyDescriptor{}, false
+}
+
+func (p *Promise) DefineOwn(name string, desc PropertyDescriptor) bool {
+	if p.PropDescs == nil {
+		p.PropDescs = make(map[string]PropertyDescriptor)
+	}
+	if _, exists := p.PropDescs[name]; !exists {
+		p.propKeyOrder = append(p.propKeyOrder, name)
+	}
+	p.PropDescs[name] = desc
+	return true
+}
+
+// DeleteOwn 删除实例的可配置自有属性。没有这个键时返回 true (与
+// *RegExp.DeleteOwn 同口径: 不存在的键删起来"成功")。
+func (p *Promise) DeleteOwn(name string) bool {
+	d, ok := p.PropDescs[name]
+	if !ok {
+		return true
+	}
+	if d.Deleted {
+		return true
+	}
+	if !d.Configurable {
+		return false
+	}
+	delete(p.PropDescs, name)
+	for i, k := range p.propKeyOrder {
+		if k == name {
+			p.propKeyOrder = append(p.propKeyOrder[:i], p.propKeyOrder[i+1:]...)
+			break
+		}
+	}
+	return true
+}
 
 // NewPromise 创建一个 pending 状态的 Promise。
 func NewPromise() *Promise {
