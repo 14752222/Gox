@@ -52,7 +52,17 @@ func (m *Map) SetProperty(name string, val Value) {
 func (m *Map) SetProto(p Value) { m.proto = p }
 
 // GetProto 返回 Map 实例的原型。
-func (m *Map) GetProto() Value { return m.proto }
+//
+// 与 GetProperty 同口径: 实例级 proto 为 nil 时回退全局 %Map.prototype%。
+// 此前这里直接返回 m.proto (nil), 而 GetProperty 会回退 —— 两处不一致的
+// 后果是原型链遍历在 Map 实例处**断链**: `new Map()[Symbol.iterator]` 恒
+// undefined (尽管 Map.prototype 上有), 而 `new Map().size` 却正常。
+func (m *Map) GetProto() Value {
+	if m.proto != nil {
+		return m.proto
+	}
+	return MapProto
+}
 
 // mapKeyHash 为原始类型键生成哈希键字符串。
 func mapKeyHash(v Value) (string, bool) {
@@ -249,7 +259,13 @@ func (s *Set) SetProperty(name string, val Value) {}
 func (s *Set) SetProto(p Value) { s.proto = p }
 
 // GetProto 返回 Set 实例的原型。
-func (s *Set) GetProto() Value { return s.proto }
+// 与 *Map.GetProto 同口径: 实例级 proto 为 nil 时回退全局 %Set.prototype%。
+func (s *Set) GetProto() Value {
+	if s.proto != nil {
+		return s.proto
+	}
+	return SetProto
+}
 
 // Add 添加值到 Set。
 func (s *Set) Add(val Value) *Set {

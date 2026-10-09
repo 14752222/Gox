@@ -53,6 +53,14 @@ func BuiltinSymbolProperty(val Value) PropertyDescriptor {
 	return PropertyDescriptor{Value: val, Writable: false, Enumerable: false, Configurable: true}
 }
 
+// BuiltinSymbolMethodProperty 创建 Symbol 键内建方法属性的描述符:
+// writable:true, enumerable:false, configurable:true。
+// 与 BuiltinSymbolProperty (writable:false) 相对, 详见
+// SetBuiltinSymbolMethodProperty 的注释。
+func BuiltinSymbolMethodProperty(val Value) PropertyDescriptor {
+	return PropertyDescriptor{Value: val, Writable: true, Enumerable: false, Configurable: true}
+}
+
 // Object 表示 JavaScript 的对象类型。
 // 对象是一组键值对的集合，通过 Proto 字段实现原型链。
 type Object struct {
@@ -72,6 +80,15 @@ type Object struct {
 }
 
 func (o *Object) Type() ObjectType { return OBJECT_OBJ }
+
+// GetProto 返回对象的 [[Prototype]]。
+//
+// 原型链遍历的事实来源是鸭子类型入口 `interface{ GetProto() Value }`
+// (见 LookupSymbolPropertyDescriptorChain / ProtoOf)。*Array / *Map / *Set /
+// *String 都有 (或已补) 这个方法, 唯独 *Object 没有 —— 于是链在普通对象处
+// **断掉**: `Object.create(AIP)[Symbol.asyncIterator]` 明明能从 AIP 继承,
+// 却读回 undefined。补上与其它类型同构。
+func (o *Object) GetProto() Value { return o.Proto }
 
 // inspectMaxDepth 是 Inspect 递归打印的最大嵌套层数。
 // 即便有环检测，超深结构仍可能拖慢输出，故再加一层深度兜底。
@@ -406,6 +423,48 @@ func (o *Object) SetBuiltinSymbolProperty(sym *Symbol, val Value) {
 	o.SymbolProperties[sym.ID] = BuiltinSymbolProperty(val)
 }
 
+// symbolPropertyWriter 是"能写 Symbol 键自有属性"的最小接口。
+// *Object / *Array / *TypedArray 与函数类 (*Closure / *BuiltinFunction /
+// *BuiltinMethod, 经嵌入的 funcSymStore) 全都实现它 —— 于是装配 well-known
+// Symbol 成员可以面向接口写一次, 不必按类型穷举。
+type symbolPropertyWriter interface {
+	DefineOwnSymbolProperty(sym *Symbol, desc PropertyDescriptor)
+}
+
+// SetWellKnownSymbolMethod 在任意对象上注册 well-known Symbol **方法**成员
+// (@@iterator / @@toPrimitive / @@hasInstance ...), 描述符形态
+// writable:true, enumerable:false, configurable:true。
+//
+// 与 SetBuiltinSymbolProperty (writable:false) 的区别不是吹毛求疵 ——
+// 规范里两类 Symbol 成员的描述符确实不同:
+//   - @@toStringTag 是**数据值**属性: { writable: false, enumerable: false,
+//     configurable: true };
+//   - @@iterator 等是**方法**属性: { writable: true, enumerable: false,
+//     configurable: true }。
+//
+// test262 的 verifyProperty 会逐位比对 writable, 用错形态会直接挂。
+func SetWellKnownSymbolMethod(v Value, sym *Symbol, fn Value) {
+	if w, ok := v.(symbolPropertyWriter); ok {
+		w.DefineOwnSymbolProperty(sym, BuiltinSymbolMethodProperty(fn))
+	}
+}
+
+// SetWellKnownSymbolAccessor 在任意对象上注册 well-known Symbol **访问器**
+// 成员 (@@species 这类): { [[Get]]: getter, [[Set]]: undefined,
+// enumerable: false, configurable: true }。
+//
+// 此前只有字符串键的 *Object.DefineAccessor, 没有 Symbol 键形态 ——
+// @@species 规范上是 accessor 而非数据属性, 缺了这条就无从装配。
+func SetWellKnownSymbolAccessor(v Value, sym *Symbol, getter Value) {
+	if w, ok := v.(symbolPropertyWriter); ok {
+		w.DefineOwnSymbolProperty(sym, PropertyDescriptor{
+			Value:        NewAccessor(getter, nil),
+			Enumerable:   false,
+			Configurable: true,
+		})
+	}
+}
+
 // GetSymbolPropertyDescriptor 返回 Symbol 键自有属性的描述符 (供
 // Object.getOwnPropertyDescriptor 处理 Symbol 键)。
 func (o *Object) GetSymbolPropertyDescriptor(sym *Symbol) (PropertyDescriptor, bool) {
@@ -427,7 +486,6 @@ func (o *Object) DefineOwnSymbolProperty(sym *Symbol, desc PropertyDescriptor) {
 	}
 	o.SymbolProperties[sym.ID] = desc
 }
-
 
 // SymbolKeys 按插入顺序返回对象的 Symbol 自有键。
 func (o *Object) SymbolKeys() []*Symbol {

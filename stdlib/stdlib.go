@@ -178,6 +178,12 @@ func SetupGlobals() *runtime.Environment {
 	// 必须放在最后: 前面各 setup 造出的原型对象此刻均已注册完毕。
 	linkBuiltinPrototypes(env)
 
+	// ===== 内建对象的 well-known Symbol 成员 (@@iterator / @@species /
+	// @@toPrimitive / @@hasInstance) =====
+	// 同样必须放在最后: 要从环境取回构造器与原型, 且 @@iterator 复用既有的
+	// values / entries 方法对象。见 wellknown_symbols.go 的说明。
+	setupWellKnownSymbolMembers(env)
+
 	return env
 }
 

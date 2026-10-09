@@ -94,6 +94,13 @@ func (g *AsyncGenerator) GetProperty(name string) (Value, bool) {
 
 func (g *AsyncGenerator) SetProperty(name string, val Value) {}
 
+// GetProto 返回异步生成器实例的 [[Prototype]]。
+//
+// 与 *Map / *Set / *String / *Object 同口径补齐: 原型链遍历的事实来源是
+// 鸭子类型入口 `interface{ GetProto() Value }`, 缺了这个方法链就在此处断掉
+// —— `it[Symbol.toStringTag]` 会读回 undefined, 尽管 AGP 上明明有。
+func (g *AsyncGenerator) GetProto() Value { return g.Proto }
+
 // GetSymbolProperty 使 async generator 满足异步迭代协议:
 // [Symbol.asyncIterator]() 返回自身。
 //

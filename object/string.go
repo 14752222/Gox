@@ -17,6 +17,16 @@ func (s *String) Inspect() string {
 	return s.Value
 }
 
+// GetProto 返回字符串实例的 [[Prototype]] (即 %String.prototype%)。
+//
+// 此前 *String 没有这个方法 —— 于是原型链遍历的鸭子类型入口
+// (LookupSymbolPropertyDescriptorChain 靠 `interface{ GetProto() Value }`
+// 续走下一环) 在字符串处**断链**: 即便 String.prototype 上已装配
+// @@iterator, `"abc"[Symbol.iterator]` 仍恒为 undefined。数组 (*Array) 有
+// GetProto 所以没这个问题 —— 同一个缺口在不同类型上表现不一致, 正是它
+// 长期没被发现的原因。
+func (s *String) GetProto() Value { return StringProto }
+
 func (s *String) IsTruthy() bool {
 	return s.Value != ""
 }

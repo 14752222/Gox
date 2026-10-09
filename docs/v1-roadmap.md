@@ -729,3 +729,57 @@ this 是 undefined，都会把删除落到错误的基上。
 
 - `agent_doc/undecided-and-unimplemented.md` 是 **2026-09-18 快照**，其 §四 缺口清单中已有多项（cocoa 后端、iOS 后端、X11 修正、M2 IME、滚动条拖拽、tabs、table/tree、tooltip）在 09-18 后落地。本路线图已按 git 历史更正，但**建议回填该台账**，否则后续排期会继续基于过期口径。
 - `gui-component-status.md` 是最新组件权威（203KB，最大 §编号为准），本次未逐节通读；组件级剩余缺口应以它为准做最终核对。
+
+## 三十二、内建对象的 well-known Symbol 成员（`rYFTlt` 阶段一）
+
+**本轮形状**：阶段二（调用侧）做完之后回头补阶段一（读取侧）。单面说「内建对象的 Symbol 键成员读不到」，实测下来**不是"注册面不全"这么简单** —— 注册只是最后一步，前面还压着三处**原型链断链**。
+
+| 项 | 内容 |
+|---|---|
+| `rYFTlt` 阶段一 | 装配 `@@iterator` / `@@species` / `@@toPrimitive` / `@@hasInstance`，并让它们能被**读到** |
+| 现象 | `typeof [][Symbol.iterator]` 是 `undefined`（Node v22 是 `function`） |
+| 实测 | `built-ins` 全量 A/B **LOST 8 / GAINED 73**，净 +64（7777 → 7841） |
+| 单测 | 新增 8 个用例（`vm/wellknown_symbol_test.go`），去掉修复后 4 个失败 |
+
+### 装配了什么
+
+- `@@iterator`：`Array.prototype` = `values`、`Set.prototype` = `values`、`Map.prototype` = `entries`（规范里它们**就是同一个函数对象**，直接引用既有方法，零重复实现）；`String.prototype` 独立实现（`String.prototype` 没有 `values()`）。
+- `@@species`：`Array` / `Map` / `Set` / `Promise`，形态是 **accessor**（`get [@@species]() { return this }`，无 setter）。写成数据属性的话子类读 `@@species` 会拿到父类，子类化全错。
+- `@@toPrimitive`：`Symbol.prototype`。
+- `@@hasInstance`：`Function.prototype`。
+
+新增 `stdlib/wellknown_symbols.go` 集中装配，挂在 `SetupGlobals` 最后 —— 各构造器与原型此刻才全部就位。
+
+### 三处断链（真正的根因）
+
+装配完之后 `Array.prototype[Symbol.iterator]` 有值，但 `[][Symbol.iterator]` 仍是 `undefined`。逐层挖下去是三处独立的断链：
+
+1. **`vm.getIndex` 的 Symbol 键读取按类型穷举**。原来 `*Array` / `*TypedArray` / `*Object` / 函数类各写一份 `if sym, ok := ...`，漏掉的类型静默回落 default 分支（把 Symbol 转成字符串去查自有属性）。`*String` / `*Map` / `*Set` 正是漏掉的。
+   → **收口**：Symbol 键读取的语义与对象类型无关（自身 + 原型链 + 访问器展开），提到类型 switch **之前**统一处理。新增对象类型不必再记得补分支。
+2. **原型链遍历靠鸭子类型 `interface{ GetProto() Value }` 续走，多个类型缺这个方法**：`*Object`（！）、`*String`、`*AsyncGenerator`。`*Map` / `*Set` 有，但 `proto` 为 nil 时**不回退全局原型**（而它们的 `GetProperty` 会回退 —— 两处口径不一致）。
+   → 逐个补齐，与既有类型同构。
+3. **`@@toStringTag` 有一部分是按字符串键形态硬编码的**（如 `%AsyncGeneratorPrototype%`，其 `SymbolProperties` 其实是空的，`Object.getOwnPropertySymbols` 返回 `[]`）。统一通道若只查符号槽，这类成员会静默读回 `undefined`。
+   → 在链查找里保留字符串键兜底，**键的写法必须与旧路径逐字一致**：`object.ToString(sym)` 而非 `sym.Inspect()`（后者是 `"Symbol(...)"`，查不到）。
+
+### 顺带修掉的一个既有 bug
+
+`resolveSymbolIterator` 对 JS 层迭代器已经包好 `*runtime.Iterator`，而 `OP_ARRAY_SPREAD` 把它当"待迭代值"又丢回 `runtime.GetIterable` —— 后者只认 JS 值，`*runtime.Iterator` 不在其中，于是恒报 `is not iterable`。
+
+**此前这条死代码从未被执行**：内建原型上没有 `@@iterator`，数组展开永远走下面的快路径。装配 `@@iterator` 后它第一次被走到，`[...[1,2],3]` 直接挂。是既有 bug，不是新引入的。
+
+### 收敛点
+
+- `object.ProtoOf`：原型链遍历的事实来源只有一处。此前只存在于 vm 包（`vm.protoOf`），stdlib 无从复用。
+- `object.MatchBuiltinType` / `object.BuiltinName`：instanceof 的类型名兜底提到 object 包 —— `x instanceof C` 与 `C[Symbol.hasInstance](x)` **必须给出同样的结论**，两份匹配表迟早分叉。
+
+### 实锤
+
+1. **`@@species` 是 accessor 不是数据属性**。`descriptor.get` 是 function、`set` 是 undefined；写错形态的话 `Sub[Symbol.species]` 恒为 `Array`。
+2. **"修对了反而掉用例"要逐个查，不能一律当回归**。本轮 8 个 LOST **全部是假阳性退潮**：RegExp 的 `@@match` / `@@replace` 此前读不到（是 `undefined`），`undefined('')` 正好抛 `TypeError`，于是 `assert.throws(TypeError, ...)` 一路"通过"；能读到之后，真实实现不抛本该抛的错，立刻暴露。
+3. **test262 有并发抖动**。本轮出现过「全量报 LOST、单独重跑 3/3 通过」两次（`Array/prototype/filter/15.4.4.20-9-c-ii-1.js`、`RegExp/property-escapes/generated/Any.js`）。可疑 LOST 一律先单独重跑再下结论。
+
+### 未能收口的部分
+
+那 8 个 RegExp LOST 的真缺口是：**`RegExp` 在 Gox 里还不是一等对象** —— `RegExp.prototype` 是 `undefined`，`Object.getOwnPropertyDescriptor(/a/g, 'lastIndex')` 直接报 `called on non-object`，`Object.defineProperty` 对它是 no-op（它不满足 `OwnPropertyStore`）。于是规范里「`Set(rx, "lastIndex", 0, true)` 写不进去就抛 `TypeError`」无从实现。
+
+修好它要让 RegExp 具备完整的自有属性接口（prototype 装配 + `OwnPropertyStore` 五件套 + 描述符语义），是**独立的工程**，不是本单范围 —— 已开单跟踪。本轮尝试中途撤回，不留半成品。

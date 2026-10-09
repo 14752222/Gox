@@ -2507,6 +2507,25 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				}
 				continue
 			} else if ok {
+				// resolveSymbolIterator 对 JS 层迭代器 (arr.values() /
+				// Array.prototype[@@iterator]() 的返回值) 已经包好了
+				// *runtime.Iterator —— 直接驱动即可, 不要再丢回
+				// runtime.GetIterable: 后者只认 JS 值, *runtime.Iterator 不在
+				// 其中, 恒返回 false 并误报 "is not iterable"。
+				//
+				// 这条路径此前走不到 (内建原型上没有 @@iterator, 数组展开
+				// 永远落在下面的 GetIterable 快路径), 装配 @@iterator 之后
+				// 才第一次暴露 —— 是既有 bug, 不是新引入的。
+				if it, isIter := resolved.(*runtime.Iterator); isIter {
+					for {
+						val, done := it.Next()
+						if done {
+							break
+						}
+						a.Elements = append(a.Elements, val)
+					}
+					continue
+				}
 				iterable = resolved
 			}
 			iter, hasIter := runtime.GetIterable(iterable)
@@ -3858,117 +3877,21 @@ func (vm *VM) instanceOf(left, right object.Value) object.Value {
 }
 
 // protoOf 返回值的原型对象 (沿对象模型的原型字段)。
+// protoOf 是 object.ProtoOf 的薄包装 —— 原型链遍历的事实来源只有一处
+// (见 object/proto.go 的说明): @@hasInstance 与 instanceof 必须给出同样的
+// 结论, 两边各写一份类型穷举迟早分叉。
 func protoOf(v object.Value) object.Value {
-	switch t := v.(type) {
-	case *object.Object:
-		return t.Proto
-	case *object.Array:
-		return t.GetProto()
-	// 函数对象的 [[Prototype]] 按种类指向内建原型 (Function/GeneratorFunction/
-	// AsyncFunction/AsyncGeneratorFunction.prototype)，用于 instanceof 等沿链查找。
-	case *object.Closure:
-		return object.FuncPrototypeOf(t)
-	case *object.BuiltinFunction:
-		return object.FuncPrototypeOf(t)
-	case *object.BuiltinMethod:
-		return object.FuncPrototypeOf(t)
-	// Temporal 类型把原型放在类型注册表里 (见 object.SetTemporalProto)，
-	// 各自实现了 GetProto()。缺了这些分支，instanceof 会退化成名称匹配，
-	// 而构造器名 ("Instant") 与类型标识并不对应。
-	case *object.TemporalInstant:
-		return t.GetProto()
-	case *object.TemporalPlainDateTime:
-		return t.GetProto()
-	case *object.TemporalPlainDate:
-		return t.GetProto()
-	case *object.TemporalPlainTime:
-		return t.GetProto()
-	case *object.TemporalPlainYearMonth:
-		return t.GetProto()
-	case *object.TemporalPlainMonthDay:
-		return t.GetProto()
-	case *object.TemporalZonedDateTime:
-		return t.GetProto()
-	case *object.TemporalDuration:
-		return t.GetProto()
-	case *object.TemporalTimeZone:
-		return t.GetProto()
-	case *object.TemporalCalendar:
-		return t.GetProto()
-	// Date 的原型同样放在类型注册表里 (见 object.SetDateProto)。
-	case *object.Date:
-		return t.GetProto()
-	}
-	return nil
+	return object.ProtoOf(v)
 }
 
-// matchBuiltinType 对内置类型做名称匹配 (instanceof Array/Map/Set/...)。
+// matchBuiltinType / builtinName 是 object.MatchBuiltinType / object.BuiltinName
+// 的薄包装 —— instanceof 与 %Function.prototype%[@@hasInstance] 必须给出同样的
+// 结论, 两份匹配表迟早分叉。
 func matchBuiltinType(left, right object.Value) bool {
-	// 通过构造器内建名判断
-	ctorName := builtinName(right)
-	if ctorName == "" {
-		return false
-	}
-	lt := left.Type()
-	switch ctorName {
-	case "Array":
-		return lt == object.ARRAY_OBJ
-	case "Object":
-		// 数组、对象、函数等都是 Object 的实例
-		return lt == object.OBJECT_OBJ || lt == object.ARRAY_OBJ || object.IsCallable(left) ||
-			lt == object.MAP_OBJ || lt == object.SET_OBJ || lt == object.REGEXP_OBJ ||
-			lt == object.PROMISE_OBJ || lt == object.ERROR_OBJ
-	case "Map":
-		return lt == object.MAP_OBJ
-	case "Set":
-		return lt == object.SET_OBJ
-	case "RegExp":
-		return lt == object.REGEXP_OBJ
-	case "Promise":
-		return lt == object.PROMISE_OBJ
-	case "Error", "TypeError", "RangeError", "ReferenceError", "SyntaxError":
-		return lt == object.ERROR_OBJ
-	case "SuppressedError":
-		// explicit resource management: 释放期合成错误。精确按 Name 匹配 ——
-		// 不能并进上面那组 (那组对任意 ERROR_OBJ 都返回真)。
-		if e, ok := left.(*object.Error); ok {
-			return e.Name == "SuppressedError"
-		}
-		return false
-	case "String":
-		return lt == object.STRING_OBJ
-	case "Number":
-		return lt == object.NUMBER_OBJ
-	case "Boolean":
-		return lt == object.BOOLEAN_OBJ
-	case "Function":
-		return object.IsCallable(left)
-	}
-	return false
+	return object.MatchBuiltinType(left, right)
 }
 
-// builtinName 返回内置构造器/函数的名称。
-func builtinName(v object.Value) string {
-	switch f := v.(type) {
-	case *object.BuiltinFunction:
-		if f.Name != "" {
-			return f.Name
-		}
-	case *object.BuiltinMethod:
-		if f.Name != "" {
-			return f.Name
-		}
-	}
-	// 通过属性名兜底 (closure 构造器一般带 name)
-	if o, ok := v.(*object.Object); ok {
-		if nv, found := o.GetProperty("name"); found {
-			if s, ok := nv.(*object.String); ok {
-				return s.Value
-			}
-		}
-	}
-	return ""
-}
+func builtinName(v object.Value) string { return object.BuiltinName(v) }
 
 // describeCallee 生成错误信息中对"被当作函数调用的值"的简短描述。
 //
@@ -5720,14 +5643,24 @@ func (vm *VM) getIndex(obj, index object.Value) object.Value {
 	// OP_TO_PROPERTY_KEY 转过一次的键是幂等的 (原语原样返回), 不会二次
 	// 触发用户 toString。对象键转换会调用户代码, 故需消费回调桥异常。
 	index = vm.normalizeIndexKey(index)
+
+	// Symbol 键**统一通道** —— 提到类型 switch 之前。
+	//
+	// 此前按类型穷举: *Array / *TypedArray / *Object / 函数类各写一份
+	// `if sym, ok := index.(*object.Symbol); ok { return getSymbolIndexedValue }`,
+	// 漏一个类型就静默回落 default 分支 (把 Symbol 转成字符串去查自有属性),
+	// 恒得 undefined。*object.String 正是漏掉的那个: 即便
+	// %String.prototype%[@@iterator] 已装配, `"abc"[Symbol.iterator]` 还是
+	// undefined; *Map / *Set 同理。
+	//
+	// Symbol 键读取的语义与对象类型无关 (自身 + 原型链 + 访问器展开), 没理由
+	// 按类型各写一遍。收口到这里, 新增对象类型不必再记得补分支。
+	if sym, ok := index.(*object.Symbol); ok {
+		return vm.getSymbolIndexedValue(obj, sym)
+	}
+
 	switch o := obj.(type) {
 	case *object.Array:
-		// Symbol 键: 数组此前无符号键槽, arr[Symbol.iterator] 读回 undefined,
-		// 使被覆盖的迭代器不可见。现走符号键通道 (自身 + 原型链)。getter
-		// 抛错经 object 回调桥记录, 由 GET_INDEX 之后的 checkCallbackErr 消费。
-		if sym, ok := index.(*object.Symbol); ok {
-			return vm.getSymbolIndexedValue(o, sym)
-		}
 		// 已通过 Object.defineProperty 定义过描述符 (索引访问器 / 不可写)
 		// 的数组, 索引读必须走描述符通道 (GetProperty 调 getter), 与自有
 		// 属性接口保持一致。PropDescs 为空 (绝大多数数组) 时走下方的快速
@@ -5781,9 +5714,6 @@ func (vm *VM) getIndex(obj, index object.Value) object.Value {
 		return object.UndefinedSingleton
 
 	case *object.TypedArray:
-		if sym, ok := index.(*object.Symbol); ok {
-			return vm.getSymbolIndexedValue(o, sym)
-		}
 		if n, ok := index.(*object.Number); ok {
 			idx := int(n.Value)
 			if idx >= 0 && idx < o.Length {
@@ -5845,13 +5775,8 @@ func (vm *VM) getIndex(obj, index object.Value) object.Value {
 		return val
 
 	case *object.Closure, *object.BuiltinFunction, *object.BuiltinMethod:
-		// 函数对象: Symbol 键沿原型链查 (getter 展开), 数字等键型按 ToPropertyKey
-		// 转字符串 (f[1] === f["1"])。此前函数只走 default 兜底 —— 字符串键同口径,
-		// 但 Symbol 键仅自身鸭子类型查找 (拿不到原型链上的 @@hasInstance 等) 且无
-		// 统一符号键槽; 这里收口到与 *Object / 数组一致的符号键通道。
-		if sym, ok := index.(*object.Symbol); ok {
-			return vm.getSymbolIndexedValue(o, sym)
-		}
+		// 函数对象: 数字等键型按 ToPropertyKey 转字符串 (f[1] === f["1"])。
+		// (Symbol 键已在上方统一通道处理。)
 		if s, ok := index.(*object.String); ok {
 			val, found := o.GetProperty(s.Value)
 			if !found {
