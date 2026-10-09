@@ -899,6 +899,7 @@ var (
 | `http` | `stdlib/http.go` | 全局对象，`createServer` 服务器与 `get`/`request` 客户端 |
 | `fetch` | `stdlib/http.go` | 全局函数，Promise 风格 HTTP 客户端 |
 | `process` | `stdlib/process.go` | 全局对象，argv/env/cwd/exit 等宿主信息 |
+| `crypto` / `hash` | `stdlib/crypto.go` | 全局对象 + 内置模块 `gx/crypto`：同步 `hash()`、`crypto.subtle.digest()` (Promise→ArrayBuffer)、`randomUUID`、`getRandomValues` |
 
 ### 6.1 fs：同步与异步两套 API
 
@@ -986,6 +987,26 @@ if (rel) {
     if (res) promptRestart(res.version);      // 重启后运行新版本
 }
 ```
+
+### 6.5 gx/crypto：摘要与随机数的双形态注册
+
+`stdlib/crypto.go` 是**一个模块、两副面孔**的典型例子：实现写在内置模块 `gx/crypto` 的导出表里，全局 `crypto` 与全局 `hash` 只是复用同一批函数对象（与 fs/http 同一口径，避免"全局一套、import 又一套"慢慢漂移）。
+
+```js
+import { hash, digest, randomUUID, getRandomValues } from "gx/crypto";
+// 等价的全局写法：hash(...) / crypto.subtle.digest(...) / crypto.randomUUID()
+
+hash("gox");                                    // 同步 → 小写 hex
+await crypto.subtle.digest("SHA-256", "gox");   // Promise → ArrayBuffer
+```
+
+三个值得照抄的设计判断：
+
+1. **算法名归一化**（`normalizeDigestAlgo`）：剥掉 `-`/`_` 再转大写后查表，于是 `"SHA-256"` / `"sha256"` / `"Sha_256"` 是同一个算法 —— WebCrypto 的算法名本就大小写不敏感，抄浏览器代码不必先做字符串体操。
+2. **MD5 只在同步 `hash()` 里**：`cryptoDigestAlgo.subtle` 标记算法是否属于 WebCrypto 名单。`SubtleCrypto.digest` 从来没有 MD5，把它塞进 `crypto.subtle` 等于承诺了一个浏览器里不存在的算法 —— 从浏览器抄来的代码在 Gox 上跑通、上浏览器就挂，是最难查的一类错。MD5 的真实用途是校验和/旧系统对账，留在 `hash()` 里。
+3. **错误一律报出来**：不支持的算法返回 `TypeError`（`digest` 走 Promise reject），且消息里列出受支持的算法名。摘要算错不报错，只会让比对永远不等 —— 那是"静默失效"里最贵的一种。
+
+`crypto.getRandomValues` 直接写底层字节（不按元素宽度分派），因此所有 TypedArray 视图都适用；超出 WebCrypto 的 64KB 上限抛 `QuotaExceededError`，不静默截断。
 
 ---
 

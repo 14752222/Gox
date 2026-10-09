@@ -2,7 +2,7 @@
   "说明": "本文件由 python3 scripts/gen-exports-golden.py 生成，是内置模块导出名单的唯一机器可读真相。改了 Go 侧的导出后，请重新生成并提交 —— CI 会用「实抽 vs 本文件」diff 兜住漏改。",
   "生成方式": "python3 scripts/gen-exports-golden.py",
   "真源": "Go 侧的 object.RegisterBuiltinModule(\"gx/xxx\", …) 与 stdlib/gox_module.go 的 submodules 清单",
-  "moduleCount": 21,
+  "moduleCount": 22,
   "modules": {
     "fs": [
       "appendFile",
@@ -48,6 +48,12 @@
       "setOrientation",
       "share",
       "useAppState"
+    ],
+    "gx/crypto": [
+      "digest",
+      "getRandomValues",
+      "hash",
+      "randomUUID"
     ],
     "gx/dev": [
       "devEval",
@@ -312,6 +318,7 @@
     "devTree",
     "deviceId",
     "deviceInfo",
+    "digest",
     "distanceBetween",
     "downloadAndInstall",
     "exitApp",
@@ -321,12 +328,14 @@
     "focusPrev",
     "getBrightness",
     "getLocation",
+    "getRandomValues",
     "getSetting",
     "getStorage",
     "getStorageInfo",
     "h",
     "hasFold",
     "hasLocation",
+    "hash",
     "hinge",
     "hingeOrientation",
     "humanSize",
@@ -379,6 +388,7 @@
     "posture",
     "previewImage",
     "primaryScreen",
+    "randomUUID",
     "regions",
     "removeStorage",
     "render",

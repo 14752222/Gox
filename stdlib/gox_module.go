@@ -41,6 +41,9 @@ func setupGoxUmbrella(env *runtime.Environment) {
 			"gx/dialog",
 			"gx/storage",
 			"gx/update",
+			// 摘要与随机数 (看板 ru3TZK): hash / digest / randomUUID /
+			// getRandomValues 一并进并集, `import { hash } from "gox"` 可用。
+			"gx/crypto",
 			"gx/theme",
 			"gx/dev",
 			// T10 无障碍: 焦点遍历序 / 程序化聚焦 / 隐式 role 表 (gfx/a11y.go)。

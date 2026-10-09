@@ -171,6 +171,9 @@ func SetupGlobals() *runtime.Environment {
 	// ===== 桌面自动更新 (内置模块 gx/update, v1.1: 流式下载/进度/pre 通道) =====
 	setupUpdate(env)
 
+	// ===== 摘要与随机数 (内置模块 gx/crypto, 看板 ru3TZK) =====
+	setupCrypto(env)
+
 	// ===== 聚合模块 "gox" (gx/* 导出并集, 一行导入) =====
 	setupGoxUmbrella(env)
 
