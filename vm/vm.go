@@ -381,12 +381,92 @@ func (m *ModuleExports) exportNames(seen map[*ModuleExports]bool) []string {
 	return names
 }
 
+// isLiveExport 判断导出名 name 在 m 上是否是**活导出**: 值来自模块顶层帧槽位
+// (bindings) 或再导出转发 (forwards/stars), 源端后续改动应能被命名空间读到。
+//
+// 只有活的导出才需要在命名空间上装读取器 (见 liveExportDesc); 直接塞进
+// Named/Default 的静态导出 (内置模块、字面量导出) 是常量, 物化一次就够 ——
+// 也给它们保留普通数据属性, 免得 console.log(内建命名空间) 之类路径看到
+// 访问器而退化。
+func (m *ModuleExports) isLiveExport(name string, path map[*ModuleExports]bool) bool {
+	if m == nil || path[m] {
+		return false
+	}
+	path[m] = true
+	defer delete(path, m)
+
+	if m.bindings != nil {
+		if _, ok := m.bindings[name]; ok {
+			return true
+		}
+	}
+	if m.forwards != nil {
+		if f, ok := m.forwards[name]; ok {
+			// "*" 是命名空间再导出, 其值是另一个命名空间对象: 保持物化语义
+			// (每次读取都新建对象会破坏 ns.a === ns.a 的同一性), 不视为活导出。
+			if f.name == "*" {
+				return false
+			}
+			return f.src.isLiveExport(f.name, path)
+		}
+	}
+	if m.Named != nil {
+		if _, ok := m.Named[name]; ok {
+			return false
+		}
+	}
+	if name == "default" && m.Default != nil {
+		return false
+	}
+	if name == "default" {
+		return false
+	}
+	for _, s := range m.stars {
+		if s.isLiveExport(name, path) {
+			return true
+		}
+	}
+	return false
+}
+
+// liveExportDesc 构造命名空间上一个**活导出**的属性描述符。
+//
+// 规范里模块命名空间是 exotic object (11.4.6 Module Namespace Exotic
+// Objects): 它的 [[Get]] 每次都回源模块的绑定槽取值, 所以导入方在模块求值
+// 之后修改导出绑定 ——
+//
+//	var x = 1; export { x }; ... x = 2;
+//
+// —— 命名空间上读到的必须是新值。Gox 的命名空间是普通 *object.Object, 物化时
+// 若直接 SetProperty 就把活绑定固化成了快照, `imported.x` 永远是物化那一刻的
+// 值 (test262: dynamic-import/usage/*gtbndng-indirect-update*)。
+//
+// 这里以"读取时回读"的访问器等效实现: getter 每次调用 resolveWith, 拿到源模块
+// 导出槽的当前值。setter 留空对应规范 [[Set]] 直接返回 false —— 无 setter 的
+// 访问器在非严格模式静默失败、严格模式抛 TypeError, 与之同构。描述符取
+// enumerable:true / configurable:false, 与规范命名空间属性一致。
+func (m *ModuleExports) liveExportDesc(name string) object.PropertyDescriptor {
+	getter := object.NewBuiltin("get "+name, func(args ...object.Value) object.Value {
+		v, ok := m.resolveWith(name, map[*ModuleExports]bool{}, map[*ModuleExports]bool{})
+		if !ok || v == nil {
+			return object.UndefinedSingleton
+		}
+		return v
+	})
+	return object.PropertyDescriptor{
+		Value:        object.NewAccessor(getter, nil),
+		Writable:     false,
+		Enumerable:   true,
+		Configurable: false,
+	}
+}
+
 // buildNamespace 把模块导出物化成一个命名空间对象。
 //
 // 这是导入方唯一拿到的"模块视图": OP_IMPORT / 动态 import / `export * as ns`
-// 都走它。因为是物化时逐名调用 resolve, 再导出转发读到的就是源模块导出槽的
-// **当前**值 —— 即"取值时读取源模块导出槽"的语义 (比在 export 语句处立刻拷贝
-// 更接近规范的活绑定)。
+// 都走它。活导出 (顶层词法声明 / 具名再导出) 落成读取器、每次读取回源模块
+// 导出槽; 静态导出 (内置模块塞进 Named 的值) 落成数据属性。见 isLiveExport /
+// liveExportDesc 的说明。
 //
 // building 是"正在构造的模块"集合, 跨整棵递归共享, 打断 `export * as ns`
 // 形成的命名空间环 (见 resolveWith 的注释)。
@@ -412,10 +492,18 @@ func (m *ModuleExports) buildNamespace(building map[*ModuleExports]bool) *object
 		if !ok {
 			continue // 二义/未解析: 不放进命名空间
 		}
+		if m.isLiveExport(name, map[*ModuleExports]bool{}) {
+			obj.DefineOwnProperty(name, m.liveExportDesc(name))
+			continue
+		}
 		obj.SetProperty(name, v)
 	}
 	if v, ok := m.resolveWith("default", map[*ModuleExports]bool{}, building); ok {
-		obj.SetProperty("default", v)
+		if m.isLiveExport("default", map[*ModuleExports]bool{}) {
+			obj.DefineOwnProperty("default", m.liveExportDesc("default"))
+		} else {
+			obj.SetProperty("default", v)
+		}
 	}
 	return obj
 }

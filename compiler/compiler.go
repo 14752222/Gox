@@ -3869,10 +3869,15 @@ func (c *Compiler) emitLocalExport(local, exported string) {
 
 // compileDefaultExport 编译 export default。
 //
-// default 导出始终是"值"而非活绑定: 规范里 default 是独立导出项, 具名默认
-// 函数/类只把名字作为模块内局部绑定 (见 parser.parseExportDefault)。因此这里
-// 先编译声明登记局部绑定, 再把绑定当前值作为 default 导出; 表达式/匿名函数/
-// 匿名类则直接求值导出。
+// 具名默认导出 (`export default function fn(){}` / `export default class C {}`)
+// 是**活绑定**: 规范 16.2.3.7 把它记成 LocalExportEntry
+// {[[ExportName]]:"default", [[LocalName]]:"fn"} —— default 指向模块内的局部
+// 绑定 fn, 于是模块内 `fn = 2` 之后导入方读 imported.default 必须是 2
+// (test262: dynamic-import/usage/*gtbndng-indirect-update-dflt*)。模块模式下
+// 因此走 emitLocalExport (OP_EXPORT_BINDING 记录槽位), 而不是取值导出。
+//
+// 表达式/匿名函数/匿名类默认导出则没有可供引用的局部名 (规范的 localName 是
+// 不可书写的 "*default*"), 只能取值导出: 先求值入栈, 再 OP_EXPORT 弹出。
 func (c *Compiler) compileDefaultExport(decl ast.Statement) error {
 	nameIdx := c.constants.AddConstant(object.NewString("default"))
 	switch d := decl.(type) {
@@ -3886,12 +3891,20 @@ func (c *Compiler) compileDefaultExport(decl ast.Statement) error {
 		if err := c.compileFunctionDeclaration(d); err != nil {
 			return err
 		}
+		if d.Name != nil && c.moduleMode {
+			c.emitLocalExport(d.Name.Value, "default")
+			return nil
+		}
 		if err := c.loadDeclaredBinding(d.Name); err != nil {
 			return err
 		}
 	case *ast.ClassDeclaration:
 		if err := c.compileClassDeclaration(d); err != nil {
 			return err
+		}
+		if d.Name != nil && c.moduleMode {
+			c.emitLocalExport(d.Name.Value, "default")
+			return nil
 		}
 		if err := c.loadDeclaredBinding(d.Name); err != nil {
 			return err
