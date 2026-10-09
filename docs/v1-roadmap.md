@@ -1001,3 +1001,68 @@ $ find L0               -mmin +12 → L0
 
 `/f/tmp/fullab.lockdir` 的旧格式（无 `heartbeat` 文件）持有者会退化到 `owner.info` mtime 或目录 mtime 判据，不会因换实现而卡住 —— 已列为自检用例。
 
+## 三十八、computed 求值抛错的 Rx 语义：定为「抛原始抛出值」（rvE6lH）
+
+`object/observable.go` 的 `Computed.recompute` 原先把求值异常降级成
+`NewErrorWithName("Error", err.Error())` **当值返回**。看板 `rvE6lH` 把这处挑出来要求先定语义
+（(a) 抛原始抛出值 / (b) 返回 undefined 或上次缓存 / (c) 抛包装后的 Error），本轮定案并实现。
+
+### 1. 为什么选 (a)
+
+`computed(fn)` 的契约是 **`.value` ≡ 调用 `fn()`**。`fn()` 会抛，读 `.value` 也就该抛 —— 最小惊讶原则，
+也是 Vue / MobX / Solid 的通行做法。(b)/(c) 会把错误**埋进渲染结果里**：读回来的是一个看起来正常的
+值，错误就此静默 —— 而 Gox 自己在 `rr1O8P` 上得到的教训恰恰是「静默错值是最坏的失败模式」。
+
+### 2. 抛是怎么实现的（不污染全局错误槽）
+
+`GetProperty` 没有 error 返回通道，但 VM 在 `OP_GET_PROP` / `OP_GET_INDEX` 之后**本来就会**
+`checkCallbackErr()` 并重抛 —— accessor getter 就是这么抛的。所以：
+
+- `recompute()` 消费**两个槽**（`TakeCallbackError` + `TakeCallbackErrorValue`），把原始抛出值保真缓存；
+- 新增 `valueOrThrown()` 作为 **Go 侧内部读值入口**，只走值通道、**不动回调桥双槽**；
+- `RxValue()` 作为 **JS 侧读值入口**，抛错态下把原始抛出值写回双槽并返回 undefined —— VM 立刻取走重抛，
+  JS 侧 `catch (e)` 拿到的就是 `throw` 出来的那个值本身（`e === 抛出侧`，不是 `Error: boom` 这种字符串）。
+
+`Inspect()` / `invalidate()` / `RxSubscribe()` 一律走 `valueOrThrown()`：它们跑在渲染与通知链路上，
+写全局错误槽会被 `gfx` 那几十处 `takeCallbackErr()` 当成「本次操作失败」取走，把一次求值错误升级成
+整条渲染链路的失败。
+
+VM 侧补两处消费点：`OP_CALL` 的 `ObservableState` 分支（GetX 的 `c()` 语法）与 `callFunction` 的
+Rx 分支，否则 `RxValue` 写入的信号没人取，会残留到之后不相干的内建调用点（同 `rvdPPH` 的形态）。
+
+### 3. 三条边界
+
+| 边界 | 行为 | 不这么做会怎样 |
+|---|---|---|
+| 失败态**要缓存** | 失败后 `fn` 不再重跑，直到依赖变化或 `refresh()` | 原来 `valid` 一直是 false，每读一次 `.value` 就执行一次 `fn` —— 带副作用的计算被执行 N 遍（实测读 5 次跑 5 次，修复后跑 1 次） |
+| 失败态**仍要布线依赖** | 错误路径也调 `wireDeps` | 依赖变到一个能算出值的状态后依然读回旧错误，computed 永久锁死 |
+| 失败**不通知监听者** | 进入错误态不触发 `listen` 回调，恢复到正常值才触发 | 一次求值失败把整条 effect / 渲染链路打断 —— 这正是看板要求确认的那点 |
+
+**「抛错的 computed 会不会把 effect 整条链路断」的答案是：不会断。** 错误只在**读取点**暴露。
+
+配套新增 `.error` 属性（读原始抛出值，**不抛**），给 GUI 一个「渲染错误态而不是炸掉」的出口：
+
+```js
+{() => total.error ? "数量不合法" : `合计 ${total.value}`}   // 推荐写法
+```
+
+另有 `markDirty()`：依赖变化时必须把**失败态一并置脏**，否则 `valueOrThrown` 会命中缓存的
+`thrown` 而永不重算（第一版实现就栽在这里 —— 依赖变好了也回不来）。
+
+### 4. 证据
+
+新增 `vm/vm_obs_throw_test.go` 11 例，覆盖：值保真（字符串 / 数字 / Error 实例 / 普通对象，含
+`e === 抛出侧` 同一性）、`.error` 不抛、失败态缓存（fn 只跑 1 次）、依赖变好后恢复、
+错误态不通知 + 恢复后通知、`c()` 语法也抛、抛错不污染后续内建与回调调用、嵌套 computed 错误向外传播、
+`refresh()` 清失败态、`String(computed)` 诊断路径不抛也不写槽。
+
+反向验证四组注入缺陷，均如期 FAIL：
+
+| 注入的缺陷 | 如期 FAIL 的用例 |
+|---|---|
+| `RxValue` 不往回调桥写槽（退回「错误当值返回」） | `ValueThrowsOriginalValue`、`CallSyntaxThrows`、`ThrowDoesNotPollute…`、`NestedThrowPropagates`、`FailureRecovers…` |
+| 失败态不缓存 | `FailureIsCached` |
+| 错误态也通知监听者 | `FailureDoesNotNotifyListeners` |
+| 错误路径不布线依赖 | `FailureRecovers…`、`NestedThrowPropagates` |
+
+`go test -count=1 ./...` 全绿（2m10s，零失败）。语义已落到 `docs/gui-guide.md` §8.5。

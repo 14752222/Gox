@@ -1773,7 +1773,19 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 
 			case object.ObservableState:
 				// Rx 单元直接调用: count() 等价 count.value (GetX 语义)
-				vm.stack.Push(callee.RxValue())
+				//
+				// computed 的求值函数抛错时 RxValue 会把原始抛出值写进回调桥双槽
+				// (看板 rvE6lH 方案 a), 而 GetProperty 没有 error 返回通道 ——
+				// 必须在此刻取出重抛, 否则信号残留到之后某个不相干的内建调用点
+				// 才被消费, 外层 try 处理器可能早已出栈 (同 rvdPPH 的形态)。
+				rv := callee.RxValue()
+				if err := vm.checkCallbackErr(); err != nil {
+					if terr := vm.rethrowBridgeError(err); terr != nil {
+						return terr
+					}
+					continue
+				}
+				vm.stack.Push(rv)
 
 			default:
 				if err := vm.throwNamedError("TypeError", "%s is not a function", describeCallee(fn)); err != nil {
@@ -3544,8 +3556,17 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 // 调用用户传入的 JS 闭包时，通过此方法执行子帧。
 func (vm *VM) callFunction(fn object.Value, this object.Value, args []object.Value) (object.Value, error) {
 	// Rx 单元可直接调用: count() 等价 count.value (GetX 语义)
+	//
+	// computed 求值抛错时 RxValue 会把原始抛出值写进回调桥双槽 (rvE6lH 方案 a)。
+	// 这里必须立刻取走并以 error 返回 —— 交给外层桥重新 SetCallbackError,
+	// throw 出的原值才不会滞留在值槽里被下一个两槽消费者误读 (静默错值)。
 	if obs, ok := fn.(object.ObservableState); ok {
-		return obs.RxValue(), nil
+		v := obs.RxValue()
+		if err := object.TakeCallbackError(); err != nil {
+			object.TakeCallbackErrorValue()
+			return object.UndefinedSingleton, err
+		}
+		return v, nil
 	}
 	switch callee := fn.(type) {
 	case *object.BuiltinFunction:

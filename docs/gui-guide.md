@@ -848,6 +848,45 @@ h("text", null, () => `breakpoint = ${bp()} / cols = ${layout().cols}`);
 示例：[testdata/breakpoint_demo.js](../testdata/breakpoint_demo.js)（同一份代码在四个尺寸下自动换形态，按钮直接 resize 到四档）。
 完整 API 与坐标口径见 [multi-window.md](multi-window.md)。
 
+### 8.5 computed 求值抛错：`.value` 抛出原始抛出值
+
+`computed(fn)` 的契约是 **`.value` ≡ 调用 `fn()`**。`fn()` 会抛，读 `.value` 也就该抛 ——
+而且抛出的是**原始抛出值**（`throw x` 的 `x` 本身），不降级成字符串、不包装成 `Error`：
+
+```js
+const total = computed(() => {
+  if (qty.value < 0) throw new RangeError("qty 不能为负");
+  return price.value * qty.value;
+});
+
+total.value      // qty < 0 时真的抛出那个 RangeError 实例（=== 抛出侧）
+total.error      // 同一个实例，但**不抛** —— 给"渲染错误态而不是炸掉"的出口
+```
+
+三条边界，都是踩过的坑：
+
+| 边界 | 行为 | 为什么 |
+|---|---|---|
+| 失败态**会缓存** | 失败后 `fn` 不再重跑，直到依赖变化或 `refresh()` | 否则每读一次 `.value` 就执行一次 `fn`，带副作用的计算会被执行 N 遍 |
+| 失败态**仍追踪依赖** | 依赖变到一个能算出值的状态后自动恢复 | 否则会永久锁死在上一次的错误里，即使依赖已经变好 |
+| 失败**不通知监听者** | 进入错误态时不触发 `listen` 回调；恢复到正常值才触发 | 一次求值失败不该把整条 effect / 渲染链路打断 |
+
+所以「抛错的 computed 会不会把 effect 链路断掉」的答案是：**不会断**。错误只在**读取点**暴露
+（`.value` 抛 / `.error` 不抛），怎么处置由读的人决定。
+
+GUI 里推荐这样写 —— 不要指望 try/catch 兜住渲染过程：
+
+```js
+// ✅ 读 .error 渲染错误态，链路照常跑
+{() => total.error ? "数量不合法" : `合计 ${total.value}`}
+
+// ❌ 直接读 .value：一旦算错就是一次未捕获异常
+{() => `合计 ${total.value}`}
+```
+
+`console.log(computed)` / 字符串拼接走的是诊断路径，不会因为处在错误态而抛，
+也不会往回调桥里写错误信号（否则一个纯诊断动作会变成"某处抛错了"）。
+
 ## 9. 宿主能力
 
 ### 9.1 原生系统对话框

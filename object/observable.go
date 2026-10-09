@@ -646,6 +646,21 @@ func (m *ObservableMap) RxClose() {
 
 // Computed 惰性计算属性: 求值期间追踪读取过的 Observable, 任一依赖
 // 变化即失效并重算/通知。
+//
+// ===== 求值抛错的语义 (看板 rvE6lH, 选定方案 a: 抛出原始抛出值) =====
+//
+// computed(fn) 的契约是 `.value` ≡ 调用 fn()。fn() 会抛, 那读 `.value` 也该抛,
+// 而且抛出的是**原始抛出值** (throw x 的 x 本身), 不降级成字符串、不包装。
+//
+// 抛的实现走 VM 既有机制: Computed.GetProperty 无 error 返回, 但 VM 在
+// OP_GET_PROP / OP_GET_INDEX 之后会立刻 checkCallbackErr 并重抛 (accessor getter
+// 就是这么抛的)。所以 RxValue 在抛错态下把原始抛出值写回回调桥双槽即可。
+//
+// 三条边界, 见下方 recompute / invalidate / valueOrThrown 的注释:
+//  1. 失败态**要缓存** —— 否则每次读都重跑 fn, 副作用被重复执行;
+//  2. 失败态**仍要给依赖布线** —— 否则依赖变了不再重算, 锁死在错误里;
+//  3. 失败**不往监听链扩散** —— invalidate 时不通知监听者, 一次求值失败
+//     不该把整条 effect / 渲染链路打断。错误只在**读取点**暴露。
 type Computed struct {
 	fn        Value
 	cached    Value
@@ -655,18 +670,36 @@ type Computed struct {
 	tracker   *rxTracker
 	// wired 记录已布线的依赖, 防止重算时重复注册监听
 	wired map[RxSource]bool
-	mu    sync.Mutex
+	// threw / thrown / thrownErr 是缓存的失败态。thrown 保真保存原始抛出值
+	// (throw x 的 x 本身, 可能是任意值, 不一定是 Error 对象);
+	// thrownErr 保存 VM 给的 Go 侧错误 (通常是携带 Value 的 *ThrowError)。
+	threw     bool
+	thrown    Value
+	thrownErr error
+	mu        sync.Mutex
 }
 
 func NewComputed(fn Value) *Computed { return &Computed{fn: fn} }
 
 func (c *Computed) Type() ObjectType { return OBSERVABLE_OBJ }
-func (c *Computed) Inspect() string  { return "RxComputed<" + ToString(c.RxValue()) + ">" }
 func (c *Computed) IsTruthy() bool   { return true }
 func (c *Computed) rxSource()        {}
 
+func (c *Computed) Inspect() string {
+	// 刻意走 valueOrThrown 而不是 RxValue: Inspect 可能在任意时刻被调
+	// (console.log / 字符串拼接 / 调试器), 绝不能往回调桥双槽里写东西 ——
+	// 那会让一个纯粹的诊断动作变成"某处抛错了" (rr1O8P 类跨调用污染)。
+	v, threw := c.valueOrThrown()
+	if threw {
+		return "RxComputed<Error: " + ToString(v) + ">"
+	}
+	return "RxComputed<" + ToString(v) + ">"
+}
+
 // recompute 在追踪器开启的情况下执行 fn, 并把新依赖布线到失效回调。
-func (c *Computed) recompute() Value {
+//
+// 返回 (值, 是否抛错)。抛错时第一个返回是**原始抛出值**, 不是包装后的 Error。
+func (c *Computed) recompute() (Value, bool) {
 	t := &rxTracker{}
 	rxPushTracker(t)
 	ret := CallFunction(c.fn, UndefinedSingleton)
@@ -674,21 +707,76 @@ func (c *Computed) recompute() Value {
 		rxPopTracker(t)
 		// 值槽同步消费: 只清错误槽会把原值留在原地, 之后任一取两槽的位点
 		// 会把它当成"本次抛出的值" ⇒ 静默错值 (rr1O8P)。
-		//
-		// 这里**刻意不改**返回值语义 —— "Computed 求值抛错时读回的什么"
-		// 是独立的 Rx 语义决策, 不宜照搬 r6OWbQ 的值保真修法 (看板 rvE6lH)。
-		// 本单只做卫生修复: 两槽同步, 消除跨调用污染。
-		TakeCallbackErrorValue()
-		return NewErrorWithName("Error", err.Error())
+		thrown := TakeCallbackErrorValue()
+		c.mu.Lock()
+		c.threw = true
+		c.thrown = thrown
+		c.thrownErr = err
+		c.valid = false
+		c.mu.Unlock()
+		// 失败态**也要布线**: fn 可能是在读到一半的依赖时才抛的, 本次追踪到的
+		// 依赖仍然成立。不布线的话依赖变了不会再重算, computed 就永久锁死在
+		// 这次的错误里 —— 即使依赖已经变回一个能算出值的状态。
+		c.wireDeps(t)
+		return thrown, true
 	}
 	rxPopTracker(t)
 	c.mu.Lock()
 	c.tracker = t
 	c.cached = ret
 	c.valid = true
+	c.threw = false
+	c.thrown = nil
+	c.thrownErr = nil
 	c.mu.Unlock()
 	c.wireDeps(t)
-	return ret
+	return ret, false
+}
+
+// valueOrThrown 是 Go 侧内部读值入口: 只返回值通道结果, **不动回调桥双槽**。
+//
+// invalidate / RxSubscribe / Inspect 都走这里 —— 它们跑在渲染与通知链路上,
+// 写全局错误槽会被 gfx 那些 `takeCallbackErr()` 位点当成"本次操作失败"取走,
+// 把一次求值错误升级成整条渲染链路的失败。
+func (c *Computed) valueOrThrown() (Value, bool) {
+	c.mu.Lock()
+	if c.valid {
+		v := c.cached
+		c.mu.Unlock()
+		// 上层 computed 也可能依赖本 computed
+		if t := rxCurrentTracker(); t != nil {
+			t.track(c)
+		}
+		return v, false
+	}
+	if c.threw {
+		v := c.thrown
+		c.mu.Unlock()
+		if t := rxCurrentTracker(); t != nil {
+			t.track(c)
+		}
+		return v, true
+	}
+	c.mu.Unlock()
+	v, threw := c.recompute()
+	if t := rxCurrentTracker(); t != nil {
+		t.track(c)
+	}
+	return v, threw
+}
+
+// markDirty 让缓存失效: 下次读取必须重新求值。
+//
+// 失败态**同样**要能被置脏 —— 否则依赖变到一个能算出值的新状态后,
+// valueOrThrown 会一直命中缓存的 thrown, computed 就永久锁死在旧错误里
+// (依赖明明已经变了, 读回来还是上一次的抛出值)。
+func (c *Computed) markDirty() {
+	c.mu.Lock()
+	c.valid = false
+	c.threw = false
+	c.thrown = nil
+	c.thrownErr = nil
+	c.mu.Unlock()
 }
 
 // wireDeps 为新增依赖注册失效回调 (已布线的跳过)。
@@ -737,21 +825,22 @@ func (c *Computed) wireDeps(t *rxTracker) {
 	}
 }
 
+// RxValue 是 JS 侧读值入口 (`c.value`, 以及 GetX 语义的 `c()`)。
+//
+// 求值抛错时: 把**原始抛出值**写回回调桥双槽并返回 undefined。VM 在
+// OP_GET_PROP / OP_GET_INDEX 之后会立刻 checkCallbackErr 并重抛, 于是 JS 侧
+// 读到的是 throw 出来的那个值本身 —— 与直接调用 fn() 完全一致 (rvE6lH 方案 a)。
+// 不检查错误槽的 Go 侧调用方拿到 undefined, 这比拿到一个伪装成正常值的 Error
+// 更安全 (不会静默变成渲染结果)。
 func (c *Computed) RxValue() Value {
-	c.mu.Lock()
-	if c.valid {
-		v := c.cached
-		c.mu.Unlock()
-		// 上层 computed 也可能依赖本 computed
-		if t := rxCurrentTracker(); t != nil {
-			t.track(c)
+	v, threw := c.valueOrThrown()
+	if threw {
+		// 两槽同进同出, 保持与 VM 桥一致的写法。
+		if c.thrownErr != nil {
+			SetCallbackError(c.thrownErr)
 		}
-		return v
-	}
-	c.mu.Unlock()
-	v := c.recompute()
-	if t := rxCurrentTracker(); t != nil {
-		t.track(c)
+		SetCallbackErrorValue(c.thrown)
+		return UndefinedSingleton
 	}
 	return v
 }
@@ -764,9 +853,22 @@ func (c *Computed) invalidate() {
 		return
 	}
 	old := c.cached
+	wasThrew := c.threw
 	c.mu.Unlock()
-	nv := c.recompute()
-	if sameRxValue(old, nv) {
+	// 先置脏: 否则 valueOrThrown 会直接命中上一次的 cached / thrown,
+	// 依赖变化根本触发不了重算 (错误态尤其致命 —— 依赖变好了也回不来)。
+	c.markDirty()
+	// 走 valueOrThrown 而不是 recompute: 通知链路不能碰全局错误槽。
+	nv, threw := c.valueOrThrown()
+	// 求值抛错 ⇒ **不通知监听者**。一次求值失败不该把整条 effect / 渲染
+	// 链路打断 (rvE6lH 明确要确认的这一点, 答案是: 不会断)。错误只在读取点
+	// (`.value`) 暴露 —— 读的人自己决定是 try/catch 还是读 `.error`。
+	if threw {
+		return
+	}
+	// 从错误态恢复到正常值: 这算一次真实变化, 要通知。
+	// (错误态下 old 仍是上一次成功的值, 不做 same-value 比较。)
+	if !wasThrew && sameRxValue(old, nv) {
 		return
 	}
 	c.mu.Lock()
@@ -780,15 +882,21 @@ func (c *Computed) GetProperty(name string) (Value, bool) {
 	switch name {
 	case "value":
 		return c.RxValue(), true
+	case "error":
+		// 不抛的读法: 给 GUI 场景一个"渲染错误态而不是炸掉"的出口。
+		// 最近一次求值成功时为 undefined。
+		v, threw := c.valueOrThrown()
+		if !threw {
+			return UndefinedSingleton, true
+		}
+		return v, true
 	case "listen":
 		return NewBuiltin("listen", func(args ...Value) Value { return c.RxSubscribe(argRx(args, 0)) }), true
 	case "close":
 		return NewBuiltin("close", func(args ...Value) Value { c.RxClose(); return UndefinedSingleton }), true
 	case "refresh":
 		return NewBuiltin("refresh", func(args ...Value) Value {
-			c.mu.Lock()
-			c.valid = false
-			c.mu.Unlock()
+			// invalidate 会先 markDirty (valid 与失败态一并清), 再重算。
 			c.invalidate()
 			return UndefinedSingleton
 		}), true
@@ -804,9 +912,16 @@ func (c *Computed) RxSubscribe(fn Value) Value {
 		c.listeners = append(c.listeners, fn)
 	}
 	c.mu.Unlock()
-	// 立即求值并以当前值回调
-	v := c.RxValue()
-	if IsCallable(fn) {
+	// 立即求值并以当前值回调。
+	//
+	// 走 valueOrThrown 而不是 RxValue: 这里是通知链路, 不能碰全局错误槽 ——
+	// 紧随其后的 CallFunction 会把错误槽清空, 信号就丢了; 而值槽不清,
+	// 又会污染到下一个两槽消费者 (rr1O8P)。
+	//
+	// 求值抛错时不回调: 与 invalidate 一致 (错误只在读取点暴露), 否则订阅者
+	// 会收到一个 undefined 却无从分辨"值就是 undefined"还是"算失败了"。
+	v, threw := c.valueOrThrown()
+	if !threw && IsCallable(fn) {
 		CallFunction(fn, nil, v, v)
 	}
 	sub := NewObject()
