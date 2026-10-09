@@ -39,8 +39,12 @@ def mirror(dst):
             rel = os.path.relpath(src, ROOT).replace("\\", "/")
             # npm/ 与 scripts/ 整目录都要。注意 os.walk 的 dirpath 到 npm/bin
             # 那一层就不再以 "npm" 结尾，所以只能按 rel 判前缀。
+            # docs/exports.golden.json 是第 6 项检查的输入（r3FFt6）：
+            # 不镜像它，镜像里的检查会因为"golden 不存在"先红一次，
+            # 于是所有用例都被判成"基线就红"，自测整体失效。
             if not (rel.endswith(".go") or rel.startswith("npm/")
-                    or rel.startswith("scripts/")):
+                    or rel.startswith("scripts/")
+                    or (rel.startswith("docs/") and rel.endswith(".golden.json"))):
                 continue
             if fn.endswith(".exe"):
                 continue
@@ -141,6 +145,15 @@ CASES = [
     ("package.json bin 指向不存在的文件",
      "但该文件不存在",
      lambda r: sub(r, "npm/package.json", '"gox": "bin/gox.js"', '"gox": "bin/gone.js"')),
+
+    # 导出面变了却没重新生成 golden —— 这是 r3FFt6 要守住的那个动作：
+    # 「新增一个导出，README / 官网 / 脚手架全没跟」的第一步就是这里没跟。
+    ("新增导出但没更新 golden",
+     "golden 里没有",
+     lambda r: sub(r, "gfx/view.go",
+                   '"Switch": object.NewBuiltin("Switch", jsViewSwitch),',
+                   '"Switch": object.NewBuiltin("Switch", jsViewSwitch),\n'
+                   '\t\t\t"brandNewExport": object.NewBuiltin("brandNewExport", jsViewSwitch),')),
 ]
 
 

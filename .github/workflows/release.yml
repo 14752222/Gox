@@ -81,6 +81,27 @@ jobs:
         with:
           submodules: true
 
+      # ── 版本号闸门（r4yycE，B 路：维持手写，但把检查升级成发版硬闸门）────────
+      # 放在 decide 的**第一步**：发版一旦走到 publish，二进制已经交叉编译完了，
+      # 那时才发现版本号对不上，浪费的是整轮构建；而这里几秒就能判死。
+      #
+      # 为什么不用「收敛到 git tag / ldflags 注入」（A 路）：cmd/gox/main.go 的注释
+      #   已经写明「刻意不引入第二个真相来源以外的复杂度」—— 那是有意取舍。
+      #   所以本单不改架构，只把"漏改"从「事后被 check-registries 发现」前移成
+      #   「发版第一关就红」，并且失败时把每一处真相点的 文件:行号 = 值 全列出来：
+      #   只报一句"版本号不一致"等于让人去全仓 grep，那是 rXrGfu 的老毛病。
+      #
+      # 覆盖范围：cmd/gox/main.go 的 const version（基准）+ npm/package.json +
+      #   npm/packages/* 平台子包。官网页面里的版本号由 pages.yml 的
+      #   scripts/check-site.py 那一步负责（部署时），不在这里重复建闸。
+      #
+      # `--github` 让脚本自己把失败写成 ::error:: 注解：未登录读不到 job 日志，
+      #   而注解是唯一的归因入口。
+      - name: 版本号同步闸门（cmd/gox ↔ npm 主包 ↔ 平台子包）
+        run: |
+          set -euo pipefail
+          python3 scripts/check-registries.py --version --github
+
       - name: 解析版本号并查 registry
         id: guard
         env:
@@ -176,10 +197,9 @@ jobs:
       - name: 注册表一致性（内置组件 / gx 模块 / 版本号 / npm 清单）
         run: |
           set -euo pipefail
-          if ! python3 scripts/check-registries.py; then
-            echo "::error::注册表一致性检查未通过，中止发版 —— 具体缺哪个站点见上一条输出"
-            exit 1
-          fi
+          # --github：让脚本把每条失败自己写成 ::error:: 注解（带具体文件与缺哪个
+          # 站点）。上面 decide 已经用 --version 单独跑过版本号，这里跑全套。
+          python3 scripts/check-registries.py --github
 
       - uses: actions/setup-go@v7
         with:

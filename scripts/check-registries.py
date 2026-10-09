@@ -26,14 +26,22 @@
    不同子模块不得导出同名 API（`merged[k] = v` 是 last-wins，会静默吞掉前一个）。
    注：模块名走 `gx/` 前缀已被 `vm.loadModule` 的保留命名空间拦下，无需额外登记。
 
-3. **版本号一致**。`cmd/gox/main.go` 的 `const version` 必须等于 `npm/package.json` 的
-   `version`（官网那四个页面里的版本号由 `scripts/check-site.py` 负责）。
+3. **版本号一致**（r4yycE：三处手工同步，本项就是它的机器闸门）。
+   `cmd/gox/main.go` 的 `const version`、`npm/package.json` 的 `version`、
+   `npm/packages/*/package.json` 的子包 version 必须同号，以 `cmd/gox/main.go`
+   为基准。每条来源都带**文件:行号**（官网页面里的版本号由 pages.yml 的
+   `scripts/check-site.py` 那一步负责）。
 
 4. **npm 包清单自洽**。主包 `package.json` 的 `bin` 指向真实存在的文件，`files`
    覆盖 `bin/`、`binaries/`，且**不含 `mobile/`**（历史教训：发过一个没有二进制的
    空壳包，本地 Windows 不复现、只有 Linux CI 上必现 —— 本地能查的只有清单自洽性）。
 
-5. **移动端子包自洽**（M11）。`npm/packages/<dirname>/package.json` 是「平台 × ABI」
+5. **导出名单 golden**（r3FFt6）。内置模块的导出名单落成
+   `docs/exports.golden.json`（由 `scripts/gen-exports-golden.py` 生成），CI 用
+   「实抽 vs golden」diff：改了导出面就必须重新生成并提交，让 API 变化在
+   `git diff` 里现形，而不是混在一次大提交里被人漏看。
+
+6. **移动端子包自洽**（M11）。`npm/packages/<dirname>/package.json` 是「平台 × ABI」
    子包的定义：命名、版本（须与主包同号）、`files` 清单必须自洽；若本机已跑过
    `build-npm-mobile.sh`（`dist/npm-mobile-pkgs/<dirname>/` 存在），再逐产物比对
    `manifest.json` 里的 sha256/size —— 这是"发出去的库是不是这次编的"唯一硬证据。
@@ -41,11 +49,14 @@
 用法：
     python3 scripts/check-registries.py            # 跑全部检查
     python3 scripts/check-registries.py --list     # 只打印实际抽出的注册表
+    python3 scripts/check-registries.py --version  # 只跑版本号那一类（发版闸门）
+    python3 scripts/check-registries.py --github   # 失败时额外输出 ::error:: 注解
 
 退出码非 0 表示失败。
 """
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import re
@@ -357,11 +368,29 @@ def extract_umbrella_submodules():
 
 
 def extract_version():
-    src = strip_comments(read(os.path.join("cmd", "gox", "main.go")))
-    m = re.search(r'const version\s*=\s*"([^"]+)"', src)
+    """返回 (版本号, 行号)。
+
+    行号按**原始文件**算：strip_comments 后的文本是给正则用的，行数是否与原文件
+    对齐不该成为本函数的隐式依赖 —— 一旦哪天改成"删注释行"，用剥离后的文本算
+    出来的行号就会指向错的地方，而错行号比没有行号更糟（照着它去改会改错文件）。
+    """
+    raw = read(os.path.join("cmd", "gox", "main.go"))
+    m = re.search(r'const version\s*=\s*"([^"]+)"', strip_comments(raw))
     if not m:
         raise Fail('cmd/gox/main.go 里找不到 `const version = "…"`')
-    return m.group(1)
+    return m.group(1), line_of(raw, r'const version\s*=\s*"')
+
+
+def line_of(text, pattern):
+    """在 text 里找 pattern 首次命中的行号（1 起）。找不到返回 0。
+
+    re.M 是必需的：pattern 里带 `^` 时，默认只匹配整个文本的开头 —— 那会让
+    `"version"` 这类"不在第一行"的字段永远拿不到行号，输出里变成一堆 `?`。
+    """
+    m = re.search(pattern, text, re.M)
+    if not m:
+        return 0
+    return text.count("\n", 0, m.start()) + 1
 
 
 def load_pkg():
@@ -495,15 +524,105 @@ def check_modules():
 
 
 # ── 检查 3：版本号一致 ──────────────────────────────────────────────────────
+#
+# 为什么每条来源都要带**文件:行号**：版本号靠人同步（r4yycE），发版时任何一处漏改
+# 都只在事后才被发现。只报一句"版本号不一致"等于让人去全仓 grep —— 那正是
+# "只给 exit code、不给归因"的老毛病（看板 rXrGfu）。所以这里把每一处真相点
+# 的 文件:行号 = 值 全列出来，改错的是哪个文件一眼可见。
+def version_sources():
+    """收集版本号的所有真相点，返回 [(说明, 相对路径, 行号, 值), …]。
+
+    顺序有意义：第一项是**基准**（cmd/gox/main.go —— 用户 `gox version` 读到的
+    就是它），其余向它对齐。
+    """
+    go_ver, go_line = extract_version()
+    srcs = [("cmd/gox/main.go 的 const version", os.path.join("cmd", "gox", "main.go"),
+             go_line, go_ver)]
+
+    pkg_rel = os.path.join("npm", "package.json")
+    srcs.append(("npm/package.json 的 version", pkg_rel,
+                 line_of(read(pkg_rel), r'^\s*"version"\s*:'),
+                 str(load_pkg().get("version", ""))))
+
+    # 平台子包（M11）：与主包成对发布，版本号必须同号 —— 壳工程与引擎对不上号
+    # 是"装上就崩"级别的错，而它在 registry 上表现为两个包安静地共存。
+    pkgs_dir = os.path.join(ROOT, "npm", "packages")
+    if os.path.isdir(pkgs_dir):
+        for name in sorted(os.listdir(pkgs_dir)):
+            rel = os.path.join("npm", "packages", name, "package.json")
+            p = os.path.join(ROOT, rel)
+            if not os.path.isfile(p):
+                continue
+            with open(p, encoding="utf-8") as f:
+                try:
+                    sub = json.load(f)
+                except ValueError as e:
+                    raise Fail("%s 解析失败：%s" % (rel, e))
+            srcs.append(("子包 %s 的 version" % name, rel,
+                         line_of(read(rel), r'^\s*"version"\s*:'),
+                         str(sub.get("version", ""))))
+    return srcs
+
+
 def check_version():
-    go_ver = extract_version()
-    pkg_ver = str(load_pkg().get("version", ""))
-    if go_ver != pkg_ver:
-        raise Fail("版本号不一致：cmd/gox/main.go 的 const version = %r，"
-                   "npm/package.json 的 version = %r。"
-                   "`gox version` 报的与实际发出去的包不是同一个版本号"
-                   % (go_ver, pkg_ver))
-    return go_ver
+    srcs = version_sources()
+    base_label, base_path, base_line, base_ver = srcs[0]
+
+    # 通过时也把整张表打出来：版本号是**唯一**一个"对了也要留证据"的检查 ——
+    # 发版记录里能直接抄到"这一版各处分别写的什么"，事后对账不用再翻文件。
+    lines = ["  版本真相点（%d 处，以 %s 为基准）：" % (len(srcs), base_label)]
+    for label, path, ln, val in srcs:
+        lines.append("    %s:%s = %r   [%s]" % (path, ln or "?", val, label))
+
+    diff = [(l, p, ln, v) for l, p, ln, v in srcs[1:] if v != base_ver]
+    if not diff:
+        print("\n".join(lines))
+        return base_ver
+
+    lines.append("")
+    # 「版本号不一致」这五个字是 check-registries-selftest.py 的断言关键字，
+    # 也是人一眼认出这是版本问题的锚点 —— 改写这条消息时要同步改自测。
+    lines.append("  版本号不一致：%d 处与基准 %r 对不上（把它们改成 %r 即可）："
+                 % (len(diff), base_ver, base_ver))
+    for label, path, ln, val in diff:
+        lines.append("    %s:%s 现在是 %r ≠ %r   [%s]" % (path, ln or "?", val, base_ver, label))
+    lines.append("")
+    lines.append("  后果：`gox version` 报的与实际发出去的包不是同一个版本号，"
+                 "用户装到的包与命令行自报的身份对不上 —— 且只在事后才被发现。")
+    raise Fail("\n".join(lines))
+
+
+# ── 检查 6：导出名单 golden 与代码一致 (r3FFt6) ────────────────────────────
+#
+# 抽取逻辑只有一份，活在 scripts/gen-exports-golden.py 里（它反过来按文件加载
+# 本脚本取真源）。golden 文件的意义见该脚本文件头：导出面是 API 契约，变化
+# 必须被人看见，所以 CI 只做 diff、不自动刷新。
+def check_exports_golden():
+    helper = os.path.join(ROOT, "scripts", "gen-exports-golden.py")
+    spec = importlib.util.spec_from_file_location("gen_exports_golden", helper)
+    if spec is None or spec.loader is None:
+        raise Fail("加载 %s 失败（脚本改名了？）" % helper)
+    gen = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(gen)
+
+    rel = os.path.join("docs", "exports.golden.json")
+    path = os.path.join(ROOT, rel)
+    if not os.path.isfile(path):
+        raise Fail("%s 不存在 —— 先跑 python3 scripts/gen-exports-golden.py 生成它"
+                   "（它是内置模块导出名单的唯一机器可读真相）" % rel)
+    try:
+        with open(path, encoding="utf-8") as f:
+            golden = json.load(f)
+    except (OSError, ValueError) as e:
+        raise Fail("%s 读不出来：%s" % (rel, e))
+
+    problems = gen.diff(golden, gen.current(sys.modules[__name__]))
+    if problems:
+        raise Fail("导出名单 golden 与代码不一致 —— 导出面变了要让人看见："
+                   "确认无误后跑 python3 scripts/gen-exports-golden.py 重新生成，"
+                   "并**随代码一起提交**（README / 官网 / 脚手架都要照它更新）\n"
+                   + "\n".join(problems))
+    return True
 
 
 # ── 检查 4：npm 包清单自洽 ──────────────────────────────────────────────────
@@ -688,8 +807,18 @@ def cmd_list():
 
 
 def main():
-    if "--list" in sys.argv:
+    argv = sys.argv[1:]
+    if "--list" in argv:
         return cmd_list()
+
+    # --github：把失败原因同时写成一行 ::error:: 注解。
+    #   未登录读不到 job 日志，注解是唯一的归因入口（看板 rXrGfu 的教训）。
+    #   stdout 上仍然保留完整的多行证据 —— 注解有长度上限，会截断，不能只靠它。
+    github = "--github" in argv
+
+    # --version：只跑版本号那一类。发版流水线用它做**专门一步**，失败时输出里
+    #   只有版本信息，不会被组件/模块那几类的输出淹没。
+    only_version = "--version" in argv
 
     checks = [
         ("内置 GUI 组件四处同步", check_components),
@@ -697,7 +826,13 @@ def main():
         ("版本号一致 (cmd/gox/main.go ↔ npm/package.json)", check_version),
         ("npm 包清单自洽", check_npm_manifest),
         ("移动端子包自洽 (M11)", check_mobile_subpackages),
+        ("导出名单 golden ↔ 代码 (r3FFt6)", check_exports_golden),
     ]
+
+    if only_version:
+        checks = [c for c in checks if c[1] is check_version]
+        if not checks:
+            raise SystemExit("--version 没匹配到任何检查（脚本内部错误）")
 
     failed = 0
     for title, fn in checks:
@@ -707,6 +842,10 @@ def main():
             failed += 1
             print("FAIL  %s" % title)
             print(str(e))
+            if github:
+                # 注解里的换行会被 GitHub 压成一坨，用 ｜ 分隔可读性更好
+                flat = " ｜ ".join(x.strip() for x in str(e).splitlines() if x.strip())
+                print("::error::%s —— %s" % (title, flat[:2000]))
         else:
             print("ok    %s" % title)
 
