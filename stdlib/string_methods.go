@@ -16,6 +16,25 @@ const jsWhitespace = "\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004" +
 // 超大 count 触发 OOM 或 panic (规范中对应 RangeError: Invalid string length)。
 const maxStringLength = 1 << 30
 
+// requireObjectCoercible 实现规范的 RequireObjectCoercible 抽象操作：
+// null 与 undefined 非法，其余一切（含原始值）都合法。
+//
+// 与 thisStringValue 是**两个不同的操作**，别混：RequireObjectCoercible 只挡
+// null/undefined，之后通常还要 ToString/ToObject 做强制转换；ThisStringValue
+// 则要求 this 已经是 String（或 String 对象），不做强制转换。
+func requireObjectCoercible(v object.Value) bool {
+	if v == nil {
+		return false // undefined
+	}
+	if _, ok := v.(*object.Undefined); ok {
+		return false
+	}
+	if _, ok := v.(*object.Null); ok {
+		return false
+	}
+	return true
+}
+
 // thisStringValue 实现规范的 ThisStringValue 抽象操作。
 //
 // 返回 (*object.String, true) 表示 this 合法；返回 (nil, false) 表示调用方
@@ -610,12 +629,22 @@ func setupStringProto() *object.Object {
 	}))
 
 	// concat(...strings)
+	//
+	// 注意: concat 的规范算法是 RequireObjectCoercible + ToString, **不是**
+	// ThisStringValue —— 两者是**不同的抽象操作**, 混用会直接丢用例:
+	//
+	//	String.prototype.concat.call(42, "x")  === "42x"   (ToString 强制转换)
+	//	({toString(){return "one"}}).concat("two", x) === "onetwoundefined"
+	//
+	// 后者是 ES5 老用例 (S15.5.4.6_A4_T1), 至今仍在 test262 里; 前者是 ES2015
+	// 起的口径。只有 null/undefined 必须抛 TypeError (RequireObjectCoercible)。
+	// 我第一次改这里时按 ThisStringValue 收口了, 结果前者挂掉 —— 用例级 diff
+	// 抓出来的, 肉眼读代码看不出这两个操作的区别。
 	p.SetBuiltinProperty("concat", object.NewBuiltinMethod("concat", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := thisStringValue(this, p)
-		if !ok {
+		if !requireObjectCoercible(this) {
 			return thisTypeError("String", "concat", this)
 		}
-		result := s.Value
+		result := toStr(this)
 		for _, arg := range args {
 			result += toStr(arg)
 		}

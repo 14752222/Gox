@@ -132,6 +132,9 @@ declare module "gox" {
   export function current(...args: any[]): any;
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
   export function currentVersion(...args: any[]): any;
+  /** 类型待补: 默认导出 (内置常量, 类型未推断). */
+  const _default: any;
+  export default _default;
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
   export function devEval(...args: any[]): any;
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
@@ -151,6 +154,8 @@ declare module "gox" {
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
   export function deviceInfo(...args: any[]): any;
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
+  export function digest(...args: any[]): any;
+  /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
   export function distanceBetween(...args: any[]): any;
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
   export function downloadAndInstall(...args: any[]): any;
@@ -169,6 +174,8 @@ declare module "gox" {
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
   export function getLocation(...args: any[]): any;
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
+  export function getRandomValues(...args: any[]): any;
+  /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
   export function getSetting(...args: any[]): any;
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
   export function getStorage(...args: any[]): any;
@@ -180,6 +187,8 @@ declare module "gox" {
   export function hasFold(...args: any[]): any;
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
   export function hasLocation(...args: any[]): any;
+  /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
+  export function hash(...args: any[]): any;
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
   export function hinge(...args: any[]): any;
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
@@ -284,6 +293,8 @@ declare module "gox" {
   export function previewImage(...args: any[]): any;
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
   export function primaryScreen(...args: any[]): any;
+  /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
+  export function randomUUID(...args: any[]): any;
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
   export function regions(...args: any[]): any;
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
@@ -462,6 +473,20 @@ declare module "gx/app" {
   export function share(...args: any[]): any;
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
   export function useAppState(...args: any[]): any;
+}
+
+declare module "gx/crypto" {
+  /** 类型待补: 默认导出 (内置常量, 类型未推断). */
+  const _default: any;
+  export default _default;
+  /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
+  export function digest(...args: any[]): any;
+  /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
+  export function getRandomValues(...args: any[]): any;
+  /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
+  export function hash(...args: any[]): any;
+  /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
+  export function randomUUID(...args: any[]): any;
 }
 
 declare module "gx/dev" {

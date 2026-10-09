@@ -138,6 +138,47 @@ func TestStringProtoToStringAcceptsStringThis(t *testing.T) {
 	`)
 }
 
+// TestStringProtoConcatIsCoercibleNotThisStringValue
+//
+// concat 走 RequireObjectCoercible + ToString, **不是** ThisStringValue。
+// 这两个是**不同的抽象操作**, 混用会直接丢用例 —— 我第一次修这里时就混了,
+// 结果 ES5 老用例 S15.5.4.6_A4_T1 从过变挂 (靠用例级 diff 才发现, 读代码
+// 看不出来)。所以三条形态各钉一条:
+//
+//	concat.call(42, "x")                      === "42x"   (ToString 强制转换)
+//	({toString(){return "one"}}).concat("two", x) === "onetwoundefined"  (ES5)
+//	concat.call(null / undefined)             → TypeError (RequireObjectCoercible)
+func TestStringProtoConcatIsCoercibleNotThisStringValue(t *testing.T) {
+	evalJS(t, `
+		// ① 非 String 的原始值: ToString 强制转换, 不是 TypeError
+		if (String.prototype.concat.call(42, "x") !== "42x") {
+			throw new Error("concat.call(42) 应强制转换为 \"42x\"");
+		}
+
+		// ② ES5 老用例的口径: 自定义 toString 的对象也要先 ToString 再拼
+		const inst = { toString: function () { return "one"; } };
+		inst.concat = String.prototype.concat;
+		let x;
+		if (inst.concat("two", x) !== "onetwoundefined") {
+			throw new Error("ES5 concat 口径错了, 得到 " + inst.concat("two", x));
+		}
+
+		// ③ 只有 null/undefined 抛 TypeError
+		function mustThrow(fn, label) {
+			let threw = false;
+			try { fn(); } catch (e) {
+				if (!(e instanceof TypeError)) { throw new Error(label + " 抛的不是 TypeError: " + e); }
+				threw = true;
+			}
+			if (!threw) { throw new Error(label + " 没有抛 TypeError"); }
+		}
+		const concat = String.prototype.concat;
+		mustThrow(() => concat.call(undefined, ""), "concat.call(undefined)");
+		mustThrow(() => concat.call(null, ""), "concat.call(null)");
+		"ok";
+	`)
+}
+
 // TestToStringGuardStillStopsUserRecursion 用户自定义递归仍由 Go 侧 depth 兜住。
 //
 // 这条钉住的是"不要因为这次修了 String 就以为递归问题全解决了": object.ToString
