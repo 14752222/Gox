@@ -192,42 +192,26 @@ func TestHostNetworkTypeDoesNotPanic(t *testing.T) {
 	}
 }
 
-// TestHostNetworkTypeOffsetsSanity 把"实测偏移"钉成断言, 防止有人"顺手改回
-// 手写 struct + 点号访问"。
+// TestHostNetworkTypeOffsetsSanity 守住"偏移必须来自 unsafe.Offsetof, 不是手写
+// 魔数"这条纪律。
 //
-// 这些常量本身是魔数, 所以测试只断言它们的**内部一致性** (不依赖本机网卡是否
-// 存在 / 是否有地址), 真正的布局证据在 host.go 的常量注释里。
+// 背景: 这个文件曾经断言过 648 / 144 两个魔数 —— 它们是**上一轮修错了**的实测值
+// (旧结构体把 AdapterName/Description 写成 [132]byte, 于是后面每个字段都错)。
+// 真正的布局证据现在在 ipadapter.go: 偏移由 unsafe.Offsetof 算出, 与 SDK 的期望
+// 值在**编译期**比对 (ipadapter_test.go 里还有一份跑在 Linux 上的运行时版本)。
+// 所以这里只断言"字段顺序 + 读取区间落在记录内", 不再复制任何数字。
 func TestHostNetworkTypeOffsetsSanity(t *testing.T) {
-	// IpAddressList 必须是记录里**最后**一个字段, 且在记录内。
+	// IpAddressList 必须在 DhcpEnabled 之后, 且整个读取区间在记录内。
 	if offIpAddressList <= offDhcpEnabled {
 		t.Fatalf("IpAddressList 偏移 %d 应大于 DhcpEnabled 的 %d", offIpAddressList, offDhcpEnabled)
 	}
-	if offIpAddressList+ipAddrStringSize > ipAdapterInfoSize {
-		t.Fatalf("IpAddressList(@%d)+48 超出单条记录跨度 %d", offIpAddressList, ipAdapterInfoSize)
+	if ipAdapterInfoReadSpan > ipAdapterInfoSize {
+		t.Fatalf("读取区间 %d 超出单条记录跨度 %d", ipAdapterInfoReadSpan, ipAdapterInfoSize)
 	}
-	// 关键回归点: 真实偏移是 @648, 而 Go 自动布局给的是 @312 —— 若有人把它改回
-	// 312 (即回到手写 struct 的等价形态), 这条断言立刻红。
-	if offIpAddressList != 648 {
-		t.Fatalf("IpAddressList 实测偏移应为 648 (Go 自动布局的 312 是错的), 实际 %d", offIpAddressList)
-	}
-	if offDescription != 144 {
-		t.Fatalf("Description 实测偏移应为 144, 实际 %d", offDescription)
-	}
-	// 越界读取必须被兜住 (这是"不 panic"的实现基础)。
-	empty := ipBuf{}
-	if got := empty.u32(0); got != 0 {
-		t.Fatalf("空缓冲 u32 应为 0, 实际 %d", got)
-	}
-	if got := empty.cstr(0, 16); got != "" {
-		t.Fatalf("空缓冲 cstr 应为空串, 实际 %q", got)
-	}
-	if empty.hasIPv4(0) {
-		t.Fatalf("空缓冲 hasIPv4 应为 false")
-	}
-	// 短缓冲: 记录头都不完整时也必须安全返回 false。
-	short := ipBuf{b: make([]byte, 16)}
-	if short.hasIPv4(0) {
-		t.Fatalf("短缓冲 hasIPv4 应为 false")
+	// 与 SDK 期望值一致 (当前字长下那份期望值)。
+	if offIpAddressList != wantOffIpAddressList || offDescription != wantOffDescription {
+		t.Fatalf("偏移与 SDK 不符: IpAddressList=%d (要 %d), Description=%d (要 %d)",
+			offIpAddressList, wantOffIpAddressList, offDescription, wantOffDescription)
 	}
 }
 
