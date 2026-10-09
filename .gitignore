@@ -103,3 +103,8 @@ bench-results/perf-stress-*.json
 # 根目录的 gox 只是随手 go build 的二进制，不该入库）。
 .DS_Store
 /gox
+
+# Python 字节码缓存：scripts/ 下十几个闸门脚本，任何一次 py_compile / import 都
+# 会留下 .pyc。入库没有意义，还会在不同 Python 版本之间反复产生 diff。
+__pycache__/
+*.py[cod]

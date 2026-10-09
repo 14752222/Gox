@@ -4,24 +4,37 @@
 # 为什么需要这个文件：`gox test262`（cmd/gox/cmd_test262.go）能把 ECMAScript
 #   合规现状量化出来，docs/test262-t04-report.md 记录了两轮提分工程（15.32% →
 #   31.56%），但那个数字是手跑的 —— 引擎后来又变了，README 上却看不到实时值。
-#   本工作流把三件事钉死在 CI 上：
+#   本工作流把四件事钉死在 CI 上：
 #     1. 定期/引擎变更时跑全量 language 套件（本地 15s，CI 上分钟级）；
 #     2. 把合规率写成 shields.io endpoint 徽章格式提交回 docs/test262-compliance.json
 #        —— README 的徽章直接读这份 JSON，每次跑完自动更新，无需人手；
-#     3. 完整逐用例结果上传为 artifact，供回归排查（哪个子集掉了、掉在哪条）。
+#     3. **合规率下限闸门**（scripts/check-compliance.py）：跑完先跟
+#        docs/test262-baseline.json 比，掉了就红。以前只有徽章上的数字在变，
+#        合规率从 78% 掉到 74% CI 依然是绿的，只有人去读数字才会发现 —— 现在不
+#        会了。闸门过了才刷新基线，所以基线恒等于「上次通过闸门时的合规率」；
+#     4. 完整逐用例结果上传为 artifact，供回归排查（哪个子集掉了、掉在哪条）。
+#
+# 闸门判据（完整说明见 scripts/check-compliance.py 文件头）：
+#   用例集没变（total 变化 ≤1%）⇒ 直接比率，跌过 0.5pp 即红；
+#   用例集变了（>1%，通常是 test262 上游加用例）⇒ 率不可比，降级为提示，改看
+#   passed 绝对数 —— "过的用例变少了"在任何分母下都是硬信号。
+#
+# 卡住了解锁：上游一次加几百个用例就可能让通过数掉过 1%。这时不是回归，手动
+#   dispatch 勾上 refresh_baseline 跳过闸门重设基线。
 #
 # 触发策略：
 #   - 每周一 03:00 UTC 定时 —— 官方 test262 是滚动仓库，浅克隆总能拿到最新用例，
 #     上游加用例导致合规率波动也能被发现；
 #   - 推送触碰引擎核心（parser/compiler/vm/object/stdlib/runner 本身）时 ——
 #     "每修一个引擎缺陷，合规率涨了多少"要能立刻在 README 上看到；
-#   - 本 workflow 自己提交的 docs/test262-compliance.json 不在 paths 里，
-#     天然不会自触发死循环。
+#   - 本 workflow 自己提交的 docs/test262-compliance.json 与
+#     docs/test262-baseline.json 都不在 paths 里，天然不会自触发死循环。
 #
 # 与 ci.yml 的关系：ci.yml 是推送闸门（注册表/构建/测试，windows-latest）；
-#   本工作流是趋势观测，慢一点、提交回 main 都不阻塞别人。互不依赖。
+#   本工作流是趋势观测 + 合规率下限，慢一点、提交回 main 都不阻塞别人。互不依赖。
 # 失败时怎么查：先看"合规率汇总"步骤的 GITHUB_STEP_SUMMARY（有按目录分组），
-#   再下 artifact 里的逐用例 JSONL 对比上一次 run 找回归用例。
+#   再看"合规率下限闸门"步骤（会打印基线与现值三行对照 + ::error:: 注解），
+#   最后下 artifact 里的逐用例 JSONL 对比上一次 run 找回归用例。
 # ─────────────────────────────────────────────────────────────────────────────
 name: test262
 
@@ -29,6 +42,11 @@ on:
   schedule:
     - cron: '0 3 * * 1'
   workflow_dispatch:
+    inputs:
+      refresh_baseline:
+        description: '跳过合规率下限闸门，直接把本次结果刷新为基线（test262 上游加用例导致闸门卡住时用）'
+        type: boolean
+        default: false
   push:
     branches: [main]
     paths:
@@ -38,6 +56,7 @@ on:
       - 'vm/**'
       - 'object/**'
       - 'stdlib/**'
+      - 'scripts/check-compliance.py'
       - '.github/workflows/test262.yml'
 
 permissions:
@@ -112,21 +131,56 @@ jobs:
           open(summary, "w").write("\n".join(lines) + "\n")
           PY
 
+      # 自检必须放在闸门之前：万一判据失效（永远输出 ok），先知道，而不是
+      # 白跑一轮之后得到一条假绿 —— 一个从没失败过的闸门等于黑盒。
+      - name: 闸门自检（负向样本必须真的红）
+        run: |
+          set -euo pipefail
+          if ! python3 scripts/check-compliance.py --self-test; then
+            echo "::error::test262 合规率闸门自测未通过 —— 判据或负向样本失效，它可能已经不再拦任何东西"
+            exit 1
+          fi
+
+      # 红在这里 = 合规率掉了。失败原因（基线/现值/折算掉多少用例）由脚本自己
+      # 写成 ::error::，这里不补一句笼统的话 —— 那会让注解里出现两条信息量
+      # 不对等的红。
+      - name: 合规率下限闸门
+        if: ${{ !inputs.refresh_baseline }}
+        run: |
+          set -euo pipefail
+          python3 scripts/check-compliance.py \
+            --current test262-results.json \
+            --baseline docs/test262-baseline.json \
+            --github
+
       - name: 上传逐用例结果
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test262-results
           path: test262-results.json
           retention-days: 90
 
-      - name: 提交徽章数据回 main
+      # 只有闸门过了才刷新基线 —— 所以基线恒等于「上一次通过闸门时的合规率」，
+      # 一次回归不会把基线一起拉低而把后续所有轮次都洗白。
+      - name: 刷新合规率基线
+        if: ${{ success() }}
+        run: |
+          set -euo pipefail
+          python3 scripts/check-compliance.py \
+            --current test262-results.json \
+            --baseline docs/test262-baseline.json \
+            --update-baseline
+
+      - name: 提交徽章数据与基线回 main
+        if: ${{ success() }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add docs/test262-compliance.json
+          git add docs/test262-compliance.json docs/test262-baseline.json
           if git diff --cached --quiet; then
             echo "合规率无变化，跳过提交"
           else
-            git commit -m "chore(test262): 更新合规率徽章数据（$(date -u +%F)）"
+            git commit -m "chore(test262): 更新合规率徽章数据与基线（$(date -u +%F)）"
             git push
           fi

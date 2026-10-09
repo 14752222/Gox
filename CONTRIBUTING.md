@@ -95,6 +95,25 @@ recover 的机会。往里放一次平台调用，就等于要求**所有**二�
 - CI 红了的正确修法不是删掉 golden，而是确认这次 API 变化是有意的，然后重新
   生成并在 PR 描述里写明。
 
+### 7. 改引擎后：合规率与性能各有一次「不许悄悄变差」
+
+两条闸门都是**趋势型**的，跑在 CI 上而不是本地，规矩也一样：
+
+| 闸门 | 跑的时机 | 基线 | 判据 |
+|------|----------|------|------|
+| `scripts/check-compliance.py` | test262.yml（周一 03:00 UTC + 引擎核心变更） | `docs/test262-baseline.json` | 用例集没变 ⇒ 合规率跌过 0.5pp 即红；用例集变了 ⇒ 改看通过数跌过 1% |
+| `scripts/check-bench.py` | bench.yml（每天 03:17 UTC + 手动） | `bench-results/baseline.json` | 主力判 gox/node **比值**（机器差异被约掉）；绝对值只在机型一致时启用 |
+
+- **基线只在闸门通过后才刷新** —— 所以基线恒等于「上一次通过时的数字」。一次
+  回归不会把基线一起拉低，把后面所有轮次洗白。
+- 红了的正确修法：**先确认是不是真退化，再决定是修代码还是刷基线**。不要用
+  「刷基线」当修 bug 的替代品 —— 那是把警报关掉，不是把火灭掉。
+- 上游 test262 加用例导致闸门卡住（不是我们的回归）：手动 dispatch 勾上
+  `refresh_baseline` 跳过闸门重设基线；bench 则是 `python3 scripts/check-bench.py
+  --update-baseline`。
+- 两条闸门都带 `--self-test`（负向用例必须真的红）。改判据时先跑它 ——
+  **一个从没失败过的闸门等于黑盒**。
+
 ## 移动端 / Android 侧的贡献
 
 - 构建一律走 `bash scripts/build-android.sh`（自动找 NDK + ELF 目标校验）；**桌面 `go test` 看不见 android tag 下的编译错误**，改完必跑该脚本。
