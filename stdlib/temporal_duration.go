@@ -183,31 +183,43 @@ func setupTemporalDuration(temporal *object.Object) {
 			return roe
 		}
 		// 规范读取顺序: largestUnit → relativeTo → roundingIncrement →
-		// roundingMode → smallestUnit，全部读完再逐项校验。
-		lv := optValue(opts, "largestUnit")
+		// roundingMode → smallestUnit；逐项 get+cast，语义校验延迟到读完后。
+		lv, _, e := castUnitOption(opts, "largestUnit")
+		if e != nil {
+			return e
+		}
 		relV := optValue(opts, "relativeTo")
 		iv := optValue(opts, "roundingIncrement")
 		var incF float64
-		var incNumErr object.Value
 		if iv != nil {
-			incF, incNumErr = tgToNumber(iv)
+			var numErr object.Value
+			incF, numErr = tgToNumber(iv)
+			if numErr != nil {
+				return numErr
+			}
 		}
-		mv := optValue(opts, "roundingMode")
-		sv := optValue(opts, "smallestUnit")
+		mv, e := castOptionString(opts, "roundingMode")
+		if e != nil {
+			return e
+		}
+		sv, _, e := castUnitOption(opts, "smallestUnit")
+		if e != nil {
+			return e
+		}
 
-		largest, uerr := validateUnitOption(lv, "largestUnit", durationUnits, "auto")
+		largest, uerr := validateUnitString(lv, "largestUnit", durationUnits, "auto")
 		if uerr != nil {
 			return uerr
 		}
-		inc, incErr := validateRoundingIncrement(iv, incNumErr, incF)
+		inc, incErr := validateRoundingIncrement(iv, nil, incF)
 		if incErr != nil {
 			return incErr
 		}
-		mode, modeErr := validateRoundingMode(mv, "halfExpand")
+		mode, modeErr := validateRoundingModeString(mv, "halfExpand")
 		if modeErr != nil {
 			return modeErr
 		}
-		smallest, uerr := validateUnitOption(sv, "smallestUnit", durationUnits, "auto")
+		smallest, uerr := validateUnitString(sv, "smallestUnit", durationUnits, "auto")
 		if uerr != nil {
 			return uerr
 		}
@@ -278,6 +290,8 @@ func setupTemporalDuration(temporal *object.Object) {
 			// 字符串简写: total("hours")
 			opts = nil
 			unit = s.Value
+		} else if opts == nil || opts == object.UndefinedSingleton {
+			return tgType("Options argument is required")
 		} else if e := optionsTypeErr(opts); e != nil {
 			return e
 		}
