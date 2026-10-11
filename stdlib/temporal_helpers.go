@@ -208,8 +208,12 @@ func optionsTypeErr(opts object.Value) object.Value {
 }
 
 // roundOptionsOf 处理 round 类方法的 roundTo 参数:
-// 字符串等价于 { smallestUnit: 字符串 }，对象原样，其余 TypeError。
+// 字符串等价于 { smallestUnit: 字符串 }，对象原样；
+// undefined (未传) 或其余原始值 → TypeError。
 func roundOptionsOf(opts object.Value) (object.Value, object.Value) {
+	if opts == nil || opts == object.UndefinedSingleton {
+		return nil, tgType("Options argument is required")
+	}
 	if s, ok := opts.(*object.String); ok {
 		o := object.NewObject()
 		o.SetProperty("smallestUnit", s)
@@ -530,38 +534,103 @@ type diffOptions struct {
 	mode              string
 }
 
-// readDiffOptions 按规范顺序读取直到/自差值的全部选项后再逐项校验:
+// readDiffOptions 按规范顺序读取直到/自差值的全部选项:
 // largestUnit → roundingIncrement → roundingMode → smallestUnit。
-// 读取与转换逐项交替: get → ToString/ToNumber → 下一项
-// (DifferenceSettings 顺序 largestUnit → roundingIncrement → roundingMode → smallestUnit)。
+// 读取与转换逐项交替 (get → ToString/ToNumber → 下一项)，转换错误立即抛出；
+// 但语义校验 (单位是否允许、数值是否越界) 延迟到全部读取完成后，
+// 再按读取顺序逐一校验 —— 与 test262 "options-read-before-algorithmic-validation" 对齐。
 func readDiffOptions(opts object.Value, allowed []string) (*diffOptions, object.Value) {
-	lv := optValue(opts, "largestUnit")
-	largest, e := validateUnitOption(lv, "largestUnit", allowed, "auto")
+	// 阶段 1: 逐项读取并转换 (副作用可观察顺序)。
+	lv, _, e := castUnitOption(opts, "largestUnit")
 	if e != nil {
 		return nil, e
 	}
 	iv := optValue(opts, "roundingIncrement")
 	var incF float64
-	var incNumErr object.Value
 	if iv != nil {
-		incF, incNumErr = tgToNumber(iv)
+		var numErr object.Value
+		incF, numErr = tgToNumber(iv)
+		if numErr != nil {
+			return nil, numErr
+		}
 	}
-	inc, e := validateRoundingIncrement(iv, incNumErr, incF)
+	mv, e := castOptionString(opts, "roundingMode")
 	if e != nil {
 		return nil, e
 	}
-	mv := optValue(opts, "roundingMode")
+	sv, _, e := castUnitOption(opts, "smallestUnit")
+	if e != nil {
+		return nil, e
+	}
+	// 阶段 2: 全部读取完成后按读取顺序做语义校验。
+	largest, e := validateUnitString(lv, "largestUnit", allowed, "auto")
+	if e != nil {
+		return nil, e
+	}
+	inc, e := validateRoundingIncrement(iv, nil, incF)
+	if e != nil {
+		return nil, e
+	}
 	// DifferenceSettings 的 roundingMode 默认 trunc。
-	mode, e := validateRoundingMode(mv, "trunc")
+	mode, e := validateRoundingModeString(mv, "trunc")
 	if e != nil {
 		return nil, e
 	}
-	sv := optValue(opts, "smallestUnit")
-	smallest, e := validateUnitOption(sv, "smallestUnit", allowed, "auto")
+	smallest, e := validateUnitString(sv, "smallestUnit", allowed, "auto")
 	if e != nil {
 		return nil, e
 	}
 	return &diffOptions{largest: largest, smallest: smallest, inc: inc, mode: mode}, nil
+}
+
+// castUnitOption 读取并立即 ToString 转换单位选项。
+// provided 为 false 表示未提供 (此时 s 为 "")。
+func castUnitOption(opts object.Value, key string) (s string, provided bool, err object.Value) {
+	v := optValue(opts, key)
+	if v == nil {
+		return "", false, nil
+	}
+	str, ok := optionToString(v)
+	if !ok {
+		return "", false, tgType("Cannot convert option " + key + " to string")
+	}
+	return str, true, nil
+}
+
+// castOptionString 同 castUnitOption (语义命名区分)。
+func castOptionString(opts object.Value, key string) (string, object.Value) {
+	s, _, e := castUnitOption(opts, key)
+	return s, e
+}
+
+// validateUnitString 校验已转换的单位字符串 (s 为 "" 表示未提供)。
+func validateUnitString(s, key string, allowed []string, def string) (string, object.Value) {
+	if s == "" {
+		return def, nil
+	}
+	u, _ := normalizeUnit(s)
+	for _, a := range allowed {
+		if a == u {
+			return u, nil
+		}
+	}
+	if s == "auto" && (key == "largestUnit" || key == "smallestUnit") {
+		return "auto", nil
+	}
+	return "", tgRange("Invalid unit option: " + s)
+}
+
+// validateRoundingModeString 校验已转换的 roundingMode 字符串。
+func validateRoundingModeString(s, def string) (string, object.Value) {
+	if s == "" {
+		return def, nil
+	}
+	for _, m := range roundingModeNames {
+		if m == s {
+			return s, nil
+		}
+	}
+	return "", tgRange("Invalid roundingMode option: " + s)
 }
 
 // roundOptions 是 round 方法的解析结果 (读取顺序:
@@ -572,27 +641,43 @@ type roundOptions struct {
 	mode     string
 }
 
-// readRoundOptions 按规范顺序读取 round 的全部选项后再逐项校验。
-// 逐项交替读取与转换 (roundingIncrement → roundingMode → smallestUnit)。
+// readRoundOptions 按规范顺序读取 round 的全部选项
+// (roundingIncrement → roundingMode → smallestUnit)。
+// 读取与转换逐项交替；语义校验延迟到全部读取完成后。
+// smallestUnit 为必填项: 未提供 → TypeError。
 func readRoundOptions(opts object.Value, allowed []string) (*roundOptions, object.Value) {
 	iv := optValue(opts, "roundingIncrement")
 	var incF float64
-	var incNumErr object.Value
 	if iv != nil {
-		incF, incNumErr = tgToNumber(iv)
+		var numErr object.Value
+		incF, numErr = tgToNumber(iv)
+		if numErr != nil {
+			return nil, numErr
+		}
 	}
-	inc, e := validateRoundingIncrement(iv, incNumErr, incF)
+	mv, e := castOptionString(opts, "roundingMode")
 	if e != nil {
 		return nil, e
 	}
-	mv := optValue(opts, "roundingMode")
+	sv, svProvided, e := castUnitOption(opts, "smallestUnit")
+	if e != nil {
+		return nil, e
+	}
+	// 语义校验。
+	inc, e := validateRoundingIncrement(iv, nil, incF)
+	if e != nil {
+		return nil, e
+	}
 	// round 的 roundingMode 默认 halfExpand。
-	mode, e := validateRoundingMode(mv, "halfExpand")
+	mode, e := validateRoundingModeString(mv, "halfExpand")
 	if e != nil {
 		return nil, e
 	}
-	sv := optValue(opts, "smallestUnit")
-	smallest, e := validateUnitOption(sv, "smallestUnit", allowed, "")
+	if !svProvided {
+		// 已提供 options 对象但缺 smallestUnit → RangeError。
+		return nil, tgRange("smallestUnit option is required")
+	}
+	smallest, e := validateUnitString(sv, "smallestUnit", allowed, "")
 	if e != nil {
 		return nil, e
 	}
