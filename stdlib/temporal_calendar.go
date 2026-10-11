@@ -479,28 +479,62 @@ func calendarArgToISODate(v object.Value) (object.ISODate, bool) {
 	return dt.Date, true
 }
 
-// yearMonthFields 从属性包取出 (year, month)，按 overflow 调节 month。
+// yearMonthFields 从属性包按字母序 (month, monthCode, year) 取出字段并调节。
 func yearMonthFields(o propBag, overflow string) (int32, int32, object.Value) {
-	if ce := checkCalendarProp(o); ce != nil {
-		return 0, 0, ce
+	raw, e := yearMonthFieldsRaw(o)
+	if e != nil {
+		return 0, 0, e
 	}
-	yv, hasYear := o.GetProperty("year")
-	if !hasYear || yv == object.UndefinedSingleton {
+	return raw.regulateYM(overflow)
+}
+
+// yearMonthFieldsRaw 只读取不校验 (选项读取插入在读取与校验之间)。
+func yearMonthFieldsRaw(o propBag) (rawDateFields, object.Value) {
+	var r rawDateFields
+	if ce := checkCalendarProp(o); ce != nil {
+		return r, ce
+	}
+	if e := readMonthField(o, &r); e != nil {
+		return r, e
+	}
+	if e := readMonthCodeField(o, &r); e != nil {
+		return r, e
+	}
+	y, okY, e := readIntField(o, "year")
+	if e != nil {
+		return r, e
+	}
+	r.year, r.hasYear = y, okY
+	return r, nil
+}
+
+// regulateYM 校验并调节 year-month 原字段。
+func (r rawDateFields) regulateYM(overflow string) (int32, int32, object.Value) {
+	if !r.hasYear {
 		return 0, 0, tgType("yearMonthFromFields requires year")
 	}
-	yf, yerr := tgToNumber(yv)
-	if yerr != nil {
-		return 0, 0, yerr
+	if !r.hasMonth && !r.hasMonthCode {
+		return 0, 0, tgType("yearMonthFromFields requires month or monthCode")
 	}
-	if math.IsNaN(yf) || math.IsInf(yf, 0) || yf != math.Trunc(yf) {
-		return 0, 0, tgRange("year must be an integer")
+	m := r.month
+	if !r.hasMonth {
+		m = r.monthCode
+	} else {
+		if r.hasMonthCode && r.monthCode != m {
+			return 0, 0, tgRange("month does not match monthCode")
+		}
+		if m < 1 || m > 12 {
+			if overflow == "reject" {
+				return 0, 0, tgRange("month is out of range")
+			}
+			if m < 1 {
+				m = 1
+			} else {
+				m = 12
+			}
+		}
 	}
-	y := int32(yf)
-	m, merr := monthFromFields(o, overflow)
-	if merr != nil {
-		return 0, 0, merr
-	}
-	return y, m, nil
+	return r.year, m, nil
 }
 
 // monthFromFields 读取 month / monthCode 并校验一致性，按 overflow 调节到 1..12。
@@ -567,31 +601,59 @@ func parseMonthCode(s string) (int32, object.Value) {
 	return m, nil
 }
 
-// monthDayFields 从属性包取出 (month, day)，按 overflow 处理月末约束。
-func monthDayFields(o propBag, overflow string) (int32, int32, object.Value) {
+// monthDayFieldsRaw 按字母序 (day, month, monthCode) 读取 month-day 字段。
+func monthDayFieldsRaw(o propBag) (rawDateFields, object.Value) {
+	var r rawDateFields
 	if ce := checkCalendarProp(o); ce != nil {
-		return 0, 0, ce
+		return r, ce
 	}
-	dv, hasDay := o.GetProperty("day")
-	if !hasDay || dv == object.UndefinedSingleton {
+	d, okD, e := readIntField(o, "day")
+	if e != nil {
+		return r, e
+	}
+	r.day, r.hasDay = d, okD
+	if e := readMonthField(o, &r); e != nil {
+		return r, e
+	}
+	if e := readMonthCodeField(o, &r); e != nil {
+		return r, e
+	}
+	return r, nil
+}
+
+// regulateMD 校验并调节 month-day 原字段 (参考年取闰年 1972)。
+func (r rawDateFields) regulateMD(overflow string) (int32, int32, object.Value) {
+	if !r.hasDay {
 		return 0, 0, tgType("monthDayFromFields requires day")
 	}
-	df, derr := tgToNumber(dv)
-	if derr != nil {
-		return 0, 0, derr
+	if !r.hasMonth && !r.hasMonthCode {
+		return 0, 0, tgType("monthDayFromFields requires month or monthCode")
 	}
-	if math.IsNaN(df) || math.IsInf(df, 0) || df != math.Trunc(df) {
-		return 0, 0, tgRange("day must be an integer")
+	m := r.month
+	if !r.hasMonth {
+		m = r.monthCode
+	} else {
+		if r.hasMonthCode && r.monthCode != m {
+			return 0, 0, tgRange("month does not match monthCode")
+		}
+		if m < 1 || m > 12 {
+			if overflow == "reject" {
+				return 0, 0, tgRange("month is out of range")
+			}
+			if m < 1 {
+				m = 1
+			} else {
+				m = 12
+			}
+		}
 	}
-	d := int32(df)
-	if d < 1 || d > 31 {
-		return 0, 0, tgRange("day is out of range")
+	d := r.day
+	if d < 1 {
+		if overflow == "reject" {
+			return 0, 0, tgRange("day is out of range")
+		}
+		d = 1
 	}
-	m, merr := monthFromFields(o, overflow)
-	if merr != nil {
-		return 0, 0, merr
-	}
-	// iso8601 参考年取闰年 1972，使 02-29 合法。
 	dim := object.DaysInMonth(1972, m)
 	if d > dim {
 		if overflow == "reject" {
@@ -600,6 +662,15 @@ func monthDayFields(o propBag, overflow string) (int32, int32, object.Value) {
 		d = dim
 	}
 	return m, d, nil
+}
+
+// monthDayFields 从属性包取出 (month, day)，按 overflow 处理月末约束。
+func monthDayFields(o propBag, overflow string) (int32, int32, object.Value) {
+	raw, e := monthDayFieldsRaw(o)
+	if e != nil {
+		return 0, 0, e
+	}
+	return raw.regulateMD(overflow)
 }
 
 // ==================== PlainYearMonth ====================
@@ -844,14 +915,11 @@ func setupTemporalPlainYearMonth(temporal *object.Object) {
 		if len(args) == 0 {
 			return tgType("PlainYearMonth.from requires an argument")
 		}
-		// spec: 选项包在任何分支之前做 GetOptionsObject + overflow 校验。
-		if e := optionsTypeErr(argAt(args, 1)); e != nil {
-			return e
-		}
-		if _, oe := getOverflow(argAt(args, 1)); oe != nil {
-			return oe
-		}
+		// spec: 字段/槽读取先于选项处理，各分支内再做选项校验。
 		if ym, ok := asPlainYearMonth(args[0]); ok {
+			if _, oe := readOverflowOption(argAt(args, 1)); oe != nil {
+				return oe
+			}
 			return ym
 		}
 		switch v := args[0].(type) {
@@ -859,6 +927,9 @@ func setupTemporalPlainYearMonth(temporal *object.Object) {
 			f, ok := object.ParseTemporalYearMonthString(v.Value)
 			if !ok {
 				return tgRange("Invalid PlainYearMonth string: " + v.Value)
+			}
+			if _, oe := readOverflowOption(argAt(args, 1)); oe != nil {
+				return oe
 			}
 			return object.NewTemporalPlainYearMonth(f.Year, f.Month, 1, object.DefaultCalendarID)
 		case *object.TemporalPlainDate:
@@ -876,14 +947,15 @@ func setupTemporalPlainYearMonth(temporal *object.Object) {
 			default:
 				return tgType("PlainYearMonth.from: unsupported argument")
 			}
-			if e := optionsTypeErr(argAt(args, 1)); e != nil {
-				return e
+			raw, rerr := yearMonthFieldsRaw(v)
+			if rerr != nil {
+				return rerr
 			}
-			ymOverflow, oe := getOverflow(argAt(args, 1))
+			ymOverflow, oe := readOverflowOption(argAt(args, 1))
 			if oe != nil {
 				return oe
 			}
-			y, m, err := yearMonthFields(v, ymOverflow)
+			y, m, err := raw.regulateYM(ymOverflow)
 			if err != nil {
 				return err
 			}
@@ -1175,15 +1247,11 @@ func setupTemporalPlainMonthDay(temporal *object.Object) {
 		if len(args) == 0 {
 			return tgType("PlainMonthDay.from requires an argument")
 		}
-		// spec: 选项包在任何分支之前做 GetOptionsObject + overflow 校验。
-		if e := optionsTypeErr(argAt(args, 1)); e != nil {
-			return e
-		}
-		mdOverflow, oe := getOverflow(argAt(args, 1))
-		if oe != nil {
-			return oe
-		}
+		// spec: 字段/槽读取先于选项处理，各分支内再做选项校验。
 		if md, ok := asPlainMonthDay(args[0]); ok {
+			if _, oe := readOverflowOption(argAt(args, 1)); oe != nil {
+				return oe
+			}
 			return md
 		}
 		switch v := args[0].(type) {
@@ -1191,6 +1259,9 @@ func setupTemporalPlainMonthDay(temporal *object.Object) {
 			f, ok := object.ParseTemporalMonthDayString(v.Value)
 			if !ok {
 				return tgRange("Invalid PlainMonthDay string: " + v.Value)
+			}
+			if _, oe := readOverflowOption(argAt(args, 1)); oe != nil {
+				return oe
 			}
 			return object.NewTemporalPlainMonthDay(f.Month, f.Day, 1972, object.DefaultCalendarID)
 		case *object.TemporalPlainDate:
@@ -1208,7 +1279,15 @@ func setupTemporalPlainMonthDay(temporal *object.Object) {
 			default:
 				return tgType("PlainMonthDay.from: unsupported argument")
 			}
-			m, d, ferr := monthDayFields(v, mdOverflow)
+			raw, rerr := monthDayFieldsRaw(v)
+			if rerr != nil {
+				return rerr
+			}
+			mdOverflow, oe := readOverflowOption(argAt(args, 1))
+			if oe != nil {
+				return oe
+			}
+			m, d, ferr := raw.regulateMD(mdOverflow)
 			if ferr != nil {
 				return ferr
 			}

@@ -319,6 +319,16 @@ func getEnumOption(opts object.Value, key, def string, allowed ...string) (strin
 	return "", tgRange("Invalid " + key + " option: " + s)
 }
 
+// readOverflowOption 组合 GetOptionsObject (类型校验) + overflow 读取。
+// spec 中字段读取 (PrepareTemporalFields) 先于选项处理，因此 from/with
+// 必须在读完字段后才调用本函数。
+func readOverflowOption(opts object.Value) (string, object.Value) {
+	if e := optionsTypeErr(opts); e != nil {
+		return "", e
+	}
+	return getOverflow(opts)
+}
+
 // getOverflow 读取 overflow 选项 ("constrain" 或 "reject")。
 func getOverflow(opts object.Value) (string, object.Value) {
 	return getEnumOption(opts, "overflow", "constrain", "constrain", "reject")
@@ -333,6 +343,14 @@ func getDisambiguation(opts object.Value) (string, object.Value) {
 // getOffsetOption 读取 offset 选项 (ZonedDateTime 歧义消解用)。
 func getOffsetOption(opts object.Value) (string, object.Value) {
 	return getEnumOption(opts, "offset", "reject", "prefer", "use", "ignore", "reject")
+}
+
+// readZDTOptionsE 组合 GetOptionsObject (类型校验) + readZonedDateTimeOptions。
+func readZDTOptionsE(opts object.Value) (string, string, string, object.Value) {
+	if e := optionsTypeErr(opts); e != nil {
+		return "", "", "", e
+	}
+	return readZonedDateTimeOptions(opts)
 }
 
 // readZonedDateTimeOptions 按 spec 顺序读取 disambiguation → offset → overflow。
@@ -1208,11 +1226,12 @@ func readMonthCodeField(o propBag, r *rawDateFields) object.Value {
 	if e2, isErr := mc.(*object.Error); isErr {
 		return e2
 	}
-	s, ok := mc.(*object.String)
+	// spec: monthCode 经 ToString (观察者对象返回 "M01" 这类字符串)。
+	sv, ok := optionToString(mc)
 	if !ok {
-		return tgRange("Invalid monthCode")
+		return tgType("Cannot convert monthCode to string")
 	}
-	c, cerr := parseMonthCode(s.Value)
+	c, cerr := parseMonthCode(sv)
 	if cerr != nil {
 		return cerr
 	}

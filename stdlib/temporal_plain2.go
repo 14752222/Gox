@@ -295,25 +295,22 @@ func setupTemporalPlainDate(temporal *object.Object) {
 		if len(args) == 0 {
 			return tgType("PlainDate.from requires an argument")
 		}
-		// spec: GetOptionsObject 只验类型 (无可观察读取)；overflow 的读取
-		// 推迟到字段读取之后 (PrepareTemporalFields → GetTemporalOverflowOption)。
-		if e := optionsTypeErr(argAt(args, 1)); e != nil {
-			return e
-		}
+		// spec: 字段读取 (PrepareTemporalFields) 先于选项处理，
+		// 各分支在完成字段/槽读取后才做 GetOptionsObject + overflow 读取。
 		if pd, ok := asPlainDate(args[0]); ok {
-			if _, oe := getOverflow(argAt(args, 1)); oe != nil {
+			if _, oe := readOverflowOption(argAt(args, 1)); oe != nil {
 				return oe
 			}
 			return pd
 		}
 		switch v := args[0].(type) {
 		case *object.TemporalPlainDateTime:
-			if _, oe := getOverflow(argAt(args, 1)); oe != nil {
+			if _, oe := readOverflowOption(argAt(args, 1)); oe != nil {
 				return oe
 			}
 			return object.NewTemporalPlainDate(v.ISODateTime().Date, object.DefaultCalendarID)
 		case *object.TemporalZonedDateTime:
-			if _, oe := getOverflow(argAt(args, 1)); oe != nil {
+			if _, oe := readOverflowOption(argAt(args, 1)); oe != nil {
 				return oe
 			}
 			dt := object.GetISOPartsFromEpoch(v.TimeZoneID(), v.Nanos())
@@ -323,7 +320,7 @@ func setupTemporalPlainDate(temporal *object.Object) {
 			if !ok {
 				return tgRange("Invalid PlainDate string: " + v.Value)
 			}
-			if _, oe := getOverflow(argAt(args, 1)); oe != nil {
+			if _, oe := readOverflowOption(argAt(args, 1)); oe != nil {
 				return oe
 			}
 			if f.Calendar != "" && f.Calendar != object.DefaultCalendarID {
@@ -343,7 +340,7 @@ func setupTemporalPlainDate(temporal *object.Object) {
 			if rerr != nil {
 				return rerr
 			}
-			fromOverflow, oe := getOverflow(argAt(args, 1))
+			fromOverflow, oe := readOverflowOption(argAt(args, 1))
 			if oe != nil {
 				return oe
 			}
@@ -720,14 +717,12 @@ func setupTemporalPlainTime(temporal *object.Object) {
 		if len(args) == 0 {
 			return tgType("PlainTime.from requires an argument")
 		}
-		// spec: 选项包在任何分支之前做 GetOptionsObject + overflow 校验。
-		if e := optionsTypeErr(argAt(args, 1)); e != nil {
-			return e
-		}
-		if _, oe := getOverflow(argAt(args, 1)); oe != nil {
-			return oe
-		}
+		// spec: 字段/槽读取先于选项处理；PlainTime 的 overflow 不读取值，
+		// 但仍需 GetOptionsObject 类型校验 (放在各分支末尾)。
 		if pt, ok := asPlainTime(args[0]); ok {
+			if e := optionsTypeErr(argAt(args, 1)); e != nil {
+				return e
+			}
 			return pt
 		}
 		switch v := args[0].(type) {
@@ -757,13 +752,25 @@ func setupTemporalPlainTime(temporal *object.Object) {
 			if f.IsZ {
 				return tgRange("Invalid PlainTime string: " + v.Value)
 			}
+			if _, oe := readOverflowOption(argAt(args, 1)); oe != nil {
+				return oe
+			}
 			return object.NewTemporalPlainTime(f.ISODateTime().Time)
 		case *object.TemporalPlainDateTime:
+			if _, oe := readOverflowOption(argAt(args, 1)); oe != nil {
+				return oe
+			}
 			return object.NewTemporalPlainTime(v.ISODateTime().Time)
 		case *object.TemporalZonedDateTime:
+			if _, oe := readOverflowOption(argAt(args, 1)); oe != nil {
+				return oe
+			}
 			dt := object.GetISOPartsFromEpoch(v.TimeZoneID(), v.Nanos())
 			return object.NewTemporalPlainTime(dt.Time)
 		case *object.TemporalPlainDate:
+			if _, oe := readOverflowOption(argAt(args, 1)); oe != nil {
+				return oe
+			}
 			return object.NewTemporalPlainTime(object.ISOTime{})
 		case propBag:
 			switch v.(type) {
@@ -774,6 +781,17 @@ func setupTemporalPlainTime(temporal *object.Object) {
 			time := object.ISOTime{}
 			if merr := mergeTimeInto(&time, v); merr != nil {
 				return merr
+			}
+			ptOverflow, oe := readOverflowOption(argAt(args, 1))
+			if oe != nil {
+				return oe
+			}
+			// 闰秒 second=60: constrain 钳制为 59, reject 报 RangeError。
+			if time.Second == 60 {
+				if ptOverflow == "reject" {
+					return tgRange("PlainTime.from: invalid fields")
+				}
+				time.Second = 59
 			}
 			if !object.IsValidISOTime(time) {
 				return tgRange("PlainTime.from: invalid fields")

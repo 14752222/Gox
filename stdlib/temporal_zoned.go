@@ -392,13 +392,10 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 		if len(args) == 0 {
 			return tgType("ZonedDateTime.from requires an argument")
 		}
-		// spec: GetOptionsObject 只验类型 (无可观察读取)；各分支在字段
-		// 读取完成后才按 disambiguation → offset → overflow 顺序读选项。
-		if e := optionsTypeErr(argAt(args, 1)); e != nil {
-			return e
-		}
+		// spec: 各分支在字段/槽读取完成后才做 GetOptionsObject 并按
+		// disambiguation → offset → overflow 顺序读选项。
 		if z, ok := asZonedDateTime(args[0]); ok {
-			if _, _, _, oe := readZonedDateTimeOptions(argAt(args, 1)); oe != nil {
+			if _, _, _, oe := readZDTOptionsE(argAt(args, 1)); oe != nil {
 				return oe
 			}
 			return z
@@ -426,7 +423,7 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 			if ferr != nil {
 				return ferr
 			}
-			dis, _, fromOverflow, oe := readZonedDateTimeOptions(argAt(args, 1))
+			dis, _, fromOverflow, oe := readZDTOptionsE(argAt(args, 1))
 			if oe != nil {
 				return oe
 			}
@@ -558,6 +555,9 @@ func zdtFromFields(f object.TemporalFields, args []object.Value) object.Value {
 	var opts object.Value
 	if len(args) > 1 {
 		opts = args[1]
+		if e := optionsTypeErr(opts); e != nil {
+			return e
+		}
 		disambiguationTmp, disambiguationErr := getDisambiguation(opts)
 		if disambiguationErr != nil {
 			return disambiguationErr
