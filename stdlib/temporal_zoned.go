@@ -133,6 +133,20 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 		if len(args) == 0 {
 			return tgType("ZonedDateTime.prototype.with requires an object")
 		}
+		if len(args) > 1 {
+			if e := optionsTypeErr(args[1]); e != nil {
+				return e
+			}
+			if _, oerr := getOverflow(args[1]); oerr != nil {
+				return oerr
+			}
+			if _, derr := getDisambiguation(args[1]); derr != nil {
+				return derr
+			}
+			if _, oerr2 := getEnumOption(args[1], "offset", "prefer", "prefer", "use", "ignore", "reject"); oerr2 != nil {
+				return oerr2
+			}
+		}
 		dt, ok := mergeDateTimeFields(zdtISO(t), args[0], true)
 		if !ok {
 			return tgType("ZonedDateTime.prototype.with: invalid fields")
@@ -147,12 +161,12 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 		}
 		dt := zdtISO(t)
 		dt.Time = object.ISOTime{}
-		if len(args) > 0 {
-			if pt, ok := asPlainTime(args[0]); ok {
-				dt.Time = pt.ISOTime()
-			} else if merged, ok := mergeTimeFields(dt.Time, args[0]); ok {
-				dt.Time = merged
+		if len(args) > 0 && args[0] != object.UndefinedSingleton && args[0] != nil {
+			pt, terr := toPlainTimeValue(args[0])
+			if terr != nil {
+				return terr
 			}
+			dt.Time = pt.ISOTime()
 		}
 		return zdtFromWallClock(dt, t.TimeZoneID(), t.CalendarID(), "compatible", nil)
 	})
@@ -182,9 +196,9 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 		if len(args) == 0 {
 			return tgType("withTimeZone requires a time zone")
 		}
-		tz, ok := toTimeZoneID(args[0])
-		if !ok {
-			return tgRange("Invalid time zone")
+		tz, tzTzErr := toTimeZoneIDE(args[0])
+		if tzTzErr != nil {
+			return tzTzErr
 		}
 		return object.NewTemporalZonedDateTime(t.Nanos(), tz, t.CalendarID())
 	})
@@ -238,21 +252,34 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 		if !ok {
 			return tgTypeBadThis("ZonedDateTime")
 		}
+		if len(args) == 0 {
+			return tgType("ZonedDateTime.prototype.round requires an argument")
+		}
 		var opts object.Value
 		if len(args) > 0 {
 			opts = args[0]
 		}
-		smallest, ok := getSmallestUnit(opts, datetimeUnits)
-		if !ok || smallest == "auto" {
+		opts, roe := roundOptionsOf(opts)
+		if roe != nil {
+			return roe
+		}
+		smallest, uerr := getSmallestUnit(opts, datetimeUnits)
+		if uerr != nil {
+			return uerr
+		}
+		if smallest == "auto" {
 			return tgRange("Invalid smallestUnit for ZonedDateTime.round")
 		}
-		inc, ok := getRoundingIncrement(opts)
-		if !ok {
-			return tgRange("Invalid roundingIncrement")
+		inc, incErr := getRoundingIncrement(opts)
+		if incErr != nil {
+			return incErr
 		}
-		mode := getRoundingMode(opts)
-		if mode == "invalid" {
-			return tgRange("Invalid roundingMode")
+		mode, modeErr := getRoundingMode(opts)
+		if modeErr != nil {
+			return modeErr
+		}
+		if !validRoundingIncrement(smallest, inc) {
+			return tgRange("Invalid roundingIncrement for " + smallest)
 		}
 		res, ok := roundInstantNanos(t.Nanos(), smallest, inc, mode)
 		if !ok {
@@ -267,13 +294,13 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 			return tgTypeBadThis("ZonedDateTime")
 		}
 		if len(args) == 0 {
-			return object.NewBoolean(false)
+			return tgType("equals requires an argument")
 		}
-		o, ok := asZonedDateTime(args[0])
-		if !ok {
-			return object.NewBoolean(false)
+		o, cerr := toZonedDateTimeValue(args[0])
+		if cerr != nil {
+			return cerr
 		}
-		return object.NewBoolean(t.Nanos().Cmp(o.Nanos()) == 0 && t.TimeZoneID() == o.TimeZoneID())
+		return object.NewBoolean(t.Nanos().Cmp(o.Nanos()) == 0 && t.TimeZoneID() == o.TimeZoneID() && t.CalendarID() == o.CalendarID())
 	})
 
 	// ===== 转换 =====
@@ -306,16 +333,22 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 		return object.NewTemporalPlainTime(zdtISO(t).Time)
 	})
 
-	tgToStringMethod(proto, func(this object.Value) string {
+	tgToStringMethod(proto, "ZonedDateTime", func(this object.Value, args ...object.Value) (string, object.Value) {
 		t, ok := asZonedDateTime(this)
 		if !ok {
-			return ""
+			return "", nil
 		}
-		return t.ToString()
+		var opts object.Value
+		if len(args) > 0 {
+			opts = args[0]
+		}
+		st, perr := parseToStringSettings(opts, true)
+		if perr != nil {
+			return "", perr
+		}
+		return t.ToString() + calendarAnnotation(st), nil
 	})
-	tgMethod(proto, "valueOf", func(this object.Value, args ...object.Value) object.Value {
-		return this
-	})
+	tgValueOf(proto)
 
 	ctor := object.NewBuiltin("ZonedDateTime", func(args ...object.Value) object.Value {
 		if len(args) == 0 {
@@ -330,9 +363,9 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 		}
 		tzid := "UTC"
 		if len(args) > 1 {
-			tz, ok := toTimeZoneID(args[1])
-			if !ok {
-				return tgRange("Invalid time zone")
+			tz, tzTzErr := toTimeZoneIDE(args[1])
+			if tzTzErr != nil {
+				return tzTzErr
 			}
 			tzid = tz
 		}
@@ -362,10 +395,15 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 				return tgRange("ZonedDateTime string requires a time zone annotation")
 			}
 			return zdtFromFields(f, args)
-		case *object.Object:
-			dt, ok := dateTimeFromFieldsObject(v)
-			if !ok {
-				return tgType("ZonedDateTime.from: invalid fields")
+		case propBag:
+			if len(args) > 1 {
+				if e := optionsTypeErr(args[1]); e != nil {
+					return e
+				}
+			}
+			dt, ferr := readDateTimeFields(v, "constrain")
+			if ferr != nil {
+				return ferr
 			}
 			tz := tzOfFieldsObject(v)
 			var opts object.Value
@@ -390,13 +428,51 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 		if len(args) < 2 {
 			return tgType("compare requires two ZonedDateTimes")
 		}
-		a, _ := asZonedDateTime(args[0])
-		b, _ := asZonedDateTime(args[1])
-		if a == nil || b == nil {
-			return tgType("compare: arguments must be ZonedDateTime")
+		a, ea := toZonedDateTimeValue(args[0])
+		if ea != nil {
+			return ea
+		}
+		b, eb := toZonedDateTimeValue(args[1])
+		if eb != nil {
+			return eb
 		}
 		return object.NewNumber(float64(a.Nanos().Cmp(b.Nanos())))
 	})
+
+		tgMethod(proto, "withCalendar", func(this object.Value, args ...object.Value) object.Value {
+		t, ok := asZonedDateTime(this)
+		if !ok {
+			return tgTypeBadThis("ZonedDateTime")
+		}
+		if len(args) == 0 {
+			return tgType("withCalendar requires an argument")
+		}
+		cal, cerr := toCalendarIDValue(args[0])
+		if cerr != nil {
+			return cerr
+		}
+		return object.NewTemporalZonedDateTime(t.Nanos(), t.TimeZoneID(), cal)
+	})
+
+	tgMethod(proto, "toPlainYearMonth", func(this object.Value, args ...object.Value) object.Value {
+		t, ok := asZonedDateTime(this)
+		if !ok {
+			return tgTypeBadThis("ZonedDateTime")
+		}
+		d := object.GetISOPartsFromEpoch(t.TimeZoneID(), t.Nanos()).Date
+		return object.NewTemporalPlainYearMonth(d.Year, d.Month, d.Day, t.CalendarID())
+	})
+
+	tgMethod(proto, "toPlainMonthDay", func(this object.Value, args ...object.Value) object.Value {
+		t, ok := asZonedDateTime(this)
+		if !ok {
+			return tgTypeBadThis("ZonedDateTime")
+		}
+		d := object.GetISOPartsFromEpoch(t.TimeZoneID(), t.Nanos()).Date
+		return object.NewTemporalPlainMonthDay(d.Month, d.Day, d.Year, t.CalendarID())
+	})
+
+	tgEraGetters(proto, "ZonedDateTime", func(v object.Value) bool { _, ok := asZonedDateTime(v); return ok })
 
 	setToStringTag(proto, "Temporal.ZonedDateTime")
 	temporal.SetBuiltinProperty("ZonedDateTime", ctor)
@@ -439,8 +515,8 @@ func zdtFromWallClock(dt object.ISODateTime, tz, calendar, disambiguation string
 			}
 			disambiguation = d
 		}
-		if o := getOverflow(opts); o == "invalid" {
-			return tgRange("Invalid overflow option")
+		if _, oErr := getOverflow(opts); oErr != nil {
+			return oErr
 		}
 	}
 	candidates := object.GetPossibleInstantsFor(tz, dt)
@@ -458,10 +534,11 @@ func zdtFromFields(f object.TemporalFields, args []object.Value) object.Value {
 	var opts object.Value
 	if len(args) > 1 {
 		opts = args[1]
-		disambiguation = getDisambiguation(opts)
-		if disambiguation == "invalid" {
-			return tgRange("Invalid disambiguation option")
+		disambiguationTmp, disambiguationErr := getDisambiguation(opts)
+		if disambiguationErr != nil {
+			return disambiguationErr
 		}
+		disambiguation = disambiguationTmp
 		if o := optString(opts, "offset", ""); o != "" {
 			// options.offset 用于在 DST 歧义时挑选候选 (这里我们只需判定兼容)
 			_ = o
@@ -504,9 +581,12 @@ func zdtShift(t *object.TemporalZonedDateTime, args []object.Value, negate bool)
 	if len(args) == 0 {
 		return tgType("missing duration")
 	}
-	d, ok := toDurationValue(args[0])
-	if !ok {
-		return tgType("invalid duration")
+	d, derr := toDurationE(args[0])
+	if derr != nil {
+		return derr
+	}
+	if serr := checkDurationUniformSign(d); serr != nil {
+		return serr
 	}
 	var opts object.Value
 	if len(args) > 1 {
@@ -523,13 +603,13 @@ func zdtShift(t *object.TemporalZonedDateTime, args []object.Value, negate bool)
 		return object.NewTemporalZonedDateTime(ns, t.TimeZoneID(), t.CalendarID())
 	}
 	// 墙钟加法: 先算当地的新墙钟时间，再求解它对应的精确时刻
-	overflow := getOverflow(opts)
-	if overflow == "invalid" {
-		return tgRange("Invalid overflow option")
+	overflow, overflowErr := getOverflow(opts)
+	if overflowErr != nil {
+		return overflowErr
 	}
-	disambiguation := getDisambiguation(opts)
-	if disambiguation == "invalid" {
-		return tgRange("Invalid disambiguation option")
+	disambiguation, disambiguationErr := getDisambiguation(opts)
+	if disambiguationErr != nil {
+		return disambiguationErr
 	}
 	dt, ok := object.AddDateTime(object.GetISOPartsFromEpoch(t.TimeZoneID(), t.Nanos()), d, overflow)
 	if !ok {
@@ -547,34 +627,43 @@ func zdtDiffFrom(t *object.TemporalZonedDateTime, args []object.Value, since boo
 	if len(args) == 0 {
 		return tgType("missing argument")
 	}
-	other, ok := asZonedDateTime(args[0])
-	if !ok {
-		return tgType("argument is not a ZonedDateTime")
+	other, cerr := toZonedDateTimeValue(args[0])
+	if cerr != nil {
+		return cerr
 	}
 	var opts object.Value
 	if len(args) > 1 {
 		opts = args[1]
 	}
-	largest, ok := getLargestUnit(opts, datetimeUnits)
-	if !ok {
-		return tgRange("Invalid largestUnit")
+	if e := optionsTypeErr(opts); e != nil {
+		return e
 	}
-	smallest, ok := getSmallestUnit(opts, datetimeUnits)
-	if !ok {
-		return tgRange("Invalid smallestUnit")
+	largest, uerr := getLargestUnit(opts, datetimeUnits)
+	if uerr != nil {
+		return uerr
 	}
-	inc, ok := getRoundingIncrement(opts)
-	if !ok {
-		return tgRange("Invalid roundingIncrement")
+	smallest, uerr := getSmallestUnit(opts, datetimeUnits)
+	if uerr != nil {
+		return uerr
 	}
-	mode := getRoundingMode(opts)
-	if mode == "invalid" {
-		return tgRange("Invalid roundingMode")
+	inc, incErr := getRoundingIncrement(opts)
+	if incErr != nil {
+		return incErr
 	}
-	if largest == "auto" {
-		largest = "hour"
+	mode, modeErr := getRoundingMode(opts)
+	if modeErr != nil {
+		return modeErr
 	}
 	su := smallest
+	if su == "auto" {
+		su = "nanosecond"
+	}
+	if largest == "auto" {
+		largest = resolveAutoLargest(su, "hour")
+	}
+	if !validRoundingIncrement(su, inc) {
+		return tgRange("Invalid roundingIncrement for " + su)
+	}
 	if su == "auto" {
 		su = "nanosecond"
 	}
@@ -621,7 +710,7 @@ func zdtDiffFrom(t *object.TemporalZonedDateTime, args []object.Value, since boo
 
 // tzOfFieldsObject 由属性包提取 timeZone 字段。
 // 缺失时按规范使用宿主默认时区；这里退化为 UTC 以免依赖宿主环境配置。
-func tzOfFieldsObject(o *object.Object) string {
+func tzOfFieldsObject(o propBag) string {
 	v, found := o.GetProperty("timeZone")
 	if !found || v == object.UndefinedSingleton {
 		return "UTC"
@@ -633,7 +722,7 @@ func tzOfFieldsObject(o *object.Object) string {
 }
 
 // offsetOfFieldsObject 由属性包提取 offset 字段 (可选)。
-func offsetOfFieldsObject(o *object.Object) (string, bool) {
+func offsetOfFieldsObject(o propBag) (string, bool) {
 	v, found := o.GetProperty("offset")
 	if !found || v == object.UndefinedSingleton {
 		return "", false

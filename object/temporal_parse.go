@@ -20,6 +20,7 @@ package object
 import (
 	"math"
 	"math/big"
+	"strings"
 	"time"
 )
 
@@ -157,8 +158,8 @@ func (p *isoScanner) parseDate(f *TemporalFields) bool {
 		if !ok {
 			return false
 		}
-		if y == 0 {
-			return false // 禁止 -000000 / +000000
+		if y == 0 && sign < 0 {
+			return false // spec 禁止 -000000 (+000000 表示 0 年, 合法)
 		}
 		f.Year = sign * y
 		if p.take('-') {
@@ -235,7 +236,7 @@ func (p *isoScanner) parseYearMonth(f *TemporalFields) bool {
 		}
 		p.pos++
 		y, ok := p.digits(6)
-		if !ok || y == 0 {
+		if !ok || (y == 0 && sign < 0) {
 			return false
 		}
 		f.Year = sign * y
@@ -328,6 +329,10 @@ func (p *isoScanner) parseTime(f *TemporalFields) bool {
 	if f.Hour == 24 {
 		return f.Minute == 0 && f.Second == 0 && nanos == 0
 	}
+	// 闰秒 (second == 60) 在文法上合法，按规范约束为 59。
+	if f.Second == 60 {
+		f.Second = 59
+	}
 	return IsValidISOTime(ISOTime{f.Hour, f.Minute, f.Second, f.Millisecond, f.Microsecond, f.Nanosecond})
 }
 
@@ -336,6 +341,7 @@ func (p *isoScanner) parseTime(f *TemporalFields) bool {
 // parseOffset 解析 ±HH:MM[:SS[.fff]] 或 Z。
 // 返回 offset 是否出现；偏移量以秒为单位存入 out。
 func (p *isoScanner) parseOffset(f *TemporalFields) bool {
+	start := p.pos
 	if p.at('Z') || p.at('z') {
 		p.pos++
 		z := int32(0)
@@ -353,6 +359,7 @@ func (p *isoScanner) parseOffset(f *TemporalFields) bool {
 
 	h, ok := p.digits(2)
 	if !ok {
+		p.pos = start
 		return false
 	}
 	m := int32(0)
@@ -361,26 +368,45 @@ func (p *isoScanner) parseOffset(f *TemporalFields) bool {
 	if p.take(':') {
 		m, ok = p.digits(2)
 		if !ok {
+			p.pos = start
 			return false
 		}
 		if p.take(':') {
 			s, ok = p.digits(2)
 			if !ok {
+				p.pos = start
 				return false
 			}
 			var e error
 			frac, e = scanFraction(p)
 			if e != nil {
+				p.pos = start
 				return false
 			}
 		}
 	} else if p.remaining() >= 2 && p.isDigit() {
 		m, ok = p.digits(2)
 		if !ok {
+			p.pos = start
 			return false
+		}
+		// 无冒号形式也允许可选的秒与小数: +000000,0 / +000000.000000000
+		if p.remaining() >= 2 && p.isDigit() {
+			s, ok = p.digits(2)
+			if !ok {
+				p.pos = start
+				return false
+			}
+			var e error
+			frac, e = scanFraction(p)
+			if e != nil {
+				p.pos = start
+				return false
+			}
 		}
 	}
 	if h > 23 || m > 59 || s > 59 {
+		p.pos = start
 		return false
 	}
 	total := h*3600 + m*60 + s
@@ -396,7 +422,7 @@ func (p *isoScanner) parseOffset(f *TemporalFields) bool {
 
 // scanFraction 读取小数部分并返回纳秒值 (0 表示无小数)。
 func scanFraction(p *isoScanner) (int32, error) {
-	if !p.take('.') {
+	if !p.take('.') && !p.take(',') {
 		return 0, nil
 	}
 	if !p.isDigit() {
@@ -441,9 +467,51 @@ func (p *isoScanner) parseAnnotations(f *TemporalFields) bool {
 		body := p.s[start:p.pos]
 		p.pos++ // 消费 ']'
 
+		if len(body) == 0 {
+			return false
+		}
+		critical := false
+		if body[0] == '!' {
+			critical = true
+			body = body[1:]
+			if len(body) == 0 {
+				return false
+			}
+		}
 		if len(body) >= 2 && body[0] == 'u' && body[1] == '-' {
+			if cal != "" {
+				return false
+			}
 			cal = parseCalendarAnnotation(body)
 			if cal == "" {
+				return false
+			}
+			continue
+		}
+		// 偏移注解 ([+02:00] / [-05:30:15]): 本身就是时区。
+		if body[0] == '+' || body[0] == '-' {
+			if tz != "" {
+				return false
+			}
+			sub := &isoScanner{s: body}
+			var tf TemporalFields
+			if !sub.parseOffset(&tf) || !sub.eof() {
+				return false
+			}
+			f.OffsetSeconds = tf.OffsetSeconds
+			tz = body
+			continue
+		}
+		// key=value 形式的未知注解: 非 critical 忽略，critical 拒绝。
+		// 注解 key 必须全小写 (如 "U-CA" 非法)。
+		if i := strings.IndexByte(body, '='); i >= 0 {
+			for j := 0; j < i; j++ {
+				c := body[j]
+				if c >= 'A' && c <= 'Z' {
+					return false
+				}
+			}
+			if critical {
 				return false
 			}
 			continue
@@ -522,6 +590,7 @@ func ParseTemporalDateTimeString(s string) (TemporalFields, bool) {
 			return f, false
 		}
 	}
+	p.parseOffset(&f)
 	if !p.parseAnnotations(&f) || !p.eof() {
 		return f, false
 	}
@@ -536,6 +605,11 @@ func ParseTemporalTimeString(s string) (TemporalFields, bool) {
 		// 允许带 T 前缀
 	}
 	if !p.parseTime(&f) {
+		return f, false
+	}
+	p.parseOffset(&f)
+	// TemporalTimeString 不允许 UTC 指示符 Z (仅 Instant/ZonedDateTime 文法允许)。
+	if f.IsZ {
 		return f, false
 	}
 	if !p.parseAnnotations(&f) || !p.eof() {
@@ -646,8 +720,9 @@ func IsValidTimeZoneID(id string) bool {
 	if id == "UTC" || id == "GMT" {
 		return true
 	}
-	if _, ok := ParseTimeZoneOffsetString(id); ok {
-		return true
+	if off, ok := ParseTimeZoneOffsetString(id); ok {
+		// 亚分钟级偏移不是合法时区标识符。
+		return off%60 == 0
 	}
 	_, err := time.LoadLocation(id)
 	return err == nil
@@ -714,8 +789,18 @@ func ParseTemporalDurationString(s string) (DurationFields, bool) {
 			ok = carryFraction(&value, &out.Months, 12)
 		case 'M':
 			if inTimePart {
-				out.Minutes = int64(value)
-				ok = carryFraction(&value, &out.Seconds, 60)
+				// 小数分钟按纳秒折算 (1min = 6e10ns)。
+				ns := value * 60 * 1e9
+				if r := math.Round(ns); math.Abs(ns-r) < 0.5 {
+					ns = r
+				} else {
+					return false
+				}
+				out.Minutes = int64(ns / 6e10)
+				ns = math.Mod(ns, 6e10)
+				out.Seconds += int64(ns / 1e9)
+				out.Nanoseconds += int64(math.Mod(ns, 1e9))
+				ok = true
 			} else {
 				out.Months = int64(value)
 				// 月不是固定长度单位，无法把小数折算成天数
@@ -728,8 +813,20 @@ func ParseTemporalDurationString(s string) (DurationFields, bool) {
 			out.Days = int64(value)
 			ok = carryFraction(&value, &out.Hours, 24)
 		case 'H':
-			out.Hours = int64(value)
-			ok = carryFraction(&value, &out.Minutes, 60)
+			// 小数小时直接按纳秒折算 (1h = 3.6e12ns): ≤9 位小数必然精确。
+			ns := value * 3600 * 1e9
+			if r := math.Round(ns); math.Abs(ns-r) < 0.5 {
+				ns = r
+			} else {
+				return false
+			}
+			out.Hours = int64(ns / 3.6e12)
+			ns = math.Mod(ns, 3.6e12)
+			out.Minutes += int64(ns / 6e10)
+			ns = math.Mod(ns, 6e10)
+			out.Seconds += int64(ns / 1e9)
+			out.Nanoseconds += int64(math.Mod(ns, 1e9))
+			ok = true
 		case 'S':
 			whole := math.Trunc(value)
 			nanos := (value - whole) * 1e9
