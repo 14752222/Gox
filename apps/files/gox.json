@@ -1,0 +1,10 @@
+{
+  "name": "files",
+  "title": "文件",
+  "appId": "com.gox.apps.files",
+  "version": "0.1.0",
+  "permissions": [],
+  "desktop": {
+    "windowed": true
+  }
+}

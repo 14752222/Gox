@@ -1,0 +1,10 @@
+{
+  "name": "m-weather",
+  "title": "天气",
+  "appId": "com.gox.apps.mweather",
+  "version": "0.1.0",
+  "permissions": ["network"],
+  "mobile": {
+    "orientation": "portrait"
+  }
+}

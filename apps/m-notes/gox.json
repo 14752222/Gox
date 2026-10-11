@@ -1,0 +1,10 @@
+{
+  "name": "m-notes",
+  "title": "记事",
+  "appId": "com.gox.apps.mnotes",
+  "version": "0.1.0",
+  "permissions": [],
+  "mobile": {
+    "orientation": "portrait"
+  }
+}

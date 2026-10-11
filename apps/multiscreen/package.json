@@ -1,0 +1,13 @@
+{
+  "name": "gox-multiscreen",
+  "version": "0.1.0",
+  "private": true,
+  "description": "多屏协同演示（跨端）—— 窗口几何 + 跨屏事件 + 应用接续 + 断点布局，Gox 实用应用",
+  "scripts": {
+    "dev": "goxjs dev src/main.js",
+    "start": "goxjs src/main.js"
+  },
+  "devDependencies": {
+    "@goxjs/goxjs": "^0.9.0"
+  }
+}
