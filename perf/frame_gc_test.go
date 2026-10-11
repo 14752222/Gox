@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/14752222/Gox/gfx"
+	_ "github.com/14752222/Gox/gfx/bind" // 注册 gx/theme 等 JS 绑定模块
 	"github.com/14752222/Gox/object"
 	"github.com/14752222/Gox/vm"
 )

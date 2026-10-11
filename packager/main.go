@@ -166,6 +166,7 @@ import (
 
 	"github.com/14752222/Gox/compiler"
 	"github.com/14752222/Gox/gfx"
+	_ "github.com/14752222/Gox/gfx/bind" // 注册 gx/theme 等 JS 绑定模块
 	_ "github.com/14752222/Gox/gfx/backend" // 按目标平台注册窗口后端
 	"github.com/14752222/Gox/lexer"
 	"github.com/14752222/Gox/object"
