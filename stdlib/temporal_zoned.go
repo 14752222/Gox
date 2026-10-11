@@ -42,6 +42,7 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 	fieldGetter("dayOfWeek", func(dt object.ISODateTime) int64 { return int64(dt.Date.DayOfWeek()) })
 	fieldGetter("dayOfYear", func(dt object.ISODateTime) int64 { return int64(dt.Date.DayOfYear()) })
 	fieldGetter("weekOfYear", func(dt object.ISODateTime) int64 { return int64(dt.Date.WeekOfYear()) })
+	fieldGetter("yearOfWeek", func(dt object.ISODateTime) int64 { return int64(dt.Date.YearOfWeek()) })
 	fieldGetter("daysInMonth", func(dt object.ISODateTime) int64 {
 		return int64(object.DaysInMonth(dt.Date.Year, dt.Date.Month))
 	})

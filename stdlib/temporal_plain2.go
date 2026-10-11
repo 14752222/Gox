@@ -39,6 +39,7 @@ func setupTemporalPlainDate(temporal *object.Object) {
 	dateGetter("dayOfWeek", func(d object.ISODate) int64 { return int64(d.DayOfWeek()) })
 	dateGetter("dayOfYear", func(d object.ISODate) int64 { return int64(d.DayOfYear()) })
 	dateGetter("weekOfYear", func(d object.ISODate) int64 { return int64(d.WeekOfYear()) })
+	dateGetter("yearOfWeek", func(d object.ISODate) int64 { return int64(d.YearOfWeek()) })
 	dateGetter("daysInMonth", func(d object.ISODate) int64 {
 		return int64(object.DaysInMonth(d.Year, d.Month))
 	})

@@ -228,6 +228,13 @@ func (d ISODate) WeekOfYear() int32 {
 	return int32(week)
 }
 
+// YearOfWeek 返回 ISO 周年 (week-numbering year):
+// 该日期所在周的星期四所属的公历年。
+func (d ISODate) YearOfWeek() int32 {
+	thu := d.EpochDays() - int64(d.DayOfWeek()) + 4
+	return CivilFromDays(thu).Year
+}
+
 // InLeapYear 判断该日期所在年是否为闰年。
 func (d ISODate) InLeapYear() bool { return IsLeapYear(d.Year) }
 

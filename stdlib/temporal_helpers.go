@@ -112,7 +112,10 @@ func tgToStringMethod(proto *object.Object, typeName string, fn func(this object
 		return object.NewString(s)
 	}
 	tgMethod(proto, "toString", wrap)
-	tgMethod(proto, "toJSON", wrap)
+	// toJSON 不读取任何参数 (规范: 等价于无参调用 toString)。
+	tgMethod(proto, "toJSON", func(this object.Value, args ...object.Value) object.Value {
+		return wrap(this)
+	})
 	// 无 Intl 支持: toLocaleString 退化为 toString，但容忍
 	// locales 参数 (字符串或数组) 与 options 参数。
 	tgMethod(proto, "toLocaleString", func(this object.Value, args ...object.Value) object.Value {
