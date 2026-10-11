@@ -26,6 +26,19 @@ func tgRange(msg string) object.Value { return object.NewErrorWithName("RangeErr
 
 func tgType(msg string) object.Value { return object.NewErrorWithName("TypeError", msg) }
 
+// canonicalTimeZoneID 校验时区标识符并返回规范形式。
+// 时区标识符大小写不敏感: "uTc"/"etc/utc" 等规范化为 "UTC"。
+func canonicalTimeZoneID(id string) (string, bool) {
+	if object.IsValidTimeZoneID(id) {
+		return id, true
+	}
+	if strings.EqualFold(id, "UTC") || strings.EqualFold(id, "Etc/UTC") ||
+		strings.EqualFold(id, "Etc/Universal") || strings.EqualFold(id, "Universal") {
+		return "UTC", true
+	}
+	return "", false
+}
+
 // tgTypeBadThis 生成统一的 "要求 this 为某类型" 错误信息。
 func tgTypeBadThis(typeName string) object.Value {
 	return tgType("Method called on incompatible receiver " + typeName)
@@ -835,8 +848,8 @@ func toTimeZoneIDE(v object.Value) (string, object.Value) {
 	if !ok {
 		return "", tgType("Invalid time zone value: expected a string or Temporal.TimeZone")
 	}
-	if object.IsValidTimeZoneID(s.Value) {
-		return s.Value, nil
+	if id, ok := canonicalTimeZoneID(s.Value); ok {
+		return id, nil
 	}
 	// 裸偏移字符串 ("+02:00"、"-05:00:30.5"): 规范化为偏移时区 ID。
 	if off, ok := object.ParseTimeZoneOffsetString(s.Value); ok {
@@ -852,8 +865,8 @@ func toTimeZoneIDE(v object.Value) (string, object.Value) {
 		if f, ok := parseCalendarSyntactic(s.Value, parse); ok {
 			if f.TimeZoneAnnotation != "" {
 				ann := f.TimeZoneAnnotation
-				if object.IsValidTimeZoneID(ann) {
-					return ann, nil
+				if id, ok := canonicalTimeZoneID(ann); ok {
+					return id, nil
 				}
 				// 偏移注解 ([+02:00] / [-05:30:15])
 				if off, ok := object.ParseTimeZoneOffsetString(ann); ok {
@@ -1730,7 +1743,9 @@ func toZonedDateTimeValue(v object.Value) (*object.TemporalZonedDateTime, object
 			return nil, e
 		}
 		tz := f.TimeZoneAnnotation
-		if !object.IsValidTimeZoneID(tz) {
+		if id, ok := canonicalTimeZoneID(tz); ok {
+			tz = id
+		} else {
 			return nil, tgRange("Invalid time zone: " + tz)
 		}
 		var ns *big.Int
