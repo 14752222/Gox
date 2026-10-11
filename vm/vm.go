@@ -2123,10 +2123,13 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			// 创建新对象
 			newObj := object.NewObject()
 			if closure, ok := fn.(*object.Closure); ok {
-				// generator / async 函数不是构造器: new 必须抛 TypeError
-				// (规范: 它们没有 [[Construct]])。旧实现把 new generator 当作
-				// 普通调用返回 Generator，与规范不符且掩盖用法错误。
-				if closure.Fn != nil && (closure.Fn.IsGenerator || closure.Fn.IsAsync) {
+				// IsConstructor 校验 (ES: EvaluateNew → Construct 前检查
+				// IsConstructor(constructor), 无 [[Construct]] 抛 TypeError):
+				//   - 箭头函数 (IsArrow): 词法 this, 规范明确不可构造;
+				//   - generator / async 函数: 没有 [[Construct]]。
+				// 旧实现把 new 箭头函数当普通调用、new generator 返回 Generator,
+				// 均与规范不符且掩盖用法错误。
+				if closure.IsArrow || (closure.Fn != nil && (closure.Fn.IsGenerator || closure.Fn.IsAsync)) {
 					if err := vm.throwNamedError("TypeError", "%s is not a constructor", describeCallee(fn)); err != nil {
 						return err
 					}
