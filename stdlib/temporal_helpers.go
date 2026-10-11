@@ -330,6 +330,28 @@ func getDisambiguation(opts object.Value) (string, object.Value) {
 		"compatible", "earlier", "later", "reject")
 }
 
+// getOffsetOption 读取 offset 选项 (ZonedDateTime 歧义消解用)。
+func getOffsetOption(opts object.Value) (string, object.Value) {
+	return getEnumOption(opts, "offset", "reject", "prefer", "use", "ignore", "reject")
+}
+
+// readZonedDateTimeOptions 按 spec 顺序读取 disambiguation → offset → overflow。
+func readZonedDateTimeOptions(opts object.Value) (string, string, string, object.Value) {
+	d, e := getDisambiguation(opts)
+	if e != nil {
+		return "", "", "", e
+	}
+	o, e := getOffsetOption(opts)
+	if e != nil {
+		return "", "", "", e
+	}
+	ov, e := getOverflow(opts)
+	if e != nil {
+		return "", "", "", e
+	}
+	return d, o, ov, nil
+}
+
 // getRoundingMode 读取 roundingMode 选项。
 // halfEven 是银行家舍入，与 halfExpand 在符号对称性上不同，但作为
 // 合法值必须被接受 (舍入实现内部再区分)。
@@ -1083,7 +1105,14 @@ func mergeDateBag(base object.ISODate, bag propBag, overflow string) (object.ISO
 			return base, err
 		}
 		if n < 1 || n > 12 {
-			return base, tgRange("month is out of range")
+			if overflow == "reject" {
+				return base, tgRange("month is out of range")
+			}
+			if n < 1 {
+				n = 1
+			} else {
+				n = 12
+			}
 		}
 		m = n
 		monthSeen = true
@@ -1109,7 +1138,10 @@ func mergeDateBag(base object.ISODate, bag propBag, overflow string) (object.ISO
 			return base, err
 		}
 		if n < 1 {
-			return base, tgRange("day is out of range")
+			if overflow == "reject" {
+				return base, tgRange("day is out of range")
+			}
+			n = 1
 		}
 		d = n
 	}
@@ -1169,7 +1201,7 @@ func readDateFields(o propBag, overflow string) (object.ISODate, object.Value) {
 	if !okY {
 		return object.ISODate{}, tgType("missing required date fields (year, month, day)")
 	}
-	m, merr := monthFromFields(o)
+	m, merr := monthFromFields(o, overflow)
 	if merr != nil {
 		return object.ISODate{}, merr
 	}
@@ -1180,10 +1212,12 @@ func readDateFields(o propBag, overflow string) (object.ISODate, object.Value) {
 	if !okD {
 		return object.ISODate{}, tgType("missing required date fields (year, month, day)")
 	}
-	// spec: day < 1 一律 RangeError; day 超过当月天数在 constrain 下钳制、
-	// reject 下报错。
+	// spec RegulateISODate: day 越界在 constrain 下钳制到 1..dim、reject 下报错。
 	if d < 1 {
-		return object.ISODate{}, tgRange("day is out of range")
+		if overflow == "reject" {
+			return object.ISODate{}, tgRange("day is out of range")
+		}
+		d = 1
 	}
 	dim := object.DaysInMonth(y, m)
 	if d > dim {
@@ -1208,6 +1242,13 @@ func readDateTimeFields(o propBag, overflow string) (object.ISODateTime, object.
 	tm := object.ISOTime{}
 	if merr := mergeTimeInto(&tm, o); merr != nil {
 		return object.ISODateTime{}, merr
+	}
+	// 闰秒 second==60: constrain 钳制为 59, reject 报 RangeError。
+	if tm.Second == 60 {
+		if overflow == "reject" {
+			return object.ISODateTime{}, tgRange("Invalid ISO time")
+		}
+		tm.Second = 59
 	}
 	if !object.IsValidISOTime(tm) {
 		return object.ISODateTime{}, tgRange("Invalid ISO time")
@@ -1397,7 +1438,7 @@ func toPlainYearMonthValue(v object.Value) (*object.TemporalPlainYearMonth, obje
 		}
 		return object.NewTemporalPlainYearMonth(f.Year, f.Month, 1, object.DefaultCalendarID), nil
 	case propBag:
-		y, m, err := yearMonthFields(t)
+		y, m, err := yearMonthFields(t, "constrain")
 		if err != nil {
 			return nil, err
 		}
@@ -1927,20 +1968,23 @@ func parseToStringSettings(opts object.Value, hasTime bool) (*toStringSettings, 
 		if fv != nil && s.smallestUnit == "" {
 			// spec: smallestUnit 存在时 fractionalSecondDigits 被忽略。
 			// 数值经 ToIntegerWithTruncation (2.5→2、-0.6→-1 越界)。
-			if _, isSym := fv.(*object.Symbol); isSym {
-				return nil, tgType("Cannot convert a Symbol value to a string")
-			}
-			if str, ok := fv.(*object.String); ok && str.Value == "auto" {
-				s.precision = "auto"
-			} else if n, ok := fv.(*object.Number); ok {
-				// 按 floor 取整 (2.5→2、-0.6→-1 越界); null 等非 Number 非法。
+			if n, ok := fv.(*object.Number); ok {
+				// 按 floor 取整 (2.5→2、-0.6→-1 越界)。
 				f := math.Floor(n.Value)
 				if math.IsNaN(f) || math.IsInf(f, 0) || f < 0 || f > 9 {
 					return nil, tgRange("fractionalSecondDigits must be an integer from 0 to 9")
 				}
 				s.precision = strconv.Itoa(int(f))
 			} else {
-				return nil, tgRange("Invalid fractionalSecondDigits")
+				// 非 Number: ToString 后为 "auto" 才合法 (Symbol → TypeError)。
+				str, ok := optionToString(fv)
+				if !ok {
+					return nil, tgType("Cannot convert fractionalSecondDigits to string")
+				}
+				if str != "auto" {
+					return nil, tgRange("Invalid fractionalSecondDigits")
+				}
+				s.precision = "auto"
 			}
 		}
 	}

@@ -392,11 +392,12 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 		if len(args) == 0 {
 			return tgType("ZonedDateTime.from requires an argument")
 		}
-		// spec: 选项包在任何分支之前做 GetOptionsObject + overflow 校验。
+		// spec: 选项包在任何分支之前做 GetOptionsObject，
+		// 并按 disambiguation → offset → overflow 顺序读取校验。
 		if e := optionsTypeErr(argAt(args, 1)); e != nil {
 			return e
 		}
-		fromOverflow, oe := getOverflow(argAt(args, 1))
+		_, _, fromOverflow, oe := readZonedDateTimeOptions(argAt(args, 1))
 		if oe != nil {
 			return oe
 		}
@@ -560,9 +561,9 @@ func zdtFromFields(f object.TemporalFields, args []object.Value) object.Value {
 			return disambiguationErr
 		}
 		disambiguation = disambiguationTmp
-		if o := optString(opts, "offset", ""); o != "" {
-			// options.offset 用于在 DST 歧义时挑选候选 (这里我们只需判定兼容)
-			_ = o
+		// options.offset 需按枚举校验 ("use"/"prefer"/"ignore"/"reject")。
+		if _, oerr := getOffsetOption(opts); oerr != nil {
+			return oerr
 		}
 	}
 	// 字符串自带 UTC 偏移时直接得到精确时刻，无需再查时区。
@@ -616,17 +617,20 @@ func zdtShift(t *object.TemporalZonedDateTime, args []object.Value, negate bool)
 	if negate {
 		d = d.Negated()
 	}
+	// spec: 选项包在任何分支之前做 GetOptionsObject + overflow 校验。
+	if e := optionsTypeErr(opts); e != nil {
+		return e
+	}
+	overflow, overflowErr := getOverflow(opts)
+	if overflowErr != nil {
+		return overflowErr
+	}
 	if !d.HasCalendarUnits() {
 		ns := new(big.Int).Add(t.Nanos(), d.TimeTotalNanos())
 		if !object.IsValidEpochNanos(ns) {
 			return tgRange("Result is outside of supported range")
 		}
 		return object.NewTemporalZonedDateTime(ns, t.TimeZoneID(), t.CalendarID())
-	}
-	// 墙钟加法: 先算当地的新墙钟时间，再求解它对应的精确时刻
-	overflow, overflowErr := getOverflow(opts)
-	if overflowErr != nil {
-		return overflowErr
 	}
 	disambiguation, disambiguationErr := getDisambiguation(opts)
 	if disambiguationErr != nil {

@@ -352,7 +352,7 @@ func setupTemporalCalendar(temporal *object.Object) {
 		if !ok {
 			return tgType("yearMonthFromFields: invalid fields")
 		}
-		y, m, err := yearMonthFields(o)
+		y, m, err := yearMonthFields(o, "constrain")
 		if err != nil {
 			return err
 		}
@@ -479,8 +479,8 @@ func calendarArgToISODate(v object.Value) (object.ISODate, bool) {
 	return dt.Date, true
 }
 
-// yearMonthFields 从属性包取出 (year, month)。
-func yearMonthFields(o propBag) (int32, int32, object.Value) {
+// yearMonthFields 从属性包取出 (year, month)，按 overflow 调节 month。
+func yearMonthFields(o propBag, overflow string) (int32, int32, object.Value) {
 	if ce := checkCalendarProp(o); ce != nil {
 		return 0, 0, ce
 	}
@@ -496,15 +496,15 @@ func yearMonthFields(o propBag) (int32, int32, object.Value) {
 		return 0, 0, tgRange("year must be an integer")
 	}
 	y := int32(yf)
-	m, merr := monthFromFields(o)
+	m, merr := monthFromFields(o, overflow)
 	if merr != nil {
 		return 0, 0, merr
 	}
 	return y, m, nil
 }
 
-// monthFromFields 读取 month / monthCode 并校验一致性，返回 1..12 的月份。
-func monthFromFields(o propBag) (int32, object.Value) {
+// monthFromFields 读取 month / monthCode 并校验一致性，按 overflow 调节到 1..12。
+func monthFromFields(o propBag, overflow string) (int32, object.Value) {
 	mc, hasCode := o.GetProperty("monthCode")
 	code := int32(0)
 	if hasCode && mc != object.UndefinedSingleton {
@@ -532,7 +532,14 @@ func monthFromFields(o propBag) (int32, object.Value) {
 		}
 		m := int32(mf)
 		if m < 1 || m > 12 {
-			return 0, tgRange("month is out of range")
+			if overflow == "reject" {
+				return 0, tgRange("month is out of range")
+			}
+			if m < 1 {
+				m = 1
+			} else {
+				m = 12
+			}
 		}
 		if code != 0 && code != m {
 			return 0, tgRange("month does not match monthCode")
@@ -580,7 +587,7 @@ func monthDayFields(o propBag, overflow string) (int32, int32, object.Value) {
 	if d < 1 || d > 31 {
 		return 0, 0, tgRange("day is out of range")
 	}
-	m, merr := monthFromFields(o)
+	m, merr := monthFromFields(o, overflow)
 	if merr != nil {
 		return 0, 0, merr
 	}
@@ -858,7 +865,11 @@ func setupTemporalPlainYearMonth(temporal *object.Object) {
 			if e := optionsTypeErr(argAt(args, 1)); e != nil {
 				return e
 			}
-			y, m, err := yearMonthFields(v)
+			ymOverflow, oe := getOverflow(argAt(args, 1))
+			if oe != nil {
+				return oe
+			}
+			y, m, err := yearMonthFields(v, ymOverflow)
 			if err != nil {
 				return err
 			}
