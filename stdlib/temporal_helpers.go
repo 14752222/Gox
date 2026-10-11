@@ -1118,7 +1118,11 @@ func toPlainDateValue(v object.Value) (*object.TemporalPlainDate, object.Value) 
 		if e := calendarFromAnnotation(f.Calendar); e != nil {
 			return nil, e
 		}
-		return object.NewTemporalPlainDate(object.ISODate{Year: f.Year, Month: f.Month, Day: f.Day}, object.DefaultCalendarID), nil
+		d := object.ISODate{Year: f.Year, Month: f.Month, Day: f.Day}
+		if !object.IsValidISODate(d) {
+			return nil, tgRange("Invalid PlainDate string: " + t.Value)
+		}
+		return object.NewTemporalPlainDate(d, object.DefaultCalendarID), nil
 	case propBag:
 		d, ferr := readDateFields(t, "constrain")
 		if ferr != nil {
@@ -1141,8 +1145,12 @@ func toPlainTimeValue(v object.Value) (*object.TemporalPlainTime, object.Value) 
 		return object.NewTemporalPlainTime(dt.Time), nil
 	case *object.String:
 		// 歧义拒绝: 不含时间分隔符、但能解释为 YearMonth/MonthDay 的裸串
-		// ("2021-12"、"1214"、"12-14") 不是合法 PlainTime 串。
-		if !strings.ContainsAny(t.Value, "Tt ") {
+		// ("2021-12"、"1214"、"12-14"、"202112[UTC]") 不是合法 PlainTime 串。
+		head := t.Value
+		if i := strings.IndexByte(head, '['); i >= 0 {
+			head = head[:i]
+		}
+		if !strings.ContainsAny(head, "Tt ") {
 			if _, amb := object.ParseTemporalYearMonthString(t.Value); amb {
 				return nil, tgRange("Invalid PlainTime string: "+t.Value)
 			}
@@ -1775,6 +1783,9 @@ func parseToStringSettings(opts object.Value, hasTime bool) (*toStringSettings, 
 		if fv != nil && s.smallestUnit == "" {
 			// spec: smallestUnit 存在时 fractionalSecondDigits 被忽略。
 			// 数值经 ToIntegerWithTruncation (2.5→2、-0.6→-1 越界)。
+			if _, isSym := fv.(*object.Symbol); isSym {
+				return nil, tgType("Cannot convert a Symbol value to a string")
+			}
 			if str, ok := fv.(*object.String); ok && str.Value == "auto" {
 				s.precision = "auto"
 			} else if n, ok := fv.(*object.Number); ok {

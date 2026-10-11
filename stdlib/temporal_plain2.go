@@ -319,6 +319,9 @@ func setupTemporalPlainDate(temporal *object.Object) {
 			if f.Calendar != "" && f.Calendar != object.DefaultCalendarID {
 				return tgRange("Unsupported calendar: " + f.Calendar)
 			}
+			if !object.IsValidISODate(f.ISODateTime().Date) {
+				return tgRange("Invalid PlainDate string: " + v.Value)
+			}
 			return object.NewTemporalPlainDate(f.ISODateTime().Date, object.DefaultCalendarID)
 		case propBag:
 			d, ferr := readDateFields(v, fromOverflow)
@@ -726,7 +729,11 @@ func setupTemporalPlainTime(temporal *object.Object) {
 		switch v := args[0].(type) {
 		case *object.String:
 			// 歧义拒绝: 不含时间分隔符的 YearMonth/MonthDay 形式不是 PlainTime。
-			if !strings.ContainsAny(v.Value, "Tt ") {
+			head := v.Value
+			if i := strings.IndexByte(head, '['); i >= 0 {
+				head = head[:i]
+			}
+			if !strings.ContainsAny(head, "Tt ") {
 				if _, amb := object.ParseTemporalYearMonthString(v.Value); amb {
 					return tgRange("Invalid PlainTime string: " + v.Value)
 				}
