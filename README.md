@@ -435,6 +435,8 @@ Options:
 
 字段说明、权限清单与图标规范见 [docs/platform-config.md](docs/platform-config.md)。
 
+脚本运行时的权限模型（`--allow-fs-write` 等，默认最小权限）见 [docs/permissions.md](docs/permissions.md)；主流 npm 库实测兼容性见 [docs/compat-matrix.md](docs/compat-matrix.md)。
+
 ## 配置说明
 
 Gox 运行时本身不使用配置文件，全部行为由**命令行参数**、**少量环境变量**与**脚本内 API** 控制。

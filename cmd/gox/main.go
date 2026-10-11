@@ -18,6 +18,7 @@ import (
 	"github.com/14752222/Gox/config"
 	"github.com/14752222/Gox/gfx"
 	"github.com/14752222/Gox/object"
+	"github.com/14752222/Gox/permissions"
 	"github.com/14752222/Gox/scaffold"
 	"github.com/14752222/Gox/stdlib"
 	"github.com/14752222/Gox/vm"
@@ -36,11 +37,22 @@ func main() {
 	initStrictAPI()
 
 	args := os.Args[1:]
+
+	// 权限模型（v1，Deno 风格，见 docs/permissions.md）：先剥离 --allow-*
+	// 标志再分发。脚本执行路径默认最小权限（未授权的高危能力抛错）；
+	// REPL 是交互式会话，默认全部允许（人已坐在终端前）。
+	args, permMask, permErr := permissions.ParseFlags(args)
+	if permErr != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", permErr)
+		os.Exit(2)
+	}
 	if len(args) == 0 {
-		// 没有参数: 启动 REPL
+		// 没有参数: 启动 REPL（交互式 → 全部允许）
+		permissions.Set(permissions.All)
 		startREPL()
 		return
 	}
+	permissions.Set(permMask)
 
 	// 子命令只在参数"不像脚本路径"时才认。判据是扩展名与路径分隔符 ——
 	// 这样 `gox help.js` / `gox src/create.js` 仍然老老实实当脚本执行，
@@ -173,6 +185,13 @@ func printUsage(w io.Writer) {
   gox lint [路径]              静态检查: 抓"违反了不报错、只会静默失效"的几条规矩
                                （子节点写成快照 / 子节点区 // / each 无 key / lib 引 gox）
   gox update [--check] [--pre] [--manifest URL]  gox 自更新（流式下载/断点续传/pre 通道）
+
+权限（执行脚本默认最小权限，触达未授权能力即报错，见 docs/permissions.md）:
+  --allow-fs-write          允许 fs 写入/删除/改名
+  --allow-process-exit      允许 process.exit
+  --allow-net-listen        允许 http.createServer().listen()
+  --allow-geo-media         允许定位（gx/geo）与媒体采集（gx/media）
+  --allow-all (-A)          授予以上全部权限
   gox                          启动交互式 REPL
   gox help                     显示这份帮助
   gox version                  显示版本号
