@@ -1433,69 +1433,20 @@ func regulateTimeFields(t *object.ISOTime, overflow string) object.Value {
 // readDateFields 从属性包读取 year/month(或 monthCode)/day 并按 overflow 调节。
 // 失败时返回 *object.Error (TypeError=字段缺失, RangeError=值越界)。
 func readDateFields(o propBag, overflow string) (object.ISODate, object.Value) {
-	if ce := checkCalendarProp(o); ce != nil {
-		return object.ISODate{}, ce
-	}
-	y, okY, e := readIntField(o, "year")
+	raw, e := readDateFieldsRaw(o)
 	if e != nil {
 		return object.ISODate{}, e
 	}
-	if !okY {
-		return object.ISODate{}, tgType("missing required date fields (year, month, day)")
-	}
-	m, merr := monthFromFields(o, overflow)
-	if merr != nil {
-		return object.ISODate{}, merr
-	}
-	d, okD, e3 := readIntField(o, "day")
-	if e3 != nil {
-		return object.ISODate{}, e3
-	}
-	if !okD {
-		return object.ISODate{}, tgType("missing required date fields (year, month, day)")
-	}
-	// spec RegulateISODate: day 越界在 constrain 下钳制到 1..dim、reject 下报错。
-	if d < 1 {
-		if overflow == "reject" {
-			return object.ISODate{}, tgRange("day is out of range")
-		}
-		d = 1
-	}
-	dim := object.DaysInMonth(y, m)
-	if d > dim {
-		if overflow == "reject" {
-			return object.ISODate{}, tgRange("Invalid ISO date")
-		}
-		d = dim
-	}
-	out := object.ISODate{Year: y, Month: m, Day: d}
-	if !object.IsValidISODate(out) {
-		return object.ISODate{}, tgRange("Invalid ISO date")
-	}
-	return out, nil
+	return raw.regulate(overflow)
 }
 
 // readDateTimeFields 在 readDateFields 基础上合并可选时间字段。
 func readDateTimeFields(o propBag, overflow string) (object.ISODateTime, object.Value) {
-	d, e := readDateFields(o, overflow)
+	raw, e := readDateTimeFieldsRaw(o)
 	if e != nil {
 		return object.ISODateTime{}, e
 	}
-	tm := object.ISOTime{}
-	if merr := mergeTimeInto(&tm, o); merr != nil {
-		return object.ISODateTime{}, merr
-	}
-	// 闰秒 second==60: constrain 钳制为 59, reject 报 RangeError。
-	if tm.Second == 60 {
-		if overflow == "reject" {
-			return object.ISODateTime{}, tgRange("Invalid ISO time")
-		}
-		tm.Second = 59
-	}
-	if !object.IsValidISOTime(tm) {
-		return object.ISODateTime{}, tgRange("Invalid ISO time")
-	}
-	return object.ISODateTime{Date: d, Time: tm}, nil
+	return raw.regulate(overflow)
 }
 
 // toPlainDateTimeValue 实现 ToTemporalDateTime。
@@ -1806,15 +1757,14 @@ func toZonedDateTimeValue(v object.Value) (*object.TemporalZonedDateTime, object
 		default:
 			return nil, tgType("argument is not a ZonedDateTime")
 		}
-		tzv, found := t.GetProperty("timeZone")
-		if !found {
+		if _, found := t.GetProperty("timeZone"); !found {
 			return nil, tgType("argument is not a ZonedDateTime: missing timeZone")
 		}
-		tz, ok := toTimeZoneID(tzv)
-		if !ok {
-			return nil, tgRange("Invalid time zone")
+		raw, _, tz, rerr := readZDTFieldsRaw(t)
+		if rerr != nil {
+			return nil, rerr
 		}
-		dt, ferr := readDateTimeFields(t, "constrain")
+		dt, ferr := raw.regulate("constrain")
 		if ferr != nil {
 			return nil, ferr
 		}
