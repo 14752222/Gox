@@ -468,6 +468,12 @@ func (b *BuiltinFunction) SetFunctionLength(n int) {
 	b.DefineOwn("length", PropertyDescriptor{Value: NewInt(int64(n)), Writable: false, Enumerable: false, Configurable: true})
 }
 
+// SetFunctionLength 是 BuiltinMethod 的同语义版本 (与 *BuiltinFunction 同法,
+// 走 PropDescs 以保证 GetProperty 与 getOwnPropertyDescriptor 口径一致)。
+func (b *BuiltinMethod) SetFunctionLength(n int) {
+	b.DefineOwn("length", PropertyDescriptor{Value: NewInt(int64(n)), Writable: false, Enumerable: false, Configurable: true})
+}
+
 // NamePropertyOf 返回函数类值 (Closure / BuiltinFunction / BuiltinMethod) 上
 // "name" 自有属性的描述符。ok=false 表示该值不是函数类, 没有 name 自有属性。
 //
