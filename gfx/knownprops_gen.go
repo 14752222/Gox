@@ -20,6 +20,7 @@ var knownPropsUniversal = map[string]struct{}{
 	"border":           {},
 	"borderStyle":      {},
 	"borderWidth":      {},
+	"borderless":       {},
 	"buffer":           {},
 	"checked":          {},
 	"color":            {},
@@ -103,6 +104,7 @@ var knownPropsUniversal = map[string]struct{}{
 	"x":                {},
 	"y":                {},
 	"zIndex":           {},
+	"zebra":            {},
 }
 
 // knownPropsByTag 是各标签**额外**认得的属性（不含 universal 那一档）。
@@ -200,12 +202,8 @@ var knownPropsByTag = map[string]map[string]struct{}{
 	"table": {
 		"rows": {},
 	},
-	"table-cell": {
-		"borderless": {},
-	},
 	"table-row": {
-		"_zebra":     {},
-		"borderless": {},
+		"_zebra": {},
 	},
 	"tag": {
 		"closable":  {},

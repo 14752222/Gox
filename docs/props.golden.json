@@ -77,6 +77,7 @@
     "border",
     "borderStyle",
     "borderWidth",
+    "borderless",
     "buffer",
     "checked",
     "color",
@@ -159,7 +160,8 @@
     "wrap",
     "x",
     "y",
-    "zIndex"
+    "zIndex",
+    "zebra"
   ],
   "propsByTag": {
     "alert": [
@@ -255,12 +257,8 @@
     "table": [
       "rows"
     ],
-    "table-cell": [
-      "borderless"
-    ],
     "table-row": [
-      "_zebra",
-      "borderless"
+      "_zebra"
     ],
     "tag": [
       "closable",
