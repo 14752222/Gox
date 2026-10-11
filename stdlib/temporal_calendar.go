@@ -517,10 +517,18 @@ func (r rawDateFields) regulateYM(overflow string) (int32, int32, object.Value) 
 		return 0, 0, tgType("yearMonthFromFields requires month or monthCode")
 	}
 	m := r.month
+	code := int32(0)
+	if r.hasMonthCode {
+		c, cerr := r.monthCodeValue()
+		if cerr != nil {
+			return 0, 0, cerr
+		}
+		code = c
+	}
 	if !r.hasMonth {
-		m = r.monthCode
+		m = code
 	} else {
-		if r.hasMonthCode && r.monthCode != m {
+		if r.hasMonthCode && code != m {
 			return 0, 0, tgRange("month does not match monthCode")
 		}
 		if m < 1 || m > 12 {
@@ -630,10 +638,18 @@ func (r rawDateFields) regulateMD(overflow string) (int32, int32, object.Value) 
 		return 0, 0, tgType("monthDayFromFields requires month or monthCode")
 	}
 	m := r.month
+	code := int32(0)
+	if r.hasMonthCode {
+		c, cerr := r.monthCodeValue()
+		if cerr != nil {
+			return 0, 0, cerr
+		}
+		code = c
+	}
 	if !r.hasMonth {
-		m = r.monthCode
+		m = code
 	} else {
-		if r.hasMonthCode && r.monthCode != m {
+		if r.hasMonthCode && code != m {
 			return 0, 0, tgRange("month does not match monthCode")
 		}
 		if m < 1 || m > 12 {

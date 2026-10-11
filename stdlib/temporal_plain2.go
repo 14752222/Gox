@@ -720,8 +720,8 @@ func setupTemporalPlainTime(temporal *object.Object) {
 		// spec: 字段/槽读取先于选项处理；PlainTime 的 overflow 不读取值，
 		// 但仍需 GetOptionsObject 类型校验 (放在各分支末尾)。
 		if pt, ok := asPlainTime(args[0]); ok {
-			if e := optionsTypeErr(argAt(args, 1)); e != nil {
-				return e
+			if _, oe := readOverflowOption(argAt(args, 1)); oe != nil {
+				return oe
 			}
 			return pt
 		}
@@ -786,15 +786,8 @@ func setupTemporalPlainTime(temporal *object.Object) {
 			if oe != nil {
 				return oe
 			}
-			// 闰秒 second=60: constrain 钳制为 59, reject 报 RangeError。
-			if time.Second == 60 {
-				if ptOverflow == "reject" {
-					return tgRange("PlainTime.from: invalid fields")
-				}
-				time.Second = 59
-			}
-			if !object.IsValidISOTime(time) {
-				return tgRange("PlainTime.from: invalid fields")
+			if e := regulateTimeFields(&time, ptOverflow); e != nil {
+				return e
 			}
 			return object.NewTemporalPlainTime(time)
 		}
