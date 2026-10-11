@@ -266,27 +266,41 @@ func setupArrayProto() *object.Object {
 		if spErr != nil {
 			return spErr
 		}
-		var result []object.Value
-		if l.arr != nil {
-			result = append(result, l.arr.Elements...)
-		} else {
-			result = append(result, this)
-		}
-		for _, arg := range args {
-			if argArr, ok := arg.(*object.Array); ok {
-				result = append(result, argArr.Elements...)
-			} else {
-				result = append(result, arg)
+		// 规范: this 与每个参数先经 IsConcatSpreadable 判定,
+		// 可展开者按 length/索引逐项拷贝 (支持类数组与 @@isConcatSpreadable)。
+		items := make([]object.Value, 0, len(args)+1)
+		items = append(items, this)
+		items = append(items, args...)
+		var n int64
+		for _, e := range items {
+			spreadable, sErr := isConcatSpreadable(e)
+			if sErr != nil {
+				return sErr
 			}
-		}
-		var out int64
-		for _, e := range result {
-			if e == nil {
-				out++
+			if !spreadable {
+				if n >= maxArrayLikeLen {
+					return object.NewTypeError("concat result exceeds maximum length")
+				}
+				setIndexValue(a, n, e)
+				n++
 				continue
 			}
-			setIndexValue(a, out, e)
-			out++
+			sl, lErr := asArrayLike("concat", e)
+			if lErr != nil {
+				return lErr
+			}
+			if n+sl.n > maxArrayLikeLen {
+				return object.NewTypeError("concat result exceeds maximum length")
+			}
+			for i := int64(0); i < sl.n; i++ {
+				if sl.has(i) {
+					setIndexValue(a, n, sl.get(i))
+				}
+				if sl.err != nil {
+					return sl.err
+				}
+				n++
+			}
 		}
 		return a
 	}))
@@ -1116,6 +1130,32 @@ func setupArrayProto() *object.Object {
 	return p
 }
 
+// isConcatSpreadable 实现规范的 IsConcatSpreadable(O):
+// 非对象不可展开; @@isConcatSpreadable 优先, 缺省按 IsArray。
+func isConcatSpreadable(v object.Value) (bool, object.Value) {
+	if !isObjectLike(v) {
+		return false, nil
+	}
+	if desc, found := object.LookupSymbolPropertyDescriptorChain(v, object.GetGlobalSymbol("Symbol.isConcatSpreadable")); found {
+		var sv object.Value
+		if acc, isAcc := desc.Value.(*object.Accessor); isAcc {
+			if acc.Getter != nil && object.IsCallable(acc.Getter) {
+				sv = object.CallFunction(acc.Getter, v)
+				if t := callbackThrown(); t != nil {
+					return false, t
+				}
+			}
+		} else {
+			sv = desc.Value
+		}
+		if sv != nil && !isUndefinedValue(sv) {
+			return sv.IsTruthy(), nil
+		}
+	}
+	_, isArr := v.(*object.Array)
+	return isArr, nil
+}
+
 // isObjectLike 判断值是否为"对象" (IsConstructor/ArraySpeciesCreate 的参数校验用)。
 func isObjectLike(v object.Value) bool {
 	switch v.(type) {
@@ -1616,7 +1656,8 @@ func strictEqualValues(a, b object.Value) bool {
 		_, ok := b.(*object.Undefined)
 		return ok
 	}
-	return false
+	// 其余类型 (Object/Array/Symbol/BigInt/函数等) 按引用同一性比较
+	return a == b
 }
 
 // sameValueZero 实现 ECMAScript 的 SameValueZero 比较。
