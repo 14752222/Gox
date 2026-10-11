@@ -26,6 +26,7 @@ func toFloat(v object.Value) float64 {
 	if v == nil {
 		return math.NaN()
 	}
+	v = object.UnwrapPrimitive(v)
 	switch val := v.(type) {
 	case *object.Number:
 		return val.Value
@@ -149,6 +150,7 @@ func toStr(v object.Value) string {
 
 // isFalsy 判断值是否为假值。
 func isFalsy(v object.Value) bool {
+	v = object.UnwrapPrimitive(v)
 	return object.IsFalsy(v)
 }
 

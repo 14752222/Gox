@@ -1522,20 +1522,15 @@ func sameValueZero(a, b object.Value) bool {
 // (isArray/from/of) 作为构造器自身的属性挂载，语义不变。
 func setupArrayGlobal() *object.BuiltinFunction {
 	arr := object.NewBuiltin("Array", func(args ...object.Value) object.Value {
-		// Array(len): 单参数且为整数时，返回指定长度的数组。
-		// 本运行时没有"空洞"的概念，用 undefined 填充，
-		// 因此 Array(3).length === 3，但 (0 in Array(3)) 为 true。
+		// Array(len): 单参数且为整数时，返回指定长度的稀疏数组。
+		// Elements 的 nil 即洞 (规范语义: (0 in Array(3)) === false)。
 		if len(args) == 1 {
 			if n, ok := args[0].(*object.Number); ok {
 				l := n.Value
 				if math.IsNaN(l) || l != math.Trunc(l) || l < 0 || l > 4294967295 {
 					return object.NewRangeError("Invalid array length")
 				}
-				els := make([]object.Value, int(l))
-				for i := range els {
-					els[i] = object.UndefinedSingleton
-				}
-				return object.NewArray(els)
+				return object.NewArray(make([]object.Value, int(l)))
 			}
 		}
 		// Array(...items): 直接以参数为元素

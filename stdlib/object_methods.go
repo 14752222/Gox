@@ -1029,7 +1029,7 @@ func setupGlobalFunctions(env *runtime.Environment) {
 	// Boolean.prototype.toString / valueOf (ES2024 20.3.3.2 / 20.3.3.3)：
 	// 此前原型上只有 constructor，`true.toString()` 因此取不到方法。
 	boolProto.SetBuiltinProperty("toString", object.NewBuiltinMethod("toString", func(this object.Value, args ...object.Value) object.Value {
-		if b, ok := this.(*object.Boolean); ok {
+		if b, ok := object.UnwrapPrimitive(this).(*object.Boolean); ok {
 			if b.Value {
 				return object.NewString("true")
 			}
@@ -1038,7 +1038,7 @@ func setupGlobalFunctions(env *runtime.Environment) {
 		return object.NewTypeError("Boolean.prototype.toString requires that 'this' be a Boolean")
 	}))
 	boolProto.SetBuiltinProperty("valueOf", object.NewBuiltinMethod("valueOf", func(this object.Value, args ...object.Value) object.Value {
-		if b, ok := this.(*object.Boolean); ok {
+		if b, ok := object.UnwrapPrimitive(this).(*object.Boolean); ok {
 			return b
 		}
 		return object.NewTypeError("Boolean.prototype.valueOf requires that 'this' be a Boolean")

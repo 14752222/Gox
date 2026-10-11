@@ -26,6 +26,26 @@ type Array struct {
 	symbolKeyOrder []*Symbol
 }
 
+// holeValue 是数组洞 (elision) 的栈上标记类型。
+// 只在 VM 栈上短暂存在: OP_NEW_ARRAY / OP_ARRAY_PUSH 写入 Elements 时
+// 转成 nil (Elements 里 nil 即洞, GetProperty/Has 均按洞处理)。
+type holeValue struct{}
+
+func (h *holeValue) Type() ObjectType                     { return UNDEFINED_OBJ }
+func (h *holeValue) Inspect() string                      { return "undefined" }
+func (h *holeValue) IsTruthy() bool                       { return false }
+func (h *holeValue) GetProperty(name string) (Value, bool) { return nil, false }
+func (h *holeValue) SetProperty(name string, val Value)   {}
+
+// HoleSingleton 是洞标记单例。
+var HoleSingleton Value = &holeValue{}
+
+// IsHole 判断值是否为洞标记。
+func IsHole(v Value) bool {
+	_, ok := v.(*holeValue)
+	return ok
+}
+
 // ArrayProto 是所有数组实例的原型对象。
 // 由 stdlib 包初始化时设置。包含 push, pop, map 等方法。
 var ArrayProto Value

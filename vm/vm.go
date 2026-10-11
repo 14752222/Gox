@@ -1331,6 +1331,8 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			vm.stack.Push(object.NullSingleton)
 		case bytecode.OP_UNDEFINED:
 			vm.stack.Push(object.UndefinedSingleton)
+		case bytecode.OP_HOLE:
+			vm.stack.Push(object.HoleSingleton)
 		case bytecode.OP_TRUE:
 			vm.stack.Push(object.NewBoolean(true))
 		case bytecode.OP_FALSE:
@@ -2199,6 +2201,16 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				if result == nil {
 					result = newObj
 				}
+				// new Boolean/Number/String: 规范构造结果是包装对象
+				// (普通对象 + [[PrimitiveValue]] 内部槽)，不是原始值本身。
+				switch prim := result.(type) {
+				case *object.Boolean:
+					result = object.NewPrimitiveObject(prim, object.BooleanProto)
+				case *object.Number:
+					result = object.NewPrimitiveObject(prim, object.NumberProto)
+				case *object.String:
+					result = object.NewPrimitiveObject(prim, object.StringProto)
+				}
 				// 内建构造器返回 Error 对象时抛出异常 (如 new RegExp("[") → SyntaxError)
 				// ReturnIsValue 的构造器 (如 Error) 返回的 Error 是值，不抛出
 				if errObj, isErr := result.(*object.Error); isErr && !builtin.ReturnIsValue {
@@ -2236,7 +2248,11 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			n := int(operand)
 			elements := make([]object.Value, n)
 			for i := n - 1; i >= 0; i-- {
-				elements[i] = vm.stack.Pop()
+				e := vm.stack.Pop()
+				if object.IsHole(e) {
+					e = nil // 洞在 Elements 里以 nil 表示
+				}
+				elements[i] = e
 			}
 			vm.stack.Push(object.NewArray(elements))
 		case bytecode.OP_NEW_OBJECT:
@@ -2550,6 +2566,9 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 		case bytecode.OP_ARRAY_PUSH:
 			// 弹出值，追加到栈顶下方的数组
 			val := vm.stack.Pop()
+			if object.IsHole(val) {
+				val = nil // 洞在 Elements 里以 nil 表示
+			}
 			arr := vm.stack.Peek()
 			if a, ok := arr.(*object.Array); ok {
 				a.Elements = append(a.Elements, val)
@@ -5915,6 +5934,21 @@ func (vm *VM) getIndex(obj, index object.Value) object.Value {
 		}
 		return object.UndefinedSingleton
 
+	case *object.PrimitiveObject:
+		// 包装对象: 先查 String 包装的 length/索引字符, 再走普通对象语义
+		if sym, ok := index.(*object.Symbol); ok {
+			if desc, found := object.LookupSymbolPropertyDescriptorChain(o, sym); found {
+				if desc.Value != nil {
+					return desc.Value
+				}
+			}
+			return object.UndefinedSingleton
+		}
+		val, found := o.GetProperty(toJSString(index))
+		if !found {
+			return object.UndefinedSingleton
+		}
+		return val
 	case *object.Object:
 		if s, ok := index.(*object.String); ok {
 			val, found := o.GetProperty(s.Value)
@@ -6663,8 +6697,9 @@ func (vm *VM) setIndex(obj, index, val object.Value, inStaticInit bool) {
 		if n, ok := index.(*object.Number); ok {
 			idx := int(n.Value)
 			if idx >= 0 {
+				// 跳位写 (arr[5]=1) 产生的空缺是洞 (nil), 不是 undefined 元素
 				for len(o.Elements) <= idx {
-					o.Elements = append(o.Elements, object.UndefinedSingleton)
+					o.Elements = append(o.Elements, nil)
 				}
 				o.Elements[idx] = val
 				return
@@ -6694,6 +6729,13 @@ func (vm *VM) setIndex(obj, index, val object.Value, inStaticInit bool) {
 		if n, ok := index.(*object.Number); ok {
 			o.SetIndexedElement(int(n.Value), val)
 		}
+	case *object.PrimitiveObject:
+		if sym, ok := index.(*object.Symbol); ok {
+			o.SetSymbolProperty(sym, val)
+			return
+		}
+		// String 包装的 length/索引只读 (PrimitiveObject.SetProperty 内部拦截)
+		o.SetProperty(toJSString(index), val)
 	case *object.Object:
 		if s, ok := index.(*object.String); ok {
 			o.SetProperty(s.Value, val)
@@ -6760,6 +6802,9 @@ func (vm *VM) normalizeIndexKey(index object.Value) object.Value {
 
 // toNumber 将任意值转换为 float64。
 func toNumber(v object.Value) float64 {
+	if w, ok := v.(*object.PrimitiveObject); ok {
+		v = w.Primitive
+	}
 	switch val := v.(type) {
 	case *object.Number:
 		return val.Value

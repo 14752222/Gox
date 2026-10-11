@@ -146,7 +146,7 @@ func setupNumberProto() *object.Object {
 
 	// valueOf(): 返回原始数字值
 	p.SetBuiltinProperty("valueOf", object.NewBuiltinMethod("valueOf", func(this object.Value, args ...object.Value) object.Value {
-		if num, ok := this.(*object.Number); ok {
+		if num, ok := object.UnwrapPrimitive(this).(*object.Number); ok {
 			return num
 		}
 		return object.NewNumber(0)
