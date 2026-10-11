@@ -415,21 +415,15 @@ func plainDateDiffFrom(from object.ISODate, args []object.Value, since bool) obj
 	if uerr2 != nil {
 		return uerr2
 	}
-	if _, modeErr := getRoundingMode(opts); modeErr != nil {
+	mode, modeErr := getRoundingModeTrunc(opts)
+	if modeErr != nil {
 		return modeErr
 	}
-	if _, incErr := getRoundingIncrement(opts); incErr != nil {
+	inc, incErr := getRoundingIncrement(opts)
+	if incErr != nil {
 		return incErr
 	}
 	to := other.ISODate()
-	if since {
-		from, to = to, from
-	}
-	sign := int64(1)
-	if from.EpochDays() > to.EpochDays() {
-		sign = -1
-		from, to = to, from
-	}
 	su := smallest
 	if su == "auto" {
 		su = "day"
@@ -440,13 +434,16 @@ func plainDateDiffFrom(from object.ISODate, args []object.Value, since bool) obj
 	if unitRank(su) < unitRank(largest) {
 		return tgRange("smallestUnit is larger than largestUnit")
 	}
-	years, months, weeks, days := object.DiffISODate(from, to, largest)
-	dur := object.NewTemporalDuration(
-		int64(years), int64(months), int64(weeks), int64(days), 0, 0, 0, 0, 0, 0)
-	if sign < 0 {
-		return dur.Negated()
+	if !validRoundingIncrement(su, inc) {
+		return tgRange("Invalid roundingIncrement for " + su)
 	}
-	return dur
+	if since {
+		from, to = to, from
+		mode = negateRoundingMode(mode)
+	}
+	return calendarRoundDiff(
+		object.ISODateTime{Date: from}, object.ISODateTime{Date: to},
+		largest, su, inc, mode)
 }
 
 // dateFromFieldsObject 从属性包构造 ISODate (constrain 语义)。

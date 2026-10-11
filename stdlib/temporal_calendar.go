@@ -3,6 +3,7 @@ package stdlib
 import (
 	"fmt"
 	"math"
+	"math/big"
 
 	"github.com/14752222/Gox/object"
 )
@@ -940,25 +941,42 @@ func ymDiff(t *object.TemporalPlainYearMonth, args []object.Value, since bool) o
 	if uerr != nil {
 		return uerr
 	}
-	if _, suerr := getSmallestUnit(opts, []string{"year", "month"}); suerr != nil {
+	smallest, suerr := getSmallestUnit(opts, []string{"year", "month"})
+	if suerr != nil {
 		return suerr
 	}
-	if _, merr := getRoundingMode(opts); merr != nil {
+	mode, merr := getRoundingModeTrunc(opts)
+	if merr != nil {
 		return merr
 	}
-	if _, incErr := getRoundingIncrement(opts); incErr != nil {
+	inc, incErr := getRoundingIncrement(opts)
+	if incErr != nil {
 		return incErr
 	}
-	a := int64(t.Year())*12 + int64(t.Month())
-	b := int64(other.Year())*12 + int64(other.Month())
-	diff := b - a
+	if largest == "auto" {
+		largest = "year"
+	}
+	if smallest == "auto" {
+		smallest = "month"
+	}
+	if unitRank(smallest) < unitRank(largest) {
+		return tgRange("smallestUnit is larger than largestUnit")
+	}
+	diff := (int64(other.Year())*12 + int64(other.Month())) -
+		(int64(t.Year())*12 + int64(t.Month()))
 	if since {
 		diff = -diff
+		mode = negateRoundingMode(mode)
 	}
-	if largest == "year" || largest == "auto" {
-		return object.NewTemporalDuration(diff/12, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+	if smallest == "year" {
+		years := roundRatToIncrement(big.NewRat(diff, 12), inc, mode)
+		return object.NewTemporalDuration(years, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 	}
-	return object.NewTemporalDuration(0, diff, 0, 0, 0, 0, 0, 0, 0, 0)
+	r := roundRatToIncrement(big.NewRat(diff, 1), inc, mode)
+	if largest == "year" {
+		return object.NewTemporalDuration(r/12, r%12, 0, 0, 0, 0, 0, 0, 0, 0)
+	}
+	return object.NewTemporalDuration(0, r, 0, 0, 0, 0, 0, 0, 0, 0)
 }
 
 // floorDiv64 向下取整除法 (负数时也正确)。

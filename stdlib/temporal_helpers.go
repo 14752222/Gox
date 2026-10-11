@@ -1547,6 +1547,167 @@ func resolveAutoLargest(smallest, fallback string) string {
 	return fallback
 }
 
+// getRoundingModeTrunc 同 getRoundingMode，但默认值为 "trunc"。
+// DifferenceSettings (until/since) 的规范默认值是 trunc 而非 halfExpand。
+func getRoundingModeTrunc(opts object.Value) (string, object.Value) {
+	return getEnumOption(opts, "roundingMode", "trunc",
+		"ceil", "floor", "expand", "trunc",
+		"halfCeil", "halfFloor", "halfExpand", "halfTrunc", "halfEven")
+}
+
+// ===== 日历感知差值舍入 =====
+
+// negateRoundingMode 返回方向取反后的舍入模式 (负值差值 / since 方向使用)。
+func negateRoundingMode(mode string) string {
+	switch mode {
+	case "ceil":
+		return "floor"
+	case "floor":
+		return "ceil"
+	case "halfCeil":
+		return "halfFloor"
+	case "halfFloor":
+		return "halfCeil"
+	}
+	return mode
+}
+
+// roundRatToIncrement 把有理数 v 按 mode 舍入到 inc 的整数倍，返回该整数。
+// v 带符号；各 half* 模式按规范处理 tie 与符号对称性。
+func roundRatToIncrement(v *big.Rat, inc int64, mode string) int64 {
+	if inc < 1 {
+		inc = 1
+	}
+	q := new(big.Rat).Quo(v, big.NewRat(inc, 1))
+	// floor(q): Quo 向零取整，负值且有余数时再减 1
+	fl := new(big.Int).Quo(q.Num(), q.Denom())
+	if q.Sign() < 0 && new(big.Int).Mod(q.Num(), q.Denom()).Sign() != 0 {
+		fl.Sub(fl, big.NewInt(1))
+	}
+	frac := new(big.Rat).Sub(q, new(big.Rat).SetInt(fl))
+	exact := frac.Sign() == 0
+	half := frac.Cmp(big.NewRat(1, 2))
+	pos := v.Sign() >= 0
+	up := false
+	switch mode {
+	case "ceil":
+		up = !exact
+	case "floor":
+		up = false
+	case "expand": // 远离零: 正取 hi、负取 lo
+		up = !exact && pos
+	case "trunc": // 趋向零: 正取 lo、负取 hi
+		up = !exact && !pos
+	case "halfCeil":
+		up = half >= 0
+	case "halfFloor":
+		up = half > 0
+	case "halfExpand":
+		up = half > 0 || (half == 0 && pos)
+	case "halfTrunc":
+		up = half > 0 || (half == 0 && !pos)
+	default: // halfEven: tie 取偶数倍数
+		up = half > 0 || (half == 0 && fl.Bit(0) == 1)
+	}
+	if up {
+		fl.Add(fl, big.NewInt(1))
+	}
+	return new(big.Int).Mul(fl, big.NewInt(inc)).Int64()
+}
+
+// addMonthsWall 在 wall-clock datetime 上加整月 (constrain)，保留时间部分。
+func addMonthsWall(dt object.ISODateTime, months int64) object.ISODateTime {
+	d, ok := object.AddDateDuration(dt.Date, int32(months/12), int32(months%12), 0, 0, "constrain")
+	if !ok {
+		return dt
+	}
+	return object.ISODateTime{Date: d, Time: dt.Time}
+}
+
+// calendarRoundDiff 计算 wall-clock 差 (to - from) 并按 smallestUnit 舍入，
+// 覆盖 year..nanosecond 全单位 (ISO 日历)。返回带符号的 Duration。
+// 调用方负责: since 方向先交换 from/to 并对 mode 取反。
+func calendarRoundDiff(from, to object.ISODateTime, largest, smallest string, inc int64, mode string) *object.TemporalDuration {
+	sign := int64(1)
+	if compareISODateTime(from, to) > 0 {
+		sign = -1
+		from, to = to, from
+		mode = negateRoundingMode(mode)
+	}
+	// largest 为日及以下: 纯纳秒路径
+	if unitRank(largest) >= unitRank("day") {
+		total := new(big.Int).Sub(to.EpochNanos(), from.EpochNanos())
+		rounded := roundNanosToUnit(total, smallest, inc, mode)
+		dur := durationFromNanosByLargest(rounded, largest)
+		if sign < 0 {
+			return dur.Negated()
+		}
+		return dur
+	}
+
+	var years0, months0, weeks0, fullMonths int64
+	var rem *big.Int
+	anchor := from
+	if largest == "week" {
+		total := new(big.Int).Sub(to.EpochNanos(), from.EpochNanos())
+		q, r := new(big.Int).QuoRem(total, big.NewInt(7*object.NanosPerDay), new(big.Int))
+		weeks0 = q.Int64()
+		rem = r
+	} else {
+		fullMonths = int64(to.Date.Year-from.Date.Year)*12 + int64(to.Date.Month-from.Date.Month)
+		anchor = addMonthsWall(from, fullMonths)
+		if compareISODateTime(anchor, to) > 0 {
+			fullMonths--
+			anchor = addMonthsWall(from, fullMonths)
+		}
+		if largest == "year" {
+			years0 = fullMonths / 12
+			months0 = fullMonths % 12
+		} else {
+			months0 = fullMonths
+		}
+		rem = new(big.Int).Sub(to.EpochNanos(), anchor.EpochNanos())
+	}
+
+	years, months, weeks := years0, months0, weeks0
+	var days, hours, mins, secs, millis, micros, nanos int64
+	switch smallest {
+	case "year":
+		ys := addMonthsWall(from, years0*12)
+		ye := addMonthsWall(ys, 12)
+		unitLen := new(big.Int).Sub(ye.EpochNanos(), ys.EpochNanos())
+		remY := new(big.Int).Sub(to.EpochNanos(), ys.EpochNanos())
+		q := new(big.Rat).Add(big.NewRat(years0, 1), new(big.Rat).SetFrac(remY, unitLen))
+		years, months, weeks = roundRatToIncrement(q, inc, mode), 0, 0
+	case "month":
+		me := addMonthsWall(anchor, 1)
+		unitLen := new(big.Int).Sub(me.EpochNanos(), anchor.EpochNanos())
+		q := new(big.Rat).Add(big.NewRat(fullMonths, 1), new(big.Rat).SetFrac(rem, unitLen))
+		r := roundRatToIncrement(q, inc, mode)
+		weeks = 0
+		if largest == "year" {
+			years, months = r/12, r%12
+		} else {
+			months = r
+		}
+	case "week":
+		q := new(big.Rat).SetFrac(rem, big.NewInt(7*object.NanosPerDay))
+		q.Add(q, big.NewRat(weeks0, 1))
+		weeks = roundRatToIncrement(q, inc, mode)
+	default: // day 及以下时间单位
+		rounded := roundNanosToUnit(rem, smallest, inc, mode)
+		td := durationFromNanosByLargest(rounded, "day")
+		days = td.Days()
+		hours, mins, secs = td.Hours(), td.Minutes(), td.Seconds()
+		millis, micros, nanos = td.Milliseconds(), td.Microseconds(), td.Nanoseconds()
+	}
+	dur := object.NewTemporalDuration(years, months, weeks, days, hours, mins, secs, millis, micros, nanos)
+	if sign < 0 {
+		return dur.Negated()
+	}
+	return dur
+}
+
 // validRoundingIncrement 校验 roundingIncrement 对 smallestUnit 合法:
 // 增量必须能整除上一级单位的容量 (小时 24、分/秒 60、毫秒及以下 1000)，
 // 日历单位只允许 1。

@@ -536,16 +536,12 @@ func dateTimeDiffFrom(from object.ISODateTime, args []object.Value, since bool) 
 	if incErr != nil {
 		return incErr
 	}
-	mode, modeErr := getRoundingMode(opts)
+	mode, modeErr := getRoundingModeTrunc(opts)
 	if modeErr != nil {
 		return modeErr
 	}
 
 	to := toPtr.ISODateTime()
-	// since 反转方向后统一按 "from → to" 的顺序计算
-	if since {
-		from, to = to, from
-	}
 	su := smallest
 	if su == "auto" {
 		su = "nanosecond"
@@ -559,44 +555,12 @@ func dateTimeDiffFrom(from object.ISODateTime, args []object.Value, since bool) 
 	if unitRank(su) < unitRank(largest) {
 		return tgRange("smallestUnit is larger than largestUnit")
 	}
-
-	// 统一方向: 保证 from <= to，负数结果由末尾的 Negated 还原
-	sign := int64(1)
-	if compareISODateTime(from, to) > 0 {
-		sign = -1
+	// since 反转方向并对舍入模式取反
+	if since {
 		from, to = to, from
+		mode = negateRoundingMode(mode)
 	}
-
-	// largestUnit 为"日"及以上时走两段式: 先算日历差 (精确到 largestUnit)，
-	// 再把剩余的时间落差作为时间部分。这样 1月31日 → 3月1日 在 largestUnit
-	// = month 下得到 P1M1D 而不是含糊的"31 天"。
-	if unitRank(largest) <= unitRank("day") {
-		years, months, weeks, days := object.DiffISODate(from.Date, to.Date, largest)
-		interDate, ok := object.AddDateDuration(from.Date, years, months, weeks, days, "constrain")
-		if !ok {
-			return tgRange("Difference out of range")
-		}
-		interDT := object.ISODateTime{Date: interDate, Time: from.Time}
-		rem := new(big.Int).Sub(to.EpochNanos(), interDT.EpochNanos())
-		timeDur := durationFromNanosByLargest(rem, su)
-		dur := object.NewTemporalDuration(
-			int64(years), int64(months), int64(weeks), int64(days),
-			timeDur.Hours(), timeDur.Minutes(), timeDur.Seconds(),
-			timeDur.Milliseconds(), timeDur.Microseconds(), timeDur.Nanoseconds())
-		if sign < 0 {
-			return dur.Negated()
-		}
-		return dur
-	}
-
-	// 其余情况整体按纳秒差处理后再按 largestUnit 拆分
-	total := new(big.Int).Sub(to.EpochNanos(), from.EpochNanos())
-	rounded := roundNanosToUnit(total, su, inc, mode)
-	dur := durationFromNanosByLargest(rounded, largest)
-	if sign < 0 {
-		return dur.Negated()
-	}
-	return dur
+	return calendarRoundDiff(from, to, largest, su, inc, mode)
 }
 
 // dateTimeFromFieldsObject 从属性包构造 ISODateTime (constrain 语义)。

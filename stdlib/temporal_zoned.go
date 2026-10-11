@@ -658,7 +658,7 @@ func zdtDiffFrom(t *object.TemporalZonedDateTime, args []object.Value, since boo
 	if incErr != nil {
 		return incErr
 	}
-	mode, modeErr := getRoundingMode(opts)
+	mode, modeErr := getRoundingModeTrunc(opts)
 	if modeErr != nil {
 		return modeErr
 	}
@@ -671,9 +671,6 @@ func zdtDiffFrom(t *object.TemporalZonedDateTime, args []object.Value, since boo
 	}
 	if !validRoundingIncrement(su, inc) {
 		return tgRange("Invalid roundingIncrement for " + su)
-	}
-	if su == "auto" {
-		su = "nanosecond"
 	}
 	if unitRank(su) < unitRank(largest) {
 		return tgRange("smallestUnit is larger than largestUnit")
@@ -688,23 +685,11 @@ func zdtDiffFrom(t *object.TemporalZonedDateTime, args []object.Value, since boo
 	if unitRank(largest) <= unitRank("day") {
 		fromDT := object.GetISOPartsFromEpoch(t.TimeZoneID(), t.Nanos())
 		toDT := object.GetISOPartsFromEpoch(t.TimeZoneID(), other.Nanos())
-		years, months, weeks, days := object.DiffISODate(fromDT.Date, toDT.Date, largest)
-		interDate, ok := object.AddDateDuration(fromDT.Date, years, months, weeks, days, "constrain")
-		if !ok {
-			return tgRange("Difference out of range")
+		if since {
+			fromDT, toDT = toDT, fromDT
+			mode = negateRoundingMode(mode)
 		}
-		interDT := object.ISODateTime{Date: interDate, Time: fromDT.Time}
-		rem := new(big.Int).Sub(other.Nanos(), new(big.Int).Add(t.Nanos(),
-			new(big.Int).Sub(interDT.EpochNanos(), fromDT.EpochNanos())))
-		timeDur := durationFromNanosByLargest(rem, su)
-		dur := object.NewTemporalDuration(
-			int64(years), int64(months), int64(weeks), int64(days),
-			timeDur.Hours(), timeDur.Minutes(), timeDur.Seconds(),
-			timeDur.Milliseconds(), timeDur.Microseconds(), timeDur.Nanoseconds())
-		if sign < 0 && other.Nanos().Cmp(t.Nanos()) < 0 {
-			return dur.Negated()
-		}
-		return dur
+		return calendarRoundDiff(fromDT, toDT, largest, su, inc, mode)
 	}
 
 	total := new(big.Int).Sub(other.Nanos(), t.Nanos())

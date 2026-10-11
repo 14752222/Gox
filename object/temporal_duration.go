@@ -280,7 +280,11 @@ func AddDateTime(dt ISODateTime, d *TemporalDuration, overflow string) (ISODateT
 	if !ok {
 		return ISODateTime{}, false
 	}
-	newDate, newTime, ok := AddTimeDuration(newDate, dt.Time, d.TimeTotalNanos())
+	// TimeTotalNanos 含天数部分，而天数已由 AddDateDuration 处理，
+	// 这里只加日内时间，避免天数被计算两次。
+	timeOnly := new(big.Int).Sub(d.TimeTotalNanos(),
+		new(big.Int).Mul(big.NewInt(d.days), big.NewInt(NanosPerDay)))
+	newDate, newTime, ok := AddTimeDuration(newDate, dt.Time, timeOnly)
 	if !ok {
 		return ISODateTime{}, false
 	}

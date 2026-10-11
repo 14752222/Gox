@@ -37,7 +37,8 @@ func durationDefaultLargest(d *object.TemporalDuration, smallest string) string 
 	case d.Microseconds() != 0:
 		largest = "microsecond"
 	}
-	if unitRank(smallest) > unitRank(largest) {
+	// LargerOfTwoTemporalUnits: rank 小者单位更大。
+	if unitRank(smallest) < unitRank(largest) {
 		return smallest
 	}
 	return largest
@@ -209,20 +210,19 @@ func setupTemporalDuration(temporal *object.Object) {
 			if unitRank(smallest) < unitRank(largest) {
 				return tgRange("smallestUnit is larger than largestUnit")
 			}
-			// 用相对起点把日历单位也折算成纳秒后统一舍入
-			end, ok := object.AddDateTime(*relTo, d, "constrain")
-			if !ok {
-				return tgRange("Duration is out of range")
-			}
-			diff := new(big.Int).Sub(end.EpochNanos(), relTo.EpochNanos())
-			if unit := largest; unit == "year" || unit == "month" || unit == "week" {
-				return tgRange("rounding to " + unit + " requires the full calendar-aware round")
-			}
-			if !validRoundingIncrement(smallest, inc) {
-				return tgRange("Invalid roundingIncrement for " + smallest)
-			}
-			rounded := roundNanosToUnit(diff, smallest, inc, mode)
-			return durationFromNanosByLargest(rounded, largest)
+		// 用相对起点把日历单位也折算成纳秒后统一舍入
+		end, ok := object.AddDateTime(*relTo, d, "constrain")
+		if !ok {
+			return tgRange("Duration is out of range")
+		}
+		if !validRoundingIncrement(smallest, inc) {
+			return tgRange("Invalid roundingIncrement for " + smallest)
+		}
+		dur := calendarRoundDiff(*relTo, end, largest, smallest, inc, mode)
+		if e := checkDurationRange(dur); e != nil {
+			return e
+		}
+		return dur
 		}
 
 		if d.HasCalendarUnits() {
