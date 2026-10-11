@@ -230,20 +230,13 @@ func setupTemporalPlainDateTime(temporal *object.Object) {
 		if roe != nil {
 			return roe
 		}
-		smallest, uerr := getSmallestUnit(opts, datetimeUnits)
-		if uerr != nil {
-			return uerr
+		ro, rerr := readRoundOptions(opts, datetimeUnits)
+		if rerr != nil {
+			return rerr
 		}
-		if smallest == "auto" {
+		smallest, inc, mode := ro.smallest, ro.inc, ro.mode
+		if smallest == "" || smallest == "auto" {
 			return tgRange("Invalid smallestUnit for PlainDateTime.round")
-		}
-		inc, incErr := getRoundingIncrement(opts)
-		if incErr != nil {
-			return incErr
-		}
-		mode, modeErr := getRoundingMode(opts)
-		if modeErr != nil {
-			return modeErr
 		}
 		if !validRoundingIncrement(smallest, inc) {
 			return tgRange("Invalid roundingIncrement for " + smallest)
@@ -524,25 +517,13 @@ func dateTimeDiffFrom(from object.ISODateTime, args []object.Value, since bool) 
 	if e := optionsTypeErr(opts); e != nil {
 		return e
 	}
-	largest, uerr := getLargestUnit(opts, datetimeUnits)
-	if uerr != nil {
-		return uerr
+	do, derr := readDiffOptions(opts, datetimeUnits)
+	if derr != nil {
+		return derr
 	}
-	smallest, uerr := getSmallestUnit(opts, datetimeUnits)
-	if uerr != nil {
-		return uerr
-	}
-	inc, incErr := getRoundingIncrement(opts)
-	if incErr != nil {
-		return incErr
-	}
-	mode, modeErr := getRoundingModeTrunc(opts)
-	if modeErr != nil {
-		return modeErr
-	}
+	largest, su, inc, mode := do.largest, do.smallest, do.inc, do.mode
 
 	to := toPtr.ISODateTime()
-	su := smallest
 	if su == "auto" {
 		su = "nanosecond"
 	}
@@ -598,8 +579,9 @@ func mergeDateTimeFields(dt object.ISODateTime, src object.Value, partial bool) 
 // mergeTimeInto 把时间字段合并到 ISOTime。缺失字段保持原值。
 // 返回 nil 表示成功；getter 抛错或字段非法时返回错误值。
 func mergeTimeInto(t *object.ISOTime, o propBag) object.Value {
-	keys := []string{"hour", "minute", "second", "millisecond", "microsecond", "nanosecond"}
-	targets := []*int32{&t.Hour, &t.Minute, &t.Second, &t.Millisecond, &t.Microsecond, &t.Nanosecond}
+	// 规范按字母序读取字段 (hour, microsecond, millisecond, minute, nanosecond, second)。
+	keys := []string{"hour", "microsecond", "millisecond", "minute", "nanosecond", "second"}
+	targets := []*int32{&t.Hour, &t.Microsecond, &t.Millisecond, &t.Minute, &t.Nanosecond, &t.Second}
 	for i, k := range keys {
 		v, found := o.GetProperty(k)
 		if !found || v == object.UndefinedSingleton {

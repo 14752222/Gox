@@ -937,22 +937,11 @@ func ymDiff(t *object.TemporalPlainYearMonth, args []object.Value, since bool) o
 	if e := optionsTypeErr(opts); e != nil {
 		return e
 	}
-	largest, uerr := getLargestUnit(opts, []string{"year", "month"})
-	if uerr != nil {
-		return uerr
+	do, derr := readDiffOptions(opts, []string{"year", "month"})
+	if derr != nil {
+		return derr
 	}
-	smallest, suerr := getSmallestUnit(opts, []string{"year", "month"})
-	if suerr != nil {
-		return suerr
-	}
-	mode, merr := getRoundingModeTrunc(opts)
-	if merr != nil {
-		return merr
-	}
-	inc, incErr := getRoundingIncrement(opts)
-	if incErr != nil {
-		return incErr
-	}
+	largest, smallest, inc, mode := do.largest, do.smallest, do.inc, do.mode
 	if largest == "auto" {
 		largest = "year"
 	}

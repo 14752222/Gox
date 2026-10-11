@@ -402,6 +402,149 @@ func getSmallestUnit(opts object.Value, allowed []string) (string, object.Value)
 	return getUnitOption(opts, "smallestUnit", allowed, "nanosecond")
 }
 
+// ===== 规范读取顺序的选项解析 (可观察顺序对齐) =====
+//
+// test262 的 propertyBagObserver 会记录每个选项的 get/toString/valueOf
+// 调用顺序，因此必须先按规范顺序把全部选项读完，再做逐项校验。
+
+// validateUnitOption 校验已读出的单位选项值 (读取副作用已发生)。
+func validateUnitOption(v object.Value, key string, allowed []string, def string) (string, object.Value) {
+	if v == nil {
+		return def, nil
+	}
+	s, ok := optionToString(v)
+	if !ok {
+		return "", tgType("Cannot convert option " + key + " to string")
+	}
+	u, _ := normalizeUnit(s)
+	for _, a := range allowed {
+		if a == u {
+			return u, nil
+		}
+	}
+	if s == "auto" && (key == "largestUnit" || key == "smallestUnit") {
+		return "auto", nil
+	}
+	return "", tgRange("Invalid unit option: " + s)
+}
+
+// validateRoundingIncrement 校验已读出的 roundingIncrement (numErr 是读取时
+// ToNumber 的错误，需原样传播)。
+func validateRoundingIncrement(v object.Value, numErr object.Value, f float64) (int64, object.Value) {
+	if v == nil {
+		return 1, nil
+	}
+	if numErr != nil {
+		return 0, numErr
+	}
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, tgRange("Invalid roundingIncrement")
+	}
+	f = math.Trunc(f)
+	if f < 1 || f > 1e9 {
+		return 0, tgRange("Invalid roundingIncrement")
+	}
+	return int64(f), nil
+}
+
+// roundingModeNames 是 roundingMode 的全部合法值。
+var roundingModeNames = []string{
+	"ceil", "floor", "expand", "trunc",
+	"halfCeil", "halfFloor", "halfExpand", "halfTrunc", "halfEven",
+}
+
+// validateRoundingMode 校验已读出的 roundingMode。
+func validateRoundingMode(v object.Value, def string) (string, object.Value) {
+	if v == nil {
+		return def, nil
+	}
+	s, ok := optionToString(v)
+	if !ok {
+		return "", tgType("Cannot convert option roundingMode to string")
+	}
+	for _, m := range roundingModeNames {
+		if m == s {
+			return s, nil
+		}
+	}
+	return "", tgRange("Invalid roundingMode option: " + s)
+}
+
+// diffOptions 是 DifferenceSettings (until/since) 的解析结果。
+type diffOptions struct {
+	largest, smallest string
+	inc               int64
+	mode              string
+}
+
+// readDiffOptions 按规范顺序读取直到/自差值的全部选项后再逐项校验:
+// largestUnit → roundingIncrement → roundingMode → smallestUnit。
+func readDiffOptions(opts object.Value, allowed []string) (*diffOptions, object.Value) {
+	lv := optValue(opts, "largestUnit")
+	iv := optValue(opts, "roundingIncrement")
+	var incF float64
+	var incNumErr object.Value
+	if iv != nil {
+		incF, incNumErr = tgToNumber(iv)
+	}
+	mv := optValue(opts, "roundingMode")
+	sv := optValue(opts, "smallestUnit")
+
+	largest, e := validateUnitOption(lv, "largestUnit", allowed, "auto")
+	if e != nil {
+		return nil, e
+	}
+	inc, e := validateRoundingIncrement(iv, incNumErr, incF)
+	if e != nil {
+		return nil, e
+	}
+	// DifferenceSettings 的 roundingMode 默认 trunc。
+	mode, e := validateRoundingMode(mv, "trunc")
+	if e != nil {
+		return nil, e
+	}
+	smallest, e := validateUnitOption(sv, "smallestUnit", allowed, "auto")
+	if e != nil {
+		return nil, e
+	}
+	return &diffOptions{largest: largest, smallest: smallest, inc: inc, mode: mode}, nil
+}
+
+// roundOptions 是 round 方法的解析结果 (读取顺序:
+// roundingIncrement → roundingMode → smallestUnit)。
+type roundOptions struct {
+	smallest string
+	inc      int64
+	mode     string
+}
+
+// readRoundOptions 按规范顺序读取 round 的全部选项后再逐项校验。
+func readRoundOptions(opts object.Value, allowed []string) (*roundOptions, object.Value) {
+	iv := optValue(opts, "roundingIncrement")
+	var incF float64
+	var incNumErr object.Value
+	if iv != nil {
+		incF, incNumErr = tgToNumber(iv)
+	}
+	mv := optValue(opts, "roundingMode")
+	sv := optValue(opts, "smallestUnit")
+
+	inc, e := validateRoundingIncrement(iv, incNumErr, incF)
+	if e != nil {
+		return nil, e
+	}
+	// round 的 roundingMode 默认 halfExpand。
+	mode, e := validateRoundingMode(mv, "halfExpand")
+	if e != nil {
+		return nil, e
+	}
+	smallest, e := validateUnitOption(sv, "smallestUnit", allowed, "")
+	if e != nil {
+		return nil, e
+	}
+	return &roundOptions{smallest: smallest, inc: inc, mode: mode}, nil
+}
+
 // getLargestUnit 读取 largestUnit，默认 auto。
 func getLargestUnit(opts object.Value, allowed []string) (string, object.Value) {
 	return getUnitOption(opts, "largestUnit", allowed, "auto")
@@ -516,8 +659,9 @@ func checkDurationRange(d *object.TemporalDuration) object.Value {
 func durationFromFieldsE(obj propBag) (*object.TemporalDuration, object.Value) {
 	fields := map[string]float64{}
 	any := false
-	for _, k := range []string{"years", "months", "weeks", "days",
-		"hours", "minutes", "seconds", "milliseconds", "microseconds", "nanoseconds"} {
+	// 规范按字母序读取字段 (days, hours, microseconds, ...)。
+	for _, k := range []string{"days", "hours", "microseconds", "milliseconds",
+		"minutes", "months", "nanoseconds", "seconds", "weeks", "years"} {
 		if v, found := obj.GetProperty(k); found && v != object.UndefinedSingleton {
 			f, cerr := tgToNumber(v)
 			if cerr != nil {

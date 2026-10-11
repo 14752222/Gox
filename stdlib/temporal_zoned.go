@@ -263,20 +263,13 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 		if roe != nil {
 			return roe
 		}
-		smallest, uerr := getSmallestUnit(opts, datetimeUnits)
-		if uerr != nil {
-			return uerr
+		ro, rerr := readRoundOptions(opts, datetimeUnits)
+		if rerr != nil {
+			return rerr
 		}
-		if smallest == "auto" {
+		smallest, inc, mode := ro.smallest, ro.inc, ro.mode
+		if smallest == "" || smallest == "auto" {
 			return tgRange("Invalid smallestUnit for ZonedDateTime.round")
-		}
-		inc, incErr := getRoundingIncrement(opts)
-		if incErr != nil {
-			return incErr
-		}
-		mode, modeErr := getRoundingMode(opts)
-		if modeErr != nil {
-			return modeErr
 		}
 		if !validRoundingIncrement(smallest, inc) {
 			return tgRange("Invalid roundingIncrement for " + smallest)
@@ -666,23 +659,11 @@ func zdtDiffFrom(t *object.TemporalZonedDateTime, args []object.Value, since boo
 	if e := optionsTypeErr(opts); e != nil {
 		return e
 	}
-	largest, uerr := getLargestUnit(opts, datetimeUnits)
-	if uerr != nil {
-		return uerr
+	do, derr := readDiffOptions(opts, datetimeUnits)
+	if derr != nil {
+		return derr
 	}
-	smallest, uerr := getSmallestUnit(opts, datetimeUnits)
-	if uerr != nil {
-		return uerr
-	}
-	inc, incErr := getRoundingIncrement(opts)
-	if incErr != nil {
-		return incErr
-	}
-	mode, modeErr := getRoundingModeTrunc(opts)
-	if modeErr != nil {
-		return modeErr
-	}
-	su := smallest
+	largest, su, inc, mode := do.largest, do.smallest, do.inc, do.mode
 	if su == "auto" {
 		su = "nanosecond"
 	}

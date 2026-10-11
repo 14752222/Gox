@@ -410,24 +410,12 @@ func plainDateDiffFrom(from object.ISODate, args []object.Value, since bool) obj
 	if e := optionsTypeErr(opts); e != nil {
 		return e
 	}
-	largest, uerr := getLargestUnit(opts, dateOnlyUnits)
-	if uerr != nil {
-		return uerr
+	do, derr := readDiffOptions(opts, dateOnlyUnits)
+	if derr != nil {
+		return derr
 	}
-	smallest, uerr2 := getSmallestUnit(opts, dateOnlyUnits)
-	if uerr2 != nil {
-		return uerr2
-	}
-	mode, modeErr := getRoundingModeTrunc(opts)
-	if modeErr != nil {
-		return modeErr
-	}
-	inc, incErr := getRoundingIncrement(opts)
-	if incErr != nil {
-		return incErr
-	}
+	largest, su, inc, mode := do.largest, do.smallest, do.inc, do.mode
 	to := other.ISODate()
-	su := smallest
 	if su == "auto" {
 		su = "day"
 	}
@@ -574,20 +562,13 @@ func setupTemporalPlainTime(temporal *object.Object) {
 		if roe != nil {
 			return roe
 		}
-		smallest, uerr := getSmallestUnit(opts, timeOnlyUnits)
-		if uerr != nil {
-			return uerr
+		ro, rerr := readRoundOptions(opts, timeOnlyUnits)
+		if rerr != nil {
+			return rerr
 		}
-		if smallest == "auto" {
+		smallest, inc, mode := ro.smallest, ro.inc, ro.mode
+		if smallest == "" || smallest == "auto" {
 			return tgRange("Invalid smallestUnit for PlainTime.round")
-		}
-		inc, incErr := getRoundingIncrement(opts)
-		if incErr != nil {
-			return incErr
-		}
-		mode, modeErr := getRoundingMode(opts)
-		if modeErr != nil {
-			return modeErr
 		}
 		if !validRoundingIncrement(smallest, inc) {
 			return tgRange("Invalid roundingIncrement for " + smallest)
@@ -829,28 +810,16 @@ func plainTimeDiffFrom(from object.ISOTime, args []object.Value, since bool) obj
 	if e := optionsTypeErr(opts); e != nil {
 		return e
 	}
-	largest, uerr := getLargestUnit(opts, timeOnlyUnits)
-	if uerr != nil {
-		return uerr
+	do, derr := readDiffOptions(opts, timeOnlyUnits)
+	if derr != nil {
+		return derr
 	}
-	smallest, uerr := getSmallestUnit(opts, timeOnlyUnits)
-	if uerr != nil {
-		return uerr
-	}
-	inc, incErr := getRoundingIncrement(opts)
-	if incErr != nil {
-		return incErr
-	}
-	mode, modeErr := getRoundingMode(opts)
-	if modeErr != nil {
-		return modeErr
-	}
+	largest, su, inc, mode := do.largest, do.smallest, do.inc, do.mode
 	// PlainTime 的差值始终环绕一天: 23:00 到 01:00 是 +2 小时而非 -22 小时。
 	diff := other.ISOTime().NanosOfDay() - from.NanosOfDay()
 	if diff < 0 {
 		diff += object.NanosPerDay
 	}
-	su := smallest
 	if su == "auto" {
 		su = "nanosecond"
 	}

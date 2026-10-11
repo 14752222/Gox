@@ -126,20 +126,13 @@ func setupTemporalInstant(env *object.Object) {
 		if roe != nil {
 			return roe
 		}
-		smallest, uerr := getSmallestUnit(opts, instantUnits)
-		if uerr != nil {
-			return uerr
+		ro, rerr := readRoundOptions(opts, instantUnits)
+		if rerr != nil {
+			return rerr
 		}
-		if smallest == "auto" {
+		smallest, inc, mode := ro.smallest, ro.inc, ro.mode
+		if smallest == "" || smallest == "auto" {
 			return tgRange("smallestUnit cannot be auto")
-		}
-		inc, incErr := getRoundingIncrement(opts)
-		if incErr != nil {
-			return incErr
-		}
-		mode, modeErr := getRoundingMode(opts)
-		if modeErr != nil {
-			return modeErr
 		}
 		if !validRoundingIncrement(smallest, inc) {
 			return tgRange("Invalid roundingIncrement for " + smallest)
@@ -331,22 +324,11 @@ func instantDiffFrom(this *object.TemporalInstant, args []object.Value, since bo
 	if e := optionsTypeErr(opts); e != nil {
 		return e
 	}
-	largest, uerr := getLargestUnit(opts, instantUnits)
-	if uerr != nil {
-		return uerr
+	do, derr := readDiffOptions(opts, instantUnits)
+	if derr != nil {
+		return derr
 	}
-	smallest, uerr := getSmallestUnit(opts, instantUnits)
-	if uerr != nil {
-		return uerr
-	}
-	inc, incErr := getRoundingIncrement(opts)
-	if incErr != nil {
-		return incErr
-	}
-	mode, modeErr := getRoundingMode(opts)
-	if modeErr != nil {
-		return modeErr
-	}
+	largest, su, inc, mode := do.largest, do.smallest, do.inc, do.mode
 
 	// 差的符号由方向决定: until 取 other - this，since 取 this - other。
 	diff := new(big.Int).Sub(other.Nanos(), this.Nanos())
@@ -355,7 +337,6 @@ func instantDiffFrom(this *object.TemporalInstant, args []object.Value, since bo
 	}
 
 	// 先按 smallestUnit 取整，再按 largestUnit 包装成 Duration 字段。
-	su := smallest
 	if su == "auto" {
 		su = "nanosecond"
 	}

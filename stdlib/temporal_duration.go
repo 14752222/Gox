@@ -182,23 +182,36 @@ func setupTemporalDuration(temporal *object.Object) {
 		if roe != nil {
 			return roe
 		}
-		largest, uerr := getLargestUnit(opts, durationUnits)
+		// 规范读取顺序: largestUnit → relativeTo → roundingIncrement →
+		// roundingMode → smallestUnit，全部读完再逐项校验。
+		lv := optValue(opts, "largestUnit")
+		relV := optValue(opts, "relativeTo")
+		iv := optValue(opts, "roundingIncrement")
+		var incF float64
+		var incNumErr object.Value
+		if iv != nil {
+			incF, incNumErr = tgToNumber(iv)
+		}
+		mv := optValue(opts, "roundingMode")
+		sv := optValue(opts, "smallestUnit")
+
+		largest, uerr := validateUnitOption(lv, "largestUnit", durationUnits, "auto")
 		if uerr != nil {
 			return uerr
 		}
-		smallest, uerr := getSmallestUnit(opts, durationUnits)
-		if uerr != nil {
-			return uerr
-		}
-		inc, incErr := getRoundingIncrement(opts)
+		inc, incErr := validateRoundingIncrement(iv, incNumErr, incF)
 		if incErr != nil {
 			return incErr
 		}
-		mode, modeErr := getRoundingMode(opts)
+		mode, modeErr := validateRoundingMode(mv, "halfExpand")
 		if modeErr != nil {
 			return modeErr
 		}
-		relTo, hasRel := relativeToISO(opts)
+		smallest, uerr := validateUnitOption(sv, "smallestUnit", durationUnits, "auto")
+		if uerr != nil {
+			return uerr
+		}
+		relTo, hasRel := relativeToISOValue(relV)
 
 		if hasRel {
 			if smallest == "auto" {
@@ -260,12 +273,17 @@ func setupTemporalDuration(temporal *object.Object) {
 			opts = args[0]
 		}
 		unit := ""
+		var relV object.Value
 		if s, isStr := opts.(*object.String); isStr {
 			// 字符串简写: total("hours")
 			opts = nil
 			unit = s.Value
 		} else if e := optionsTypeErr(opts); e != nil {
 			return e
+		}
+		if opts != nil {
+			// 规范读取顺序: relativeTo → unit。
+			relV = optValue(opts, "relativeTo")
 		}
 		if unit == "" {
 			unit = optString(opts, "unit", "")
@@ -283,7 +301,7 @@ func setupTemporalDuration(temporal *object.Object) {
 		if !found {
 			return tgRange("Invalid unit: " + unit)
 		}
-		relTo, _ := relativeToISO(opts)
+		relTo, _ := relativeToISOValue(relV)
 		v, ok := object.TotalOfUnit(d, u, relTo)
 		if !ok {
 			return tgRange("total of " + u + " requires a relativeTo")
@@ -402,7 +420,11 @@ func compareDurations(a, b *object.TemporalDuration, opts object.Value) (int, ob
 // relativeToISO 从 options.relativeTo 提取锚点时间点。
 // 支持 PlainDateTime/PlainDate/ZonedDateTime 实例、属性包与字符串。
 func relativeToISO(opts object.Value) (*object.ISODateTime, bool) {
-	v := optValue(opts, "relativeTo")
+	return relativeToISOValue(optValue(opts, "relativeTo"))
+}
+
+// relativeToISOValue 同上，但接受已读出的原始值 (避免重复 get 被观察)。
+func relativeToISOValue(v object.Value) (*object.ISODateTime, bool) {
 	if v == nil {
 		return nil, false
 	}
