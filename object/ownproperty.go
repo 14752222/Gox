@@ -193,7 +193,7 @@ func (a *Array) DeleteOwn(name string) bool {
 		}
 		delete(a.PropDescs, name)
 		if idx, err := Atoi(name); err == nil && idx >= 0 && idx < len(a.Elements) {
-			a.Elements[idx] = UndefinedSingleton
+			a.Elements[idx] = nil // delete 产生洞, 不是 undefined 元素
 		}
 		for i, k := range a.propKeyOrder {
 			if k == name {
@@ -207,7 +207,7 @@ func (a *Array) DeleteOwn(name string) bool {
 		return false
 	}
 	if idx, err := Atoi(name); err == nil && idx >= 0 && idx < len(a.Elements) {
-		a.Elements[idx] = UndefinedSingleton
+		a.Elements[idx] = nil // delete 产生洞, 不是 undefined 元素
 		return true
 	}
 	return false

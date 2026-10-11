@@ -173,20 +173,23 @@ func setupArrayProto() *object.Object {
 			end = clampIndex(toInt(args[1]), n)
 		}
 		if start >= end {
-			return object.NewArray([]object.Value{})
+			start, end = 0, 0
 		}
-		result := make([]object.Value, 0, end-start)
+		a, spErr := arraySpeciesCreate(l, int64(end-start))
+		if spErr != nil {
+			return spErr
+		}
+		var out int64
 		for i := start; i < end; i++ {
 			if l.has(int64(i)) {
-				result = append(result, l.get(int64(i)))
-			} else {
-				result = append(result, nil)
+				setIndexValue(a, out, l.get(int64(i)))
 			}
 			if l.err != nil {
 				return l.err
 			}
+			out++
 		}
-		return object.NewArray(result)
+		return a
 	}))
 
 	// splice(start, deleteCount, ...items): 修改数组内容
@@ -221,8 +224,17 @@ func setupArrayProto() *object.Object {
 				deleteCount = n - start
 			}
 		}
+		deletedArr, spErr := arraySpeciesCreate(l, int64(deleteCount))
+		if spErr != nil {
+			return spErr
+		}
 		deleted := make([]object.Value, deleteCount)
 		copy(deleted, arr.Elements[start:start+deleteCount])
+		for i := range deleted {
+			if deleted[i] != nil {
+				setIndexValue(deletedArr, int64(i), deleted[i])
+			}
+		}
 		items := []object.Value{}
 		if len(args) > 2 {
 			items = args[2:]
@@ -232,7 +244,7 @@ func setupArrayProto() *object.Object {
 		newElements = append(newElements, items...)
 		newElements = append(newElements, arr.Elements[start+deleteCount:]...)
 		arr.Elements = newElements
-		return object.NewArray(deleted)
+		return deletedArr
 	}))
 
 	// concat(...arrays): 连接多个数组
@@ -245,9 +257,18 @@ func setupArrayProto() *object.Object {
 		if isUndefinedValue(this) || isNullValue(this) {
 			return thisTypeError("Array", "concat", this)
 		}
-		var result []object.Value
+		l := &arrayLike{obj: this}
 		if arr, ok := this.(*object.Array); ok {
-			result = append(result, arr.Elements...)
+			l.arr = arr
+			l.n = int64(len(arr.Elements))
+		}
+		a, spErr := arraySpeciesCreate(l, 0)
+		if spErr != nil {
+			return spErr
+		}
+		var result []object.Value
+		if l.arr != nil {
+			result = append(result, l.arr.Elements...)
 		} else {
 			result = append(result, this)
 		}
@@ -258,7 +279,16 @@ func setupArrayProto() *object.Object {
 				result = append(result, arg)
 			}
 		}
-		return object.NewArray(result)
+		var out int64
+		for _, e := range result {
+			if e == nil {
+				out++
+				continue
+			}
+			setIndexValue(a, out, e)
+			out++
+		}
+		return a
 	}))
 
 	// indexOf(item, fromIndex): 查找元素的索引
@@ -403,7 +433,10 @@ func setupArrayProto() *object.Object {
 		if errVal != nil {
 			return errVal
 		}
-		result := make([]object.Value, l.n)
+		a, spErr := arraySpeciesCreate(l, l.n)
+		if spErr != nil {
+			return spErr
+		}
 		for i := int64(0); i < l.n; i++ {
 			if !l.has(i) {
 				continue
@@ -422,9 +455,9 @@ func setupArrayProto() *object.Object {
 			if mapped == nil {
 				mapped = object.UndefinedSingleton
 			}
-			result[i] = mapped
+			setIndexValue(a, i, mapped)
 		}
-		return object.NewArray(result)
+		return a
 	}))
 
 	// filter(callback, thisArg): 过滤数组，返回满足条件的元素
@@ -433,7 +466,11 @@ func setupArrayProto() *object.Object {
 		if errVal != nil {
 			return errVal
 		}
-		var result []object.Value
+		a, spErr := arraySpeciesCreate(l, 0)
+		if spErr != nil {
+			return spErr
+		}
+		var out int64
 		for i := int64(0); i < l.n; i++ {
 			if !l.has(i) {
 				continue
@@ -451,10 +488,11 @@ func setupArrayProto() *object.Object {
 				return thrown
 			}
 			if keep != nil && keep.IsTruthy() {
-				result = append(result, elem)
+				setIndexValue(a, out, elem)
+				out++
 			}
 		}
-		return object.NewArray(result)
+		return a
 	}))
 
 	// reduce(callback, initialValue): 归约数组为单个值
@@ -1078,6 +1116,81 @@ func setupArrayProto() *object.Object {
 	return p
 }
 
+// isObjectLike 判断值是否为"对象" (IsConstructor/ArraySpeciesCreate 的参数校验用)。
+func isObjectLike(v object.Value) bool {
+	switch v.(type) {
+	case *object.Object, *object.Array, *object.Closure, *object.BuiltinFunction,
+		*object.BuiltinMethod, *object.PrimitiveObject, *object.Proxy:
+		return true
+	}
+	return false
+}
+
+// setIndexValue 实现 CreateDataPropertyOrThrow(A, Pk, V) 的宽松版。
+func setIndexValue(a object.Value, i int64, v object.Value) {
+	if arr, ok := a.(*object.Array); ok {
+		for int64(len(arr.Elements)) <= i {
+			arr.Elements = append(arr.Elements, nil)
+		}
+		arr.Elements[i] = v
+		return
+	}
+	a.SetProperty(arrayIndexKey(i), v)
+}
+
+// arraySpeciesCreate 实现规范的 ArraySpeciesCreate(O, length)。
+// O 非数组时直接默认建数组; 否则读 O.constructor 与 @@species 决定构造器:
+//   - constructor 为 undefined / @@species 为 null 或 undefined → 默认数组
+//   - constructor 不是对象 / @@species 不可构造 → TypeError
+//   - constructor / @@species 的 getter 抛错 → 原样传播
+//
+// 返回 (结果对象, 错误值); 错误非 nil 时调用方应直接返回它。
+func arraySpeciesCreate(l *arrayLike, length int64) (object.Value, object.Value) {
+	mk := func() object.Value {
+		return object.NewArray(make([]object.Value, length))
+	}
+	if l.arr == nil {
+		return mk(), nil
+	}
+	c, _ := l.obj.GetProperty("constructor")
+	if t := callbackThrown(); t != nil {
+		return nil, t
+	}
+	if c == nil || isUndefinedValue(c) {
+		return mk(), nil
+	}
+	if !isObjectLike(c) {
+		return nil, object.NewTypeError("%s is not a constructor", toStr(c))
+	}
+	sVal := object.Value(object.UndefinedSingleton)
+	if desc, found := object.LookupSymbolPropertyDescriptorChain(c, object.GetGlobalSymbol("Symbol.species")); found {
+		if acc, isAcc := desc.Value.(*object.Accessor); isAcc {
+			if acc.Getter != nil && object.IsCallable(acc.Getter) {
+				sVal = object.CallFunction(acc.Getter, c)
+				if t := callbackThrown(); t != nil {
+					return nil, t
+				}
+			}
+		} else if desc.Value != nil {
+			sVal = desc.Value
+		}
+	}
+	if sVal == nil || isUndefinedValue(sVal) || isNullValue(sVal) {
+		return mk(), nil
+	}
+	if !object.IsCallable(sVal) {
+		return nil, object.NewTypeError("%s is not a constructor", toStr(sVal))
+	}
+	r := object.ConstructFunction(sVal, object.NewInt(length))
+	if t := callbackThrown(); t != nil {
+		return nil, t
+	}
+	if r == nil || !isObjectLike(r) {
+		return nil, object.NewTypeError("species constructor did not return an object")
+	}
+	return r, nil
+}
+
 // genericSort 是 sort 作用于非数组类对象时的规范路径:
 // 读出 → 排序 → 经 Set 写回（洞集中到末尾并按规范删除多余索引）。
 func genericSort(l *arrayLike, args []object.Value) object.Value {
@@ -1170,10 +1283,16 @@ func genericSplice(l *arrayLike, args []object.Value) object.Value {
 		}
 		items = args[2:]
 	}
-	deleted := make([]object.Value, deleteCount)
+	deletedArr, spErr := arraySpeciesCreate(l, int64(deleteCount))
+	if spErr != nil {
+		return spErr
+	}
 	for i := 0; i < deleteCount; i++ {
 		if l.has(int64(start + i)) {
-			deleted[i] = l.get(int64(start + i))
+			setIndexValue(deletedArr, int64(i), l.get(int64(start+i)))
+		}
+		if l.err != nil {
+			return l.err
 		}
 	}
 	del := func(i int64) {
@@ -1211,7 +1330,7 @@ func genericSplice(l *arrayLike, args []object.Value) object.Value {
 		l.set(int64(start+i), it)
 	}
 	l.setLen(length - int64(deleteCount) + int64(insertCount))
-	return object.NewArray(deleted)
+	return deletedArr
 }
 
 // flatInfiniteDepth 是 flat() 的深度哨兵值，表示 Infinity (完全展开)。
@@ -1287,7 +1406,7 @@ func toNumberViaPrimitive(v object.Value) (float64, object.Value) {
 			return toFloat(r), nil
 		}
 	}
-	return math.NaN(), nil
+	return 0, object.NewTypeError("Cannot convert object to primitive value")
 }
 
 // toLength 实现 ECMAScript 的 ToLength: 转数后钳位到 [0, 2^53-1]。

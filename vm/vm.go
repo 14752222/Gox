@@ -552,6 +552,19 @@ func init() {
 		}
 		return result
 	})
+	// 注册构造回调: object.ConstructFunction (ArraySpeciesCreate 等) → vm
+	object.SetConstructFunction(func(fn object.Value, args []object.Value) object.Value {
+		if currentVM == nil {
+			return object.UndefinedSingleton
+		}
+		result, err := currentVM.constructValue(fn, args)
+		if err != nil {
+			object.SetCallbackError(err)
+			setCallbackErrorValueFromThrow(err)
+			return object.UndefinedSingleton
+		}
+		return result
+	})
 	// 注册 generator 驱动回调: object.GeneratorNext → vm.genResume
 	object.SetGeneratorNext(func(gen *object.Generator, arg object.Value) (object.Value, bool) {
 		if currentVM == nil {
@@ -3677,6 +3690,42 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 // callFunction 从 Go 代码调用 JS 函数 (闭包或内建函数)。
 // 用于 stdlib 回调桥: 当 BuiltinMethod (如 Array.prototype.map) 需要
 // 调用用户传入的 JS 闭包时，通过此方法执行子帧。
+// constructValue 实现 new fn(...args) 的核心语义 (供 object.ConstructFunction 桥):
+// 内建构造器直接调用; 闭包先以 fn.prototype 为原型建 this, 返回对象则用之。
+func (vm *VM) constructValue(fn object.Value, args []object.Value) (object.Value, error) {
+	if b, ok := fn.(*object.BuiltinFunction); ok {
+		r := b.Fn(args...)
+		if r == nil {
+			return object.UndefinedSingleton, nil
+		}
+		return r, nil
+	}
+	var proto object.Value
+	if pv, ok := fn.GetProperty("prototype"); ok && pv != nil {
+		proto = pv
+	}
+	var newObj object.Value
+	if proto != nil {
+		newObj = object.NewObjectWithProto(proto)
+	} else {
+		newObj = object.NewPlainObject()
+	}
+	r, err := vm.callFunction(fn, newObj, args)
+	if err != nil {
+		return nil, err
+	}
+	// 构造器返回对象则以其为结果, 否则用新建的 this
+	switch r.(type) {
+	case *object.Object, *object.Array, *object.Closure, *object.BuiltinFunction,
+		*object.PrimitiveObject, *object.Error, *object.Map, *object.Set,
+		*object.Proxy, *object.Date, *object.RegExp:
+		if r != nil {
+			return r, nil
+		}
+	}
+	return newObj, nil
+}
+
 func (vm *VM) callFunction(fn object.Value, this object.Value, args []object.Value) (object.Value, error) {
 	// Rx 单元可直接调用: count() 等价 count.value (GetX 语义)
 	//
