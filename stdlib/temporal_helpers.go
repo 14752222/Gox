@@ -669,6 +669,10 @@ func toTimeZoneIDE(v object.Value) (string, object.Value) {
 				if f.OffsetSubMinute {
 					return "", tgRange("UTC offset with sub-minute precision is not a valid time zone")
 				}
+				// Z 指示符按规范映射为 "UTC" 时区标识符。
+				if f.IsZ {
+					return "UTC", nil
+				}
 				return tzOffsetID(*f.OffsetSeconds)
 			}
 		}
@@ -1136,9 +1140,9 @@ func toPlainTimeValue(v object.Value) (*object.TemporalPlainTime, object.Value) 
 		dt := object.GetISOPartsFromEpoch(t.TimeZoneID(), t.Nanos())
 		return object.NewTemporalPlainTime(dt.Time), nil
 	case *object.String:
-		// 歧义拒绝: 无 T 前缀但能解释为 YearMonth/MonthDay 的串
+		// 歧义拒绝: 不含时间分隔符、但能解释为 YearMonth/MonthDay 的裸串
 		// ("2021-12"、"1214"、"12-14") 不是合法 PlainTime 串。
-		if !strings.HasPrefix(t.Value, "T") && !strings.HasPrefix(t.Value, "t") {
+		if !strings.ContainsAny(t.Value, "Tt ") {
 			if _, amb := object.ParseTemporalYearMonthString(t.Value); amb {
 				return nil, tgRange("Invalid PlainTime string: "+t.Value)
 			}
@@ -1514,13 +1518,11 @@ func toCalendarIDValue(v object.Value) (string, object.Value) {
 	if !ok {
 		return "", tgType("Invalid calendar value")
 	}
-	if s == "" {
-		return "", tgRange("Invalid calendar: empty string is not a valid calendar ID")
+	// 校验 (ISO 串提取注解 / ASCII 小写化 / iso8601 约束) 由 checkCalendarString 完成。
+	if e := checkCalendarString(s); e != nil {
+		return "", e
 	}
-	if s != object.DefaultCalendarID {
-		return "", tgRange("Unsupported calendar: " + s)
-	}
-	return s, nil
+	return object.DefaultCalendarID, nil
 }
 
 // tgEraGetters 注册 era/eraYear getter。iso8601 日历下二者恒为 undefined，
@@ -1775,16 +1777,15 @@ func parseToStringSettings(opts object.Value, hasTime bool) (*toStringSettings, 
 			// 数值经 ToIntegerWithTruncation (2.5→2、-0.6→-1 越界)。
 			if str, ok := fv.(*object.String); ok && str.Value == "auto" {
 				s.precision = "auto"
-			} else {
-				f, cerr := tgToNumber(fv)
-				if cerr != nil {
-					return nil, tgRange("Invalid fractionalSecondDigits")
-				}
-				f = math.Floor(f)
+			} else if n, ok := fv.(*object.Number); ok {
+				// 按 floor 取整 (2.5→2、-0.6→-1 越界); null 等非 Number 非法。
+				f := math.Floor(n.Value)
 				if math.IsNaN(f) || math.IsInf(f, 0) || f < 0 || f > 9 {
 					return nil, tgRange("fractionalSecondDigits must be an integer from 0 to 9")
 				}
 				s.precision = strconv.Itoa(int(f))
+			} else {
+				return nil, tgRange("Invalid fractionalSecondDigits")
 			}
 		}
 	}

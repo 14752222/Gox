@@ -725,8 +725,8 @@ func setupTemporalPlainTime(temporal *object.Object) {
 		}
 		switch v := args[0].(type) {
 		case *object.String:
-			// 歧义拒绝: 无 T 前缀的 YearMonth/MonthDay 形式不是 PlainTime。
-			if !strings.HasPrefix(v.Value, "T") && !strings.HasPrefix(v.Value, "t") {
+			// 歧义拒绝: 不含时间分隔符的 YearMonth/MonthDay 形式不是 PlainTime。
+			if !strings.ContainsAny(v.Value, "Tt ") {
 				if _, amb := object.ParseTemporalYearMonthString(v.Value); amb {
 					return tgRange("Invalid PlainTime string: " + v.Value)
 				}
