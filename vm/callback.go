@@ -2,9 +2,39 @@ package vm
 
 import (
 	"github.com/14752222/Gox/object"
+	"sync"
 )
 
-var currentVM *VM
+// runtimeState 收敛 vm 包的可变全局状态 (原散落的包级 currentVM 变量)。
+// 当前正在执行的 VM 实例, 供 stdlib 回调 JS 闭包时定位;
+// 通过 swap/current 访问, 多 VM 或并发测试可显式替换整个 state 以隔离实例。
+type runtimeState struct {
+	mu        sync.RWMutex
+	currentVM *VM
+}
+
+// state 是 vm 包唯一的可变全局状态对象。
+var state = &runtimeState{}
+
+// current 返回当前正在执行的 VM (无则 nil)。
+func (s *runtimeState) current() *VM {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.currentVM
+}
+
+// swap 把当前 VM 设为 v, 返回恢复函数 (通常 defer 调用)。
+func (s *runtimeState) swap(v *VM) (restore func()) {
+	s.mu.Lock()
+	prev := s.currentVM
+	s.currentVM = v
+	s.mu.Unlock()
+	return func() {
+		s.mu.Lock()
+		s.currentVM = prev
+		s.mu.Unlock()
+	}
+}
 
 // setCallbackErrorValueFromThrow 把 Go 侧的运行期错误还原成原始 JS 抛出值,
 // 存入 object 层供 stdlib 作为 rejection reason。
@@ -33,10 +63,11 @@ func init() {
 	// 会永久残留，之后任何一个内建函数调用都会被这个陈旧错误"击落"
 	// (表现为回调链莫名中断且无任何报告)。
 	object.SetCallFunction(func(fn object.Value, this object.Value, args []object.Value) object.Value {
-		if currentVM == nil {
+		cur := state.current()
+		if cur == nil {
 			return object.UndefinedSingleton
 		}
-		result, err := currentVM.callFunction(fn, this, args)
+		result, err := cur.callFunction(fn, this, args)
 		if err != nil {
 			// 向 object 层暴露错误信号: 返回值无法区分
 			// "函数正常返回" 与 "函数抛出了非 Error 异常"。
@@ -49,10 +80,11 @@ func init() {
 	})
 	// 注册 generator 驱动回调: object.GeneratorNext → vm.genResume
 	object.SetGeneratorNext(func(gen *object.Generator, arg object.Value) (object.Value, bool) {
-		if currentVM == nil {
+		cur := state.current()
+		if cur == nil {
 			return object.UndefinedSingleton, true
 		}
-		val, done, err := currentVM.genResume(gen, arg)
+		val, done, err := cur.genResume(gen, arg)
 		if err != nil {
 			object.SetCallbackError(err)
 			setCallbackErrorValueFromThrow(err)
@@ -62,10 +94,11 @@ func init() {
 	})
 	// 注册 generator 异常恢复回调: object.GeneratorThrow → vm.genThrow
 	object.SetGeneratorThrow(func(gen *object.Generator, throwVal object.Value) (object.Value, bool) {
-		if currentVM == nil {
+		cur := state.current()
+		if cur == nil {
 			return object.UndefinedSingleton, true
 		}
-		val, done, err := currentVM.genThrow(gen, throwVal)
+		val, done, err := cur.genThrow(gen, throwVal)
 		if err != nil {
 			object.SetCallbackError(err)
 			setCallbackErrorValueFromThrow(err)
@@ -75,10 +108,11 @@ func init() {
 	})
 	// 注册 generator return 完成回调: object.GeneratorReturn → vm.genReturn
 	object.SetGeneratorReturn(func(gen *object.Generator, returnVal object.Value) (object.Value, bool) {
-		if currentVM == nil {
+		cur := state.current()
+		if cur == nil {
 			return returnVal, true
 		}
-		val, done, err := currentVM.genReturn(gen, returnVal)
+		val, done, err := cur.genReturn(gen, returnVal)
 		if err != nil {
 			object.SetCallbackError(err)
 			setCallbackErrorValueFromThrow(err)

@@ -12,9 +12,7 @@ import (
 )
 
 func (vm *VM) execute() error {
-	saved := currentVM
-	currentVM = vm
-	defer func() { currentVM = saved }()
+	defer state.swap(vm)()
 	return vm.runProtected(func() error { return vm.runFrom(0) })
 }
 

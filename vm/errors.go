@@ -62,10 +62,9 @@ func (vm *VM) callToString(fn *object.Closure, this object.Value) (result string
 	// 顶层 execute() 已返回、currentVM 被恢复为旧值; 渲染时要调回调桥
 	// (object.CallFunction → currentVM.callFunction) 执行用户 toString,
 	// 故在此重新注册 currentVM, 退出时恢复。
-	saved := currentVM
-	currentVM = vm
+	restore := state.swap(vm)
 	defer func() {
-		currentVM = saved
+		restore()
 		if r := recover(); r != nil {
 			result, ok = "", false
 		}

@@ -53,9 +53,7 @@ func (vm *VM) runTimersLoopProtected(until time.Time, pump func(maxWait time.Dur
 	// (如 Promise resolve 触发的 .then 回调) 能找到正确的 VM 实例。
 	// 主脚本执行结束后 currentVM 会被恢复为 nil，若不在此处重新注册，
 	// 定时器回调里 resolve 的 Promise 的 then 回调会被静默丢弃。
-	saved := currentVM
-	currentVM = vm
-	defer func() { currentVM = saved }()
+	defer state.swap(vm)()
 
 	return vm.runProtected(func() error { return vm.runTimersLoop(until, pump) })
 }

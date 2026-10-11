@@ -1,7 +1,6 @@
 package vm
 
 import (
-
 	"github.com/14752222/Gox/bytecode"
 	"github.com/14752222/Gox/compiler"
 	"github.com/14752222/Gox/object"
@@ -240,9 +239,7 @@ func (vm *VM) RunCompiledAsync(c *compiler.Compiler) error {
 		Constants:     c.Constants().Constants,
 		Instructions:  c.Bytes(),
 	}
-	saved := currentVM
-	currentVM = vm
-	defer func() { currentVM = saved }()
+	defer state.swap(vm)()
 	return vm.runProtected(func() error { return vm.driveMainUnit(gen) })
 }
 

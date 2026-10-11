@@ -334,9 +334,6 @@ func (m *ModuleExports) buildNamespace(building map[*ModuleExports]bool) *object
 	return obj
 }
 
-// currentVM 是当前正在执行的 VM 实例。
-// 用于从 stdlib 回调 JS 闭包时找到正确的 VM。
-
 func (vm *VM) ensureCurrentExports() *ModuleExports {
 	if vm.currentExports == nil {
 		vm.currentExports = newModuleExports()
@@ -714,9 +711,7 @@ func (vm *VM) driveModule(pe *modulePendingEval, arg object.Value, isThrow bool)
 // stepGen 在 panic 保护下对模块生成器做一次 resume/throw。
 
 func (vm *VM) stepGen(pe *modulePendingEval, arg object.Value, isThrow bool) (object.Value, bool, error, error) {
-	saved := currentVM
-	currentVM = vm
-	defer func() { currentVM = saved }()
+	defer state.swap(vm)()
 	var val object.Value
 	var done bool
 	var genErr error
