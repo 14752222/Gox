@@ -109,3 +109,6 @@ bench-results/perf-stress-*.json
 __pycache__/
 *.py[cod]
 playground/gox.wasm
+
+# RSS 曲线采样产物（r95WjJ）：CI 只上传 artifact，不入库
+bench-results/rss-*.csv
