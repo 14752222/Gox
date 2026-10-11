@@ -247,6 +247,7 @@
       "widthClass"
     ],
     "http": [
+      "WebSocket",
       "createServer",
       "get",
       "request"

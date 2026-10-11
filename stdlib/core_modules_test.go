@@ -18,7 +18,7 @@ func TestCoreBuiltinModulesRegistered(t *testing.T) {
 	}{
 		{"fs", []string{"readFileSync", "writeFileSync", "readBytesSync", "existsSync", "statSync", "readdirSync", "mkdirSync", "rmSync", "renameSync", "copyFileSync"}},
 		{"path", []string{"join", "resolve", "dirname", "basename", "extname", "isAbsolute", "sep", "delimiter"}},
-		{"http", []string{"createServer", "get", "request"}},
+		{"http", []string{"createServer", "get", "request", "WebSocket"}},
 		{"process", []string{"argv", "env", "cwd", "chdir", "exit", "platform", "pid"}},
 	}
 	for _, tc := range cases {
