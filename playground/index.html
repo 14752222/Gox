@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<!--
+  Gox Playground（rzTQml T14 可行性探针）
+
+  最小验证页：textarea 输入 JS → 「运行」→ 浏览器内的 Gox wasm 引擎执行 → 输出区。
+  只跑纯语言层（lexer/parser/compiler/vm/object/stdlib），GUI(gfx) 不进 wasm。
+
+  使用：
+    bash scripts/build-playground.sh        # 产出 gox.wasm 到本目录
+    python3 -m http.server -d playground 8080
+    # 打开 http://localhost:8080
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Gox Playground（wasm 探针）</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body { font-family: ui-monospace, monospace; max-width: 860px; margin: 2em auto; padding: 0 1em; }
+  textarea { width: 100%; height: 12em; font-family: inherit; box-sizing: border-box; }
+  button { padding: .5em 1.5em; margin: .5em 0; }
+  #out { white-space: pre-wrap; background: #111; color: #0f0; padding: 1em; min-height: 6em; }
+  #status { color: #888; }
+</style>
+</head>
+<body>
+<h1>Gox Playground <small id="status">wasm 加载中…</small></h1>
+<textarea id="src">// 在浏览器里跑 Gox 引擎
+console.log("hello from gox wasm");
+[1, 2, 3].map(x => x * 2)</textarea>
+<br>
+<button id="run" disabled>运行 ▶</button>
+<div id="out"></div>
+
+<script src="wasm_exec.js"></script>
+<script>
+const statusEl = document.getElementById('status');
+const outEl = document.getElementById('out');
+const runBtn = document.getElementById('run');
+
+async function boot() {
+  try {
+    const go = new Go();
+    const resp = await fetch('gox.wasm');
+    if (!resp.ok) throw new Error('gox.wasm 拉取失败: HTTP ' + resp.status +
+      '（先跑 scripts/build-playground.sh）');
+    const mod = await WebAssembly.instantiateStreaming(resp, go.importObject);
+    go.run(mod.instance); // 不返回：引擎常驻，goxRunSource 挂在 globalThis
+    if (!globalThis.goxReady) throw new Error('goxReady 未置位');
+    statusEl.textContent = '引擎就绪（Gox wasm）';
+    runBtn.disabled = false;
+    // ?auto=1：加载完成后自动跑一次并置 data-probe=done，供 headless 验证
+    // （chromium --headless --dump-dom '...?auto=1' | grep data-probe）
+    if (new URLSearchParams(location.search).get('auto') === '1') {
+      await runBtn.click();
+      document.body.setAttribute('data-probe', 'done');
+    }
+  } catch (e) {
+    statusEl.textContent = '加载失败: ' + e.message;
+  }
+}
+
+runBtn.addEventListener('click', async () => {
+  runBtn.disabled = true;
+  const src = document.getElementById('src').value;
+  outEl.textContent += '> ' + src.split('\n').pop() + '\n';
+  try {
+    // goxRunSource 返回 Promise（见 cmd/goxwasm/main.go：同步回调会 fsCall 死锁）
+    outEl.textContent += (await globalThis.goxRunSource(src)) + '\n';
+  } catch (e) {
+    outEl.textContent += 'panic: ' + e + '\n';
+  }
+  runBtn.disabled = false;
+});
+
+boot();
+</script>
+</body>
+</html>

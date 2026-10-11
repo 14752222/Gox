@@ -108,3 +108,4 @@ bench-results/perf-stress-*.json
 # 会留下 .pyc。入库没有意义，还会在不同 Python 版本之间反复产生 diff。
 __pycache__/
 *.py[cod]
+playground/gox.wasm
