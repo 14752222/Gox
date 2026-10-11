@@ -410,34 +410,50 @@ func setupTemporalPlainDateTime(temporal *object.Object) {
 		if len(args) == 0 {
 			return tgType("PlainDateTime.from requires an argument")
 		}
-		// spec: 选项包在任何分支之前做 GetOptionsObject + overflow 校验。
+		// spec: GetOptionsObject 只验类型；overflow 读取推迟到字段之后。
 		if e := optionsTypeErr(argAt(args, 1)); e != nil {
 			return e
 		}
-		fromOverflow, oe := getOverflow(argAt(args, 1))
-		if oe != nil {
-			return oe
-		}
-		if len(args) > 1 {
-			if e := optionsTypeErr(args[1]); e != nil {
-				return e
-			}
-		}
 		if pdt, ok := asPlainDateTime(args[0]); ok {
+			if _, oe := getOverflow(argAt(args, 1)); oe != nil {
+				return oe
+			}
 			return pdt
 		}
 		switch v := args[0].(type) {
+		case *object.TemporalPlainDate:
+			if _, oe := getOverflow(argAt(args, 1)); oe != nil {
+				return oe
+			}
+			return object.NewTemporalPlainDateTime(object.ISODateTime{Date: v.ISODate()}, object.DefaultCalendarID)
+		case *object.TemporalZonedDateTime:
+			if _, oe := getOverflow(argAt(args, 1)); oe != nil {
+				return oe
+			}
+			dt := object.GetISOPartsFromEpoch(v.TimeZoneID(), v.Nanos())
+			return object.NewTemporalPlainDateTime(dt, object.DefaultCalendarID)
 		case *object.String:
 			f, ok := object.ParseTemporalDateTimeString(v.Value)
 			if !ok {
 				return tgRange("Invalid PlainDateTime string: " + v.Value)
+			}
+			if _, oe := getOverflow(argAt(args, 1)); oe != nil {
+				return oe
 			}
 			if f.Calendar != "" && f.Calendar != object.DefaultCalendarID {
 				return tgRange("Unsupported calendar: " + f.Calendar)
 			}
 			return object.NewTemporalPlainDateTime(f.ISODateTime(), object.DefaultCalendarID)
 		case propBag:
-			dt, ferr := readDateTimeFields(v, fromOverflow)
+			raw, rerr := readDateTimeFieldsRaw(v)
+			if rerr != nil {
+				return rerr
+			}
+			fromOverflow, oe := getOverflow(argAt(args, 1))
+			if oe != nil {
+				return oe
+			}
+			dt, ferr := raw.regulate(fromOverflow)
 			if ferr != nil {
 				return ferr
 			}

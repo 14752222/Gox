@@ -392,16 +392,15 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 		if len(args) == 0 {
 			return tgType("ZonedDateTime.from requires an argument")
 		}
-		// spec: 选项包在任何分支之前做 GetOptionsObject，
-		// 并按 disambiguation → offset → overflow 顺序读取校验。
+		// spec: GetOptionsObject 只验类型 (无可观察读取)；各分支在字段
+		// 读取完成后才按 disambiguation → offset → overflow 顺序读选项。
 		if e := optionsTypeErr(argAt(args, 1)); e != nil {
 			return e
 		}
-		_, _, fromOverflow, oe := readZonedDateTimeOptions(argAt(args, 1))
-		if oe != nil {
-			return oe
-		}
 		if z, ok := asZonedDateTime(args[0]); ok {
+			if _, _, _, oe := readZonedDateTimeOptions(argAt(args, 1)); oe != nil {
+				return oe
+			}
 			return z
 		}
 		switch v := args[0].(type) {
@@ -418,25 +417,20 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 			}
 			return zdtFromFields(f, args)
 		case propBag:
-			if len(args) > 1 {
-				if e := optionsTypeErr(args[1]); e != nil {
-					return e
-				}
-			}
-			dt, ferr := readDateTimeFields(v, fromOverflow)
+			raw, off, tz, ferr := readZDTFieldsRaw(v)
 			if ferr != nil {
 				return ferr
 			}
-			tz, tzErr := tzOfFieldsObject(v)
-			if tzErr != nil {
-				return tzErr
+			dis, _, fromOverflow, oe := readZonedDateTimeOptions(argAt(args, 1))
+			if oe != nil {
+				return oe
 			}
-			var opts object.Value
-			if len(args) > 1 {
-				opts = args[1]
+			dt, ferr := raw.regulate(fromOverflow)
+			if ferr != nil {
+				return ferr
 			}
 			// 属性包自带 offset 时直接得到精确时刻，跳过 DST 求解。
-			if off, ok := offsetOfFieldsObject(v); ok {
+			if off != "" {
 				want, ok := object.ParseTimeZoneOffsetString(off)
 				if !ok {
 					return tgRange("Invalid offset")
@@ -444,7 +438,7 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 				ns := new(big.Int).Sub(dt.EpochNanos(), big.NewInt(int64(want)*object.NanosPerSecond))
 				return object.NewTemporalZonedDateTime(ns, tz, object.DefaultCalendarID)
 			}
-			return zdtFromWallClock(dt, tz, object.DefaultCalendarID, "compatible", opts)
+			return zdtFromWallClock(dt, tz, object.DefaultCalendarID, dis, nil)
 		}
 		return tgType("ZonedDateTime.from: unsupported argument")
 	})
@@ -707,6 +701,67 @@ func zdtDiffFrom(t *object.TemporalZonedDateTime, args []object.Value, since boo
 		return dur.Negated()
 	}
 	return dur
+}
+
+// readZDTFieldsRaw 按字母序读取 ZonedDateTime 属性包字段:
+// calendar, day, hour, microsecond, millisecond, minute, month, monthCode,
+// nanosecond, offset, second, timeZone, year。校验推迟到选项读取之后。
+func readZDTFieldsRaw(o propBag) (rawDateTimeFields, string, string, object.Value) {
+	var r rawDateTimeFields
+	if ce := checkCalendarProp(o); ce != nil {
+		return r, "", "", ce
+	}
+	d, okD, e := readIntField(o, "day")
+	if e != nil {
+		return r, "", "", e
+	}
+	r.day, r.hasDay = d, okD
+	tkeys := []string{"hour", "microsecond", "millisecond", "minute"}
+	targets := []*int32{&r.time.Hour, &r.time.Microsecond, &r.time.Millisecond, &r.time.Minute}
+	for i, k := range tkeys {
+		f, ok, e := readIntField(o, k)
+		if e != nil {
+			return r, "", "", e
+		}
+		if ok {
+			*targets[i] = f
+		}
+	}
+	if e := readMonthField(o, &r.rawDateFields); e != nil {
+		return r, "", "", e
+	}
+	if e := readMonthCodeField(o, &r.rawDateFields); e != nil {
+		return r, "", "", e
+	}
+	if n, ok, e := readIntField(o, "nanosecond"); e != nil {
+		return r, "", "", e
+	} else if ok {
+		r.time.Nanosecond = n
+	}
+	// offset (ToString)
+	off := ""
+	if ov, found := o.GetProperty("offset"); found && ov != object.UndefinedSingleton {
+		s, ok := optionToString(ov)
+		if !ok {
+			return r, "", "", tgType("Cannot convert offset to string")
+		}
+		off = s
+	}
+	if s, ok, e := readIntField(o, "second"); e != nil {
+		return r, "", "", e
+	} else if ok {
+		r.time.Second = s
+	}
+	tz, tzErr := tzOfFieldsObject(o)
+	if tzErr != nil {
+		return r, "", "", tzErr
+	}
+	y, okY, e := readIntField(o, "year")
+	if e != nil {
+		return r, "", "", e
+	}
+	r.year, r.hasYear = y, okY
+	return r, off, tz, nil
 }
 
 // tzOfFieldsObject 由属性包提取 timeZone 字段。

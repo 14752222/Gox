@@ -816,6 +816,7 @@ func toTimeZoneIDE(v object.Value) (string, object.Value) {
 	// 尝试作为带注解/偏移的 Temporal 字符串解析，取其中的时区部分。
 	for _, parse := range []func(string) (object.TemporalFields, bool){
 		object.ParseTemporalZonedDateTimeString,
+		object.ParseTemporalInstantString,
 		object.ParseTemporalDateTimeString,
 		object.ParseTemporalTimeString,
 	} {
@@ -1082,68 +1083,42 @@ func tgToNumber(v object.Value) (float64, object.Value) {
 	return toFloat(v), nil
 }
 
-// mergeDateBag 实现 PlainDate.with 的字段合并: 属性包中给出的字段覆盖
-// base，缺省沿用 base；值经 ToNumber/整数截断校验，非有限值 RangeError；
-// month 与 monthCode 可同时给出但必须一致；最后按 overflow 调节。
-func mergeDateBag(base object.ISODate, bag propBag, overflow string) (object.ISODate, object.Value) {
-	if ce := checkCalendarProp(bag); ce != nil {
-		return base, ce
-	}
+// mergeDateBag 实现 PlainDate.with 的字段合并: raw 中给出的字段覆盖 base，
+// 缺省沿用 base；month 与 monthCode 可同时给出但必须一致；最后按 overflow 调节。
+// raw 必须已通过 readDateFieldsRaw 按字母序读出 (选项读取发生在其之后)。
+func mergeDateBag(base object.ISODate, raw rawDateFields, overflow string) (object.ISODate, object.Value) {
 	y := base.Year
-	if v, found := bag.GetProperty("year"); found && v != object.UndefinedSingleton {
-		n, err := toIntTruncArg(v)
-		if err != nil {
-			return base, err
-		}
-		y = n
+	if raw.hasYear {
+		y = raw.year
 	}
 	m := base.Month
-	monthSeen := false
-	if v, found := bag.GetProperty("month"); found && v != object.UndefinedSingleton {
-		n, err := toIntTruncArg(v)
-		if err != nil {
-			return base, err
+	if raw.hasMonth {
+		m = raw.month
+		if raw.hasMonthCode && raw.monthCode != m {
+			return base, tgRange("month does not match monthCode")
 		}
-		if n < 1 || n > 12 {
+		if m < 1 || m > 12 {
 			if overflow == "reject" {
 				return base, tgRange("month is out of range")
 			}
-			if n < 1 {
-				n = 1
+			if m < 1 {
+				m = 1
 			} else {
-				n = 12
+				m = 12
 			}
 		}
-		m = n
-		monthSeen = true
-	}
-	if v, found := bag.GetProperty("monthCode"); found && v != object.UndefinedSingleton {
-		sv, ok := v.(*object.String)
-		if !ok {
-			return base, tgRange("Invalid monthCode")
-		}
-		code, cerr := parseMonthCode(sv.Value)
-		if cerr != nil {
-			return base, cerr
-		}
-		if monthSeen && code != m {
-			return base, tgRange("month does not match monthCode")
-		}
-		m = code
+	} else if raw.hasMonthCode {
+		m = raw.monthCode
 	}
 	d := base.Day
-	if v, found := bag.GetProperty("day"); found && v != object.UndefinedSingleton {
-		n, err := toIntTruncArg(v)
-		if err != nil {
-			return base, err
-		}
-		if n < 1 {
+	if raw.hasDay {
+		d = raw.day
+		if d < 1 {
 			if overflow == "reject" {
 				return base, tgRange("day is out of range")
 			}
-			n = 1
+			d = 1
 		}
-		d = n
 	}
 	dim := object.DaysInMonth(y, m)
 	if d > dim {
@@ -1186,6 +1161,198 @@ func readIntField(o propBag, key string) (int32, bool, object.Value) {
 		return 0, false, tgRange(key + " must be a finite number")
 	}
 	return int32(math.Trunc(f)), true, nil
+}
+
+// rawDateFields 暂存按字母序 (day, month, monthCode, year) 读出的原始字段，
+// 校验推迟到选项读取之后 (spec: PrepareTemporalFields 先于 GetTemporalOverflowOption)。
+type rawDateFields struct {
+	day, month, year          int32
+	hasDay, hasMonth, hasYear bool
+	monthCode                 int32
+	hasMonthCode              bool
+}
+
+// readMonthField 读取 month (ToNumber + 整数校验)。
+func readMonthField(o propBag, r *rawDateFields) object.Value {
+	mv, hasM := o.GetProperty("month")
+	if !hasM || mv == object.UndefinedSingleton {
+		return nil
+	}
+	mf, merr := tgToNumber(mv)
+	if merr != nil {
+		return merr
+	}
+	if math.IsNaN(mf) || math.IsInf(mf, 0) {
+		return tgRange("month must be a finite number")
+	}
+	r.month, r.hasMonth = int32(math.Trunc(mf)), true
+	return nil
+}
+
+// readMonthCodeField 读取 monthCode (ToString + 语法校验)。
+func readMonthCodeField(o propBag, r *rawDateFields) object.Value {
+	mc, hasMC := o.GetProperty("monthCode")
+	if !hasMC || mc == object.UndefinedSingleton {
+		return nil
+	}
+	if e2, isErr := mc.(*object.Error); isErr {
+		return e2
+	}
+	s, ok := mc.(*object.String)
+	if !ok {
+		return tgRange("Invalid monthCode")
+	}
+	c, cerr := parseMonthCode(s.Value)
+	if cerr != nil {
+		return cerr
+	}
+	r.monthCode, r.hasMonthCode = c, true
+	return nil
+}
+
+// readDateFieldsRaw 按字母序读取 calendar, day, month, monthCode, year。
+func readDateFieldsRaw(o propBag) (rawDateFields, object.Value) {
+	var r rawDateFields
+	if ce := checkCalendarProp(o); ce != nil {
+		return r, ce
+	}
+	d, okD, e := readIntField(o, "day")
+	if e != nil {
+		return r, e
+	}
+	r.day, r.hasDay = d, okD
+	if e := readMonthField(o, &r); e != nil {
+		return r, e
+	}
+	if e := readMonthCodeField(o, &r); e != nil {
+		return r, e
+	}
+	y, okY, e := readIntField(o, "year")
+	if e != nil {
+		return r, e
+	}
+	r.year, r.hasYear = y, okY
+	return r, nil
+}
+
+// regulate 在读取 overflow 后校验并调节原始字段。
+func (r rawDateFields) regulate(overflow string) (object.ISODate, object.Value) {
+	if !r.hasYear || !r.hasDay || (!r.hasMonth && !r.hasMonthCode) {
+		return object.ISODate{}, tgType("missing required date fields (year, month, day)")
+	}
+	y := r.year
+	m := r.month
+	if !r.hasMonth {
+		m = r.monthCode
+	} else {
+		if r.hasMonthCode && r.monthCode != m {
+			return object.ISODate{}, tgRange("month does not match monthCode")
+		}
+		if m < 1 || m > 12 {
+			if overflow == "reject" {
+				return object.ISODate{}, tgRange("month is out of range")
+			}
+			if m < 1 {
+				m = 1
+			} else {
+				m = 12
+			}
+		}
+	}
+	d := r.day
+	if d < 1 {
+		if overflow == "reject" {
+			return object.ISODate{}, tgRange("day is out of range")
+		}
+		d = 1
+	}
+	dim := object.DaysInMonth(y, m)
+	if d > dim {
+		if overflow == "reject" {
+			return object.ISODate{}, tgRange("Invalid ISO date")
+		}
+		d = dim
+	}
+	out := object.ISODate{Year: y, Month: m, Day: d}
+	if !object.IsValidISODate(out) {
+		return object.ISODate{}, tgRange("Invalid ISO date")
+	}
+	return out, nil
+}
+
+// rawDateTimeFields 日期 + 时间原字段 (字母序 calendar, day, hour, microsecond,
+// millisecond, minute, month, monthCode, nanosecond, second, year)。
+type rawDateTimeFields struct {
+	rawDateFields
+	time object.ISOTime
+}
+
+// readDateTimeFieldsRaw 按字母序读取全部 date-time 字段。
+func readDateTimeFieldsRaw(o propBag) (rawDateTimeFields, object.Value) {
+	var r rawDateTimeFields
+	if ce := checkCalendarProp(o); ce != nil {
+		return r, ce
+	}
+	d, okD, e := readIntField(o, "day")
+	if e != nil {
+		return r, e
+	}
+	r.day, r.hasDay = d, okD
+	// hour, microsecond, millisecond, minute
+	tkeys := []string{"hour", "microsecond", "millisecond", "minute"}
+	targets := []*int32{&r.time.Hour, &r.time.Microsecond, &r.time.Millisecond, &r.time.Minute}
+	for i, k := range tkeys {
+		f, ok, e := readIntField(o, k)
+		if e != nil {
+			return r, e
+		}
+		if ok {
+			*targets[i] = f
+		}
+	}
+	if e := readMonthField(o, &r.rawDateFields); e != nil {
+		return r, e
+	}
+	if e := readMonthCodeField(o, &r.rawDateFields); e != nil {
+		return r, e
+	}
+	// nanosecond, second
+	nk := []string{"nanosecond", "second"}
+	nt := []*int32{&r.time.Nanosecond, &r.time.Second}
+	for i, k := range nk {
+		f, ok, e := readIntField(o, k)
+		if e != nil {
+			return r, e
+		}
+		if ok {
+			*nt[i] = f
+		}
+	}
+	y, okY, e := readIntField(o, "year")
+	if e != nil {
+		return r, e
+	}
+	r.year, r.hasYear = y, okY
+	return r, nil
+}
+
+// regulate 校验并调节 date-time 原字段 (含闰秒 second=60 的处理)。
+func (r rawDateTimeFields) regulate(overflow string) (object.ISODateTime, object.Value) {
+	d, e := r.rawDateFields.regulate(overflow)
+	if e != nil {
+		return object.ISODateTime{}, e
+	}
+	tm := r.time
+	if tm.Second == 60 {
+		if overflow == "reject" {
+			return object.ISODateTime{}, tgRange("Invalid ISO time")
+		}
+		tm.Second = 59
+	}
+	if !object.IsValidISOTime(tm) {
+		return object.ISODateTime{}, tgRange("Invalid ISO time")
+	}
+	return object.ISODateTime{Date: d, Time: tm}, nil
 }
 
 // readDateFields 从属性包读取 year/month(或 monthCode)/day 并按 overflow 调节。
