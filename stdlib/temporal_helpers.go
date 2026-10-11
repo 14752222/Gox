@@ -760,8 +760,8 @@ func toDurationE(v object.Value) (*object.TemporalDuration, object.Value) {
 	return nil, tgType("argument is not a Duration")
 }
 
-// checkDurationRange 实现 IsValidDuration 的绝对值上限:
-// 年/月/周 < 2^32，日 < ceil(2^53/86400)，时间分量按折算上限。
+// checkDurationRange 实现 IsValidDuration:
+// 年/月/周绝对值 ≤ 2^32-1；全部时间分量折算后的总秒数绝对值 < 2^53。
 func checkDurationRange(d *object.TemporalDuration) object.Value {
 	abs := func(x int64) uint64 {
 		if x < 0 {
@@ -772,27 +772,24 @@ func checkDurationRange(d *object.TemporalDuration) object.Value {
 	if abs(d.Years()) > 0xFFFFFFFF || abs(d.Months()) > 0xFFFFFFFF || abs(d.Weeks()) > 0xFFFFFFFF {
 		return tgRange("Duration years/months/weeks out of range")
 	}
-	const maxSafe = float64(9007199254740991)
-	if float64(abs(d.Days())) > maxSafe/86400 {
-		return tgRange("Duration days out of range")
+	// 总秒数必须严格小于 2^53 (数学值比较，不能用 float64 —— 边界会舍入)。
+	// 用整数纳秒比较: maxNs = 2^53 * 1e9。
+	totalNs := new(big.Int).SetInt64(d.Days())
+	totalNs.Mul(totalNs, big.NewInt(86400*1000000000))
+	add := func(v, mult int64) {
+		t := big.NewInt(v)
+		t.Mul(t, big.NewInt(mult))
+		totalNs.Add(totalNs, t)
 	}
-	if float64(abs(d.Hours())) > maxSafe/3600 {
-		return tgRange("Duration hours out of range")
-	}
-	if float64(abs(d.Minutes())) > maxSafe/60 {
-		return tgRange("Duration minutes out of range")
-	}
-	if float64(abs(d.Seconds())) > maxSafe {
-		return tgRange("Duration seconds out of range")
-	}
-	if float64(abs(d.Milliseconds())) > maxSafe*1e3 {
-		return tgRange("Duration milliseconds out of range")
-	}
-	if float64(abs(d.Microseconds())) > maxSafe*1e6 {
-		return tgRange("Duration microseconds out of range")
-	}
-	if float64(abs(d.Nanoseconds())) > maxSafe*1e9 {
-		return tgRange("Duration nanoseconds out of range")
+	add(d.Hours(), 3600*1000000000)
+	add(d.Minutes(), 60*1000000000)
+	add(d.Seconds(), 1000000000)
+	add(d.Milliseconds(), 1000000)
+	add(d.Microseconds(), 1000)
+	add(d.Nanoseconds(), 1)
+	maxNs, _ := new(big.Int).SetString("9007199254740992000000000", 10)
+	if totalNs.CmpAbs(maxNs) >= 0 {
+		return tgRange("Duration is out of range")
 	}
 	return nil
 }
@@ -1568,6 +1565,9 @@ func toPlainDateTimeValue(v object.Value) (*object.TemporalPlainDateTime, object
 		if e := calendarFromAnnotation(f.Calendar); e != nil {
 			return nil, e
 		}
+		if !object.ISODateTimeInRange(f.ISODateTime()) {
+			return nil, tgRange("PlainDateTime is outside of supported range")
+		}
 		return object.NewTemporalPlainDateTime(f.ISODateTime(), object.DefaultCalendarID), nil
 	case propBag:
 		switch t.(type) {
@@ -1605,6 +1605,9 @@ func toPlainDateValue(v object.Value) (*object.TemporalPlainDate, object.Value) 
 		d := object.ISODate{Year: f.Year, Month: f.Month, Day: f.Day}
 		if !object.IsValidISODate(d) {
 			return nil, tgRange("Invalid PlainDate string: " + t.Value)
+		}
+		if !object.ISODateInRange(d) {
+			return nil, tgRange("PlainDate is outside of supported range")
 		}
 		return object.NewTemporalPlainDate(d, object.DefaultCalendarID), nil
 	case propBag:

@@ -330,6 +330,9 @@ func setupTemporalPlainDate(temporal *object.Object) {
 			if !object.IsValidISODate(f.ISODateTime().Date) {
 				return tgRange("Invalid PlainDate string: " + v.Value)
 			}
+			if !object.ISODateInRange(f.ISODateTime().Date) {
+				return tgRange("PlainDate is outside of supported range")
+			}
 			return object.NewTemporalPlainDate(f.ISODateTime().Date, object.DefaultCalendarID)
 		case propBag:
 			switch v.(type) {

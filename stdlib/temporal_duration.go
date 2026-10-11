@@ -358,9 +358,13 @@ func setupTemporalDuration(temporal *object.Object) {
 				return tgRange("Duration arguments must be integers")
 			}
 		}
-		return object.NewTemporalDuration(
+		d := object.NewTemporalDuration(
 			int64(get(0)), int64(get(1)), int64(get(2)), int64(get(3)), int64(get(4)),
 			int64(get(5)), int64(get(6)), int64(get(7)), int64(get(8)), int64(get(9)))
+		if cerr := checkDurationRange(d); cerr != nil {
+			return cerr
+		}
+		return d
 	})
 	ctor.SetProperty("name", object.NewString("Duration"))
 	ctor.SetProperty("prototype", proto)

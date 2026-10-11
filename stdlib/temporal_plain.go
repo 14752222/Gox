@@ -441,6 +441,9 @@ func setupTemporalPlainDateTime(temporal *object.Object) {
 			if f.Calendar != "" && f.Calendar != object.DefaultCalendarID {
 				return tgRange("Unsupported calendar: " + f.Calendar)
 			}
+			if !object.ISODateTimeInRange(f.ISODateTime()) {
+				return tgRange("PlainDateTime is outside of supported range")
+			}
 			return object.NewTemporalPlainDateTime(f.ISODateTime(), object.DefaultCalendarID)
 		case propBag:
 			switch v.(type) {

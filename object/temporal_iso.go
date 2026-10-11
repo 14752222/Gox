@@ -241,10 +241,10 @@ func (d ISODate) InLeapYear() bool { return IsLeapYear(d.Year) }
 // ===== 范围校验 =====
 
 // ISODateTimeToEpochNanos 把 ISO 字段记录 (按 UTC 解释) 转为 epoch 纳秒。
+// 注意: 必须全程 big.Int 运算 —— 极端日期 (±1e8 天) 下 int64 会溢出。
 func (dt ISODateTime) EpochNanos() *big.Int {
-	days := dt.Date.EpochDays()
-	nanos := days*NanosPerDay + dt.Time.NanosOfDay()
-	return big.NewInt(nanos)
+	n := new(big.Int).Mul(big.NewInt(dt.Date.EpochDays()), big.NewInt(NanosPerDay))
+	return n.Add(n, big.NewInt(dt.Time.NanosOfDay()))
 }
 
 // EpochNanosToISODateTime 由 epoch 纳秒还原 UTC 下的 ISO 字段记录。
@@ -284,6 +284,34 @@ var (
 
 func IsValidEpochNanos(ns *big.Int) bool {
 	return ns.Cmp(minEpochNanos) >= 0 && ns.Cmp(maxEpochNanos) <= 0
+}
+
+// ISODateInRange 检查日期是否落在 Temporal 可表示区间
+// (-271821-04-19 .. +275760-09-13，含端点)。
+func ISODateInRange(d ISODate) bool {
+	if d.Year < -271821 || d.Year > 275760 {
+		return false
+	}
+	if d.Year == -271821 && (d.Month < 4 || (d.Month == 4 && d.Day < 19)) {
+		return false
+	}
+	if d.Year == 275760 && (d.Month > 9 || (d.Month == 9 && d.Day > 13)) {
+		return false
+	}
+	return true
+}
+
+// ISODateTimeInRange 检查日期时间是否落在 Temporal 可表示区间
+// (-271821-04-19T00:00:00.000000001 .. +275760-09-13T23:59:59.999999999)。
+func ISODateTimeInRange(dt ISODateTime) bool {
+	if !ISODateInRange(dt.Date) {
+		return false
+	}
+	if dt.Date.Year == -271821 && dt.Date.Month == 4 && dt.Date.Day == 19 &&
+		dt.Time.NanosOfDay() == 0 {
+		return false
+	}
+	return true
 }
 
 // IsValidISODate 检查 ISO 日期字段是否构成合法日期。
