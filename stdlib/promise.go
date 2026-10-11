@@ -407,68 +407,8 @@ func setupPromiseProto() *object.Object {
 		if len(args) > 1 {
 			onRejected = args[1]
 		}
-
-		next := object.NewPromise()
-		promise.Lock()
-
-		if promise.State == object.PromiseFulfilled {
-			promise.Unlock()
-			if object.IsCallable(onFulfilled) {
-				// onFulfilled 抛错必须让派生 promise reject (原始抛出值),
-				// 而不是逃逸成未捕获异常终止脚本 —— 回调桥把抛出记在
-				// callbackError 上, 此处不消费则 VM 返回后会重抛。
-				result, ok := object.CallPromiseHandler(onFulfilled, promise.Value)
-				if ok {
-					next.Resolve(result)
-				} else {
-					next.Reject(result)
-				}
-			} else {
-				next.Resolve(promise.Value)
-			}
-		} else if promise.State == object.PromiseRejected {
-			promise.Unlock()
-			if object.IsCallable(onRejected) {
-				result, ok := object.CallPromiseHandler(onRejected, promise.Reason)
-				if ok {
-					next.Resolve(result)
-				} else {
-					next.Reject(result)
-				}
-			} else {
-				next.Reject(promise.Reason)
-			}
-		} else {
-			// Pending: 注册回调
-			if object.IsCallable(onFulfilled) {
-				promise.ThenCallbacks = append(promise.ThenCallbacks, object.PromiseCallback{
-					Callback:    onFulfilled,
-					NextPromise: next,
-				})
-			} else {
-				// 没有 onFulfilled，透传值
-				promise.ThenCallbacks = append(promise.ThenCallbacks, object.PromiseCallback{
-					Callback:    nil,
-					NextPromise: next,
-				})
-			}
-			if object.IsCallable(onRejected) {
-				promise.CatchCallbacks = append(promise.CatchCallbacks, object.PromiseCallback{
-					Callback:    onRejected,
-					NextPromise: next,
-					IsCatch:     true,
-				})
-			} else {
-				// 没有 onRejected，透传错误
-				promise.CatchCallbacks = append(promise.CatchCallbacks, object.PromiseCallback{
-					Callback:    nil,
-					NextPromise: next,
-					IsCatch:     true,
-				})
-			}
-			promise.Unlock()
-		}
-		return next
+		// 反应回调统一走微任务队列 (已结算也不同步执行), 实现在 object 层。
+		return promise.ThenCatch(onFulfilled, onRejected)
 	}))
 
 	// catch(onRejected)

@@ -93,6 +93,11 @@ var p = Promise.resolve(1);
 
 // TestPromiseThenStillWorksAfterOwnProps 加了自有属性之后, 原型上的 then 仍
 // 然照常工作 (两级查找 不得 遮蔽原型方法)。
+//
+// 微任务语义 (rrpZIw) 下 then 回调不再同步执行, 故不能像旧版那样在同一
+// 表达式里 join log —— 那条断言本身就建立在"结算即回调"的错误语义上。
+// 改为把结果写进全局, RunTimers 驱动事件循环后再取 (与 for_await 测试的
+// __out 模式一致)。
 func TestPromiseThenStillWorksAfterOwnProps(t *testing.T) {
 	src := `
 var log = [];
@@ -101,10 +106,21 @@ p.tag = 'mine';
 p.then(function(v) {
   log.push('tag=' + p.tag);
   log.push('v=' + v);
+  globalThis.__promiseLog = log.join(',');
 });
-log.join(',');
 `
-	assertString(t, evalJS(t, src), "tag=mine,v=7")
+	v, err := EvalVM(src)
+	if err != nil {
+		t.Fatalf("Eval error: %v", err)
+	}
+	if err := v.RunTimers(); err != nil {
+		t.Fatalf("RunTimers: %v", err)
+	}
+	got, ok := v.Globals().Get("__promiseLog")
+	if !ok {
+		t.Fatalf("then 回调未执行: __promiseLog 不存在")
+	}
+	assertString(t, got, "tag=mine,v=7")
 }
 
 // TestPromiseRejectReasonKeepsOwnProps 一等对象化不得干扰结算语义: 带自有属性
@@ -113,14 +129,12 @@ log.join(',');
 // 用普通对象而非 Error: Error 实例目前还不是一等属性存储
 // (Object.defineProperty(new Error(), …) 会抛), 那是另一个缺口, 不在本任务内。
 func TestPromiseRejectReasonKeepsOwnProps(t *testing.T) {
-	src := `
-var got = 'unset';
+	// 微任务语义下 catch 回调异步执行, 结果写入 __r 后由 assertJSAsync 读取。
+	assertJSAsync(t, `
 var reason = { code: 'E1' };
 Object.defineProperty(reason, 'extra', { value: 1, enumerable: false, configurable: true });
 Promise.reject(reason).catch(function(r) {
-  got = [r === reason, r.code, r.extra].join(',');
+  globalThis.__r = [r === reason, r.code, r.extra].join(',');
 });
-got;
-`
-	assertString(t, evalJS(t, src), "true,E1,1")
+`, "true,E1,1")
 }

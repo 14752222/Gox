@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/14752222/Gox/bytecode"
@@ -665,6 +666,12 @@ type VM struct {
 	// 栈上模板段之外还有外层操作数，无法区分边界。
 	tplParts [][]object.Value
 
+	// 微任务队列 (Promise Jobs, 见 microtask.go): promise settle / 已结算
+	// then 注册的反应回调在此排队, 于脚本顶层结束、每个宏任务后 drain。
+	microtasks         []func()
+	microtaskMu        sync.Mutex
+	drainingMicrotasks bool
+
 	// ── 运行时错误源码帧 (T05 / M2) ──
 	// mainPositions 是主脚本"语句首条指令 offset → 源码位置"的升序表;
 	// 函数体错误查抛出帧闭包的 Positions 表 (offset 空间按编译单元隔离)。
@@ -829,6 +836,11 @@ func (vm *VM) runTimersLoop(until time.Time, pump func(maxWait time.Duration) bo
 	scheduler := object.GlobalScheduler()
 	strict := object.GlobalStrictScheduler()
 	for {
+		// 微任务检查点: 上一轮宏任务 (定时器/空闲/严格回调, 或 GUI pump
+		// 派发的外部事件) 产生的 Promise Jobs 在下一个宏任务前全部 drain;
+		// 也兜底"无定时器但队列非空"的退出口 (drain 期间新入队的同轮消费)。
+		vm.drainMicrotasks()
+
 		// 0) 严格定时器到期信号优先消费 (排队/抢占模式共用此入口)。
 		//    有信号时先执行, 保证回调尽早运行。
 		if interrupts := strict.TakeStrictInterrupts(64); len(interrupts) > 0 {
@@ -1162,6 +1174,9 @@ func (vm *VM) driveMainUnit(gen *object.Generator) error {
 			val, done, err = vm.genResume(gen, res)
 		}
 	}
+	savedPopped := vm.lastPopped
+	vm.drainMicrotasks()
+	vm.lastPopped = savedPopped
 	return err
 }
 
@@ -1196,6 +1211,9 @@ func (vm *VM) settleTopLevelAwait(val object.Value) (object.Value, object.Value)
 		}
 		return object.UndefinedSingleton
 	}))
+	// 已结算 promise 的 then 回调是微任务: 立刻 drain 取出结算值,
+	// 维持"TLA 只支持同步可结算 promise"的本版口径。
+	vm.drainMicrotasks()
 	if !got {
 		return object.UndefinedSingleton,
 			object.NewErrorWithName("Error", "top-level await: promise did not settle synchronously")
@@ -1211,7 +1229,16 @@ func (vm *VM) execute() error {
 	saved := currentVM
 	currentVM = vm
 	defer func() { currentVM = saved }()
-	return vm.runProtected(func() error { return vm.runFrom(0) })
+	return vm.runProtected(func() error {
+		err := vm.runFrom(0)
+		// 微任务检查点: 脚本顶层同步执行完成后 drain Promise Jobs
+		// (即使脚本抛错也先 drain, 与浏览器 "script 结束即 checkpoint" 一致)。
+		// job 的执行会动操作数栈, 需保住脚本的完成值 (lastPopped)。
+		savedPopped := vm.lastPopped
+		vm.drainMicrotasks()
+		vm.lastPopped = savedPopped
+		return err
+	})
 }
 
 // runFrom 从指定帧索引开始执行指令循环。
@@ -3658,7 +3685,17 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 // callFunction 从 Go 代码调用 JS 函数 (闭包或内建函数)。
 // 用于 stdlib 回调桥: 当 BuiltinMethod (如 Array.prototype.map) 需要
 // 调用用户传入的 JS 闭包时，通过此方法执行子帧。
-func (vm *VM) callFunction(fn object.Value, this object.Value, args []object.Value) (object.Value, error) {
+func (vm *VM) callFunction(fn object.Value, this object.Value, args []object.Value) (result object.Value, err error) {
+	// 微任务检查点 (ES perform-microtask-checkpoint): frameIdx == -1 表示
+	// 这是一次顶层 Go→JS 调用 (定时器/空闲/严格回调、GUI 事件派发等),
+	// JS 栈将在返回时清空, 故返回前 drain Promise Jobs。脚本执行期
+	// (frameIdx >= 0) 的回调桥调用不 drain —— job 必须等同步代码跑完。
+	topLevel := vm.frameIdx == -1
+	defer func() {
+		if topLevel {
+			vm.drainMicrotasks()
+		}
+	}()
 	// Rx 单元可直接调用: count() 等价 count.value (GetX 语义)
 	//
 	// computed 求值抛错时 RxValue 会把原始抛出值写进回调桥双槽 (rvE6lH 方案 a)。
@@ -4873,6 +4910,36 @@ func (vm *VM) driveModule(pe *modulePendingEval, arg object.Value, isThrow bool)
 		p, ok := val.(*object.Promise)
 		if !ok {
 			val, done, genErr, panicErr = vm.stepGen(pe, val, false)
+			continue
+		}
+		// 已结算 Promise 同样同步恢复: 微任务语义下 then 回调只入队,
+		// 而模块图求值不支持挂起等待 (本版口径, 见 RunCompiledAsync),
+		// 这里直接取结算值续跑, 与旧的"同步 Promise 模型"行为一致。
+		// pending 时先 drain 一轮微任务: 操作数若是已结算 promise 的
+		// 派生链 (如 await Promise.resolve(1).then(f)), drain 后即结算,
+		// 仍可同步续跑; 真正 pending (定时器等) 才挂恢复回调。
+		p.Lock()
+		state := p.State
+		sval, sreason := p.Value, p.Reason
+		p.Unlock()
+		if state == object.PromisePending {
+			// drain 必须在 modVM 上下文进行: job 入队按 currentVM 路由,
+			// 且 job 内的 JS 回调经回调桥落在 currentVM 上执行。
+			saved := currentVM
+			currentVM = vm
+			vm.drainMicrotasks()
+			currentVM = saved
+			p.Lock()
+			state = p.State
+			sval, sreason = p.Value, p.Reason
+			p.Unlock()
+		}
+		if state == object.PromiseFulfilled {
+			val, done, genErr, panicErr = vm.stepGen(pe, sval, false)
+			continue
+		}
+		if state == object.PromiseRejected {
+			val, done, genErr, panicErr = vm.stepGen(pe, sreason, true)
 			continue
 		}
 		vm.armPromiseResume(pe, p)

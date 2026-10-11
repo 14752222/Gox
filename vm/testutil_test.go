@@ -31,6 +31,29 @@ func evalJS(t *testing.T, input string) object.Value {
 	return result
 }
 
+// assertJSAsync 断言 Promise 反应回调的异步结果 (rrpZIw 微任务语义)。
+//
+// 微任务队列引入后, .then/.catch 回调在脚本同步执行完成后才运行,
+// 旧式 "(function(){ promise.then(v=>r=...); return r })()" 的写法必然
+// 读到初始值 (V8 同样如此) —— 那些断言本身就建立在错误的同步语义上。
+// 约定: 脚本把最终结果写入 globalThis.__r; 本函数在 drain 微任务并跑完
+// 事件循环后读取 __r 与 expected 比较。
+func assertJSAsync(t *testing.T, input, expected string) {
+	t.Helper()
+	v, err := EvalVM(input)
+	if err != nil {
+		t.Fatalf("Eval error for input %q: %v", input, err)
+	}
+	if err := v.RunTimers(); err != nil {
+		t.Fatalf("RunTimers error for input %q: %v", input, err)
+	}
+	got, ok := v.Globals().Get("__r")
+	if !ok {
+		t.Fatalf("回调未执行 (__r 未设置) for input %q", input)
+	}
+	assertString(t, got, expected)
+}
+
 // testEval 在裸环境 (不装 stdlib) 里编译并执行，返回最后一个表达式的值。
 func testEval(t *testing.T, input string) object.Value {
 	t.Helper()
