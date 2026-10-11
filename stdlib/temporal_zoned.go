@@ -427,7 +427,10 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 			if ferr != nil {
 				return ferr
 			}
-			tz := tzOfFieldsObject(v)
+			tz, tzErr := tzOfFieldsObject(v)
+			if tzErr != nil {
+				return tzErr
+			}
 			var opts object.Value
 			if len(args) > 1 {
 				opts = args[1]
@@ -708,15 +711,12 @@ func zdtDiffFrom(t *object.TemporalZonedDateTime, args []object.Value, since boo
 
 // tzOfFieldsObject 由属性包提取 timeZone 字段。
 // 缺失时按规范使用宿主默认时区；这里退化为 UTC 以免依赖宿主环境配置。
-func tzOfFieldsObject(o propBag) string {
+func tzOfFieldsObject(o propBag) (string, object.Value) {
 	v, found := o.GetProperty("timeZone")
 	if !found || v == object.UndefinedSingleton {
-		return "UTC"
+		return "UTC", nil
 	}
-	if id, ok := toTimeZoneID(v); ok {
-		return id
-	}
-	return "UTC"
+	return toTimeZoneIDE(v)
 }
 
 // offsetOfFieldsObject 由属性包提取 offset 字段 (可选)。

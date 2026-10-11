@@ -599,6 +599,10 @@ func ParseTemporalDateString(s string) (TemporalFields, bool) {
 		}
 	}
 	p.parseOffset(&f)
+	// TemporalDateString 不允许 UTC 指示符 Z (仅 Instant/ZonedDateTime 文法允许)。
+	if f.IsZ {
+		return f, false
+	}
 	if !p.parseAnnotations(&f) || !p.eof() {
 		return f, false
 	}
@@ -622,6 +626,9 @@ func ParseTemporalDateTimeString(s string) (TemporalFields, bool) {
 		}
 	}
 	p.parseOffset(&f)
+	if f.IsZ {
+		return f, false
+	}
 	if !p.parseAnnotations(&f) || !p.eof() {
 		return f, false
 	}

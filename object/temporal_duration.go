@@ -351,34 +351,37 @@ func TotalOfUnit(d *TemporalDuration, unit string, relativeTo *ISODateTime) (flo
 
 // RoundNanos 按 roundingMode 与 increment 对纳秒值取整。
 // truncation 是返回细粟端 tolerant 与否的控制: 这里实现 halfExpand (四舍五入)。
+// RoundNanos 实现规范 RoundNumberToIncrement 的有符号语义:
+// 以 floor 为基准 (余数恒非负)，trunc 等价 floor、expand 等价 ceil，
+// halfExpand/halfCeil 平局向上、halfTrunc/halfFloor 平局向下。
+// 对负时长需要"按绝对值舍入再加符号"的调用方应先取反模式 (ceil↔floor、
+// expand↔trunc、halfCeil↔halfFloor、halfExpand↔halfTrunc) 再传入正数。
 func RoundNanos(total *big.Int, increment *big.Int, mode string) *big.Int {
 	if increment == nil || increment.Sign() <= 0 {
 		return new(big.Int).Set(total)
 	}
-	q, r := new(big.Int).QuoRem(total, increment, new(big.Int))
+	// DivMod 为欧几里得语义: q = floor(total/increment), 0 <= r < increment。
+	q, r := new(big.Int).DivMod(total, increment, new(big.Int))
 	if r.Sign() == 0 {
 		return new(big.Int).Set(total)
 	}
-	half := new(big.Int).Rsh(increment, 1)
-	// Rem 与 Quo 都是截断语义 (结果与 total 同号)，比较时用绝对值。
-	absR := new(big.Int).Abs(r)
+	twiceR := new(big.Int).Lsh(r, 1)
+	cmp := twiceR.Cmp(increment)
 	roundUp := false
 	switch mode {
-	case "ceil":
-		roundUp = total.Sign() > 0
-	case "floor":
-		roundUp = total.Sign() < 0
-	case "trunc":
+	case "ceil", "expand":
+		roundUp = true
+	case "halfCeil", "halfExpand":
+		roundUp = cmp >= 0
+	case "halfFloor", "halfTrunc":
+		roundUp = cmp > 0
+	case "halfEven":
+		roundUp = cmp > 0 || (cmp == 0 && q.Bit(0) == 1)
+	default: // floor, trunc
 		roundUp = false
-	default: // halfExpand
-		roundUp = absR.Cmp(half) >= 0
 	}
 	if roundUp {
-		if total.Sign() < 0 {
-			q.Sub(q, big.NewInt(1))
-		} else {
-			q.Add(q, big.NewInt(1))
-		}
+		q.Add(q, big.NewInt(1))
 	}
 	return new(big.Int).Mul(q, increment)
 }

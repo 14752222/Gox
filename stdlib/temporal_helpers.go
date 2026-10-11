@@ -1759,10 +1759,18 @@ func negateRoundingMode(mode string) string {
 		return "floor"
 	case "floor":
 		return "ceil"
+	case "expand":
+		return "trunc"
+	case "trunc":
+		return "expand"
 	case "halfCeil":
 		return "halfFloor"
 	case "halfFloor":
 		return "halfCeil"
+	case "halfExpand":
+		return "halfTrunc"
+	case "halfTrunc":
+		return "halfExpand"
 	}
 	return mode
 }
