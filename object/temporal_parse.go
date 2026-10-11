@@ -582,13 +582,23 @@ func isAsciiAlphaNumExt(s string) bool {
 
 // ===== 公开文法入口 =====
 
-// ParseTemporalDateString 解析 TemporalDateString (Date [ tz ])。
+// ParseTemporalDateString 解析 TemporalDateString (Date [Time] [ tz ])。
+// 文法允许完整 date-time (含 UTC 偏移与时区注解)，调用方只取日期部分。
 func ParseTemporalDateString(s string) (TemporalFields, bool) {
 	var f TemporalFields
 	p := &isoScanner{s: s}
 	if !p.parseDate(&f) {
 		return f, false
 	}
+	if !p.eof() && !p.at('[') {
+		if !(p.take('T') || p.take('t') || p.take(' ')) {
+			return f, false
+		}
+		if !p.parseTime(&f) {
+			return f, false
+		}
+	}
+	p.parseOffset(&f)
 	if !p.parseAnnotations(&f) || !p.eof() {
 		return f, false
 	}
@@ -690,30 +700,27 @@ func ParseTemporalZonedDateTimeString(s string) (TemporalFields, bool) {
 	return f, true
 }
 
-// ParseTemporalYearMonthString 解析 TemporalYearMonthString (YYYY-MM [ tz ])。
+// ParseTemporalYearMonthString 解析 TemporalYearMonthString。
+// 文法同时允许完整 date-time (取其中的 year/month)。
 func ParseTemporalYearMonthString(s string) (TemporalFields, bool) {
 	var f TemporalFields
 	p := &isoScanner{s: s}
-	if !p.parseYearMonth(&f) {
-		return f, false
+	if p.parseYearMonth(&f) && p.parseAnnotations(&f) && p.eof() {
+		return f, true
 	}
-	if !p.parseAnnotations(&f) || !p.eof() {
-		return f, false
-	}
-	return f, true
+	// 回退到完整 date-time 文法 (如 "2000-05-02T00+00")
+	return ParseTemporalDateTimeString(s)
 }
 
-// ParseTemporalMonthDayString 解析 TemporalMonthDayString (MM-DD [ tz ])。
+// ParseTemporalMonthDayString 解析 TemporalMonthDayString。
+// 文法同时允许完整 date-time (取其中的 month/day)。
 func ParseTemporalMonthDayString(s string) (TemporalFields, bool) {
 	var f TemporalFields
 	p := &isoScanner{s: s}
-	if !p.parseMonthDay(&f) {
-		return f, false
+	if p.parseMonthDay(&f) && p.parseAnnotations(&f) && p.eof() {
+		return f, true
 	}
-	if !p.parseAnnotations(&f) || !p.eof() {
-		return f, false
-	}
-	return f, true
+	return ParseTemporalDateTimeString(s)
 }
 
 // ParseTimeZoneOffsetString 解析 ±HH:MM[:SS] 形式的偏移串，返回偏移秒数。

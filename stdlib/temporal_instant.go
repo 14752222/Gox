@@ -203,8 +203,8 @@ func setupTemporalInstant(env *object.Object) {
 			tz = id
 		}
 		ns := t.Nanos()
-		if st.smallestUnit != "" {
-			ns = roundNanosToUnit(ns, st.smallestUnit, 1, st.mode)
+		if q := st.roundingQuantumNanos(); q > 0 {
+			ns = object.RoundNanos(ns, big.NewInt(q), st.mode)
 		}
 		off := object.TimeZoneOffsetSecondsAt(tz, ns)
 		dt := object.AddOffsetToISODateTime(object.EpochNanosToISODateTime(ns), off)

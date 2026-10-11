@@ -678,7 +678,7 @@ func setupTemporalPlainTime(temporal *object.Object) {
 		if perr != nil {
 			return "", perr
 		}
-		tm := roundTimeOfDay(t.ISOTime(), st.smallestUnit, st.mode)
+		tm := roundTimeOfDay(t.ISOTime(), st.roundingQuantumNanos(), st.mode)
 		prec := st.precision
 		if st.smallestUnit != "" {
 			prec = precisionForSmallest(st.smallestUnit)

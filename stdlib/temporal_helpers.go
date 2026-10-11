@@ -1749,7 +1749,7 @@ func parseToStringSettings(opts object.Value, hasTime bool) (*toStringSettings, 
 		precision: "auto", calendarName: "auto",
 		timeZoneName: "auto", offsetName: "auto", mode: "trunc",
 	}
-	mode, merr := getRoundingMode(opts)
+	mode, merr := getRoundingModeTrunc(opts)
 	if merr != nil {
 		return nil, merr
 	}
@@ -1772,16 +1772,19 @@ func parseToStringSettings(opts object.Value, hasTime bool) (*toStringSettings, 
 		fv := optValue(opts, "fractionalSecondDigits")
 		if fv != nil && s.smallestUnit == "" {
 			// spec: smallestUnit 存在时 fractionalSecondDigits 被忽略。
-			if n, ok := fv.(*object.Number); ok {
-				f := n.Value
-				if math.IsNaN(f) || math.IsInf(f, 0) || f != math.Trunc(f) || f < 0 || f > 9 {
+			// 数值经 ToIntegerWithTruncation (2.5→2、-0.6→-1 越界)。
+			if str, ok := fv.(*object.String); ok && str.Value == "auto" {
+				s.precision = "auto"
+			} else {
+				f, cerr := tgToNumber(fv)
+				if cerr != nil {
+					return nil, tgRange("Invalid fractionalSecondDigits")
+				}
+				f = math.Floor(f)
+				if math.IsNaN(f) || math.IsInf(f, 0) || f < 0 || f > 9 {
 					return nil, tgRange("fractionalSecondDigits must be an integer from 0 to 9")
 				}
 				s.precision = strconv.Itoa(int(f))
-			} else if str, ok := optionToString(fv); ok && str == "auto" {
-				s.precision = "auto"
-			} else {
-				return nil, tgRange("Invalid fractionalSecondDigits")
 			}
 		}
 	}
@@ -1844,13 +1847,33 @@ func calendarAnnotation(s *toStringSettings) string {
 	return ""
 }
 
-// roundTimeOfDay 按 smallestUnit+mode 舍入一天内的时间 (环绕 24h)。
-func roundTimeOfDay(t object.ISOTime, su, mode string) object.ISOTime {
-	if su == "" {
+// roundingQuantumNanos 计算 toString 的舍入量子 (纳秒): smallestUnit 优先，
+// 否则由 fractionalSecondDigits 的位数决定 (digits=0 → 1秒)。0 表示不舍入。
+func (s *toStringSettings) roundingQuantumNanos() int64 {
+	if s.smallestUnit != "" {
+		if n, ok := object.UnitToNanos(s.smallestUnit); ok {
+			return n
+		}
+		return 0
+	}
+	if len(s.precision) == 1 && s.precision[0] >= '0' && s.precision[0] <= '9' {
+		d := int(s.precision[0] - '0')
+		q := int64(1)
+		for i := 0; i < 9-d; i++ {
+			q *= 10
+		}
+		return q
+	}
+	return 0
+}
+
+// roundTimeOfDay 按量子+mode 舍入一天内的时间 (环绕 24h)。
+func roundTimeOfDay(t object.ISOTime, quantum int64, mode string) object.ISOTime {
+	if quantum <= 0 {
 		return t
 	}
 	n := big.NewInt(t.NanosOfDay())
-	r := roundNanosToUnit(n, su, 1, mode)
+	r := object.RoundNanos(n, big.NewInt(quantum), mode)
 	day := big.NewInt(object.NanosPerDay)
 	r.Mod(r, day)
 	if r.Sign() < 0 {
@@ -1859,12 +1882,12 @@ func roundTimeOfDay(t object.ISOTime, su, mode string) object.ISOTime {
 	return object.TimeFromNanosOfDay(r.Int64())
 }
 
-// roundDateTimeForDisplay 按 smallestUnit 舍入墙钟日期时间 (允许跨日进位)。
-func roundDateTimeForDisplay(dt object.ISODateTime, su, mode string) object.ISODateTime {
-	if su == "" {
+// roundDateTimeForDisplay 按量子舍入墙钟日期时间 (允许跨日进位)。
+func roundDateTimeForDisplay(dt object.ISODateTime, quantum int64, mode string) object.ISODateTime {
+	if quantum <= 0 {
 		return dt
 	}
-	n := roundNanosToUnit(dt.EpochNanos(), su, 1, mode)
+	n := object.RoundNanos(dt.EpochNanos(), big.NewInt(quantum), mode)
 	return object.EpochNanosToISODateTime(n)
 }
 

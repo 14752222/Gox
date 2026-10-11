@@ -361,7 +361,7 @@ func setupTemporalPlainDateTime(temporal *object.Object) {
 		if perr != nil {
 			return "", perr
 		}
-		dt := roundDateTimeForDisplay(t.ISODateTime(), st.smallestUnit, st.mode)
+		dt := roundDateTimeForDisplay(t.ISODateTime(), st.roundingQuantumNanos(), st.mode)
 		prec := st.precision
 		if st.smallestUnit != "" {
 			prec = precisionForSmallest(st.smallestUnit)

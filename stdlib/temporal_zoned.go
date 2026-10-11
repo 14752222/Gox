@@ -346,7 +346,27 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 		if perr != nil {
 			return "", perr
 		}
-		return t.ToString() + calendarAnnotation(st), nil
+		tz := t.TimeZoneID()
+		ns := t.Nanos()
+		if q := st.roundingQuantumNanos(); q > 0 {
+			ns = object.RoundNanos(ns, big.NewInt(q), st.mode)
+		}
+		off := object.TimeZoneOffsetSecondsAt(tz, ns)
+		dt := object.AddOffsetToISODateTime(object.EpochNanosToISODateTime(ns), off)
+		prec := st.precision
+		if st.smallestUnit != "" {
+			prec = precisionForSmallest(st.smallestUnit)
+		}
+		s := object.FormatISODate(dt.Date) + "T" + object.FormatISOTime(dt.Time, prec)
+		s += formatZDTOffset(off, st.offsetName)
+		if st.timeZoneName != "never" {
+			crit := ""
+			if st.timeZoneName == "critical" {
+				crit = "!"
+			}
+			s += "[" + crit + tz + "]"
+		}
+		return s + calendarAnnotation(st), nil
 	})
 	tgValueOf(proto)
 
