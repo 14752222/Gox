@@ -79,7 +79,7 @@ func setupTemporalPlainDate(temporal *object.Object) {
 		if e := optionsTypeErr(argAt(args, 1)); e != nil {
 			return e
 		}
-		bag, isBag := args[0].(propBag)
+		bag, isBag := plainBagOf(args[0])
 		if !isBag {
 			return tgType("PlainDate.prototype.with requires an object")
 		}
@@ -334,6 +334,11 @@ func setupTemporalPlainDate(temporal *object.Object) {
 			}
 			return object.NewTemporalPlainDate(f.ISODateTime().Date, object.DefaultCalendarID)
 		case propBag:
+			switch v.(type) {
+			case *object.Object, *object.Proxy:
+			default:
+				return tgType("PlainDate.from: unsupported argument")
+			}
 			raw, rerr := readDateFieldsRaw(v)
 			if rerr != nil {
 				return rerr
@@ -753,7 +758,19 @@ func setupTemporalPlainTime(temporal *object.Object) {
 				return tgRange("Invalid PlainTime string: " + v.Value)
 			}
 			return object.NewTemporalPlainTime(f.ISODateTime().Time)
+		case *object.TemporalPlainDateTime:
+			return object.NewTemporalPlainTime(v.ISODateTime().Time)
+		case *object.TemporalZonedDateTime:
+			dt := object.GetISOPartsFromEpoch(v.TimeZoneID(), v.Nanos())
+			return object.NewTemporalPlainTime(dt.Time)
+		case *object.TemporalPlainDate:
+			return object.NewTemporalPlainTime(object.ISOTime{})
 		case propBag:
+			switch v.(type) {
+			case *object.Object, *object.Proxy:
+			default:
+				return tgType("PlainTime.from: unsupported argument")
+			}
 			time := object.ISOTime{}
 			if merr := mergeTimeInto(&time, v); merr != nil {
 				return merr

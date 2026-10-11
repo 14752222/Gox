@@ -861,7 +861,21 @@ func setupTemporalPlainYearMonth(temporal *object.Object) {
 				return tgRange("Invalid PlainYearMonth string: " + v.Value)
 			}
 			return object.NewTemporalPlainYearMonth(f.Year, f.Month, 1, object.DefaultCalendarID)
+		case *object.TemporalPlainDate:
+			d := v.ISODate()
+			return object.NewTemporalPlainYearMonth(d.Year, d.Month, 1, object.DefaultCalendarID)
+		case *object.TemporalPlainDateTime:
+			d := v.ISODateTime().Date
+			return object.NewTemporalPlainYearMonth(d.Year, d.Month, 1, object.DefaultCalendarID)
+		case *object.TemporalZonedDateTime:
+			d := object.GetISOPartsFromEpoch(v.TimeZoneID(), v.Nanos()).Date
+			return object.NewTemporalPlainYearMonth(d.Year, d.Month, 1, object.DefaultCalendarID)
 		case propBag:
+			switch v.(type) {
+			case *object.Object, *object.Proxy:
+			default:
+				return tgType("PlainYearMonth.from: unsupported argument")
+			}
 			if e := optionsTypeErr(argAt(args, 1)); e != nil {
 				return e
 			}
@@ -1179,7 +1193,21 @@ func setupTemporalPlainMonthDay(temporal *object.Object) {
 				return tgRange("Invalid PlainMonthDay string: " + v.Value)
 			}
 			return object.NewTemporalPlainMonthDay(f.Month, f.Day, 1972, object.DefaultCalendarID)
+		case *object.TemporalPlainDate:
+			d := v.ISODate()
+			return object.NewTemporalPlainMonthDay(d.Month, d.Day, 1972, object.DefaultCalendarID)
+		case *object.TemporalPlainDateTime:
+			d := v.ISODateTime().Date
+			return object.NewTemporalPlainMonthDay(d.Month, d.Day, 1972, object.DefaultCalendarID)
+		case *object.TemporalZonedDateTime:
+			d := object.GetISOPartsFromEpoch(v.TimeZoneID(), v.Nanos()).Date
+			return object.NewTemporalPlainMonthDay(d.Month, d.Day, 1972, object.DefaultCalendarID)
 		case propBag:
+			switch v.(type) {
+			case *object.Object, *object.Proxy:
+			default:
+				return tgType("PlainMonthDay.from: unsupported argument")
+			}
 			m, d, ferr := monthDayFields(v, mdOverflow)
 			if ferr != nil {
 				return ferr

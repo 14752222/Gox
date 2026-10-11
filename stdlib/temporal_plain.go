@@ -445,6 +445,11 @@ func setupTemporalPlainDateTime(temporal *object.Object) {
 			}
 			return object.NewTemporalPlainDateTime(f.ISODateTime(), object.DefaultCalendarID)
 		case propBag:
+			switch v.(type) {
+			case *object.Object, *object.Proxy:
+			default:
+				return tgType("PlainDateTime.from: unsupported argument")
+			}
 			raw, rerr := readDateTimeFieldsRaw(v)
 			if rerr != nil {
 				return rerr

@@ -417,6 +417,11 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 			}
 			return zdtFromFields(f, args)
 		case propBag:
+			switch v.(type) {
+			case *object.Object, *object.Proxy:
+			default:
+				return tgType("ZonedDateTime.from: unsupported argument")
+			}
 			raw, off, tz, ferr := readZDTFieldsRaw(v)
 			if ferr != nil {
 				return ferr

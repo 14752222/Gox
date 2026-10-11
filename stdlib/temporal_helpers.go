@@ -737,6 +737,16 @@ type propBag interface {
 	GetProperty(string) (object.Value, bool)
 }
 
+// plainBagOf 仅接受真正的对象/Proxy 作为属性包；原始类型虽实现了
+// GetProperty (原型方法查找)，但按规范不是 fields bag，应走 TypeError。
+func plainBagOf(v object.Value) (propBag, bool) {
+	switch v.(type) {
+	case *object.Object, *object.Proxy:
+		return v.(propBag), true
+	}
+	return nil, false
+}
+
 // toDurationValue 把任意值转成 Duration。
 // 支持 Duration 实例与 ISO Duration 字符串。
 func toDurationValue(v object.Value) (*object.TemporalDuration, bool) {
@@ -1443,6 +1453,11 @@ func toPlainDateTimeValue(v object.Value) (*object.TemporalPlainDateTime, object
 		}
 		return object.NewTemporalPlainDateTime(f.ISODateTime(), object.DefaultCalendarID), nil
 	case propBag:
+		switch t.(type) {
+		case *object.Object, *object.Proxy:
+		default:
+			return nil, tgType("argument is not a PlainDateTime")
+		}
 		dt, ferr := readDateTimeFields(t, "constrain")
 		if ferr != nil {
 			return nil, ferr
@@ -1476,6 +1491,11 @@ func toPlainDateValue(v object.Value) (*object.TemporalPlainDate, object.Value) 
 		}
 		return object.NewTemporalPlainDate(d, object.DefaultCalendarID), nil
 	case propBag:
+		switch t.(type) {
+		case *object.Object, *object.Proxy:
+		default:
+			return nil, tgType("argument is not a PlainDate")
+		}
 		d, ferr := readDateFields(t, "constrain")
 		if ferr != nil {
 			return nil, ferr
@@ -1531,6 +1551,11 @@ func toPlainTimeValue(v object.Value) (*object.TemporalPlainTime, object.Value) 
 			Hour: f.Hour, Minute: f.Minute, Second: f.Second,
 			Millisecond: f.Millisecond, Microsecond: f.Microsecond, Nanosecond: f.Nanosecond}), nil
 	case propBag:
+		switch t.(type) {
+		case *object.Object, *object.Proxy:
+		default:
+			return nil, tgType("argument is not a PlainTime")
+		}
 		any := false
 		for _, k := range []string{"hour", "minute", "second", "millisecond", "microsecond", "nanosecond"} {
 			if pv, found := t.GetProperty(k); found && pv != object.UndefinedSingleton {
@@ -1605,6 +1630,11 @@ func toPlainYearMonthValue(v object.Value) (*object.TemporalPlainYearMonth, obje
 		}
 		return object.NewTemporalPlainYearMonth(f.Year, f.Month, 1, object.DefaultCalendarID), nil
 	case propBag:
+		switch t.(type) {
+		case *object.Object, *object.Proxy:
+		default:
+			return nil, tgType("argument is not a PlainYearMonth")
+		}
 		y, m, err := yearMonthFields(t, "constrain")
 		if err != nil {
 			return nil, err
@@ -1635,6 +1665,11 @@ func toPlainMonthDayValue(v object.Value) (*object.TemporalPlainMonthDay, object
 		}
 		return object.NewTemporalPlainMonthDay(f.Month, f.Day, 1972, object.DefaultCalendarID), nil
 	case propBag:
+		switch t.(type) {
+		case *object.Object, *object.Proxy:
+		default:
+			return nil, tgType("argument is not a PlainMonthDay")
+		}
 		if ce := checkCalendarProp(t); ce != nil {
 			return nil, ce
 		}
@@ -1701,6 +1736,11 @@ func toZonedDateTimeValue(v object.Value) (*object.TemporalZonedDateTime, object
 		}
 		return object.NewTemporalZonedDateTime(ns, tz, object.DefaultCalendarID), nil
 	case propBag:
+		switch t.(type) {
+		case *object.Object, *object.Proxy:
+		default:
+			return nil, tgType("argument is not a ZonedDateTime")
+		}
 		tzv, found := t.GetProperty("timeZone")
 		if !found {
 			return nil, tgType("argument is not a ZonedDateTime: missing timeZone")
