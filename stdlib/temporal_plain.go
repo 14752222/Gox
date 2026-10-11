@@ -372,20 +372,25 @@ func setupTemporalPlainDateTime(temporal *object.Object) {
 
 	// ===== 构造器 =====
 	ctor := object.NewBuiltin("PlainDateTime", func(args ...object.Value) object.Value {
+		var convErr object.Value
 		f := func(i int) int32 {
-			if i >= len(args) {
+			if i >= len(args) || args[i] == object.UndefinedSingleton {
 				return 0
 			}
-			v, _ := argFloat(args, i)
-			if math.IsNaN(v) || math.IsInf(v, 0) {
+			n, cerr := toIntTruncArg(args[i])
+			if cerr != nil {
+				convErr = cerr
 				return 0
 			}
-			return int32(math.Trunc(v))
+			return n
 		}
 		if len(args) < 3 || args[0] == object.UndefinedSingleton || args[1] == object.UndefinedSingleton || args[2] == object.UndefinedSingleton {
 			return tgRange("PlainDateTime requires at least year, month, day")
 		}
 		date := object.ISODate{Year: f(0), Month: f(1), Day: f(2)}
+		if convErr != nil {
+			return convErr
+		}
 		if !object.IsValidISODate(date) {
 			return tgRange("Invalid ISO date")
 		}
@@ -412,6 +417,14 @@ func setupTemporalPlainDateTime(temporal *object.Object) {
 		if len(args) == 0 {
 			return tgType("PlainDateTime.from requires an argument")
 		}
+		// spec: 选项包在任何分支之前做 GetOptionsObject + overflow 校验。
+		if e := optionsTypeErr(argAt(args, 1)); e != nil {
+			return e
+		}
+		fromOverflow, oe := getOverflow(argAt(args, 1))
+		if oe != nil {
+			return oe
+		}
 		if len(args) > 1 {
 			if e := optionsTypeErr(args[1]); e != nil {
 				return e
@@ -431,15 +444,7 @@ func setupTemporalPlainDateTime(temporal *object.Object) {
 			}
 			return object.NewTemporalPlainDateTime(f.ISODateTime(), object.DefaultCalendarID)
 		case propBag:
-			var opts object.Value
-			if len(args) > 1 {
-				opts = args[1]
-			}
-			overflow, oerr := getOverflow(opts)
-			if oerr != nil {
-				return oerr
-			}
-			dt, ferr := readDateTimeFields(v, overflow)
+			dt, ferr := readDateTimeFields(v, fromOverflow)
 			if ferr != nil {
 				return ferr
 			}
@@ -616,7 +621,7 @@ func mergeDateTimeFields(dt object.ISODateTime, src object.Value, partial bool) 
 	if v, found := o.GetProperty("day"); found && v != object.UndefinedSingleton {
 		dt.Date.Day = int32(toFloat(v))
 	}
-	if !mergeTimeInto(&dt.Time, o) {
+	if merr := mergeTimeInto(&dt.Time, o); merr != nil {
 		return dt, false
 	}
 	if !object.IsValidISODate(dt.Date) || !object.IsValidISOTime(dt.Time) {
@@ -626,8 +631,9 @@ func mergeDateTimeFields(dt object.ISODateTime, src object.Value, partial bool) 
 	return dt, true
 }
 
-// mergeTimeInto 把时区字段合并到 ISOTime。缺失字段保持原值。
-func mergeTimeInto(t *object.ISOTime, o propBag) bool {
+// mergeTimeInto 把时间字段合并到 ISOTime。缺失字段保持原值。
+// 返回 nil 表示成功；getter 抛错或字段非法时返回错误值。
+func mergeTimeInto(t *object.ISOTime, o propBag) object.Value {
 	keys := []string{"hour", "minute", "second", "millisecond", "microsecond", "nanosecond"}
 	targets := []*int32{&t.Hour, &t.Minute, &t.Second, &t.Millisecond, &t.Microsecond, &t.Nanosecond}
 	for i, k := range keys {
@@ -635,13 +641,16 @@ func mergeTimeInto(t *object.ISOTime, o propBag) bool {
 		if !found || v == object.UndefinedSingleton {
 			continue
 		}
-		f := toFloat(v)
-		if f != math.Trunc(f) {
-			return false
+		f, cerr := tgToNumber(v)
+		if cerr != nil {
+			return cerr
+		}
+		if math.IsNaN(f) || math.IsInf(f, 0) || f != math.Trunc(f) {
+			return tgRange("Invalid time fields")
 		}
 		*targets[i] = int32(f)
 	}
-	return true
+	return nil
 }
 
 // mergeTimeFields 从属性包构造新的 ISOTime (其余字段归零)。
@@ -651,7 +660,7 @@ func mergeTimeFields(base object.ISOTime, src object.Value) (object.ISOTime, boo
 		return base, false
 	}
 	out := object.ISOTime{}
-	if !mergeTimeInto(&out, o) {
+	if merr := mergeTimeInto(&out, o); merr != nil {
 		return base, false
 	}
 	if !object.IsValidISOTime(out) {

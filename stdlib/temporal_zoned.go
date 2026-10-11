@@ -379,6 +379,14 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 		if len(args) == 0 {
 			return tgType("ZonedDateTime.from requires an argument")
 		}
+		// spec: 选项包在任何分支之前做 GetOptionsObject + overflow 校验。
+		if e := optionsTypeErr(argAt(args, 1)); e != nil {
+			return e
+		}
+		fromOverflow, oe := getOverflow(argAt(args, 1))
+		if oe != nil {
+			return oe
+		}
 		if z, ok := asZonedDateTime(args[0]); ok {
 			return z
 		}
@@ -401,7 +409,7 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 					return e
 				}
 			}
-			dt, ferr := readDateTimeFields(v, "constrain")
+			dt, ferr := readDateTimeFields(v, fromOverflow)
 			if ferr != nil {
 				return ferr
 			}
@@ -439,7 +447,7 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 		return object.NewNumber(float64(a.Nanos().Cmp(b.Nanos())))
 	})
 
-		tgMethod(proto, "withCalendar", func(this object.Value, args ...object.Value) object.Value {
+	tgMethod(proto, "withCalendar", func(this object.Value, args ...object.Value) object.Value {
 		t, ok := asZonedDateTime(this)
 		if !ok {
 			return tgTypeBadThis("ZonedDateTime")

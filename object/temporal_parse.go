@@ -47,6 +47,9 @@ type TemporalFields struct {
 	// Z 与 +00:00 解析结果一致 (均为 0)，但 IsZ 保留原始写法以便错误信息区分。
 	OffsetSeconds *int32
 	IsZ           bool
+	// OffsetSubMinute 记录偏移在源字符串中是否带秒级/亚分钟精度
+	// (如 "-07:00:00" 或 "+000000")；作为时区标识符使用时必须拒绝。
+	OffsetSubMinute bool
 
 	// TimeZoneAnnotation 是 [Asia/Tokyo] 这类注解中的时区标识符。
 	TimeZoneAnnotation string
@@ -288,6 +291,7 @@ func (p *isoScanner) parseTime(f *TemporalFields) bool {
 	}
 	f.Hour = h
 
+	hasSeconds := false
 	if p.take(':') {
 		m, ok := p.digits(2)
 		if !ok {
@@ -300,6 +304,7 @@ func (p *isoScanner) parseTime(f *TemporalFields) bool {
 				return false
 			}
 			f.Second = s
+			hasSeconds = true
 		}
 	} else if p.remaining() >= 2 && p.isDigit() {
 		m, ok := p.digits(2)
@@ -313,9 +318,14 @@ func (p *isoScanner) parseTime(f *TemporalFields) bool {
 				return false
 			}
 			f.Second = s
+			hasSeconds = true
 		}
 	}
 
+	// 小数部分只允许出现在秒之后 ("05:07.123"、"12.5" 非法)。
+	if !hasSeconds && (p.at('.') || p.at(',')) {
+		return false
+	}
 	nanos, ok := p.frac(9)
 	if !ok {
 		return false
@@ -365,6 +375,7 @@ func (p *isoScanner) parseOffset(f *TemporalFields) bool {
 	m := int32(0)
 	s := int32(0)
 	frac := int32(0)
+	subMinute := false
 	if p.take(':') {
 		m, ok = p.digits(2)
 		if !ok {
@@ -372,6 +383,7 @@ func (p *isoScanner) parseOffset(f *TemporalFields) bool {
 			return false
 		}
 		if p.take(':') {
+			subMinute = true
 			s, ok = p.digits(2)
 			if !ok {
 				p.pos = start
@@ -392,6 +404,7 @@ func (p *isoScanner) parseOffset(f *TemporalFields) bool {
 		}
 		// 无冒号形式也允许可选的秒与小数: +000000,0 / +000000.000000000
 		if p.remaining() >= 2 && p.isDigit() {
+			subMinute = true
 			s, ok = p.digits(2)
 			if !ok {
 				p.pos = start
@@ -417,6 +430,7 @@ func (p *isoScanner) parseOffset(f *TemporalFields) bool {
 	// 当前实现只保留到秒，亚秒偏移在真实时区数据库中不存在。
 	_ = frac
 	f.OffsetSeconds = &total
+	f.OffsetSubMinute = subMinute
 	return true
 }
 
@@ -455,6 +469,7 @@ func (e *isoParseError) Error() string { return "invalid ISO 8601 string" }
 // Temporal 允许时区注解与日历注解以任意顺序出现，且各自最多一次。
 func (p *isoScanner) parseAnnotations(f *TemporalFields) bool {
 	var tz, cal string
+	calCritical := false
 	for p.at('[') {
 		p.pos++
 		start := p.pos
@@ -479,13 +494,19 @@ func (p *isoScanner) parseAnnotations(f *TemporalFields) bool {
 			}
 		}
 		if len(body) >= 2 && body[0] == 'u' && body[1] == '-' {
+			// 多个日历注解: 全为非 critical 且取值一致才允许。
 			if cal != "" {
-				return false
+				// 后续日历注解: 任何一方 critical 则语法非法，否则忽略 (首个生效)。
+				if critical || calCritical {
+					return false
+				}
+				continue
 			}
 			cal = parseCalendarAnnotation(body)
 			if cal == "" {
 				return false
 			}
+			calCritical = critical
 			continue
 		}
 		// 偏移注解 ([+02:00] / [-05:30:15]): 本身就是时区。

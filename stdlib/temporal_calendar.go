@@ -507,6 +507,9 @@ func monthFromFields(o propBag) (int32, object.Value) {
 	mc, hasCode := o.GetProperty("monthCode")
 	code := int32(0)
 	if hasCode && mc != object.UndefinedSingleton {
+		if e, isErr := mc.(*object.Error); isErr {
+			return 0, e
+		}
 		s, ok := mc.(*object.String)
 		if !ok {
 			return 0, tgRange("Invalid monthCode")
@@ -808,7 +811,7 @@ func setupTemporalPlainYearMonth(temporal *object.Object) {
 		}
 		y, _ := argFloat(args, 0)
 		m, _ := argFloat(args, 1)
-		if math.IsNaN(y) || math.IsNaN(m) {
+		if math.IsNaN(y) || math.IsNaN(m) || math.IsInf(y, 0) || math.IsInf(m, 0) {
 			return tgRange("Invalid year or month")
 		}
 		yi, mi := int32(y), int32(m)
@@ -832,6 +835,13 @@ func setupTemporalPlainYearMonth(temporal *object.Object) {
 	tgStatic(ctor, "from", func(args ...object.Value) object.Value {
 		if len(args) == 0 {
 			return tgType("PlainYearMonth.from requires an argument")
+		}
+		// spec: 选项包在任何分支之前做 GetOptionsObject + overflow 校验。
+		if e := optionsTypeErr(argAt(args, 1)); e != nil {
+			return e
+		}
+		if _, oe := getOverflow(argAt(args, 1)); oe != nil {
+			return oe
 		}
 		if ym, ok := asPlainYearMonth(args[0]); ok {
 			return ym
@@ -878,7 +888,7 @@ func setupTemporalPlainYearMonth(temporal *object.Object) {
 		return object.NewNumber(0)
 	})
 
-		tgEraGetters(proto, "PlainYearMonth", func(v object.Value) bool { _, ok := asPlainYearMonth(v); return ok })
+	tgEraGetters(proto, "PlainYearMonth", func(v object.Value) bool { _, ok := asPlainYearMonth(v); return ok })
 
 	setToStringTag(proto, "Temporal.PlainYearMonth")
 	temporal.SetBuiltinProperty("PlainYearMonth", ctor)
@@ -1133,6 +1143,14 @@ func setupTemporalPlainMonthDay(temporal *object.Object) {
 		if len(args) == 0 {
 			return tgType("PlainMonthDay.from requires an argument")
 		}
+		// spec: 选项包在任何分支之前做 GetOptionsObject + overflow 校验。
+		if e := optionsTypeErr(argAt(args, 1)); e != nil {
+			return e
+		}
+		mdOverflow, oe := getOverflow(argAt(args, 1))
+		if oe != nil {
+			return oe
+		}
 		if md, ok := asPlainMonthDay(args[0]); ok {
 			return md
 		}
@@ -1144,14 +1162,7 @@ func setupTemporalPlainMonthDay(temporal *object.Object) {
 			}
 			return object.NewTemporalPlainMonthDay(f.Month, f.Day, 1972, object.DefaultCalendarID)
 		case propBag:
-			if e := optionsTypeErr(argAt(args, 1)); e != nil {
-				return e
-			}
-			overflow, oerr := getOverflow(argAt(args, 1))
-			if oerr != nil {
-				return oerr
-			}
-			m, d, ferr := monthDayFields(v, overflow)
+			m, d, ferr := monthDayFields(v, mdOverflow)
 			if ferr != nil {
 				return ferr
 			}
@@ -1160,7 +1171,7 @@ func setupTemporalPlainMonthDay(temporal *object.Object) {
 		return tgType("PlainMonthDay.from: unsupported argument")
 	})
 
-		tgEraGetters(proto, "PlainMonthDay", func(v object.Value) bool { _, ok := asPlainMonthDay(v); return ok })
+	tgEraGetters(proto, "PlainMonthDay", func(v object.Value) bool { _, ok := asPlainMonthDay(v); return ok })
 
 	setToStringTag(proto, "Temporal.PlainMonthDay")
 	temporal.SetBuiltinProperty("PlainMonthDay", ctor)

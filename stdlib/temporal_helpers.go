@@ -460,15 +460,56 @@ func toDurationE(v object.Value) (*object.TemporalDuration, object.Value) {
 		if !ok {
 			return nil, tgRange("Invalid Duration string: " + s.Value)
 		}
-		return object.NewTemporalDuration(
+		d := object.NewTemporalDuration(
 			f.Years, f.Months, f.Weeks, f.Days,
 			f.Hours, f.Minutes, f.Seconds,
-			f.Milliseconds, f.Microseconds, f.Nanoseconds), nil
+			f.Milliseconds, f.Microseconds, f.Nanoseconds)
+		if cerr := checkDurationRange(d); cerr != nil {
+			return nil, cerr
+		}
+		return d, nil
 	}
 	if o, ok := v.(propBag); ok {
 		return durationFromFieldsE(o)
 	}
 	return nil, tgType("argument is not a Duration")
+}
+
+// checkDurationRange 实现 IsValidDuration 的绝对值上限:
+// 年/月/周 < 2^32，日 < ceil(2^53/86400)，时间分量按折算上限。
+func checkDurationRange(d *object.TemporalDuration) object.Value {
+	abs := func(x int64) uint64 {
+		if x < 0 {
+			return uint64(-x)
+		}
+		return uint64(x)
+	}
+	if abs(d.Years()) > 0xFFFFFFFF || abs(d.Months()) > 0xFFFFFFFF || abs(d.Weeks()) > 0xFFFFFFFF {
+		return tgRange("Duration years/months/weeks out of range")
+	}
+	const maxSafe = float64(9007199254740991)
+	if float64(abs(d.Days())) > maxSafe/86400 {
+		return tgRange("Duration days out of range")
+	}
+	if float64(abs(d.Hours())) > maxSafe/3600 {
+		return tgRange("Duration hours out of range")
+	}
+	if float64(abs(d.Minutes())) > maxSafe/60 {
+		return tgRange("Duration minutes out of range")
+	}
+	if float64(abs(d.Seconds())) > maxSafe {
+		return tgRange("Duration seconds out of range")
+	}
+	if float64(abs(d.Milliseconds())) > maxSafe*1e3 {
+		return tgRange("Duration milliseconds out of range")
+	}
+	if float64(abs(d.Microseconds())) > maxSafe*1e6 {
+		return tgRange("Duration microseconds out of range")
+	}
+	if float64(abs(d.Nanoseconds())) > maxSafe*1e9 {
+		return tgRange("Duration nanoseconds out of range")
+	}
+	return nil
 }
 
 // durationFromFieldsE 从属性包构造 Duration (带规范错误类型)。
@@ -492,11 +533,15 @@ func durationFromFieldsE(obj propBag) (*object.TemporalDuration, object.Value) {
 	if !any {
 		return nil, tgType("Duration-like object has no valid properties")
 	}
-	return object.NewTemporalDuration(
+	d := object.NewTemporalDuration(
 		int64(fields["years"]), int64(fields["months"]), int64(fields["weeks"]),
 		int64(fields["days"]), int64(fields["hours"]), int64(fields["minutes"]),
 		int64(fields["seconds"]), int64(fields["milliseconds"]),
-		int64(fields["microseconds"]), int64(fields["nanoseconds"])), nil
+		int64(fields["microseconds"]), int64(fields["nanoseconds"]))
+	if cerr := checkDurationRange(d); cerr != nil {
+		return nil, cerr
+	}
+	return d, nil
 }
 
 // checkDurationUniformSign 实现 spec 的 DurationSign 检查:
@@ -621,6 +666,9 @@ func toTimeZoneIDE(v object.Value) (string, object.Value) {
 				return "", tgRange("Invalid time zone: " + ann)
 			}
 			if f.OffsetSeconds != nil {
+				if f.OffsetSubMinute {
+					return "", tgRange("UTC offset with sub-minute precision is not a valid time zone")
+				}
 				return tzOffsetID(*f.OffsetSeconds)
 			}
 		}
@@ -777,6 +825,9 @@ func checkCalendarProp(o propBag) object.Value {
 	if !found || v == object.UndefinedSingleton {
 		return nil
 	}
+	if e, ok := v.(*object.Error); ok {
+		return e
+	}
 	if c, ok := asCalendar(v); ok {
 		return checkCalendarString(c.ID())
 	}
@@ -812,6 +863,11 @@ func ctorCalendarID(v object.Value) (string, object.Value) {
 // tgToNumber 实现 ToNumber: 数字原样; 对象走 ToPrimitive (valueOf → toString),
 // 回调抛出的 JS 异常原样透传。返回值不是有限数时由调用方决定错误类型。
 func tgToNumber(v object.Value) (float64, object.Value) {
+	// getter 调用抛出的错误值直接向上传播 (如访问 Temporal.X.prototype
+	// 的字段 getter 抛出的 TypeError)。
+	if e, ok := v.(*object.Error); ok {
+		return 0, e
+	}
 	switch v.(type) {
 	case *object.Number, *object.Boolean, *object.Null, *object.Undefined, *object.String:
 		return toFloat(v), nil
@@ -820,7 +876,9 @@ func tgToNumber(v object.Value) (float64, object.Value) {
 	case *object.Symbol:
 		return 0, tgType("Cannot convert a Symbol value to a number")
 	}
-	if g, ok := v.(interface{ GetProperty(string) (object.Value, bool) }); ok {
+	if g, ok := v.(interface {
+		GetProperty(string) (object.Value, bool)
+	}); ok {
 		if vf, found := g.GetProperty("valueOf"); found && object.IsCallable(vf) {
 			r := object.CallFunction(vf, v)
 			if cbErr := object.TakeCallbackError(); cbErr != nil {
@@ -854,6 +912,86 @@ func tgToNumber(v object.Value) (float64, object.Value) {
 	return toFloat(v), nil
 }
 
+// mergeDateBag 实现 PlainDate.with 的字段合并: 属性包中给出的字段覆盖
+// base，缺省沿用 base；值经 ToNumber/整数截断校验，非有限值 RangeError；
+// month 与 monthCode 可同时给出但必须一致；最后按 overflow 调节。
+func mergeDateBag(base object.ISODate, bag propBag, overflow string) (object.ISODate, object.Value) {
+	if ce := checkCalendarProp(bag); ce != nil {
+		return base, ce
+	}
+	y := base.Year
+	if v, found := bag.GetProperty("year"); found && v != object.UndefinedSingleton {
+		n, err := toIntTruncArg(v)
+		if err != nil {
+			return base, err
+		}
+		y = n
+	}
+	m := base.Month
+	monthSeen := false
+	if v, found := bag.GetProperty("month"); found && v != object.UndefinedSingleton {
+		n, err := toIntTruncArg(v)
+		if err != nil {
+			return base, err
+		}
+		if n < 1 || n > 12 {
+			return base, tgRange("month is out of range")
+		}
+		m = n
+		monthSeen = true
+	}
+	if v, found := bag.GetProperty("monthCode"); found && v != object.UndefinedSingleton {
+		sv, ok := v.(*object.String)
+		if !ok {
+			return base, tgRange("Invalid monthCode")
+		}
+		code, cerr := parseMonthCode(sv.Value)
+		if cerr != nil {
+			return base, cerr
+		}
+		if monthSeen && code != m {
+			return base, tgRange("month does not match monthCode")
+		}
+		m = code
+	}
+	d := base.Day
+	if v, found := bag.GetProperty("day"); found && v != object.UndefinedSingleton {
+		n, err := toIntTruncArg(v)
+		if err != nil {
+			return base, err
+		}
+		if n < 1 {
+			return base, tgRange("day is out of range")
+		}
+		d = n
+	}
+	dim := object.DaysInMonth(y, m)
+	if d > dim {
+		if overflow == "reject" {
+			return base, tgRange("day is out of range for the month")
+		}
+		d = dim
+	}
+	out := object.ISODate{Year: y, Month: m, Day: d}
+	if !object.IsValidISODate(out) {
+		return base, tgRange("Invalid ISO date")
+	}
+	return out, nil
+}
+
+// toIntTruncArg 按 ToIntegerWithTruncation 转换构造器数值参数:
+// 走完整 ToNumber (含 valueOf 回调)，非有限值 RangeError。
+func toIntTruncArg(v object.Value) (int32, object.Value) {
+	f, err := tgToNumber(v)
+	if err != nil {
+		return 0, err
+	}
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, tgRange("Temporal argument must be a finite number")
+	}
+	return int32(math.Trunc(f)), nil
+}
+
 // readIntField 读取整型字段: 缺失返回 ok=false; 非有限数按 spec 抛 RangeError。
 func readIntField(o propBag, key string) (int32, bool, object.Value) {
 	v, found := o.GetProperty(key)
@@ -880,50 +1018,30 @@ func readDateFields(o propBag, overflow string) (object.ISODate, object.Value) {
 	if e != nil {
 		return object.ISODate{}, e
 	}
-	var m int32
-	var okM bool
-	if mc, found := o.GetProperty("monthCode"); found && mc != object.UndefinedSingleton {
-		s, ok := mc.(*object.String)
-		if !ok || len(s.Value) != 3 || s.Value[0] != 'M' {
-			return object.ISODate{}, tgRange("Invalid monthCode")
-		}
-		m = int32(s.Value[1]-'0')*10 + int32(s.Value[2]-'0')
-		if m < 1 || m > 12 {
-			return object.ISODate{}, tgRange("Invalid monthCode")
-		}
-		okM = true
-	} else {
-		var e2 object.Value
-		m, okM, e2 = readIntField(o, "month")
-		if e2 != nil {
-			return object.ISODate{}, e2
-		}
+	if !okY {
+		return object.ISODate{}, tgType("missing required date fields (year, month, day)")
+	}
+	m, merr := monthFromFields(o)
+	if merr != nil {
+		return object.ISODate{}, merr
 	}
 	d, okD, e3 := readIntField(o, "day")
 	if e3 != nil {
 		return object.ISODate{}, e3
 	}
-	if !okY || !okM || !okD {
+	if !okD {
 		return object.ISODate{}, tgType("missing required date fields (year, month, day)")
 	}
-	if overflow == "reject" {
-		out := object.ISODate{Year: y, Month: m, Day: d}
-		if !object.IsValidISODate(out) {
-			return object.ISODate{}, tgRange("Invalid ISO date")
-		}
-		return out, nil
-	}
-	if m < 1 {
-		m = 1
-	}
-	if m > 12 {
-		m = 12
+	// spec: day < 1 一律 RangeError; day 超过当月天数在 constrain 下钳制、
+	// reject 下报错。
+	if d < 1 {
+		return object.ISODate{}, tgRange("day is out of range")
 	}
 	dim := object.DaysInMonth(y, m)
-	if d < 1 {
-		d = 1
-	}
 	if d > dim {
+		if overflow == "reject" {
+			return object.ISODate{}, tgRange("Invalid ISO date")
+		}
 		d = dim
 	}
 	out := object.ISODate{Year: y, Month: m, Day: d}
@@ -940,7 +1058,10 @@ func readDateTimeFields(o propBag, overflow string) (object.ISODateTime, object.
 		return object.ISODateTime{}, e
 	}
 	tm := object.ISOTime{}
-	if !mergeTimeInto(&tm, o) || !object.IsValidISOTime(tm) {
+	if merr := mergeTimeInto(&tm, o); merr != nil {
+		return object.ISODateTime{}, merr
+	}
+	if !object.IsValidISOTime(tm) {
 		return object.ISODateTime{}, tgRange("Invalid ISO time")
 	}
 	return object.ISODateTime{Date: d, Time: tm}, nil
@@ -959,7 +1080,7 @@ func toPlainDateTimeValue(v object.Value) (*object.TemporalPlainDateTime, object
 	case *object.String:
 		f, ok := object.ParseTemporalDateTimeString(t.Value)
 		if !ok {
-			return nil, tgRange("Invalid PlainDateTime string: "+t.Value)
+			return nil, tgRange("Invalid PlainDateTime string: " + t.Value)
 		}
 		if e := calendarFromAnnotation(f.Calendar); e != nil {
 			return nil, e
@@ -988,7 +1109,7 @@ func toPlainDateValue(v object.Value) (*object.TemporalPlainDate, object.Value) 
 	case *object.String:
 		f, ok := object.ParseTemporalDateString(t.Value)
 		if !ok || !f.HasDate {
-			return nil, tgRange("Invalid PlainDate string: "+t.Value)
+			return nil, tgRange("Invalid PlainDate string: " + t.Value)
 		}
 		if e := calendarFromAnnotation(f.Calendar); e != nil {
 			return nil, e
@@ -1015,6 +1136,16 @@ func toPlainTimeValue(v object.Value) (*object.TemporalPlainTime, object.Value) 
 		dt := object.GetISOPartsFromEpoch(t.TimeZoneID(), t.Nanos())
 		return object.NewTemporalPlainTime(dt.Time), nil
 	case *object.String:
+		// 歧义拒绝: 无 T 前缀但能解释为 YearMonth/MonthDay 的串
+		// ("2021-12"、"1214"、"12-14") 不是合法 PlainTime 串。
+		if !strings.HasPrefix(t.Value, "T") && !strings.HasPrefix(t.Value, "t") {
+			if _, amb := object.ParseTemporalYearMonthString(t.Value); amb {
+				return nil, tgRange("Invalid PlainTime string: "+t.Value)
+			}
+			if _, amb := object.ParseTemporalMonthDayString(t.Value); amb {
+				return nil, tgRange("Invalid PlainTime string: "+t.Value)
+			}
+		}
 		f, ok := object.ParseTemporalTimeString(t.Value)
 		if !ok {
 			// 也接受带日期的 DateTime 串 (取时间部分，必须含时间)。
@@ -1023,11 +1154,11 @@ func toPlainTimeValue(v object.Value) (*object.TemporalPlainTime, object.Value) 
 			}
 		}
 		if !ok || !f.HasTime {
-			return nil, tgRange("Invalid PlainTime string: "+t.Value)
+			return nil, tgRange("Invalid PlainTime string: " + t.Value)
 		}
 		// UTC 指示符 Z 不是合法的 PlainTime 串 (数值偏移允许但被忽略)。
 		if f.IsZ {
-			return nil, tgRange("Invalid PlainTime string: "+t.Value)
+			return nil, tgRange("Invalid PlainTime string: " + t.Value)
 		}
 		if f.Second == 60 {
 			f.Second = 59
@@ -1047,8 +1178,8 @@ func toPlainTimeValue(v object.Value) (*object.TemporalPlainTime, object.Value) 
 			return nil, tgType("argument is not a PlainTime: no time fields")
 		}
 		tm := object.ISOTime{}
-		if !mergeTimeInto(&tm, t) {
-			return nil, tgRange("Invalid time fields")
+		if merr := mergeTimeInto(&tm, t); merr != nil {
+			return nil, merr
 		}
 		// 属性包中的闰秒 (second: 60) 按规范约束为 59。
 		if tm.Second == 60 {
@@ -1072,7 +1203,7 @@ func toInstantValue(v object.Value) (*object.TemporalInstant, object.Value) {
 	case *object.String:
 		f, ok := object.ParseTemporalInstantString(t.Value)
 		if !ok {
-			return nil, tgRange("Invalid Instant string: "+t.Value)
+			return nil, tgRange("Invalid Instant string: " + t.Value)
 		}
 		if e := calendarFromAnnotation(f.Calendar); e != nil {
 			return nil, e
@@ -1103,7 +1234,7 @@ func toPlainYearMonthValue(v object.Value) (*object.TemporalPlainYearMonth, obje
 	case *object.String:
 		f, ok := object.ParseTemporalYearMonthString(t.Value)
 		if !ok {
-			return nil, tgRange("Invalid PlainYearMonth string: "+t.Value)
+			return nil, tgRange("Invalid PlainYearMonth string: " + t.Value)
 		}
 		if e := calendarFromAnnotation(f.Calendar); e != nil {
 			return nil, e
@@ -1133,7 +1264,7 @@ func toPlainMonthDayValue(v object.Value) (*object.TemporalPlainMonthDay, object
 	case *object.String:
 		f, ok := object.ParseTemporalMonthDayString(t.Value)
 		if !ok {
-			return nil, tgRange("Invalid PlainMonthDay string: "+t.Value)
+			return nil, tgRange("Invalid PlainMonthDay string: " + t.Value)
 		}
 		if e := calendarFromAnnotation(f.Calendar); e != nil {
 			return nil, e
@@ -1178,14 +1309,14 @@ func toZonedDateTimeValue(v object.Value) (*object.TemporalZonedDateTime, object
 	case *object.String:
 		f, ok := object.ParseTemporalZonedDateTimeString(t.Value)
 		if !ok || f.TimeZoneAnnotation == "" {
-			return nil, tgRange("Invalid ZonedDateTime string: "+t.Value)
+			return nil, tgRange("Invalid ZonedDateTime string: " + t.Value)
 		}
 		if e := calendarFromAnnotation(f.Calendar); e != nil {
 			return nil, e
 		}
 		tz := f.TimeZoneAnnotation
 		if !object.IsValidTimeZoneID(tz) {
-			return nil, tgRange("Invalid time zone: "+tz)
+			return nil, tgRange("Invalid time zone: " + tz)
 		}
 		var ns *big.Int
 		if f.OffsetSeconds != nil {
@@ -1197,7 +1328,7 @@ func toZonedDateTimeValue(v object.Value) (*object.TemporalZonedDateTime, object
 			cands := object.GetPossibleInstantsFor(tz, dt)
 			n, ok := object.DisambiguatePossibleInstants(cands, tz, dt, "compatible")
 			if !ok {
-				return nil, tgRange("Invalid ZonedDateTime string: "+t.Value)
+				return nil, tgRange("Invalid ZonedDateTime string: " + t.Value)
 			}
 			ns = n
 		}
@@ -1424,8 +1555,11 @@ func validRoundingIncrement(unit string, inc int64) bool {
 		return false
 	}
 	switch unit {
-	case "year", "month", "week", "day":
+	case "year", "month", "week":
 		return inc == 1
+	case "day":
+		// 天为单位时任意正整数增量均合法 (规范无整除约束)。
+		return true
 	case "hour":
 		return inc < 24 && 24%inc == 0
 	case "minute", "second":
@@ -1475,10 +1609,8 @@ func parseToStringSettings(opts object.Value, hasTime bool) (*toStringSettings, 
 			}
 		}
 		fv := optValue(opts, "fractionalSecondDigits")
-		if fv != nil {
-			if s.smallestUnit != "" {
-				return nil, tgRange("fractionalSecondDigits and smallestUnit cannot be used together")
-			}
+		if fv != nil && s.smallestUnit == "" {
+			// spec: smallestUnit 存在时 fractionalSecondDigits 被忽略。
 			if n, ok := fv.(*object.Number); ok {
 				f := n.Value
 				if math.IsNaN(f) || math.IsInf(f, 0) || f != math.Trunc(f) || f < 0 || f > 9 {

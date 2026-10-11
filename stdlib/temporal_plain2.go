@@ -3,6 +3,7 @@ package stdlib
 import (
 	"math"
 	"math/big"
+	"strings"
 
 	"github.com/14752222/Gox/object"
 )
@@ -75,17 +76,24 @@ func setupTemporalPlainDate(temporal *object.Object) {
 		if len(args) == 0 {
 			return tgType("PlainDate.prototype.with requires an object")
 		}
+		overflow := "constrain"
 		if len(args) > 1 {
 			if e := optionsTypeErr(args[1]); e != nil {
 				return e
 			}
-			if _, oerr := getOverflow(args[1]); oerr != nil {
+			ov, oerr := getOverflow(args[1])
+			if oerr != nil {
 				return oerr
 			}
+			overflow = ov
 		}
-		d, ok := mergeDateFields(t.ISODate(), args[0])
-		if !ok {
-			return tgType("PlainDate.prototype.with: invalid fields")
+		bag, isBag := args[0].(propBag)
+		if !isBag {
+			return tgType("PlainDate.prototype.with requires an object")
+		}
+		d, merr := mergeDateBag(t.ISODate(), bag, overflow)
+		if merr != nil {
+			return merr
 		}
 		return object.NewTemporalPlainDate(d, t.CalendarID())
 	})
@@ -213,7 +221,9 @@ func setupTemporalPlainDate(temporal *object.Object) {
 				}
 				tm = ptv.ISOTime()
 			} else {
-				mergeTimeInto(&tm, bag)
+				if merr := mergeTimeInto(&tm, bag); merr != nil {
+					return merr
+				}
 			}
 		}
 		tz, tzTzErr := toTimeZoneIDE(tzArg)
@@ -250,14 +260,19 @@ func setupTemporalPlainDate(temporal *object.Object) {
 		if len(args) < 3 || args[0] == object.UndefinedSingleton || args[1] == object.UndefinedSingleton || args[2] == object.UndefinedSingleton {
 			return tgRange("PlainDate requires year, month, day")
 		}
+		var convErr object.Value
 		f := func(i int) int32 {
-			v, _ := argFloat(args, i)
-			if math.IsNaN(v) || math.IsInf(v, 0) {
+			n, cerr := toIntTruncArg(args[i])
+			if cerr != nil {
+				convErr = cerr
 				return 0
 			}
-			return int32(math.Trunc(v))
+			return n
 		}
 		d := object.ISODate{Year: f(0), Month: f(1), Day: f(2)}
+		if convErr != nil {
+			return convErr
+		}
 		if !object.IsValidISODate(d) {
 			return tgRange("Invalid ISO date")
 		}
@@ -279,6 +294,14 @@ func setupTemporalPlainDate(temporal *object.Object) {
 		if len(args) == 0 {
 			return tgType("PlainDate.from requires an argument")
 		}
+		// spec: 选项包在任何分支之前做 GetOptionsObject + overflow 校验。
+		if e := optionsTypeErr(argAt(args, 1)); e != nil {
+			return e
+		}
+		fromOverflow, oe := getOverflow(argAt(args, 1))
+		if oe != nil {
+			return oe
+		}
 		if len(args) > 1 {
 			if e := optionsTypeErr(args[1]); e != nil {
 				return e
@@ -298,15 +321,7 @@ func setupTemporalPlainDate(temporal *object.Object) {
 			}
 			return object.NewTemporalPlainDate(f.ISODateTime().Date, object.DefaultCalendarID)
 		case propBag:
-			var opts object.Value
-			if len(args) > 1 {
-				opts = args[1]
-			}
-			overflow, oerr := getOverflow(opts)
-			if oerr != nil {
-				return oerr
-			}
-			d, ferr := readDateFields(v, overflow)
+			d, ferr := readDateFields(v, fromOverflow)
 			if ferr != nil {
 				return ferr
 			}
@@ -402,7 +417,7 @@ func plainDateDiffFrom(from object.ISODate, args []object.Value, since bool) obj
 	}
 	if _, modeErr := getRoundingMode(opts); modeErr != nil {
 		return modeErr
-		}
+	}
 	if _, incErr := getRoundingIncrement(opts); incErr != nil {
 		return incErr
 	}
@@ -504,8 +519,11 @@ func setupTemporalPlainTime(temporal *object.Object) {
 			return tgType("PlainTime.prototype.with: invalid fields")
 		}
 		time := t.ISOTime()
-		if !mergeTimeInto(&time, o) || !object.IsValidISOTime(time) {
-			return tgType("PlainTime.prototype.with: invalid fields")
+		if merr := mergeTimeInto(&time, o); merr != nil {
+			return merr
+		}
+		if !object.IsValidISOTime(time) {
+			return tgRange("PlainTime.prototype.with: invalid fields")
 		}
 		return object.NewTemporalPlainTime(time)
 	})
@@ -698,11 +716,27 @@ func setupTemporalPlainTime(temporal *object.Object) {
 		if len(args) == 0 {
 			return tgType("PlainTime.from requires an argument")
 		}
+		// spec: 选项包在任何分支之前做 GetOptionsObject + overflow 校验。
+		if e := optionsTypeErr(argAt(args, 1)); e != nil {
+			return e
+		}
+		if _, oe := getOverflow(argAt(args, 1)); oe != nil {
+			return oe
+		}
 		if pt, ok := asPlainTime(args[0]); ok {
 			return pt
 		}
 		switch v := args[0].(type) {
 		case *object.String:
+			// 歧义拒绝: 无 T 前缀的 YearMonth/MonthDay 形式不是 PlainTime。
+			if !strings.HasPrefix(v.Value, "T") && !strings.HasPrefix(v.Value, "t") {
+				if _, amb := object.ParseTemporalYearMonthString(v.Value); amb {
+					return tgRange("Invalid PlainTime string: " + v.Value)
+				}
+				if _, amb := object.ParseTemporalMonthDayString(v.Value); amb {
+					return tgRange("Invalid PlainTime string: " + v.Value)
+				}
+			}
 			f, ok := object.ParseTemporalTimeString(v.Value)
 			if !ok {
 				if df, dok := object.ParseTemporalDateTimeString(v.Value); dok && df.HasTime {
@@ -718,8 +752,11 @@ func setupTemporalPlainTime(temporal *object.Object) {
 			return object.NewTemporalPlainTime(f.ISODateTime().Time)
 		case propBag:
 			time := object.ISOTime{}
-			if !mergeTimeInto(&time, v) || !object.IsValidISOTime(time) {
-				return tgType("PlainTime.from: invalid fields")
+			if merr := mergeTimeInto(&time, v); merr != nil {
+				return merr
+			}
+			if !object.IsValidISOTime(time) {
+				return tgRange("PlainTime.from: invalid fields")
 			}
 			return object.NewTemporalPlainTime(time)
 		}
