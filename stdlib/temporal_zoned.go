@@ -335,7 +335,7 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 		if len(args) > 0 {
 			opts = args[0]
 		}
-		st, perr := parseToStringSettings(opts, true)
+		st, perr := parseToStringSettings(opts, true, true)
 		if perr != nil {
 			return "", perr
 		}

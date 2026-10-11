@@ -519,30 +519,31 @@ type diffOptions struct {
 
 // readDiffOptions 按规范顺序读取直到/自差值的全部选项后再逐项校验:
 // largestUnit → roundingIncrement → roundingMode → smallestUnit。
+// 读取与转换逐项交替: get → ToString/ToNumber → 下一项
+// (DifferenceSettings 顺序 largestUnit → roundingIncrement → roundingMode → smallestUnit)。
 func readDiffOptions(opts object.Value, allowed []string) (*diffOptions, object.Value) {
 	lv := optValue(opts, "largestUnit")
+	largest, e := validateUnitOption(lv, "largestUnit", allowed, "auto")
+	if e != nil {
+		return nil, e
+	}
 	iv := optValue(opts, "roundingIncrement")
 	var incF float64
 	var incNumErr object.Value
 	if iv != nil {
 		incF, incNumErr = tgToNumber(iv)
 	}
-	mv := optValue(opts, "roundingMode")
-	sv := optValue(opts, "smallestUnit")
-
-	largest, e := validateUnitOption(lv, "largestUnit", allowed, "auto")
-	if e != nil {
-		return nil, e
-	}
 	inc, e := validateRoundingIncrement(iv, incNumErr, incF)
 	if e != nil {
 		return nil, e
 	}
+	mv := optValue(opts, "roundingMode")
 	// DifferenceSettings 的 roundingMode 默认 trunc。
 	mode, e := validateRoundingMode(mv, "trunc")
 	if e != nil {
 		return nil, e
 	}
+	sv := optValue(opts, "smallestUnit")
 	smallest, e := validateUnitOption(sv, "smallestUnit", allowed, "auto")
 	if e != nil {
 		return nil, e
@@ -559,6 +560,7 @@ type roundOptions struct {
 }
 
 // readRoundOptions 按规范顺序读取 round 的全部选项后再逐项校验。
+// 逐项交替读取与转换 (roundingIncrement → roundingMode → smallestUnit)。
 func readRoundOptions(opts object.Value, allowed []string) (*roundOptions, object.Value) {
 	iv := optValue(opts, "roundingIncrement")
 	var incF float64
@@ -566,18 +568,17 @@ func readRoundOptions(opts object.Value, allowed []string) (*roundOptions, objec
 	if iv != nil {
 		incF, incNumErr = tgToNumber(iv)
 	}
-	mv := optValue(opts, "roundingMode")
-	sv := optValue(opts, "smallestUnit")
-
 	inc, e := validateRoundingIncrement(iv, incNumErr, incF)
 	if e != nil {
 		return nil, e
 	}
+	mv := optValue(opts, "roundingMode")
 	// round 的 roundingMode 默认 halfExpand。
 	mode, e := validateRoundingMode(mv, "halfExpand")
 	if e != nil {
 		return nil, e
 	}
+	sv := optValue(opts, "smallestUnit")
 	smallest, e := validateUnitOption(sv, "smallestUnit", allowed, "")
 	if e != nil {
 		return nil, e
@@ -2218,10 +2219,63 @@ type toStringSettings struct {
 
 // parseToStringSettings 解析并校验 toString 的 options。
 // hasTime: 该类是否有时间部分 (决定是否接受 smallestUnit/fractionalSecondDigits)。
-func parseToStringSettings(opts object.Value, hasTime bool) (*toStringSettings, object.Value) {
+// parseToStringSettings 按 spec 顺序读取 toString 选项:
+// calendarName → fractionalSecondDigits → offset(仅 ZonedDateTime) →
+// roundingMode → smallestUnit → timeZoneName(仅 ZonedDateTime)。
+func parseToStringSettings(opts object.Value, hasTime bool, zoned ...bool) (*toStringSettings, object.Value) {
+	isZoned := len(zoned) > 0 && zoned[0]
 	s := &toStringSettings{
 		precision: "auto", calendarName: "auto",
 		timeZoneName: "auto", offsetName: "auto", mode: "trunc",
+	}
+	if cn := optValue(opts, "calendarName"); cn != nil {
+		str, ok := optionToString(cn)
+		if !ok {
+			return nil, tgType("Cannot convert calendarName to string")
+		}
+		switch str {
+		case "auto", "always", "never", "critical":
+			s.calendarName = str
+		default:
+			return nil, tgRange("Invalid calendarName: " + str)
+		}
+	}
+	if hasTime {
+		// fractionalSecondDigits 总是读取并校验；smallestUnit 存在时结果被忽略。
+		if fv := optValue(opts, "fractionalSecondDigits"); fv != nil {
+			if n, ok := fv.(*object.Number); ok {
+				// 按 floor 取整 (2.5→2、-0.6→-1 越界)。
+				f := math.Floor(n.Value)
+				if math.IsNaN(f) || math.IsInf(f, 0) || f < 0 || f > 9 {
+					return nil, tgRange("fractionalSecondDigits must be an integer from 0 to 9")
+				}
+				s.precision = strconv.Itoa(int(f))
+			} else {
+				// 非 Number: ToString 后为 "auto" 才合法 (Symbol → TypeError)。
+				str, ok := optionToString(fv)
+				if !ok {
+					return nil, tgType("Cannot convert fractionalSecondDigits to string")
+				}
+				if str != "auto" {
+					return nil, tgRange("Invalid fractionalSecondDigits")
+				}
+				s.precision = "auto"
+			}
+		}
+	}
+	if isZoned {
+		if v := optValue(opts, "offset"); v != nil {
+			str, ok := optionToString(v)
+			if !ok {
+				return nil, tgType("Cannot convert offset to string")
+			}
+			switch str {
+			case "auto", "never", "critical":
+				s.offsetName = str
+			default:
+				return nil, tgRange("Invalid offset: " + str)
+			}
+		}
 	}
 	mode, merr := getRoundingModeTrunc(opts)
 	if merr != nil {
@@ -2243,58 +2297,24 @@ func parseToStringSettings(opts object.Value, hasTime bool) (*toStringSettings, 
 				return nil, tgRange("Invalid smallestUnit for toString: " + str)
 			}
 		}
-		fv := optValue(opts, "fractionalSecondDigits")
-		if fv != nil && s.smallestUnit == "" {
-			// spec: smallestUnit 存在时 fractionalSecondDigits 被忽略。
-			// 数值经 ToIntegerWithTruncation (2.5→2、-0.6→-1 越界)。
-			if n, ok := fv.(*object.Number); ok {
-				// 按 floor 取整 (2.5→2、-0.6→-1 越界)。
-				f := math.Floor(n.Value)
-				if math.IsNaN(f) || math.IsInf(f, 0) || f < 0 || f > 9 {
-					return nil, tgRange("fractionalSecondDigits must be an integer from 0 to 9")
-				}
-				s.precision = strconv.Itoa(int(f))
-			} else {
-				// 非 Number: ToString 后为 "auto" 才合法 (Symbol → TypeError)。
-				str, ok := optionToString(fv)
-				if !ok {
-					return nil, tgType("Cannot convert fractionalSecondDigits to string")
-				}
-				if str != "auto" {
-					return nil, tgRange("Invalid fractionalSecondDigits")
-				}
-				s.precision = "auto"
-			}
-		}
 	}
-	if cn := optValue(opts, "calendarName"); cn != nil {
-		str, ok := optionToString(cn)
-		if !ok {
-			return nil, tgType("Cannot convert calendarName to string")
-		}
-		switch str {
-		case "auto", "always", "never", "critical":
-			s.calendarName = str
-		default:
-			return nil, tgRange("Invalid calendarName: " + str)
-		}
-	}
-	for _, k := range []struct {
-		key string
-		dst *string
-	}{{"timeZoneName", &s.timeZoneName}, {"offset", &s.offsetName}} {
-		if v := optValue(opts, k.key); v != nil {
+	if isZoned {
+		if v := optValue(opts, "timeZoneName"); v != nil {
 			str, ok := optionToString(v)
 			if !ok {
-				return nil, tgType("Cannot convert " + k.key + " to string")
+				return nil, tgType("Cannot convert timeZoneName to string")
 			}
 			switch str {
 			case "auto", "never", "critical":
-				*k.dst = str
+				s.timeZoneName = str
 			default:
-				return nil, tgRange("Invalid " + k.key + ": " + str)
+				return nil, tgRange("Invalid timeZoneName: " + str)
 			}
 		}
+	}
+	// smallestUnit 存在时 fractionalSecondDigits 的结果不生效。
+	if s.smallestUnit != "" {
+		s.precision = "auto"
 	}
 	return s, nil
 }
