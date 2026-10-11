@@ -3798,6 +3798,14 @@ func (vm *VM) throwIfError(result object.Value, returnsRaw bool) (thrown bool, e
 	if !isErr || returnsRaw {
 		return false, nil
 	}
+	// 内建方法中转的用户抛值 (回调里 throw 的非 Error 值):
+	// 抛原始值, 保持 instanceof / catch 语义。
+	if errObj.Original != nil {
+		if !vm.handleThrow(errObj.Original) {
+			return true, &ThrowError{Value: errObj.Original}
+		}
+		return true, nil
+	}
 	if !vm.handleThrow(errObj) {
 		return true, &ThrowError{Value: errObj}
 	}

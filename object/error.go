@@ -29,6 +29,11 @@ type Error struct {
 	// 用于 AggregateError.errors 等标准错误子类型的额外字段 ——
 	// 过去 SetProperty 是空实现，导致这些属性写入后被静默丢弃。
 	Properties map[string]Value
+	// Original 记录该包装错误对应的原始 JS 抛值 (如回调里 `throw obj`
+	// 的 obj)。非 nil 时 VM 应抛 Original 而非本 Error —— 用户抛出的
+	// 非 Error 值 (Test262Error 实例、字符串等) 经内建方法中转时,
+	// instanceof / catch 语义必须看到原始值。
+	Original Value
 }
 
 func (e *Error) Type() ObjectType { return ERROR_OBJ }

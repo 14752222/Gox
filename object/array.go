@@ -89,22 +89,62 @@ func (a *Array) GetProperty(name string) (Value, bool) {
 		}
 	}
 
-	// 数字索引访问
+	// 数字索引访问: 仅当元素真实存在（非洞）时返回；
+	// 洞与越界索引按规范继续沿原型链查找 (Array.prototype[1]=1 时
+	// [,,,][1] 应读到 1)。
 	if idx, err := strconv.Atoi(name); err == nil {
-		if idx >= 0 && idx < len(a.Elements) {
-			if a.Elements[idx] == nil {
-				return UndefinedSingleton, true
-			}
+		if idx >= 0 && idx < len(a.Elements) && a.Elements[idx] != nil {
 			return a.Elements[idx], true
 		}
-		return UndefinedSingleton, true
 	}
 
 	// 原型链查找
 	if a.proto != nil {
-		return a.proto.GetProperty(name)
+		if v, ok := a.proto.GetProperty(name); ok {
+			return v, true
+		}
+	}
+	// 数字索引读取未命中时仍返回 undefined (JS 语义: arr[100] === undefined，
+	// 不抛错)。非数字属性保持 (nil,false) 让调用方区分"不存在"。
+	if _, err := strconv.Atoi(name); err == nil {
+		return UndefinedSingleton, true
 	}
 	return nil, false
+}
+
+// Has 实现数组的 HasProperty（含原型链、显式描述符；nil 元素视为洞）。
+// Array.prototype 泛型算法 (forEach/map/reduce/...) 的"索引是否存在"
+// 判定必须走这里 —— 直接看 Elements 会漏掉原型上的同名索引。
+func (a *Array) Has(name string) bool {
+	if name == "length" {
+		return true
+	}
+	if _, ok := a.PropDescs[name]; ok {
+		return true
+	}
+	if a.ExtraProps != nil {
+		if _, ok := a.ExtraProps[name]; ok {
+			return true
+		}
+	}
+	if idx, err := strconv.Atoi(name); err == nil {
+		if idx >= 0 && idx < len(a.Elements) && a.Elements[idx] != nil {
+			return true
+		}
+	}
+	if a.proto != nil {
+		return HasPropertyOf(a.proto, name)
+	}
+	return false
+}
+
+// HasPropertyOf 对任意值做 HasProperty 检查（数组走 Has 以正确识别洞）。
+func HasPropertyOf(v Value, name string) bool {
+	if a, ok := v.(*Array); ok {
+		return a.Has(name)
+	}
+	_, ok := v.GetProperty(name)
+	return ok
 }
 
 func (a *Array) SetProperty(name string, val Value) {

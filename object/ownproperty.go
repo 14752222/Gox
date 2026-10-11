@@ -779,7 +779,7 @@ func (b *BuiltinMethod) OwnDescriptor(name string) (PropertyDescriptor, bool) {
 	case "name":
 		return functionNameDescriptor(b)
 	case "length":
-		return closureLengthDescriptor(0), true
+		return closureLengthDescriptor(b.Length), true
 	}
 	return PropertyDescriptor{}, false
 }

@@ -110,11 +110,12 @@ func TestArraySortDefaultIsStringOrder(t *testing.T) {
 }
 
 func TestArrayIndexOfUsesSameValueZero(t *testing.T) {
-	// indexOf / includes / lastIndexOf 必须能匹配 NaN
-	assertJS(t, `[NaN].indexOf(NaN)`, "0")
+	// 规范: includes 用 SameValueZero 能匹配 NaN;
+	// indexOf / lastIndexOf 用 StrictEqual, NaN 永不匹配
+	assertJS(t, `[NaN].indexOf(NaN)`, "-1")
 	assertJS(t, `[NaN].includes(NaN)`, "true")
-	assertJS(t, `[1,NaN,3].lastIndexOf(NaN)`, "1")
-	// +0 / -0 在 SameValueZero 下相等
+	assertJS(t, `[1,NaN,3].lastIndexOf(NaN)`, "-1")
+	// +0 / -0 在 StrictEqual 下相等
 	assertJS(t, `[0].indexOf(-0)`, "0")
 }
 
