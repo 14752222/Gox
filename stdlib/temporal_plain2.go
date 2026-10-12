@@ -289,7 +289,7 @@ func setupTemporalPlainDate(temporal *object.Object) {
 		return object.NewTemporalPlainDate(d, cal)
 	})
 	ctor.SetProperty("name", object.NewString("PlainDate"))
-	ctor.SetProperty("prototype", proto)
+	tgSetCtorPrototype(ctor, proto)
 	proto.SetBuiltinProperty("constructor", ctor)
 
 	tgStatic(ctor, "from", func(args ...object.Value) object.Value {
@@ -714,7 +714,7 @@ func setupTemporalPlainTime(temporal *object.Object) {
 		return object.NewTemporalPlainTime(time)
 	})
 	ctor.SetProperty("name", object.NewString("PlainTime"))
-	ctor.SetProperty("prototype", proto)
+	tgSetCtorPrototype(ctor, proto)
 	proto.SetBuiltinProperty("constructor", ctor)
 
 	tgStatic(ctor, "from", func(args ...object.Value) object.Value {

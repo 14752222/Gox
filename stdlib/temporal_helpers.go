@@ -69,6 +69,19 @@ func tgStatic(ctor *object.BuiltinFunction, name string, fn func(args ...object.
 	ctor.SetProperty(name, object.NewBuiltin(name, fn).MarkNotConstructable())
 }
 
+// tgSetCtorPrototype 把构造器的 prototype 属性设为规范要求的自有属性:
+// { [[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: false }
+// (sec-temporal.instant.prototype 等 … [[Prototype]] 章节均如此规定)。
+// 必须走 DefineOwn (写 PropDescs): SetProperty 会落到 Properties 且默认可写,
+// 于是 Object.getOwnPropertyDescriptor(Temporal.X, "prototype") 报
+// writable/enumerable=true —— 8 个 prop-desc 用例因此失败。
+func tgSetCtorPrototype(ctor *object.BuiltinFunction, proto *object.Object) {
+	var pv object.Value = proto
+	ctor.DefineOwn("prototype", object.PropertyDescriptor{
+		Value: pv, Writable: false, Enumerable: false, Configurable: false,
+	})
+}
+
 // tgFn 在命名空间对象 (如 Temporal.Now) 上定义普通函数属性。
 // 命名空间函数 (Temporal.Now.instant 等) 同样没有 [[Construct]]。
 func tgFn(ns *object.Object, name string, fn func(args ...object.Value) object.Value) {

@@ -404,7 +404,7 @@ func setupTemporalPlainDateTime(temporal *object.Object) {
 		return object.NewTemporalPlainDateTime(object.ISODateTime{Date: date, Time: time}, cal)
 	})
 	ctor.SetProperty("name", object.NewString("PlainDateTime"))
-	ctor.SetProperty("prototype", proto)
+	tgSetCtorPrototype(ctor, proto)
 	proto.SetBuiltinProperty("constructor", ctor)
 
 	tgStatic(ctor, "from", func(args ...object.Value) object.Value {

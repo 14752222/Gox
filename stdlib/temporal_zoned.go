@@ -386,7 +386,7 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 		return object.NewTemporalZonedDateTime(bn.Value, tzid, object.DefaultCalendarID)
 	})
 	ctor.SetProperty("name", object.NewString("ZonedDateTime"))
-	ctor.SetProperty("prototype", proto)
+	tgSetCtorPrototype(ctor, proto)
 	proto.SetBuiltinProperty("constructor", ctor)
 
 	tgStatic(ctor, "from", func(args ...object.Value) object.Value {
