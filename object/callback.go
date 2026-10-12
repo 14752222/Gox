@@ -87,6 +87,32 @@ func ConstructFunction(fn Value, args ...Value) Value {
 	return constructFunction(fn, args)
 }
 
+// IsConstructor 实现规范的 IsConstructor (sec-ecmascript-data-types-and-values)。
+// 判断值是否实现 [[Construct]] —— 与"可调用"不等价: 箭头函数可调用但不可构造，
+// generator/async 函数同理；内建函数里原型方法/getter/命名空间函数也没有
+// [[Construct]] (靠 NotConstructable 标记)。
+// Proxy 一律视为可构造 (规范由 target 决定，这里放宽)。
+func IsConstructor(v Value) bool {
+	switch f := v.(type) {
+	case *Closure:
+		if f.IsArrow {
+			return false
+		}
+		if f.Fn != nil && (f.Fn.IsGenerator || f.Fn.IsAsync) {
+			return false
+		}
+		return true
+	case *BuiltinFunction:
+		return !f.NotConstructable
+	case *BuiltinMethod:
+		// BuiltinMethod 无 NotConstructable 标记: 原型方法无 [[Construct]]。
+		return false
+	case *Proxy:
+		return true
+	}
+	return false
+}
+
 // IsCallable 检查值是否可调用 (是 Closure 或 BuiltinFunction)。
 func IsCallable(v Value) bool {
 	switch v.(type) {

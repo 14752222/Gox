@@ -117,9 +117,9 @@ func (f *CompiledFunction) SetProperty(name string, val Value) {
 // 闭包 = 编译后的函数 + 捕获的环境 + this 绑定 + 捕获的局部变量。
 // 每次函数声明或函数表达式求值时创建闭包。
 type Closure struct {
-	Fn             *CompiledFunction // 被闭包的函数
-	Env            Environment       // 捕获的词法环境 (全局环境)
-	This           Value             // this 绑定 (箭头函数复用外层 this)
+	Fn   *CompiledFunction // 被闭包的函数
+	Env  Environment       // 捕获的词法环境 (全局环境)
+	This Value             // this 绑定 (箭头函数复用外层 this)
 	// NewTarget 是词法捕获的 new.target。仅两类闭包会设置:
 	//   - 箭头函数: 创建时捕获所在帧生效的 new.target (与 This 同型);
 	//   - 直接 eval 的包装闭包: VM 把调用者帧的 new.target 经桥传入, 由 eval
@@ -127,16 +127,16 @@ type Closure struct {
 	// 其余 (普通函数/方法/构造器) 恒为 nil —— 其 new.target 由调用形态决定
 	// (OP_NEW / super() 经 pendingNewTarget 写入), 见 vm.callClosure。
 	NewTarget      Value
-	IsArrow        bool              // 是否为箭头函数
-	CapturedLocals []Value           // 捕获的外层局部变量
-	CreatedAtFrame int               // 创建时的帧索引 (用于递归自引用检测)
+	IsArrow        bool    // 是否为箭头函数
+	CapturedLocals []Value // 捕获的外层局部变量
+	CreatedAtFrame int     // 创建时的帧索引 (用于递归自引用检测)
 	// IterEpoch 是创建该闭包时, 创建帧已执行的迭代边界次数 (见 vm.Frame.Epoch)。
 	// 迭代边界只应定版"每轮新建"的词法绑定 (LoopEpoch 之后的 slot), 共享绑定
 	// (var / 外层 let) 的写入仍需传播给更早迭代的闭包 —— 靠它与帧的 SealMarks
 	// 比较来判定 (rUm0q6)。
-	IterEpoch      int
-	Proto          Value             // prototype 属性 (new 实例的原型; 箭头函数无)
-	Props          map[string]Value  // 其他可设置属性 (如 class 的静态方法)
+	IterEpoch int
+	Proto     Value            // prototype 属性 (new 实例的原型; 箭头函数无)
+	Props     map[string]Value // 其他可设置属性 (如 class 的静态方法)
 	// propKeyOrder 记录非结构性自有字符串键 (Props / PropDescs 里的键, 不含
 	// length/name/prototype) 的**插入顺序**, 供 OwnKeys / EnumerableOwnKeys 按
 	// 规范的 OrdinaryOwnPropertyKeys (整数键升序 → 字符串键插入序) 输出 —— 此前
@@ -366,7 +366,32 @@ type BuiltinFunction struct {
 	// FuncPrototype 是函数对象自身的 [[Prototype]]。nil 时回退到全局
 	// %Function.prototype% (绝大多数内置函数如此)。
 	FuncPrototype Value
+	// NotConstructable 为 true 时该内建函数**不实现 [[Construct]]** ——
+	// 规范里大量内建函数 (原型方法、getter、命名空间函数如 Temporal.Now.*)
+	// 都没有 [[Construct]]，`new f()` 须抛 TypeError，且
+	// isConstructor(f) (经 Reflect.construct 的 newTarget 校验) 须为 false。
+	// Gox 此前把所有内建一律当可构造 (OP_NEW 直接调 Fn)，导致 Test262 的
+	// not-a-constructor 族整体失败。
+	NotConstructable bool
+	// RequiresNew 为 true 时该内建函数只能经 `new` 调用:
+	// 作为普通函数调用 (NewTarget 为 undefined) 须抛 TypeError。
+	// 规范里 Temporal 的构造器 (PlainDate/Duration/Instant/...) 属此类 ——
+	// `Temporal.PlainDate(1970,1,1)` 必须报错, 只有 `new Temporal.PlainDate(...)`
+	// 合法。VM 在用 `new` 调用内建时经 EnterConstructCall 置位,
+	// 构造器体以 object.IsConstructCall() 读取。
+	RequiresNew bool
 }
+
+// constructCallDepth 记录当前是否处于"内建经 new 调用"的同步窗口。
+// VM 的 OP_NEW 内建分支在调用 Fn 前置位、返回后复位。
+var constructCallDepth int
+
+// EnterConstructCall / LeaveConstructCall 由 VM 在内建构造调用前后配对调用。
+func EnterConstructCall() { constructCallDepth++ }
+func LeaveConstructCall() { constructCallDepth-- }
+
+// IsConstructCall 报告当前是否处在内建经 new 调用的窗口内。
+func IsConstructCall() bool { return constructCallDepth > 0 }
 
 func (b *BuiltinFunction) Type() ObjectType { return BUILTIN_OBJ }
 func (b *BuiltinFunction) Inspect() string {

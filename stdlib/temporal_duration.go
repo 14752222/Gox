@@ -235,19 +235,19 @@ func setupTemporalDuration(temporal *object.Object) {
 			if unitRank(smallest) < unitRank(largest) {
 				return tgRange("smallestUnit is larger than largestUnit")
 			}
-		// 用相对起点把日历单位也折算成纳秒后统一舍入
-		end, ok := object.AddDateTime(*relTo, d, "constrain")
-		if !ok {
-			return tgRange("Duration is out of range")
-		}
-		if !validRoundingIncrement(smallest, inc) {
-			return tgRange("Invalid roundingIncrement for " + smallest)
-		}
-		dur := calendarRoundDiff(*relTo, end, largest, smallest, inc, mode)
-		if e := checkDurationRange(dur); e != nil {
-			return e
-		}
-		return dur
+			// 用相对起点把日历单位也折算成纳秒后统一舍入
+			end, ok := object.AddDateTime(*relTo, d, "constrain")
+			if !ok {
+				return tgRange("Duration is out of range")
+			}
+			if !validRoundingIncrement(smallest, inc) {
+				return tgRange("Invalid roundingIncrement for " + smallest)
+			}
+			dur := calendarRoundDiff(*relTo, end, largest, smallest, inc, mode)
+			if e := checkDurationRange(dur); e != nil {
+				return e
+			}
+			return dur
 		}
 
 		if d.HasCalendarUnits() {
@@ -343,6 +343,9 @@ func setupTemporalDuration(temporal *object.Object) {
 
 	// ===== 构造器 =====
 	ctor := object.NewBuiltin("Duration", func(args ...object.Value) object.Value {
+		if g := tgCtorGuard("Duration"); g != nil {
+			return g
+		}
 		get := func(i int) float64 {
 			if i >= len(args) || args[i] == object.UndefinedSingleton {
 				// spec: 显式 undefined 按 0 处理。
@@ -367,6 +370,7 @@ func setupTemporalDuration(temporal *object.Object) {
 		return d
 	})
 	ctor.SetProperty("name", object.NewString("Duration"))
+	tgMarkCtorNew(ctor)
 	tgSetCtorPrototype(ctor, proto)
 	proto.SetBuiltinProperty("constructor", ctor)
 

@@ -78,6 +78,23 @@ func tgSetCtorPrototype(ctor *object.BuiltinFunction, proto *object.Object) {
 	})
 }
 
+// tgCtorGuard 在 Temporal 构造器体首行调用: 若未处于 `new` 调用窗口
+// (即作为普通函数调用, 规范 NewTarget === undefined), 返回 TypeError。
+// 正常 `new T(...)` 时返回 nil。
+func tgCtorGuard(name string) object.Value {
+	if !object.IsConstructCall() {
+		return tgType("Constructor " + name + " requires 'new'")
+	}
+	return nil
+}
+
+// tgMarkCtorNew 把构造器标记为 RequiresNew, 供 VM 的 OP_NEW 识别并按需
+// 置位"经 new 调用"窗口。
+func tgMarkCtorNew(ctor *object.BuiltinFunction) *object.BuiltinFunction {
+	ctor.RequiresNew = true
+	return ctor
+}
+
 // tgFn 在命名空间对象 (如 Temporal.Now) 上定义普通函数属性。
 func tgFn(ns *object.Object, name string, fn func(args ...object.Value) object.Value) {
 	ns.SetBuiltinProperty(name, object.NewBuiltin(name, fn))
