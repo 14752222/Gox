@@ -29,6 +29,16 @@ func tgType(msg string) object.Value { return object.NewErrorWithName("TypeError
 // canonicalTimeZoneID 校验时区标识符并返回规范形式。
 // 时区标识符大小写不敏感: "uTc"/"etc/utc" 等规范化为 "UTC"。
 func canonicalTimeZoneID(id string) (string, bool) {
+	// 裸偏移串 (如 "+0330"、"-08"、"+03:30") 统一规范化为 ±HH:MM[:SS] 形式,
+	// 使 equals 等比较按规范等价 (argument-valid)。仅处理**不含**小数秒
+	// (无 '.'/',' ) 且无 ISO 主体 (无 'T') 的纯偏移标识符; 其余形态
+	// (含小数秒的注解偏移等) 交给下游按各自规则报错。
+	if len(id) > 0 && (id[0] == '+' || id[0] == '-') &&
+		!strings.ContainsAny(id, "Tt.,") {
+		if off, ok := object.ParseTimeZoneOffsetString(id); ok && off%60 == 0 {
+			return object.FormatOffsetSecondsNumeric(off), true
+		}
+	}
 	if object.IsValidTimeZoneID(id) {
 		return id, true
 	}
@@ -179,44 +189,34 @@ func tgValueOf(proto *object.Object) {
 // 统一返回 (值, 是否成功) 让调用方写出一致的错误分支。
 
 func asInstant(v object.Value) (*object.TemporalInstant, bool) {
-	t, ok := v.(*object.TemporalInstant)
-	return t, ok
+	return object.UnwrapTemporal[*object.TemporalInstant](v)
 }
 func asPlainDateTime(v object.Value) (*object.TemporalPlainDateTime, bool) {
-	t, ok := v.(*object.TemporalPlainDateTime)
-	return t, ok
+	return object.UnwrapTemporal[*object.TemporalPlainDateTime](v)
 }
 func asPlainDate(v object.Value) (*object.TemporalPlainDate, bool) {
-	t, ok := v.(*object.TemporalPlainDate)
-	return t, ok
+	return object.UnwrapTemporal[*object.TemporalPlainDate](v)
 }
 func asPlainTime(v object.Value) (*object.TemporalPlainTime, bool) {
-	t, ok := v.(*object.TemporalPlainTime)
-	return t, ok
+	return object.UnwrapTemporal[*object.TemporalPlainTime](v)
 }
 func asPlainYearMonth(v object.Value) (*object.TemporalPlainYearMonth, bool) {
-	t, ok := v.(*object.TemporalPlainYearMonth)
-	return t, ok
+	return object.UnwrapTemporal[*object.TemporalPlainYearMonth](v)
 }
 func asPlainMonthDay(v object.Value) (*object.TemporalPlainMonthDay, bool) {
-	t, ok := v.(*object.TemporalPlainMonthDay)
-	return t, ok
+	return object.UnwrapTemporal[*object.TemporalPlainMonthDay](v)
 }
 func asZonedDateTime(v object.Value) (*object.TemporalZonedDateTime, bool) {
-	t, ok := v.(*object.TemporalZonedDateTime)
-	return t, ok
+	return object.UnwrapTemporal[*object.TemporalZonedDateTime](v)
 }
 func asDuration(v object.Value) (*object.TemporalDuration, bool) {
-	t, ok := v.(*object.TemporalDuration)
-	return t, ok
+	return object.UnwrapTemporal[*object.TemporalDuration](v)
 }
 func asTimeZone(v object.Value) (*object.TemporalTimeZone, bool) {
-	t, ok := v.(*object.TemporalTimeZone)
-	return t, ok
+	return object.UnwrapTemporal[*object.TemporalTimeZone](v)
 }
 func asCalendar(v object.Value) (*object.TemporalCalendar, bool) {
-	t, ok := v.(*object.TemporalCalendar)
-	return t, ok
+	return object.UnwrapTemporal[*object.TemporalCalendar](v)
 }
 
 // ===== options 解析 =====
@@ -1188,6 +1188,55 @@ func checkCalendarProp(o propBag) object.Value {
 	return checkCalendarString(s.Value)
 }
 
+// rejectTemporalLikeObject 实现规范 RejectTemporalLikeObject:
+// plain 类型的 with() 参数包不得携带 calendar / timeZone 字段
+// (它们是"类似 Temporal 对象"的标志，混进来一律 TypeError)。
+func rejectTemporalLikeObject(o propBag) object.Value {
+	for _, k := range []string{"calendar", "timeZone"} {
+		if v, found := o.GetProperty(k); found && v != object.UndefinedSingleton {
+			if e, isErr := v.(*object.Error); isErr {
+				return e
+			}
+			return tgType("with() argument must not have a " + k + " property")
+		}
+	}
+	return nil
+}
+
+// mergeDateBagRaw 与 mergeDateBag 等价，入参为完整 date-time 原字段。
+func mergeDateBagRaw(base object.ISODate, raw rawDateTimeFields, overflow string) (object.ISODate, object.Value) {
+	return mergeDateBag(base, raw.rawDateFields, overflow)
+}
+
+// mergeTimeBagRaw 把 raw 中给出的时间字段覆盖到 base 上，缺失字段沿用 base，
+// 最后按 overflow 调节 (constrain 钳制 / reject 报错)。
+func mergeTimeBagRaw(base object.ISOTime, raw rawDateTimeFields, overflow string) (object.ISOTime, object.Value) {
+	out := base
+	t := raw.time
+	if raw.hasTime[0] {
+		out.Hour = t.Hour
+	}
+	if raw.hasTime[1] {
+		out.Microsecond = t.Microsecond
+	}
+	if raw.hasTime[2] {
+		out.Millisecond = t.Millisecond
+	}
+	if raw.hasTime[3] {
+		out.Minute = t.Minute
+	}
+	if raw.hasTime[4] {
+		out.Nanosecond = t.Nanosecond
+	}
+	if raw.hasTime[5] {
+		out.Second = t.Second
+	}
+	if e := regulateTimeFields(&out, overflow); e != nil {
+		return base, e
+	}
+	return out, nil
+}
+
 // ctorCalendarID 处理构造器可选 calendar 参数 (undefined → 默认 iso8601)。
 func ctorCalendarID(v object.Value) (string, object.Value) {
 	if v == nil || v == object.UndefinedSingleton {
@@ -1422,9 +1471,21 @@ func (r rawDateFields) monthCodeValue() (int32, object.Value) {
 
 // readDateFieldsRaw 按字母序读取 calendar, day, month, monthCode, year。
 func readDateFieldsRaw(o propBag) (rawDateFields, object.Value) {
+	return readDateFieldsCore(o, false)
+}
+
+// readDateFieldsPlain 供 plain 类型的 with() 使用: 不读 calendar
+// (已由 RejectObjectWithCalendarOrTimeZone 处理, 避免重复触发 getter)。
+func readDateFieldsPlain(o propBag) (rawDateFields, object.Value) {
+	return readDateFieldsCore(o, true)
+}
+
+func readDateFieldsCore(o propBag, skipCalendar bool) (rawDateFields, object.Value) {
 	var r rawDateFields
-	if ce := checkCalendarProp(o); ce != nil {
-		return r, ce
+	if !skipCalendar {
+		if ce := checkCalendarProp(o); ce != nil {
+			return r, ce
+		}
 	}
 	d, okD, e := readIntField(o, "day")
 	if e != nil {
@@ -1503,6 +1564,8 @@ func (r rawDateFields) regulate(overflow string) (object.ISODate, object.Value) 
 type rawDateTimeFields struct {
 	rawDateFields
 	time object.ISOTime
+	// 时间字段出现标记 (供 with 判断"至少一个字段"与逐字段覆盖)。
+	hasTime [6]bool // hour, microsecond, millisecond, minute, nanosecond, second
 	// timeZone / offset: relativeTo 属性包可携带 timeZone (及 offset)。
 	// 存在 timeZone 时按 ZonedDateTime 解释, 且 timeZone 字符串必须合法。
 	timeZone string
@@ -1511,30 +1574,57 @@ type rawDateTimeFields struct {
 	hasOff   bool
 }
 
+// anyDateTimeField 判断是否至少给出一个可识别的 date-time 字段
+// (规范 PrepareTemporalFields 后字段集非空, 否则 with 抛 TypeError)。
+func (r rawDateTimeFields) anyDateTimeField() bool {
+	if r.hasYear || r.hasMonth || r.hasMonthCode || r.hasDay {
+		return true
+	}
+	for _, h := range r.hasTime {
+		if h {
+			return true
+		}
+	}
+	return false
+}
+
 // readDateTimeFieldsRaw 按字母序读取全部 date-time 字段。
 func readDateTimeFieldsRaw(o propBag) (rawDateTimeFields, object.Value) {
+	return readDateTimeFieldsCore(o, false)
+}
+
+// readDateTimeFieldsPlain 供 plain 类型的 with() 使用: 字母序读取 date-time
+// 字段, 但不读 calendar / timeZone / offset —— 它们已由
+// RejectTemporalLikeObject 负责, 再读会重复触发 getter 而破坏求值顺序。
+func readDateTimeFieldsPlain(o propBag) (rawDateTimeFields, object.Value) {
+	return readDateTimeFieldsCore(o, true)
+}
+
+func readDateTimeFieldsCore(o propBag, skipLike bool) (rawDateTimeFields, object.Value) {
 	var r rawDateTimeFields
-	if ce := checkCalendarProp(o); ce != nil {
-		return r, ce
-	}
-	// timeZone / offset: 规范在日期时间字段之后读取, 并对字符串做时区 ID
-	// 校验 (bare datetime、亚分钟偏移等非法串须 RangeError)。
-	if v, ok := o.GetProperty("timeZone"); ok && v != object.UndefinedSingleton {
-		id, e := toTimeZoneIDE(v)
-		if e != nil {
-			return r, e
+	if !skipLike {
+		if ce := checkCalendarProp(o); ce != nil {
+			return r, ce
 		}
-		r.timeZone, r.hasTZ = id, true
-	}
-	if v, ok := o.GetProperty("offset"); ok && v != object.UndefinedSingleton {
-		s, isStr := v.(*object.String)
-		if !isStr {
-			return r, tgType("offset must be a string")
+		// timeZone / offset: 规范在日期时间字段之后读取, 并对字符串做时区 ID
+		// 校验 (bare datetime、亚分钟偏移等非法串须 RangeError)。
+		if v, ok := o.GetProperty("timeZone"); ok && v != object.UndefinedSingleton {
+			id, e := toTimeZoneIDE(v)
+			if e != nil {
+				return r, e
+			}
+			r.timeZone, r.hasTZ = id, true
 		}
-		if _, ok := object.ParseTimeZoneOffsetString(s.Value); !ok {
-			return r, tgRange("Invalid offset string: " + s.Value)
+		if v, ok := o.GetProperty("offset"); ok && v != object.UndefinedSingleton {
+			s, isStr := v.(*object.String)
+			if !isStr {
+				return r, tgType("offset must be a string")
+			}
+			if _, ok := object.ParseTimeZoneOffsetString(s.Value); !ok {
+				return r, tgRange("Invalid offset string: " + s.Value)
+			}
+			r.offset, r.hasOff = s.Value, true
 		}
-		r.offset, r.hasOff = s.Value, true
 	}
 	d, okD, e := readIntField(o, "day")
 	if e != nil {
@@ -1551,6 +1641,7 @@ func readDateTimeFieldsRaw(o propBag) (rawDateTimeFields, object.Value) {
 		}
 		if ok {
 			*targets[i] = f
+			r.hasTime[i] = true
 		}
 	}
 	if e := readMonthField(o, &r.rawDateFields); e != nil {
@@ -1562,6 +1653,7 @@ func readDateTimeFieldsRaw(o propBag) (rawDateTimeFields, object.Value) {
 	// nanosecond, second
 	nk := []string{"nanosecond", "second"}
 	nt := []*int32{&r.time.Nanosecond, &r.time.Second}
+	nidx := []int{4, 5}
 	for i, k := range nk {
 		f, ok, e := readIntField(o, k)
 		if e != nil {
@@ -1569,6 +1661,7 @@ func readDateTimeFieldsRaw(o propBag) (rawDateTimeFields, object.Value) {
 		}
 		if ok {
 			*nt[i] = f
+			r.hasTime[nidx[i]] = true
 		}
 	}
 	y, okY, e := readIntField(o, "year")
@@ -2612,13 +2705,17 @@ func roundDateTimeForDisplay(dt object.ISODateTime, quantum int64, mode string) 
 }
 
 // formatZDTOffset 按 offsetName 设置输出偏移后缀。
+//
+// ZonedDateTime 的偏移一律用数值形式 ±HH:MM[:SS] 输出 —— 即便 UTC 也写
+// "+00:00" 而非 "Z"。原因是该偏移是"时区在该时刻的实际偏移"，Z 会让人误
+// 以为时刻本身是 Z 记法；规范 (FormatUTCOffsetNanoseconds with Z=false)
+// 与 test262 的 offset-*/timezonename-* 整族均要求 +00:00。
 func formatZDTOffset(offSec int32, show string) string {
-	crit := show == "critical"
 	if show == "never" {
 		return ""
 	}
-	s := object.FormatOffsetSeconds(offSec)
-	if crit {
+	s := object.FormatOffsetSecondsNumeric(offSec)
+	if show == "critical" {
 		return "!" + s
 	}
 	return s

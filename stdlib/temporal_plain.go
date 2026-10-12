@@ -83,39 +83,47 @@ func setupTemporalPlainDateTime(temporal *object.Object) {
 		if len(args) == 0 {
 			return tgType("PlainDateTime.prototype.with requires an object")
 		}
-		o, isObj := args[0].(*object.Object)
-		if !isObj {
-			return tgType("PlainDateTime.prototype.with: invalid fields")
+		bag, isBag := plainBagOf(args[0])
+		if !isBag {
+			return tgType("PlainDateTime.prototype.with: argument must be an object")
 		}
-		// spec: 字段值读取与"下界拒绝"校验先于 GetOptionsObject。day<1 /
-		// month<1 无论 overflow 为何都抛 RangeError (上界溢出才受 overflow 影响)。
-		for _, fk := range []string{"year", "month", "day", "hour", "microsecond", "millisecond", "minute", "nanosecond", "second"} {
-			v, found := o.GetProperty(fk)
-			if !found || v == object.UndefinedSingleton {
-				continue
-			}
-			f, cerr := tgToNumber(v)
-			if cerr != nil {
-				return cerr
-			}
-			if math.IsNaN(f) || math.IsInf(f, 0) || f != math.Trunc(f) {
-				return tgRange("PlainDateTime.prototype.with: invalid fields")
-			}
-			if (fk == "day" || fk == "month") && f < 1 {
-				return tgRange("PlainDateTime.prototype.with: invalid fields")
-			}
+		// spec 顺序: RejectTemporalLikeObject (calendar, timeZone) →
+		// PrepareTemporalFields (字母序) → 至少一个字段→否则 TypeError →
+		// GetOptionsObject → overflow。选项读取在字段之后。
+		if e := rejectTemporalLikeObject(bag); e != nil {
+			return e
+		}
+		raw, rerr := readDateTimeFieldsPlain(bag)
+		if rerr != nil {
+			return rerr
+		}
+		if !raw.anyDateTimeField() {
+			return tgType("no supported properties found")
+		}
+		if verr := validateDateFieldsReject(raw.rawDateFields); verr != nil {
+			return verr
 		}
 		if len(args) > 1 {
 			if e := optionsTypeErr(args[1]); e != nil {
 				return e
 			}
-			if _, oerr := getOverflow(args[1]); oerr != nil {
-				return oerr
-			}
 		}
-		dt, ok := mergeDateTimeFields(t.ISODateTime(), args[0], false)
-		if !ok {
-			return tgRange("PlainDateTime.prototype.with: invalid fields")
+		overflow, oe := getOverflow(argAt(args, 1))
+		if oe != nil {
+			return oe
+		}
+		// 字段合并: month/monthCode 冲突 → RangeError; 下界与溢出按 overflow。
+		date, derr := mergeDateBagRaw(t.ISODateTime().Date, raw, overflow)
+		if derr != nil {
+			return derr
+		}
+		tm, terr := mergeTimeBagRaw(t.ISODateTime().Time, raw, overflow)
+		if terr != nil {
+			return terr
+		}
+		dt := object.ISODateTime{Date: date, Time: tm}
+		if !object.ISODateTimeInRange(dt) {
+			return tgRange("PlainDateTime is outside of supported range")
 		}
 		return object.NewTemporalPlainDateTime(dt, t.CalendarID())
 	})

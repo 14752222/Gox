@@ -3,6 +3,8 @@ package stdlib
 import (
 	"math"
 	"math/big"
+	"strconv"
+	"strings"
 
 	"github.com/14752222/Gox/object"
 )
@@ -154,23 +156,57 @@ func setupTemporalDuration(temporal *object.Object) {
 		if len(args) == 0 {
 			return tgType("Duration.prototype.with requires an object")
 		}
-		newD, ok := durationFromFieldsObject(args[0])
-		if !ok {
-			return tgType("Duration.prototype.with: invalid fields")
+		bag, isBag := plainBagOf(args[0])
+		if !isBag {
+			return tgType("Duration.prototype.with requires an object")
 		}
-		// 未指定的字段沿用原值
-		pick := func(v int64, def int64) int64 {
-			if v != 0 {
+		// ToPartialDuration: 按字母序读十个字段, 只接受"存在且非 undefined"
+		// 的字段; 至少一个字段存在, 否则 TypeError。
+		names := []string{"days", "hours", "microseconds", "milliseconds",
+			"minutes", "months", "nanoseconds", "seconds", "weeks", "years"}
+		vals := map[string]int64{}
+		any := false
+		for _, k := range names {
+			v, found := bag.GetProperty(k)
+			if !found || v == object.UndefinedSingleton {
+				continue
+			}
+			if e, isErr := v.(*object.Error); isErr {
+				return e
+			}
+			f, cerr := tgToNumber(v)
+			if cerr != nil {
+				return cerr
+			}
+			if math.IsNaN(f) || math.IsInf(f, 0) || f != math.Trunc(f) {
+				return tgRange("Duration field must be an integer")
+			}
+			vals[k] = int64(f)
+			any = true
+		}
+		if !any {
+			return tgType("Duration.prototype.with: no recognized fields")
+		}
+		pick := func(k string, def int64) int64 {
+			if v, ok := vals[k]; ok {
 				return v
 			}
 			return def
 		}
-		return object.NewTemporalDuration(
-			pick(newD.Years(), d.Years()), pick(newD.Months(), d.Months()),
-			pick(newD.Weeks(), d.Weeks()), pick(newD.Days(), d.Days()),
-			pick(newD.Hours(), d.Hours()), pick(newD.Minutes(), d.Minutes()),
-			pick(newD.Seconds(), d.Seconds()), pick(newD.Milliseconds(), d.Milliseconds()),
-			pick(newD.Microseconds(), d.Microseconds()), pick(newD.Nanoseconds(), d.Nanoseconds()))
+		r := object.NewTemporalDuration(
+			pick("years", d.Years()), pick("months", d.Months()),
+			pick("weeks", d.Weeks()), pick("days", d.Days()),
+			pick("hours", d.Hours()), pick("minutes", d.Minutes()),
+			pick("seconds", d.Seconds()), pick("milliseconds", d.Milliseconds()),
+			pick("microseconds", d.Microseconds()), pick("nanoseconds", d.Nanoseconds()))
+		// 符号必须一致 (含与 this 混合), 且量级须在范围内。
+		if serr := checkDurationUniformSign(r); serr != nil {
+			return serr
+		}
+		if cerr := checkDurationRange(r); cerr != nil {
+			return cerr
+		}
+		return r
 	})
 
 	// ===== 舍入与总量 =====
@@ -192,6 +228,8 @@ func setupTemporalDuration(temporal *object.Object) {
 		}
 		// 规范读取顺序: largestUnit → relativeTo → roundingIncrement →
 		// roundingMode → smallestUnit；逐项 get+cast，语义校验延迟到读完后。
+		largestProvided := optValue(opts, "largestUnit") != nil
+		smallestProvided := optValue(opts, "smallestUnit") != nil
 		lv, _, e := castUnitOption(opts, "largestUnit")
 		if e != nil {
 			return e
@@ -231,7 +269,36 @@ func setupTemporalDuration(temporal *object.Object) {
 		if uerr != nil {
 			return uerr
 		}
-		relTo, hasRel := relativeToISOValue(relV)
+		relTo, relErr, hasRel := toRelativeTemporalObject(relV)
+		if relErr != nil {
+			return relErr
+		}
+
+		// 规范: 舍入到日历单位 (year/month/week/day) 且带 relativeTo 时,
+		// roundingIncrement 不受 "必须整除上级" 约束, 只要求 increment >= 1；
+		// 但若显式指定了更大的日历 largestUnit (需跨日历单位 balance),
+		// 则 increment 必须为 1, 否则 RangeError。
+		explicitLargest := largest
+		isCalUnit := func(u string) bool {
+			return u == "year" || u == "month" || u == "week" || u == "day"
+		}
+		validInc := func(u string) bool {
+			if hasRel && isCalUnit(u) {
+				if inc < 1 {
+					return false
+				}
+				if explicitLargest != "auto" && explicitLargest != u &&
+					isCalUnit(explicitLargest) && unitRank(explicitLargest) < unitRank(u) {
+					return inc == 1
+				}
+				return true
+			}
+			return validRoundingIncrement(u, inc)
+		}
+
+		if !largestProvided && !smallestProvided {
+			return tgRange("Duration.prototype.round requires either largestUnit or smallestUnit")
+		}
 
 		if hasRel {
 			if smallest == "auto" {
@@ -243,15 +310,14 @@ func setupTemporalDuration(temporal *object.Object) {
 			if unitRank(smallest) < unitRank(largest) {
 				return tgRange("smallestUnit is larger than largestUnit")
 			}
-			// 用相对起点把日历单位也折算成纳秒后统一舍入
-			end, ok := object.AddDateTime(*relTo, d, "constrain")
+			if !validInc(smallest) {
+				return tgRange("Invalid roundingIncrement for " + smallest)
+			}
+			end, ok := relEndDateTime(relTo, d)
 			if !ok {
 				return tgRange("Duration is out of range")
 			}
-			if !validRoundingIncrement(smallest, inc) {
-				return tgRange("Invalid roundingIncrement for " + smallest)
-			}
-			dur := calendarRoundDiff(*relTo, end, largest, smallest, inc, mode)
+			dur := calendarRoundDiff(relTo.Wall, end, largest, smallest, inc, mode)
 			if e := checkDurationRange(dur); e != nil {
 				return e
 			}
@@ -277,7 +343,11 @@ func setupTemporalDuration(temporal *object.Object) {
 			return tgRange("Invalid roundingIncrement for " + smallest)
 		}
 		rounded := roundNanosToUnit(d.TimeTotalNanos(), smallest, inc, mode)
-		return durationFromNanosByLargest(rounded, largest)
+		res := durationFromNanosByLargest(rounded, largest)
+		if e := checkDurationRange(res); e != nil {
+			return e
+		}
+		return res
 	})
 
 	tgMethod(proto, "total", func(this object.Value, args ...object.Value) object.Value {
@@ -303,9 +373,13 @@ func setupTemporalDuration(temporal *object.Object) {
 		} else if e := optionsTypeErr(opts); e != nil {
 			return e
 		}
+		// 规范读取顺序: relativeTo → unit。
 		if opts != nil {
-			// 规范读取顺序: relativeTo → unit。
 			relV = optValue(opts, "relativeTo")
+		}
+		relTo, relErr, relProvided := toRelativeTemporalObject(relV)
+		if relErr != nil {
+			return relErr
 		}
 		if unit == "" {
 			unit = optString(opts, "unit", "")
@@ -323,8 +397,7 @@ func setupTemporalDuration(temporal *object.Object) {
 		if !found {
 			return tgRange("Invalid unit: " + unit)
 		}
-		relTo, _ := relativeToISOValue(relV)
-		v, ok := object.TotalOfUnit(d, u, relTo)
+		v, ok := totalOfUnitRel(d, u, relTo, relProvided)
 		if !ok {
 			return tgRange("total of " + u + " requires a relativeTo")
 		}
@@ -344,8 +417,36 @@ func setupTemporalDuration(temporal *object.Object) {
 		if perr != nil {
 			return "", perr
 		}
-		_ = st
-		return d.ToString(), nil
+		// Duration 的 smallestUnit 只能是 second 及以下 (规范 GetTemporalUnit
+		// 限定 subsecond 单位); minute 及以上 → RangeError。
+		if st.smallestUnit == "minute" {
+			return "", tgRange("Invalid smallestUnit for Duration.toString: minute")
+		}
+		// 显示位数: smallestUnit 决定固定位数, 否则由 fractionalSecondDigits
+		// 决定; "auto" → -1 (裁剪尾部 0)。
+		digits := -1
+		if st.smallestUnit != "" {
+			switch precisionForSmallest(st.smallestUnit) {
+			case "0":
+				digits = 0
+			case "3":
+				digits = 3
+			case "6":
+				digits = 6
+			default:
+				digits = 9
+			}
+		} else if st.precision != "auto" {
+			if n, err := strconv.Atoi(st.precision); err == nil {
+				digits = n
+			}
+		}
+		quantum := st.roundingQuantumNanos()
+		out, ok := d.ToStringWithPrecision(digits, quantum, st.mode)
+		if !ok {
+			return "", tgRange("Rounded duration is out of range")
+		}
+		return out, nil
 	})
 	tgValueOf(proto)
 
@@ -447,27 +548,200 @@ func compareDurations(a, b *object.TemporalDuration, opts object.Value) (int, ob
 	return endA.EpochNanos().Cmp(endB.EpochNanos()), nil
 }
 
-// relativeToISO 从 options.relativeTo 提取锚点时间点。
-// 支持 PlainDateTime/PlainDate/ZonedDateTime 实例、属性包与字符串。
-func relativeToISO(opts object.Value) (*object.ISODateTime, bool) {
-	return relativeToISOValue(optValue(opts, "relativeTo"))
+// temporalRelativeTo 是 ToRelativeTemporalObject 的结果。
+//
+// 规范区分两种形态，且这一区分直接决定"一天有多长":
+//   - Plain 形态 (裸日期串 / 日期时间串 / 无 timeZone 的属性包):
+//     墙钟日历，一天恒等于 86400e9 纳秒。
+//   - Zoned 形态 (带 [TZ] 注解的串 / 带 timeZone 字段的属性包 /
+//     ZonedDateTime 实例): 一天是"当地一个日历日"，夏令时切换日可能
+//     是 23 或 25 小时 —— total/round 必须按 epoch 差而非墙钟差计算。
+type temporalRelativeTo struct {
+	// Wall 是解析出的墙钟日期时间 (zoned 形态取其当地字段)。
+	Wall object.ISODateTime
+	// TZ 非空表示 zoned 形态; 空串表示 plain 形态。
+	TZ string
+	// Nanos 是 zoned 形态下的确切时刻; plain 形态下为 nil。
+	Nanos *big.Int
 }
 
-// relativeToISOValue 同上，但接受已读出的原始值 (避免重复 get 被观察)。
-func relativeToISOValue(v object.Value) (*object.ISODateTime, bool) {
-	if v == nil {
+// IsZoned 判断是否为 zoned 相对起点。
+func (r temporalRelativeTo) IsZoned() bool { return r.TZ != "" && r.Nanos != nil }
+
+// totalOfUnitRel 桥接 object.TotalOfUnit，把已解析的相对起点转成锚点。
+func totalOfUnitRel(d *object.TemporalDuration, unit string, rel temporalRelativeTo, provided bool) (float64, bool) {
+	if !provided {
+		return object.TotalOfUnit(d, unit, nil)
+	}
+	dt := rel.Wall
+	if rel.IsZoned() {
+		return object.TotalOfUnitZoned(d, unit, dt, rel.TZ, rel.Nanos)
+	}
+	return object.TotalOfUnit(d, unit, &dt)
+}
+
+// relEndDateTime 把 duration 加到相对起点的墙钟上，返回终点墙钟。
+// 日历单位运算在墙钟上进行 (与 total 的 zoned 确切时刻路径不同 ——
+// round 的日历差值本就以墙钟字段计算)。
+func relEndDateTime(rel temporalRelativeTo, d *object.TemporalDuration) (object.ISODateTime, bool) {
+	return object.AddDateTime(rel.Wall, d, "constrain")
+}
+
+// relativeToISO 从 options.relativeTo 提取锚点时间点。
+func relativeToISO(opts object.Value) (*object.ISODateTime, bool) {
+	rel, err, ok := toRelativeTemporalObject(optValue(opts, "relativeTo"))
+	if !ok || err != nil {
 		return nil, false
 	}
-	if zdt, ok := asZonedDateTime(v); ok {
-		dt := object.GetISOPartsFromEpoch(zdt.TimeZoneID(), zdt.Nanos())
-		return &dt, true
-	}
-	pdt, cerr := toPlainDateTimeValue(v)
-	if cerr != nil {
-		return nil, false
-	}
-	dt := pdt.ISODateTime()
+	dt := rel.Wall
 	return &dt, true
+}
+
+// relativeToISOValue 返回墙钟锚点 (保留旧签名，供只关心墙钟的调用方使用)。
+func relativeToISOValue(v object.Value) (*object.ISODateTime, bool) {
+	rel, err, ok := toRelativeTemporalObject(v)
+	if !ok || err != nil {
+		return nil, false
+	}
+	dt := rel.Wall
+	return &dt, true
+}
+
+// toRelativeTemporalObject 实现规范 ToRelativeTemporalObject。
+//
+// 返回 (值, 错误, 是否已提供)。未提供 relativeTo (或 undefined) 时 ok=false, err=nil。
+// 错误类型遵循规范: 只有 string 会按 ISO 解析 (失败 → RangeError);
+// number/bigint/boolean/null/symbol 等非 string 原始值 → TypeError;
+// 对象缺必需字段 → TypeError。
+func toRelativeTemporalObject(v object.Value) (temporalRelativeTo, object.Value, bool) {
+	var z temporalRelativeTo
+	if v == nil {
+		return z, nil, false
+	}
+	switch t := v.(type) {
+	case *object.TemporalZonedDateTime:
+		wall := object.GetISOPartsFromEpoch(t.TimeZoneID(), t.Nanos())
+		return temporalRelativeTo{Wall: wall, TZ: t.TimeZoneID(), Nanos: t.Nanos()}, nil, true
+	case *object.TemporalPlainDateTime:
+		return temporalRelativeTo{Wall: t.ISODateTime()}, nil, true
+	case *object.TemporalPlainDate:
+		return temporalRelativeTo{Wall: object.ISODateTime{Date: t.ISODate()}}, nil, true
+	case *object.String:
+		return relativeFromString(t.Value)
+	case *object.Object, *object.Proxy:
+		return relativeFromBag(v.(propBag))
+	case *object.Undefined:
+		return z, nil, false
+	}
+	// number / bigint / boolean / null / symbol 等非 string 原始值: TypeError。
+	return z, tgType("relativeTo must be an object or a string"), true
+}
+
+// relativeFromString 把 ISO 串解析成相对起点。
+// 带 [TZ] 注解 → zoned 形态 (按 offset 或时区消歧); 否则 plain 形态。
+func relativeFromString(s string) (temporalRelativeTo, object.Value, bool) {
+	var z temporalRelativeTo
+	if !strings.ContainsAny(s, "0123456789") {
+		// 既非日期也非时间, 交由解析器给出 RangeError。
+		return z, tgRange("Invalid ISO string: " + s), true
+	}
+	// 扩展年 (含前导 +/− 且位数 > 4) 必须由完整文法校验, 裸日期串走
+	// TemporalRelativeToString。minus-zero 年份 ("-000000-...") 非法。
+	if strings.HasPrefix(s, "-000000") || strings.HasPrefix(s, "\u2212000000") {
+		return z, tgRange("Invalid ISO string: " + s), true
+	}
+	f, ok := object.ParseTemporalRelativeToString(s)
+	if !ok {
+		return z, tgRange("Invalid ISO string: " + s), true
+	}
+	if e := calendarFromAnnotation(f.Calendar); e != nil {
+		return z, e, true
+	}
+	if f.TimeZoneAnnotation == "" {
+		// plain: 只需要日期部分 (时间可选)。
+		if !f.HasDate {
+			return z, tgRange("Invalid ISO string: " + s), true
+		}
+		dt := f.ISODateTime()
+		if !object.ISODateTimeInRange(dt) {
+			return z, tgRange("PlainDateTime is outside of supported range"), true
+		}
+		return temporalRelativeTo{Wall: dt}, nil, true
+	}
+	tz := f.TimeZoneAnnotation
+	if id, ok := canonicalTimeZoneID(tz); ok {
+		tz = id
+	} else {
+		return z, tgRange("Invalid time zone: " + tz), true
+	}
+	dt := f.ISODateTime()
+	var ns *big.Int
+	if f.OffsetSeconds != nil {
+		// 有显式 offset: 先由墙钟 + offset 得到 epoch, 再校验与 tz 一致。
+		// 规范: offset 与 [TZ] 注解必须相容 (含子分钟残留舍入的边界),
+		// 否则 RangeError —— rounding-not-accepted 整族。
+		cands := object.GetPossibleInstantsFor(tz, dt)
+		n, ok := object.DisambiguatePossibleInstants(cands, tz, dt, "compatible")
+		if !ok {
+			return z, tgRange("Invalid relativeTo string: " + s), true
+		}
+		actualOff := object.TimeZoneOffsetSecondsAt(tz, n)
+		if int32(*f.OffsetSeconds) != actualOff {
+			return z, tgRange("UTC offset does not match the time zone: " + s), true
+		}
+		ns = n
+	} else {
+		cands := object.GetPossibleInstantsFor(tz, dt)
+		n, ok := object.DisambiguatePossibleInstants(cands, tz, dt, "compatible")
+		if !ok {
+			return z, tgRange("Invalid relativeTo string: " + s), true
+		}
+		ns = n
+	}
+	if !object.IsValidEpochNanos(ns) {
+		return z, tgRange("ZonedDateTime is outside of supported range"), true
+	}
+	wall := object.GetISOPartsFromEpoch(tz, ns)
+	return temporalRelativeTo{Wall: wall, TZ: tz, Nanos: ns}, nil, true
+}
+
+// relativeFromBag 把属性包解析成相对起点。
+// 含 timeZone 字段 → zoned 形态; 否则 plain 形态 (需 year/month/day)。
+func relativeFromBag(o propBag) (temporalRelativeTo, object.Value, bool) {
+	var z temporalRelativeTo
+	// 用 readZDTFieldsRaw 一次性按字母序读出全部字段 (含 timeZone/offset)。
+	raw, _, _, rerr := readZDTFieldsRaw(o)
+	if rerr != nil {
+		return z, rerr, true
+	}
+	if !raw.hasYear || (!raw.hasMonth && !raw.hasMonthCode) || !raw.hasDay {
+		return z, tgType("relativeTo must have year, month, and day properties"), true
+	}
+	dt, ferr := raw.regulate("constrain")
+	if ferr != nil {
+		return z, ferr, true
+	}
+	if !raw.hasTZ {
+		if !object.ISODateTimeInRange(dt) {
+			return z, tgRange("PlainDateTime is outside of supported range"), true
+		}
+		return temporalRelativeTo{Wall: dt}, nil, true
+	}
+	tz := raw.timeZone
+	if id, ok := canonicalTimeZoneID(tz); ok {
+		tz = id
+	} else {
+		return z, tgRange("Invalid time zone: " + tz), true
+	}
+	cands := object.GetPossibleInstantsFor(tz, dt)
+	ns, ok := object.DisambiguatePossibleInstants(cands, tz, dt, "compatible")
+	if !ok {
+		return z, tgRange("Invalid wall-clock time"), true
+	}
+	if !object.IsValidEpochNanos(ns) {
+		return z, tgRange("ZonedDateTime is outside of supported range"), true
+	}
+	return temporalRelativeTo{Wall: object.GetISOPartsFromEpoch(tz, ns), TZ: tz, Nanos: ns}, nil, true
 }
 
 // balancedDurationAdd 按规范语义做 Duration 加法: 相加后必须平衡字段。

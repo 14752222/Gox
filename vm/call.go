@@ -77,6 +77,17 @@ func (vm *VM) constructValue(fn object.Value, args []object.Value) (object.Value
 		if object.IsObjectValue(result) {
 			return result, nil
 		}
+		if object.IsTemporalExotic(result) {
+			// 派生类 super() 返回 Temporal 内建实例: 内部槽寄存到派生类 this。
+			target := ctorThis
+			if target == nil || target == newObj {
+				target = newObj
+			}
+			if object.StoreTemporalSlot(target, result) {
+				return target, nil
+			}
+			return result, nil
+		}
 		if ctorThis != nil && ctorThis != newObj {
 			return ctorThis, nil
 		}

@@ -134,25 +134,56 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 		if len(args) == 0 {
 			return tgType("ZonedDateTime.prototype.with requires an object")
 		}
+		bag, isBag := plainBagOf(args[0])
+		if !isBag {
+			return tgType("ZonedDateTime.prototype.with requires an object")
+		}
+		// spec 顺序: RejectObjectWithCalendarOrTimeZone (calendar, timeZone) →
+		// PrepareTemporalFields (字母序, 含 offset) → 至少一个字段→TypeError →
+		// GetOptionsObject → overflow/disambiguation/offset。
+		if e := rejectTemporalLikeObject(bag); e != nil {
+			return e
+		}
+		raw, rerr := readZDTFieldsPlain(bag)
+		if rerr != nil {
+			return rerr
+		}
+		if !raw.anyDateTimeField() {
+			return tgType("no supported properties found")
+		}
+		// 字段下界拒绝 (day<1 / month<1) 先于 GetOptionsObject。
+		if verr := validateDateFieldsReject(raw.rawDateFields); verr != nil {
+			return verr
+		}
 		if len(args) > 1 {
 			if e := optionsTypeErr(args[1]); e != nil {
 				return e
 			}
-			if _, oerr := getOverflow(args[1]); oerr != nil {
-				return oerr
-			}
-			if _, derr := getDisambiguation(args[1]); derr != nil {
-				return derr
-			}
-			if _, oerr2 := getEnumOption(args[1], "offset", "prefer", "prefer", "use", "ignore", "reject"); oerr2 != nil {
-				return oerr2
-			}
 		}
-		dt, ok := mergeDateTimeFields(zdtISO(t), args[0], true)
-		if !ok {
-			return tgType("ZonedDateTime.prototype.with: invalid fields")
+		// 选项读取顺序 (spec): disambiguation → offset → overflow。
+		if _, derr := getDisambiguation(argAt(args, 1)); derr != nil {
+			return derr
 		}
-		return zdtFromWallClock(dt, t.TimeZoneID(), t.CalendarID(), "compatible", args[0])
+		if _, oferr := getEnumOption(argAt(args, 1), "offset", "prefer", "prefer", "use", "ignore", "reject"); oferr != nil {
+			return oferr
+		}
+		overflow, oerr := getOverflow(argAt(args, 1))
+		if oerr != nil {
+			return oerr
+		}
+		// 结果须落在有效范围内 (墙钟字段合并后校验)。
+		date, daerr := mergeDateBagRaw(zdtISO(t).Date, raw, overflow)
+		if daerr != nil {
+			return daerr
+		}
+		tm, tmerr := mergeTimeBagRaw(zdtISO(t).Time, raw, overflow)
+		if tmerr != nil {
+			return tmerr
+		}
+		dt := object.ISODateTime{Date: date, Time: tm}
+		// offset 选项: 属性包里的 offset 与选项值共同参与消歧。
+		return zdtFromWallClockWithOffset(dt, t.TimeZoneID(), t.CalendarID(),
+			argAt(args, 1), raw)
 	})
 
 	tgMethod(proto, "withPlainTime", func(this object.Value, args ...object.Value) object.Value {
@@ -275,11 +306,65 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 		if !validRoundingIncrement(smallest, inc) {
 			return tgRange("Invalid roundingIncrement for " + smallest)
 		}
+		// day 舍入按**当地墙钟**: day 边界 = 当地午夜, 不能对 epoch 直接取模
+		// (偏移非整天或跨 DST 时会错位)。时间单位走 exact instant 路径。
+		if smallest == "day" {
+			wall := object.GetISOPartsFromEpoch(t.TimeZoneID(), t.Nanos())
+			rounded := roundDateTime(wall, t.CalendarID(), smallest, inc, mode)
+			if _, isErr := rounded.(*object.Error); isErr {
+				return rounded
+			}
+			pdt, ok := rounded.(*object.TemporalPlainDateTime)
+			if !ok {
+				return tgRange("Result is outside of supported range")
+			}
+			return zdtFromWallClock(pdt.ISODateTime(), t.TimeZoneID(), t.CalendarID(), "compatible", nil)
+		}
 		res, ok := roundInstantNanos(t.Nanos(), smallest, inc, mode)
 		if !ok {
 			return tgRange("Result is outside of supported range")
 		}
 		return object.NewTemporalZonedDateTime(res, t.TimeZoneID(), t.CalendarID())
+	})
+
+	tgMethod(proto, "getTimeZoneTransition", func(this object.Value, args ...object.Value) object.Value {
+		t, ok := asZonedDateTime(this)
+		if !ok {
+			return tgTypeBadThis("ZonedDateTime")
+		}
+		var param object.Value
+		if len(args) > 0 {
+			param = args[0]
+		}
+		// 字符串简写等价于 { direction: <string> }；其它形态按 options 读取。
+		direction := ""
+		provided := false
+		if s, isStr := param.(*object.String); isStr {
+			direction, provided = s.Value, true
+		} else {
+			if e := optionsTypeErr(param); e != nil {
+				return e
+			}
+			v := optValue(param, "direction")
+			if v != nil {
+				str, ok := optionToString(v)
+				if !ok {
+					return tgType("Cannot convert direction to string")
+				}
+				direction, provided = str, true
+			}
+		}
+		if !provided {
+			return tgRange("direction is required")
+		}
+		if direction != "next" && direction != "previous" {
+			return tgRange("Invalid direction: " + direction)
+		}
+		ns, ok := object.TimeZoneTransition(t.TimeZoneID(), t.Nanos(), direction)
+		if !ok {
+			return object.NullSingleton
+		}
+		return object.NewTemporalZonedDateTime(ns, t.TimeZoneID(), t.CalendarID())
 	})
 
 	tgMethod(proto, "equals", func(this object.Value, args ...object.Value) object.Value {
@@ -562,6 +647,114 @@ func zdtFromWallClock(dt object.ISODateTime, tz, calendar, disambiguation string
 	return object.NewTemporalZonedDateTime(ns, tz, calendar)
 }
 
+// readZDTFieldsPlain 供 ZonedDateTime.with 使用: 字母序读取 date-time 字段
+// 及可选 offset，但不读 calendar / timeZone (已由 RejectTemporalLikeObject
+// 处理，重复读取会打乱求值顺序)。offset 必须为合法偏移串。
+func readZDTFieldsPlain(o propBag) (rawDateTimeFields, object.Value) {
+	var r rawDateTimeFields
+	d, okD, e := readIntField(o, "day")
+	if e != nil {
+		return r, e
+	}
+	r.day, r.hasDay = d, okD
+	tkeys := []string{"hour", "microsecond", "millisecond", "minute"}
+	targets := []*int32{&r.time.Hour, &r.time.Microsecond, &r.time.Millisecond, &r.time.Minute}
+	for i, k := range tkeys {
+		f, ok, e := readIntField(o, k)
+		if e != nil {
+			return r, e
+		}
+		if ok {
+			*targets[i] = f
+			r.hasTime[i] = true
+		}
+	}
+	if e := readMonthField(o, &r.rawDateFields); e != nil {
+		return r, e
+	}
+	if e := readMonthCodeField(o, &r.rawDateFields); e != nil {
+		return r, e
+	}
+	nk := []string{"nanosecond"}
+	nidx := []int{4}
+	for i, k := range nk {
+		f, ok, e := readIntField(o, k)
+		if e != nil {
+			return r, e
+		}
+		if ok {
+			r.time.Nanosecond = f
+			r.hasTime[nidx[i]] = true
+		}
+	}
+	// offset: 必须存在但可为 undefined; 非字符串 → TypeError, 非法串 → RangeError。
+	if v, ok := o.GetProperty("offset"); ok && v != object.UndefinedSingleton {
+		if e, isErr := v.(*object.Error); isErr {
+			return r, e
+		}
+		if _, isStr := v.(*object.String); !isStr {
+			return r, tgType("offset must be a string")
+		}
+		s := v.(*object.String)
+		if _, ok := object.ParseTimeZoneOffsetString(s.Value); !ok {
+			return r, tgRange("Invalid offset string: " + s.Value)
+		}
+		r.offset, r.hasOff = s.Value, true
+	}
+	f, ok, e := readIntField(o, "second")
+	if e != nil {
+		return r, e
+	}
+	if ok {
+		r.time.Second = f
+		r.hasTime[5] = true
+	}
+	y, okY, e := readIntField(o, "year")
+	if e != nil {
+		return r, e
+	}
+	r.year, r.hasYear = y, okY
+	return r, nil
+}
+
+// zdtFromWallClockWithOffset 在 zdtFromWallClock 基础上处理属性包/选项里的
+// offset: offset=use 时用给定偏移直接定时刻; reject 时校验偏移与时区一致。
+func zdtFromWallClockWithOffset(dt object.ISODateTime, tz, calendar string, opts object.Value, raw rawDateTimeFields) object.Value {
+	offsetOpt := optString(opts, "offset", "prefer")
+	disambiguation := optString(opts, "disambiguation", "compatible")
+	haveOff := raw.hasOff
+	offStr := raw.offset
+	if !haveOff {
+		if v := optValue(opts, "offsetStr"); v != nil {
+			if s, ok := v.(*object.String); ok {
+				offStr, haveOff = s.Value, true
+			}
+		}
+	}
+	if haveOff {
+		offSec, ok := object.ParseTimeZoneOffsetString(offStr)
+		if !ok {
+			return tgRange("Invalid offset string: " + offStr)
+		}
+		matches := offsetMatches(dt.EpochNanos(), tz, offStr)
+		switch offsetOpt {
+		case "use":
+			// 直接用墙钟 + 偏移得到时刻，忽略时区在该时刻的实际偏移。
+			ns := dt.EpochNanos()
+			ns = ns.Sub(ns, big.NewInt(int64(offSec)*object.NanosPerSecond))
+			if !object.IsValidEpochNanos(ns) {
+				return tgRange("ZonedDateTime is outside of supported range")
+			}
+			return object.NewTemporalZonedDateTime(ns, tz, calendar)
+		case "reject":
+			if !matches {
+				return tgRange("offset does not match the time zone")
+			}
+		}
+	}
+	return zdtFromWallClock(dt, tz, calendar, disambiguation, nil)
+}
+
 // zdtFromFields 由带注释的解析结果构造 ZonedDateTime。
 func zdtFromFields(f object.TemporalFields, args []object.Value) object.Value {
 	tz := f.TimeZoneAnnotation
@@ -697,29 +890,30 @@ func zdtDiffFrom(t *object.TemporalZonedDateTime, args []object.Value, since boo
 		return tgRange("smallestUnit is larger than largestUnit")
 	}
 
-	sign := int64(1)
-	if t.Nanos().Cmp(other.Nanos()) > 0 {
-		sign = -1
-	}
-
-	// 日历单位: 用各自时区的墙钟字段计算，而非直接用 Instant 差
+	// 日历单位: 用各自时区的墙钟字段计算，而非直接用 Instant 差。
+	// since 通过交换起止端点反转方向; calendarRoundDiff 内部已按实际次序
+	// 归一化并镜像方向性模式, 此处不得再 negateRoundingMode (会双重取反)。
 	if unitRank(largest) <= unitRank("day") {
 		fromDT := object.GetISOPartsFromEpoch(t.TimeZoneID(), t.Nanos())
 		toDT := object.GetISOPartsFromEpoch(t.TimeZoneID(), other.Nanos())
 		if since {
 			fromDT, toDT = toDT, fromDT
-			mode = negateRoundingMode(mode)
 		}
 		return calendarRoundDiff(fromDT, toDT, largest, su, inc, mode)
 	}
 
-	total := new(big.Int).Sub(other.Nanos(), t.Nanos())
-	rounded := roundNanosToUnit(total, su, inc, mode)
-	dur := durationFromNanosByLargest(rounded, largest)
-	if sign < 0 && other.Nanos().Cmp(t.Nanos()) < 0 {
-		return dur.Negated()
+	// 时间单位 (hour 及以下): 直接用精确时刻差, 但需按语义方向取符号。
+	// until: this − other; since: other − this。差值本身带符号, 舍入用
+	// RoundNanosSigned 的有符号语义, 因此这里不再做额外的 sign 翻转
+	// (旧实现既取 other−t 又在 this>other 时 Negated, 双重取反导致负例变正)。
+	var total *big.Int
+	if since {
+		total = new(big.Int).Sub(t.Nanos(), other.Nanos())
+	} else {
+		total = new(big.Int).Sub(other.Nanos(), t.Nanos())
 	}
-	return dur
+	rounded := roundNanosToUnit(total, su, inc, mode)
+	return durationFromNanosByLargest(rounded, largest)
 }
 
 // readZDTFieldsRaw 按字母序读取 ZonedDateTime 属性包字段:

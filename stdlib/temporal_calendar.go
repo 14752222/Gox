@@ -626,6 +626,12 @@ func monthDayFieldsRaw(o propBag) (rawDateFields, object.Value) {
 	if e := readMonthCodeField(o, &r); e != nil {
 		return r, e
 	}
+	// year 仅用于决定闰年 (约束 2 月 29); 结果参考年仍固定为 1972。
+	y, okY, e := readIntField(o, "year")
+	if e != nil {
+		return r, e
+	}
+	r.year, r.hasYear = y, okY
 	return r, nil
 }
 
@@ -670,7 +676,13 @@ func (r rawDateFields) regulateMD(overflow string) (int32, int32, object.Value) 
 		}
 		d = 1
 	}
-	dim := object.DaysInMonth(1972, m)
+	// 闰年参考: 显式提供 year 时用该年判断 (2 月 29 在非闰年 constrain→28 /
+	// reject→RangeError); 未提供时用 ISO 参考年 1972 (闰年)。
+	refYear := int32(1972)
+	if r.hasYear {
+		refYear = r.year
+	}
+	dim := object.DaysInMonth(refYear, m)
 	if d > dim {
 		if overflow == "reject" {
 			return 0, 0, tgRange("day is out of range for the month")
