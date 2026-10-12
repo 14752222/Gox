@@ -381,29 +381,51 @@ func roundNanosToUnit(ns *big.Int, unit string, inc int64, mode string) *big.Int
 }
 
 // nanosToDurationForInstant 把纳秒差值包装成以 largestUnit 为最大单位的 Duration。
-// Instant 的差值没有日历成分，因此只填充largestUnit 这一级字段。
+//
+// 规范 (BalanceTimeDuration / Temporal.Instant.prototype.until 的
+// DifferenceTemporalInstant) 要求把整个纳秒差值**逐级平衡**到 largestUnit
+// 之下的所有时间单位 (hour..nanosecond)，而不是只填 largestUnit 一级。
+// 旧实现直接 Quo(ns, factor) 只取最大单位，把余数丢掉 ——
+//   diff = 987ms, largest = second  →  正确 {seconds:0, milliseconds:987}，
+//   旧实现 {milliseconds:0}；
+// 于是 Instant.until/since 的 largestunit / rounding 整族失败。
+// 注意 largestUnit 之上不会出现字段 (Instant 无日历单位)，故只需在
+// hour/second/millisecond/microsecond/nanosecond 五级之间平衡。
 func nanosToDurationForInstant(ns *big.Int, largestUnit string) *object.TemporalDuration {
-	factor, ok := object.UnitToNanos(largestUnit)
-	if !ok {
-		factor = 1
+	// timeUnits 是 Instant 可涉及的时间单位 (从大到小) 及其纳秒因子。
+	type tu struct {
+		name   string
+		factor int64
 	}
-	// 纳秒差值必须换算到目标单位: 90e9 纳秒在 second 粒度下是 90，
-	// 直接塞进 seconds 字段会得到 PT90000000000S 这种荒谬结果。
-	v := new(big.Int).Quo(ns, big.NewInt(factor)).Int64()
-	switch largestUnit {
-	case "hour":
-		return object.NewTemporalDuration(0, 0, 0, 0, v, 0, 0, 0, 0, 0)
-	case "minute":
-		return object.NewTemporalDuration(0, 0, 0, 0, 0, v, 0, 0, 0, 0)
-	case "second":
-		return object.NewTemporalDuration(0, 0, 0, 0, 0, 0, v, 0, 0, 0)
-	case "millisecond":
-		return object.NewTemporalDuration(0, 0, 0, 0, 0, 0, 0, v, 0, 0)
-	case "microsecond":
-		return object.NewTemporalDuration(0, 0, 0, 0, 0, 0, 0, 0, v, 0)
-	default:
-		return object.NewTemporalDuration(0, 0, 0, 0, 0, 0, 0, 0, 0, v)
+	units := []tu{
+		{"hour", 3600 * 1e9},
+		{"minute", 60 * 1e9},
+		{"second", 1e9},
+		{"millisecond", 1e6},
+		{"microsecond", 1e3},
+		{"nanosecond", 1},
 	}
+	// 找到 largestUnit 在表中的起点 (rank)，从它开始向下逐级整除取余。
+	start := 0
+	for i, u := range units {
+		if u.name == largestUnit {
+			start = i
+			break
+		}
+	}
+	rem := new(big.Int).Set(ns)
+	vals := map[string]int64{}
+	// 起点单位之前 (比 largestUnit 更大) 的字段恒为 0。
+	for i := start; i < len(units); i++ {
+		q := new(big.Int)
+		r := new(big.Int)
+		q.QuoRem(rem, big.NewInt(units[i].factor), r)
+		vals[units[i].name] = q.Int64()
+		rem = r
+	}
+	return object.NewTemporalDuration(0, 0, 0, 0,
+		vals["hour"], vals["minute"], vals["second"],
+		vals["millisecond"], vals["microsecond"], vals["nanosecond"])
 }
 
 // setToStringTag 在内建原型/命名空间对象上设置 Symbol.toStringTag，使
