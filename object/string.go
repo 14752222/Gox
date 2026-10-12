@@ -12,6 +12,9 @@ var StringProto Value
 // SetStringProto 设置全局字符串原型 (由 stdlib 调用)。
 func SetStringProto(p Value) { StringProto = p }
 
+// GetStringProto 返回全局字符串原型 (%String.prototype%)。
+func GetStringProto() Value { return StringProto }
+
 func (s *String) Type() ObjectType { return STRING_OBJ }
 func (s *String) Inspect() string {
 	return s.Value

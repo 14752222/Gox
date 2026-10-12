@@ -27,13 +27,15 @@ func setupObjectGlobal() *object.BuiltinFunction {
 		case *object.Object, *object.Array, *object.Map, *object.Set,
 			*object.RegExp, *object.Promise, *object.Error, *object.Proxy,
 			*object.Closure, *object.CompiledFunction,
-			*object.BuiltinFunction, *object.BuiltinMethod:
+			*object.BuiltinFunction, *object.BuiltinMethod,
+			*object.PrimitiveObject:
 			// 已是对象: 原样返回
 			return v
 		}
-		// 原始值: 规范返回对应的包装对象。本运行时不实现包装对象
-		// (new Number(5) 得到的也是 number)，因此此处原样返回原始值。
-		return v
+		// 原始值: 规范 ToObject —— 返回对应的包装对象, 使其 instanceof
+		// 对应对构造器为真 (Array.prototype.map 等泛型算法的第三个回调
+		// 参数 obj === ToObject(this), test262 大量用例据此断言)。
+		return toObjectValue(v)
 	})
 	// Object(x) 从不抛异常: 传入 Error 对象时它是"值"而非异常
 	// (否则 Object(Error()) 会被 VM 当成 throw，call-error 用例失败)。

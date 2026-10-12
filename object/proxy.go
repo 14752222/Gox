@@ -75,6 +75,12 @@ func NewProxy(target, handler Value) (*Proxy, *Error) {
 
 // IsObjectLike 粗略判断一个值是否为"对象类"引用类型 (允许作为 handler)。
 func IsObjectLike(v Value) bool {
+	// 原始值包装对象 (new Boolean/Number/String/Symbol) 的 Type() 返回其
+	// 包装的原始类型 (供 instanceof 判定), 但它们在语义上是对象 ——
+	// 须在 Type() 分支之前拦下, 否则会被当成原始值。
+	if _, ok := v.(*PrimitiveObject); ok {
+		return true
+	}
 	switch v.Type() {
 	case OBJECT_OBJ, ARRAY_OBJ, MAP_OBJ, SET_OBJ, ERROR_OBJ, ITERATOR_OBJ,
 		CLOSURE_OBJ, BUILTIN_OBJ, PROXY_OBJ, REGEXP_OBJ, PROMISE_OBJ, DATE_OBJ,

@@ -1483,6 +1483,11 @@ func asArrayLike(method string, this object.Value) (*arrayLike, object.Value) {
 	if arr, ok := this.(*object.Array); ok {
 		return &arrayLike{obj: arr, arr: arr, n: int64(len(arr.Elements))}, nil
 	}
+	// 规范的 ToObject(this): 原始值 (boolean/number/string/symbol) 要包成
+	// 对应包装对象再读写属性。漏掉这一步会让回调的第三个参数 obj 拿到原始
+	// 值 (规范要求 obj === ToObject(this)), 且原型上的 length/索引读不到 ——
+	// test262 的 15.4.4.*/S15.4.4.* "applied to primitive" 族即因此整族失败。
+	this = toObjectValue(this)
 	var n int64
 	if lv, ok := this.GetProperty("length"); ok && lv != nil {
 		// ToLength(Symbol) 按规范抛 TypeError (LengthOfArrayLike 的 abrupt)
@@ -1500,6 +1505,23 @@ func asArrayLike(method string, this object.Value) (*arrayLike, object.Value) {
 		}
 	}
 	return &arrayLike{obj: this, n: n}, nil
+}
+
+// toObjectValue 实现规范的 ToObject (sec-object-type):
+// undefined/null 抛 TypeError (调用方自行保证其已排除), 其余原始值包成对应
+// 的包装对象, 已是对象则原样返回。Array.prototype 的泛型算法第 1 步即此。
+func toObjectValue(v object.Value) object.Value {
+	switch p := v.(type) {
+	case *object.Boolean:
+		return object.NewPrimitiveObject(p, object.GetBooleanProto())
+	case *object.Number:
+		return object.NewPrimitiveObject(p, object.GetNumberProto())
+	case *object.String:
+		return object.NewPrimitiveObject(p, object.GetStringProto())
+	case *object.Symbol:
+		return object.NewPrimitiveObject(p, object.GetSymbolProto())
+	}
+	return v
 }
 
 // has 实现 HasProperty(O, Pk)（含原型链）；数组的 nil 元素是洞。
