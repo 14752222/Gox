@@ -371,13 +371,15 @@ func roundInstantTo(ns *big.Int, smallestUnit string, inc int64, mode string) ob
 }
 
 // roundNanosToUnit 按目标单位的倍数对纳秒做舍入。
+// 用 RoundNanosSigned: 差值是**带符号**的 (since 常为负), 规范 roundingMode
+// 相对 0/±∞ 定义, 不能沿用只对正幅值成立的 floor 基准舍入。
 func roundNanosToUnit(ns *big.Int, unit string, inc int64, mode string) *big.Int {
 	n, ok := object.UnitToNanos(unit)
 	if !ok {
 		return ns
 	}
 	increment := new(big.Int).Mul(big.NewInt(n), big.NewInt(inc))
-	return object.RoundNanos(ns, increment, mode)
+	return object.RoundNanosSigned(ns, increment, mode)
 }
 
 // nanosToDurationForInstant 把纳秒差值包装成以 largestUnit 为最大单位的 Duration。

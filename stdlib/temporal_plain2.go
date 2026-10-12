@@ -865,10 +865,14 @@ func plainTimeDiffFrom(from object.ISOTime, args []object.Value, since bool) obj
 		return derr
 	}
 	largest, su, inc, mode := do.largest, do.smallest, do.inc, do.mode
-	// PlainTime 的差值始终环绕一天: 23:00 到 01:00 是 +2 小时而非 -22 小时。
-	diff := other.ISOTime().NanosOfDay() - from.NanosOfDay()
-	if diff < 0 {
-		diff += object.NanosPerDay
+	// PlainTime 的差值是**带符号的真实差值**，不做一天环绕:
+	//   until(t) = t - this;  since(t) = this - t。
+	// 例: two(16:23).until(one(15:23)) = -1 小时；one.since(two) = +1 小时。
+	// 旧实现把差环绕进 [0, 24h) 再对 since 取负，得到"恒正/恒负"的荒谬值
+	// (16:23.until(15:23) 得 23 小时)，PlainTime until/since 整族因此失败。
+	diff := new(big.Int).Sub(big.NewInt(other.ISOTime().NanosOfDay()), big.NewInt(from.NanosOfDay()))
+	if since {
+		diff.Neg(diff)
 	}
 	if su == "auto" {
 		su = "nanosecond"
@@ -882,12 +886,8 @@ func plainTimeDiffFrom(from object.ISOTime, args []object.Value, since bool) obj
 	if unitRank(su) < unitRank(largest) {
 		return tgRange("smallestUnit is larger than largestUnit")
 	}
-	rounded := roundNanosToUnit(big.NewInt(diff), su, inc, mode)
-	dur := durationFromNanosByLargest(rounded, largest)
-	if since {
-		return dur.Negated()
-	}
-	return dur
+	rounded := roundNanosToUnit(diff, su, inc, mode)
+	return durationFromNanosByLargest(rounded, largest)
 }
 
 // quoRemForDay 把纳秒值拆成 (跨天天数, 日内纳秒)。
