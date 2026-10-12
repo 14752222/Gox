@@ -1398,13 +1398,26 @@ func readMonthCodeField(o propBag, r *rawDateFields) object.Value {
 	if e2, isErr := mc.(*object.Error); isErr {
 		return e2
 	}
-	// spec: monthCode 经 ToString (观察者对象返回 "M01" 这类字符串)。
-	sv, ok := optionToString(mc)
-	if !ok {
-		return tgType("Cannot convert monthCode to string")
+	// spec: monthCode 必须是字符串 —— 经 ToPrimitive(value, string) 后若结果
+	// 不是 String 一律 TypeError (5/5n/false/null/Symbol()/{toString:()=>5}
+	// 都在此被拒)。观察者对象返回 "M01" 这类字符串才合法。
+	if sv, ok := mc.(*object.String); ok {
+		r.monthCodeStr, r.hasMonthCode = sv.Value, true
+		return nil
 	}
-	r.monthCodeStr, r.hasMonthCode = sv, true
-	return nil
+	if object.IsObjectLike(mc) {
+		if pb, ok := mc.(propBag); ok {
+			if tv, found := pb.GetProperty("toString"); found && object.IsCallable(tv) {
+				if pv := object.CallFunction(tv, mc); pv != nil {
+					if sv, ok := pv.(*object.String); ok {
+						r.monthCodeStr, r.hasMonthCode = sv.Value, true
+						return nil
+					}
+				}
+			}
+		}
+	}
+	return tgType("monthCode must be a string")
 }
 
 // monthCodeValue 在 regulate 阶段解析并校验 monthCode。
