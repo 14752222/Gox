@@ -84,9 +84,13 @@ import (
 // win32Capabilities 是桌面宿主会实现的方法名。与内核调用点一一对应 (见文件头)。
 var win32Capabilities = []string{
 	"device.info",
-	"device.vibrate",
 	"device.brightness",
 	"device.openSettings",
+	// device.vibrate **刻意不声明**: 桌面没有震动硬件, 声明了就是「声明了却
+	// 永远 unsupported」, 会让 canIUse("device.vibrate") 说谎 (文件头「不许多
+	// 报」那条纪律)。不声明时该调用直接静默返回 —— 与声明后 unsupported 被
+	// callNativeSoft 吞掉是同一个可见结果 (native_device.go:469-473)。
+	// 2026-10-12 由 gfx/hosttest 的「声明即可用」契约断言揭出。
 	// app.orientation / permission.get 由移动壳报; 桌面内核调用点存在但
 	// 语义上桌面没有对应实现 (见 Call 里的分支注释)。
 }
@@ -111,10 +115,6 @@ func (h *win32Host) Call(method string, args object.Value) gfx.NativeCallResult 
 	switch method {
 	case "device.info":
 		return gfx.NativeResult(hostDeviceInfoJS())
-	case "device.vibrate":
-		// 桌面没有震动硬件。返回 unsupported 而不是静默成功:
-		// 调用方写 vibrate() 是想震, 假成功会让他以为震了。
-		return gfx.NativeFailure(gfx.ErrUnsupported, "桌面没有震动硬件 (vibrate 仅移动端支持)")
 	case "device.brightness":
 		// 读亮度需要 WMI / 显示器 DDC, 纯 syscall 拿不到稳定值 —— 诚实返回
 		// unavailable 而不是瞎猜 (假数据比没有更糟)。
