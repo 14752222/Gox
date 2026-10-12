@@ -105,27 +105,27 @@ rawfile 脚本端到端: `gfx/mobile/harmony_asset_test.go`)。
 
 | 模块 | 方法/通道 | Android (Kotlin) | iOS (Swift) | 鸿蒙 (ArkTS) |
 |---|---|---|---|---|
-| gx/device | device.info | ✅ | ✅ | ⬜ unsupported |
-| | device.vibrate | ✅ | ✅ (仅系统级一档) | ⬜ |
-| | device.brightness | ✅ | ✅ | ⬜ |
-| | device.keepScreenOn | ✅ | ✅ | ⬜ |
-| | device.openSettings | ✅ (11 个 kind 全覆盖) | 🟡 (只有 app 总览页; iOS 只开放本应用设置页) | ⬜ |
-| | battery / network 上报 | ✅ (广播 / NetworkCallback) | ✅ (UIDevice / NWPathMonitor) | ⬜ |
-| gx/app | app.share | ✅ | ✅ | ⬜ |
-| | app.exit | ✅ (finishAffinity) | ❌ (iOS 不允许自杀, 显式 unsupported) | ⬜ |
-| | app.orientation | ✅ (requestedOrientation) | ✅ (动态 mask, 需 Info.plist 方向声明) | ⬜ |
-| | appstate / memory 上报 | ✅ (onResume/onPause/onTrimMemory) | ✅ (UIApplication 通知) | ⬜ |
-| | 返回键 (reportBackPress) | ✅ (onBackPressed → 同步问脚本 ≤500ms) | ⬜ (iOS 无返回键) | ⬜ |
-| gx/geo | location.get | ✅ (LocationManager; 宿主侧 30s 兜底超时) | ✅ (CLLocationManager) | ⬜ |
-| | location.watch / unwatch | ✅ (流式, 同 id 反复回填) | ✅ (流式) | ⬜ |
-| | gcj02 坐标系请求 | ❌→platform-error (不做火星换算) | ❌→platform-error | ⬜ |
-| gx/media | camera.takePhoto | ✅ (MediaStore EXTRA_OUTPUT; API<29 缩略图兜底) | ✅ (UIImagePickerController, quality 落 jpg) | ⬜ |
-| | gallery.pick | ✅ (ACTION_PICK / ACTION_GET_CONTENT 多选) | ✅ (PHPicker, 无需相册权限) | ⬜ |
-| | gallery.pickVideo | ✅ | ✅ | ⬜ |
-| | media.save | ✅ (MediaStore 29+; 低版本公共目录+扫描) | ✅ (PHPhotoLibrary add-only) | ⬜ |
-| | media.preview | 🟡 (ACTION_VIEW 单文件; 无系统多图预览) | ✅ (QLPreviewController) | ⬜ |
-| gx/permission | permission.get | 🟡 (Android 无法区分 not-determined/denied → 统一 denied; gallery limited ✅) | ✅ (notification 的同步状态拿不到 → 缺键按 unknown) | ⬜ |
-| | permission.request | ✅ (批量一次申请一次回填) | ✅ (camera/mic/gallery/notification/contacts/calendar/location) | ⬜ |
+| gx/device | device.info | ✅ | ✅ | ✅ (deviceInfo/bundleManager/i18n; udid 受限权限不申请 → deviceId 空) |
+| | device.vibrate | ✅ | ✅ (仅系统级一档) | ✅ (@ohos.vibrator, 时长档) |
+| | device.brightness | ✅ | ✅ | 🟡 (读=系统亮度 settings 库; 写=仅本窗口, 系统亮度写是 system_api) |
+| | device.keepScreenOn | ✅ | ✅ | ✅ (setWindowKeepScreenOn) |
+| | device.openSettings | ✅ (11 个 kind 全覆盖) | 🟡 (只有 app 总览页; iOS 只开放本应用设置页) | 🟡 (只有 app 详情页; 鸿蒙三方应用不允许拉起其他系统设置页) |
+| | battery / network 上报 | ✅ (广播 / NetworkCallback) | ✅ (UIDevice / NWPathMonitor) | ✅ (GoxDeviceReport: 电池 30s 轮询 / NetConnection 回调; chargingType 恒 unknown, SSID/蜂窝代际恒空) |
+| gx/app | app.share | ✅ | ✅ | 🟡 (ShareKit; 待真机验收面板拉起形态) |
+| | app.exit | ✅ (finishAffinity) | ❌ (iOS 不允许自杀, 显式 unsupported) | ✅ (terminateSelf) |
+| | app.orientation | ✅ (requestedOrientation) | ✅ (动态 mask, 需 Info.plist 方向声明) | ✅ (setPreferredOrientation) |
+| | appstate / memory 上报 | ✅ (onResume/onPause/onTrimMemory) | ✅ (UIApplication 通知) | ✅ (onForeground/onBackground/onMemoryLevel, EntryAbility 已接) |
+| | 返回键 (reportBackPress) | ✅ (onBackPressed → 同步问脚本 ≤500ms) | ⬜ (iOS 无返回键) | ✅ (onBackPress → 同步问脚本 ≤500ms, EntryAbility 已接) |
+| gx/geo | location.get | ✅ (LocationManager; 宿主侧 30s 兜底超时) | ✅ (CLLocationManager) | ✅ (geoLocationManager.getCurrentLocation; 待真机验收) |
+| | location.watch / unwatch | ✅ (流式, 同 id 反复回填) | ✅ (流式) | ✅ (on/off('locationChange'), 流式同 id 回填; 待真机验收) |
+| | gcj02 坐标系请求 | ❌→platform-error (不做火星换算) | ❌→platform-error | ❌→platform-error (三端一致) |
+| gx/media | camera.takePhoto | ✅ (MediaStore EXTRA_OUTPUT; API<29 缩略图兜底) | ✅ (UIImagePickerController, quality 落 jpg) | 🟡 (cameraPicker 系统相机 UI 免权限; saveToGallery/maxWidth 未实现, format 恒 jpeg; 待真机验收) |
+| | gallery.pick | ✅ (ACTION_PICK / ACTION_GET_CONTENT 多选) | ✅ (PHPicker, 无需相册权限) | ✅ (PhotoViewPicker, 无需相册权限) |
+| | gallery.pickVideo | ✅ | ✅ | ✅ (PhotoViewPicker VIDEO_TYPE) |
+| | media.save | ✅ (MediaStore 29+; 低版本公共目录+扫描) | ✅ (PHPhotoLibrary add-only) | 🟡 (createAsset 写入相册; album 参数忽略; 授权弹窗形态待真机验收) |
+| | media.preview | 🟡 (ACTION_VIEW 单文件; 无系统多图预览) | ✅ (QLPreviewController) | ❌ (鸿蒙无等价系统预览组件, 显式 unsupported) |
+| gx/permission | permission.get | 🟡 (Android 无法区分 not-determined/denied → 统一 denied; gallery limited ✅) | ✅ (notification 的同步状态拿不到 → 缺键按 unknown) | ✅ (checkAccessTokenSync 全量实值; gallery 走系统选择器免权限恒 granted; storage 无等价恒 unknown) |
+| | permission.request | ✅ (批量一次申请一次回填) | ✅ (camera/mic/gallery/notification/contacts/calendar/location) | ✅ (requestPermissionsFromUser 批量一次申请一次回填 + reportPermission) |
 | gx/viewport | insets 上报 | ✅ (nativeSetInsets, 既有通道) | ✅ (gox_set_insets, 既有通道) | ✅ (GoxBridge.setInsets, 既有通道) |
 | gx/screen (折叠屏) | displayFold 上报 | ✅ (GoxDisplayFold.kt → nativeSetDisplayFold; androidx.window FoldingFeature) | ✅ (GoxDisplayFold.swift → gox_set_display_fold; UIView.reservedRegions, iOS 27.1+) | ✅ (GoxDisplayFold.ets → setDisplayFold; display.getFoldStatus / getCurrentFoldCreaseRegion, API 26+) |
 
@@ -178,7 +178,24 @@ rawfile 脚本端到端: `gfx/mobile/harmony_asset_test.go`)。
 |---|---|---|---|
 | Android | `GoxNativeHost.kt` (interface) | `GoxNativeHostImpl.kt` (+ `GoxFileProvider.kt`, `MainActivity` 接线) | `gfx/android/libgox/main.go` (jniNativeHost, JNI 导出 nativeResolveNative / nativeReport*) |
 | iOS | `NativeHost.swift` (GoxNativeHost 类 + C 闭包) | 同文件 (六模块) + AppDelegate 方向 mask | `gfx/ios/libgox/main.go` (cfnNativeHost, gox_set_native_host / gox_resolve_native / gox_report_*) |
-| 鸿蒙 | `app/harmony/entry/src/main/ets/native/NativeHost.ets` (interface + 协议) | `app/harmony/entry/src/main/ets/native/GoxNativeHost.ets` (stub, 六模块仍显式 unsupported) | `gfx/harmony/libgox/main.go` (napiNativeHost; NAPI 导出 `GoxModuleRegister` / `GoxDispatch`) |
+| 鸿蒙 | `app/harmony/entry/src/main/ets/native/NativeHost.ets` (interface + 协议) | `GoxNativeHostImpl.ets` (六模块真实现) + `GoxNativeHost.ets` (无上下文兜底 stub) + `GoxDeviceReport.ets` (battery/network 上报) | `gfx/harmony/libgox/main.go` (napiNativeHost; NAPI 导出 `GoxModuleRegister` / `GoxDispatch`) |
+
+## 鸿蒙 v1.0 降级口径 (逐模块, 发布说明以此为准)
+
+图例: **可用** = 已实现且协议完整; **降级** = 已实现但有明确边界 (下述);
+**不可用** = 显式 unsupported 错误信封 (绝不静默 stub, 绝不返回假数据)。
+所有"待真机验收"项在 DevEco 模拟器/真机回归前**不视为已验证**, 但实现已按
+公开 API 写完, 失败路径全部走 8 个统一错误码。
+
+| 模块 | v1.0 状态 | 降级内容与影响 |
+|---|---|---|
+| gx/device | **可用** (部分降级) | brightness 写只影响本窗口 (系统亮度写是 system_api, 三方不可得); openSettings 只支持 kind="app" (本应用详情页), 其余 10 个 kind 显式 unsupported —— 与 iOS 口径相同; deviceId 恒空 (udid 需受限权限); 电池 chargingType 恒 unknown、SSID 恒空 (三方应用拿不到) |
+| gx/app | **可用** | app.exit 经 terminateSelf; appstate/memory/返回键上报 EntryAbility 已接; share 走 ShareKit, 面板依赖华为账号登录态, **待真机验收** |
+| gx/geo | **可用** (待真机验收) | getCurrentLocation + locationChange 流式已实现; gcj02 显式 platform-error (三端一致); 未授权显式 permission-denied (不替脚本弹窗) |
+| gx/media | **降级** | takePhoto 走 cameraPicker (免权限), saveToGallery/maxWidth 重采样未实现、format 恒 jpeg; gallery.pick/pickVideo 走 PhotoViewPicker (免权限) 可用; media.save 经 createAsset, album 参数忽略, **待真机验收**; **media.preview 不可用** (鸿蒙无等价系统预览组件) → 显式 unsupported, 脚本需 canIUse 分支或自行实现预览页 |
+| gx/permission | **可用** | get 全量实值; gallery 免权限恒 granted (系统选择器); storage 无等价恒 unknown; request 批量一次申请一次回填并上报变化 |
+| gx/viewport | **可用** | insets 上报既有通道 (GoxBridge.setInsets), EntryAbility 已接 |
+| gx/screen | **可用** | displayFold 上报已实现 (GoxDisplayFold.ets, HF2 起); 触摸/上屏/折叠上报仍待 DevEco 模拟器或真机回归 |
 
 ## 验证情况 (2026-09-25)
 
@@ -201,6 +218,15 @@ rawfile 脚本端到端: `gfx/mobile/harmony_asset_test.go`)。
 | 契约测试 | ✅ `gfx/mobile` 鸿蒙用例 6 项全通 (含 rawfile 脚本端到端跑折叠上报) |
 | DevEco 模拟器 / 真机 | ⬜ **未跑**: 触摸、上屏、折叠上报目前只有静态 + 纯 Go 验证 |
 
+### 鸿蒙六模块补齐 (2026-10-11, v1.0)
+
+| 项 | 结果 |
+|---|---|
+| `GoxNativeHostImpl.ets` (五 Call 模块真实现 + media.preview 显式降级) | ✅ 已写, 静态自查; ArkTS 编译/DevEco 构建未跑 (本机无 SDK) |
+| `GoxDeviceReport.ets` (battery/network 上报) + EntryAbility memory 上报 | ✅ 已接 |
+| `Index.ets` 会话注入真实现 (缺省才退回 stub) | ✅ 已接 |
+| ShareKit 面板 / cameraPicker / createAsset / geoLocationManager | ⬜ **待真机验收** (实现已按公开 API 写完, 见降级口径表) |
+
 ## 需要真机/模拟器验收的遗留项
 
 1. Android 返回键链路: `onBackPressed → nativeReportBackPress` 的 500ms 同步等待
@@ -213,6 +239,10 @@ rawfile 脚本端到端: `gfx/mobile/harmony_asset_test.go`)。
    PermissionRationale 两种情况都 false); 若内核后续增加"永久拒绝"语义需平台跟进。
 5. 三平台 battery 的 `chargingType` 词汇 (usb/ac/wireless/none/unknown) 在 iOS
    上不可区分, 恒 unknown (充电中)。
+6. 鸿蒙六模块真机验收 (2026-10-11 补齐实现后): ShareKit 分享面板 (依赖华为
+   账号登录态)、cameraPicker 拍照与照片落盘、photoAccessHelper createAsset
+   授权弹窗形态、geoLocationManager 一次定位与流式 watch、vibrator 在无马达
+   机型的错误形态、系统亮度量程 (按 0..255 归一)。
 
 ## 已修复 (待回归确认)
 
