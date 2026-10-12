@@ -1117,8 +1117,16 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			// 栈: [obj, parent] → obj.Proto = parent
 			parent := vm.stack.Pop()
 			obj := vm.stack.Peek()
-			if o, ok := obj.(*object.Object); ok {
+			switch o := obj.(type) {
+			case *object.Object:
 				o.Proto = parent
+			case *object.Closure:
+				// class 派生类的构造器是闭包: `class D extends C` 时规范要求
+				// D.[[Prototype]] = C (不只 D.prototype.[[Prototype]] = C.prototype)。
+				// 缺这一步会让 D 无法继承 C 的静态成员 / @@species 访问器。
+				o.FuncPrototype = parent
+			case *object.BuiltinFunction:
+				o.FuncPrototype = parent
 			}
 		case bytecode.OP_GET_PROTO:
 			// 栈: [obj] → [proto] (roiE5Z: eval 单元 super.x 的 base 解析)。

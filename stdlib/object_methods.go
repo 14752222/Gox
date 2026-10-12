@@ -986,6 +986,13 @@ func setupGlobalFunctions(env *runtime.Environment) {
 		if len(args) == 0 {
 			return object.NewNumber(0)
 		}
+		// 规范 sec-number-constructor: ToNumeric 语义 —— Number(BigInt) 是
+		// 唯一允许 BigInt 的数值转换 (𝔽(ℝ(value))), 例如 Number(2n) === 2。
+		// 不能走 toFloat (它把 BigInt 当未知类型返回 NaN), 否则 test262
+		// 的 ToNumbers/Convert 等 harness 辅助把 BigInt 元素读成 NaN。
+		if bi, ok := object.UnwrapPrimitive(args[0]).(*object.BigInt); ok {
+			return object.NewNumber(bi.ToFloat64())
+		}
 		return object.NewNumber(toFloat(args[0]))
 	})
 	numFn.SetProperty("name", object.NewString("Number"))

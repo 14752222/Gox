@@ -17,6 +17,15 @@ func (vm *VM) constructValue(fn object.Value, args []object.Value) (object.Value
 		}
 		return r, nil
 	}
+	// 闭包构造必须与 OP_NEW 同口径: 派生类的 super(...) 依赖 pendingNewTarget
+	// 走「父构造结果替换本帧 this」分支, 否则 `class D extends Uint8Array{}`
+	// 经 Reflect.construct / SpeciesCreate 构造出来的只是普通对象 (实例方法
+	// 全部报 receiver must be a TypedArray)。
+	if c, ok := fn.(*object.Closure); ok {
+		if c.IsArrow || (c.Fn != nil && (c.Fn.IsGenerator || c.Fn.IsAsync)) {
+			return object.UndefinedSingleton, fmt.Errorf("TypeError: %s is not a constructor", describeCallee(fn))
+		}
+	}
 	var proto object.Value
 	if pv, ok := fn.GetProperty("prototype"); ok && pv != nil {
 		proto = pv
@@ -26,6 +35,51 @@ func (vm *VM) constructValue(fn object.Value, args []object.Value) (object.Value
 		newObj = object.NewObjectWithProto(proto)
 	} else {
 		newObj = object.NewPlainObject()
+	}
+	// 闭包构造走 callClosure + runFrom (与 OP_NEW 同路径): 派生类的 super(...)
+	// 依赖 pendingNewTarget 走「父构造结果替换本帧 this」分支, 且隐式返回
+	// undefined 时须采用构造器帧最终的 this。否则 `class D extends Uint8Array{}`
+	// 经 Reflect.construct / SpeciesCreate 构造出来的只是普通对象 (实例方法
+	// 全部报 receiver must be a TypedArray)。
+	if c, ok := fn.(*object.Closure); ok {
+		bound := &object.Closure{
+			Fn:             c.Fn,
+			Env:            c.Env,
+			This:           newObj,
+			NewTarget:      c.NewTarget,
+			IsArrow:        c.IsArrow,
+			CapturedLocals: c.CapturedLocals,
+			CreatedAtFrame: c.CreatedAtFrame,
+			IterEpoch:      c.IterEpoch,
+		}
+		prevNT, prevHas := vm.pendingNewTarget, vm.hasPendingNewTarget
+		vm.pendingNewTarget = fn
+		vm.hasPendingNewTarget = true
+		startIdx := vm.frameIdx + 1
+		if err := vm.callClosure(bound, args); err != nil {
+			vm.pendingNewTarget, vm.hasPendingNewTarget = prevNT, prevHas
+			vm.unwindFramesTo(startIdx)
+			return nil, err
+		}
+		ctorFrame := vm.frames[startIdx]
+		if err := vm.runFrom(startIdx); err != nil {
+			vm.pendingNewTarget, vm.hasPendingNewTarget = prevNT, prevHas
+			vm.unwindFramesTo(startIdx)
+			return nil, err
+		}
+		vm.pendingNewTarget, vm.hasPendingNewTarget = prevNT, prevHas
+		var ctorThis object.Value
+		if ctorFrame != nil {
+			ctorThis = ctorFrame.This
+		}
+		result := vm.stack.Pop()
+		if object.IsObjectValue(result) {
+			return result, nil
+		}
+		if ctorThis != nil && ctorThis != newObj {
+			return ctorThis, nil
+		}
+		return newObj, nil
 	}
 	r, err := vm.callFunction(fn, newObj, args)
 	if err != nil {
