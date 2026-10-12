@@ -482,7 +482,9 @@ func (t *TypedArray) setElementE(i int, val Value) (err Value) {
 // bigIntElementBits 把一个值按 BigInt 视图的元素语义编码为 64 位:
 //   - BigInt 原值直接取模 2^64 (无符号) 或按补码回绕 (有符号);
 //   - Number 按 ToBigInt (须为整数值, 否则抛 RangeError);
-//   - 其余类型 (String/Boolean/null/undefined/object) 抛 TypeError。
+//   - String 按 StringToBigInt (空串/全空白 → 0n; 非法 → SyntaxError);
+//   - Boolean → 1n / 0n;
+//   - 其余类型 (null/undefined/object/Symbol) 抛 TypeError。
 //
 // 出错时调用方需感知 (set 系列要能中止并抛错), 故这里 panic 一个
 // *Error 由 setElementE 捕获; 无错路径零开销。
@@ -495,6 +497,18 @@ func bigIntElementBits(v Value, signed bool) uint64 {
 			panic(NewRangeError("Cannot convert %v to a BigInt", t.Value))
 		}
 		return bigIntToBits(bigIntFromFloat(t.Value), signed)
+	case *String:
+		// 规范 ToBigInt(String) = StringToBigInt: 解析失败抛 SyntaxError。
+		bi, ok := ParseBigIntString(t.Value)
+		if !ok {
+			panic(NewSyntaxError(fmt.Sprintf("Cannot convert %s to a BigInt", t.Inspect())))
+		}
+		return bigIntToBits(NewBigInt(bi), signed)
+	case *Boolean:
+		if t.Value {
+			return 1
+		}
+		return 0
 	default:
 		panic(NewTypeError("Cannot convert %s to a BigInt", v.Inspect()))
 	}
@@ -720,41 +734,62 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 			if len(sargs) == 0 {
 				return UndefinedSingleton
 			}
+			// 规范 sec-%typedarray%.prototype.set:
+			//   1. offset = ToIntegerOrInfinity(offset) —— NaN 视作 0;
+			//   2. src = ToObject(source) (sourceArg 为 undefined/null 抛 TypeError)。
 			offset := 0
 			if len(sargs) > 1 {
 				f, err := toF64E(sargs[1])
 				if err != nil {
 					return err
 				}
-				offset = int(f)
+				offset = toIntegerOrInfinity(f)
 			}
+			// 元素类型 (Integer-Indexed) 的捕获发生在 ToIntegerOrInfinity 之前,
+			// 之后 buffer 分离/缩容会让 SetElement 直接抛 TypeError —— 此处先
+			// 记录源/目标是否可用。
 			if offset < 0 {
 				return NewRangeError("TypedArray.prototype.set: offset is negative")
 			}
-			src, ok := sargs[0].(*TypedArray)
+			srcArg := sargs[0]
+			if srcArg == nil || srcArg == UndefinedSingleton || srcArg == NullSingleton {
+				return NewTypeError("TypedArray.prototype.set: source is null or undefined")
+			}
+			src, ok := srcArg.(*TypedArray)
 			if ok {
+				if src.OutOfBounds() || ta.OutOfBounds() {
+					return NewTypeError("TypedArray.prototype.set: typed array is detached or out of bounds")
+				}
 				// 跨 BigInt/非 BigInt 视图互拷是 TypeError (规范 SetTypedArrayFromTypedArray)。
 				if src.Kind.BigInt != ta.Kind.BigInt {
 					return NewTypeError("TypedArray.prototype.set: cannot mix BigInt and non-BigInt views")
 				}
-				if offset+src.arrLength() > ta.arrLength() {
+				srcLen := src.arrLength()
+				if offset+srcLen > ta.arrLength() {
 					return NewRangeError("TypedArray.prototype.set: source is too large")
 				}
-				for i := 0; i < src.arrLength(); i++ {
-					if err := ta.setElementE(offset+i, src.getElement(i)); err != nil {
+				// 同 buffer 重叠拷贝: 规范先把源元素读进临时列表再写 ——
+				// 直接逐点拷贝会把已覆盖的源元素再写回去 (set/typedarray-arg-
+				// set-values-same-buffer-same-type 的 [1,1,1,4])。
+				tmp := make([]Value, srcLen)
+				for i := 0; i < srcLen; i++ {
+					tmp[i] = src.getElement(i)
+				}
+				for i := 0; i < srcLen; i++ {
+					if err := ta.setElementE(offset+i, tmp[i]); err != nil {
 						return err
 					}
 				}
 				return UndefinedSingleton
 			}
-			if next, ok := Iterate(sargs[0]); ok {
+			if next, ok := Iterate(srcArg); ok {
 				i := offset
 				for {
 					v, done := next()
 					if done {
 						break
 					}
-					if i >= ta.arrLength() {
+					if ta.OutOfBounds() || i >= ta.arrLength() {
 						return NewRangeError("TypedArray.prototype.set: source is too large")
 					}
 					if err := ta.setElementE(i, v); err != nil {
@@ -767,7 +802,7 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 			// array-like / Proxy 源: 读 length 再逐索引取 (规范
 			// TypedArraySetFromArrayLike 语义; 中途 resize 由 setElement
 			// 边界检查自然覆盖)。
-			lv, ok := sargs[0].GetProperty("length")
+			lv, ok := srcArg.GetProperty("length")
 			if !ok || lv == nil {
 				return NewTypeError("TypedArray.prototype.set: invalid source")
 			}
@@ -775,12 +810,12 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 			if lerr != nil {
 				return lerr
 			}
-			n := int(nf)
-			if n < 0 || offset+n > ta.arrLength() {
+			n := toIntegerOrInfinity(nf)
+			if ta.OutOfBounds() || n < 0 || offset+n > ta.arrLength() {
 				return NewRangeError("TypedArray.prototype.set: source is too large")
 			}
 			for i := 0; i < n; i++ {
-				v, _ := sargs[0].GetProperty(fmt.Sprintf("%d", i))
+				v, _ := srcArg.GetProperty(fmt.Sprintf("%d", i))
 				if v == nil {
 					v = UndefinedSingleton
 				}
@@ -1268,6 +1303,21 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 		}), true
 	}
 	return nil, false
+}
+
+// toIntegerOrInfinity 实现规范 ToIntegerOrInfinity: NaN→0, ±Inf 保持符号,
+// 其余向零截断。
+func toIntegerOrInfinity(f float64) int {
+	if math.IsNaN(f) {
+		return 0
+	}
+	if math.IsInf(f, 0) {
+		if f > 0 {
+			return math.MaxInt
+		}
+		return math.MinInt
+	}
+	return int(math.Trunc(f))
 }
 
 // fromIndexArg 解析 indexOf/includes 的 fromIndex (负值按 length 回绕)。
