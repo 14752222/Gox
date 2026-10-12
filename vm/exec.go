@@ -2219,6 +2219,26 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				continue
 			}
 			vm.stack.Push(result)
+		case bytecode.OP_INC, bytecode.OP_DEC:
+			// ++/-- 的数值步骤: ToNumeric(old) ± 1 (同类型)。
+			// BigInt 走 BigInt ± 1n (禁止与 Number 混合), 其余走 double。
+			val := vm.stack.Pop()
+			one := int64(1)
+			if op == bytecode.OP_DEC {
+				one = -1
+			}
+			if bi, ok := val.(*object.BigInt); ok {
+				vm.stack.Push(bi.Add(object.NewBigIntInt64(one)))
+				continue
+			}
+			num, err := toNumberValue(val)
+			if err != nil {
+				if terr := vm.throwJSError(err); terr != nil {
+					return terr
+				}
+				continue
+			}
+			vm.stack.Push(object.NewNumber(num.(*object.Number).Value + float64(one)))
 		case bytecode.OP_TO_PROPERTY_KEY:
 			// 栈: [obj, keyRaw] → [obj, keyTransformed]。
 			//

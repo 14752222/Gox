@@ -933,14 +933,14 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 		return iterMethod("join", func(ta *TypedArray, sargs []Value) Value {
 			sep := ","
 			if len(sargs) > 0 && !isUndef(sargs[0]) {
-				sep = ToString(sargs[0])
+				s := sargs[0]
+				// 规范 ToString(separator): Symbol 抛 TypeError。
+				if _, isSym := s.(*Symbol); isSym {
+					return NewTypeError("Cannot convert a Symbol value to a string")
+				}
+				sep = ToString(s)
 			}
-			n := ta.arrLength()
-			parts := make([]string, 0, n)
-			for i := 0; i < n; i++ {
-				parts = append(parts, ToString(ta.getElement(i)))
-			}
-			return NewString(strings.Join(parts, sep))
+			return NewString(ta.joinWith(sep, ta.arrLength()))
 		})
 	case "indexOf":
 		return iterMethod("indexOf", func(ta *TypedArray, sargs []Value) Value {
@@ -1143,17 +1143,37 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 			for i := 0; i < n; i++ {
 				els[i] = ta.getElement(i)
 			}
+			// 无 comparefn: 规范按数值升序 (BigInt 视图用 BigInt 语义)。
+			// 有 comparefn: 其返回值经 ToNumber 后 < 0 判序 —— 但 CompareTypedArray-
+			// Elements 要求 comparefn 非 callable 时抛 TypeError (不得静默忽略)。
 			var cmp func(a, b Value) bool
-			if len(sargs) > 0 && IsCallable(sargs[0]) {
+			if len(sargs) > 0 && !isUndef(sargs[0]) {
+				if !IsCallable(sargs[0]) {
+					return NewTypeError("TypedArray.prototype.sort: comparefn must be a function")
+				}
 				cmpFn := sargs[0]
+				var cbErr Value
 				cmp = func(a, b Value) bool {
-					return toF64Value(CallFunction(cmpFn, UndefinedSingleton, a, b)) < 0
+					if cbErr != nil {
+						return false
+					}
+					r := CallFunction(cmpFn, UndefinedSingleton, a, b)
+					if ev := TakeCallbackErrorValue(); ev != UndefinedSingleton {
+						cbErr = ev
+						return false
+					}
+					return toF64Value(r) < 0
 				}
-			} else {
-				cmp = func(a, b Value) bool {
-					return toNumberValue(a) < toNumberValue(b)
+				sort.SliceStable(els, func(i, j int) bool { return cmp(els[i], els[j]) })
+				if cbErr != nil {
+					return cbErr
 				}
+				for i := 0; i < n; i++ {
+					ta.setElement(i, els[i])
+				}
+				return ta
 			}
+			cmp = func(a, b Value) bool { return typedArrayElemLess(a, b) }
 			sort.SliceStable(els, func(i, j int) bool { return cmp(els[i], els[j]) })
 			for i := 0; i < n; i++ {
 				ta.setElement(i, els[i])
@@ -1318,12 +1338,35 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 			}
 			return acc
 		})
-	case "toLocaleString", "toString":
+	case "toString":
+		// %TypedArray%.prototype.toString 复用 join 的默认分隔符语义
+		// (规范 22.2.3.32: 实际调用 Array.prototype.toString 的算法)。
+		return iterMethod("toString", func(ta *TypedArray, sargs []Value) Value {
+			return NewString(ta.joinWith(",", ta.arrLength()))
+		})
+	case "toLocaleString":
+		// 规范 22.2.3.28: 逐元素 ToString(Invoke(element, "toLocaleString")),
+		// null/undefined 元素计空串。不能直接 ToString(element) —— 那样会
+		// 绕过元素上被覆盖的 toLocaleString (BigInt/Number 原型均可被改)。
 		return iterMethod("toLocaleString", func(ta *TypedArray, sargs []Value) Value {
 			n := ta.arrLength()
 			parts := make([]string, 0, n)
 			for i := 0; i < n; i++ {
-				parts = append(parts, ToString(ta.getElement(i)))
+				e := ta.getElement(i)
+				if e == nil || e == UndefinedSingleton || e == NullSingleton {
+					parts = append(parts, "")
+					continue
+				}
+				m, ok := e.GetProperty("toLocaleString")
+				if !ok || !IsCallable(m) {
+					parts = append(parts, ToString(e))
+					continue
+				}
+				r := CallFunction(m, e)
+				if ev := TakeCallbackErrorValue(); ev != UndefinedSingleton {
+					return ev
+				}
+				parts = append(parts, ToString(r))
 			}
 			return NewString(strings.Join(parts, ","))
 		})
@@ -1344,15 +1387,16 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 				els[i] = ta.getElement(i)
 			}
 			var cmp func(a, b Value) bool
-			if len(sargs) > 0 && IsCallable(sargs[0]) {
+			if len(sargs) > 0 && !isUndef(sargs[0]) {
+				if !IsCallable(sargs[0]) {
+					return NewTypeError("TypedArray.prototype.toSorted: comparefn must be a function")
+				}
 				cmpFn := sargs[0]
 				cmp = func(a, b Value) bool {
 					return toF64Value(CallFunction(cmpFn, UndefinedSingleton, a, b)) < 0
 				}
 			} else {
-				cmp = func(a, b Value) bool {
-					return toNumberValue(a) < toNumberValue(b)
-				}
+				cmp = func(a, b Value) bool { return typedArrayElemLess(a, b) }
 			}
 			sort.SliceStable(els, func(i, j int) bool { return cmp(els[i], els[j]) })
 			out := NewTypedArray(ta.Kind, n)
@@ -1494,6 +1538,43 @@ func (t *TypedArray) rangeArgs(args []Value) (int, int, Value) {
 		end = start
 	}
 	return start, end, nil
+}
+
+// typedArrayElemLess 是 TypedArray sort 默认比较: 元素按数学值升序。
+//
+// BigInt 元素必须用 BigInt 语义比较: 转 float64 会丢 >2^53 的精度, 且
+// BigInt 与 Number 在 Go 侧不可直接比 —— 故按类型分派。
+func typedArrayElemLess(a, b Value) bool {
+	ab, aBig := a.(*BigInt)
+	bb, bBig := b.(*BigInt)
+	if aBig && bBig {
+		return ab.Value.Cmp(bb.Value) < 0
+	}
+	if aBig || bBig {
+		// 混合不出现于同一 TypedArray, 但回调可改变元素类型; 退化到浮点。
+		return toNumberValue(a) < toNumberValue(b)
+	}
+	return toNumberValue(a) < toNumberValue(b)
+}
+
+// joinWith 以 sep 连接前 n 个元素 (join/toString 共用)。
+//
+// 逐元素走 ToString (而非 Inspect): BigInt 元素不带 "n" 后缀, null/undefined
+// 计空串 —— 与 Array.prototype.join 语义一致。
+func (t *TypedArray) joinWith(sep string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	parts := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		e := t.getElement(i)
+		if e == nil || e == UndefinedSingleton || e == NullSingleton {
+			parts = append(parts, "")
+			continue
+		}
+		parts = append(parts, ToString(e))
+	}
+	return strings.Join(parts, sep)
 }
 
 // nameIndex 把属性名解析为非负整数索引。
