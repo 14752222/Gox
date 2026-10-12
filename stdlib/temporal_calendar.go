@@ -1067,8 +1067,12 @@ func ymDiff(t *object.TemporalPlainYearMonth, args []object.Value, since bool) o
 	diff := (int64(other.Year())*12 + int64(other.Month())) -
 		(int64(t.Year())*12 + int64(t.Month()))
 	if since {
+		// 只翻符号即可: roundRatToIncrement 自身按规范处理带符号输入
+		// (pos := v.Sign() >= 0), 无需再镜像 roundingMode。旧实现在此
+		// 额外 negateRoundingMode(mode), 与"先取负"叠加成双重取反 ——
+		// since 的 expand/ceil 被错当成 trunc/floor, 正值 2y8m 该进到 3
+		// 却停在 2 (PlainYearMonth/prototype/since 的 roundingmode 整族)。
 		diff = -diff
-		mode = negateRoundingMode(mode)
 	}
 	if smallest == "year" {
 		years := roundRatToIncrement(big.NewRat(diff, 12), inc, mode)
