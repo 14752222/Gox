@@ -686,6 +686,19 @@ func ParseTemporalInstantString(s string) (TemporalFields, bool) {
 // ParseTemporalZonedDateTimeString 解析 TemporalZonedDateTimeString。
 // 与 Instant 文法的区别: 偏移可选，但时区注解必需。
 func ParseTemporalZonedDateTimeString(s string) (TemporalFields, bool) {
+	f, ok := ParseTemporalRelativeToString(s)
+	if !ok || f.TimeZoneAnnotation == "" {
+		return f, false
+	}
+	return f, true
+}
+
+// ParseTemporalRelativeToString 解析 TemporalRelativeToString:
+// Date [Time] [Offset] [Annotations]，各段除日期外均可选、
+// 时区注解也可选。供 ToRelativeTemporalObject 与
+// TimeZone/Calendar 的串参数使用 —— 它比 ZonedDateTime 文法宽松，
+// 允许裸日期 ("2000-01-01") 与不带注解的日期时间 ("2019-11-01T00:00")。
+func ParseTemporalRelativeToString(s string) (TemporalFields, bool) {
 	var f TemporalFields
 	p := &isoScanner{s: s}
 	if !p.parseDate(&f) {
@@ -701,9 +714,6 @@ func ParseTemporalZonedDateTimeString(s string) (TemporalFields, bool) {
 	}
 	p.parseOffset(&f)
 	if !p.parseAnnotations(&f) || !p.eof() {
-		return f, false
-	}
-	if f.TimeZoneAnnotation == "" {
 		return f, false
 	}
 	return f, true

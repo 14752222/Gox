@@ -3,6 +3,7 @@ package stdlib
 import (
 	"math"
 	"math/big"
+	"strings"
 
 	"github.com/14752222/Gox/object"
 )
@@ -235,8 +236,7 @@ func setupTemporalDuration(temporal *object.Object) {
 
 		if hasRel {
 			if smallest == "auto" {
-				smallest = "nanosecond"
-			}
+				smallest = "nanosecond"			}
 			if largest == "auto" {
 				largest = durationDefaultLargest(d, smallest)
 			}
@@ -303,9 +303,13 @@ func setupTemporalDuration(temporal *object.Object) {
 		} else if e := optionsTypeErr(opts); e != nil {
 			return e
 		}
+		// 规范读取顺序: relativeTo → unit。
 		if opts != nil {
-			// 规范读取顺序: relativeTo → unit。
 			relV = optValue(opts, "relativeTo")
+		}
+		relTo, relErr, relProvided := toRelativeTemporalObject(relV)
+		if relErr != nil {
+			return relErr
 		}
 		if unit == "" {
 			unit = optString(opts, "unit", "")
@@ -323,8 +327,7 @@ func setupTemporalDuration(temporal *object.Object) {
 		if !found {
 			return tgRange("Invalid unit: " + unit)
 		}
-		relTo, _ := relativeToISOValue(relV)
-		v, ok := object.TotalOfUnit(d, u, relTo)
+		v, ok := totalOfUnitRel(d, u, relTo, relProvided)
 		if !ok {
 			return tgRange("total of " + u + " requires a relativeTo")
 		}
@@ -447,27 +450,182 @@ func compareDurations(a, b *object.TemporalDuration, opts object.Value) (int, ob
 	return endA.EpochNanos().Cmp(endB.EpochNanos()), nil
 }
 
-// relativeToISO 从 options.relativeTo 提取锚点时间点。
-// 支持 PlainDateTime/PlainDate/ZonedDateTime 实例、属性包与字符串。
-func relativeToISO(opts object.Value) (*object.ISODateTime, bool) {
-	return relativeToISOValue(optValue(opts, "relativeTo"))
+// temporalRelativeTo 是 ToRelativeTemporalObject 的结果。
+//
+// 规范区分两种形态，且这一区分直接决定"一天有多长":
+//   - Plain 形态 (裸日期串 / 日期时间串 / 无 timeZone 的属性包):
+//     墙钟日历，一天恒等于 86400e9 纳秒。
+//   - Zoned 形态 (带 [TZ] 注解的串 / 带 timeZone 字段的属性包 /
+//     ZonedDateTime 实例): 一天是"当地一个日历日"，夏令时切换日可能
+//     是 23 或 25 小时 —— total/round 必须按 epoch 差而非墙钟差计算。
+type temporalRelativeTo struct {
+	// Wall 是解析出的墙钟日期时间 (zoned 形态取其当地字段)。
+	Wall object.ISODateTime
+	// TZ 非空表示 zoned 形态; 空串表示 plain 形态。
+	TZ string
+	// Nanos 是 zoned 形态下的确切时刻; plain 形态下为 nil。
+	Nanos *big.Int
 }
 
-// relativeToISOValue 同上，但接受已读出的原始值 (避免重复 get 被观察)。
-func relativeToISOValue(v object.Value) (*object.ISODateTime, bool) {
-	if v == nil {
+// IsZoned 判断是否为 zoned 相对起点。
+func (r temporalRelativeTo) IsZoned() bool { return r.TZ != "" && r.Nanos != nil }
+
+// totalOfUnitRel 桥接 object.TotalOfUnit，把已解析的相对起点转成锚点。
+func totalOfUnitRel(d *object.TemporalDuration, unit string, rel temporalRelativeTo, provided bool) (float64, bool) {
+	if !provided {
+		return object.TotalOfUnit(d, unit, nil)
+	}
+	dt := rel.Wall
+	if rel.IsZoned() {
+		return object.TotalOfUnitZoned(d, unit, dt, rel.TZ, rel.Nanos)
+	}
+	return object.TotalOfUnit(d, unit, &dt)
+}
+
+// relativeToISO 从 options.relativeTo 提取锚点时间点。
+func relativeToISO(opts object.Value) (*object.ISODateTime, bool) {
+	rel, err, ok := toRelativeTemporalObject(optValue(opts, "relativeTo"))
+	if !ok || err != nil {
 		return nil, false
 	}
-	if zdt, ok := asZonedDateTime(v); ok {
-		dt := object.GetISOPartsFromEpoch(zdt.TimeZoneID(), zdt.Nanos())
-		return &dt, true
-	}
-	pdt, cerr := toPlainDateTimeValue(v)
-	if cerr != nil {
-		return nil, false
-	}
-	dt := pdt.ISODateTime()
+	dt := rel.Wall
 	return &dt, true
+}
+
+// relativeToISOValue 返回墙钟锚点 (保留旧签名，供只关心墙钟的调用方使用)。
+func relativeToISOValue(v object.Value) (*object.ISODateTime, bool) {
+	rel, err, ok := toRelativeTemporalObject(v)
+	if !ok || err != nil {
+		return nil, false
+	}
+	dt := rel.Wall
+	return &dt, true
+}
+
+// toRelativeTemporalObject 实现规范 ToRelativeTemporalObject。
+//
+// 返回 (值, 错误, 是否已提供)。未提供 relativeTo 时 ok=false, err=nil。
+// 错误类型遵循规范: 非字符串原始值 (number/bigint/boolean/null) → TypeError;
+// 非法 ISO 串 → RangeError; 对象缺必需字段 → TypeError。
+func toRelativeTemporalObject(v object.Value) (temporalRelativeTo, object.Value, bool) {
+	var z temporalRelativeTo
+	if v == nil {
+		return z, nil, false
+	}
+	switch t := v.(type) {
+	case *object.TemporalZonedDateTime:
+		wall := object.GetISOPartsFromEpoch(t.TimeZoneID(), t.Nanos())
+		return temporalRelativeTo{Wall: wall, TZ: t.TimeZoneID(), Nanos: t.Nanos()}, nil, true
+	case *object.TemporalPlainDateTime:
+		return temporalRelativeTo{Wall: t.ISODateTime()}, nil, true
+	case *object.TemporalPlainDate:
+		return temporalRelativeTo{Wall: object.ISODateTime{Date: t.ISODate()}}, nil, true
+	case *object.String:
+		return relativeFromString(t.Value)
+	case *object.Object, *object.Proxy:
+		return relativeFromBag(v.(propBag))
+	case *object.Undefined:
+		return z, nil, false
+	}
+	// number / bigint / boolean / null / symbol 等原始值: 规范要求 TypeError。
+	return z, tgType("relativeTo must be an object or a string"), true
+}
+
+// relativeFromString 把 ISO 串解析成相对起点。
+// 带 [TZ] 注解 → zoned 形态 (按 offset 或时区消歧); 否则 plain 形态。
+func relativeFromString(s string) (temporalRelativeTo, object.Value, bool) {
+	var z temporalRelativeTo
+	if !strings.ContainsAny(s, "0123456789") {
+		// 既非日期也非时间, 交由解析器给出 RangeError。
+		return z, tgRange("Invalid ISO string: " + s), true
+	}
+	// 扩展年 (含前导 +/− 且位数 > 4) 必须由完整文法校验, 裸日期串走
+	// TemporalRelativeToString。minus-zero 年份 ("-000000-...") 非法。
+	if strings.HasPrefix(s, "-000000") || strings.HasPrefix(s, "\u2212000000") {
+		return z, tgRange("Invalid ISO string: " + s), true
+	}
+	f, ok := object.ParseTemporalRelativeToString(s)
+	if !ok {
+		return z, tgRange("Invalid ISO string: " + s), true
+	}
+	if e := calendarFromAnnotation(f.Calendar); e != nil {
+		return z, e, true
+	}
+	if f.TimeZoneAnnotation == "" {
+		// plain: 只需要日期部分 (时间可选)。
+		if !f.HasDate {
+			return z, tgRange("Invalid ISO string: " + s), true
+		}
+		dt := f.ISODateTime()
+		if !object.ISODateTimeInRange(dt) {
+			return z, tgRange("PlainDateTime is outside of supported range"), true
+		}
+		return temporalRelativeTo{Wall: dt}, nil, true
+	}
+	tz := f.TimeZoneAnnotation
+	if id, ok := canonicalTimeZoneID(tz); ok {
+		tz = id
+	} else {
+		return z, tgRange("Invalid time zone: " + tz), true
+	}
+	dt := f.ISODateTime()
+	var ns *big.Int
+	if f.OffsetSeconds != nil {
+		// 有显式 offset: 先由墙钟 + offset 得到 epoch, 再校验与 tz 一致。
+		ns = dt.EpochNanos()
+		ns = ns.Sub(ns, big.NewInt(int64(*f.OffsetSeconds)*object.NanosPerSecond))
+	} else {
+		cands := object.GetPossibleInstantsFor(tz, dt)
+		n, ok := object.DisambiguatePossibleInstants(cands, tz, dt, "compatible")
+		if !ok {
+			return z, tgRange("Invalid relativeTo string: " + s), true
+		}
+		ns = n
+	}
+	if !object.IsValidEpochNanos(ns) {
+		return z, tgRange("ZonedDateTime is outside of supported range"), true
+	}
+	wall := object.GetISOPartsFromEpoch(tz, ns)
+	return temporalRelativeTo{Wall: wall, TZ: tz, Nanos: ns}, nil, true
+}
+
+// relativeFromBag 把属性包解析成相对起点。
+// 含 timeZone 字段 → zoned 形态; 否则 plain 形态 (需 year/month/day)。
+func relativeFromBag(o propBag) (temporalRelativeTo, object.Value, bool) {
+	var z temporalRelativeTo
+	// 用 readZDTFieldsRaw 一次性按字母序读出全部字段 (含 timeZone/offset)。
+	raw, _, _, rerr := readZDTFieldsRaw(o)
+	if rerr != nil {
+		return z, rerr, true
+	}
+	if !raw.hasYear || (!raw.hasMonth && !raw.hasMonthCode) || !raw.hasDay {
+		return z, tgType("relativeTo must have year, month, and day properties"), true
+	}
+	dt, ferr := raw.regulate("constrain")
+	if ferr != nil {
+		return z, ferr, true
+	}
+	if !raw.hasTZ {
+		if !object.ISODateTimeInRange(dt) {
+			return z, tgRange("PlainDateTime is outside of supported range"), true
+		}
+		return temporalRelativeTo{Wall: dt}, nil, true
+	}
+	tz := raw.timeZone
+	if id, ok := canonicalTimeZoneID(tz); ok {
+		tz = id
+	} else {
+		return z, tgRange("Invalid time zone: " + tz), true
+	}
+	cands := object.GetPossibleInstantsFor(tz, dt)
+	ns, ok := object.DisambiguatePossibleInstants(cands, tz, dt, "compatible")
+	if !ok {
+		return z, tgRange("Invalid wall-clock time"), true
+	}
+	if !object.IsValidEpochNanos(ns) {
+		return z, tgRange("ZonedDateTime is outside of supported range"), true
+	}
+	return temporalRelativeTo{Wall: object.GetISOPartsFromEpoch(tz, ns), TZ: tz, Nanos: ns}, nil, true
 }
 
 // balancedDurationAdd 按规范语义做 Duration 加法: 相加后必须平衡字段。

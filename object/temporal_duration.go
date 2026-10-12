@@ -315,77 +315,146 @@ func TotalNanosPerUnit(unit string) (float64, bool) {
 	return 0, false
 }
 
+// RelativeAnchor 是 Duration.total/round 的日历换算锚点。
+//
+// IsZoned 为真时 (带时区的相对起点)，一天的长度由当地日历日决定
+// (夏令时切换日可能是 23/25 小时)，因此必须用 EpochNanos 差值；
+// 为假时 (PlainDate/PlainDateTime)，一天恒等于 86400e9 纳秒。
+type RelativeAnchor struct {
+	Wall    ISODateTime
+	IsZoned bool
+	// TZ 非空表示 zoned 形态; 用于把墙钟端点换算成确切时刻 (含夏令时)。
+	TZ string
+	// Epoch 是 zoned 形态下墙钟 Wall 对应的确切时刻 (纳秒)。
+	Epoch *big.Int
+}
+
+// EpochNanos 返回锚点的确切时刻。Plain 形态下按 UTC 墙钟折算。
+func (a RelativeAnchor) EpochNanos() *big.Int {
+	if a.Epoch != nil {
+		return a.Epoch
+	}
+	return a.Wall.EpochNanos()
+}
+
+// addDateTimeEpoch 把 duration 加到锚点上，返回终点的确切时刻与墙钟。
+func addDateTimeEpoch(rel RelativeAnchor, d *TemporalDuration) (*big.Int, bool) {
+	target, ok := AddDateTime(rel.Wall, d, "constrain")
+	if !ok {
+		return nil, false
+	}
+	if rel.IsZoned && rel.TZ != "" {
+		// zoned: 墙钟 → 确切时刻 (compatible 消歧)，夏令时日的真实长度
+		// 才能体现在 epoch 差里。
+		cands := GetPossibleInstantsFor(rel.TZ, target)
+		ns, ok := DisambiguatePossibleInstants(cands, rel.TZ, target, "compatible")
+		if !ok {
+			return nil, false
+		}
+		return ns, true
+	}
+	return target.EpochNanos(), true
+}
+
 // TotalOfUnit 计算 Duration 按指定单位的总值 (浮点)。
 //
 // unit 为日历单位时必须提供 relativeTo，否则无法换算 (返回 ok=false);
 // 这与 Temporal.Duration.prototype.total 抛 RangeError 的行为一致。
 func TotalOfUnit(d *TemporalDuration, unit string, relativeTo *ISODateTime) (float64, bool) {
-	if n, ok := TotalNanosPerUnit(unit); ok {
-		total := d.TimeTotalNanos()
-		f, _ := new(big.Float).SetInt(total).Float64()
-		return f / n, true
-	}
-	var divisor float64
-	switch unit {
-	case "year", "years":
-		divisor = 31556952000000000.0 // ISO 年: 365.2425 天
-	case "month", "months":
-		divisor = 2629746000000000.0 // ISO 年 / 12
-	case "week", "weeks":
-		divisor = float64(7 * NanosPerDay)
-	default:
-		return 0, false
-	}
-	// 日历单位有了相对起点后，把 date 差值算成纳秒再除
 	if relativeTo == nil {
+		return totalOfUnitAnchor(d, unit, RelativeAnchor{}, false)
+	}
+	return totalOfUnitAnchor(d, unit, RelativeAnchor{Wall: *relativeTo}, true)
+}
+
+// TotalOfUnitZoned 同 TotalOfUnit，但相对起点带时区 (zoned 形态)。
+// 夏令时切换日以确切时刻差计算真实天数。
+func TotalOfUnitZoned(d *TemporalDuration, unit string, wall ISODateTime, tz string, epoch *big.Int) (float64, bool) {
+	return totalOfUnitAnchor(d, unit, RelativeAnchor{Wall: wall, IsZoned: true, TZ: tz, Epoch: epoch}, true)
+}
+
+// totalOfUnitAnchor 实现规范 TotalRelativeDuration。
+//
+// 对单位 U: 求相对起点 A 到 A+d 的区间中"整 U 的个数 n"与"最后一个
+// 未满 U 的余量占该单位实际长度的比例"，返回 n + 余量/U 的实际长度。
+//
+// 关键: 有 relativeTo 时，**所有**单位都按 A→A+d 的区间算 —— 包括 day。
+// 因为 d 里的年/月/周必须先在日历上落成具体天数 (1 年可能是 365/366 天)，
+// 再除以单位长度。只有完全没有 relativeTo 时，精确单位才退回纳秒直除。
+func totalOfUnitAnchor(d *TemporalDuration, unit string, rel RelativeAnchor, hasRel bool) (float64, bool) {
+	if !hasRel {
+		// 无 relativeTo: 仅精确单位 (day 及以下) 可算, 日历单位报错。
+		if n, ok := TotalNanosPerUnit(unit); ok {
+			total := d.TimeTotalNanos()
+			f, _ := new(big.Float).SetInt(total).Float64()
+			return f / n, true
+		}
 		return 0, false
 	}
-	target, ok := AddDateTime(*relativeTo, d, "constrain")
+	targetEpoch, ok := addDateTimeEpoch(rel, d)
 	if !ok {
 		return 0, false
 	}
-	// 年/月/周: 按规范的 TotalRelativeDuration —— 先取"整单位"个数, 再把
-	// 余下部分除以"该单位在终点前的实际长度"(闰年/月长各异)。直接用
-	// ISO 平均长度 (365.2425 天) 会得到 1.50037 而非精确的 1.5 ——
-	// PlainDate/prototype/until 的 roundingmode-half-boundary 整族。
+	startEpoch := rel.EpochNanos()
 	switch unit {
+	case "day", "days":
+		diff := new(big.Int).Sub(targetEpoch, startEpoch)
+		f, _ := new(big.Float).SetInt(diff).Float64()
+		return f / float64(NanosPerDay), true
 	case "year", "years", "month", "months":
 		wantYear := unit == "year" || unit == "years"
 		sign := int64(1)
-		if target.EpochNanos().Cmp(relativeTo.EpochNanos()) < 0 {
+		if targetEpoch.Cmp(startEpoch) < 0 {
 			sign = -1
 		}
 		// 逐单位逼近: 求最大的 n 使 relativeTo + n 个单位不越过 target。
 		n := int64(0)
 		for {
-			next := addCalendarUnits(*relativeTo, n+sign, wantYear)
+			next := addCalendarUnits(rel.Wall, n+sign, wantYear)
 			if sign > 0 {
-				if next.EpochNanos().Cmp(target.EpochNanos()) > 0 {
+				if addCalendarUnitsEpoch(rel, next).Cmp(targetEpoch) > 0 {
 					break
 				}
-			} else if next.EpochNanos().Cmp(target.EpochNanos()) < 0 {
+			} else if addCalendarUnitsEpoch(rel, next).Cmp(targetEpoch) < 0 {
 				break
 			}
 			n += sign
 		}
-		anchor := addCalendarUnits(*relativeTo, n, wantYear)
-		unitLen := new(big.Int).Sub(
-			addCalendarUnits(anchor, sign, wantYear).EpochNanos(), anchor.EpochNanos())
-		rem := new(big.Int).Sub(target.EpochNanos(), anchor.EpochNanos())
+		anchor := addCalendarUnits(rel.Wall, n, wantYear)
+		anchorEpoch := addCalendarUnitsEpoch(rel, anchor)
+		unitLen := new(big.Int).Sub(addCalendarUnitsEpoch(rel, addCalendarUnits(anchor, sign, wantYear)), anchorEpoch)
+		rem := new(big.Int).Sub(targetEpoch, anchorEpoch)
 		if unitLen.Sign() == 0 {
-			break
+			return 0, false
 		}
 		ratio := new(big.Rat).SetFrac(rem, unitLen)
 		ratio.Add(ratio, big.NewRat(n, 1))
 		f, _ := ratio.Float64()
 		return f, true
 	case "week", "weeks":
-		// 周是固定 7 天, 用总纳秒除以周长即可 (上面的 divisor 路径已足够
-		// 精确), 落入下方。
+		diff := new(big.Int).Sub(targetEpoch, startEpoch)
+		f, _ := new(big.Float).SetInt(diff).Float64()
+		return f / float64(7*NanosPerDay), true
 	}
-	diff := new(big.Int).Sub(target.EpochNanos(), relativeTo.EpochNanos())
-	f, _ := new(big.Float).SetInt(diff).Float64()
-	return f / divisor, true
+	// 小时及以下: 直接用精确部分纳秒 (不受日历单位影响)。
+	if n, ok := TotalNanosPerUnit(unit); ok {
+		total := d.TimeTotalNanos()
+		f, _ := new(big.Float).SetInt(total).Float64()
+		return f / n, true
+	}
+	return 0, false
+}
+
+// addCalendarUnitsEpoch 把"相对锚点加 n 个年/月"后的墙钟换算成确切时刻。
+func addCalendarUnitsEpoch(rel RelativeAnchor, dt ISODateTime) *big.Int {
+	if rel.IsZoned && rel.TZ != "" {
+		cands := GetPossibleInstantsFor(rel.TZ, dt)
+		ns, ok := DisambiguatePossibleInstants(cands, rel.TZ, dt, "compatible")
+		if ok {
+			return ns
+		}
+	}
+	return dt.EpochNanos()
 }
 
 // addCalendarUnits 在 ISO 日期时间上加 n 个年 (wantYear) 或月。时间部分不变。
