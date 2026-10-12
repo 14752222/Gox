@@ -413,6 +413,15 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 			if f.TimeZoneAnnotation == "" {
 				return tgRange("ZonedDateTime string requires a time zone annotation")
 			}
+			// 注解必须能解析成合法时区标识符 (裸 IANA 名 / UTC / 偏移标识符)。
+			// 偏移标识符不允许带小数秒 —— toTimeZoneIDE 会拒绝并规范化,
+			// 于是 "[+01:35:00.000000000]" 抛 RangeError, "[+01:35]" 规范化为
+			// "+01:35" (zoneddatetime-string-multiple-offsets)。
+			if id, tzErr := toTimeZoneIDE(object.NewString(f.TimeZoneAnnotation)); tzErr != nil {
+				return tzErr
+			} else {
+				f.TimeZoneAnnotation = id
+			}
 			return zdtFromFields(f, args)
 		case propBag:
 			switch v.(type) {
