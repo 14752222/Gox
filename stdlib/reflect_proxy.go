@@ -300,7 +300,7 @@ func setupReflectProxy(env *runtime.Environment) {
 
 	// Reflect.construct(target, argsArray[, newTarget]) — 以构造方式调用
 	reflectObj.SetBuiltinProperty("construct", object.NewBuiltin("Reflect.construct", func(args ...object.Value) object.Value {
-		if len(args) < 1 || !object.IsCallable(args[0]) {
+		if len(args) < 1 || !object.IsConstructor(args[0]) {
 			return object.NewTypeError("Reflect.construct: target is not a constructor")
 		}
 		fn := args[0]
@@ -313,7 +313,14 @@ func setupReflectProxy(env *runtime.Environment) {
 		}
 		// newTarget 省略时等于 target
 		newTarget := fn
-		if len(args) > 2 && args[2] != nil {
+		if len(args) > 2 && args[2] != nil && !isUndefinedValue(args[2]) {
+			// 规范 sec-reflect.construct 第 3 步: newTarget 必须实现
+			// [[Construct]] (IsConstructor)，否则抛 TypeError。
+			// 这条校验正是 harness isConstructor() 的判据，漏掉它会让
+			// 内建函数一律被误判为可构造 (parseInt 等 not-a-constructor 族)。
+			if !object.IsConstructor(args[2]) {
+				return object.NewTypeError("Reflect.construct: newTarget is not a constructor")
+			}
 			newTarget = args[2]
 		}
 		// 规范 sec-reflect.construct 步骤 2: IsConstructor(newTarget) 为假抛

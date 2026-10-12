@@ -332,6 +332,13 @@ func (t *TypedArray) ArrLength() int { return t.arrLength() }
 // [[IsOutOfBounds]] 语义): buffer 分离, 或定长视图的字节范围超出
 // buffer 当前字节长 (resizable buffer 缩容导致)。越界视图上调用
 // 原型方法必须抛 TypeError。
+// TypedArrayOutOfBounds 构造越界视图上 "必须抛 TypeError" 的错误值。
+// 供无法直接返回 error 的接口 (如 HasOwn 返回 bool) 经 panic 抛出,
+// VM 的 panic 恢复路径会把它转成 JS 异常。
+func TypedArrayOutOfBounds(method string) *Error {
+	return NewTypeError("TypedArray.prototype.%s: typed array is out of bounds", method)
+}
+
 func (t *TypedArray) OutOfBounds() bool {
 	if t.Buffer == nil || t.Buffer.Detach {
 		return true
@@ -1010,7 +1017,15 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 			return FalseSingleton
 		})
 	case "hasOwnProperty":
-		return iterMethod("hasOwnProperty", func(ta *TypedArray, sargs []Value) Value {
+		// 规范 sec-typedarray-hasownproperty: ValidateTypedArray 只对
+		// 整数索引键做 [[IsOutOfBounds]] 检查 —— 越界视图上查索引抛
+		// TypeError, 查 "byteLength" / 自定义键仍正常返回, 故不能用
+		// 一律前置校验的 iterMethod。
+		return NewBuiltinMethod("hasOwnProperty", func(this Value, sargs ...Value) Value {
+			ta, ok := this.(*TypedArray)
+			if !ok {
+				return NewTypeError("TypedArray.prototype.hasOwnProperty: receiver must be a TypedArray")
+			}
 			if len(sargs) == 0 {
 				return FalseSingleton
 			}
@@ -1020,6 +1035,9 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 			}
 			name := ToString(sargs[0])
 			if n, ok := nameIndex(name); ok {
+				if ta.OutOfBounds() {
+					return TypedArrayOutOfBounds("hasOwnProperty")
+				}
 				return NewBoolean(n < ta.arrLength())
 			}
 			switch name {
@@ -1027,7 +1045,7 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 				return TrueSingleton
 			}
 			return FalseSingleton
-		})
+		}), true
 	case "at":
 		return iterMethod("at", func(ta *TypedArray, sargs []Value) Value {
 			n := ta.arrLength()
@@ -2176,7 +2194,14 @@ func (t *TypedArray) EnumerableOwnKeys() []string {
 // HasOwn 检查 name 是否为 TypedArray 自有属性: 范围内的整数索引, 或经
 // defineProperty / 赋值新增的字符串键。length/byteLength/... 非自有。
 func (t *TypedArray) HasOwn(name string) bool {
-	if idx, err := Atoi(name); err == nil && idx >= 0 {
+	// 规范 sec-typedarray-hasownproperty 第 2 步: 先 ValidateTypedArray(O)
+	// (ES2024 起含 [[IsOutOfBounds]] 检查), 越界视图上**整数索引**的
+	// HasOwnProperty 必须抛 TypeError, 而不是静默返回 false;
+	// 非索引键 (byteLength / 自定义属性等) 不受此约束。
+	if idx, ok := nameIndex(name); ok {
+		if t.OutOfBounds() {
+			panic(TypedArrayOutOfBounds("hasOwnProperty"))
+		}
 		return idx < t.arrLength()
 	}
 	if t.PropDescs != nil {

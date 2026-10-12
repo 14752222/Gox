@@ -312,14 +312,21 @@ func setupArrayProto() *object.Object {
 		if errVal != nil {
 			return errVal
 		}
-		if len(args) < 1 {
-			return object.NewNumber(-1)
+		// 缺省 searchElement 即 undefined (规范 IndexOf 的 searchElement 参数
+		// 不传时为 undefined), 故 [undefined].indexOf() === 0。
+		var target object.Value = object.UndefinedSingleton
+		if len(args) > 0 {
+			target = args[0]
 		}
-		target := args[0]
 		n := int(l.n)
 		fromIdx := 0
 		if len(args) > 1 {
-			f := toInt(args[1])
+			// fromIndex 先 ToIntegerOrInfinity: 对象经 ToPrimitive(number)
+			// (先 valueOf 后 toString), 用户 valueOf/toString 抛错原样传播。
+			f, ferr := toIntegerOrInfinity(args[1])
+			if ferr != nil {
+				return ferr
+			}
 			if f >= int64(n) {
 				return object.NewNumber(-1)
 			}
@@ -878,51 +885,25 @@ func setupArrayProto() *object.Object {
 
 	// sort(compareFn): 排序数组 (原地修改并返回自身)
 	p.SetBuiltinProperty("sort", object.NewBuiltinMethod("sort", func(this object.Value, args ...object.Value) object.Value {
+		// 规范 sec-array.prototype.sort 第 2 步: IsCallable(comparefn)
+		// 必须在 ToObject/读 length **之前** 观察 —— comparefn 非函数/非
+		// undefined 时立即抛 TypeError, 不得触发 this.length 的 getter
+		// (comparefn-nonfunction-call-throws 族)。
+		var compareFn object.Value
+		if len(args) > 0 && !isUndefinedValue(args[0]) {
+			if !object.IsCallable(args[0]) {
+				return object.NewTypeError("%s is not a function", toStr(args[0]))
+			}
+			compareFn = args[0]
+		}
 		l, errVal := asArrayLike("sort", this)
 		if errVal != nil {
 			return errVal
 		}
-		if l.arr == nil {
-			if mv := l.checkMutable(); mv != nil {
-				return mv
-			}
+		if mv := l.checkMutable(); mv != nil {
+			return mv
 		}
-		if l.arr == nil {
-			return genericSort(l, args)
-		}
-		arr := l.arr
-		if len(args) > 0 && !isUndefinedValue(args[0]) {
-			compareFn := args[0]
-			if !object.IsCallable(compareFn) {
-				return object.NewTypeError("%s is not a function", toStr(compareFn))
-			}
-			// 比较器抛异常时记录并尽快结束排序 (数组可能处于部分有序状态，
-			// 与 V8 的实现定义行为一致)；排序结束后把异常抛给调用方。
-			var sortThrown object.Value
-			sort.SliceStable(arr.Elements, func(i, j int) bool {
-				if sortThrown != nil {
-					return false
-				}
-				result := object.CallFunction(compareFn, object.UndefinedSingleton,
-					arr.Elements[i], arr.Elements[j])
-				if thrown := callbackThrown(); thrown != nil {
-					sortThrown = thrown
-					return false
-				}
-				return toFloat(result) < 0
-			})
-			if sortThrown != nil {
-				return sortThrown
-			}
-			return arr
-		}
-		// 默认排序遵循规范的 SortCompare: 先把元素转成字符串再比较。
-		// 旧实现遇到两个 Number 时按数值比较，导致 [10, 9].sort() 得到
-		// [9, 10]；按规范应为 [10, 9] (因为 "10" < "9")。
-		sort.SliceStable(arr.Elements, func(i, j int) bool {
-			return defaultSortLess(arr.Elements[i], arr.Elements[j])
-		})
-		return arr
+		return specSort(l, compareFn)
 	}))
 
 	// toString(): 数组转字符串 (等价于无参 join)
@@ -1045,14 +1026,19 @@ func setupArrayProto() *object.Object {
 		if errVal != nil {
 			return errVal
 		}
-		if len(args) < 1 {
-			return object.NewNumber(-1)
+		// 缺省 searchElement 即 undefined (同 indexOf)。
+		var target object.Value = object.UndefinedSingleton
+		if len(args) > 0 {
+			target = args[0]
 		}
-		target := args[0]
 		n := int(l.n)
 		fromIdx := n - 1
 		if len(args) > 1 {
-			f := toInt(args[1])
+			// 同 indexOf: fromIndex 走 ToIntegerOrInfinity (对象先 ToPrimitive)。
+			f, ferr := toIntegerOrInfinity(args[1])
+			if ferr != nil {
+				return ferr
+			}
 			if f < 0 {
 				fromIdx = n + int(f)
 			} else if f < int64(n) {
@@ -1156,6 +1142,14 @@ func isConcatSpreadable(v object.Value) (bool, object.Value) {
 	return isArr, nil
 }
 
+// isConstructorValue 判断值是否为构造器 (规范的 IsConstructor)。
+// 内建构造器 (Array/Object/String/...) 在 Gox 里是 *BuiltinFunction,
+// object.IsConstructor 已按 NotConstructable 标记区分; Proxy 一律视为
+// 可构造 (target 决定, 这里放宽)。
+func isConstructorValue(v object.Value) bool {
+	return object.IsConstructor(v)
+}
+
 // isObjectLike 判断值是否为"对象" (IsConstructor/ArraySpeciesCreate 的参数校验用)。
 func isObjectLike(v object.Value) bool {
 	switch v.(type) {
@@ -1189,38 +1183,60 @@ func arraySpeciesCreate(l *arrayLike, length int64) (object.Value, object.Value)
 	mk := func() object.Value {
 		return object.NewArray(make([]object.Value, length))
 	}
-	if l.arr == nil {
+	// 规范的 IsArray(O): Proxy 透过 target 判定 —— 仅凭 l.arr != nil
+	// 会把 "Proxy 包数组" 的接收者误判为非数组, 跳过 species 查找
+	// (create-proxy / is-concat-spreadable-proxy 族)。
+	if !isArrayValue(l.obj) {
 		return mk(), nil
 	}
 	c, _ := l.obj.GetProperty("constructor")
 	if t := callbackThrown(); t != nil {
 		return nil, t
 	}
+	// 规范 ArraySpeciesCreate 6~9 步:
+	//   6. If IsConstructor(C) is true: (跨 realm 的 %Array% 视为 undefined)
+	//   7. If Type(C) is Object: C = Get(C, @@species); null → undefined
+	//   8. If C is undefined, return ArrayCreate(length)
+	//   9. If IsConstructor(C) is false, throw TypeError
+	// 注意 7 的判据是 "是对象" (create-species 族用 {}[@@species]=Ctor),
+	// 而 9 才要求构造器 —— 故 constructor 为原始值 (1/'s'/true) 时必然
+	// 在 9 抛 TypeError (create-ctor-non-object 族)。
+	if !isUndefinedValue(c) && !isNullValue(c) && !isObjectLike(c) {
+		return nil, object.NewTypeError("%s is not a constructor", toStr(c))
+	}
+	if isObjectLike(c) {
+		sVal := object.Value(object.UndefinedSingleton)
+		if desc, found := object.LookupSymbolPropertyDescriptorChain(c, object.GetGlobalSymbol("Symbol.species")); found {
+			if acc, isAcc := desc.Value.(*object.Accessor); isAcc {
+				if acc.Getter != nil && object.IsCallable(acc.Getter) {
+					sVal = object.CallFunction(acc.Getter, c)
+					if t := callbackThrown(); t != nil {
+						return nil, t
+					}
+				}
+			} else if desc.Value != nil {
+				sVal = desc.Value
+			}
+		}
+		// 规范 7.b: Type(C) 是对象且 @@species 取到 null 时, C 归一为
+		// undefined → 第 8 步直接 ArrayCreate (create-species-null 族)。
+		// 注意这与 "constructor 本身就是 null" 不同 —— 后者不走 7, 而是
+		// 落到第 9 步的 IsConstructor(null)=false 抛 TypeError
+		// (create-ctor-non-object 的 null 用例)。
+		if sVal == nil || isNullValue(sVal) {
+			return mk(), nil
+		}
+		c = sVal
+	}
+	// 步骤 8/9: C 为 undefined → 默认数组; 否则 (含 constructor===null) 必须
+	// 是构造器, 否则抛 TypeError。
 	if c == nil || isUndefinedValue(c) {
 		return mk(), nil
 	}
-	if !isObjectLike(c) {
+	if !isConstructorValue(c) {
 		return nil, object.NewTypeError("%s is not a constructor", toStr(c))
 	}
-	sVal := object.Value(object.UndefinedSingleton)
-	if desc, found := object.LookupSymbolPropertyDescriptorChain(c, object.GetGlobalSymbol("Symbol.species")); found {
-		if acc, isAcc := desc.Value.(*object.Accessor); isAcc {
-			if acc.Getter != nil && object.IsCallable(acc.Getter) {
-				sVal = object.CallFunction(acc.Getter, c)
-				if t := callbackThrown(); t != nil {
-					return nil, t
-				}
-			}
-		} else if desc.Value != nil {
-			sVal = desc.Value
-		}
-	}
-	if sVal == nil || isUndefinedValue(sVal) || isNullValue(sVal) {
-		return mk(), nil
-	}
-	if !object.IsCallable(sVal) {
-		return nil, object.NewTypeError("%s is not a constructor", toStr(sVal))
-	}
+	sVal := c
 	r := object.ConstructFunction(sVal, object.NewInt(length))
 	if t := callbackThrown(); t != nil {
 		return nil, t
@@ -1229,6 +1245,91 @@ func arraySpeciesCreate(l *arrayLike, length int64) (object.Value, object.Value)
 		return nil, object.NewTypeError("species constructor did not return an object")
 	}
 	return r, nil
+}
+
+// specSort 是 Array.prototype.sort 的规范路径, 对真实数组与类数组对象
+// 一视同仁: 全程经 Get/Set/Delete 访问属性 (支持访问器), 且按规范处理
+// 洞与 undefined。
+//
+// 规范语义 (sec-array.prototype.sort / SortCompare):
+//   - 先把 undefined 元素与"洞"一同排到最后, 再做稳定排序;
+//   - 排序用 SortCompare: 有 comparefn 时直接调用 (返回 <0 视为前);
+//     无 comparefn 时把两侧转字符串按码元序比较, undefined 恒排后。
+//
+// 之前对真实数组直接 sort.SliceStable(Elements, ...): 绕过访问器、把 nil
+// 洞当成 undefined、且自定义比较器下不把 undefined 挪到末尾 ——
+// precise-* / S15.4.4.11_* 族即因此失败。
+func specSort(l *arrayLike, compareFn object.Value) object.Value {
+	n := int(l.n)
+	// 步骤 1: 读外部元素 (索引 < n 且存在者), 洞与 undefined 记下不参与排序。
+	vals := make([]object.Value, 0, n)
+	undefIdx := make([]int, 0)
+	holeIdx := make([]int, 0)
+	for i := 0; i < n; i++ {
+		if !l.has(int64(i)) {
+			holeIdx = append(holeIdx, i)
+		} else {
+			v := l.get(int64(i))
+			if l.err != nil {
+				return l.err
+			}
+			if isUndefinedValue(v) {
+				undefIdx = append(undefIdx, i)
+			} else {
+				vals = append(vals, v)
+			}
+		}
+	}
+
+	var sortThrown object.Value
+	less := func(a, b object.Value) bool {
+		if sortThrown != nil {
+			return false
+		}
+		var r float64
+		if compareFn != nil {
+			rv := object.CallFunction(compareFn, object.UndefinedSingleton, a, b)
+			if thrown := callbackThrown(); thrown != nil {
+				sortThrown = thrown
+				return false
+			}
+			r = toFloat(rv)
+			if math.IsNaN(r) {
+				r = 0
+			}
+		} else {
+			as := sortKeyString(a)
+			bs := sortKeyString(b)
+			switch {
+			case as < bs:
+				r = -1
+			case as > bs:
+				r = 1
+			}
+		}
+		return r < 0
+	}
+	sort.SliceStable(vals, func(i, j int) bool { return less(vals[i], vals[j]) })
+	if sortThrown != nil {
+		return sortThrown
+	}
+
+	// 步骤 2: 回写 —— 排序值在前, 随后 undefined, 最后洞。
+	idx := 0
+	for _, v := range vals {
+		l.set(int64(idx), v)
+		idx++
+	}
+	for range undefIdx {
+		l.set(int64(idx), object.UndefinedSingleton)
+		idx++
+	}
+	if o, ok := l.obj.(*object.Object); ok {
+		for _, i := range holeIdx {
+			o.DeleteProperty(arrayIndexKey(int64(i)))
+		}
+	}
+	return l.obj
 }
 
 // genericSort 是 sort 作用于非数组类对象时的规范路径:
@@ -1483,6 +1584,11 @@ func asArrayLike(method string, this object.Value) (*arrayLike, object.Value) {
 	if arr, ok := this.(*object.Array); ok {
 		return &arrayLike{obj: arr, arr: arr, n: int64(len(arr.Elements))}, nil
 	}
+	// 规范的 ToObject(this): 原始值 (boolean/number/string/symbol) 要包成
+	// 对应包装对象再读写属性。漏掉这一步会让回调的第三个参数 obj 拿到原始
+	// 值 (规范要求 obj === ToObject(this)), 且原型上的 length/索引读不到 ——
+	// test262 的 15.4.4.*/S15.4.4.* "applied to primitive" 族即因此整族失败。
+	this = toObjectValue(this)
 	var n int64
 	if lv, ok := this.GetProperty("length"); ok && lv != nil {
 		// ToLength(Symbol) 按规范抛 TypeError (LengthOfArrayLike 的 abrupt)
@@ -1500,6 +1606,59 @@ func asArrayLike(method string, this object.Value) (*arrayLike, object.Value) {
 		}
 	}
 	return &arrayLike{obj: this, n: n}, nil
+}
+
+// toIntegerOrInfinity 实现规范的 ToIntegerOrInfinity:
+// 对象先 ToPrimitive(number hint) (先 valueOf 后 toString), 再 ToNumber,
+// 最后 NaN→0、±∞ 保留、其余向零取整。返回 (值, 错误值)。
+//
+// indexOf/lastIndexOf 等以 fromIndex 为参数的算法必须走这条路径:
+// fromIndex 是对象时其 valueOf/toString 必须被调用, 且抛错原样传播。
+func toIntegerOrInfinity(v object.Value) (int64, object.Value) {
+	f := 0.0
+	if isObjectValue(v) {
+		var nerr object.Value
+		f, nerr = toNumberViaPrimitive(v)
+		if nerr != nil {
+			return 0, nerr
+		}
+	} else {
+		f = toFloat(v)
+	}
+	switch {
+	case math.IsNaN(f), f == 0:
+		return 0, nil
+	case math.IsInf(f, 1):
+		return math.MaxInt64, nil
+	case math.IsInf(f, -1):
+		return math.MinInt64, nil
+	}
+	truncated := math.Trunc(f)
+	const int64Limit = 9223372036854775808.0
+	if truncated >= int64Limit {
+		return math.MaxInt64, nil
+	}
+	if truncated <= -int64Limit {
+		return math.MinInt64, nil
+	}
+	return int64(truncated), nil
+}
+
+// toObjectValue 实现规范的 ToObject (sec-object-type):
+// undefined/null 抛 TypeError (调用方自行保证其已排除), 其余原始值包成对应
+// 的包装对象, 已是对象则原样返回。Array.prototype 的泛型算法第 1 步即此。
+func toObjectValue(v object.Value) object.Value {
+	switch p := v.(type) {
+	case *object.Boolean:
+		return object.NewPrimitiveObject(p, object.GetBooleanProto())
+	case *object.Number:
+		return object.NewPrimitiveObject(p, object.GetNumberProto())
+	case *object.String:
+		return object.NewPrimitiveObject(p, object.GetStringProto())
+	case *object.Symbol:
+		return object.NewPrimitiveObject(p, object.GetSymbolProto())
+	}
+	return v
 }
 
 // has 实现 HasProperty(O, Pk)（含原型链）；数组的 nil 元素是洞。
@@ -1702,7 +1861,11 @@ func setupArrayGlobal() *object.BuiltinFunction {
 		if len(args) == 0 {
 			return object.NewBoolean(false)
 		}
-		_, ok := args[0].(*object.Array)
+		// 规范 IsArray: Proxy 递归看 target, revoked proxy 抛 TypeError。
+		ok, errVal := isArrayValueOrThrow(args[0])
+		if errVal != nil {
+			return errVal
+		}
 		return object.NewBoolean(ok)
 	}))
 	// Array.from(arrayLike, mapFn, thisArg)
