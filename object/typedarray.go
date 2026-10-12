@@ -192,8 +192,12 @@ func toF64Value(v Value) float64 {
 }
 
 // toF64E 是带 ToNumber 语义的版本: 对象先调 valueOf 再调 toString,
-// 回调抛错 (*Error 返回值) 时透传 —— test262 的 return-abrupt 系列
-// 依赖该可观测行为。Symbol 按规范抛 TypeError。
+// 用户回调抛出异常时透传 —— test262 的 return-abrupt 系列依赖该可观测行为。
+// Symbol 按规范抛 TypeError。
+//
+// 异常判定必须走回调桥 (TakeCallbackErrorValue), 而非"返回值是否为 *Error":
+// CallFunction 遇到 JS throw 时返回 undefined (错误经 callbackError 传递),
+// 早期只认 *Error 返回值的写法漏判了所有用户回调抛错。
 // err 非 nil 时调用方必须立即返回该错误值。
 func toF64E(v Value) (float64, Value) {
 	switch v.(type) {
@@ -208,6 +212,9 @@ func toF64E(v Value) (float64, Value) {
 	}
 	if vo, ok := v.GetProperty("valueOf"); ok && IsCallable(vo) {
 		r := CallFunction(vo, v)
+		if ev := TakeCallbackErrorValue(); ev != UndefinedSingleton {
+			return 0, ev
+		}
 		if err, isErr := r.(*Error); isErr {
 			return 0, err
 		}
@@ -218,6 +225,9 @@ func toF64E(v Value) (float64, Value) {
 	}
 	if ts, ok := v.GetProperty("toString"); ok && IsCallable(ts) {
 		r := CallFunction(ts, v)
+		if ev := TakeCallbackErrorValue(); ev != UndefinedSingleton {
+			return 0, ev
+		}
 		if err, isErr := r.(*Error); isErr {
 			return 0, err
 		}
@@ -655,6 +665,11 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 		return iterMethod("indexOf", func(ta *TypedArray, sargs []Value) Value {
 			want := toNumberValue(argOr(sargs, 0))
 			n := ta.arrLength()
+			// 规范: length 为 0 时在 ToIntegerOrInfinity(fromIndex) 之前就返回 ——
+			// 因而空视图不会触发 fromIndex 的 valueOf (可能抛错)。
+			if n == 0 {
+				return NewInt(-1)
+			}
 			from, err := fromIndexArg(sargs, 1, n)
 			if err != nil {
 				return err
@@ -670,6 +685,9 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 		return iterMethod("lastIndexOf", func(ta *TypedArray, sargs []Value) Value {
 			want := toNumberValue(argOr(sargs, 0))
 			n := ta.arrLength()
+			if n == 0 {
+				return NewInt(-1)
+			}
 			from := n - 1
 			if len(sargs) > 1 && !isUndef(sargs[1]) {
 				fv, err := toF64E(sargs[1])
@@ -694,6 +712,9 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 		return iterMethod("includes", func(ta *TypedArray, sargs []Value) Value {
 			want := toNumberValue(argOr(sargs, 0))
 			n := ta.arrLength()
+			if n == 0 {
+				return FalseSingleton
+			}
 			from, err := fromIndexArg(sargs, 1, n)
 			if err != nil {
 				return err
@@ -846,7 +867,9 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 			}
 			n := ta.arrLength()
 			for i := 0; i < n; i++ {
-				CallFunction(sargs[0], argOr(sargs, 1), ta.getElement(i), NewInt(int64(i)), ta)
+				if _, err := callTypedArrayCB(sargs[0], argOr(sargs, 1), ta.getElement(i), NewInt(int64(i)), ta); err != nil {
+					return err
+				}
 			}
 			return UndefinedSingleton
 		})
@@ -862,7 +885,11 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 				return outV
 			}
 			for i := 0; i < n; i++ {
-				out.setElement(i, CallFunction(sargs[0], argOr(sargs, 1), ta.getElement(i), NewInt(int64(i)), ta))
+				v, err := callTypedArrayCB(sargs[0], argOr(sargs, 1), ta.getElement(i), NewInt(int64(i)), ta)
+				if err != nil {
+					return err
+				}
+				out.setElement(i, v)
 			}
 			return out
 		})
@@ -875,7 +902,11 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 			var kept []Value
 			for i := 0; i < n; i++ {
 				v := ta.getElement(i)
-				if CallFunction(sargs[0], argOr(sargs, 1), v, NewInt(int64(i)), ta).IsTruthy() {
+				r, err := callTypedArrayCB(sargs[0], argOr(sargs, 1), v, NewInt(int64(i)), ta)
+				if err != nil {
+					return err
+				}
+				if r.IsTruthy() {
 					kept = append(kept, v)
 				}
 			}
@@ -896,7 +927,11 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 			}
 			n := ta.arrLength()
 			for i := 0; i < n; i++ {
-				if !CallFunction(sargs[0], argOr(sargs, 1), ta.getElement(i), NewInt(int64(i)), ta).IsTruthy() {
+				r, err := callTypedArrayCB(sargs[0], argOr(sargs, 1), ta.getElement(i), NewInt(int64(i)), ta)
+				if err != nil {
+					return err
+				}
+				if !r.IsTruthy() {
 					return FalseSingleton
 				}
 			}
@@ -909,7 +944,11 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 			}
 			n := ta.arrLength()
 			for i := 0; i < n; i++ {
-				if CallFunction(sargs[0], argOr(sargs, 1), ta.getElement(i), NewInt(int64(i)), ta).IsTruthy() {
+				r, err := callTypedArrayCB(sargs[0], argOr(sargs, 1), ta.getElement(i), NewInt(int64(i)), ta)
+				if err != nil {
+					return err
+				}
+				if r.IsTruthy() {
 					return TrueSingleton
 				}
 			}
@@ -928,7 +967,11 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 					i = n - 1 - k
 				}
 				v := ta.getElement(i)
-				if CallFunction(sargs[0], argOr(sargs, 1), v, NewInt(int64(i)), ta).IsTruthy() {
+				r, err := callTypedArrayCB(sargs[0], argOr(sargs, 1), v, NewInt(int64(i)), ta)
+				if err != nil {
+					return err
+				}
+				if r.IsTruthy() {
 					if name == "findIndex" || name == "findLastIndex" {
 						return NewInt(int64(i))
 					}
@@ -961,7 +1004,11 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 				i += step
 			}
 			for ; i >= 0 && i < n; i += step {
-				acc = CallFunction(sargs[0], UndefinedSingleton, acc, ta.getElement(i), NewInt(int64(i)), ta)
+				r, err := callTypedArrayCB(sargs[0], UndefinedSingleton, acc, ta.getElement(i), NewInt(int64(i)), ta)
+				if err != nil {
+					return err
+				}
+				acc = r
 			}
 			return acc
 		})
@@ -1067,6 +1114,18 @@ func fromIndexArg(args []Value, i, n int) (int, Value) {
 		idx = n
 	}
 	return idx, nil
+}
+
+// callTypedArrayCB 调用 TypedArray 迭代方法 (map/filter/forEach/…) 的用户回调,
+// 并把回调抛出的异常透传出来。规范要求这些方法在回调抛出时立即中止并抛出 ——
+// CallFunction 遇 JS throw 返回 undefined 且把错误塞进回调桥, 故必须显式取。
+// 第二个返回值非 nil 表示回调抛出, 调用方须立即把它作为结果返回。
+func callTypedArrayCB(fn Value, this Value, args ...Value) (Value, Value) {
+	r := CallFunction(fn, this, args...)
+	if ev := TakeCallbackErrorValue(); ev != UndefinedSingleton {
+		return nil, ev
+	}
+	return r, nil
 }
 
 func argOr(args []Value, i int) Value {
