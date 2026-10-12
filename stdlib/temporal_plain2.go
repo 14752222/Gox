@@ -259,6 +259,9 @@ func setupTemporalPlainDate(temporal *object.Object) {
 	tgValueOf(proto)
 
 	ctor := object.NewBuiltin("PlainDate", func(args ...object.Value) object.Value {
+		if g := tgCtorGuard("PlainDate"); g != nil {
+			return g
+		}
 		if len(args) < 3 || args[0] == object.UndefinedSingleton || args[1] == object.UndefinedSingleton || args[2] == object.UndefinedSingleton {
 			return tgRange("PlainDate requires year, month, day")
 		}
@@ -289,6 +292,7 @@ func setupTemporalPlainDate(temporal *object.Object) {
 		return object.NewTemporalPlainDate(d, cal)
 	})
 	ctor.SetProperty("name", object.NewString("PlainDate"))
+	tgMarkCtorNew(ctor)
 	tgSetCtorPrototype(ctor, proto)
 	proto.SetBuiltinProperty("constructor", ctor)
 
@@ -696,6 +700,9 @@ func setupTemporalPlainTime(temporal *object.Object) {
 	tgValueOf(proto)
 
 	ctor := object.NewBuiltin("PlainTime", func(args ...object.Value) object.Value {
+		if g := tgCtorGuard("PlainTime"); g != nil {
+			return g
+		}
 		f := func(i int) int32 {
 			if i >= len(args) {
 				return 0
@@ -714,6 +721,7 @@ func setupTemporalPlainTime(temporal *object.Object) {
 		return object.NewTemporalPlainTime(time)
 	})
 	ctor.SetProperty("name", object.NewString("PlainTime"))
+	tgMarkCtorNew(ctor)
 	tgSetCtorPrototype(ctor, proto)
 	proto.SetBuiltinProperty("constructor", ctor)
 

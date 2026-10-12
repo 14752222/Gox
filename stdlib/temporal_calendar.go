@@ -901,6 +901,9 @@ func setupTemporalPlainYearMonth(temporal *object.Object) {
 	tgValueOf(proto)
 
 	ctor := object.NewBuiltin("PlainYearMonth", func(args ...object.Value) object.Value {
+		if g := tgCtorGuard("PlainYearMonth"); g != nil {
+			return g
+		}
 		if len(args) < 2 || args[0] == object.UndefinedSingleton || args[1] == object.UndefinedSingleton {
 			return tgRange("PlainYearMonth requires year and month")
 		}
@@ -924,6 +927,7 @@ func setupTemporalPlainYearMonth(temporal *object.Object) {
 		return object.NewTemporalPlainYearMonth(yi, mi, 1, cal)
 	})
 	ctor.SetProperty("name", object.NewString("PlainYearMonth"))
+	tgMarkCtorNew(ctor)
 	tgSetCtorPrototype(ctor, proto)
 	proto.SetBuiltinProperty("constructor", ctor)
 
@@ -1227,6 +1231,9 @@ func setupTemporalPlainMonthDay(temporal *object.Object) {
 	tgValueOf(proto)
 
 	ctor := object.NewBuiltin("PlainMonthDay", func(args ...object.Value) object.Value {
+		if g := tgCtorGuard("PlainMonthDay"); g != nil {
+			return g
+		}
 		num := func(i int) (int32, object.Value) {
 			if i >= len(args) || args[i] == object.UndefinedSingleton {
 				return 0, tgRange("PlainMonthDay argument is required")
@@ -1260,6 +1267,7 @@ func setupTemporalPlainMonthDay(temporal *object.Object) {
 		return object.NewTemporalPlainMonthDay(mi, di, 1972, cal)
 	})
 	ctor.SetProperty("name", object.NewString("PlainMonthDay"))
+	tgMarkCtorNew(ctor)
 	tgSetCtorPrototype(ctor, proto)
 	proto.SetBuiltinProperty("constructor", ctor)
 

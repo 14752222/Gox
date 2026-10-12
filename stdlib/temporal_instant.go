@@ -212,6 +212,9 @@ func setupTemporalInstant(env *object.Object) {
 
 	// ===== 构造器 =====
 	ctor := object.NewBuiltin("Instant", func(args ...object.Value) object.Value {
+		if g := tgCtorGuard("Instant"); g != nil {
+			return g
+		}
 		if len(args) == 0 {
 			return tgType("Temporal.Instant requires an epochNanoseconds argument")
 		}
@@ -226,6 +229,7 @@ func setupTemporalInstant(env *object.Object) {
 		return object.NewTemporalInstant(ns)
 	})
 	ctor.SetProperty("name", object.NewString("Instant"))
+	tgMarkCtorNew(ctor)
 	tgSetCtorPrototype(ctor, proto)
 	proto.SetBuiltinProperty("constructor", ctor)
 
@@ -389,8 +393,10 @@ func roundNanosToUnit(ns *big.Int, unit string, inc int64, mode string) *big.Int
 // DifferenceTemporalInstant) 要求把整个纳秒差值**逐级平衡**到 largestUnit
 // 之下的所有时间单位 (hour..nanosecond)，而不是只填 largestUnit 一级。
 // 旧实现直接 Quo(ns, factor) 只取最大单位，把余数丢掉 ——
-//   diff = 987ms, largest = second  →  正确 {seconds:0, milliseconds:987}，
-//   旧实现 {milliseconds:0}；
+//
+//	diff = 987ms, largest = second  →  正确 {seconds:0, milliseconds:987}，
+//	旧实现 {milliseconds:0}；
+//
 // 于是 Instant.until/since 的 largestunit / rounding 整族失败。
 // 注意 largestUnit 之上不会出现字段 (Instant 无日历单位)，故只需在
 // hour/second/millisecond/microsecond/nanosecond 五级之间平衡。

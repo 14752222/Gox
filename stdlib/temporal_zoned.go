@@ -365,6 +365,9 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 	tgValueOf(proto)
 
 	ctor := object.NewBuiltin("ZonedDateTime", func(args ...object.Value) object.Value {
+		if g := tgCtorGuard("ZonedDateTime"); g != nil {
+			return g
+		}
 		if len(args) == 0 {
 			return tgType("ZonedDateTime requires epochNanoseconds")
 		}
@@ -386,6 +389,7 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 		return object.NewTemporalZonedDateTime(bn.Value, tzid, object.DefaultCalendarID)
 	})
 	ctor.SetProperty("name", object.NewString("ZonedDateTime"))
+	tgMarkCtorNew(ctor)
 	tgSetCtorPrototype(ctor, proto)
 	proto.SetBuiltinProperty("constructor", ctor)
 

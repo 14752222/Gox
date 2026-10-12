@@ -366,6 +366,9 @@ func setupTemporalPlainDateTime(temporal *object.Object) {
 
 	// ===== 构造器 =====
 	ctor := object.NewBuiltin("PlainDateTime", func(args ...object.Value) object.Value {
+		if g := tgCtorGuard("PlainDateTime"); g != nil {
+			return g
+		}
 		var convErr object.Value
 		f := func(i int) int32 {
 			if i >= len(args) || args[i] == object.UndefinedSingleton {
@@ -404,6 +407,7 @@ func setupTemporalPlainDateTime(temporal *object.Object) {
 		return object.NewTemporalPlainDateTime(object.ISODateTime{Date: date, Time: time}, cal)
 	})
 	ctor.SetProperty("name", object.NewString("PlainDateTime"))
+	tgMarkCtorNew(ctor)
 	tgSetCtorPrototype(ctor, proto)
 	proto.SetBuiltinProperty("constructor", ctor)
 
