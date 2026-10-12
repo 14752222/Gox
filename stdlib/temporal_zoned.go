@@ -850,29 +850,30 @@ func zdtDiffFrom(t *object.TemporalZonedDateTime, args []object.Value, since boo
 		return tgRange("smallestUnit is larger than largestUnit")
 	}
 
-	sign := int64(1)
-	if t.Nanos().Cmp(other.Nanos()) > 0 {
-		sign = -1
-	}
-
-	// 日历单位: 用各自时区的墙钟字段计算，而非直接用 Instant 差
+	// 日历单位: 用各自时区的墙钟字段计算，而非直接用 Instant 差。
+	// since 通过交换起止端点反转方向; calendarRoundDiff 内部已按实际次序
+	// 归一化并镜像方向性模式, 此处不得再 negateRoundingMode (会双重取反)。
 	if unitRank(largest) <= unitRank("day") {
 		fromDT := object.GetISOPartsFromEpoch(t.TimeZoneID(), t.Nanos())
 		toDT := object.GetISOPartsFromEpoch(t.TimeZoneID(), other.Nanos())
 		if since {
 			fromDT, toDT = toDT, fromDT
-			mode = negateRoundingMode(mode)
 		}
 		return calendarRoundDiff(fromDT, toDT, largest, su, inc, mode)
 	}
 
-	total := new(big.Int).Sub(other.Nanos(), t.Nanos())
-	rounded := roundNanosToUnit(total, su, inc, mode)
-	dur := durationFromNanosByLargest(rounded, largest)
-	if sign < 0 && other.Nanos().Cmp(t.Nanos()) < 0 {
-		return dur.Negated()
+	// 时间单位 (hour 及以下): 直接用精确时刻差, 但需按语义方向取符号。
+	// until: this − other; since: other − this。差值本身带符号, 舍入用
+	// RoundNanosSigned 的有符号语义, 因此这里不再做额外的 sign 翻转
+	// (旧实现既取 other−t 又在 this>other 时 Negated, 双重取反导致负例变正)。
+	var total *big.Int
+	if since {
+		total = new(big.Int).Sub(t.Nanos(), other.Nanos())
+	} else {
+		total = new(big.Int).Sub(other.Nanos(), t.Nanos())
 	}
-	return dur
+	rounded := roundNanosToUnit(total, su, inc, mode)
+	return durationFromNanosByLargest(rounded, largest)
 }
 
 // readZDTFieldsRaw 按字母序读取 ZonedDateTime 属性包字段:
