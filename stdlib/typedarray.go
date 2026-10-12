@@ -102,6 +102,22 @@ func setupTypedArrays(env *runtime.Environment) {
 	}), nil)
 	abFn.SetProperty("prototype", abProto)
 	env.Declare("ArrayBuffer", abFn, false)
+	// SharedArrayBuffer: Gox 是单线程运行时, 无真正共享内存 —— 以 ArrayBuffer
+	// 同构实现 (共享语义无从观测, 视图/拷贝逻辑与 ArrayBuffer 完全一致),
+	// 使 features:[SharedArrayBuffer] 的用例可运行而非 ReferenceError。
+	sabFn := object.NewBuiltin("SharedArrayBuffer", func(args ...object.Value) object.Value {
+		n := 0
+		if len(args) > 0 {
+			f := toFloat(args[0])
+			if f < 0 || f != float64(int(f)) {
+				return object.NewRangeError("SharedArrayBuffer: invalid length")
+			}
+			n = int(f)
+		}
+		return object.NewArrayBuffer(n)
+	})
+	sabFn.SetProperty("prototype", abProto)
+	env.Declare("SharedArrayBuffer", sabFn, false)
 
 	// ----- 十种 TypedArray 构造器 -----
 	for _, kind := range object.TAKindList() {

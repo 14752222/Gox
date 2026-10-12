@@ -405,6 +405,17 @@ const (
 	// 属性查找会穿透到父类原型 (extends TypedArray 时派生实例的 constructor
 	// 错误解析为基类构造器)。
 	OP_SET_CTOR Opcode = 0xF6
+
+	// OP_INC / OP_DEC 实现 ++/-- 的「+1 / -1」数值步骤 (规范 13.4.4.1:
+	// oldValue = ToNumeric(oldValue); newValue = oldValue ± 1n/1 同类型)。
+	//
+	// 栈: [old] → [new]。之所以不能拆成 OP_TO_NUMERIC + OP_INT 1 + OP_ADD,
+	// 是因为 BigInt 与 Number 不允许隐式混合运算: 对 BigInt 元素必须加 1n。
+	// 此前编译器发射的正是 OP_TO_NUMBER/OP_INT/OP_ADD 组合, 于是
+	// `x = 0n; x++` 在 TypedArray(BigInt) 的迭代用例里直接抛
+	// "Cannot convert a BigInt value to a number"。
+	OP_INC Opcode = 0xF7
+	OP_DEC Opcode = 0xF8
 )
 
 // InstructionSize 是每条指令的字节长度 (固定 3 字节)。
@@ -414,8 +425,8 @@ const InstructionSize = 3
 var opcodeNames = map[Opcode]string{
 	OP_NOP: "NOP", OP_POP: "POP", OP_DUP: "DUP", OP_SWAP: "SWAP", OP_POP_N: "POP_N",
 	OP_DUP2: "DUP2", OP_DUP_BELOW2: "DUP_BELOW2", OP_ITER_BOUNDARY: "ITER_BOUNDARY",
-	OP_CONST: "CONST", OP_NULL: "NULL", OP_UNDEFINED: "UNDEFINED", OP_HOLE: "HOLE",
-	OP_SET_CTOR: "SET_CTOR",
+	OP_CONST: "CONST", 	OP_NULL: "NULL", OP_UNDEFINED: "UNDEFINED", OP_HOLE: "HOLE",
+	OP_SET_CTOR: "SET_CTOR", OP_INC: "INC", OP_DEC: "DEC",
 	OP_TRUE: "TRUE", OP_FALSE: "FALSE", OP_INT: "INT",
 	OP_LOAD: "LOAD", OP_STORE: "STORE", OP_STORE_CONST: "STORE_CONST",
 	OP_STORE_CONST_GUARD: "STORE_CONST_GUARD",

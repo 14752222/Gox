@@ -1157,15 +1157,11 @@ func (c *Compiler) compileIncDec(target ast.Expression, isInc, isPrefix bool) er
 			ref := c.emitWithRef(c.buildWithRef(ident.Value, sym))
 			c.emitter.Emit(bytecode.OP_WITH_LOAD, ref) // [old]
 			if isPrefix {
-				c.emitter.EmitNoOperand(bytecode.OP_TO_NUMBER)
-				c.emitter.Emit(bytecode.OP_INT, 1)
 				c.emitIncDecOp(isInc)
 				c.emitter.EmitNoOperand(bytecode.OP_DUP)
 				c.emitter.Emit(bytecode.OP_WITH_STORE, ref)
 			} else {
 				c.emitter.EmitNoOperand(bytecode.OP_DUP)
-				c.emitter.EmitNoOperand(bytecode.OP_TO_NUMBER)
-				c.emitter.Emit(bytecode.OP_INT, 1)
 				c.emitIncDecOp(isInc)
 				c.emitter.Emit(bytecode.OP_WITH_STORE, ref)
 			}
@@ -1179,15 +1175,11 @@ func (c *Compiler) compileIncDec(target ast.Expression, isInc, isPrefix bool) er
 			// 读-改-写照常工作。sloppy 与 strict 都适用 (未声明读属于运行期错)。
 			c.emitGlobalLoad(ident.Value) // [old] (缺失时运行时抛错)
 			if isPrefix {
-				c.emitter.EmitNoOperand(bytecode.OP_TO_NUMBER)
-				c.emitter.Emit(bytecode.OP_INT, 1)
 				c.emitIncDecOp(isInc)
 				c.emitter.EmitNoOperand(bytecode.OP_DUP)
 				c.emitAssignmentStore(ident.Value, nil)
 			} else {
 				c.emitter.EmitNoOperand(bytecode.OP_DUP)
-				c.emitter.EmitNoOperand(bytecode.OP_TO_NUMBER)
-				c.emitter.Emit(bytecode.OP_INT, 1)
 				c.emitIncDecOp(isInc)
 				c.emitAssignmentStore(ident.Value, nil)
 			}
@@ -1201,8 +1193,6 @@ func (c *Compiler) compileIncDec(target ast.Expression, isInc, isPrefix bool) er
 			// 前缀: ++i → 返回新值
 			// [old] → TO_NUMBER → [num] → push 1 → [num, 1] → OP → [new]
 			// → DUP → [new, new] → STORE → [new]
-			c.emitter.EmitNoOperand(bytecode.OP_TO_NUMBER)
-			c.emitter.Emit(bytecode.OP_INT, 1)
 			c.emitIncDecOp(isInc)
 			c.emitter.EmitNoOperand(bytecode.OP_DUP)
 			c.emitStore(sym)
@@ -1211,8 +1201,6 @@ func (c *Compiler) compileIncDec(target ast.Expression, isInc, isPrefix bool) er
 			// [old] → DUP → [old, old] → TO_NUMBER → [old, num] → push 1
 			// → [old, num, 1] → OP → [old, new] → STORE → [old]
 			c.emitter.EmitNoOperand(bytecode.OP_DUP)
-			c.emitter.EmitNoOperand(bytecode.OP_TO_NUMBER)
-			c.emitter.Emit(bytecode.OP_INT, 1)
 			c.emitIncDecOp(isInc)
 			c.emitStore(sym)
 		}
@@ -1232,8 +1220,6 @@ func (c *Compiler) compileIncDec(target ast.Expression, isInc, isPrefix bool) er
 		if isPrefix {
 			// 前缀: [obj, key, old] → TO_NUMBER → [obj, key, num] → push 1 → OP
 			// → [obj, key, new] → SET_INDEX (推回写入值) → [new]
-			c.emitter.EmitNoOperand(bytecode.OP_TO_NUMBER)
-			c.emitter.Emit(bytecode.OP_INT, 1)
 			c.emitIncDecOp(isInc)
 			c.emitter.EmitNoOperand(bytecode.OP_SET_INDEX)
 			return nil
@@ -1242,8 +1228,6 @@ func (c *Compiler) compileIncDec(target ast.Expression, isInc, isPrefix bool) er
 		// → TO_NUMBER → [old, obj, key, num] → push 1 → OP → [old, obj, key, new]
 		// → SET_INDEX → [old, new] → POP → [old]
 		c.emitter.EmitNoOperand(bytecode.OP_DUP_BELOW2)
-		c.emitter.EmitNoOperand(bytecode.OP_TO_NUMBER)
-		c.emitter.Emit(bytecode.OP_INT, 1)
 		c.emitIncDecOp(isInc)
 		c.emitter.EmitNoOperand(bytecode.OP_SET_INDEX)
 		c.emitter.EmitNoOperand(bytecode.OP_POP)
@@ -1255,13 +1239,16 @@ func (c *Compiler) compileIncDec(target ast.Expression, isInc, isPrefix bool) er
 	return fmt.Errorf("SyntaxError: ++/-- only supports identifiers")
 }
 
-// emitIncDecOp 发射 ++/-- 的加减指令。
-
+// emitIncDecOp 发射 ++/-- 的数值步骤。
+//
+// 用单条 OP_INC/OP_DEC 而非「ToNumber + 1 + ADD」: 规范 13.4.4.1 要求
+// ToNumeric (BigInt 保持 BigInt) 且加数与被加数同类型 (BigInt 加 1n)。
+// 拆成指令流必然把 1 编码成 Number 常量, 对 BigInt 触发混合运算 TypeError。
 func (c *Compiler) emitIncDecOp(isInc bool) {
 	if isInc {
-		c.emitter.EmitNoOperand(bytecode.OP_ADD)
+		c.emitter.EmitNoOperand(bytecode.OP_INC)
 	} else {
-		c.emitter.EmitNoOperand(bytecode.OP_SUB)
+		c.emitter.EmitNoOperand(bytecode.OP_DEC)
 	}
 }
 

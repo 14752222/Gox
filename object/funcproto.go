@@ -231,6 +231,16 @@ func FuncPrototypeOf(v Value) Value {
 	return nil
 }
 
+// GetProto 让函数类对象参与原型链遍历 (符号键查找、class 派生构造器的
+// static 继承走 LookupSymbolPropertyDescriptorChain → GetProto)。
+func (c *Closure) GetProto() Value { return FuncPrototypeOf(c) }
+
+// GetProto 见 Closure.GetProto。
+func (b *BuiltinFunction) GetProto() Value { return FuncPrototypeOf(b) }
+
+// GetProto 见 Closure.GetProto。
+func (b *BuiltinMethod) GetProto() Value { return FuncPrototypeOf(b) }
+
 // FuncPrototypeForCompiled 按函数种类返回其函数对象 [[Prototype]]。
 // 供 vm.createClosure 与动态函数构造 (CreateDynamicFunction) 共用:
 //   - IsAsyncGenerator         → %AsyncGeneratorFunction.prototype%

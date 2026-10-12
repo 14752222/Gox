@@ -2,6 +2,7 @@ package vm
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/14752222/Gox/bytecode"
 	"github.com/14752222/Gox/object"
@@ -17,6 +18,15 @@ func (vm *VM) constructValue(fn object.Value, args []object.Value) (object.Value
 		}
 		return r, nil
 	}
+	// 闭包构造必须与 OP_NEW 同口径: 派生类的 super(...) 依赖 pendingNewTarget
+	// 走「父构造结果替换本帧 this」分支, 否则 `class D extends Uint8Array{}`
+	// 经 Reflect.construct / SpeciesCreate 构造出来的只是普通对象 (实例方法
+	// 全部报 receiver must be a TypedArray)。
+	if c, ok := fn.(*object.Closure); ok {
+		if c.IsArrow || (c.Fn != nil && (c.Fn.IsGenerator || c.Fn.IsAsync)) {
+			return object.UndefinedSingleton, fmt.Errorf("TypeError: %s is not a constructor", describeCallee(fn))
+		}
+	}
 	var proto object.Value
 	if pv, ok := fn.GetProperty("prototype"); ok && pv != nil {
 		proto = pv
@@ -26,6 +36,51 @@ func (vm *VM) constructValue(fn object.Value, args []object.Value) (object.Value
 		newObj = object.NewObjectWithProto(proto)
 	} else {
 		newObj = object.NewPlainObject()
+	}
+	// 闭包构造走 callClosure + runFrom (与 OP_NEW 同路径): 派生类的 super(...)
+	// 依赖 pendingNewTarget 走「父构造结果替换本帧 this」分支, 且隐式返回
+	// undefined 时须采用构造器帧最终的 this。否则 `class D extends Uint8Array{}`
+	// 经 Reflect.construct / SpeciesCreate 构造出来的只是普通对象 (实例方法
+	// 全部报 receiver must be a TypedArray)。
+	if c, ok := fn.(*object.Closure); ok {
+		bound := &object.Closure{
+			Fn:             c.Fn,
+			Env:            c.Env,
+			This:           newObj,
+			NewTarget:      c.NewTarget,
+			IsArrow:        c.IsArrow,
+			CapturedLocals: c.CapturedLocals,
+			CreatedAtFrame: c.CreatedAtFrame,
+			IterEpoch:      c.IterEpoch,
+		}
+		prevNT, prevHas := vm.pendingNewTarget, vm.hasPendingNewTarget
+		vm.pendingNewTarget = fn
+		vm.hasPendingNewTarget = true
+		startIdx := vm.frameIdx + 1
+		if err := vm.callClosure(bound, args); err != nil {
+			vm.pendingNewTarget, vm.hasPendingNewTarget = prevNT, prevHas
+			vm.unwindFramesTo(startIdx)
+			return nil, err
+		}
+		ctorFrame := vm.frames[startIdx]
+		if err := vm.runFrom(startIdx); err != nil {
+			vm.pendingNewTarget, vm.hasPendingNewTarget = prevNT, prevHas
+			vm.unwindFramesTo(startIdx)
+			return nil, err
+		}
+		vm.pendingNewTarget, vm.hasPendingNewTarget = prevNT, prevHas
+		var ctorThis object.Value
+		if ctorFrame != nil {
+			ctorThis = ctorFrame.This
+		}
+		result := vm.stack.Pop()
+		if object.IsObjectValue(result) {
+			return result, nil
+		}
+		if ctorThis != nil && ctorThis != newObj {
+			return ctorThis, nil
+		}
+		return newObj, nil
 	}
 	r, err := vm.callFunction(fn, newObj, args)
 	if err != nil {
@@ -74,6 +129,18 @@ func (vm *VM) callFunction(fn object.Value, this object.Value, args []object.Val
 		result := callee.Fn(this, args...)
 		if result == nil {
 			return object.UndefinedSingleton, nil
+		}
+		// 内建**访问器 getter** 以"返回 *Error"作为抛出信号 (与 OP_CALL
+		// 的 throwIfError 一致)。经此桥 (object.CallFunction) 展开 getter 时,
+		// 若不在此转换, 返回值会被当作普通值持有 —— e.g.
+		// `TypedArray.prototype.byteOffset` 应抛 TypeError, 实际却拿到
+		// 一个 TypeError 对象 (get-%typedarray% 系列的 invoked-as-accessor)。
+		//
+		// 只对访问器 (名字以 "get " 开头) 生效: 普通内建方法返回 *Error
+		// 在若干内部调用点 (Temporal 的 FromXxx 辅助等) 是"把错误值交给
+		// 调用方判定"的既有约定, 一律转换会破坏那些路径。
+		if errObj, isErr := result.(*object.Error); isErr && strings.HasPrefix(callee.Name, "get ") {
+			return nil, &ThrowError{Value: errObj}
 		}
 		return result, nil
 

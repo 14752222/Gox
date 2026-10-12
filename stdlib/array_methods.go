@@ -927,6 +927,42 @@ func setupArrayProto() *object.Object {
 		return object.NewString(strings.Join(parts, ","))
 	}))
 
+	// toLocaleString(): 规范 23.1.3.32 —— 逐元素
+	// ToString(Invoke(element, "toLocaleString")), null/undefined 计空串,
+	// 分隔符为宿主 locale 定义 (本运行时无 Intl, 取 ",")。
+	// 此前该方法完全缺失, 属性查找穿透到 Object.prototype.toLocaleString,
+	// 后者对数组调 toString() 得到 "[object Array]" —— 于是依赖
+	// `["",""].toLocaleString()` 取分隔符的用例 (如 TypedArray 的
+	// toLocaleString {BigInt,Float} 系列) 全部失败。
+	p.SetBuiltinProperty("toLocaleString", object.NewBuiltinMethod("toLocaleString", func(this object.Value, args ...object.Value) object.Value {
+		l, errVal := asArrayLike("toLocaleString", this)
+		if errVal != nil {
+			return errVal
+		}
+		parts := make([]string, 0, l.n)
+		for i := int64(0); i < l.n; i++ {
+			e := l.get(i)
+			if l.err != nil {
+				return l.err
+			}
+			if e == nil || isUndefinedValue(e) || isNullValue(e) {
+				parts = append(parts, "")
+				continue
+			}
+			m, found := e.GetProperty("toLocaleString")
+			if !found || !object.IsCallable(m) {
+				parts = append(parts, toStr(e))
+				continue
+			}
+			r := object.CallFunction(m, e)
+			if ev := object.TakeCallbackErrorValue(); ev != object.UndefinedSingleton {
+				return ev
+			}
+			parts = append(parts, toStr(r))
+		}
+		return object.NewString(strings.Join(parts, ","))
+	}))
+
 	// at(index): 返回指定索引处的元素，支持负索引 (-1 表示最后一个)
 	p.SetBuiltinProperty("at", object.NewBuiltinMethod("at", func(this object.Value, args ...object.Value) object.Value {
 		l, errVal := asArrayLike("at", this)

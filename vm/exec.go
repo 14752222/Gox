@@ -1117,8 +1117,16 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			// 栈: [obj, parent] → obj.Proto = parent
 			parent := vm.stack.Pop()
 			obj := vm.stack.Peek()
-			if o, ok := obj.(*object.Object); ok {
+			switch o := obj.(type) {
+			case *object.Object:
 				o.Proto = parent
+			case *object.Closure:
+				// class 派生类的构造器是闭包: `class D extends C` 时规范要求
+				// D.[[Prototype]] = C (不只 D.prototype.[[Prototype]] = C.prototype)。
+				// 缺这一步会让 D 无法继承 C 的静态成员 / @@species 访问器。
+				o.FuncPrototype = parent
+			case *object.BuiltinFunction:
+				o.FuncPrototype = parent
 			}
 		case bytecode.OP_GET_PROTO:
 			// 栈: [obj] → [proto] (roiE5Z: eval 单元 super.x 的 base 解析)。
@@ -2211,6 +2219,26 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				continue
 			}
 			vm.stack.Push(result)
+		case bytecode.OP_INC, bytecode.OP_DEC:
+			// ++/-- 的数值步骤: ToNumeric(old) ± 1 (同类型)。
+			// BigInt 走 BigInt ± 1n (禁止与 Number 混合), 其余走 double。
+			val := vm.stack.Pop()
+			one := int64(1)
+			if op == bytecode.OP_DEC {
+				one = -1
+			}
+			if bi, ok := val.(*object.BigInt); ok {
+				vm.stack.Push(bi.Add(object.NewBigIntInt64(one)))
+				continue
+			}
+			num, err := toNumberValue(val)
+			if err != nil {
+				if terr := vm.throwJSError(err); terr != nil {
+					return terr
+				}
+				continue
+			}
+			vm.stack.Push(object.NewNumber(num.(*object.Number).Value + float64(one)))
 		case bytecode.OP_TO_PROPERTY_KEY:
 			// 栈: [obj, keyRaw] → [obj, keyTransformed]。
 			//

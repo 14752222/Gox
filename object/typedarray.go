@@ -276,6 +276,69 @@ func toF64E(v Value) (float64, Value) {
 
 // ===== TypedArray =====
 
+// toBigIntE 是带 ToBigInt 语义的版本 (对象先 valueOf 再 toString),
+// 供 with/fill 等需要显式先转换值的方法使用。返回的 Value 是 *BigInt。
+// 用户回调抛出/转换失败时返回该错误值。
+func toBigIntE(v Value) (Value, Value) {
+	switch t := v.(type) {
+	case *BigInt:
+		return t, nil
+	case *Number:
+		if math.IsNaN(t.Value) || math.IsInf(t.Value, 0) || t.Value != math.Trunc(t.Value) {
+			return nil, NewRangeError("Cannot convert %v to a BigInt", t.Value)
+		}
+		return bigIntFromFloat(t.Value), nil
+	case *Boolean:
+		if t.Value {
+			return NewBigInt(big.NewInt(1)), nil
+		}
+		return NewBigInt(big.NewInt(0)), nil
+	case *String:
+		bi, ok := ParseBigIntString(t.Value)
+		if !ok {
+			return nil, NewSyntaxError(fmt.Sprintf("Cannot convert %s to a BigInt", t.Inspect()))
+		}
+		return NewBigInt(bi), nil
+	}
+	if v == nil || v == UndefinedSingleton || v == NullSingleton {
+		return nil, NewTypeError("Cannot convert %s to a BigInt", v.Inspect())
+	}
+	if _, ok := v.(*Symbol); ok {
+		return nil, NewTypeError("Cannot convert a Symbol value to a BigInt")
+	}
+	// 对象: 先 valueOf 再 toString。
+	if vo, ok := v.GetProperty("valueOf"); ok && IsCallable(vo) {
+		r := CallFunction(vo, v)
+		if ev := TakeCallbackErrorValue(); ev != UndefinedSingleton {
+			return nil, ev
+		}
+		if err, isErr := r.(*Error); isErr {
+			return nil, err
+		}
+		switch r.(type) {
+		case *BigInt, *Number, *Boolean, *String:
+			return toBigIntE(r)
+		}
+	}
+	if ts, ok := v.GetProperty("toString"); ok && IsCallable(ts) {
+		r := CallFunction(ts, v)
+		if ev := TakeCallbackErrorValue(); ev != UndefinedSingleton {
+			return nil, ev
+		}
+		if err, isErr := r.(*Error); isErr {
+			return nil, err
+		}
+		if s, isStr := r.(*String); isStr {
+			bi, ok := ParseBigIntString(s.Value)
+			if !ok {
+				return nil, NewSyntaxError(fmt.Sprintf("Cannot convert %s to a BigInt", s.Inspect()))
+			}
+			return NewBigInt(bi), nil
+		}
+	}
+	return nil, NewTypeError("Cannot convert %s to a BigInt", v.Inspect())
+}
+
 type TypedArray struct {
 	Kind       TAKind
 	Buffer     *ArrayBuffer
@@ -489,7 +552,9 @@ func (t *TypedArray) setElementE(i int, val Value) (err Value) {
 // bigIntElementBits 把一个值按 BigInt 视图的元素语义编码为 64 位:
 //   - BigInt 原值直接取模 2^64 (无符号) 或按补码回绕 (有符号);
 //   - Number 按 ToBigInt (须为整数值, 否则抛 RangeError);
-//   - 其余类型 (String/Boolean/null/undefined/object) 抛 TypeError。
+//   - String 按 StringToBigInt (空串/全空白 → 0n; 非法 → SyntaxError);
+//   - Boolean → 1n / 0n;
+//   - 其余类型 (null/undefined/object/Symbol) 抛 TypeError。
 //
 // 出错时调用方需感知 (set 系列要能中止并抛错), 故这里 panic 一个
 // *Error 由 setElementE 捕获; 无错路径零开销。
@@ -502,6 +567,18 @@ func bigIntElementBits(v Value, signed bool) uint64 {
 			panic(NewRangeError("Cannot convert %v to a BigInt", t.Value))
 		}
 		return bigIntToBits(bigIntFromFloat(t.Value), signed)
+	case *String:
+		// 规范 ToBigInt(String) = StringToBigInt: 解析失败抛 SyntaxError。
+		bi, ok := ParseBigIntString(t.Value)
+		if !ok {
+			panic(NewSyntaxError(fmt.Sprintf("Cannot convert %s to a BigInt", t.Inspect())))
+		}
+		return bigIntToBits(NewBigInt(bi), signed)
+	case *Boolean:
+		if t.Value {
+			return 1
+		}
+		return 0
 	default:
 		panic(NewTypeError("Cannot convert %s to a BigInt", v.Inspect()))
 	}
@@ -636,6 +713,11 @@ func (t *TypedArray) GetProperty(name string) (Value, bool) {
 	case "byteLength":
 		return NewInt(int64(t.arrLength() * t.Kind.ElemSize)), true
 	case "byteOffset":
+		// 规范 get %TypedArray%.prototype.byteOffset: [[IsOutOfBounds]] 为真
+		// 时返回 0 (resizable 缩容/分离后)。
+		if t.OutOfBounds() {
+			return NewInt(0), true
+		}
 		return NewInt(int64(t.ByteOffset)), true
 	case "buffer":
 		if t.Buffer == nil {
@@ -727,41 +809,62 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 			if len(sargs) == 0 {
 				return UndefinedSingleton
 			}
+			// 规范 sec-%typedarray%.prototype.set:
+			//   1. offset = ToIntegerOrInfinity(offset) —— NaN 视作 0;
+			//   2. src = ToObject(source) (sourceArg 为 undefined/null 抛 TypeError)。
 			offset := 0
 			if len(sargs) > 1 {
 				f, err := toF64E(sargs[1])
 				if err != nil {
 					return err
 				}
-				offset = int(f)
+				offset = toIntegerOrInfinity(f)
 			}
+			// 元素类型 (Integer-Indexed) 的捕获发生在 ToIntegerOrInfinity 之前,
+			// 之后 buffer 分离/缩容会让 SetElement 直接抛 TypeError —— 此处先
+			// 记录源/目标是否可用。
 			if offset < 0 {
 				return NewRangeError("TypedArray.prototype.set: offset is negative")
 			}
-			src, ok := sargs[0].(*TypedArray)
+			srcArg := sargs[0]
+			if srcArg == nil || srcArg == UndefinedSingleton || srcArg == NullSingleton {
+				return NewTypeError("TypedArray.prototype.set: source is null or undefined")
+			}
+			src, ok := srcArg.(*TypedArray)
 			if ok {
+				if src.OutOfBounds() || ta.OutOfBounds() {
+					return NewTypeError("TypedArray.prototype.set: typed array is detached or out of bounds")
+				}
 				// 跨 BigInt/非 BigInt 视图互拷是 TypeError (规范 SetTypedArrayFromTypedArray)。
 				if src.Kind.BigInt != ta.Kind.BigInt {
 					return NewTypeError("TypedArray.prototype.set: cannot mix BigInt and non-BigInt views")
 				}
-				if offset+src.arrLength() > ta.arrLength() {
+				srcLen := src.arrLength()
+				if offset+srcLen > ta.arrLength() {
 					return NewRangeError("TypedArray.prototype.set: source is too large")
 				}
-				for i := 0; i < src.arrLength(); i++ {
-					if err := ta.setElementE(offset+i, src.getElement(i)); err != nil {
+				// 同 buffer 重叠拷贝: 规范先把源元素读进临时列表再写 ——
+				// 直接逐点拷贝会把已覆盖的源元素再写回去 (set/typedarray-arg-
+				// set-values-same-buffer-same-type 的 [1,1,1,4])。
+				tmp := make([]Value, srcLen)
+				for i := 0; i < srcLen; i++ {
+					tmp[i] = src.getElement(i)
+				}
+				for i := 0; i < srcLen; i++ {
+					if err := ta.setElementE(offset+i, tmp[i]); err != nil {
 						return err
 					}
 				}
 				return UndefinedSingleton
 			}
-			if next, ok := Iterate(sargs[0]); ok {
+			if next, ok := Iterate(srcArg); ok {
 				i := offset
 				for {
 					v, done := next()
 					if done {
 						break
 					}
-					if i >= ta.arrLength() {
+					if ta.OutOfBounds() || i >= ta.arrLength() {
 						return NewRangeError("TypedArray.prototype.set: source is too large")
 					}
 					if err := ta.setElementE(i, v); err != nil {
@@ -774,7 +877,7 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 			// array-like / Proxy 源: 读 length 再逐索引取 (规范
 			// TypedArraySetFromArrayLike 语义; 中途 resize 由 setElement
 			// 边界检查自然覆盖)。
-			lv, ok := sargs[0].GetProperty("length")
+			lv, ok := srcArg.GetProperty("length")
 			if !ok || lv == nil {
 				return NewTypeError("TypedArray.prototype.set: invalid source")
 			}
@@ -782,12 +885,12 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 			if lerr != nil {
 				return lerr
 			}
-			n := int(nf)
-			if n < 0 || offset+n > ta.arrLength() {
+			n := toIntegerOrInfinity(nf)
+			if ta.OutOfBounds() || n < 0 || offset+n > ta.arrLength() {
 				return NewRangeError("TypedArray.prototype.set: source is too large")
 			}
 			for i := 0; i < n; i++ {
-				v, _ := sargs[0].GetProperty(fmt.Sprintf("%d", i))
+				v, _ := srcArg.GetProperty(fmt.Sprintf("%d", i))
 				if v == nil {
 					v = UndefinedSingleton
 				}
@@ -799,28 +902,95 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 		})
 	case "subarray":
 		return iterMethod("subarray", func(ta *TypedArray, sargs []Value) Value {
-			start, end, err := ta.rangeArgs(sargs)
+			// 规范 sec-%typedarray%.prototype.subarray:
+			//   1. O = this; buffer = O.[[ViewedArrayBuffer]];
+			//   2. srcLength = O.[[ArrayLength]];
+			//   3. relativeBegin = ToIntegerOrInfinity(begin); beginIndex = clamp;
+			//   4. relativeEnd = ToIntegerOrInfinity(end); endIndex = clamp;
+			//   5. newLength = endIndex - beginIndex;
+			//   6. ctor = SpeciesConstructor(O, %TypedArray%);
+			//   7. return TypedArraySpeciesCreate(O, « 𝔽(beginIndex), 𝔽(newLength) »).
+			// 注意 subarray 的 species 参数是 (beginIndex, newLength), 与
+			// slice/map 的 (length) 不同 —— 自定义构造器据此建子视图。
+			beginF, err := toF64E(argOr(sargs, 0))
 			if err != nil {
 				return err
 			}
-			return &TypedArray{
-				Kind:       ta.Kind,
-				Buffer:     ta.Buffer,
-				ByteOffset: ta.ByteOffset + start*ta.Kind.ElemSize,
-				Length:     end - start,
+			endF := math.Inf(1)
+			if len(sargs) > 1 && !isUndef(sargs[1]) {
+				e, err := toF64E(sargs[1])
+				if err != nil {
+					return err
+				}
+				endF = e
 			}
+			// detached / 越界 buffer: 规范在读完 ArrayLength 后若 buffer 不可用
+			// 则由 TypedArrayCreate 抛 TypeError。此处 ToInteger 已产生全部可观测
+			// 副作用, 再判定。
+			if ta.OutOfBounds() {
+				return NewTypeError("TypedArray.prototype.subarray: typed array is detached or out of bounds")
+			}
+			srcLength := ta.arrLength()
+			beginIndex := relIndexOrInf(beginF, srcLength)
+			endIndex := relIndexOrInf(endF, srcLength)
+			newLength := endIndex - beginIndex
+			if newLength < 0 {
+				newLength = 0
+			}
+			return ta.SpeciesConstruct(subarrayArgs(ta, beginIndex, newLength, len(sargs) > 1 && !isUndef(sargs[1])), func() Value {
+				// 默认路径: 与源共享同一 buffer 的新视图。
+				// end 省略时是 length-tracking 视图 (Length=-1)。
+				length := newLength
+				if len(sargs) <= 1 || isUndef(sargs[1]) {
+					length = -1
+				}
+				return &TypedArray{
+					Kind:       ta.Kind,
+					Buffer:     ta.Buffer,
+					ByteOffset: ta.ByteOffset + beginIndex*ta.Kind.ElemSize,
+					Length:     length,
+				}
+			})
 		})
 	case "slice":
 		return iterMethod("slice", func(ta *TypedArray, sargs []Value) Value {
-			start, end, err := ta.rangeArgs(sargs)
+			// 规范 sec-%typedarray%.prototype.slice:
+			//   1. srcLength = ValidateTypedArray(O) (分离 → TypeError);
+			//   2. relativeStart/End = ToIntegerOrInfinity(...); 夹取;
+			//   3. count = max(final - k, 0);
+			//   4. A = TypedArraySpeciesCreate(O, « 𝔽(count) »)。
+			startF, err := toF64E(argOr(sargs, 0))
 			if err != nil {
 				return err
 			}
+			endF := math.Inf(1)
+			if len(sargs) > 1 && !isUndef(sargs[1]) {
+				e, err := toF64E(sargs[1])
+				if err != nil {
+					return err
+				}
+				endF = e
+			}
+			if ta.OutOfBounds() {
+				return NewTypeError("TypedArray.prototype.slice: typed array is detached or out of bounds")
+			}
+			// ToIntegerOrInfinity 的副作用须在边界判定前后一致产生 —— 上面已完成。
+			srcLength := ta.arrLength()
+			start := relIndexOrInf(startF, srcLength)
+			end := relIndexOrInf(endF, srcLength)
 			n := end - start
-			outV := ta.SpeciesCreate(n)
+			if n < 0 {
+				n = 0
+			}
+			outV, threw := ta.SpeciesCreateT(n)
+			if threw {
+				return outV
+			}
+			// TypedArrayCreate 校验: 自定义 species 构造器必须返回 TypedArray,
+			// 否则 TypeError (slice/speciesctor-get-species-custom-ctor-length-throws)。
 			out, ok := outV.(*TypedArray)
 			if !ok {
-				return outV
+				return NewTypeError("TypedArray.prototype.slice: species constructor did not return a TypedArray")
 			}
 			for i := 0; i < n; i++ {
 				out.setElement(i, ta.getElement(start+i))
@@ -829,16 +999,20 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 		})
 	case "join":
 		return iterMethod("join", func(ta *TypedArray, sargs []Value) Value {
+			// 规范 sec-%typedarray%.prototype.join: len 在 ToString(separator)
+			// 之前捕获; separator 转换可能 detach/缩容 buffer —— 之后仍迭代 len
+			// 次, 越界索引读为 undefined → 空串。
+			length := ta.arrLength()
 			sep := ","
 			if len(sargs) > 0 && !isUndef(sargs[0]) {
-				sep = ToString(sargs[0])
+				s := sargs[0]
+				// 规范 ToString(separator): Symbol 抛 TypeError。
+				if _, isSym := s.(*Symbol); isSym {
+					return NewTypeError("Cannot convert a Symbol value to a string")
+				}
+				sep = ToString(s)
 			}
-			n := ta.arrLength()
-			parts := make([]string, 0, n)
-			for i := 0; i < n; i++ {
-				parts = append(parts, ToString(ta.getElement(i)))
-			}
-			return NewString(strings.Join(parts, sep))
+			return NewString(ta.joinWith(sep, length))
 		})
 	case "indexOf":
 		return iterMethod("indexOf", func(ta *TypedArray, sargs []Value) Value {
@@ -879,11 +1053,18 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 				if err != nil {
 					return err
 				}
-				f := int(fv)
-				if f < 0 {
-					from = n + f
-				} else if f < from {
-					from = f
+				// ToIntegerOrInfinity: -Inf 回绕后 <0 → 不循环; +Inf 保持 MaxInt。
+				if math.IsInf(fv, 1) {
+					from = n - 1
+				} else if math.IsInf(fv, -1) {
+					from = -1
+				} else {
+					f := toIntegerOrInfinity(fv)
+					if f < 0 {
+						from = n + f
+					} else if f < from {
+						from = f
+					}
 				}
 			}
 			for i := from; i >= 0; i-- {
@@ -962,16 +1143,39 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 		})
 	case "fill":
 		return iterMethod("fill", func(ta *TypedArray, sargs []Value) Value {
+			// 规范 sec-%typedarray%.prototype.fill:
+			//  1. len = O.[[ArrayLength]];
+			//  2. value = BigInt 元素 ? ToBigInt(value) : ToNumber(value)  <-- 先转换一次
+			//  3. relativeStart/End = ToIntegerOrInfinity(...); 夹取;
+			//  4. IsDetachedBuffer → TypeError;
+			//  5. 循环逐点写 (用已转换的值, 不再重复转换)。
 			var v Value = UndefinedSingleton
 			if len(sargs) > 0 {
 				v = sargs[0]
+			}
+			var cv Value
+			if ta.Kind.BigInt {
+				bv, err := toBigIntE(v)
+				if err != nil {
+					return err
+				}
+				cv = bv
+			} else {
+				nf, err := toF64E(v)
+				if err != nil {
+					return err
+				}
+				cv = NewNumber(nf)
 			}
 			start, end, err := ta.rangeArgs(sargs[1:])
 			if err != nil {
 				return err
 			}
+			if ta.Buffer == nil || ta.Buffer.Detach {
+				return NewTypeError("TypedArray.prototype.fill: buffer is detached")
+			}
 			for i := start; i < end; i++ {
-				ta.setElement(i, v)
+				ta.setElementE(i, cv)
 			}
 			return ta
 		})
@@ -1041,17 +1245,37 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 			for i := 0; i < n; i++ {
 				els[i] = ta.getElement(i)
 			}
+			// 无 comparefn: 规范按数值升序 (BigInt 视图用 BigInt 语义)。
+			// 有 comparefn: 其返回值经 ToNumber 后 < 0 判序 —— 但 CompareTypedArray-
+			// Elements 要求 comparefn 非 callable 时抛 TypeError (不得静默忽略)。
 			var cmp func(a, b Value) bool
-			if len(sargs) > 0 && IsCallable(sargs[0]) {
+			if len(sargs) > 0 && !isUndef(sargs[0]) {
+				if !IsCallable(sargs[0]) {
+					return NewTypeError("TypedArray.prototype.sort: comparefn must be a function")
+				}
 				cmpFn := sargs[0]
+				var cbErr Value
 				cmp = func(a, b Value) bool {
-					return toF64Value(CallFunction(cmpFn, UndefinedSingleton, a, b)) < 0
+					if cbErr != nil {
+						return false
+					}
+					r := CallFunction(cmpFn, UndefinedSingleton, a, b)
+					if ev := TakeCallbackErrorValue(); ev != UndefinedSingleton {
+						cbErr = ev
+						return false
+					}
+					return toF64Value(r) < 0
 				}
-			} else {
-				cmp = func(a, b Value) bool {
-					return toNumberValue(a) < toNumberValue(b)
+				sort.SliceStable(els, func(i, j int) bool { return cmp(els[i], els[j]) })
+				if cbErr != nil {
+					return cbErr
 				}
+				for i := 0; i < n; i++ {
+					ta.setElement(i, els[i])
+				}
+				return ta
 			}
+			cmp = func(a, b Value) bool { return typedArrayElemLess(a, b) }
 			sort.SliceStable(els, func(i, j int) bool { return cmp(els[i], els[j]) })
 			for i := 0; i < n; i++ {
 				ta.setElement(i, els[i])
@@ -1077,10 +1301,13 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 				return NewTypeError("TypedArray.prototype.map: callback must be a function")
 			}
 			n := ta.arrLength()
-			outV := ta.SpeciesCreate(n)
+			outV, threw := ta.SpeciesCreateT(n)
+			if threw {
+				return outV
+			}
 			out, ok := outV.(*TypedArray)
 			if !ok {
-				return outV
+				return NewTypeError("TypedArray.prototype.map: species constructor did not return a TypedArray")
 			}
 			for i := 0; i < n; i++ {
 				v, err := callTypedArrayCB(sargs[0], argOr(sargs, 1), ta.getElement(i), NewInt(int64(i)), ta)
@@ -1108,10 +1335,13 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 					kept = append(kept, v)
 				}
 			}
-			outV := ta.SpeciesCreate(len(kept))
+			outV, threw := ta.SpeciesCreateT(len(kept))
+			if threw {
+				return outV
+			}
 			out, ok := outV.(*TypedArray)
 			if !ok {
-				return outV
+				return NewTypeError("TypedArray.prototype.filter: species constructor did not return a TypedArray")
 			}
 			for i, v := range kept {
 				out.setElement(i, v)
@@ -1210,12 +1440,35 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 			}
 			return acc
 		})
-	case "toLocaleString", "toString":
+	case "toString":
+		// %TypedArray%.prototype.toString 复用 join 的默认分隔符语义
+		// (规范 22.2.3.32: 实际调用 Array.prototype.toString 的算法)。
+		return iterMethod("toString", func(ta *TypedArray, sargs []Value) Value {
+			return NewString(ta.joinWith(",", ta.arrLength()))
+		})
+	case "toLocaleString":
+		// 规范 22.2.3.28: 逐元素 ToString(Invoke(element, "toLocaleString")),
+		// null/undefined 元素计空串。不能直接 ToString(element) —— 那样会
+		// 绕过元素上被覆盖的 toLocaleString (BigInt/Number 原型均可被改)。
 		return iterMethod("toLocaleString", func(ta *TypedArray, sargs []Value) Value {
 			n := ta.arrLength()
 			parts := make([]string, 0, n)
 			for i := 0; i < n; i++ {
-				parts = append(parts, ToString(ta.getElement(i)))
+				e := ta.getElement(i)
+				if e == nil || e == UndefinedSingleton || e == NullSingleton {
+					parts = append(parts, "")
+					continue
+				}
+				m, ok := e.GetProperty("toLocaleString")
+				if !ok || !IsCallable(m) {
+					parts = append(parts, ToString(e))
+					continue
+				}
+				r := CallFunction(m, e)
+				if ev := TakeCallbackErrorValue(); ev != UndefinedSingleton {
+					return ev
+				}
+				parts = append(parts, ToString(r))
 			}
 			return NewString(strings.Join(parts, ","))
 		})
@@ -1236,15 +1489,16 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 				els[i] = ta.getElement(i)
 			}
 			var cmp func(a, b Value) bool
-			if len(sargs) > 0 && IsCallable(sargs[0]) {
+			if len(sargs) > 0 && !isUndef(sargs[0]) {
+				if !IsCallable(sargs[0]) {
+					return NewTypeError("TypedArray.prototype.toSorted: comparefn must be a function")
+				}
 				cmpFn := sargs[0]
 				cmp = func(a, b Value) bool {
 					return toF64Value(CallFunction(cmpFn, UndefinedSingleton, a, b)) < 0
 				}
 			} else {
-				cmp = func(a, b Value) bool {
-					return toNumberValue(a) < toNumberValue(b)
-				}
+				cmp = func(a, b Value) bool { return typedArrayElemLess(a, b) }
 			}
 			sort.SliceStable(els, func(i, j int) bool { return cmp(els[i], els[j]) })
 			out := NewTypedArray(ta.Kind, n)
@@ -1255,23 +1509,45 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 		})
 	case "with":
 		return iterMethod("with", func(ta *TypedArray, sargs []Value) Value {
-			n := ta.arrLength()
+			// 规范 %TypedArray%.prototype.with:
+			//  1. len = O.[[ArrayLength]] (先捕获)
+			//  2. relativeIndex = ToIntegerOrInfinity(index)
+			//  3. actualIndex = index>=0 ? rel : len+rel
+			//  4. numericValue = BigInt 元素 ? ToBigInt(value) : ToNumber(value)  <-- 先转换
+			//  5. IsValidIntegerIndex 校验 -> RangeError
+			l := ta.arrLength()
 			f, err := toF64E(argOr(sargs, 0))
 			if err != nil {
 				return err
 			}
-			i := int(f)
+			i := toIntegerOrInfinity(f)
+			actual := i
 			if i < 0 {
-				i += n
+				actual = l + i
 			}
-			if i < 0 || i >= n {
+			// 值先做类型转换 (可能触发用户回调/resize), 再校验索引。
+			val := argOr(sargs, 1)
+			if ta.Kind.BigInt {
+				bv, berr := toBigIntE(val)
+				if berr != nil {
+					return berr
+				}
+				val = bv
+			} else {
+				nf, nerr := toF64E(val)
+				if nerr != nil {
+					return nerr
+				}
+				val = NewNumber(nf)
+			}
+			if actual < 0 || actual >= ta.arrLength() {
 				return NewRangeError("TypedArray.prototype.with: index out of range")
 			}
-			out := NewTypedArray(ta.Kind, n)
-			for k := 0; k < n; k++ {
+			out := NewTypedArray(ta.Kind, l)
+			for k := 0; k < l; k++ {
 				out.setElement(k, ta.getElement(k))
 			}
-			out.setElement(i, argOr(sargs, 1))
+			out.setElement(actual, val)
 			return out
 		})
 	case "toBase64":
@@ -1288,20 +1564,35 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 	return nil, false
 }
 
+// toIntegerOrInfinity 实现规范 ToIntegerOrInfinity: NaN→0, ±Inf 保持符号,
+// 其余向零截断。
+func toIntegerOrInfinity(f float64) int {
+	if math.IsNaN(f) {
+		return 0
+	}
+	if math.IsInf(f, 0) {
+		if f > 0 {
+			return math.MaxInt
+		}
+		return math.MinInt
+	}
+	return int(math.Trunc(f))
+}
+
 // fromIndexArg 解析 indexOf/includes 的 fromIndex (负值按 length 回绕)。
 // err 非 nil 表示 ToNumber 过程中用户回调抛错, 调用方直接透传。
+// 规范 ToIntegerOrInfinity(undefined/缺参) = 0; NaN → 0 —— 但注意空视图
+// (n==0) 时规范先返回, 不会调用到 fromIndex 的 valueOf, 调用方已各自处理。
 func fromIndexArg(args []Value, i, n int) (int, Value) {
-	if len(args) <= i || isUndef(args[i]) {
-		return 0, nil
+	f := 0.0
+	if len(args) > i && !isUndef(args[i]) {
+		v, err := toF64E(args[i])
+		if err != nil {
+			return 0, err
+		}
+		f = v
 	}
-	f, err := toF64E(args[i])
-	if err != nil {
-		return 0, err
-	}
-	if math.IsNaN(f) {
-		return n, nil
-	}
-	idx := int(f)
+	idx := toIntegerOrInfinity(f) // NaN→0, +Inf→MaxInt, -Inf→MinInt
 	if idx < 0 {
 		idx += n
 		if idx < 0 {
@@ -1371,6 +1662,43 @@ func (t *TypedArray) rangeArgs(args []Value) (int, int, Value) {
 		end = start
 	}
 	return start, end, nil
+}
+
+// typedArrayElemLess 是 TypedArray sort 默认比较: 元素按数学值升序。
+//
+// BigInt 元素必须用 BigInt 语义比较: 转 float64 会丢 >2^53 的精度, 且
+// BigInt 与 Number 在 Go 侧不可直接比 —— 故按类型分派。
+func typedArrayElemLess(a, b Value) bool {
+	ab, aBig := a.(*BigInt)
+	bb, bBig := b.(*BigInt)
+	if aBig && bBig {
+		return ab.Value.Cmp(bb.Value) < 0
+	}
+	if aBig || bBig {
+		// 混合不出现于同一 TypedArray, 但回调可改变元素类型; 退化到浮点。
+		return toNumberValue(a) < toNumberValue(b)
+	}
+	return toNumberValue(a) < toNumberValue(b)
+}
+
+// joinWith 以 sep 连接前 n 个元素 (join/toString 共用)。
+//
+// 逐元素走 ToString (而非 Inspect): BigInt 元素不带 "n" 后缀, null/undefined
+// 计空串 —— 与 Array.prototype.join 语义一致。
+func (t *TypedArray) joinWith(sep string, n int) string {
+	if n <= 0 {
+		return ""
+	}
+	parts := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		e := t.getElement(i)
+		if e == nil || e == UndefinedSingleton || e == NullSingleton {
+			parts = append(parts, "")
+			continue
+		}
+		parts = append(parts, ToString(e))
+	}
+	return strings.Join(parts, sep)
 }
 
 // nameIndex 把属性名解析为非负整数索引。
@@ -1511,19 +1839,82 @@ func NewTypedArrayView(kind TAKind, buf *ArrayBuffer, byteOffset, length int) *T
 // Object.defineProperty(sample, "constructor", {get(){...}}) 定义的自有
 // 访问器从不被调用 (test262 speciesctor-get-ctor 断言 calls===1 直接暴露);
 // @@species 也绕过了 Get, 读不到继承来的访问器。此处统一走 Get(O, key)。
-func (t *TypedArray) SpeciesCreate(n int) Value {
-	def := func() Value { return NewTypedArray(t.Kind, n) }
+// subarrayArgs 组装 subarray 传给 species 构造器的参数 (规范 22.2.3.27):
+//   - end 省略且来源是 length-tracking: « buffer, 𝔽(beginByteOffset) »;
+//   - 否则 « buffer, 𝔽(beginByteOffset), 𝔽(newLength) »。
+func subarrayArgs(ta *TypedArray, beginIndex, newLength int, endProvided bool) []Value {
+	buf := Value(ta.Buffer)
+	off := NewInt(int64(ta.ByteOffset + beginIndex*ta.Kind.ElemSize))
+	if !endProvided {
+		return []Value{buf, off}
+	}
+	return []Value{buf, off, NewInt(int64(newLength))}
+}
 
+// relIndexOrInf 实现 subarray/slice 的相对索引换算:
+// NaN→0, +Inf→len, -Inf→0, 其余向零截断后按负数从末尾回绕, 并夹到 [0, len]。
+func relIndexOrInf(f float64, n int) int {
+	if math.IsNaN(f) {
+		return 0
+	}
+	if math.IsInf(f, 1) {
+		return n
+	}
+	if math.IsInf(f, -1) {
+		return 0
+	}
+	i := int(math.Trunc(f))
+	if i < 0 {
+		i += n
+	}
+	if i < 0 {
+		return 0
+	}
+	if i > n {
+		return n
+	}
+	return i
+}
+
+// SpeciesCreateT 是 SpeciesConstruct 的带抛错标志版本: threw=true 表示
+// species 解析/构造过程抛出了异常, 此时第一个返回值为该原始抛出值, 调用方
+// 必须原样透传 (不得用 TypeError 覆盖 —— slice/map/filter 的
+// speciesctor-get-species-abrupt 依赖 getter 抛出的自定义错误被原样传出)。
+func (t *TypedArray) SpeciesCreateT(n int) (Value, bool) {
+	return t.SpeciesConstructT([]Value{NewInt(int64(n))}, func() Value {
+		return NewTypedArray(t.Kind, n)
+	})
+}
+
+// SpeciesCreate 实现 TypedArraySpeciesCreate(O, « 𝔽(n) ») —— 单参数 (长度) 形态。
+func (t *TypedArray) SpeciesCreate(n int) Value {
+	v, _ := t.SpeciesCreateT(n)
+	return v
+}
+
+// SpeciesConstruct 是 SpeciesConstructT 的忽略抛错标志版本。
+func (t *TypedArray) SpeciesConstruct(args []Value, def func() Value) Value {
+	v, _ := t.SpeciesConstructT(args, def)
+	return v
+}
+
+// SpeciesConstructT 实现规范 TypedArraySpeciesCreate 的通用形态:
+// 解析 SpeciesConstructor(O), 以其为构造器传入 args; 无自定义构造器时
+// 回退 def() (默认同类型视图)。返回值 (v, threw): threw=true 时 v 是原始
+// 抛出值。用户构造器的返回值不做 TypedArray 类型校验 (规范允许 species
+// 构造器返回任意对象, subarray/slice 的
+// speciesctor-get-species-custom-ctor-returns-another-instance 依赖这一点)。
+func (t *TypedArray) SpeciesConstructT(args []Value, def func() Value) (Value, bool) {
 	ctor := t.getSpecValue("constructor")
 	if ctor == nil || ctor == UndefinedSingleton {
-		return def()
+		return def(), false
 	}
 	// 规范 7.3.20 步骤 3: Type(C) is not Object → TypeError。
 	// 函数 (Closure/BuiltinFunction) 也是对象, 必须放行 —— 派生类构造器
 	// 正是 Closure, 漏判会让 `class MyU8 extends Uint8Array` 实例的
 	// super() 派生物种解析直接抛 TypeError。
 	if !IsObjectValue(ctor) {
-		return NewTypeError("TypedArray species constructor: constructor is not an object")
+		return NewTypeError("TypedArray species constructor: constructor is not an object"), false
 	}
 	var species Value
 	if sym := GetGlobalSymbol("Symbol.species"); sym != nil {
@@ -1538,31 +1929,35 @@ func (t *TypedArray) SpeciesCreate(n int) Value {
 				} else {
 					species = CallFunction(acc.Getter, ctor)
 					if ev := TakeCallbackErrorValue(); ev != UndefinedSingleton {
-						return ev
+						return ev, true
 					}
 				}
 			}
 		}
 	}
 	if species == nil || species == UndefinedSingleton || species == NullSingleton {
-		return def()
+		return def(), false
 	}
-	if !IsCallable(species) {
-		return NewTypeError("TypedArray species constructor is not a constructor")
+	if !IsConstructor(species) {
+		return NewTypeError("TypedArray species constructor is not a constructor"), false
 	}
-	// new S(n): 走构造路径 (speciesctor 的 this 语义与 [[Construct]] 一致)。
-	res := ConstructFunction(species, NewInt(int64(n)))
+	// new S(...args): 走构造路径 (speciesctor 的 this 语义与 [[Construct]] 一致)。
+	res := ConstructFunction(species, args...)
 	if ev := TakeCallbackErrorValue(); ev != UndefinedSingleton {
-		return ev
+		return ev, true
 	}
-	if err, isErr := res.(*Error); isErr {
-		return err
+	// TypedArrayCreate 步骤 3 (规范 22.2.4.6): 单 Number 参数形态下,
+	// 若新建视图是 TypedArray 且其 [[ArrayLength]] < 请求长度, 抛 TypeError。
+	// map/filter/slice 都经此路径 (subarray 走双参数形态, 不适用该检查)。
+	// 漏判会让 speciesctor-get-species-custom-ctor-length-throws 静默通过。
+	if len(args) == 1 {
+		if reqN, ok := args[0].(*Number); ok {
+			if out, isTA := res.(*TypedArray); isTA && out.arrLength() < int(reqN.Value) {
+				return NewTypeError("TypedArrayCreate: species constructor returned a typed array with insufficient length"), false
+			}
+		}
 	}
-	ta, ok := res.(*TypedArray)
-	if !ok {
-		return NewTypeError("TypedArray species constructor did not return a TypedArray")
-	}
-	return ta
+	return res, false
 }
 
 // getSpecValue 以规范 Get 语义读取 TypedArray 实例的属性: 先自有属性

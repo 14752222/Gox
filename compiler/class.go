@@ -188,8 +188,17 @@ func (c *Compiler) compileClassBody(className string, superClass ast.Expression,
 		}
 	} // [ctor, proto]
 
-	// extends: proto.Proto = SuperClass.prototype
+	// extends: proto.Proto = SuperClass.prototype, ctor.[[Prototype]] = SuperClass
 	if superName != "" {
+		// ctor.[[Prototype]] = SuperClass (规范 ClassDefinitionEvaluation 步骤:
+		// 派生类构造器自身的 [[Prototype]] 须为父类构造器, 使静态成员与
+		// @@species 访问器可继承)。栈: [ctor, proto] → SWAP → [proto, ctor]
+		c.emitter.EmitNoOperand(bytecode.OP_SWAP)
+		c.emitSuperLoad(superName) // [proto, ctor, Super]
+		// OP_SET_PROTO 取下方对象 (ctor) 设其原型 → [proto, ctor]
+		c.emitter.EmitNoOperand(bytecode.OP_SET_PROTO)
+		c.emitter.EmitNoOperand(bytecode.OP_SWAP) // [ctor, proto]
+
 		// 栈: [ctor, proto] → LOAD_GLOBAL Super → GET_PROP prototype → [ctor, proto, parent]
 		c.emitSuperLoad(superName)
 		pidx := c.constants.AddConstant(object.NewString("prototype"))

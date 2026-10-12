@@ -323,6 +323,12 @@ func setupReflectProxy(env *runtime.Environment) {
 			}
 			newTarget = args[2]
 		}
+		// 规范 sec-reflect.construct 步骤 2: IsConstructor(newTarget) 为假抛
+		// TypeError。isConstructor harness 正是靠这一步判定原型方法 (无
+		// [[Construct]] 的 BuiltinMethod) 不可 new。
+		if !object.IsConstructor(newTarget) {
+			return object.NewTypeError("Reflect.construct: newTarget is not a constructor")
+		}
 
 		// 1) 创建新对象并绑定原型到 newTarget.prototype
 		// 旧实现直接 new Object()，丢失了原型绑定，且把构造器返回值
