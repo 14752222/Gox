@@ -2100,8 +2100,28 @@ func toCalendarIDValue(v object.Value) (string, object.Value) {
 	if c, ok := asCalendar(v); ok {
 		return c.ID(), nil
 	}
-	s, ok := optionToString(v)
-	if !ok {
+	// spec ToTemporalCalendarIdentifier:
+	//   - Object → Get(v, "calendar"), undefined 则 TypeError, 否则 ToString。
+	//   - String → 原样。
+	//   - 其余原始值 (null/boolean/number/bigint/symbol) → TypeError。
+	var s string
+	if sval, ok := v.(*object.String); ok {
+		s = sval.Value
+	} else if object.IsObjectLike(v) {
+		pb, ok := v.(propBag)
+		if !ok {
+			return "", tgType("Invalid calendar value")
+		}
+		cv, _ := pb.GetProperty("calendar")
+		if cv == nil || cv == object.UndefinedSingleton {
+			return "", tgType("Invalid calendar value")
+		}
+		cs, ok := cv.(*object.String)
+		if !ok {
+			return "", tgType("Invalid calendar value")
+		}
+		s = cs.Value
+	} else {
 		return "", tgType("Invalid calendar value")
 	}
 	// 校验 (ISO 串提取注解 / ASCII 小写化 / iso8601 约束) 由 checkCalendarString 完成。
