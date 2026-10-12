@@ -981,11 +981,18 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 				if err != nil {
 					return err
 				}
-				f := int(fv)
-				if f < 0 {
-					from = n + f
-				} else if f < from {
-					from = f
+				// ToIntegerOrInfinity: -Inf 回绕后 <0 → 不循环; +Inf 保持 MaxInt。
+				if math.IsInf(fv, 1) {
+					from = n - 1
+				} else if math.IsInf(fv, -1) {
+					from = -1
+				} else {
+					f := toIntegerOrInfinity(fv)
+					if f < 0 {
+						from = n + f
+					} else if f < from {
+						from = f
+					}
 				}
 			}
 			for i := from; i >= 0; i-- {
@@ -1457,18 +1464,18 @@ func toIntegerOrInfinity(f float64) int {
 
 // fromIndexArg 解析 indexOf/includes 的 fromIndex (负值按 length 回绕)。
 // err 非 nil 表示 ToNumber 过程中用户回调抛错, 调用方直接透传。
+// 规范 ToIntegerOrInfinity(undefined/缺参) = 0; NaN → 0 —— 但注意空视图
+// (n==0) 时规范先返回, 不会调用到 fromIndex 的 valueOf, 调用方已各自处理。
 func fromIndexArg(args []Value, i, n int) (int, Value) {
-	if len(args) <= i || isUndef(args[i]) {
-		return 0, nil
+	f := 0.0
+	if len(args) > i && !isUndef(args[i]) {
+		v, err := toF64E(args[i])
+		if err != nil {
+			return 0, err
+		}
+		f = v
 	}
-	f, err := toF64E(args[i])
-	if err != nil {
-		return 0, err
-	}
-	if math.IsNaN(f) {
-		return n, nil
-	}
-	idx := int(f)
+	idx := toIntegerOrInfinity(f) // NaN→0, +Inf→MaxInt, -Inf→MinInt
 	if idx < 0 {
 		idx += n
 		if idx < 0 {
