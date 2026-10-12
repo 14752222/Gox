@@ -167,10 +167,18 @@ func setupArrayProto() *object.Object {
 		start := 0
 		end := n
 		if len(args) > 0 {
-			start = clampIndex(toInt(args[0]), n)
+			var serr object.Value
+			start, serr = specIndexClamp(args[0], n)
+			if serr != nil {
+				return serr
+			}
 		}
 		if len(args) > 1 {
-			end = clampIndex(toInt(args[1]), n)
+			var eerr object.Value
+			end, eerr = specIndexClamp(args[1], n)
+			if eerr != nil {
+				return eerr
+			}
 		}
 		if start >= end {
 			start, end = 0, 0
@@ -210,13 +218,21 @@ func setupArrayProto() *object.Object {
 		n := len(arr.Elements)
 		start := 0
 		if len(args) > 0 {
-			start = clampIndex(toInt(args[0]), n)
+			var serr object.Value
+			start, serr = specIndexClamp(args[0], n)
+			if serr != nil {
+				return serr
+			}
 		}
 		// 未指定 deleteCount 时，删除从 start 到末尾的所有元素。
 		// 这里必须基于 start 计算，否则 arr.Elements[start:start+deleteCount] 会越界。
 		deleteCount := n - start
 		if len(args) > 1 {
-			deleteCount = int(toInt(args[1]))
+			d, derr := specIndex(args[1])
+			if derr != nil {
+				return derr
+			}
+			deleteCount = int(d)
 			if deleteCount < 0 {
 				deleteCount = 0
 			}
@@ -935,7 +951,13 @@ func setupArrayProto() *object.Object {
 		}
 		idx := int64(0)
 		if len(args) > 0 {
-			idx = toInt(args[0])
+			// at(index) 的 index 走 ToIntegerOrInfinity: Symbol 抛 TypeError
+			// (index-non-numeric-argument-tointeger-invalid)。
+			var ierr object.Value
+			idx, ierr = specIndex(args[0])
+			if ierr != nil {
+				return ierr
+			}
 		}
 		if idx < 0 {
 			idx = l.n + idx
@@ -967,10 +989,18 @@ func setupArrayProto() *object.Object {
 		start := 0
 		end := n
 		if len(args) > 1 {
-			start = clampIndex(toInt(args[1]), n)
+			var serr object.Value
+			start, serr = specIndexClamp(args[1], n)
+			if serr != nil {
+				return serr
+			}
 		}
 		if len(args) > 2 {
-			end = clampIndex(toInt(args[2]), n)
+			var eerr object.Value
+			end, eerr = specIndexClamp(args[2], n)
+			if eerr != nil {
+				return eerr
+			}
 		}
 		for i := start; i < end; i++ {
 			l.set(int64(i), val)
@@ -991,14 +1021,28 @@ func setupArrayProto() *object.Object {
 		if n == 0 || len(args) < 1 {
 			return l.obj
 		}
-		target := clampIndex(toInt(args[0]), n)
+		// 规范: every / target / start / end 依次 ToIntegerOrInfinity, 任一步
+		// abrupt (Symbol / 带毒 valueOf) 都必须在任何写入前抛出。
+		var terr object.Value
+		target, terr := specIndexClamp(args[0], n)
+		if terr != nil {
+			return terr
+		}
 		start := 0
 		end := n
 		if len(args) > 1 {
-			start = clampIndex(toInt(args[1]), n)
+			var serr object.Value
+			start, serr = specIndexClamp(args[1], n)
+			if serr != nil {
+				return serr
+			}
 		}
 		if len(args) > 2 {
-			end = clampIndex(toInt(args[2]), n)
+			var eerr object.Value
+			end, eerr = specIndexClamp(args[2], n)
+			if eerr != nil {
+				return eerr
+			}
 		}
 		if target >= n || start >= n || start >= end {
 			return l.obj
@@ -1526,6 +1570,32 @@ func isObjectValue(v object.Value) bool {
 		return true
 	}
 	return false
+}
+
+// specIndex implements the spec's ToIntegerOrInfinity at array algorithm
+// positions (start / end / target / count). Unlike the loose toInt helper it
+// is abrupt on Symbol and on objects whose valueOf/toString throws —
+// `[].copyWithin(0, Symbol())` must throw a TypeError rather than silently
+// treating the Symbol as 0 (test262 *-as-symbol / tointeger-invalid 族)。
+// Returns (0, non-nil thrown) when the caller should return that value.
+func specIndex(v object.Value) (int64, object.Value) {
+	if v == nil {
+		return 0, object.NewTypeError("Cannot convert undefined to a number")
+	}
+	if _, isSym := v.(*object.Symbol); isSym {
+		return 0, object.NewTypeError("Cannot convert a Symbol value to a number")
+	}
+	return toIntegerOrInfinity(v)
+}
+
+// specIndexClamp 对 specIndex 的结果做 clampIndex, 顺带把异常短路掉。
+// 调用方拿到 errVal 非 nil 时应直接返回它。
+func specIndexClamp(v object.Value, n int) (int, object.Value) {
+	i, errVal := specIndex(v)
+	if errVal != nil {
+		return 0, errVal
+	}
+	return clampIndex(i, n), nil
 }
 
 // toNumberViaPrimitive 对对象做规范的 ToPrimitive(number hint) → ToNumber:
