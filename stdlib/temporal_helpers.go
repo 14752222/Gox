@@ -955,6 +955,14 @@ func toTimeZoneIDE(v object.Value) (string, object.Value) {
 		return id, nil
 	}
 	// 裸偏移字符串 ("+02:00"、"-05:00:30.5"): 规范化为偏移时区 ID。
+	// 作为时区标识符时不允许带小数秒 (即便小数部分全为 0):
+	// sec-temporal-time-zone-identifiers 的 UTCOffset 文法只到秒。
+	// 仅当整个字符串就是偏移 (以 +/- 开头) 时才应用, 以免误伤
+	// 含小数偏移主体的完整 ISO 串。
+	if len(s.Value) > 0 && (s.Value[0] == '+' || s.Value[0] == '-') &&
+		(strings.ContainsRune(s.Value, '.') || strings.ContainsRune(s.Value, ',')) {
+		return "", tgRange("Trailing zeroes not allowed for sub-minute time zone identifiers")
+	}
 	if off, ok := object.ParseTimeZoneOffsetString(s.Value); ok {
 		return tzOffsetID(off)
 	}
@@ -971,7 +979,14 @@ func toTimeZoneIDE(v object.Value) (string, object.Value) {
 				if id, ok := canonicalTimeZoneID(ann); ok {
 					return id, nil
 				}
-				// 偏移注解 ([+02:00] / [-05:30:15])
+				// 偏移注解 ([+02:00] / [-05:30:15])。作为**时区标识符**时,
+				// 偏移不得带小数秒 (即使小数部分全为 0 也非法):
+				// sec-temporal-time-zone-identifiers 的 UTCOffset 文法只到
+				// 秒。`[+01:35:00.000000000]` 须 RangeError, 而 ISO 主体里的
+				// 同名偏移则允许 (zoneddatetime-string-multiple-offsets)。
+				if strings.ContainsRune(ann, '.') || strings.ContainsRune(ann, ',') {
+					return "", tgRange("Trailing zeroes not allowed for sub-minute time zone identifiers")
+				}
 				if off, ok := object.ParseTimeZoneOffsetString(ann); ok {
 					return tzOffsetID(off)
 				}

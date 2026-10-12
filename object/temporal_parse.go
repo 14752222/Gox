@@ -755,6 +755,12 @@ func IsValidTimeZoneID(id string) bool {
 	if id == "UTC" || id == "GMT" {
 		return true
 	}
+	// 偏移串作为**时区标识符**时, 不允许带小数秒: sec-temporal-time-zone-identifiers
+	// 的 UTCOffset 文法只到秒 (`±HH:MM[:SS]`)。即便小数部分全为 0
+	// (如 `+01:35:00.000000000`) 也非法。
+	if strings.ContainsRune(id, '.') || strings.ContainsRune(id, ',') {
+		return false
+	}
 	if off, ok := ParseTimeZoneOffsetString(id); ok {
 		// 亚分钟级偏移不是合法时区标识符。
 		return off%60 == 0
