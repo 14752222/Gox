@@ -77,17 +77,21 @@ func setupTemporalPlainDate(temporal *object.Object) {
 		if len(args) == 0 {
 			return tgType("PlainDate.prototype.with requires an object")
 		}
-		if e := optionsTypeErr(argAt(args, 1)); e != nil {
-			return e
-		}
 		bag, isBag := plainBagOf(args[0])
 		if !isBag {
 			return tgType("PlainDate.prototype.with requires an object")
 		}
-		// spec: 先按字母序读字段，再读 overflow，最后校验调节。
+		// spec: 先按字母序读字段并校验 (day=-1 等在此抛 RangeError),
+		// 之后才 GetOptionsObject 读 overflow —— 故非法字段优先于 options 类型错误。
 		raw, rerr := readDateFieldsRaw(bag)
 		if rerr != nil {
 			return rerr
+		}
+		if verr := validateDateFieldsReject(raw); verr != nil {
+			return verr
+		}
+		if e := optionsTypeErr(argAt(args, 1)); e != nil {
+			return e
 		}
 		overflow, oerr := getOverflow(argAt(args, 1))
 		if oerr != nil {
@@ -522,6 +526,17 @@ func setupTemporalPlainTime(temporal *object.Object) {
 		if len(args) == 0 {
 			return tgType("PlainTime.prototype.with requires an object")
 		}
+		o, ok := args[0].(*object.Object)
+		if !ok {
+			return tgType("PlainTime.prototype.with: invalid fields")
+		}
+		// spec 顺序: 先 ToTemporalTimeRecord (读字段, 非有限/非整数 → RangeError,
+		// 如 minute:Infinity), 再 GetOptionsObject (原始值 → TypeError), 最后
+		// 才做范围调节 (hour:25 受 overflow 影响)。
+		time := t.ISOTime()
+		if merr := mergeTimeInto(&time, o); merr != nil {
+			return merr
+		}
 		if len(args) > 1 {
 			if e := optionsTypeErr(args[1]); e != nil {
 				return e
@@ -529,14 +544,6 @@ func setupTemporalPlainTime(temporal *object.Object) {
 			if _, oerr := getOverflow(args[1]); oerr != nil {
 				return oerr
 			}
-		}
-		o, ok := args[0].(*object.Object)
-		if !ok {
-			return tgType("PlainTime.prototype.with: invalid fields")
-		}
-		time := t.ISOTime()
-		if merr := mergeTimeInto(&time, o); merr != nil {
-			return merr
 		}
 		if !object.IsValidISOTime(time) {
 			return tgRange("PlainTime.prototype.with: invalid fields")
