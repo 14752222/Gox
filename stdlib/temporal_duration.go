@@ -442,7 +442,11 @@ func setupTemporalDuration(temporal *object.Object) {
 			}
 		}
 		quantum := st.roundingQuantumNanos()
-		return d.ToStringWithPrecision(digits, quantum, st.mode), nil
+		out, ok := d.ToStringWithPrecision(digits, quantum, st.mode)
+		if !ok {
+			return "", tgRange("Rounded duration is out of range")
+		}
+		return out, nil
 	})
 	tgValueOf(proto)
 
