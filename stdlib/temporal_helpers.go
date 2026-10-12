@@ -1755,6 +1755,29 @@ func toInstantValue(v object.Value) (*object.TemporalInstant, object.Value) {
 		}
 		return object.NewTemporalInstant(ns), nil
 	}
+	// 规范 ToTemporalInstant → ToPrimitive(value, string), 再要求结果为串。
+	// 对象 (含 {}、函数、数组) 经 ToString (会调用其 toString) 得到字符串后
+	// 解析失败 → RangeError; 只有原始非串 (undefined/null/boolean/number/
+	// bigint/symbol) 才是 TypeError。
+	if object.IsObjectLike(v) {
+		s := toStr(v)
+		f, ok := object.ParseTemporalInstantString(s)
+		if !ok {
+			return nil, tgRange("Invalid Instant string: " + s)
+		}
+		if e := calendarFromAnnotation(f.Calendar); e != nil {
+			return nil, e
+		}
+		dt := f.ISODateTime()
+		ns := dt.EpochNanos()
+		if f.OffsetSeconds != nil {
+			ns = ns.Sub(ns, big.NewInt(int64(*f.OffsetSeconds)*object.NanosPerSecond))
+		}
+		if !object.IsValidEpochNanos(ns) {
+			return nil, tgRange("Instant is outside of supported range")
+		}
+		return object.NewTemporalInstant(ns), nil
+	}
 	return nil, tgType("argument is not an Instant")
 }
 
