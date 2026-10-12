@@ -146,9 +146,7 @@ func TestObjectStatics(t *testing.T) {
 func TestPromiseStatics(t *testing.T) {
 	assertJS(t, `String(Promise.withResolvers().promise instanceof Promise)`, "true")
 	// Promise.try 把同步异常转为 rejection
-	assertJS(t, `(function(){ let out = "";
-		Promise.try(function(){ throw "boom" }).catch(function(e){ out = "caught:" + e });
-		return out })()`, "caught:boom")
+	assertJSAsync(t, `Promise.try(function(){ throw "boom" }).catch(function(e){ globalThis.__r = "caught:" + e })`, "caught:boom")
 }
 
 // ===== 其他 =====

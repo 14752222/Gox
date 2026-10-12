@@ -303,24 +303,24 @@ func TestMapSetSize(t *testing.T) {
 
 func TestPromiseRejectionPropagatesThroughThen(t *testing.T) {
 	// Then 过去不注册 rejection 回调，导致链式 Promise 永久 pending
-	assertJS(t, `(function(){let r="pending";Promise.reject("boom").then(function(){}).catch(function(e){r=e});return r})()`, "boom")
+	assertJSAsync(t, `Promise.reject("boom").then(function(){}).catch(function(e){ globalThis.__r = e })`, "boom")
 	// then 的第二个参数同样可用
-	assertJS(t, `(function(){let r="pending";Promise.reject("x").then(null, function(e){r=e});return r})()`, "x")
+	assertJSAsync(t, `Promise.reject("x").then(null, function(e){ globalThis.__r = e })`, "x")
 }
 
 func TestPromiseCombinatorsRejectOnNonIterable(t *testing.T) {
 	// 过去 race/allSettled 对非数组参数返回永久 pending 的 Promise
-	assertJS(t, `(function(){let r="pending";Promise.race("bad").catch(function(e){r=e.name});return r})()`, "TypeError")
-	assertJS(t, `(function(){let r="pending";Promise.allSettled("bad").catch(function(e){r=e.name});return r})()`, "TypeError")
-	assertJS(t, `(function(){let r="pending";Promise.all("bad").catch(function(e){r=e.name});return r})()`, "TypeError")
+	assertJSAsync(t, `Promise.race("bad").catch(function(e){ globalThis.__r = e.name })`, "TypeError")
+	assertJSAsync(t, `Promise.allSettled("bad").catch(function(e){ globalThis.__r = e.name })`, "TypeError")
+	assertJSAsync(t, `Promise.all("bad").catch(function(e){ globalThis.__r = e.name })`, "TypeError")
 }
 
 func TestPromiseAllAllSettledAny(t *testing.T) {
-	assertJS(t, `(function(){let r="pending";Promise.all([Promise.resolve(1),2]).then(function(v){r=v.join(",")});return r})()`, "1,2")
-	assertJS(t, `(function(){let r="pending";Promise.allSettled([Promise.resolve(1),Promise.reject("e")]).then(function(v){r=v[1].status});return r})()`, "rejected")
-	assertJS(t, `(function(){let r="pending";Promise.any([Promise.reject("a"),Promise.resolve("b")]).then(function(v){r=v});return r})()`, "b")
+	assertJSAsync(t, `Promise.all([Promise.resolve(1),2]).then(function(v){ globalThis.__r = v.join(",") })`, "1,2")
+	assertJSAsync(t, `Promise.allSettled([Promise.resolve(1),Promise.reject("e")]).then(function(v){ globalThis.__r = v[1].status })`, "rejected")
+	assertJSAsync(t, `Promise.any([Promise.reject("a"),Promise.resolve("b")]).then(function(v){ globalThis.__r = v })`, "b")
 	// 全部 rejected 时以 AggregateError 拒绝，并带 errors 数组
-	assertJS(t, `(function(){let r="pending";Promise.any([Promise.reject("a"),Promise.reject("b")]).catch(function(e){r=e.name+":"+e.errors.join(",")});return r})()`,
+	assertJSAsync(t, `Promise.any([Promise.reject("a"),Promise.reject("b")]).catch(function(e){ globalThis.__r = e.name+":"+e.errors.join(",") })`,
 		"AggregateError:a,b")
 }
 

@@ -399,8 +399,10 @@ func step(gen *object.Generator, arg object.Value, result *object.Promise, throw
 		return
 	}
 
-	// 非 Promise 值: 直接继续
-	step(gen, value, result, nil)
+	// 非 Promise 值: await 语义是 Await(value) ⇒ PromiseResolve 后挂起,
+	// 恢复必须走微任务 —— 同步续跑会让 `await 1` 后的代码抢在其余
+	// 同步代码/已排队 job 前执行, 破坏 FIFO (test262 顺序类用例)。
+	object.EnqueuePromiseJob(func() { step(gen, value, result, nil) })
 }
 
 // objectPrototype 是全局 Object.prototype 引用 (SetupGlobals 时填充)。

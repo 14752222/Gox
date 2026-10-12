@@ -26,7 +26,7 @@ globalThis.logs.push("A");`,
 import("./b.js");
 import("./a.js");
 globalThis.pB.resolve();
-globalThis.logs.join(",")`,
+setTimeout(() => { globalThis.result = globalThis.logs.join(","); }, 0)`,
 	})
 	vm, err := EvalFileVM(filepath.Join(dir, "entry.js"))
 	if err != nil {
@@ -35,7 +35,14 @@ globalThis.logs.join(",")`,
 	if err := vm.RunTimersUntil(time.Now().Add(500 * time.Millisecond)); err != nil {
 		t.Fatalf("RunTimers: %v", err)
 	}
-	assertString(t, vm.LastPopped(), "B,A")
+	// 微任务语义 (rrpZIw): resolve 只入队, 模块本体在事件循环 drain 时才
+	// 运行, 入口顶层的 join 必然读到 [] —— 旧断言 (LastPopped) 本身就是
+	// 同步语义的产物, 改为从全局 result 取最终顺序。
+	got, ok := vm.Globals().Get("result")
+	if !ok {
+		t.Fatalf("result 未设置: 异步模块图未在事件循环内完成")
+	}
+	assertString(t, got, "B,A")
 }
 
 // TestAsyncModuleGraphRejectionSkipsDependents b 的 TLA reject 后, 依赖它的 a
@@ -52,7 +59,7 @@ globalThis.logs.push("A-body");`,
 import("./b.js").catch(() => globalThis.logs.push("B-reject"));
 import("./a.js").catch(() => globalThis.logs.push("A-reject"));
 globalThis.pB.reject(new Error("boom"));
-globalThis.logs.join(",")`,
+setTimeout(() => { globalThis.result = globalThis.logs.join(","); }, 0)`,
 	})
 	vm, err := EvalFileVM(filepath.Join(dir, "entry.js"))
 	if err != nil {
@@ -62,7 +69,12 @@ globalThis.logs.join(",")`,
 		t.Fatalf("RunTimers: %v", err)
 	}
 	// b/a 的本体都不运行; 两个动态 import 都被拒绝, 顺序 B 先于 A。
-	assertString(t, vm.LastPopped(), "B-reject,A-reject")
+	// (同上: 结果从全局 result 取, 不再依赖入口顶层 join 的同步读。)
+	got, ok := vm.Globals().Get("result")
+	if !ok {
+		t.Fatalf("result 未设置: 拒绝未在事件循环内传播")
+	}
+	assertString(t, got, "B-reject,A-reject")
 }
 
 // TestAsyncModuleGraphNoTLAUnchanged 不含 TLA 的普通模块仍同步求值, 导入值可用
