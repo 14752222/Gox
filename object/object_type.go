@@ -81,6 +81,24 @@ type Object struct {
 
 func (o *Object) Type() ObjectType { return OBJECT_OBJ }
 
+// IsExtensible / PreventExtensions 让 *Object 满足 extensibility 接口,
+// 供 object.IsExtensible / PreventExtensions 统一分发 (与 *Array 同构)。
+func (o *Object) IsExtensible() bool { return o.Extensible }
+
+// PreventExtensions 把对象置为不可扩展 (Object.preventExtensions 的落点)。
+func (o *Object) PreventExtensions() { o.Extensible = false }
+
+// freezeProperties 把自有属性改为不可配置 (seal), freeze 为真时再置不可写。
+func (o *Object) freezeProperties(freeze bool) {
+	for k, desc := range o.Properties {
+		desc.Configurable = false
+		if freeze {
+			desc.Writable = false
+		}
+		o.Properties[k] = desc
+	}
+}
+
 // GetProto 返回对象的 [[Prototype]]。
 //
 // 原型链遍历的事实来源是鸭子类型入口 `interface{ GetProto() Value }`

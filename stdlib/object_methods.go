@@ -125,21 +125,14 @@ func setupObjectGlobal() *object.BuiltinFunction {
 	}))
 
 	// Object.freeze(obj): 不可扩展，且所有自有数据属性变为不可写、不可配置。
-	// 旧实现只设置 Extensible 与 Writable，漏了 Configurable。
+	// 经 object.FreezeProperties 统一处理 *Object 与 *Array —— 数组的索引
+	// 是隐式数据属性, 需要补写显式描述符才能真的变成只读 (否则 freeze 后
+	// arr.push(1) 仍写得进去)。
 	o.SetProperty("freeze", object.NewBuiltin("freeze", func(args ...object.Value) object.Value {
 		if len(args) == 0 {
 			return object.UndefinedSingleton
 		}
-		obj, ok := args[0].(*object.Object)
-		if !ok {
-			return args[0]
-		}
-		obj.Extensible = false
-		for k, desc := range obj.Properties {
-			desc.Writable = false
-			desc.Configurable = false
-			obj.Properties[k] = desc
-		}
+		object.FreezeProperties(args[0], true)
 		return args[0]
 	}))
 
@@ -148,19 +141,10 @@ func setupObjectGlobal() *object.BuiltinFunction {
 		if len(args) == 0 {
 			return object.NewBoolean(true)
 		}
-		obj, ok := args[0].(*object.Object)
-		if !ok {
-			return object.NewBoolean(true)
+		if !object.IsExtensible(args[0]) {
+			return object.NewBoolean(!object.HasWritableOrConfigurableOwn(args[0]))
 		}
-		if obj.Extensible {
-			return object.NewBoolean(false)
-		}
-		for _, desc := range obj.Properties {
-			if desc.Writable || desc.Configurable {
-				return object.NewBoolean(false)
-			}
-		}
-		return object.NewBoolean(true)
+		return object.NewBoolean(false)
 	}))
 
 	// Object.seal(obj): 不可扩展，所有自有属性不可配置 (但保持可写)。
@@ -168,13 +152,7 @@ func setupObjectGlobal() *object.BuiltinFunction {
 		if len(args) == 0 {
 			return object.UndefinedSingleton
 		}
-		if obj, ok := args[0].(*object.Object); ok {
-			obj.Extensible = false
-			for k, desc := range obj.Properties {
-				desc.Configurable = false
-				obj.Properties[k] = desc
-			}
-		}
+		object.FreezeProperties(args[0], false)
 		return args[0]
 	}))
 
@@ -183,17 +161,10 @@ func setupObjectGlobal() *object.BuiltinFunction {
 		if len(args) == 0 {
 			return object.NewBoolean(true)
 		}
-		if obj, ok := args[0].(*object.Object); ok {
-			if obj.Extensible {
-				return object.NewBoolean(false)
-			}
-			for _, desc := range obj.Properties {
-				if desc.Configurable {
-					return object.NewBoolean(false)
-				}
-			}
+		if !object.IsExtensible(args[0]) {
+			return object.NewBoolean(!object.HasConfigurableOwn(args[0]))
 		}
-		return object.NewBoolean(true)
+		return object.NewBoolean(false)
 	}))
 
 	// Object.create(proto)
@@ -542,30 +513,22 @@ func setupObjectGlobal() *object.BuiltinFunction {
 	}))
 
 	// Object.isExtensible(obj)
+	// 经 object.IsExtensible 统一分发: *Object 与 *Array 承载真实状态,
+	// 其余对象类型 (函数/代理/async generator 等) 按可扩展处理 ——
+	// 之前只认 *Object, 于是 Object.isExtensible(AsyncGeneratorFunction)
+	// 误报 false (built-ins/AsyncGeneratorFunction/extensibility.js),
+	// Object.isExtensible(数组) 又读不到 preventExtensions 的效果。
 	o.SetProperty("isExtensible", object.NewBuiltin("isExtensible", func(args ...object.Value) object.Value {
 		if len(args) == 0 {
 			return object.NewBoolean(false)
 		}
-		if obj, ok := args[0].(*object.Object); ok {
-			return object.NewBoolean(obj.Extensible)
-		}
-		// 其它对象类型 (函数/数组/代理/async generator 等) 默认可扩展 ——
-		// 之前只认 *Object, 于是 Object.isExtensible(AsyncGeneratorFunction)
-		// 误报 false (test262 built-ins/AsyncGeneratorFunction/extensibility.js)。
-		if object.IsObjectValue(args[0]) {
-			return object.NewBoolean(true)
-		}
-		return object.NewBoolean(false)
+		return object.NewBoolean(object.IsExtensible(args[0]))
 	}))
 
 	// Object.preventExtensions(obj)
 	o.SetProperty("preventExtensions", object.NewBuiltin("preventExtensions", func(args ...object.Value) object.Value {
 		if len(args) > 0 {
-			if obj, ok := args[0].(*object.Object); ok {
-				obj.Extensible = false
-			}
-		}
-		if len(args) > 0 {
+			object.PreventExtensions(args[0])
 			return args[0]
 		}
 		return object.UndefinedSingleton

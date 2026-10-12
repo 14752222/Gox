@@ -52,6 +52,37 @@ type PropDeleter interface {
 	DeleteOwn(name string) bool
 }
 
+// HasConfigurableOwn 报告值是否有任何可配置的自有属性 —— Object.isSealed
+// 的判据 (非对象值按"无自有属性"返回 false)。索引键与字符串键都经
+// OwnKeys 枚举, 再逐个查描述符。
+func HasConfigurableOwn(v Value) bool {
+	store, ok := v.(OwnPropertyStore)
+	if !ok {
+		return false
+	}
+	for _, k := range store.OwnKeys() {
+		if d, found := store.OwnDescriptor(k); found && d.Configurable {
+			return true
+		}
+	}
+	return false
+}
+
+// HasWritableOrConfigurableOwn 报告值是否存在"可写或可配置"的自有属性 ——
+// Object.isFrozen 的判据。
+func HasWritableOrConfigurableOwn(v Value) bool {
+	store, ok := v.(OwnPropertyStore)
+	if !ok {
+		return false
+	}
+	for _, k := range store.OwnKeys() {
+		if d, found := store.OwnDescriptor(k); found && (d.Writable || d.Configurable) {
+			return true
+		}
+	}
+	return false
+}
+
 // ===== *Object =====
 // 普通对象的自有属性就是 Properties map, 直接对接接口 (行为与此前
 // 内建里的 *Object 分支完全一致)。
@@ -86,8 +117,16 @@ func (g *GlobalObject) DefineOwn(name string, desc PropertyDescriptor) bool {
 
 // arrayLengthDescriptor 返回 length 自有属性的描述符 (规范: 可写、
 // 不可枚举、不可配置)。
-func arrayLengthDescriptor(n int) PropertyDescriptor {
-	return PropertyDescriptor{Value: NewInt(int64(n)), Writable: true, Enumerable: false, Configurable: false}
+//
+// writable 由 freezeLength 决定: 数组 length 的规范性只允许在 Object.freeze
+// (或 defineProperty 显式改) 后变成不可写 —— 普通数组恒为 true。
+func arrayLengthDescriptorFor(a *Array) PropertyDescriptor {
+	return PropertyDescriptor{
+		Value:        NewInt(int64(len(a.Elements))),
+		Writable:     !a.NonWritableLength,
+		Enumerable:   false,
+		Configurable: false,
+	}
 }
 
 // OwnKeys 返回数组自有键: 整数索引升序 + "length" + defineProperty 定义的
@@ -167,7 +206,7 @@ func (a *Array) OwnDescriptor(name string) (PropertyDescriptor, bool) {
 		return d, true
 	}
 	if name == "length" {
-		return arrayLengthDescriptor(len(a.Elements)), true
+		return arrayLengthDescriptorFor(a), true
 	}
 	if idx, err := Atoi(name); err == nil && idx >= 0 && idx < len(a.Elements) {
 		v := a.Elements[idx]

@@ -126,8 +126,17 @@ func (vm *VM) throwIfError(result object.Value, returnsRaw bool) (thrown bool, e
 	if !isErr || returnsRaw {
 		return false, nil
 	}
-	if !vm.handleThrow(errObj) {
-		return true, &ThrowError{Value: errObj}
+	// 内建方法把回调桥抛出的**非 Error 值** (如 Test262Error 实例) 包装成
+	// 通用 Error 并挂在 Original 上, 以便 VM 能识别"这是异常"。这里必须
+	// 把包装剥掉, 抛出原始值 —— 否则 catch 侧拿到的是包装 Error,
+	// `thrown.constructor !== Test262Error` 让 assert.throws 全部误报
+	// "Expected a Test262Error but got a Error" (concat/create-species-abrupt 族)。
+	var thrownVal object.Value = errObj
+	if errObj.Original != nil {
+		thrownVal = errObj.Original
+	}
+	if !vm.handleThrow(thrownVal) {
+		return true, &ThrowError{Value: thrownVal}
 	}
 	return true, nil
 }
