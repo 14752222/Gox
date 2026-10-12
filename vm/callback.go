@@ -174,7 +174,17 @@ func (vm *VM) invokeWithThis(fn, thisVal object.Value, args []object.Value) erro
 	switch callee := fn.(type) {
 	case *object.BuiltinFunction:
 		// 内建函数: 不传 this，直接传参数
+		// super() 且父类是内建构造器 (如 class C extends Temporal.Duration):
+		// 规范里 super() 走 [[Construct]], 内建构造器的 tgCtorGuard 依赖
+		// IsConstructCall() 判定 new.target !== undefined。此处临时进入
+		// 构造调用窗口, 让派生类的 super() 不被误判为普通函数调用。
+		if superCall {
+			object.EnterConstructCall()
+		}
 		result := callee.Fn(args...)
+		if superCall {
+			object.LeaveConstructCall()
+		}
 		if result == nil {
 			result = object.UndefinedSingleton
 		}

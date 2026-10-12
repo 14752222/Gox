@@ -461,8 +461,9 @@ func plainDateDiffFrom(from object.ISODate, args []object.Value, since bool) obj
 		return tgRange("Invalid roundingIncrement for " + su)
 	}
 	if since {
+		// 只交换方向; calendarRoundDiff 内部会归一化次序并镜像方向性
+		// 模式, 此处不再 negateRoundingMode (否则双重取反)。
 		from, to = to, from
-		mode = negateRoundingMode(mode)
 	}
 	return calendarRoundDiff(
 		object.ISODateTime{Date: from}, object.ISODateTime{Date: to},

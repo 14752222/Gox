@@ -2,6 +2,7 @@ package parser
 
 import (
 	"fmt"
+	"math/big"
 	"reflect"
 	"strconv"
 	"strings"
@@ -2410,11 +2411,44 @@ func (p *Parser) parseIntegerLiteral() ast.Expression {
 	}
 
 	if err != nil {
+		// 超出 int64 的整数字面量: ECMAScript 的 Number 是 float64,
+		// 这类字面量是合法数字 (如 9007199254740991463129087), 只是无法
+		// 用 int64 精确表示。降级为浮点字面量, 与 V8 的求值一致
+		// (最近可表示值), 而不是解析失败。
+		if f, ferr := parseNumericLiteralFloat(literal); ferr == nil {
+			return &ast.FloatLiteral{Token: p.curToken(), Value: f}
+		}
 		p.addError(fmt.Sprintf("could not parse %q as integer", literal))
 		return nil
 	}
 	lit.Value = value
 	return lit
+}
+
+// parseNumericLiteralFloat 把整数字面量按 float64 解析 (含 0x/0o/0b 进制
+// 与 legacy 八进制), 供 int64 溢出时的降级路径使用。用 math/big 做任意
+// 精度整数解析, 再转 float64 —— 与 ECMAScript 遇到超长数字字面量时取
+// 最近可表示值的行为一致。
+func parseNumericLiteralFloat(literal string) (float64, error) {
+	base := 10
+	digits := literal
+	switch {
+	case strings.HasPrefix(literal, "0x") || strings.HasPrefix(literal, "0X"):
+		base, digits = 16, literal[2:]
+	case strings.HasPrefix(literal, "0b") || strings.HasPrefix(literal, "0B"):
+		base, digits = 2, literal[2:]
+	case strings.HasPrefix(literal, "0o") || strings.HasPrefix(literal, "0O"):
+		base, digits = 8, literal[2:]
+	case legacyOctalValue(literal) != "":
+		digits = legacyOctalValue(literal)
+		base = legacyOctalBase(literal)
+	}
+	n, ok := new(big.Int).SetString(digits, base)
+	if !ok {
+		return 0, fmt.Errorf("invalid integer literal %q", literal)
+	}
+	f, _ := new(big.Float).SetInt(n).Float64()
+	return f, nil
 }
 
 // legacyOctalValue 报告 literal 是否为 legacy 八进制字面量 (以 0 开头且

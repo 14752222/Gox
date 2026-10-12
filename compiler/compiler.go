@@ -74,6 +74,9 @@ type Compiler struct {
 
 	// privateClassSeq 私有类序号: 每个 class 递增, 拼进私有键前缀保证唯一。
 	privateClassSeq int
+	// superClassSeq 合成父类局部变量序号: 非 Identifier 形式的 extends
+	// (`extends A.B`) 把父类表达式存进 `\x00super#N` 局部, 保证嵌套唯一。
+	superClassSeq int
 	// 仅在编译 class 方法时非空。
 	currentSuperClass string
 

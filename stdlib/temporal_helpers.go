@@ -1503,6 +1503,12 @@ func (r rawDateFields) regulate(overflow string) (object.ISODate, object.Value) 
 type rawDateTimeFields struct {
 	rawDateFields
 	time object.ISOTime
+	// timeZone / offset: relativeTo 属性包可携带 timeZone (及 offset)。
+	// 存在 timeZone 时按 ZonedDateTime 解释, 且 timeZone 字符串必须合法。
+	timeZone string
+	hasTZ    bool
+	offset   string
+	hasOff   bool
 }
 
 // readDateTimeFieldsRaw 按字母序读取全部 date-time 字段。
@@ -1510,6 +1516,25 @@ func readDateTimeFieldsRaw(o propBag) (rawDateTimeFields, object.Value) {
 	var r rawDateTimeFields
 	if ce := checkCalendarProp(o); ce != nil {
 		return r, ce
+	}
+	// timeZone / offset: 规范在日期时间字段之后读取, 并对字符串做时区 ID
+	// 校验 (bare datetime、亚分钟偏移等非法串须 RangeError)。
+	if v, ok := o.GetProperty("timeZone"); ok && v != object.UndefinedSingleton {
+		id, e := toTimeZoneIDE(v)
+		if e != nil {
+			return r, e
+		}
+		r.timeZone, r.hasTZ = id, true
+	}
+	if v, ok := o.GetProperty("offset"); ok && v != object.UndefinedSingleton {
+		s, isStr := v.(*object.String)
+		if !isStr {
+			return r, tgType("offset must be a string")
+		}
+		if _, ok := object.ParseTimeZoneOffsetString(s.Value); !ok {
+			return r, tgRange("Invalid offset string: " + s.Value)
+		}
+		r.offset, r.hasOff = s.Value, true
 	}
 	d, okD, e := readIntField(o, "day")
 	if e != nil {
@@ -1786,9 +1811,7 @@ func toInstantValue(v object.Value) (*object.TemporalInstant, object.Value) {
 		if !ok {
 			return nil, tgRange("Invalid Instant string: " + t.Value)
 		}
-		if e := calendarFromAnnotation(f.Calendar); e != nil {
-			return nil, e
-		}
+		// Instant 无日历槽: [u-ca=...] 注解一律忽略 (不校验、不报错)。
 		dt := f.ISODateTime()
 		ns := dt.EpochNanos()
 		if f.OffsetSeconds != nil {
@@ -1809,9 +1832,7 @@ func toInstantValue(v object.Value) (*object.TemporalInstant, object.Value) {
 		if !ok {
 			return nil, tgRange("Invalid Instant string: " + s)
 		}
-		if e := calendarFromAnnotation(f.Calendar); e != nil {
-			return nil, e
-		}
+		// Instant 无日历槽: [u-ca=...] 注解一律忽略 (不校验、不报错)。
 		dt := f.ISODateTime()
 		ns := dt.EpochNanos()
 		if f.OffsetSeconds != nil {
@@ -1842,6 +1863,11 @@ func toPlainYearMonthValue(v object.Value) (*object.TemporalPlainYearMonth, obje
 		}
 		if e := calendarFromAnnotation(f.Calendar); e != nil {
 			return nil, e
+		}
+		// 该月的**第一天**必须在可表示区间内 (sec-temporal-yearmonth:
+		// 参数串以"月首日"为锚点做范围检查, 而非其自带的日)。
+		if !object.ISOYearMonthInRange(f.Year, f.Month) {
+			return nil, tgRange("PlainYearMonth is outside of supported range")
 		}
 		return object.NewTemporalPlainYearMonth(f.Year, f.Month, 1, object.DefaultCalendarID), nil
 	case propBag:
@@ -2218,6 +2244,23 @@ func negateRoundingMode(mode string) string {
 	return mode
 }
 
+// mirrorDirectionalMode 镜像"方向性"舍入模式 (ceil↔floor, halfCeil↔halfFloor),
+// 零对称模式原样返回。用于"交换 from/to 后按正数舍入、再对结果取负"的场景:
+// 只有方向性模式取负后会翻向, 需要预先镜像。
+func mirrorDirectionalMode(mode string) string {
+	switch mode {
+	case "ceil":
+		return "floor"
+	case "floor":
+		return "ceil"
+	case "halfCeil":
+		return "halfFloor"
+	case "halfFloor":
+		return "halfCeil"
+	}
+	return mode
+}
+
 // roundRatToIncrement 把有理数 v 按 mode 舍入到 inc 的整数倍，返回该整数。
 // v 带符号；各 half* 模式按规范处理 tie 与符号对称性。
 func roundRatToIncrement(v *big.Rat, inc int64, mode string) int64 {
@@ -2278,7 +2321,14 @@ func calendarRoundDiff(from, to object.ISODateTime, largest, smallest string, in
 	if compareISODateTime(from, to) > 0 {
 		sign = -1
 		from, to = to, from
-		mode = negateRoundingMode(mode)
+		// 交换 from/to 后算出的 q 是正数。对"方向性"模式 (ceil/floor,
+		// halfCeil/halfFloor) 必须镜像, 才能让最终取负结果匹配原始方向
+		// 语义 (ceil(-2.66) = -2 = -floor(2.66))。零对称模式 (expand/
+		// trunc/halfExpand/halfTrunc/halfEven) 无需镜像 —— 取负后语义自洽
+		// (expand(-2.66) = -3 = -expand(2.66))。旧实现对全部模式统一
+		// negate, 把负向 expand 错当成 trunc (PlainDate/prototype/until 的
+		// roundingmode 整族)。
+		mode = mirrorDirectionalMode(mode)
 	}
 	// largest 为日及以下: 纯纳秒路径
 	if unitRank(largest) >= unitRank("day") {
