@@ -382,9 +382,26 @@ func paintTableCell(img *image.RGBA, n *GuiNode, disabled bool) {
 
 // ===== props / 运行时读取 =====
 
+// tableBorderless 读 borderless 开关。属性写在 <table> 上, 而行/单元格
+// 是 Go 侧构造的内部节点 (owner 指向 table), 所以沿 owner 链向上找 —
+// 否则脚本写 <table borderless> 会被静默吞掉, 网格线照常画。
 func (n *GuiNode) tableBorderless() bool {
-	v, ok := n.PropBool("borderless")
-	return ok && v
+	for p := n; p != nil; p = p.owner {
+		if v, ok := p.PropBool("borderless"); ok {
+			return v
+		}
+	}
+	return false
+}
+
+// tableZebra 读 zebra 开关 (同样在 <table> 上, 沿 owner 链找)。
+func (n *GuiNode) tableZebra() bool {
+	for p := n; p != nil; p = p.owner {
+		if v, ok := p.PropBool("zebra"); ok {
+			return v
+		}
+	}
+	return false
 }
 
 // tableHeaderNode / tableRowNodes 取内部构造的表头行与数据行。
@@ -444,8 +461,9 @@ func buildTable(n *GuiNode) {
 	for ri, row := range rows {
 		r := &GuiNode{Tag: "table-row", Props: map[string]object.Value{}}
 		r.owner = n
-		// 斑马纹: 奇数行 (1,3,5…) 着色 —— 由构造期决定, 不是 props
-		if ri%2 == 1 {
+		// 斑马纹: 奇数行 (1,3,5…) 着色, 但仅当 <table zebra> 显式打开。
+		// 此前无条件写 _zebra 导致 zebra prop 被静默吞掉 (关不掉也无需开)。
+		if n.tableZebra() && ri%2 == 1 {
 			r.Props["_zebra"] = &object.Boolean{Value: true}
 		}
 		texts := n.tableCells(row, cols)

@@ -3,9 +3,6 @@ package gfx
 import (
 	"fmt"
 	"image/color"
-
-	"github.com/14752222/Gox/config"
-	"github.com/14752222/Gox/object"
 )
 
 // Theme 设计 token 与主题系统 (T07)。
@@ -313,70 +310,14 @@ func markAllWindowsDirty() {
 	}
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// gx/theme JS 门面
-// ─────────────────────────────────────────────────────────────────────────────
-
-func init() {
-	object.RegisterBuiltinModule("gx/theme", func() map[string]object.Value {
-		// gox.json 的 "theme" 字段在此消费 (模块首次被 import 时)。
-		// 脚本随后显式 setTheme 会覆盖它; window 元素的 theme prop 在
-		// render() 时应用, 晚于这里 —— 三条入口优先级: setTheme 调用 >
-		// window prop > gox.json。
-		if cfg, err := config.Load("."); err == nil && cfg.Theme != "" {
-			SetThemeNamed(cfg.Theme)
-		}
-		return map[string]object.Value{
-			"setTheme":   object.NewBuiltin("setTheme", jsSetTheme),
-			"toggleDark": object.NewBuiltin("toggleDark", jsToggleDark),
-			"current":    object.NewBuiltin("current", jsCurrentTheme),
-		}
-	})
-}
-
-// jsSetTheme setTheme("light"|"dark") 或 setTheme({accent: "#e67e22", ...})。
-// 预设名返回布尔 (未知名 false); 对象形式返回实际生效的覆盖个数。
-func jsSetTheme(args ...object.Value) object.Value {
-	if len(args) == 0 {
-		return object.NewTypeError("setTheme: expected a preset name or an overrides object")
-	}
-	switch v := args[0].(type) {
-	case *object.String:
-		return object.NewBoolean(SetThemeNamed(v.Value))
-	case *object.Object:
-		overrides := map[string]string{}
-		for _, key := range v.Keys() {
-			if val, ok := v.GetProperty(key); ok {
-				if s, ok := val.(*object.String); ok {
-					overrides[key] = s.Value
-				}
-			}
-		}
-		return object.NewNumber(float64(ApplyOverrides(overrides)))
-	default:
-		return object.NewTypeError("setTheme: expected a string or an object, got %s", object.TypeOf(args[0]))
-	}
-}
-
-// jsToggleDark toggleDark(): 亮 ↔ 暗。
-func jsToggleDark(args ...object.Value) object.Value {
-	ToggleDark()
-	return object.NewBoolean(true)
-}
-
-// jsCurrentTheme current(): 读当前 token 表 (键 = token 名, 值 = #rrggbbaa
-// 十六进制), 供 devtools 快照或脚本按 token 取色。
-func jsCurrentTheme(args ...object.Value) object.Value {
+// ThemeTokens 把当前主题导出为 "token 名 → #rrggbbaa" 表 (gfx/bind 的
+// gx/theme current() 与文档生成共用同一份口径)。
+func ThemeTokens() map[string]string {
 	t := themeCurrent
-	o := object.NewObject()
-	for key, hex := range themeTokens(&t) {
-		o.SetProperty(key, object.NewString(hex))
-	}
-	return o
+	return themeTokens(&t)
 }
 
-// themeTokens 把主题导出为 "token 名 → #rrggbbaa" 表 (jsCurrentTheme 与
-// 文档生成共用同一份口径)。
+// themeTokens 把主题导出为 "token 名 → #rrggbbaa" 表。
 func themeTokens(t *Theme) map[string]string {
 	hex := func(c color.RGBA) string {
 		return fmt.Sprintf("#%02x%02x%02x%02x", c.R, c.G, c.B, c.A)
