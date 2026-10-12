@@ -198,7 +198,7 @@ func EvalFile(path string) (object.Value, error) {
 // 源码帧展示用户写的 .ts 原文, 并用转译行映射把 JS 行列翻回 .ts (M2 P0-1)。
 
 func EvalFileVM(path string) (*VM, error) {
-	return evalFileVM(path, false)
+	return evalFileVM(path, false, false)
 }
 
 // EvalFileVMModuleEarlyErrors 与 EvalFileVM 相同, 但把入口源码**按模块语义做
@@ -208,10 +208,10 @@ func EvalFileVM(path string) (*VM, error) {
 // flags:module 的用例 (它们语义是模块, 但 Gox 以脚本方式执行)。
 
 func EvalFileVMModuleEarlyErrors(path string) (*VM, error) {
-	return evalFileVM(path, true)
+	return evalFileVM(path, true, false)
 }
 
-func evalFileVM(path string, moduleEE bool) (*VM, error) {
+func evalFileVM(path string, moduleEE, t262 bool) (*VM, error) {
 	orig, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("cannot read file: %v", err)
@@ -240,7 +240,11 @@ func evalFileVM(path string, moduleEE bool) (*VM, error) {
 		return nil, evalEntryError(err)
 	}
 
-	vm := NewWithGlobals(c.Bytes(), c.Constants(), c.NumLocals(), stdlib.SetupGlobals())
+	globals := stdlib.SetupGlobals()
+	if t262 {
+		stdlib.SetupTest262Globals(globals)
+	}
+	vm := NewWithGlobals(c.Bytes(), c.Constants(), c.NumLocals(), globals)
 	vm.SetModuleBase(filepath.Dir(path))
 	// T05/M2 源码帧: 注入原文 + 行映射 + 语句位置表, 未捕获异常渲染出错行。
 	vm.SetSourceInfo(path, string(orig))
@@ -253,6 +257,13 @@ func evalFileVM(path string, moduleEE bool) (*VM, error) {
 	}
 
 	return vm, nil
+}
+
+// EvalFileVMT262 与 EvalFileVM 相同，但额外注入 test262 宿主约定所需的
+// $262 全局对象（$262.detachArrayBuffer）。仅供 cmd/gox 的 test262 runner 使用 ——
+// 常规脚本执行不应看到 $262。
+func EvalFileVMT262(path string) (*VM, error) {
+	return evalFileVM(path, false, true)
 }
 
 // EvalModuleFileVM 读取并执行一个 ESM 模块文件，把它当作**入口模块**，返回 VM。

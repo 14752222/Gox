@@ -192,6 +192,12 @@ func setupReflectProxy(env *runtime.Environment) {
 		if fp := object.FuncPrototypeOf(target); fp != nil {
 			return fp
 		}
+		// 兜底: 鸭子类型入口 `GetProto() Value` (Temporal 各类型等)。
+		if ph, ok := target.(interface{ GetProto() object.Value }); ok {
+			if p := ph.GetProto(); p != nil {
+				return p
+			}
+		}
 		return object.NullSingleton
 	}))
 
@@ -318,6 +324,12 @@ func setupReflectProxy(env *runtime.Environment) {
 		if proto, found := newTarget.GetProperty("prototype"); found && proto != nil {
 			obj.Proto = proto
 		}
+		// GetPrototypeFromConstructor 的 Get(newTarget, "prototype") 若其
+		// getter 抛出 (get-prototype-from-constructor-throws 族), 须在调用
+		// 构造器前把该异常原样抛出 —— 否则会被构造器的其它错误掩盖。
+		if thrown := callbackThrown(); thrown != nil {
+			return thrown
+		}
 
 		// 2) 以新对象为 this 调用构造器
 		// new.target 经闭包携带传入: VM 的 callClosure 在无 pending 构造目标时
@@ -330,7 +342,11 @@ func setupReflectProxy(env *runtime.Environment) {
 			c2.NewTarget = newTarget
 			callTarget = &c2
 		}
+		// Reflect.construct 是规范意义上的 [[Construct]], 对 RequiresNew 内建
+		// (Temporal 构造器) 须视为"经 new 调用" —— 否则 tgCtorGuard 会误判。
+		object.EnterConstructCall()
 		result := object.CallFunction(callTarget, obj, ctorArgs...)
+		object.LeaveConstructCall()
 		// 与 r6OWbQ 同口径: 优先回传**原始抛出值** (保住错误类型与 catch 侧
 		// === 语义), 并**同时消费值槽** —— 过去只消费错误槽, 残留的原值会
 		// 污染之后任意一次桥错误的抛出值 (rr1O8P)。

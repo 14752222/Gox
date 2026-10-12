@@ -939,6 +939,16 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			}
 			// 创建新对象
 			newObj := object.NewObject()
+			// IsConstructor 校验 (规范 EvaluateNew → 检查 IsConstructor(constructor))。
+			// 之前只对 Closure 分支做了箭头/生成器拦截；内建函数里没有 [[Construct]]
+			// 的那些 (原型方法/getter/命名空间函数) 会被错误地当普通调用执行
+			// (Temporal 的 not-a-constructor 族即因此整体失败)。
+			if !object.IsConstructor(fn) {
+				if err := vm.throwNamedError("TypeError", "%s is not a constructor", describeCallee(fn)); err != nil {
+					return err
+				}
+				continue
+			}
 			if closure, ok := fn.(*object.Closure); ok {
 				// IsConstructor 校验 (ES: EvaluateNew → Construct 前检查
 				// IsConstructor(constructor), 无 [[Construct]] 抛 TypeError):
@@ -998,6 +1008,10 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 					}
 					continue
 				}
+				// 提前抓住构造器帧指针: runFrom 正常结束时会把帧弹出, 但派生类
+				// 构造器 super() 换掉的 this 只体现在该帧上 (隐式返回 undefined
+				// 时 OP_NEW 需据此取 exotic 实例, 而非普通对象占位)。
+				ctorFrame := vm.frames[startIdx]
 				if err := vm.runFrom(startIdx); err != nil {
 					vm.unwindFramesTo(startIdx)
 					if terr := vm.rethrowBridgeError(err); terr != nil {
@@ -1005,17 +1019,39 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 					}
 					continue
 				}
+				// 派生类构造器 (extends TypedArray 等): super() 走 [[Construct]]
+				// 后被替换的 this 挂在构造器帧上, 且派生构造器通常不显式 return
+				// (隐式返回 undefined) —— 此时必须采用构造器帧最终的 this, 而非
+				// 新建的普通对象占位。否则 new MyU8(3) 只得到普通对象, 原型方法
+				// 全部报 "receiver must be a TypedArray"。
+				var ctorThis object.Value
+				if ctorFrame != nil {
+					ctorThis = ctorFrame.This
+				}
 				// 如果构造函数返回对象，使用返回的对象
 				result := vm.stack.Pop()
-				if _, isObj := result.(*object.Object); isObj {
+				if object.IsObjectValue(result) {
 					// 使用构造函数返回的对象
 					vm.stack.Push(result)
+				} else if ctorThis != nil && ctorThis != newObj {
+					// 派生构造器 super() 已把 this 换成 exotic 实例 (TypedArray),
+					// 但派生 ctor 隐式返回 undefined —— 采用帧 this。
+					vm.stack.Push(ctorThis)
 				} else {
 					// 使用 newObj
 					vm.stack.Push(newObj)
 				}
 			} else if builtin, ok := fn.(*object.BuiltinFunction); ok {
+				// 仅对 RequiresNew 内建置位"经 new 调用"窗口, 供 Temporal
+				// 构造器区分 `new T(...)` 与普通调用 `T(...)` (后者须 TypeError)。
+				// 对普通内建 (Date/Map 等) 不置位, 避免影响其内部再调用。
+				if builtin.RequiresNew {
+					object.EnterConstructCall()
+				}
 				result := builtin.Fn(args...)
+				if builtin.RequiresNew {
+					object.LeaveConstructCall()
+				}
 				if result == nil {
 					result = newObj
 				}
@@ -1135,6 +1171,18 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				vm.stack.Push(object.UndefinedSingleton)
 			} else {
 				vm.stack.Push(val)
+			}
+		case bytecode.OP_SET_CTOR:
+			// 栈: [ctor, proto] → [ctor, proto]
+			// 规范 ClassDefinitionEvaluation: 在实例原型上定义 constructor
+			// 自有属性, 不可枚举、可写、可配置。不改变栈 (后续 OP_SET_PROP
+			// prototype 仍要 [ctor, proto])。
+			proto := vm.stack.Peek()
+			ctor := vm.stack.PeekAt(1)
+			if o, ok := proto.(*object.Object); ok && ctor != nil {
+				o.DefineOwnProperty("constructor", object.PropertyDescriptor{
+					Value: ctor, Writable: true, Enumerable: false, Configurable: true,
+				})
 			}
 		case bytecode.OP_SET_PROP:
 			val := vm.stack.Pop()

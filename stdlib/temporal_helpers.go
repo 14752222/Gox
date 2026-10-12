@@ -65,6 +65,36 @@ func tgStatic(ctor *object.BuiltinFunction, name string, fn func(args ...object.
 	ctor.SetProperty(name, object.NewBuiltin(name, fn))
 }
 
+// tgSetCtorPrototype 把构造器的 prototype 属性设为规范要求的自有属性:
+// { [[Writable]]: false, [[Enumerable]]: false, [[Configurable]]: false }
+// (sec-temporal.instant.prototype 等 … [[Prototype]] 章节均如此规定)。
+// 必须走 DefineOwn (写 PropDescs): SetProperty 会落到 Properties 且默认可写,
+// 于是 Object.getOwnPropertyDescriptor(Temporal.X, "prototype") 报
+// writable/enumerable=true —— 8 个 prop-desc 用例因此失败。
+func tgSetCtorPrototype(ctor *object.BuiltinFunction, proto *object.Object) {
+	var pv object.Value = proto
+	ctor.DefineOwn("prototype", object.PropertyDescriptor{
+		Value: pv, Writable: false, Enumerable: false, Configurable: false,
+	})
+}
+
+// tgCtorGuard 在 Temporal 构造器体首行调用: 若未处于 `new` 调用窗口
+// (即作为普通函数调用, 规范 NewTarget === undefined), 返回 TypeError。
+// 正常 `new T(...)` 时返回 nil。
+func tgCtorGuard(name string) object.Value {
+	if !object.IsConstructCall() {
+		return tgType("Constructor " + name + " requires 'new'")
+	}
+	return nil
+}
+
+// tgMarkCtorNew 把构造器标记为 RequiresNew, 供 VM 的 OP_NEW 识别并按需
+// 置位"经 new 调用"窗口。
+func tgMarkCtorNew(ctor *object.BuiltinFunction) *object.BuiltinFunction {
+	ctor.RequiresNew = true
+	return ctor
+}
+
 // tgFn 在命名空间对象 (如 Temporal.Now) 上定义普通函数属性。
 func tgFn(ns *object.Object, name string, fn func(args ...object.Value) object.Value) {
 	ns.SetBuiltinProperty(name, object.NewBuiltin(name, fn))
@@ -937,6 +967,14 @@ func toTimeZoneIDE(v object.Value) (string, object.Value) {
 		return id, nil
 	}
 	// 裸偏移字符串 ("+02:00"、"-05:00:30.5"): 规范化为偏移时区 ID。
+	// 作为时区标识符时不允许带小数秒 (即便小数部分全为 0):
+	// sec-temporal-time-zone-identifiers 的 UTCOffset 文法只到秒。
+	// 仅当整个字符串就是偏移 (以 +/- 开头) 时才应用, 以免误伤
+	// 含小数偏移主体的完整 ISO 串。
+	if len(s.Value) > 0 && (s.Value[0] == '+' || s.Value[0] == '-') &&
+		(strings.ContainsRune(s.Value, '.') || strings.ContainsRune(s.Value, ',')) {
+		return "", tgRange("Trailing zeroes not allowed for sub-minute time zone identifiers")
+	}
 	if off, ok := object.ParseTimeZoneOffsetString(s.Value); ok {
 		return tzOffsetID(off)
 	}
@@ -953,7 +991,14 @@ func toTimeZoneIDE(v object.Value) (string, object.Value) {
 				if id, ok := canonicalTimeZoneID(ann); ok {
 					return id, nil
 				}
-				// 偏移注解 ([+02:00] / [-05:30:15])
+				// 偏移注解 ([+02:00] / [-05:30:15])。作为**时区标识符**时,
+				// 偏移不得带小数秒 (即使小数部分全为 0 也非法):
+				// sec-temporal-time-zone-identifiers 的 UTCOffset 文法只到
+				// 秒。`[+01:35:00.000000000]` 须 RangeError, 而 ISO 主体里的
+				// 同名偏移则允许 (zoneddatetime-string-multiple-offsets)。
+				if strings.ContainsRune(ann, '.') || strings.ContainsRune(ann, ',') {
+					return "", tgRange("Trailing zeroes not allowed for sub-minute time zone identifiers")
+				}
 				if off, ok := object.ParseTimeZoneOffsetString(ann); ok {
 					return tzOffsetID(off)
 				}
@@ -1307,6 +1352,20 @@ type rawDateFields struct {
 	hasMonthCode              bool
 }
 
+// validateDateFieldsReject 对已读出的日期字段做"下界拒绝"校验:
+// day<1 / month<1 无论 overflow 为何都抛 RangeError。上界溢出不受此限
+// (交由 overflow=constrain/reject 处理)。供 with 在 GetOptionsObject
+// **之前** 触发, 以满足 "非法字段优先于 options 类型错误" 的求值顺序。
+func validateDateFieldsReject(r rawDateFields) object.Value {
+	if r.hasMonth && r.month < 1 {
+		return tgRange("month is out of range")
+	}
+	if r.hasDay && r.day < 1 {
+		return tgRange("day is out of range")
+	}
+	return nil
+}
+
 // readMonthField 读取 month (ToNumber + 整数校验)。
 func readMonthField(o propBag, r *rawDateFields) object.Value {
 	mv, hasM := o.GetProperty("month")
@@ -1334,13 +1393,26 @@ func readMonthCodeField(o propBag, r *rawDateFields) object.Value {
 	if e2, isErr := mc.(*object.Error); isErr {
 		return e2
 	}
-	// spec: monthCode 经 ToString (观察者对象返回 "M01" 这类字符串)。
-	sv, ok := optionToString(mc)
-	if !ok {
-		return tgType("Cannot convert monthCode to string")
+	// spec: monthCode 必须是字符串 —— 经 ToPrimitive(value, string) 后若结果
+	// 不是 String 一律 TypeError (5/5n/false/null/Symbol()/{toString:()=>5}
+	// 都在此被拒)。观察者对象返回 "M01" 这类字符串才合法。
+	if sv, ok := mc.(*object.String); ok {
+		r.monthCodeStr, r.hasMonthCode = sv.Value, true
+		return nil
 	}
-	r.monthCodeStr, r.hasMonthCode = sv, true
-	return nil
+	if object.IsObjectLike(mc) {
+		if pb, ok := mc.(propBag); ok {
+			if tv, found := pb.GetProperty("toString"); found && object.IsCallable(tv) {
+				if pv := object.CallFunction(tv, mc); pv != nil {
+					if sv, ok := pv.(*object.String); ok {
+						r.monthCodeStr, r.hasMonthCode = sv.Value, true
+						return nil
+					}
+				}
+			}
+		}
+	}
+	return tgType("monthCode must be a string")
 }
 
 // monthCodeValue 在 regulate 阶段解析并校验 monthCode。
@@ -1644,10 +1716,10 @@ func toPlainTimeValue(v object.Value) (*object.TemporalPlainTime, object.Value) 
 		}
 		if !strings.ContainsAny(head, "Tt ") {
 			if _, amb := object.ParseTemporalYearMonthString(t.Value); amb {
-				return nil, tgRange("Invalid PlainTime string: "+t.Value)
+				return nil, tgRange("Invalid PlainTime string: " + t.Value)
 			}
 			if _, amb := object.ParseTemporalMonthDayString(t.Value); amb {
-				return nil, tgRange("Invalid PlainTime string: "+t.Value)
+				return nil, tgRange("Invalid PlainTime string: " + t.Value)
 			}
 		}
 		f, ok := object.ParseTemporalTimeString(t.Value)
@@ -1713,6 +1785,29 @@ func toInstantValue(v object.Value) (*object.TemporalInstant, object.Value) {
 		f, ok := object.ParseTemporalInstantString(t.Value)
 		if !ok {
 			return nil, tgRange("Invalid Instant string: " + t.Value)
+		}
+		if e := calendarFromAnnotation(f.Calendar); e != nil {
+			return nil, e
+		}
+		dt := f.ISODateTime()
+		ns := dt.EpochNanos()
+		if f.OffsetSeconds != nil {
+			ns = ns.Sub(ns, big.NewInt(int64(*f.OffsetSeconds)*object.NanosPerSecond))
+		}
+		if !object.IsValidEpochNanos(ns) {
+			return nil, tgRange("Instant is outside of supported range")
+		}
+		return object.NewTemporalInstant(ns), nil
+	}
+	// 规范 ToTemporalInstant → ToPrimitive(value, string), 再要求结果为串。
+	// 对象 (含 {}、函数、数组) 经 ToString (会调用其 toString) 得到字符串后
+	// 解析失败 → RangeError; 只有原始非串 (undefined/null/boolean/number/
+	// bigint/symbol) 才是 TypeError。
+	if object.IsObjectLike(v) {
+		s := toStr(v)
+		f, ok := object.ParseTemporalInstantString(s)
+		if !ok {
+			return nil, tgRange("Invalid Instant string: " + s)
 		}
 		if e := calendarFromAnnotation(f.Calendar); e != nil {
 			return nil, e
@@ -2035,8 +2130,28 @@ func toCalendarIDValue(v object.Value) (string, object.Value) {
 	if c, ok := asCalendar(v); ok {
 		return c.ID(), nil
 	}
-	s, ok := optionToString(v)
-	if !ok {
+	// spec ToTemporalCalendarIdentifier:
+	//   - Object → Get(v, "calendar"), undefined 则 TypeError, 否则 ToString。
+	//   - String → 原样。
+	//   - 其余原始值 (null/boolean/number/bigint/symbol) → TypeError。
+	var s string
+	if sval, ok := v.(*object.String); ok {
+		s = sval.Value
+	} else if object.IsObjectLike(v) {
+		pb, ok := v.(propBag)
+		if !ok {
+			return "", tgType("Invalid calendar value")
+		}
+		cv, _ := pb.GetProperty("calendar")
+		if cv == nil || cv == object.UndefinedSingleton {
+			return "", tgType("Invalid calendar value")
+		}
+		cs, ok := cv.(*object.String)
+		if !ok {
+			return "", tgType("Invalid calendar value")
+		}
+		s = cs.Value
+	} else {
 		return "", tgType("Invalid calendar value")
 	}
 	// 校验 (ISO 串提取注解 / ASCII 小写化 / iso8601 约束) 由 checkCalendarString 完成。

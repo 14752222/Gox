@@ -1729,7 +1729,37 @@ func setupArrayGlobal() *object.BuiltinFunction {
 					object.NewArray([]object.Value{entry.Key, entry.Value}))
 			}
 		default:
-			return object.NewArray([]object.Value{})
+			// array-like 或可迭代对象: 规范 Array.from 先看 @@iterator, 没有
+			// 再按 length + 索引属性逐项读。旧实现只认 Array/String/Set/Map,
+			// 于是 {length:n} 这类 array-like 被静默当成空数组 —— test262
+			// harness 的 makeArray 正是 `Array.from({length:n}, fn)`。
+			if next, ok := object.Iterate(args[0]); ok {
+				for i := 0; ; i++ {
+					v, done := next()
+					if done {
+						break
+					}
+					elements = append(elements, v)
+					if i > 1<<24 {
+						break
+					}
+				}
+			} else if lv, ok := args[0].GetProperty("length"); ok && lv != nil {
+				lf, lerr := toNumberViaPrimitive(lv)
+				if lerr != nil {
+					return lerr
+				}
+				n := int(lf)
+				for i := 0; i < n; i++ {
+					v, _ := args[0].GetProperty(strconv.Itoa(i))
+					if v == nil {
+						v = object.UndefinedSingleton
+					}
+					elements = append(elements, v)
+				}
+			} else {
+				return object.NewArray([]object.Value{})
+			}
 		}
 
 		// 可选的 mapFn(value, index)

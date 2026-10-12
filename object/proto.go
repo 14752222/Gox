@@ -15,6 +15,11 @@ func ProtoOf(v Value) Value {
 		return t.Proto
 	case *Array:
 		return t.GetProto()
+	// TypedArray 实例的原型在类型注册表里 (或派生类实例的 ProtoOverride),
+	// 见 object.SetTypedArrayProto / TypedArray.GetProto。缺此分支 instanceof
+	// 会退化成名称匹配, `x instanceof Uint8Array` 对派生类实例失准。
+	case *TypedArray:
+		return t.GetProto()
 	// 函数对象的 [[Prototype]] 按种类指向内建原型 (Function/GeneratorFunction/
 	// AsyncFunction/AsyncGeneratorFunction.prototype)，用于 instanceof 等沿链查找。
 	case *Closure:

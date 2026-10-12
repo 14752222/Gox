@@ -77,17 +77,21 @@ func setupTemporalPlainDate(temporal *object.Object) {
 		if len(args) == 0 {
 			return tgType("PlainDate.prototype.with requires an object")
 		}
-		if e := optionsTypeErr(argAt(args, 1)); e != nil {
-			return e
-		}
 		bag, isBag := plainBagOf(args[0])
 		if !isBag {
 			return tgType("PlainDate.prototype.with requires an object")
 		}
-		// spec: 先按字母序读字段，再读 overflow，最后校验调节。
+		// spec: 先按字母序读字段并校验 (day=-1 等在此抛 RangeError),
+		// 之后才 GetOptionsObject 读 overflow —— 故非法字段优先于 options 类型错误。
 		raw, rerr := readDateFieldsRaw(bag)
 		if rerr != nil {
 			return rerr
+		}
+		if verr := validateDateFieldsReject(raw); verr != nil {
+			return verr
+		}
+		if e := optionsTypeErr(argAt(args, 1)); e != nil {
+			return e
 		}
 		overflow, oerr := getOverflow(argAt(args, 1))
 		if oerr != nil {
@@ -259,6 +263,9 @@ func setupTemporalPlainDate(temporal *object.Object) {
 	tgValueOf(proto)
 
 	ctor := object.NewBuiltin("PlainDate", func(args ...object.Value) object.Value {
+		if g := tgCtorGuard("PlainDate"); g != nil {
+			return g
+		}
 		if len(args) < 3 || args[0] == object.UndefinedSingleton || args[1] == object.UndefinedSingleton || args[2] == object.UndefinedSingleton {
 			return tgRange("PlainDate requires year, month, day")
 		}
@@ -289,7 +296,8 @@ func setupTemporalPlainDate(temporal *object.Object) {
 		return object.NewTemporalPlainDate(d, cal)
 	})
 	ctor.SetProperty("name", object.NewString("PlainDate"))
-	ctor.SetProperty("prototype", proto)
+	tgMarkCtorNew(ctor)
+	tgSetCtorPrototype(ctor, proto)
 	proto.SetBuiltinProperty("constructor", ctor)
 
 	tgStatic(ctor, "from", func(args ...object.Value) object.Value {
@@ -518,6 +526,17 @@ func setupTemporalPlainTime(temporal *object.Object) {
 		if len(args) == 0 {
 			return tgType("PlainTime.prototype.with requires an object")
 		}
+		o, ok := args[0].(*object.Object)
+		if !ok {
+			return tgType("PlainTime.prototype.with: invalid fields")
+		}
+		// spec 顺序: 先 ToTemporalTimeRecord (读字段, 非有限/非整数 → RangeError,
+		// 如 minute:Infinity), 再 GetOptionsObject (原始值 → TypeError), 最后
+		// 才做范围调节 (hour:25 受 overflow 影响)。
+		time := t.ISOTime()
+		if merr := mergeTimeInto(&time, o); merr != nil {
+			return merr
+		}
 		if len(args) > 1 {
 			if e := optionsTypeErr(args[1]); e != nil {
 				return e
@@ -525,14 +544,6 @@ func setupTemporalPlainTime(temporal *object.Object) {
 			if _, oerr := getOverflow(args[1]); oerr != nil {
 				return oerr
 			}
-		}
-		o, ok := args[0].(*object.Object)
-		if !ok {
-			return tgType("PlainTime.prototype.with: invalid fields")
-		}
-		time := t.ISOTime()
-		if merr := mergeTimeInto(&time, o); merr != nil {
-			return merr
 		}
 		if !object.IsValidISOTime(time) {
 			return tgRange("PlainTime.prototype.with: invalid fields")
@@ -696,6 +707,9 @@ func setupTemporalPlainTime(temporal *object.Object) {
 	tgValueOf(proto)
 
 	ctor := object.NewBuiltin("PlainTime", func(args ...object.Value) object.Value {
+		if g := tgCtorGuard("PlainTime"); g != nil {
+			return g
+		}
 		f := func(i int) int32 {
 			if i >= len(args) {
 				return 0
@@ -714,7 +728,8 @@ func setupTemporalPlainTime(temporal *object.Object) {
 		return object.NewTemporalPlainTime(time)
 	})
 	ctor.SetProperty("name", object.NewString("PlainTime"))
-	ctor.SetProperty("prototype", proto)
+	tgMarkCtorNew(ctor)
+	tgSetCtorPrototype(ctor, proto)
 	proto.SetBuiltinProperty("constructor", ctor)
 
 	tgStatic(ctor, "from", func(args ...object.Value) object.Value {
@@ -865,10 +880,14 @@ func plainTimeDiffFrom(from object.ISOTime, args []object.Value, since bool) obj
 		return derr
 	}
 	largest, su, inc, mode := do.largest, do.smallest, do.inc, do.mode
-	// PlainTime 的差值始终环绕一天: 23:00 到 01:00 是 +2 小时而非 -22 小时。
-	diff := other.ISOTime().NanosOfDay() - from.NanosOfDay()
-	if diff < 0 {
-		diff += object.NanosPerDay
+	// PlainTime 的差值是**带符号的真实差值**，不做一天环绕:
+	//   until(t) = t - this;  since(t) = this - t。
+	// 例: two(16:23).until(one(15:23)) = -1 小时；one.since(two) = +1 小时。
+	// 旧实现把差环绕进 [0, 24h) 再对 since 取负，得到"恒正/恒负"的荒谬值
+	// (16:23.until(15:23) 得 23 小时)，PlainTime until/since 整族因此失败。
+	diff := new(big.Int).Sub(big.NewInt(other.ISOTime().NanosOfDay()), big.NewInt(from.NanosOfDay()))
+	if since {
+		diff.Neg(diff)
 	}
 	if su == "auto" {
 		su = "nanosecond"
@@ -882,12 +901,8 @@ func plainTimeDiffFrom(from object.ISOTime, args []object.Value, since bool) obj
 	if unitRank(su) < unitRank(largest) {
 		return tgRange("smallestUnit is larger than largestUnit")
 	}
-	rounded := roundNanosToUnit(big.NewInt(diff), su, inc, mode)
-	dur := durationFromNanosByLargest(rounded, largest)
-	if since {
-		return dur.Negated()
-	}
-	return dur
+	rounded := roundNanosToUnit(diff, su, inc, mode)
+	return durationFromNanosByLargest(rounded, largest)
 }
 
 // quoRemForDay 把纳秒值拆成 (跨天天数, 日内纳秒)。

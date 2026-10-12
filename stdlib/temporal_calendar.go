@@ -180,7 +180,7 @@ func setupTemporalTimeZone(temporal *object.Object) {
 		return object.NewTemporalTimeZone(id)
 	})
 	ctor.SetProperty("name", object.NewString("TimeZone"))
-	ctor.SetProperty("prototype", proto)
+	tgSetCtorPrototype(ctor, proto)
 	proto.SetBuiltinProperty("constructor", ctor)
 
 	tgStatic(ctor, "from", func(args ...object.Value) object.Value {
@@ -431,7 +431,7 @@ func setupTemporalCalendar(temporal *object.Object) {
 		return object.NewTemporalCalendar(s.Value)
 	})
 	ctor.SetProperty("name", object.NewString("Calendar"))
-	ctor.SetProperty("prototype", proto)
+	tgSetCtorPrototype(ctor, proto)
 	proto.SetBuiltinProperty("constructor", ctor)
 
 	tgStatic(ctor, "from", func(args ...object.Value) object.Value {
@@ -901,6 +901,9 @@ func setupTemporalPlainYearMonth(temporal *object.Object) {
 	tgValueOf(proto)
 
 	ctor := object.NewBuiltin("PlainYearMonth", func(args ...object.Value) object.Value {
+		if g := tgCtorGuard("PlainYearMonth"); g != nil {
+			return g
+		}
 		if len(args) < 2 || args[0] == object.UndefinedSingleton || args[1] == object.UndefinedSingleton {
 			return tgRange("PlainYearMonth requires year and month")
 		}
@@ -924,7 +927,8 @@ func setupTemporalPlainYearMonth(temporal *object.Object) {
 		return object.NewTemporalPlainYearMonth(yi, mi, 1, cal)
 	})
 	ctor.SetProperty("name", object.NewString("PlainYearMonth"))
-	ctor.SetProperty("prototype", proto)
+	tgMarkCtorNew(ctor)
+	tgSetCtorPrototype(ctor, proto)
 	proto.SetBuiltinProperty("constructor", ctor)
 
 	tgStatic(ctor, "from", func(args ...object.Value) object.Value {
@@ -1067,8 +1071,12 @@ func ymDiff(t *object.TemporalPlainYearMonth, args []object.Value, since bool) o
 	diff := (int64(other.Year())*12 + int64(other.Month())) -
 		(int64(t.Year())*12 + int64(t.Month()))
 	if since {
+		// 只翻符号即可: roundRatToIncrement 自身按规范处理带符号输入
+		// (pos := v.Sign() >= 0), 无需再镜像 roundingMode。旧实现在此
+		// 额外 negateRoundingMode(mode), 与"先取负"叠加成双重取反 ——
+		// since 的 expand/ceil 被错当成 trunc/floor, 正值 2y8m 该进到 3
+		// 却停在 2 (PlainYearMonth/prototype/since 的 roundingmode 整族)。
 		diff = -diff
-		mode = negateRoundingMode(mode)
 	}
 	if smallest == "year" {
 		years := roundRatToIncrement(big.NewRat(diff, 12), inc, mode)
@@ -1223,6 +1231,9 @@ func setupTemporalPlainMonthDay(temporal *object.Object) {
 	tgValueOf(proto)
 
 	ctor := object.NewBuiltin("PlainMonthDay", func(args ...object.Value) object.Value {
+		if g := tgCtorGuard("PlainMonthDay"); g != nil {
+			return g
+		}
 		num := func(i int) (int32, object.Value) {
 			if i >= len(args) || args[i] == object.UndefinedSingleton {
 				return 0, tgRange("PlainMonthDay argument is required")
@@ -1256,7 +1267,8 @@ func setupTemporalPlainMonthDay(temporal *object.Object) {
 		return object.NewTemporalPlainMonthDay(mi, di, 1972, cal)
 	})
 	ctor.SetProperty("name", object.NewString("PlainMonthDay"))
-	ctor.SetProperty("prototype", proto)
+	tgMarkCtorNew(ctor)
+	tgSetCtorPrototype(ctor, proto)
 	proto.SetBuiltinProperty("constructor", ctor)
 
 	tgStatic(ctor, "from", func(args ...object.Value) object.Value {

@@ -83,6 +83,28 @@ func setupTemporalPlainDateTime(temporal *object.Object) {
 		if len(args) == 0 {
 			return tgType("PlainDateTime.prototype.with requires an object")
 		}
+		o, isObj := args[0].(*object.Object)
+		if !isObj {
+			return tgType("PlainDateTime.prototype.with: invalid fields")
+		}
+		// spec: 字段值读取与"下界拒绝"校验先于 GetOptionsObject。day<1 /
+		// month<1 无论 overflow 为何都抛 RangeError (上界溢出才受 overflow 影响)。
+		for _, fk := range []string{"year", "month", "day", "hour", "microsecond", "millisecond", "minute", "nanosecond", "second"} {
+			v, found := o.GetProperty(fk)
+			if !found || v == object.UndefinedSingleton {
+				continue
+			}
+			f, cerr := tgToNumber(v)
+			if cerr != nil {
+				return cerr
+			}
+			if math.IsNaN(f) || math.IsInf(f, 0) || f != math.Trunc(f) {
+				return tgRange("PlainDateTime.prototype.with: invalid fields")
+			}
+			if (fk == "day" || fk == "month") && f < 1 {
+				return tgRange("PlainDateTime.prototype.with: invalid fields")
+			}
+		}
 		if len(args) > 1 {
 			if e := optionsTypeErr(args[1]); e != nil {
 				return e
@@ -93,7 +115,7 @@ func setupTemporalPlainDateTime(temporal *object.Object) {
 		}
 		dt, ok := mergeDateTimeFields(t.ISODateTime(), args[0], false)
 		if !ok {
-			return tgType("PlainDateTime.prototype.with: invalid fields")
+			return tgRange("PlainDateTime.prototype.with: invalid fields")
 		}
 		return object.NewTemporalPlainDateTime(dt, t.CalendarID())
 	})
@@ -366,6 +388,9 @@ func setupTemporalPlainDateTime(temporal *object.Object) {
 
 	// ===== 构造器 =====
 	ctor := object.NewBuiltin("PlainDateTime", func(args ...object.Value) object.Value {
+		if g := tgCtorGuard("PlainDateTime"); g != nil {
+			return g
+		}
 		var convErr object.Value
 		f := func(i int) int32 {
 			if i >= len(args) || args[i] == object.UndefinedSingleton {
@@ -404,7 +429,8 @@ func setupTemporalPlainDateTime(temporal *object.Object) {
 		return object.NewTemporalPlainDateTime(object.ISODateTime{Date: date, Time: time}, cal)
 	})
 	ctor.SetProperty("name", object.NewString("PlainDateTime"))
-	ctor.SetProperty("prototype", proto)
+	tgMarkCtorNew(ctor)
+	tgSetCtorPrototype(ctor, proto)
 	proto.SetBuiltinProperty("constructor", ctor)
 
 	tgStatic(ctor, "from", func(args ...object.Value) object.Value {

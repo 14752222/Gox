@@ -32,13 +32,8 @@ func (vm *VM) constructValue(fn object.Value, args []object.Value) (object.Value
 		return nil, err
 	}
 	// 构造器返回对象则以其为结果, 否则用新建的 this
-	switch r.(type) {
-	case *object.Object, *object.Array, *object.Closure, *object.BuiltinFunction,
-		*object.PrimitiveObject, *object.Error, *object.Map, *object.Set,
-		*object.Proxy, *object.Date, *object.RegExp:
-		if r != nil {
-			return r, nil
-		}
+	if r != nil && object.IsObjectValue(r) {
+		return r, nil
 	}
 	return newObj, nil
 }

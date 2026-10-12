@@ -365,6 +365,9 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 	tgValueOf(proto)
 
 	ctor := object.NewBuiltin("ZonedDateTime", func(args ...object.Value) object.Value {
+		if g := tgCtorGuard("ZonedDateTime"); g != nil {
+			return g
+		}
 		if len(args) == 0 {
 			return tgType("ZonedDateTime requires epochNanoseconds")
 		}
@@ -386,7 +389,8 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 		return object.NewTemporalZonedDateTime(bn.Value, tzid, object.DefaultCalendarID)
 	})
 	ctor.SetProperty("name", object.NewString("ZonedDateTime"))
-	ctor.SetProperty("prototype", proto)
+	tgMarkCtorNew(ctor)
+	tgSetCtorPrototype(ctor, proto)
 	proto.SetBuiltinProperty("constructor", ctor)
 
 	tgStatic(ctor, "from", func(args ...object.Value) object.Value {
@@ -412,6 +416,15 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 			}
 			if f.TimeZoneAnnotation == "" {
 				return tgRange("ZonedDateTime string requires a time zone annotation")
+			}
+			// 注解必须能解析成合法时区标识符 (裸 IANA 名 / UTC / 偏移标识符)。
+			// 偏移标识符不允许带小数秒 —— toTimeZoneIDE 会拒绝并规范化,
+			// 于是 "[+01:35:00.000000000]" 抛 RangeError, "[+01:35]" 规范化为
+			// "+01:35" (zoneddatetime-string-multiple-offsets)。
+			if id, tzErr := toTimeZoneIDE(object.NewString(f.TimeZoneAnnotation)); tzErr != nil {
+				return tzErr
+			} else {
+				f.TimeZoneAnnotation = id
 			}
 			return zdtFromFields(f, args)
 		case propBag:
@@ -744,14 +757,24 @@ func readZDTFieldsRaw(o propBag) (rawDateTimeFields, string, string, object.Valu
 	} else if ok {
 		r.time.Nanosecond = n
 	}
-	// offset (ToString)
+	// offset (ToString + 校验)
 	off := ""
 	if ov, found := o.GetProperty("offset"); found && ov != object.UndefinedSingleton {
-		s, ok := optionToString(ov)
-		if !ok {
-			return r, "", "", tgType("Cannot convert offset to string")
+		// 规范 (InterpretISODateTimeOffset 前的 ParseDateTimeUTCOffset):
+		// offset 必须是**字符串**; 非字符串一律 TypeError; 字符串必须符合
+		// UTCOffset 文法, 否则 RangeError。旧实现用 optionToString 把
+		// 数字等转成串后既不判类型也不校验格式, 于是 "00:00"/"+0"/0 之类
+		// 全部被静默接受 (ZonedDateTime 各入口的 invalid-offset-string 族)。
+		s, isStr := ov.(*object.String)
+		if !isStr {
+			return r, "", "", tgType("offset must be a string")
 		}
-		off = s
+		if s.Value != "" {
+			if _, ok := object.ParseTimeZoneOffsetString(s.Value); !ok {
+				return r, "", "", tgRange(s.Value + " is not a valid offset string")
+			}
+		}
+		off = s.Value
 	}
 	if s, ok, e := readIntField(o, "second"); e != nil {
 		return r, "", "", e
