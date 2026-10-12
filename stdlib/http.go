@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/14752222/Gox/object"
+	"github.com/14752222/Gox/permissions"
 	"github.com/14752222/Gox/runtime"
 )
 
@@ -155,6 +156,10 @@ func newJSServer(handler object.Value) *object.Object {
 	// 在独立 goroutine 中启动 Go HTTP 服务器；每个请求经 0ms 定时器
 	// 派发到主线程调用 JS 处理器。
 	serverObj.SetProperty("listen", object.NewBuiltin("listen", func(args ...object.Value) object.Value {
+		// 权限检查点：打开监听端口默认拒绝（--allow-net-listen 放行）。
+		if permErr := permissions.Require(permissions.NetListen); permErr != nil {
+			return permErr
+		}
 		if srv.listening {
 			return object.NewError("http: server is already listening")
 		}
