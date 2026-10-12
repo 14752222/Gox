@@ -77,6 +77,10 @@ type Object struct {
 	InsertOrder []string
 	// SymbolKeyList 按插入顺序记录 Symbol 键，供 getOwnPropertySymbols 枚举。
 	SymbolKeyList []*Symbol
+	// temporalSlot 寄存派生类 (extends Temporal.X) 实例的内部槽:
+	// 派生实例本身是普通 *Object, super() 返回的 Temporal 内建实例存于此,
+	// 供 asDuration/asInstant 等品牌检查读取 (规范内建方法忽略子类构造)。
+	temporalSlot Value
 }
 
 func (o *Object) Type() ObjectType { return OBJECT_OBJ }

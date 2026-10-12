@@ -77,6 +77,58 @@ func symbolDispatch(t ObjectType, sym *Symbol) (Value, bool) {
 	return nil, false
 }
 
+// IsTemporalExotic 报告 v 是否是一个 Temporal 内建实例 (非普通对象)。
+// 用于子类化: `class D extends Temporal.Duration {}` 时 super() 返回的
+// 内建实例需要把内部槽"寄存"到派生类的普通对象上。
+func IsTemporalExotic(v Value) bool {
+	switch v.(type) {
+	case *TemporalDuration, *TemporalInstant, *TemporalPlainDate,
+		*TemporalPlainTime, *TemporalPlainDateTime, *TemporalPlainYearMonth,
+		*TemporalPlainMonthDay, *TemporalZonedDateTime,
+		*TemporalTimeZone, *TemporalCalendar:
+		return true
+	}
+	return false
+}
+
+// TemporalSlot 字段读写: 派生类实例是普通 *Object, 其内部槽 (Temporal 实例)
+// 寄存于 Object 的 temporalSlot 字段。构造时由 VM 写入, 之后 asX 读取。
+// StoreTemporalSlot 在 obj 上寄存内建实例; obj 非 *Object 时返回 false。
+func StoreTemporalSlot(obj Value, exotic Value) bool {
+	o, ok := obj.(*Object)
+	if !ok {
+		return false
+	}
+	o.temporalSlot = exotic
+	return true
+}
+
+// LoadTemporalSlot 读取 obj 上寄存的 Temporal 内建实例 (无则 nil)。
+func LoadTemporalSlot(obj Value) Value {
+	if o, ok := obj.(*Object); ok {
+		return o.temporalSlot
+	}
+	return nil
+}
+
+// UnwrapTemporal 把 v 归一为具体的 Temporal 内建实例:
+//   - v 本身就是 T 类型 → 直接返回;
+//   - v 是寄存在普通对象 (派生类实例) 上的 T 类型 → 返回寄存值。
+// 供 stdlib 的 asX 品牌检查统一实现。
+func UnwrapTemporal[T any](v Value) (T, bool) {
+	if t, ok := v.(T); ok {
+		return t, true
+	}
+	if s := LoadTemporalSlot(v); s != nil {
+		if t, ok := s.(T); ok {
+			return t, true
+		}
+	}
+	var zero T
+	return zero, false
+}
+
+
 // ===== Temporal.Instant =====
 
 // TemporalInstant 表示一个精确的时间点 (自 epoch 起的纳秒数)。

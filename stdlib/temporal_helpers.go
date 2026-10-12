@@ -179,44 +179,34 @@ func tgValueOf(proto *object.Object) {
 // 统一返回 (值, 是否成功) 让调用方写出一致的错误分支。
 
 func asInstant(v object.Value) (*object.TemporalInstant, bool) {
-	t, ok := v.(*object.TemporalInstant)
-	return t, ok
+	return object.UnwrapTemporal[*object.TemporalInstant](v)
 }
 func asPlainDateTime(v object.Value) (*object.TemporalPlainDateTime, bool) {
-	t, ok := v.(*object.TemporalPlainDateTime)
-	return t, ok
+	return object.UnwrapTemporal[*object.TemporalPlainDateTime](v)
 }
 func asPlainDate(v object.Value) (*object.TemporalPlainDate, bool) {
-	t, ok := v.(*object.TemporalPlainDate)
-	return t, ok
+	return object.UnwrapTemporal[*object.TemporalPlainDate](v)
 }
 func asPlainTime(v object.Value) (*object.TemporalPlainTime, bool) {
-	t, ok := v.(*object.TemporalPlainTime)
-	return t, ok
+	return object.UnwrapTemporal[*object.TemporalPlainTime](v)
 }
 func asPlainYearMonth(v object.Value) (*object.TemporalPlainYearMonth, bool) {
-	t, ok := v.(*object.TemporalPlainYearMonth)
-	return t, ok
+	return object.UnwrapTemporal[*object.TemporalPlainYearMonth](v)
 }
 func asPlainMonthDay(v object.Value) (*object.TemporalPlainMonthDay, bool) {
-	t, ok := v.(*object.TemporalPlainMonthDay)
-	return t, ok
+	return object.UnwrapTemporal[*object.TemporalPlainMonthDay](v)
 }
 func asZonedDateTime(v object.Value) (*object.TemporalZonedDateTime, bool) {
-	t, ok := v.(*object.TemporalZonedDateTime)
-	return t, ok
+	return object.UnwrapTemporal[*object.TemporalZonedDateTime](v)
 }
 func asDuration(v object.Value) (*object.TemporalDuration, bool) {
-	t, ok := v.(*object.TemporalDuration)
-	return t, ok
+	return object.UnwrapTemporal[*object.TemporalDuration](v)
 }
 func asTimeZone(v object.Value) (*object.TemporalTimeZone, bool) {
-	t, ok := v.(*object.TemporalTimeZone)
-	return t, ok
+	return object.UnwrapTemporal[*object.TemporalTimeZone](v)
 }
 func asCalendar(v object.Value) (*object.TemporalCalendar, bool) {
-	t, ok := v.(*object.TemporalCalendar)
-	return t, ok
+	return object.UnwrapTemporal[*object.TemporalCalendar](v)
 }
 
 // ===== options 解析 =====

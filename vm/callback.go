@@ -209,6 +209,30 @@ func (vm *VM) invokeWithThis(fn, thisVal object.Value, args []object.Value) erro
 				if f := vm.currentFrame(); f != nil {
 					f.This = ta
 				}
+			} else if object.IsTemporalExotic(result) {
+				// class D extends Temporal.X: super(...) 返回 Temporal 内建实例。
+				// 规范里派生实例仍是普通带内部槽的对象, 其内部槽寄存在派生类
+				// this (普通对象, 原型为 D.prototype) 上, 使派生实例的内建方法
+				// 可用 (asX 品牌检查读寄存槽)。结果不应替换帧 this —— 保留
+				// 派生类 this 并按需写好原型。
+				target := thisVal
+				if f := vm.currentFrame(); f != nil {
+					target = f.This
+				}
+				if target != nil && object.IsObjectValue(target) {
+					if nt, ok := vm.pendingNewTarget.(*object.Closure); ok {
+						if pv, found := nt.GetProperty("prototype"); found && pv != nil {
+							if o, ok := target.(*object.Object); ok {
+								o.Proto = pv
+							}
+						}
+					}
+					object.StoreTemporalSlot(target, result)
+					if f := vm.currentFrame(); f != nil {
+						f.This = target
+					}
+					result = target
+				}
 			}
 			vm.hasPendingNewTarget = false
 			vm.pendingNewTarget = nil

@@ -1033,6 +1033,21 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				if object.IsObjectValue(result) {
 					// 使用构造函数返回的对象
 					vm.stack.Push(result)
+				} else if object.IsTemporalExotic(result) {
+					// 派生类 super() 返回 Temporal 内建实例 (如 new (class
+					// extends Temporal.Duration)() 里的 super(...)): 规范要求
+					// 实例仍是普通 Temporal 对象, 其内部槽寄存在派生类 this 上,
+					// 使派生实例的内建方法可用。把内建实例存进帧 this 并采用之。
+					target := ctorThis
+					if target == nil || target == newObj {
+						target = newObj
+					}
+					if !object.StoreTemporalSlot(target, result) {
+						// target 非普通对象 (极端情况) —— 直接返回内建实例。
+						vm.stack.Push(result)
+					} else {
+						vm.stack.Push(target)
+					}
 				} else if ctorThis != nil && ctorThis != newObj {
 					// 派生构造器 super() 已把 this 换成 exotic 实例 (TypedArray),
 					// 但派生 ctor 隐式返回 undefined —— 采用帧 this。
