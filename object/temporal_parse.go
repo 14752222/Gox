@@ -865,9 +865,13 @@ func ParseTemporalDurationString(s string) (DurationFields, bool) {
 		case 'S':
 			whole := math.Trunc(value)
 			nanos := (value - whole) * 1e9
-			if nanos == math.Trunc(nanos) {
+			// 与 H/M 分支同一套容差: float64 读入 6~9 位小数会引入
+			// 亚纳秒级表示误差 (1.123456 → 123456000.00000001), 严格
+			// `nanos == Trunc(nanos)` 会把这些合法串判非法
+			// (Duration/*/argument-*-max、string-with-skipped-units 等)。
+			if r := math.Round(nanos); math.Abs(nanos-r) < 0.5 {
 				out.Seconds = int64(whole)
-				out.Nanoseconds += int64(nanos)
+				out.Nanoseconds += int64(r)
 				ok = true
 			}
 		}
