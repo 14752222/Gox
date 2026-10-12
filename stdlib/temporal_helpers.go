@@ -1335,6 +1335,20 @@ type rawDateFields struct {
 	hasMonthCode              bool
 }
 
+// validateDateFieldsReject 对已读出的日期字段做"下界拒绝"校验:
+// day<1 / month<1 无论 overflow 为何都抛 RangeError。上界溢出不受此限
+// (交由 overflow=constrain/reject 处理)。供 with 在 GetOptionsObject
+// **之前** 触发, 以满足 "非法字段优先于 options 类型错误" 的求值顺序。
+func validateDateFieldsReject(r rawDateFields) object.Value {
+	if r.hasMonth && r.month < 1 {
+		return tgRange("month is out of range")
+	}
+	if r.hasDay && r.day < 1 {
+		return tgRange("day is out of range")
+	}
+	return nil
+}
+
 // readMonthField 读取 month (ToNumber + 整数校验)。
 func readMonthField(o propBag, r *rawDateFields) object.Value {
 	mv, hasM := o.GetProperty("month")
@@ -1672,10 +1686,10 @@ func toPlainTimeValue(v object.Value) (*object.TemporalPlainTime, object.Value) 
 		}
 		if !strings.ContainsAny(head, "Tt ") {
 			if _, amb := object.ParseTemporalYearMonthString(t.Value); amb {
-				return nil, tgRange("Invalid PlainTime string: "+t.Value)
+				return nil, tgRange("Invalid PlainTime string: " + t.Value)
 			}
 			if _, amb := object.ParseTemporalMonthDayString(t.Value); amb {
-				return nil, tgRange("Invalid PlainTime string: "+t.Value)
+				return nil, tgRange("Invalid PlainTime string: " + t.Value)
 			}
 		}
 		f, ok := object.ParseTemporalTimeString(t.Value)
