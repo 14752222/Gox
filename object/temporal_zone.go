@@ -118,6 +118,85 @@ func GetPossibleInstantsFor(tz string, dt ISODateTime) []*big.Int {
 	return out
 }
 
+// TimeZoneTransition 查找某时刻之后的 "next" 或之前的 "previous" 时区偏移变更点。
+//
+// 返回偏移发生变化的最小 (next) / 最大 (previous) 精确时刻; 该时区内不再有
+// 变更 (含纯偏移时区) 时返回 (nil,false)。实现用指数扩张 + 二分: 偏移在
+// tzdb 中只会在整秒处变化, 故收敛到秒精度即可。
+func TimeZoneTransition(tz string, epochNanos *big.Int, direction string) (*big.Int, bool) {
+	if IsOffsetOnlyTimeZone(tz) {
+		return nil, false
+	}
+	if _, ok := loadLocation(tz); !ok {
+		return nil, false
+	}
+	lo := new(big.Int).Set(epochNanos)
+	baseOff := TimeZoneOffsetSecondsAt(tz, lo)
+	sec := big.NewInt(NanosPerSecond)
+	if direction == "next" {
+		// 指数扩张找首个偏移不同的 hi。
+		hi := new(big.Int).Set(lo)
+		step := int64(1)
+		for i := 0; i < 64; i++ {
+			hi = new(big.Int).Add(lo, new(big.Int).Mul(big.NewInt(step), sec))
+			if !IsValidEpochNanos(hi) {
+				return nil, false
+			}
+			if TimeZoneOffsetSecondsAt(tz, hi) != baseOff {
+				break
+			}
+			step *= 2
+		}
+		if TimeZoneOffsetSecondsAt(tz, hi) == baseOff {
+			return nil, false
+		}
+		return bisectTransition(tz, lo, hi, baseOff, true), true
+	}
+	// previous: 向前扩张找首个偏移不同的 lower。
+	lolo := new(big.Int).Set(lo)
+	lolo.Sub(lolo, sec)
+	if !IsValidEpochNanos(lolo) {
+		return nil, false
+	}
+	step := int64(2)
+	for i := 0; i < 64; i++ {
+		if TimeZoneOffsetSecondsAt(tz, lolo) != baseOff {
+			break
+		}
+		next := new(big.Int).Sub(lo, new(big.Int).Mul(big.NewInt(step), sec))
+		step *= 2
+		if !IsValidEpochNanos(next) {
+			return nil, false
+		}
+		lolo = next
+	}
+	if TimeZoneOffsetSecondsAt(tz, lolo) == baseOff {
+		return nil, false
+	}
+	// 在 (lolo, lo] 区间内找偏移变更的最后时刻。
+	return bisectTransition(tz, lolo, lo, baseOff, false), true
+}
+
+// bisectTransition 在 [lo(偏移 baseOff), hi(偏移 ≠ baseOff)] 内二分求变更时刻。
+// next=true 返回变更后的首个纳秒; false 返回变更前的最后纳秒 (previous)。
+func bisectTransition(tz string, lo, hi *big.Int, baseOff int32, next bool) *big.Int {
+	a := new(big.Int).Set(lo)
+	b := new(big.Int).Set(hi)
+	for new(big.Int).Sub(b, a).Cmp(big.NewInt(1)) > 0 {
+		mid := new(big.Int).Add(a, b)
+		mid.Quo(mid, big.NewInt(2))
+		if TimeZoneOffsetSecondsAt(tz, mid) == baseOff {
+			a = mid
+		} else {
+			b = mid
+		}
+	}
+	if next {
+		return b
+	}
+	return a
+}
+
 // DisambiguatePossibleInstants 按 disambiguation 策略从候选时刻中选取一个。
 //
 //   - compatible: 取后者 (与旧版 Date 的语义最接近: 回拨后取第二次出现的时间)

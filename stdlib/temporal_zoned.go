@@ -327,6 +327,46 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 		return object.NewTemporalZonedDateTime(res, t.TimeZoneID(), t.CalendarID())
 	})
 
+	tgMethod(proto, "getTimeZoneTransition", func(this object.Value, args ...object.Value) object.Value {
+		t, ok := asZonedDateTime(this)
+		if !ok {
+			return tgTypeBadThis("ZonedDateTime")
+		}
+		var param object.Value
+		if len(args) > 0 {
+			param = args[0]
+		}
+		// 字符串简写等价于 { direction: <string> }；其它形态按 options 读取。
+		direction := ""
+		provided := false
+		if s, isStr := param.(*object.String); isStr {
+			direction, provided = s.Value, true
+		} else {
+			if e := optionsTypeErr(param); e != nil {
+				return e
+			}
+			v := optValue(param, "direction")
+			if v != nil {
+				str, ok := optionToString(v)
+				if !ok {
+					return tgType("Cannot convert direction to string")
+				}
+				direction, provided = str, true
+			}
+		}
+		if !provided {
+			return tgRange("direction is required")
+		}
+		if direction != "next" && direction != "previous" {
+			return tgRange("Invalid direction: " + direction)
+		}
+		ns, ok := object.TimeZoneTransition(t.TimeZoneID(), t.Nanos(), direction)
+		if !ok {
+			return object.NullSingleton
+		}
+		return object.NewTemporalZonedDateTime(ns, t.TimeZoneID(), t.CalendarID())
+	})
+
 	tgMethod(proto, "equals", func(this object.Value, args ...object.Value) object.Value {
 		t, ok := asZonedDateTime(this)
 		if !ok {
