@@ -2218,6 +2218,23 @@ func negateRoundingMode(mode string) string {
 	return mode
 }
 
+// mirrorDirectionalMode 镜像"方向性"舍入模式 (ceil↔floor, halfCeil↔halfFloor),
+// 零对称模式原样返回。用于"交换 from/to 后按正数舍入、再对结果取负"的场景:
+// 只有方向性模式取负后会翻向, 需要预先镜像。
+func mirrorDirectionalMode(mode string) string {
+	switch mode {
+	case "ceil":
+		return "floor"
+	case "floor":
+		return "ceil"
+	case "halfCeil":
+		return "halfFloor"
+	case "halfFloor":
+		return "halfCeil"
+	}
+	return mode
+}
+
 // roundRatToIncrement 把有理数 v 按 mode 舍入到 inc 的整数倍，返回该整数。
 // v 带符号；各 half* 模式按规范处理 tie 与符号对称性。
 func roundRatToIncrement(v *big.Rat, inc int64, mode string) int64 {
@@ -2278,7 +2295,14 @@ func calendarRoundDiff(from, to object.ISODateTime, largest, smallest string, in
 	if compareISODateTime(from, to) > 0 {
 		sign = -1
 		from, to = to, from
-		mode = negateRoundingMode(mode)
+		// 交换 from/to 后算出的 q 是正数。对"方向性"模式 (ceil/floor,
+		// halfCeil/halfFloor) 必须镜像, 才能让最终取负结果匹配原始方向
+		// 语义 (ceil(-2.66) = -2 = -floor(2.66))。零对称模式 (expand/
+		// trunc/halfExpand/halfTrunc/halfEven) 无需镜像 —— 取负后语义自洽
+		// (expand(-2.66) = -3 = -expand(2.66))。旧实现对全部模式统一
+		// negate, 把负向 expand 错当成 trunc (PlainDate/prototype/until 的
+		// roundingmode 整族)。
+		mode = mirrorDirectionalMode(mode)
 	}
 	// largest 为日及以下: 纯纳秒路径
 	if unitRank(largest) >= unitRank("day") {
