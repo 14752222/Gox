@@ -2612,13 +2612,17 @@ func roundDateTimeForDisplay(dt object.ISODateTime, quantum int64, mode string) 
 }
 
 // formatZDTOffset 按 offsetName 设置输出偏移后缀。
+//
+// ZonedDateTime 的偏移一律用数值形式 ±HH:MM[:SS] 输出 —— 即便 UTC 也写
+// "+00:00" 而非 "Z"。原因是该偏移是"时区在该时刻的实际偏移"，Z 会让人误
+// 以为时刻本身是 Z 记法；规范 (FormatUTCOffsetNanoseconds with Z=false)
+// 与 test262 的 offset-*/timezonename-* 整族均要求 +00:00。
 func formatZDTOffset(offSec int32, show string) string {
-	crit := show == "critical"
 	if show == "never" {
 		return ""
 	}
-	s := object.FormatOffsetSeconds(offSec)
-	if crit {
+	s := object.FormatOffsetSecondsNumeric(offSec)
+	if show == "critical" {
 		return "!" + s
 	}
 	return s

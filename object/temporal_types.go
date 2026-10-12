@@ -507,10 +507,14 @@ func FormatOffsetSeconds(sec int32) string {
 	return formatUTCOffset(sec)
 }
 
-func formatUTCOffset(sec int32) string {
-	if sec == 0 {
-		return "Z"
-	}
+// formatUTCOffsetNumeric 输出偏移但不用 "Z" 记零: 0 输出 "+00:00"。
+// ZonedDateTime 的偏移属于"时区实际偏移"，必须以数值形式呈现。
+func formatUTCOffsetNumeric(sec int32) string {
+	return FormatOffsetSecondsNumeric(sec)
+}
+
+// FormatOffsetSecondsNumeric 导出 formatUTCOffsetNumeric 供 stdlib 使用。
+func FormatOffsetSecondsNumeric(sec int32) string {
 	sign := "+"
 	if sec < 0 {
 		sign = "-"
@@ -524,6 +528,13 @@ func formatUTCOffset(sec int32) string {
 		out += fmt.Sprintf(":%02d", s)
 	}
 	return out
+}
+
+func formatUTCOffset(sec int32) string {
+	if sec == 0 {
+		return "Z"
+	}
+	return formatUTCOffsetNumeric(sec)
 }
 
 // AddOffsetToISODateTime 把 UTC 字段加上偏移得到当地墙钟字段。
