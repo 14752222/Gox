@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 
 	"github.com/14752222/Gox/config"
-	"github.com/14752222/Gox/icongen"
+	"github.com/14752222/Gox/tools/icongen"
 )
 
 func runIcon(args []string) {

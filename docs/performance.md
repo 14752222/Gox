@@ -133,7 +133,7 @@ gox_fib28_compute ≤ goja_fib28_compute × 1.25     // ±25% 容差
   （`gfx/dev.go`；字段形状被 `TestDevSnapshotShape` 锁死）。
 - **刻意的边界**：它**只做单调计数，不测 layout/draw 耗时**（源码注释原文：
   "耗时滑动平均等有真实需求再加"）。也就是说，仓库里**此前没有任何**帧间隔分布
-  或 GC 停顿指标——这正是本次新增 `perf/` 要补的那块。
+  或 GC 停顿指标——这正是本次新增 `tools/perf/` 要补的那块。
 
 ### 4.2 image / glyph LRU 缓存
 
@@ -164,13 +164,13 @@ gox_fib28_compute ≤ goja_fib28_compute × 1.25     // ±25% 容差
 
 ## 5. UI 帧率 / GC 毛刺基准
 
-**位置**：`perf/frame_gc_test.go`（包 `perf`）+ 压测脚本 `testdata/perf/frame_load.js`。
+**位置**：`tools/perf/frame_gc_test.go`（包 `perf`）+ 压测脚本 `testdata/perf/frame_load.js`。
 
 **跑法**：
 
 ```bash
-go test ./perf/            # 轻量探针 + 重压（默认）
-go test ./perf/ -short     # 只跑轻量探针（跳过重压）
+go test ./tools/perf/            # 轻量探针 + 重压（默认）
+go test ./tools/perf/ -short     # 只跑轻量探针（跳过重压）
 ```
 
 ### 5.1 测什么、为什么这么测
@@ -342,11 +342,11 @@ export GOPROXY=https://goproxy.cn,direct
 cd bench/goja && go mod download && cd ../..
 
 # 3) 只跑 UI 帧率 / GC 毛刺基准
-go test ./perf/ -v                 # 探针 + 重压
-go test ./perf/ -short             # 只跑轻量探针
+go test ./tools/perf/ -v                 # 探针 + 重压
+go test ./tools/perf/ -short             # 只跑轻量探针
 
 # 4) 单独看某档数据
-go test ./perf/ -run TestUIFrameGCStress -v
+go test ./tools/perf/ -run TestUIFrameGCStress -v
 
 # 5) 结果落盘位置
 ls -l bench-results/               # bench-*.json (算力) / perf-*.json (帧率+GC)
@@ -362,8 +362,8 @@ ls -l bench-results/               # bench-*.json (算力) / perf-*.json (帧率
 | 路径 | 作用 |
 |---|---|
 | `bench/goja/go.mod`、`go.sum`、`main.go` | goja 纯解释器对照 runner（独立 module） |
-| `perf/doc.go` | `perf` 包的测量口径与阈值说明 |
-| `perf/frame_gc_test.go` | 帧率 / GC 毛刺基准（`TestUIFrameGCProbe` / `TestUIFrameGCStress`） |
+| `tools/perf/doc.go` | `perf` 包的测量口径与阈值说明 |
+| `tools/perf/frame_gc_test.go` | 帧率 / GC 毛刺基准（`TestUIFrameGCProbe` / `TestUIFrameGCStress`） |
 | `testdata/perf/frame_load.js` | 高频更新长列表压测脚本（`__ROWS__`/`__UPDATES__` 占位可调） |
 | `scripts/bench-compare.sh` | 新增 `goja` 栈、跨平台 RSS、预热、机器信息入 JSON |
 | `scripts/bench-all.sh` | 一条命令跑完全部基准 |

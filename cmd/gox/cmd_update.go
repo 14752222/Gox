@@ -21,7 +21,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/14752222/Gox/update"
+	"github.com/14752222/Gox/tools/update"
 )
 
 func runUpdate(args []string) {

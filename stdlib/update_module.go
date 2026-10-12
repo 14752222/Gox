@@ -36,7 +36,7 @@ import (
 	"github.com/14752222/Gox/config"
 	"github.com/14752222/Gox/object"
 	"github.com/14752222/Gox/runtime"
-	"github.com/14752222/Gox/update"
+	"github.com/14752222/Gox/tools/update"
 )
 
 // updateProgressInterval 限制 onProgress 桥接到 JS 的频率 (64ms ≈ 单帧 @60fps)。

@@ -21,7 +21,7 @@ import (
 	"sync"
 
 	"github.com/14752222/Gox/object"
-	"github.com/14752222/Gox/tstransform"
+	"github.com/14752222/Gox/tools/tstransform"
 )
 
 // srcUnit 是一个编译单元的源码信息。

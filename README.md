@@ -536,7 +536,7 @@ REPL 内建命令：`:help`（帮助）、`:clear`（重置全局环境）、`:e
 | `gfx/` | 自研 GUI 渲染层（软件光栅化、布局、命中测试、win32 / X11 / cocoa 后端） |
 | `packager/` | jsbuild 打包器（GUI 应用、交叉编译） |
 | `scaffold/` | `gox create` 的项目脚手架：`template/` 是**真实文件**（`go:embed` 进二进制；`ts/` 是 `--ts` 的 TSX 覆盖层），`scaffold.go` 负责占位符替换与目录校验 |
-| `tstransform/` | TS/TSX → JS 的入库转译（内嵌 esbuild Go API，类型剥离 + JSX 保留），`vm` 加载 `.ts`/`.tsx` 时调用 |
+| `tools/` | 开发工具与代码生成（2026-10-12 起 icongen/certgen/tstransform/update/perf 五个根目录归拢至此）：`tstransform/`（TS/TSX → JS 入库转译，内嵌 esbuild Go API，`vm` 加载 `.ts`/`.tsx` 时调用）、`icongen/`（全平台图标生成）、`certgen/`（签名证书）、`update/`（自更新）、`perf/`（帧率/GC 基准）、`bcdump`/`initpurity`/`propdump`/`rssmon`（诊断工具） |
 | `test/` | 测试相关：`bench/` 性能剖析基准（fib、函数调用、对象操作、数值解析） |
 | `testdata/` | 可直接运行的示例脚本（语言特性、宿主 API、GUI 示例） |
 | `docs/` | **对外文档**（GUI 指南、运行时 API 教程、分发与发版手册）——过程性台账由维护者在仓库外维护（不随仓库发布） |

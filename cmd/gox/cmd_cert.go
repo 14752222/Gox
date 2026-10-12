@@ -13,7 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/14752222/Gox/certgen"
+	"github.com/14752222/Gox/tools/certgen"
 )
 
 func runCert(args []string) {

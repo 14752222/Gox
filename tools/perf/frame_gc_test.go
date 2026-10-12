@@ -689,7 +689,7 @@ func logReport(t *testing.T, rep report) {
 
 func writeReport(t *testing.T, prefix string, rep report) {
 	t.Helper()
-	dir := filepath.Join("..", "bench-results")
+	dir := filepath.Join("..", "..", "bench-results")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("创建 bench-results: %v", err)
 	}
@@ -708,7 +708,7 @@ func writeReport(t *testing.T, prefix string, rep report) {
 // loadScript 读 testdata/perf/frame_load.js 并替换行数/更新量占位符。
 func loadScript(t *testing.T, rows, updates int) string {
 	t.Helper()
-	path := filepath.Join("..", "testdata", "perf", "frame_load.js")
+	path := filepath.Join("..", "..", "testdata", "perf", "frame_load.js")
 	buf, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("读取压测脚本: %v", err)

@@ -85,7 +85,7 @@ OUT: error: ReferenceError: undefinedFn is not defined
 
 ```
 github.com/14752222/Gox/{lexer, ast, parser, compiler, bytecode, vm, object,
-runtime, stdlib, config, tstransform, update, cmd/goxwasm}
+runtime, stdlib, config, tools/tstransform, tools/update, cmd/goxwasm}
 ```
 
 gfx 是 Gox 自研 GUI（原生窗口后端），浏览器无对应后端，**图形 Playground 应直接放弃**，只做 console 版。
@@ -104,7 +104,7 @@ gfx 是 Gox 自研 GUI（原生窗口后端），浏览器无对应后端，**�
 | 候选 | 谁引入的 | wasm 里是否有用 | 备注 |
 |---|---|---|---|
 | `Gox/update`（自动更新） | **stdlib** 引入 | 无（浏览器无自更新语义） | 最干净的砍伐目标；需把 stdlib 里的 update 引用延迟化/接口化 |
-| `Gox/tstransform`（TS 转换） | **vm** 引入 | 看产品定位（Playground 若支持 .ts 输入则有） | 与桌面共用，砍它影响面大，建议保留 |
+| `Gox/tools/tstransform`（TS 转换） | **vm** 引入 | 看产品定位（Playground 若支持 .ts 输入则有） | 与桌面共用，砍它影响面大，建议保留 |
 | `Gox/config` | stdlib 引入 | 部分（路径/环境探测） | 小，风险高收益低，建议保留 |
 
 Go linker 死代码消除默认已开（strip 只再省 0.5 MiB 即为佐证），继续压体积主要靠**拆 stdlib 的 update 引用**，

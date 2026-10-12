@@ -19,9 +19,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/14752222/Gox/certgen"
+	"github.com/14752222/Gox/tools/certgen"
 	"github.com/14752222/Gox/config"
-	"github.com/14752222/Gox/icongen"
+	"github.com/14752222/Gox/tools/icongen"
 )
 
 func runBuild(args []string) {

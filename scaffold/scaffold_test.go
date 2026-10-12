@@ -9,7 +9,7 @@ import (
 	"github.com/14752222/Gox/compiler"
 	"github.com/14752222/Gox/lexer"
 	"github.com/14752222/Gox/parser"
-	"github.com/14752222/Gox/tstransform"
+	"github.com/14752222/Gox/tools/tstransform"
 )
 
 // wantFiles 是脚手架**默认输出**的完整清单。

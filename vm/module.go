@@ -10,7 +10,7 @@ import (
 
 	"github.com/14752222/Gox/compiler"
 	"github.com/14752222/Gox/object"
-	"github.com/14752222/Gox/tstransform"
+	"github.com/14752222/Gox/tools/tstransform"
 )
 
 type ModuleExports struct {

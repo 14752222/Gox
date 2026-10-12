@@ -12,7 +12,7 @@ import (
 	"github.com/14752222/Gox/ast"
 	"github.com/14752222/Gox/lexer"
 	"github.com/14752222/Gox/parser"
-	"github.com/14752222/Gox/tstransform"
+	"github.com/14752222/Gox/tools/tstransform"
 )
 
 // gox lint —— 把"违反了不会报错、只会静默失效"的那几条规矩机器化（rG73bo 3/3）。

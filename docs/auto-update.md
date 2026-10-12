@@ -129,8 +129,8 @@ Windows 上运行中的 exe 不能被覆盖写入，但**可以改名** —— �
 
 | 位置 | 内容 |
 |------|------|
-| `update/update.go` | 清单/选版本/流式下载/三段换名/自愈, 纯 Go 无依赖 |
-| `update/update_test.go` | semver 通道、续传、坏前缀回退、**中断模拟**（对应看板 rTkaiU 的验证补课） |
+| `tools/update/update.go` | 清单/选版本/流式下载/三段换名/自愈, 纯 Go 无依赖 |
+| `tools/update/update_test.go` | semver 通道、续传、坏前缀回退、**中断模拟**（对应看板 rTkaiU 的验证补课） |
 | `stdlib/update_module.go` | `gx/update` JS 门面（Promise + 进度桥接 + 忙碌互斥） |
 | `vm/update_module_test.go` | JS 侧集成测试（聚合入口导出、check 版本判定、rejection 恢复、gox.json 版本解析） |
 | `cmd/gox/cmd_update.go` | `gox update` CLI |

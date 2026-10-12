@@ -1,7 +1,7 @@
 # TypeScript / TSX 一等公民
 
 > 里程碑 M2。本文是 **用户可用行为的真源**：支持什么、边界在哪、为什么这么选、
-> 如何自证。实现细节分散在 `tstransform/`、`vm/srcframe_units.go`、`packager/`、
+> 如何自证。实现细节分散在 `tools/tstransform/`、`vm/srcframe_units.go`、`packager/`、
 > `cmd/gox/cmd_types.go`、`cmd/gox/cmd_dev.go`，注释里逐条写了"为什么 / 坑 / v1 边界"。
 
 ## 1. 选型：Go 内嵌 esbuild，不是 swc
@@ -22,7 +22,7 @@
 - **类型检查不属于运行时**：esbuild 只剥类型、不做检查。IDE / `tsc` 负责检查；
   运行时只保证语法过闸。
 
-> 注：仓库里没有任何 swc / napi / 第三方 sourcemap 依赖。VLQ 解码是 `tstransform/
+> 注：仓库里没有任何 swc / napi / 第三方 sourcemap 依赖。VLQ 解码是 `tools/tstransform/
 > sourcemap.go` 里自己写的（约 30 行），符合"零新第三方依赖"的硬约束。
 
 ## 2. 支持矩阵
@@ -136,7 +136,7 @@ broken.ts: TypeScript 转译失败
 [tstransform] cache hit  /private/tmp/tsdev/src/main.ts
 ```
 
-测试：`tstransform/sourcemap_test.go` 的 `TestTransformCachedHit`（用哨兵证明第二次
+测试：`tools/tstransform/sourcemap_test.go` 的 `TestTransformCachedHit`（用哨兵证明第二次
 真的读了缓存，而不是靠时间/日志这种不可靠信号）、`TestTransformCacheInvalidatedByContent`、
 `TestTransformCacheCorrupt`、`TestTransformCacheMissingDir`。
 
@@ -209,7 +209,7 @@ go run ./cmd/gox types scaffold/template/ts/src/gox.d.ts
 让 legacy TS 装饰器在**转译阶段降级成等价 JS**（`__decorate` 辅助调用），于是引擎
 parser 不必认识 `@`。
 
-- 测试：`tstransform/sourcemap_test.go:TestDecoratorDowngraded`（不含 `@log`）
+- 测试：`tools/tstransform/sourcemap_test.go:TestDecoratorDowngraded`（不含 `@log`）
   + `vm/vm_ts_fixtures_test.go:TestFixtureDecorator`（转译产物能被 VM 执行）。
 - `useDefineForClassFields` 保持 esbuild 默认（对 ESNext 默认 define 语义）。显式改它
   会让类字段初始化语义漂移，而引擎的类字段实现更接近赋值路径 —— 保持默认，需要时
@@ -275,7 +275,7 @@ SAME_CONTENT_RESTART_MS: 271.7
 
 ```bash
 go build ./...
-go test ./tstransform/ ./vm/ ./cmd/gox/ ./packager/ ./scaffold/
+go test ./tools/tstransform/ ./vm/ ./cmd/gox/ ./packager/ ./scaffold/
 python3 scripts/check-registries.py
 python3 scripts/check-imports.py
 ```

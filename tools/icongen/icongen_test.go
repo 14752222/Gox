@@ -18,7 +18,7 @@ var goldenRoot = filepath.Join("testdata", "golden")
 // golden。图标生成是纯函数（同源图 → 同输出）, 任何尺寸/格式回归都会在这里
 // 变红 —— 特别是 iOS 1024 的 alpha 通道问题, 只看字节数是发现不了的。
 //
-// 改动生成逻辑后跑:  UPDATE_GOLDEN=1 go test ./icongen/...  刷新 golden,
+// 改动生成逻辑后跑:  UPDATE_GOLDEN=1 go test ./tools/icongen/...  刷新 golden,
 // 并人工确认 diff 合理（用预览看几张代表图）。
 func TestGenerateAllGolden(t *testing.T) {
 	root := t.TempDir()

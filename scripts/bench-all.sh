@@ -9,7 +9,7 @@
 #
 # 两件事:
 #   1. scripts/bench-compare.sh  —— 解释器算力对比 (gox / node / goja / ...)
-#   2. go test ./perf/           —— UI 帧率 + GC 毛刺基准
+#   2. go test ./tools/perf/           —— UI 帧率 + GC 毛刺基准
 #
 # 联网要求:
 #   - gox / node 部分**完全离线可跑**;
@@ -58,8 +58,8 @@ fi
 
 if [[ "$DO_PERF" == "1" ]]; then
   echo
-  echo ">>> [2/2] UI 帧率 / GC 毛刺基准 (go test ./perf/)"
-  (cd "$ROOT" && go test ./perf/ -v)
+  echo ">>> [2/2] UI 帧率 / GC 毛刺基准 (go test ./tools/perf/)"
+  (cd "$ROOT" && go test ./tools/perf/ -v)
 fi
 
 echo

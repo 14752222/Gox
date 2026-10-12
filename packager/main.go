@@ -21,8 +21,8 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/14752222/Gox/icongen"
-	"github.com/14752222/Gox/tstransform"
+	"github.com/14752222/Gox/tools/icongen"
+	"github.com/14752222/Gox/tools/tstransform"
 )
 
 // importRe 匹配 import/export ... from "./xxx" 的相对路径模块。

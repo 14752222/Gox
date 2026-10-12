@@ -8,7 +8,7 @@ import (
 	"github.com/14752222/Gox/object"
 	"github.com/14752222/Gox/runtime"
 	"github.com/14752222/Gox/stdlib"
-	"github.com/14752222/Gox/tstransform"
+	"github.com/14752222/Gox/tools/tstransform"
 )
 
 func (vm *VM) consumeEvalMark(fn object.Value) {

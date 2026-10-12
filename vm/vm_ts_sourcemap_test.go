@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/14752222/Gox/tstransform"
+	"github.com/14752222/Gox/tools/tstransform"
 )
 
 // M2 P0-1: 报错定位到 .ts 源码行。
