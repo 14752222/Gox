@@ -188,12 +188,14 @@ func setupTemporalInstant(env *object.Object) {
 			return "", perr
 		}
 		tz := "UTC"
+		tzProvided := false
 		if tzv := optValue(opts, "timeZone"); tzv != nil {
 			id, tzErr := toTimeZoneIDE(tzv)
 			if tzErr != nil {
 				return "", tzErr
 			}
 			tz = id
+			tzProvided = true
 		}
 		ns := t.Nanos()
 		if q := st.roundingQuantumNanos(); q > 0 {
@@ -205,7 +207,15 @@ func setupTemporalInstant(env *object.Object) {
 		if st.smallestUnit != "" {
 			prec = precisionForSmallest(st.smallestUnit)
 		}
-		return object.FormatISODate(dt.Date) + "T" + object.FormatISOTime(dt.Time, prec) + object.FormatOffsetSeconds(off), nil
+		// 显式指定 timeZone 时偏移一律数值形式 (+00:00 而非 Z); 仅在默认 UTC
+		// (未提供 timeZone) 时用 "Z" (timezone-string / timezone-offset 整族)。
+		var offStr string
+		if tzProvided {
+			offStr = object.FormatOffsetSecondsNumeric(off)
+		} else {
+			offStr = object.FormatOffsetSeconds(off)
+		}
+		return object.FormatISODate(dt.Date) + "T" + object.FormatISOTime(dt.Time, prec) + offStr, nil
 	})
 
 	tgValueOf(proto)
