@@ -2,8 +2,9 @@
 # Windows 上 autocrlf 会把文本 golden 检出成 CRLF，导致 CI 上 XML/JSON 永远对不上
 # （现象：got 比 want 小 6~69 字节，且只挂 .xml/.json，.png/.ico/.icns 全过）。
 # 所以这里把 golden 目录钉死：二进制关掉转换，文本强制 LF。
-icongen/testdata/golden/**/*.png -text
-icongen/testdata/golden/**/*.ico -text
-icongen/testdata/golden/**/*.icns -text
-icongen/testdata/golden/**/*.xml text eol=lf
-icongen/testdata/golden/**/*.json text eol=lf
+# 2026-10-12 icongen/ 归拢到 tools/ 下 —— 路径跟着改，否则 CI checkout 又会转 CRLF。
+tools/icongen/testdata/golden/**/*.png -text
+tools/icongen/testdata/golden/**/*.ico -text
+tools/icongen/testdata/golden/**/*.icns -text
+tools/icongen/testdata/golden/**/*.xml text eol=lf
+tools/icongen/testdata/golden/**/*.json text eol=lf

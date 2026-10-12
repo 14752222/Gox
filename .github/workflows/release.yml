@@ -764,17 +764,18 @@ jobs:
       # `result`：缺凭证时本作业仍然是 success（只是内部步骤全跳过、不传 artifact）。
       signed: ${{ steps.macos-cred.outputs.enabled }}
     steps:
-      # 探测放在最前：缺凭证时连 checkout / setup-go 都不必跑，省一次 runner 开销；
-      # 后面每一步都用同一个闸门，拿到的是同一个结论（不会各步各判一次而漂移）。
+      # 2026-10-12 修：探测脚本 scripts/check-signing-creds.sh 本身在仓库里，
+      # 必须**先 checkout 再探测**（本 job 0.9.0 后新加、首次真跑就 exit 127 的根因：
+      # 没有仓库时 bash 找不到脚本）。省一次 checkout 的初衷让位于正确性；
+      # 缺凭证时后面的重活（setup-go / 交叉编译 / 签名公证）仍全部跳过。
+      - uses: actions/checkout@v7
+
       - name: 探测 macOS 签名材料
         id: macos-cred
         env:
           HAS_MACOS_CERT: ${{ secrets.MACOS_CERT_P12_BASE64 != '' }}
           HAS_APPLE_API: ${{ secrets.APPLE_API_KEY != '' && secrets.APPLE_API_ISSUER != '' && secrets.APPLE_API_KEY_CONTENT != '' }}
         run: bash scripts/check-signing-creds.sh macos
-
-      - uses: actions/checkout@v7
-        if: steps.macos-cred.outputs.enabled == 'true'
 
       - uses: actions/setup-go@v7
         if: steps.macos-cred.outputs.enabled == 'true'
