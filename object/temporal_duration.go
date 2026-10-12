@@ -228,7 +228,10 @@ func (t *TemporalDuration) ToString() string {
 // 平衡到天: 进位的上限是 duration 的自然最大单位与 "day" 的较小者
 // (round-cross-unit-boundary: 1:59:59.9 expand→2H, 但 30D+23:59:60 只进到 31D,
 // 不再进月; 而仅有秒单位时 59.9→60S 保持为 60S 不进分钟)。
-func (t *TemporalDuration) ToStringWithPrecision(digits int, quantum int64, mode string) string {
+//
+// 返回值 ok=false 表示舍入结果超出 Duration 可表示范围 (IsValidDuration 失败),
+// 调用方应抛 RangeError (throws-when-rounded-duration-is-invalid)。
+func (t *TemporalDuration) ToStringWithPrecision(digits int, quantum int64, mode string) (string, bool) {
 	// 整个时间部分折算为精确纳秒 (big.Int, 避免 float64 大值溢出/丢精度)。
 	timeNanos := new(big.Int)
 	addField := func(v int64, per int64) {
@@ -268,6 +271,17 @@ func (t *TemporalDuration) ToStringWithPrecision(digits int, quantum int64, mode
 		timeNanos = rem
 		days += extra.Int64()
 		top = "day"
+	}
+
+	// 范围校验: 舍入可能把秒推过 2^53 秒 (IsValidDuration 上限),
+	// 此时须抛 RangeError。用整数纳秒精确比较, 避免 float64 边界舍入。
+	{
+		grand := new(big.Int).Mul(big.NewInt(days), big.NewInt(NanosPerDay))
+		grand.Add(grand, timeNanos)
+		maxNs, _ := new(big.Int).SetString("9007199254740992000000000", 10) // 2^53 s
+		if grand.CmpAbs(maxNs) >= 0 {
+			return "", false
+		}
 	}
 
 	// 自顶向下按 top 逐级拆分: 从 top 对应单位开始, 依次取模落到下一级。
@@ -323,19 +337,23 @@ func (t *TemporalDuration) ToStringWithPrecision(digits int, quantum int64, mode
 	dateWritten := sb.Len() > prefixLen
 
 	timeEmpty := hrs == 0 && mins == 0 && secs == 0 && ms == 0 && us == 0 && ns == 0
-	if timeEmpty {
-		if !dateWritten {
-			if digits > 0 {
-				sb.WriteString("T0." + strings.Repeat("0", digits) + "S")
-			} else {
-				sb.WriteString("T0S")
-			}
-		}
-		return sb.String()
+	// 有日期部分且时间全零且 precision=auto 时省略时间部分。
+	if timeEmpty && dateWritten && digits < 0 {
+		return sb.String(), true
 	}
 	sb.WriteByte('T')
 	appendUnit(hrs, 'H')
 	appendUnit(mins, 'M')
+
+	if timeEmpty {
+		// 时间全零但需写出: "0S" 或固定精度 "0.00...S"。
+		if digits > 0 {
+			sb.WriteString("0." + strings.Repeat("0", digits) + "S")
+		} else {
+			sb.WriteString("0S")
+		}
+		return sb.String(), true
+	}
 
 	if secs != 0 || ms != 0 || us != 0 || ns != 0 || digits >= 0 {
 		s := secs
@@ -360,7 +378,7 @@ func (t *TemporalDuration) ToStringWithPrecision(digits int, quantum int64, mode
 			sb.WriteString(fmt.Sprintf("%d.%sS", s, d))
 		}
 	}
-	return sb.String()
+	return sb.String(), true
 }
 
 // naturalLargestUnit 返回 duration 中最大的非零单位名 (rank 最高者)。
