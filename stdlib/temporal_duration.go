@@ -609,9 +609,10 @@ func relativeToISOValue(v object.Value) (*object.ISODateTime, bool) {
 
 // toRelativeTemporalObject 实现规范 ToRelativeTemporalObject。
 //
-// 返回 (值, 错误, 是否已提供)。未提供 relativeTo 时 ok=false, err=nil。
-// 错误类型遵循规范: 非字符串原始值 (number/bigint/boolean/null) → TypeError;
-// 非法 ISO 串 → RangeError; 对象缺必需字段 → TypeError。
+// 返回 (值, 错误, 是否已提供)。未提供 relativeTo (或 undefined) 时 ok=false, err=nil。
+// 错误类型遵循规范: 只有 string 会按 ISO 解析 (失败 → RangeError);
+// number/bigint/boolean/null/symbol 等非 string 原始值 → TypeError;
+// 对象缺必需字段 → TypeError。
 func toRelativeTemporalObject(v object.Value) (temporalRelativeTo, object.Value, bool) {
 	var z temporalRelativeTo
 	if v == nil {
@@ -632,7 +633,7 @@ func toRelativeTemporalObject(v object.Value) (temporalRelativeTo, object.Value,
 	case *object.Undefined:
 		return z, nil, false
 	}
-	// number / bigint / boolean / null / symbol 等原始值: 规范要求 TypeError。
+	// number / bigint / boolean / null / symbol 等非 string 原始值: TypeError。
 	return z, tgType("relativeTo must be an object or a string"), true
 }
 

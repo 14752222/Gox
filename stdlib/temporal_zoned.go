@@ -306,6 +306,20 @@ func setupTemporalZonedDateTime(temporal *object.Object) {
 		if !validRoundingIncrement(smallest, inc) {
 			return tgRange("Invalid roundingIncrement for " + smallest)
 		}
+		// day 舍入按**当地墙钟**: day 边界 = 当地午夜, 不能对 epoch 直接取模
+		// (偏移非整天或跨 DST 时会错位)。时间单位走 exact instant 路径。
+		if smallest == "day" {
+			wall := object.GetISOPartsFromEpoch(t.TimeZoneID(), t.Nanos())
+			rounded := roundDateTime(wall, t.CalendarID(), smallest, inc, mode)
+			if _, isErr := rounded.(*object.Error); isErr {
+				return rounded
+			}
+			pdt, ok := rounded.(*object.TemporalPlainDateTime)
+			if !ok {
+				return tgRange("Result is outside of supported range")
+			}
+			return zdtFromWallClock(pdt.ISODateTime(), t.TimeZoneID(), t.CalendarID(), "compatible", nil)
+		}
 		res, ok := roundInstantNanos(t.Nanos(), smallest, inc, mode)
 		if !ok {
 			return tgRange("Result is outside of supported range")

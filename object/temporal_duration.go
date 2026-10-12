@@ -568,7 +568,11 @@ func TotalOfUnitZoned(d *TemporalDuration, unit string, wall ISODateTime, tz str
 // 再除以单位长度。只有完全没有 relativeTo 时，精确单位才退回纳秒直除。
 func totalOfUnitAnchor(d *TemporalDuration, unit string, rel RelativeAnchor, hasRel bool) (float64, bool) {
 	if !hasRel {
-		// 无 relativeTo: 仅精确单位 (day 及以下) 可算, 日历单位报错。
+		// 无 relativeTo: 仅当 duration 不含日历单位 (年/月/周) 且 unit 为精确单位
+		// 时才可算; 否则日历单位无法落到具体长度 → 调用方抛 RangeError。
+		if d.HasCalendarUnits() {
+			return 0, false
+		}
 		if n, ok := TotalNanosPerUnit(unit); ok {
 			total := d.TimeTotalNanos()
 			f, _ := new(big.Float).SetInt(total).Float64()
