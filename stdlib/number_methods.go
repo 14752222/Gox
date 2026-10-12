@@ -118,6 +118,16 @@ func setupNumberProto() *object.Object {
 		return object.NewString(result)
 	}))
 
+	// toLocaleString(): 本运行时无 Intl, 规范 21.1.3.4 的回退即
+	// ToString(thisNumber) —— 但 this 必须是 Number (校验同 toString)。
+	p.SetBuiltinProperty("toLocaleString", object.NewBuiltinMethod("toLocaleString", func(this object.Value, args ...object.Value) object.Value {
+		num, ok := this.(*object.Number)
+		if !ok {
+			return thisTypeError("Number", "toLocaleString", this)
+		}
+		return object.NewString(num.Inspect())
+	}))
+
 	// toExponential(fractionDigits): 返回指数表示法字符串
 	p.SetBuiltinProperty("toExponential", object.NewBuiltinMethod("toExponential", func(this object.Value, args ...object.Value) object.Value {
 		num, ok := this.(*object.Number)

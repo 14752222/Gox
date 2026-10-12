@@ -675,6 +675,15 @@ func setupStringProto() *object.Object {
 		return thisTypeError("String", "toString", this)
 	}))
 
+	// toLocaleString(): 规范 22.1.3.27 = ThisStringValue(this) (无 Intl)。
+	// 与 toString 同样返回原始字符串, this 校验一致。
+	p.SetBuiltinProperty("toLocaleString", object.NewBuiltinMethod("toLocaleString", func(this object.Value, args ...object.Value) object.Value {
+		if s, ok := thisStringValue(this, p); ok {
+			return s
+		}
+		return thisTypeError("String", "toLocaleString", this)
+	}))
+
 	// valueOf()
 	//
 	// 与 toString 同款：ThisStringValue 的校验是一样的，崩溃路径也是一样的。
