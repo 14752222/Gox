@@ -1503,6 +1503,12 @@ func (r rawDateFields) regulate(overflow string) (object.ISODate, object.Value) 
 type rawDateTimeFields struct {
 	rawDateFields
 	time object.ISOTime
+	// timeZone / offset: relativeTo 属性包可携带 timeZone (及 offset)。
+	// 存在 timeZone 时按 ZonedDateTime 解释, 且 timeZone 字符串必须合法。
+	timeZone string
+	hasTZ    bool
+	offset   string
+	hasOff   bool
 }
 
 // readDateTimeFieldsRaw 按字母序读取全部 date-time 字段。
@@ -1510,6 +1516,25 @@ func readDateTimeFieldsRaw(o propBag) (rawDateTimeFields, object.Value) {
 	var r rawDateTimeFields
 	if ce := checkCalendarProp(o); ce != nil {
 		return r, ce
+	}
+	// timeZone / offset: 规范在日期时间字段之后读取, 并对字符串做时区 ID
+	// 校验 (bare datetime、亚分钟偏移等非法串须 RangeError)。
+	if v, ok := o.GetProperty("timeZone"); ok && v != object.UndefinedSingleton {
+		id, e := toTimeZoneIDE(v)
+		if e != nil {
+			return r, e
+		}
+		r.timeZone, r.hasTZ = id, true
+	}
+	if v, ok := o.GetProperty("offset"); ok && v != object.UndefinedSingleton {
+		s, isStr := v.(*object.String)
+		if !isStr {
+			return r, tgType("offset must be a string")
+		}
+		if _, ok := object.ParseTimeZoneOffsetString(s.Value); !ok {
+			return r, tgRange("Invalid offset string: " + s.Value)
+		}
+		r.offset, r.hasOff = s.Value, true
 	}
 	d, okD, e := readIntField(o, "day")
 	if e != nil {
