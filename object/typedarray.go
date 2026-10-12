@@ -999,6 +999,10 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 		})
 	case "join":
 		return iterMethod("join", func(ta *TypedArray, sargs []Value) Value {
+			// 规范 sec-%typedarray%.prototype.join: len 在 ToString(separator)
+			// 之前捕获; separator 转换可能 detach/缩容 buffer —— 之后仍迭代 len
+			// 次, 越界索引读为 undefined → 空串。
+			length := ta.arrLength()
 			sep := ","
 			if len(sargs) > 0 && !isUndef(sargs[0]) {
 				s := sargs[0]
@@ -1008,7 +1012,7 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 				}
 				sep = ToString(s)
 			}
-			return NewString(ta.joinWith(sep, ta.arrLength()))
+			return NewString(ta.joinWith(sep, length))
 		})
 	case "indexOf":
 		return iterMethod("indexOf", func(ta *TypedArray, sargs []Value) Value {
