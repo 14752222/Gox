@@ -744,14 +744,24 @@ func readZDTFieldsRaw(o propBag) (rawDateTimeFields, string, string, object.Valu
 	} else if ok {
 		r.time.Nanosecond = n
 	}
-	// offset (ToString)
+	// offset (ToString + 校验)
 	off := ""
 	if ov, found := o.GetProperty("offset"); found && ov != object.UndefinedSingleton {
-		s, ok := optionToString(ov)
-		if !ok {
-			return r, "", "", tgType("Cannot convert offset to string")
+		// 规范 (InterpretISODateTimeOffset 前的 ParseDateTimeUTCOffset):
+		// offset 必须是**字符串**; 非字符串一律 TypeError; 字符串必须符合
+		// UTCOffset 文法, 否则 RangeError。旧实现用 optionToString 把
+		// 数字等转成串后既不判类型也不校验格式, 于是 "00:00"/"+0"/0 之类
+		// 全部被静默接受 (ZonedDateTime 各入口的 invalid-offset-string 族)。
+		s, isStr := ov.(*object.String)
+		if !isStr {
+			return r, "", "", tgType("offset must be a string")
 		}
-		off = s
+		if s.Value != "" {
+			if _, ok := object.ParseTimeZoneOffsetString(s.Value); !ok {
+				return r, "", "", tgRange(s.Value + " is not a valid offset string")
+			}
+		}
+		off = s.Value
 	}
 	if s, ok, e := readIntField(o, "second"); e != nil {
 		return r, "", "", e
