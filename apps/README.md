@@ -2,6 +2,24 @@
 
 这里是**真实可用的应用**，不是 API 示例。
 
+## 应用集（十应用：桌面 6 / 移动 3 / 跨端 1）
+
+| 应用 | 定位 | 压到的代表性能力 |
+|---|---|---|
+| `notes/` | 桌面 · Markdown 编辑器 | Markdown 预览 + 四种图表、tabs |
+| `json-toolbox/` | 桌面 · 开发者工具 | JSON 格式化/校验、菜单 |
+| `files/` | 桌面 · 文件管理器 | `fs` 模块、面包屑、keyed 列表、文本预览 |
+| `sysmon/` | 桌面 · 系统监控 | `gx/device` 订阅、`setInterval` 采样、canvas 折线 |
+| `settings/` | 桌面 · 设置面板 | `gx/theme`、`gx/storage` 即改即存、表单控件全家桶 |
+| `music/` | 桌面 · 音乐播放器 | 播放状态机（纯逻辑）、进度/音量受控、canvas 频谱 |
+| `m-notes/` | 移动 · 记事 | `useInsets()` 安全区、`onLongPress`、`search` |
+| `m-weather/` | 移动 · 天气 | `useNetwork()` 离线 banner、canvas 温度曲线 |
+| `m-calc/` | 移动 · 计算器 | `grid` 按钮盘、纯函数按键状态机、键盘等价 |
+| `multiscreen/` | 跨端 · 多屏协同 | `gx/screen` 窗口几何/跨屏事件、`router.handoff` 接续、断点布局 |
+
+冒烟：`gfx/apps_smoke_test.go` 的用例表逐个挂载每个应用的 `src/main.js`
+（无头 fakeSurface：挂载不报错 + 窗口数达标 + 抽查元素 + 事件泵跑几轮 + 全部关窗）。
+
 | 目录 | 定位 | 与谁区分 |
 |---|---|---|
 | `scaffold/template/` | `gox create` 生成的新工程模板 | 起点，不是成品 |
@@ -67,7 +85,7 @@ gox lint --skip=each-no-key    # 临时跳过某条规则
 | 列表用 `each` 时必须 `key` | `each-no-key` |
 | `lib/` 不 import `gox` | `lib-imports-gox` |
 
-第 5 条（新增应用后登记冒烟用例）涉及 `gfx/apps_smoke_test.go` 的用例表，
+第 5 条（新增应用后登记冒烟用例）涉及 `gfx/apps_smoke_test.go` 的 `appSuite` 用例表，
 还没机器化 —— 改了那边记得同步。
 
 1. **JSX 属性与子节点在调用当场求值一次**。需要响应式就必须传**函数**：`value={() => sig()}`，
@@ -77,3 +95,8 @@ gox lint --skip=each-no-key    # 临时跳过某条规则
 3. **列表用 `each` 时必须 `key`**，且更新时**造新对象**（原地改字段引用没变，行不会重建）。
 4. **`lib/` 保持纯逻辑**：不 import `gox`，不碰 signal，输入输出都是普通值。
 5. 新增应用后，在 `gfx/apps_smoke_test.go` 的用例表里加一行（挂载 + 首帧 + 关窗的冒烟）。
+6. **模块内普通 `function` 声明引用不到 import 绑定**（函数声明被提升编译，早于
+   import 登记；`export function` 与箭头 `const f = () =>` 正常）。组件与内部函数
+   一律写箭头常量或 inline `export function`。
+7. **组件收不到 JSX children**：组件标签降级为 `Comp(props, ...children)` 直接调用，
+   额外参数进不了 `props`。复合内容用 `content={() => …}` 函数 prop（同 `ui/shell.js`）。

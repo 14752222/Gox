@@ -1,0 +1,10 @@
+{
+  "name": "multiscreen",
+  "title": "多屏协同",
+  "appId": "com.gox.apps.multiscreen",
+  "version": "0.1.0",
+  "permissions": [],
+  "desktop": {
+    "windowed": true
+  }
+}

@@ -1,0 +1,13 @@
+{
+  "name": "gox-sysmon",
+  "version": "0.1.0",
+  "private": true,
+  "description": "系统监控 —— 设备信息 + 电池/网络卡片 + 实时折线，Gox 实用应用",
+  "scripts": {
+    "dev": "goxjs dev src/main.js",
+    "start": "goxjs src/main.js"
+  },
+  "devDependencies": {
+    "@goxjs/goxjs": "^0.9.0"
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "name": "settings",
+  "title": "设置",
+  "appId": "com.gox.apps.settings",
+  "version": "0.1.0",
+  "permissions": [],
+  "desktop": {
+    "windowed": true
+  }
+}
