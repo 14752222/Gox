@@ -1,0 +1,79 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# GUI 常驻进程 RSS 曲线基准（看板 r95WjJ）
+#
+# 为什么需要它：渲染层是无 GC 设计（帧缓冲 / 对象池手工复用），但此前长时
+#   内存可观测性为零 —— bench.yml 只看吞吐与帧间隔，回答不了「窗口挂一夜
+#   RSS 会不会爬」。泄漏在这种设计下不表现为崩溃，只表现为 RSS 单调上行，
+#   没有曲线就永远发现不了。
+#
+# 怎么测：tools/rssmon 拉起一个常驻进程并**按进程树**采样 /proc VmRSS
+#   （gox dev 会再起子进程，单 PID 会漏），落 CSV；stderr 顺带打一条
+#   ASCII 迷你曲线，不下载 artifact 也能从 job 日志看出趋势。
+#
+# 采样目标为何是 `gox dev`（scripts/rss-curve.sh 头部有完整记录）：
+#   2026-10-11 实测 JS 侧 render() 建出的 x11 窗口在 Xvfb 下首个 Pump 节拍
+#   即被判连接关闭而退出（纯 Go Mount+Pump 正常），是 JS→gfx 链路既有缺陷。
+#   dev 的 watcher 父进程真常驻，先覆盖「常驻宿主 + 渲染链路启动足迹」；
+#   窗口泵缺陷修复后用 RSS_TARGET_CMD 一键换成直跑入口。
+#
+# 为什么 nightly + 手动、不进 PR：与 bench.yml 同理 —— RSS 绝对值随机型/
+#   镜像漂移，PR 级硬判只会制造噪声性红。这条先解决「有曲线可看」，
+#   回归判据（如 Δ 阈值）等攒够基线数据再加。
+# ─────────────────────────────────────────────────────────────────────────────
+name: rss-curve
+
+on:
+  schedule:
+    # 每天 UTC 04:41（北京时间 12:41）：错开 bench 的 03:17，避开整点排队高峰
+    - cron: '41 4 * * *'
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 采样时长（秒）
+        default: '120'
+      interval:
+        description: 采样间隔（秒）
+        default: '2'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rss-curve
+  cancel-in-progress: false
+
+jobs:
+  rss:
+    name: GUI 常驻进程 RSS 曲线
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      # 字体与 ci.yml 同款：无 Noto CJK 时中文渲染静默退化（desktop-shots.yml
+      # 头部有这条坑的完整记录），字体栈差异会直接改变 RSS 基线。
+      - name: 无头环境（Xvfb + 字体）
+        run: |
+          set -euo pipefail
+          sudo apt-get update -q
+          sudo apt-get install -yq xvfb fonts-dejavu-core fonts-noto-cjk
+
+      - name: 采集 RSS 曲线
+        env:
+          DURATION: ${{ inputs.duration || '120' }}
+          INTERVAL: ${{ inputs.interval || '2' }}
+        run: |
+          set -euo pipefail
+          bash scripts/rss-curve.sh
+
+      - name: 上传 RSS 曲线
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rss-curve
+          path: bench-results/rss-*.csv
+          retention-days: 90

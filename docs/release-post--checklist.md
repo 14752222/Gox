@@ -92,3 +92,20 @@ test262 language 合规率 <当批数字>；class extends 仅标识符；await u
   - [ ] 知乎想法/文章挂同一组链接
   - [ ] GitHub Releases 说明「本版要点」末尾加文章链接（可选）
 - 本条与 §1–§4 无依赖顺序，`rcfa8R` 落地后单独走一节即可。
+
+## 6. 可自动核实项回填（rUkOb1，2026-10-11 实测）
+
+> 以下条目**不登录账号**即可核实，已用公共接口/registry 实际查证并回填；
+> 需要平台账号的条目仍留在 §4「待人工」，此处只补链接与核实结论。
+
+| 条目 | 链接 | 核实方式 | 结论 |
+|---|---|---|---|
+| npm 主包页面 | https://www.npmjs.com/package/@goxjs/goxjs | `npm view @goxjs/goxjs version` | ✅ 已发布，`latest = 0.9.0`（registry modified 2026-10-01），与 §1 口径一致 |
+| npm 发布 attestation | `/-/npm/v1/attestations/@goxjs%2Fgoxjs@0.9.0` | curl registry | ✅ 存在 publish attestation（sigstore bundle 可拉取） |
+| GitHub Release v0.9.0 | https://github.com/14752222/Gox/releases/tag/v0.9.0 | GitHub API `repos/14752222/Gox/releases` | ⚠️ **存在，但 assets 只有 3 个 darwin 二进制**（`gox-darwin-amd64/arm64/universal`），**与 §1「5 平台二进制」口径不符**——v0.8.0 同样只有这 3 个。linux/windows 产物实际缺失，需人工核对 release.yml 矩阵是否只跑了 macOS 部分（待人工） |
+| v0.7.0 及更早为 0 assets | （各 tag 页） | 同上 API | ✅ 与 §2 分界说明一致（v0.4.0～v0.7.0 全部 0 assets） |
+| 移动端成品产物 | https://github.com/14752222/Gox/releases/tag/nightly-2026-10-10 | 同上 API | ⚠️ `mobile-release.yml` **已在 nightly 运行**并产出 `app-debug.apk`（2026-10-08 起每日）；仍**无 HAP / iOS 产物**，「harmony HAP 恒缺」口径仍成立。§2 的「mobile-release.yml 尚未启用」表述已过时（待人工更新 §2） |
+| npm 移动子包 ×4 | https://www.npmjs.com/package/@goxjs/goxjs-mobile-android-arm64-v8a 等 | `npm view` 逐包 | ❌ 4 个子包全部 404 未发布——§4 的 Trusted Publishing 配置项**确认仍为待人工**，且首次发布前必须处理 |
+
+未回填（需账号，转 §4）：GitHub Releases 说明文案编辑、npm 包页 README 更新、
+官网版本号与下载页改动、掘金/知乎互挂。

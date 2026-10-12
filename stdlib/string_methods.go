@@ -61,7 +61,7 @@ func requireObjectCoercible(v object.Value) bool {
 // 少数几处走了这里。抽出来后，其余那些的统一是纯粹的机械替换 —— 那次统一
 // 待 built-ins 聚类数据出来后按簇的权重决定排期（见看板 rnm4C5）。
 func thisStringValue(this object.Value, proto *object.Object) (*object.String, bool) {
-	if s, ok := this.(*object.String); ok {
+	if s, ok := object.UnwrapPrimitive(this).(*object.String); ok {
 		return s, true
 	}
 	// String.prototype: 一个 [[StringData]] 为空串的 String 对象。

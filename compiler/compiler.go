@@ -6379,9 +6379,10 @@ func (c *Compiler) compileArrayLiteral(node *ast.ArrayLiteral) error {
 	if !hasSpread {
 		// 无 spread: 使用 OP_NEW_ARRAY
 		for _, elem := range node.Elements {
-			// 空洞 ([1, , 2]): 元素为 nil, 占一位 undefined。
+			// 空洞 ([1, , 2]): 元素为 nil, 推洞标记 (写入数组时转为真洞,
+			// 与显式 undefined 元素区分: forEach/hasOwnProperty 不可见)。
 			if elem == nil {
-				c.emitter.EmitNoOperand(bytecode.OP_UNDEFINED)
+				c.emitter.EmitNoOperand(bytecode.OP_HOLE)
 				continue
 			}
 			if err := c.compileExpression(elem); err != nil {
@@ -6394,8 +6395,8 @@ func (c *Compiler) compileArrayLiteral(node *ast.ArrayLiteral) error {
 		c.emitter.Emit(bytecode.OP_NEW_ARRAY, 0) // 空数组
 		for _, elem := range node.Elements {
 			if elem == nil {
-				// 空洞 ([...a, , b]): 推入 undefined 占位。
-				c.emitter.EmitNoOperand(bytecode.OP_UNDEFINED)
+				// 空洞 ([...a, , b]): 推洞标记。
+				c.emitter.EmitNoOperand(bytecode.OP_HOLE)
 				c.emitter.EmitNoOperand(bytecode.OP_ARRAY_PUSH)
 				continue
 			}

@@ -1,0 +1,13 @@
+{
+  "name": "gox-m-weather",
+  "version": "0.1.0",
+  "private": true,
+  "description": "天气（移动端）—— 当前卡 + 温度曲线 + 网络状态，Gox 实用应用",
+  "scripts": {
+    "dev": "goxjs dev src/main.js",
+    "start": "goxjs src/main.js"
+  },
+  "devDependencies": {
+    "@goxjs/goxjs": "^0.9.0"
+  }
+}

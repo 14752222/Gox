@@ -312,67 +312,77 @@ func (p *Promise) detachCallbacksLocked() []PromiseCallback {
 	return callbacks
 }
 
-// invokePromiseCallbacks 同步执行 Promise 回调 (调用时不得持有 p.mu，
+// invokePromiseCallbacks 调度 Promise 反应回调 (调用时不得持有 p.mu，
 // 否则回调中再次访问该 Promise 会死锁)。
 //
-// 注意: 这里必须同步执行而不是 go func()。原因:
+// 微任务语义 (ES Promise Jobs): 每个回调作为独立 job 按 FIFO 入队,
+// 由 VM 在当前同步执行完成后、下一个宏任务前 drain (含 drain 期间新入队
+// 的 job); 未接入 VM 队列时回退同步执行 (纯 object 上下文)。
+//
+// 注意: 绝不能 go func() 异步执行。原因:
 // 脚本模式下主线程在 RunTimers 返回后即退出进程，
 // 若回调在独立 goroutine 中执行，进程可能在回调运行前就结束，
 // 导致 "setTimeout 里 resolve 的 Promise 的 .then 永远不触发"。
 func invokePromiseCallbacks(p *Promise, callbacks []PromiseCallback) {
 	for _, cb := range callbacks {
-		if cb.IsFinally {
+		cb := cb
+		schedulePromiseJob(func() { invokePromiseCallback(p, cb) })
+	}
+}
+
+// invokePromiseCallback 执行单个反应回调 (即微任务 job 本体)。
+func invokePromiseCallback(p *Promise, cb PromiseCallback) {
+	if cb.IsFinally {
+		if IsCallable(cb.Callback) {
+			// finally 回调抛错: 覆盖原结算结果 (规范: 仅当回调正常返回
+			// 才透传原值/原因)。
+			if res, ok := CallPromiseHandler(cb.Callback); !ok {
+				if cb.NextPromise != nil {
+					cb.NextPromise.Reject(res)
+				}
+				return
+			}
+		}
+		if cb.NextPromise != nil {
+			if p.State == PromiseFulfilled {
+				cb.NextPromise.Resolve(p.Value)
+			} else {
+				cb.NextPromise.Reject(p.Reason)
+			}
+		}
+	} else if p.State == PromiseFulfilled && !cb.IsCatch {
+		if cb.NextPromise != nil {
 			if IsCallable(cb.Callback) {
-				// finally 回调抛错: 覆盖原结算结果 (规范: 仅当回调正常返回
-				// 才透传原值/原因)。
-				if res, ok := CallPromiseHandler(cb.Callback); !ok {
-					if cb.NextPromise != nil {
-						cb.NextPromise.Reject(res)
-					}
-					continue
-				}
-			}
-			if cb.NextPromise != nil {
-				if p.State == PromiseFulfilled {
-					cb.NextPromise.Resolve(p.Value)
+				res, ok := CallPromiseHandler(cb.Callback, p.Value)
+				if ok {
+					cb.NextPromise.Resolve(res)
 				} else {
-					cb.NextPromise.Reject(p.Reason)
+					cb.NextPromise.Reject(res)
 				}
+			} else {
+				// nil 回调: 原样透传 fulfillment (catch 注册的透传位)
+				cb.NextPromise.Resolve(p.Value)
 			}
-		} else if p.State == PromiseFulfilled && !cb.IsCatch {
-			if cb.NextPromise != nil {
-				if IsCallable(cb.Callback) {
-					res, ok := CallPromiseHandler(cb.Callback, p.Value)
-					if ok {
-						cb.NextPromise.Resolve(res)
-					} else {
-						cb.NextPromise.Reject(res)
-					}
+		} else if IsCallable(cb.Callback) {
+			// 无 next: 结果被丢弃, 但必须消费回调错误信号, 否则
+			// 内建返回后 VM 会把它当逃逸异常重抛。
+			CallPromiseHandler(cb.Callback, p.Value)
+		}
+	} else if p.State == PromiseRejected && cb.IsCatch {
+		if cb.NextPromise != nil {
+			if IsCallable(cb.Callback) {
+				res, ok := CallPromiseHandler(cb.Callback, p.Reason)
+				if ok {
+					cb.NextPromise.Resolve(res)
 				} else {
-					// nil 回调: 原样透传 fulfillment (catch 注册的透传位)
-					cb.NextPromise.Resolve(p.Value)
+					cb.NextPromise.Reject(res)
 				}
-			} else if IsCallable(cb.Callback) {
-				// 无 next: 结果被丢弃, 但必须消费回调错误信号, 否则
-				// 内建返回后 VM 会把它当逃逸异常重抛。
-				CallPromiseHandler(cb.Callback, p.Value)
+			} else {
+				// nil 回调: 原样透传 rejection (then 注册的透传位)
+				cb.NextPromise.Reject(p.Reason)
 			}
-		} else if p.State == PromiseRejected && cb.IsCatch {
-			if cb.NextPromise != nil {
-				if IsCallable(cb.Callback) {
-					res, ok := CallPromiseHandler(cb.Callback, p.Reason)
-					if ok {
-						cb.NextPromise.Resolve(res)
-					} else {
-						cb.NextPromise.Reject(res)
-					}
-				} else {
-					// nil 回调: 原样透传 rejection (then 注册的透传位)
-					cb.NextPromise.Reject(p.Reason)
-				}
-			} else if IsCallable(cb.Callback) {
-				CallPromiseHandler(cb.Callback, p.Reason)
-			}
+		} else if IsCallable(cb.Callback) {
+			CallPromiseHandler(cb.Callback, p.Reason)
 		}
 	}
 }
@@ -387,20 +397,25 @@ func (p *Promise) Then(onFulfilled Value) *Promise {
 	p.mu.Lock()
 	switch p.State {
 	case PromiseFulfilled:
+		val := p.Value
 		p.mu.Unlock()
-		if IsCallable(onFulfilled) {
-			// onFulfilled 抛错 ⇒ next reject (原始抛出值), 而非逃逸未捕获。
-			if res, ok := CallPromiseHandler(onFulfilled, p.Value); ok {
-				next.Resolve(res)
+		// 已结算也要走微任务队列: 回调不得同步执行 (ES 25.6.5.4 PerformPromiseThen)。
+		schedulePromiseJob(func() {
+			if IsCallable(onFulfilled) {
+				// onFulfilled 抛错 ⇒ next reject (原始抛出值), 而非逃逸未捕获。
+				if res, ok := CallPromiseHandler(onFulfilled, val); ok {
+					next.Resolve(res)
+				} else {
+					next.Reject(res)
+				}
 			} else {
-				next.Reject(res)
+				next.Resolve(val)
 			}
-		} else {
-			next.Resolve(p.Value)
-		}
+		})
 	case PromiseRejected:
+		reason := p.Reason
 		p.mu.Unlock()
-		next.Reject(p.Reason)
+		schedulePromiseJob(func() { next.Reject(reason) })
 	default:
 		p.ThenCallbacks = append(p.ThenCallbacks, PromiseCallback{
 			Callback:    onFulfilled,
@@ -416,6 +431,72 @@ func (p *Promise) Then(onFulfilled Value) *Promise {
 	return next
 }
 
+// ThenCatch 注册 fulfilled + rejected 双回调 (Promise.prototype.then 的完整
+// 两参语义), 返回新的 Promise。已结算时反应回调同样只入队、不同步执行。
+func (p *Promise) ThenCatch(onFulfilled, onRejected Value) *Promise {
+	next := NewPromise()
+	p.mu.Lock()
+	switch p.State {
+	case PromiseFulfilled:
+		val := p.Value
+		p.mu.Unlock()
+		schedulePromiseJob(func() {
+			if IsCallable(onFulfilled) {
+				if res, ok := CallPromiseHandler(onFulfilled, val); ok {
+					next.Resolve(res)
+				} else {
+					next.Reject(res)
+				}
+			} else {
+				next.Resolve(val)
+			}
+		})
+	case PromiseRejected:
+		reason := p.Reason
+		p.mu.Unlock()
+		schedulePromiseJob(func() {
+			if IsCallable(onRejected) {
+				if res, ok := CallPromiseHandler(onRejected, reason); ok {
+					next.Resolve(res)
+				} else {
+					next.Reject(res)
+				}
+			} else {
+				next.Reject(reason)
+			}
+		})
+	default:
+		if IsCallable(onFulfilled) {
+			p.ThenCallbacks = append(p.ThenCallbacks, PromiseCallback{
+				Callback:    onFulfilled,
+				NextPromise: next,
+			})
+		} else {
+			// 没有 onFulfilled，透传值
+			p.ThenCallbacks = append(p.ThenCallbacks, PromiseCallback{
+				Callback:    nil,
+				NextPromise: next,
+			})
+		}
+		if IsCallable(onRejected) {
+			p.CatchCallbacks = append(p.CatchCallbacks, PromiseCallback{
+				Callback:    onRejected,
+				NextPromise: next,
+				IsCatch:     true,
+			})
+		} else {
+			// 没有 onRejected，透传错误
+			p.CatchCallbacks = append(p.CatchCallbacks, PromiseCallback{
+				Callback:    nil,
+				NextPromise: next,
+				IsCatch:     true,
+			})
+		}
+		p.mu.Unlock()
+	}
+	return next
+}
+
 // Catch 注册 rejected 回调，返回新的 Promise。
 // 同理，fulfillment 会原样透传给 next。
 func (p *Promise) Catch(onRejected Value) *Promise {
@@ -423,19 +504,23 @@ func (p *Promise) Catch(onRejected Value) *Promise {
 	p.mu.Lock()
 	switch p.State {
 	case PromiseRejected:
+		reason := p.Reason
 		p.mu.Unlock()
-		if IsCallable(onRejected) {
-			if res, ok := CallPromiseHandler(onRejected, p.Reason); ok {
-				next.Resolve(res)
+		schedulePromiseJob(func() {
+			if IsCallable(onRejected) {
+				if res, ok := CallPromiseHandler(onRejected, reason); ok {
+					next.Resolve(res)
+				} else {
+					next.Reject(res)
+				}
 			} else {
-				next.Reject(res)
+				next.Reject(reason)
 			}
-		} else {
-			next.Reject(p.Reason)
-		}
+		})
 	case PromiseFulfilled:
+		val := p.Value
 		p.mu.Unlock()
-		next.Resolve(p.Value)
+		schedulePromiseJob(func() { next.Resolve(val) })
 	default:
 		p.CatchCallbacks = append(p.CatchCallbacks, PromiseCallback{
 			Callback:    onRejected,
@@ -457,11 +542,12 @@ func (p *Promise) Catch(onRejected Value) *Promise {
 func (p *Promise) OnFulfilled(fn Value) {
 	p.mu.Lock()
 	if p.State == PromiseFulfilled {
+		val := p.Value
 		p.mu.Unlock()
 		if IsCallable(fn) {
 			// 内部 API (Promise.all/race 等自管结算): 仍须消费错误信号,
 			// 否则内建返回后 VM 会把回调抛出当作逃逸异常。
-			CallPromiseHandler(fn, p.Value)
+			schedulePromiseJob(func() { CallPromiseHandler(fn, val) })
 		}
 		return
 	}
@@ -473,9 +559,10 @@ func (p *Promise) OnFulfilled(fn Value) {
 func (p *Promise) OnRejected(fn Value) {
 	p.mu.Lock()
 	if p.State == PromiseRejected {
+		reason := p.Reason
 		p.mu.Unlock()
 		if IsCallable(fn) {
-			CallPromiseHandler(fn, p.Reason)
+			schedulePromiseJob(func() { CallPromiseHandler(fn, reason) })
 		}
 		return
 	}
@@ -495,18 +582,20 @@ func (p *Promise) Finally(onFinally Value) *Promise {
 		reason := p.Reason
 		state := p.State
 		p.mu.Unlock()
-		if IsCallable(onFinally) {
-			// onFinally 抛错: 覆盖原结算结果 (next reject 原始抛出值)。
-			if res, ok := CallPromiseHandler(onFinally); !ok {
-				next.Reject(res)
-				return next
+		schedulePromiseJob(func() {
+			if IsCallable(onFinally) {
+				// onFinally 抛错: 覆盖原结算结果 (next reject 原始抛出值)。
+				if res, ok := CallPromiseHandler(onFinally); !ok {
+					next.Reject(res)
+					return
+				}
 			}
-		}
-		if state == PromiseFulfilled {
-			next.Resolve(val)
-		} else {
-			next.Reject(reason)
-		}
+			if state == PromiseFulfilled {
+				next.Resolve(val)
+			} else {
+				next.Reject(reason)
+			}
+		})
 	} else {
 		p.FinallyCallbacks = append(p.FinallyCallbacks, PromiseCallback{
 			Callback:    onFinally,

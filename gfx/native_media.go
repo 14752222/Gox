@@ -31,6 +31,7 @@ import (
 	"strconv"
 
 	"github.com/14752222/Gox/object"
+	"github.com/14752222/Gox/permissions"
 )
 
 // MediaFile 是一张照片 / 一段视频 / 一个音频文件。
@@ -195,6 +196,9 @@ func mediaListToJS(list []MediaFile) object.Value {
 //
 //	format:"jpg"|"png", maxWidth, maxHeight}
 func jsTakePhoto(args ...object.Value) object.Value {
+	if permErr := permissions.Require(permissions.GeoMedia); permErr != nil {
+		return permErr
+	}
 	opts := nativeOpts(args, 0)
 	if objPropStr(opts, "camera") == "" {
 		opts.SetProperty("camera", object.NewString("back"))
@@ -226,6 +230,9 @@ func jsTakePhoto(args ...object.Value) object.Value {
 //
 //	quality:0..100, allowVideo:bool}
 func jsChooseImage(args ...object.Value) object.Value {
+	if permErr := permissions.Require(permissions.GeoMedia); permErr != nil {
+		return permErr
+	}
 	opts := nativeOpts(args, 0)
 	n := objPropNum(opts, "count")
 	if n <= 0 {
@@ -244,6 +251,9 @@ func jsChooseImage(args ...object.Value) object.Value {
 // 取第一张, 用户取消 → null。之所以要它: "换头像"这种场景占相册调用的绝大多数,
 // 每次都写 `(await chooseImage())[0]` 既啰嗦又容易漏掉空数组。
 func jsChooseOneImage(args ...object.Value) object.Value {
+	if permErr := permissions.Require(permissions.GeoMedia); permErr != nil {
+		return permErr
+	}
 	opts := nativeOpts(args, 0)
 	opts.SetProperty("count", object.NewNumber(1))
 	outer := object.NewPromise()
@@ -272,6 +282,9 @@ func jsChooseOneImage(args ...object.Value) object.Value {
 //
 // options: {source, maxDuration(秒), compressed, quality:"low"|"medium"|"high"}
 func jsChooseVideo(args ...object.Value) object.Value {
+	if permErr := permissions.Require(permissions.GeoMedia); permErr != nil {
+		return permErr
+	}
 	return callNative(nmGalleryPickVideo, nativeOpts(args, 0), nativeOptFunc(args, 1))
 }
 
@@ -358,6 +371,14 @@ func init() {
 				}
 				return object.NewString(humanSize(int64(nativeNumberValue(args[0]))))
 			}),
+
+			// ===== 图片处理 (同步 API, 见 native_image.go) =====
+			"loadImage":   scr("loadImage", jsLoadImage),
+			"resize":      scr("resize", jsResizeImage),
+			"crop":        scr("crop", jsCropImage),
+			"encodeImage": scr("encodeImage", jsEncodeImage),
+			"writeImage":  scr("writeImage", jsWriteImage),
+			"freeImage":   scr("freeImage", jsFreeImage),
 		}
 	})
 }

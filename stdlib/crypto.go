@@ -156,7 +156,7 @@ func cryptoDataBytes(op string, v object.Value) ([]byte, object.Value) {
 			return nil, object.NewTypeError("%s: TypedArray 的 buffer 已分离 (detached)", op)
 		}
 		start := t.ByteOffset
-		end := start + t.Length*t.Kind.ElemSize
+		end := start + t.ArrLength()*t.Kind.ElemSize
 		if start < 0 {
 			start = 0
 		}
@@ -282,7 +282,7 @@ func jsGetRandomValues(args ...object.Value) object.Value {
 		if t.Buffer == nil || t.Buffer.Detach {
 			return object.NewTypeError("crypto.getRandomValues: TypedArray 的 buffer 已分离 (detached)")
 		}
-		n := t.Length * t.Kind.ElemSize
+		n := t.ArrLength() * t.Kind.ElemSize
 		if n > cryptoRandomValuesMaxBytes {
 			return cryptoQuotaError(n)
 		}

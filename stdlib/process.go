@@ -5,6 +5,7 @@ import (
 	goruntime "runtime"
 
 	"github.com/14752222/Gox/object"
+	"github.com/14752222/Gox/permissions"
 	"github.com/14752222/Gox/runtime"
 )
 
@@ -69,6 +70,11 @@ func init() {
 			}),
 
 			"exit": object.NewBuiltin("exit", func(args ...object.Value) object.Value {
+				// 权限检查点：脚本可单方面终结宿主进程，默认拒绝
+				//（--allow-process-exit 放行，见 docs/permissions.md）。
+				if permErr := permissions.Require(permissions.ProcessExit); permErr != nil {
+					return permErr
+				}
 				code := 0
 				if len(args) > 0 {
 					code = int(toFloat(args[0]))

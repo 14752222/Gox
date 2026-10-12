@@ -1,0 +1,13 @@
+{
+  "name": "gox-music",
+  "version": "0.1.0",
+  "private": true,
+  "description": "音乐播放器 —— 播放列表 + 进度 + 频谱可视化，Gox 实用应用",
+  "scripts": {
+    "dev": "goxjs dev src/main.js",
+    "start": "goxjs src/main.js"
+  },
+  "devDependencies": {
+    "@goxjs/goxjs": "^0.9.0"
+  }
+}

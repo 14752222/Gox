@@ -1,0 +1,10 @@
+{
+  "name": "music",
+  "title": "音乐",
+  "appId": "com.gox.apps.music",
+  "version": "0.1.0",
+  "permissions": [],
+  "desktop": {
+    "windowed": true
+  }
+}

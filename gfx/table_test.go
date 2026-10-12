@@ -199,6 +199,54 @@ func TestTableZebraAndBorderlessAffectPixels(t *testing.T) {
 	}
 }
 
+func TestTableZebraOffByDefault(t *testing.T) {
+	// 不写 zebra: 数据行不应有 _zebra 标记, 底色保持画布底 (此前无条件
+	// 着色, zebra prop 被静默吞掉)
+	tbl := mkTable([]string{"A"}, [][]string{{"1"}, {"2"}})
+	root := mkNode("column", map[string]float64{})
+	mountChildren(root, tbl)
+	img := renderTree(root, 200, 200)
+
+	rows := findAll(root, "table-row")
+	if v, ok := rows[1].PropBool("_zebra"); ok && v {
+		t.Fatalf("未开 zebra 时第 2 行不应标记 _zebra")
+	}
+	c := img.RGBAAt(rows[1].Box.X+rows[1].Box.W-2, rows[1].Box.Y+rows[1].Box.H/2)
+	if c != pxWhite {
+		t.Fatalf("未开 zebra 时行底色应为白, 取到 %v", c)
+	}
+}
+
+func TestTableBorderlessReachesRowsAndCells(t *testing.T) {
+	// borderless 写在 <table> 上, 行/单元格是 owner 链下的内部节点,
+	// 必须能通过 owner 读到 (此前只读本节点, 脚本侧 borderless 静默失效)
+	tbl := mkTable([]string{"A"}, [][]string{{"1"}})
+	withBool(tbl, "borderless", true)
+	root := mkNode("column", map[string]float64{})
+	mountChildren(root, tbl)
+	img := renderTree(root, 200, 200)
+
+	row := findFirst(root, "table-row")
+	cell := findFirst(root, "table-cell")
+	if !row.tableBorderless() {
+		t.Fatalf("行未通过 owner 链读到 borderless")
+	}
+	if !cell.tableBorderless() {
+		t.Fatalf("单元格未通过 owner 链读到 borderless")
+	}
+	// 单元格右缘不该有竖网格线 (取边框列中点像素, 应为白底)
+	edge := tint(colorTableEdge, false)
+	c := img.RGBAAt(cell.Box.X+cell.Box.W-1, cell.Box.Y+cell.Box.H/2)
+	if c == edge {
+		t.Fatalf("borderless 表格仍画了单元格竖线: %v", c)
+	}
+	// 行底缘不该有横网格线
+	rc := img.RGBAAt(row.Box.X+row.Box.W/2, row.Box.Y+row.Box.H-1)
+	if rc == edge {
+		t.Fatalf("borderless 表格仍画了行底线: %v", rc)
+	}
+}
+
 func TestTableCellAlign(t *testing.T) {
 	// 右对齐的空列: 文字应贴单元格右缘 (而非左缘)
 	tbl := mkTableObj(

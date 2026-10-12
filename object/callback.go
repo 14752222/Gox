@@ -49,6 +49,24 @@ func CallFunction(fn Value, this Value, args ...Value) Value {
 	return callFunction(fn, this, args)
 }
 
+// ConstructFunc 是从 Go 代码构造 JS 对象 (new fn(...args)) 的函数类型。
+type ConstructFunc func(fn Value, args []Value) Value
+
+// constructFunction 是 VM 注册的构造回调 (ArraySpeciesCreate 等使用)。
+var constructFunction ConstructFunc
+
+// SetConstructFunction 注册 VM 的构造回调。
+func SetConstructFunction(f ConstructFunc) { constructFunction = f }
+
+// ConstructFunction 以 fn 为构造器构造对象。错误信号同 CallFunction 走回调桥。
+func ConstructFunction(fn Value, args ...Value) Value {
+	if constructFunction == nil {
+		return UndefinedSingleton
+	}
+	callbackError = nil
+	return constructFunction(fn, args)
+}
+
 // IsCallable 检查值是否可调用 (是 Closure 或 BuiltinFunction)。
 func IsCallable(v Value) bool {
 	switch v.(type) {

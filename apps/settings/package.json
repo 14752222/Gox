@@ -1,0 +1,13 @@
+{
+  "name": "gox-settings",
+  "version": "0.1.0",
+  "private": true,
+  "description": "设置面板 —— 主题/开关/持久化，Gox 实用应用",
+  "scripts": {
+    "dev": "goxjs dev src/main.js",
+    "start": "goxjs src/main.js"
+  },
+  "devDependencies": {
+    "@goxjs/goxjs": "^0.9.0"
+  }
+}

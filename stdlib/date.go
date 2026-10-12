@@ -2,6 +2,7 @@ package stdlib
 
 import (
 	"math"
+	"math/big"
 	"time"
 
 	"github.com/14752222/Gox/object"
@@ -199,6 +200,20 @@ func setupDateProto() *object.Object {
 			return object.NewErrorWithName("TypeError", "Date.prototype.valueOf requires that 'this' be a Date")
 		}
 		return object.NewNumber(d.TimeValue())
+	}))
+
+	// Temporal 桥接: Date → Instant (毫秒转纳秒; 无效日期 RangeError)。
+	p.SetBuiltinProperty("toTemporalInstant", object.NewBuiltinMethod("toTemporalInstant", func(this object.Value, args ...object.Value) object.Value {
+		d, ok := this.(*object.Date)
+		if !ok {
+			return object.NewErrorWithName("TypeError", "Date.prototype.toTemporalInstant requires that 'this' be a Date")
+		}
+		ms := d.TimeValue()
+		if math.IsNaN(ms) || math.IsInf(ms, 0) {
+			return object.NewErrorWithName("RangeError", "Invalid Date cannot be converted to Temporal.Instant")
+		}
+		ns := new(big.Int).Mul(big.NewInt(int64(ms)), big.NewInt(object.NanosPerMillisecond))
+		return object.NewTemporalInstant(ns)
 	}))
 
 	// ===== 字符串形态 =====

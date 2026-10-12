@@ -28,12 +28,14 @@ import { window } from '@kit.ArkUI';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import nativeGox from 'libgox.so';
 import { GoxDisplayFold } from '../native/GoxDisplayFold';
+import { GoxDeviceReport } from '../native/GoxDeviceReport';
 
 const TAG: string = 'Gox';
 const DOMAIN: number = 0x0000;
 
 export default class EntryAbility extends UIAbility {
   private fold: GoxDisplayFold | null = null;
+  private deviceReport: GoxDeviceReport = new GoxDeviceReport();
   private lastInsets: string = '';
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
@@ -46,6 +48,9 @@ export default class EntryAbility extends UIAbility {
     // 落在页面首帧之前可以避免"先按直板排一次版再跳到双栏"。
     this.fold = new GoxDisplayFold(this.context);
     this.fold.start();
+
+    // 电池/网络上报 (gx/device 的纯上报型一半): 轮询 + NetConnection 回调。
+    this.deviceReport.start();
 
     this.reportInsets();
 
@@ -75,7 +80,17 @@ export default class EntryAbility extends UIAbility {
       this.fold.stop();
       this.fold = null;
     }
+    this.deviceReport.stop();
     hilog.info(DOMAIN, TAG, 'EntryAbility.onDestroy');
+  }
+
+  /**
+   * 内存告警 → 内核 ReportMemoryWarning (gx/app 的纯上报型)。
+   * 与 Android 的 onTrimMemory / iOS 的 didReceiveMemoryWarning 同义。
+   */
+  onMemoryLevel(level: AbilityConstant.MemoryLevel): void {
+    void level; // 内核只有"告警/无告警"两态, 不分级
+    nativeGox.reportMemoryWarning();
   }
 
   /**

@@ -1,7 +1,9 @@
 package stdlib
 
 import (
+	"fmt"
 	"math"
+	"math/big"
 
 	"github.com/14752222/Gox/object"
 )
@@ -106,9 +108,12 @@ func setupTemporalTimeZone(temporal *object.Object) {
 		if len(args) > 1 {
 			opts = args[1]
 		}
-		disambiguation := getDisambiguation(opts)
-		if disambiguation == "invalid" {
-			return tgRange("Invalid disambiguation")
+		if e := optionsTypeErr(opts); e != nil {
+			return e
+		}
+		disambiguation, disambiguationErr := getDisambiguation(opts)
+		if disambiguationErr != nil {
+			return disambiguationErr
 		}
 		dt := pdt.ISODateTime()
 		candidates := object.GetPossibleInstantsFor(t.ID(), dt)
@@ -156,21 +161,21 @@ func setupTemporalTimeZone(temporal *object.Object) {
 		return object.NewBoolean(t.ID() == other)
 	})
 
-	tgToStringMethod(proto, func(this object.Value) string {
+	tgToStringMethod(proto, "TimeZone", func(this object.Value, args ...object.Value) (string, object.Value) {
 		t, ok := asTimeZone(this)
 		if !ok {
-			return ""
+			return "", nil
 		}
-		return t.ToString()
+		return t.ToString(), nil
 	})
 
 	ctor := object.NewBuiltin("TimeZone", func(args ...object.Value) object.Value {
 		if len(args) == 0 {
 			return tgType("TimeZone requires an identifier")
 		}
-		id, ok := toTimeZoneID(args[0])
-		if !ok {
-			return tgRange("Invalid time zone identifier")
+		id, idTzErr := toTimeZoneIDE(args[0])
+		if idTzErr != nil {
+			return idTzErr
 		}
 		return object.NewTemporalTimeZone(id)
 	})
@@ -185,9 +190,9 @@ func setupTemporalTimeZone(temporal *object.Object) {
 		if tz, ok := asTimeZone(args[0]); ok {
 			return tz
 		}
-		id, ok := toTimeZoneID(args[0])
-		if !ok {
-			return tgRange("Invalid time zone identifier")
+		id, idTzErr := toTimeZoneIDE(args[0])
+		if idTzErr != nil {
+			return idTzErr
 		}
 		return object.NewTemporalTimeZone(id)
 	})
@@ -261,16 +266,20 @@ func setupTemporalCalendar(temporal *object.Object) {
 		if !ok {
 			return tgType("dateAdd: invalid date")
 		}
-		d, ok := toDurationValue(args[1])
-		if !ok {
-			return tgType("dateAdd: invalid duration")
+		d, derr := toDurationE(args[1])
+		if derr != nil {
+			return derr
 		}
 		overflow := "constrain"
 		if len(args) > 2 {
-			overflow = getOverflow(args[2])
-			if overflow == "invalid" {
-				return tgRange("Invalid overflow option")
+			if e := optionsTypeErr(args[2]); e != nil {
+				return e
 			}
+			overflowTmp, overflowErr := getOverflow(args[2])
+			if overflowErr != nil {
+				return overflowErr
+			}
+			overflow = overflowTmp
 		}
 		res, ok := object.AddDateDuration(date,
 			int32(d.Years()), int32(d.Months()), int32(d.Weeks()), int32(d.Days()), overflow)
@@ -300,9 +309,12 @@ func setupTemporalCalendar(temporal *object.Object) {
 		if len(args) > 2 {
 			opts = args[2]
 		}
-		largest, ok := getLargestUnit(opts, dateOnlyUnits)
-		if !ok {
-			return tgRange("Invalid largestUnit")
+		if e := optionsTypeErr(opts); e != nil {
+			return e
+		}
+		largest, uerr := getLargestUnit(opts, dateOnlyUnits)
+		if uerr != nil {
+			return uerr
 		}
 		if largest == "auto" {
 			largest = "day"
@@ -340,7 +352,7 @@ func setupTemporalCalendar(temporal *object.Object) {
 		if !ok {
 			return tgType("yearMonthFromFields: invalid fields")
 		}
-		y, m, err := yearMonthFields(o)
+		y, m, err := yearMonthFields(o, "constrain")
 		if err != nil {
 			return err
 		}
@@ -397,12 +409,12 @@ func setupTemporalCalendar(temporal *object.Object) {
 		return object.NewBoolean(false)
 	})
 
-	tgToStringMethod(proto, func(this object.Value) string {
+	tgToStringMethod(proto, "Calendar", func(this object.Value, args ...object.Value) (string, object.Value) {
 		c, ok := asCalendar(this)
 		if !ok {
-			return ""
+			return "", nil
 		}
-		return c.ToString()
+		return c.ToString(), nil
 	})
 
 	ctor := object.NewBuiltin("Calendar", func(args ...object.Value) object.Value {
@@ -467,26 +479,214 @@ func calendarArgToISODate(v object.Value) (object.ISODate, bool) {
 	return dt.Date, true
 }
 
-// yearMonthFields 从属性包取出 (year, month)。
-func yearMonthFields(o *object.Object) (int32, int32, object.Value) {
-	mc, hasCode := o.GetProperty("monthCode")
-	yv, hasYear := o.GetProperty("year")
-	if !hasYear {
+// yearMonthFields 从属性包按字母序 (month, monthCode, year) 取出字段并调节。
+func yearMonthFields(o propBag, overflow string) (int32, int32, object.Value) {
+	raw, e := yearMonthFieldsRaw(o)
+	if e != nil {
+		return 0, 0, e
+	}
+	return raw.regulateYM(overflow)
+}
+
+// yearMonthFieldsRaw 只读取不校验 (选项读取插入在读取与校验之间)。
+func yearMonthFieldsRaw(o propBag) (rawDateFields, object.Value) {
+	var r rawDateFields
+	if ce := checkCalendarProp(o); ce != nil {
+		return r, ce
+	}
+	if e := readMonthField(o, &r); e != nil {
+		return r, e
+	}
+	if e := readMonthCodeField(o, &r); e != nil {
+		return r, e
+	}
+	y, okY, e := readIntField(o, "year")
+	if e != nil {
+		return r, e
+	}
+	r.year, r.hasYear = y, okY
+	return r, nil
+}
+
+// regulateYM 校验并调节 year-month 原字段。
+func (r rawDateFields) regulateYM(overflow string) (int32, int32, object.Value) {
+	if !r.hasYear {
 		return 0, 0, tgType("yearMonthFromFields requires year")
 	}
-	y := int32(toFloat(yv))
-	if hasCode && mc != object.UndefinedSingleton {
-		s, ok := mc.(*object.String)
-		if !ok || len(s.Value) != 3 || s.Value[0] != 'M' {
-			return 0, 0, tgRange("Invalid monthCode")
+	if !r.hasMonth && !r.hasMonthCode {
+		return 0, 0, tgType("yearMonthFromFields requires month or monthCode")
+	}
+	m := r.month
+	code := int32(0)
+	if r.hasMonthCode {
+		c, cerr := r.monthCodeValue()
+		if cerr != nil {
+			return 0, 0, cerr
 		}
-		return y, int32(s.Value[1]-'0')*10 + int32(s.Value[2]-'0'), nil
+		code = c
+	}
+	if !r.hasMonth {
+		m = code
+	} else {
+		if r.hasMonthCode && code != m {
+			return 0, 0, tgRange("month does not match monthCode")
+		}
+		if m < 1 || m > 12 {
+			if overflow == "reject" {
+				return 0, 0, tgRange("month is out of range")
+			}
+			if m < 1 {
+				m = 1
+			} else {
+				m = 12
+			}
+		}
+	}
+	return r.year, m, nil
+}
+
+// monthFromFields 读取 month / monthCode 并校验一致性，按 overflow 调节到 1..12。
+func monthFromFields(o propBag, overflow string) (int32, object.Value) {
+	mc, hasCode := o.GetProperty("monthCode")
+	code := int32(0)
+	if hasCode && mc != object.UndefinedSingleton {
+		if e, isErr := mc.(*object.Error); isErr {
+			return 0, e
+		}
+		s, ok := mc.(*object.String)
+		if !ok {
+			return 0, tgRange("Invalid monthCode")
+		}
+		c, cerr := parseMonthCode(s.Value)
+		if cerr != nil {
+			return 0, cerr
+		}
+		code = c
 	}
 	mv, hasMonth := o.GetProperty("month")
-	if !hasMonth {
-		return 0, 0, tgType("yearMonthFromFields requires month")
+	if hasMonth && mv != object.UndefinedSingleton {
+		mf, merr2 := tgToNumber(mv)
+		if merr2 != nil {
+			return 0, merr2
+		}
+		if math.IsNaN(mf) || math.IsInf(mf, 0) || mf != math.Trunc(mf) {
+			return 0, tgRange("month must be an integer")
+		}
+		m := int32(mf)
+		if m < 1 || m > 12 {
+			if overflow == "reject" {
+				return 0, tgRange("month is out of range")
+			}
+			if m < 1 {
+				m = 1
+			} else {
+				m = 12
+			}
+		}
+		if code != 0 && code != m {
+			return 0, tgRange("month does not match monthCode")
+		}
+		return m, nil
 	}
-	return y, int32(toFloat(mv)), nil
+	if code != 0 {
+		return code, nil
+	}
+	return 0, tgType("monthDayFromFields requires month or monthCode")
+}
+
+// parseMonthCode 解析 "M01".."M12" ("MxxL" 闰月对 iso8601 非法)。
+func parseMonthCode(s string) (int32, object.Value) {
+	if len(s) == 4 && s[0] == 'M' && s[3] == 'L' {
+		return 0, tgRange("Leap months are not valid in the ISO 8601 calendar")
+	}
+	if len(s) != 3 || s[0] != 'M' || s[1] < '0' || s[1] > '9' || s[2] < '0' || s[2] > '9' {
+		return 0, tgRange("Invalid monthCode: " + s)
+	}
+	m := int32(s[1]-'0')*10 + int32(s[2]-'0')
+	if m < 1 || m > 12 {
+		return 0, tgRange("Invalid monthCode: " + s)
+	}
+	return m, nil
+}
+
+// monthDayFieldsRaw 按字母序 (day, month, monthCode) 读取 month-day 字段。
+func monthDayFieldsRaw(o propBag) (rawDateFields, object.Value) {
+	var r rawDateFields
+	if ce := checkCalendarProp(o); ce != nil {
+		return r, ce
+	}
+	d, okD, e := readIntField(o, "day")
+	if e != nil {
+		return r, e
+	}
+	r.day, r.hasDay = d, okD
+	if e := readMonthField(o, &r); e != nil {
+		return r, e
+	}
+	if e := readMonthCodeField(o, &r); e != nil {
+		return r, e
+	}
+	return r, nil
+}
+
+// regulateMD 校验并调节 month-day 原字段 (参考年取闰年 1972)。
+func (r rawDateFields) regulateMD(overflow string) (int32, int32, object.Value) {
+	if !r.hasDay {
+		return 0, 0, tgType("monthDayFromFields requires day")
+	}
+	if !r.hasMonth && !r.hasMonthCode {
+		return 0, 0, tgType("monthDayFromFields requires month or monthCode")
+	}
+	m := r.month
+	code := int32(0)
+	if r.hasMonthCode {
+		c, cerr := r.monthCodeValue()
+		if cerr != nil {
+			return 0, 0, cerr
+		}
+		code = c
+	}
+	if !r.hasMonth {
+		m = code
+	} else {
+		if r.hasMonthCode && code != m {
+			return 0, 0, tgRange("month does not match monthCode")
+		}
+		if m < 1 || m > 12 {
+			if overflow == "reject" {
+				return 0, 0, tgRange("month is out of range")
+			}
+			if m < 1 {
+				m = 1
+			} else {
+				m = 12
+			}
+		}
+	}
+	d := r.day
+	if d < 1 {
+		if overflow == "reject" {
+			return 0, 0, tgRange("day is out of range")
+		}
+		d = 1
+	}
+	dim := object.DaysInMonth(1972, m)
+	if d > dim {
+		if overflow == "reject" {
+			return 0, 0, tgRange("day is out of range for the month")
+		}
+		d = dim
+	}
+	return m, d, nil
+}
+
+// monthDayFields 从属性包取出 (month, day)，按 overflow 处理月末约束。
+func monthDayFields(o propBag, overflow string) (int32, int32, object.Value) {
+	raw, e := monthDayFieldsRaw(o)
+	if e != nil {
+		return 0, 0, e
+	}
+	return raw.regulateMD(overflow)
 }
 
 // ==================== PlainYearMonth ====================
@@ -556,6 +756,14 @@ func setupTemporalPlainYearMonth(temporal *object.Object) {
 		if len(args) == 0 {
 			return tgType("with requires an object")
 		}
+		if len(args) > 1 {
+			if e := optionsTypeErr(args[1]); e != nil {
+				return e
+			}
+			if _, oerr := getOverflow(args[1]); oerr != nil {
+				return oerr
+			}
+		}
 		y, m, err := yearMonthFieldsFromWith(t, args[0])
 		if err != nil {
 			return err
@@ -569,16 +777,28 @@ func setupTemporalPlainYearMonth(temporal *object.Object) {
 		if len(args) == 0 {
 			return tgType("missing duration")
 		}
-		d, ok := toDurationValue(args[0])
-		if !ok {
-			return tgType("invalid duration")
+		d, derr := toDurationE(args[0])
+		if derr != nil {
+			return derr
+		}
+		// spec: YM 加减只允许年/月分量; 符号混合一律 RangeError。
+		if err := checkDurationUniformSign(d); err != nil {
+			return err
+		}
+		if d.Weeks() != 0 || d.Days() != 0 || d.Hours() != 0 || d.Minutes() != 0 ||
+			d.Seconds() != 0 || d.Milliseconds() != 0 || d.Microseconds() != 0 || d.Nanoseconds() != 0 {
+			return tgRange("Duration with units smaller than month cannot be used with PlainYearMonth")
 		}
 		overflow := "constrain"
 		if len(args) > 1 {
-			overflow = getOverflow(args[1])
-			if overflow == "invalid" {
-				return tgRange("Invalid overflow option")
+			if e := optionsTypeErr(args[1]); e != nil {
+				return e
 			}
+			overflowTmp, overflowErr := getOverflow(args[1])
+			if overflowErr != nil {
+				return overflowErr
+			}
+			overflow = overflowTmp
 		}
 		months := d.Years()*12 + d.Months()
 		if negate {
@@ -629,11 +849,11 @@ func setupTemporalPlainYearMonth(temporal *object.Object) {
 			return tgTypeBadThis("PlainYearMonth")
 		}
 		if len(args) == 0 {
-			return object.NewBoolean(false)
+			return tgType("equals requires an argument")
 		}
-		o, ok := asPlainYearMonth(args[0])
-		if !ok {
-			return object.NewBoolean(false)
+		o, cerr := toPlainYearMonthValue(args[0])
+		if cerr != nil {
+			return cerr
 		}
 		return object.NewBoolean(t.Year() == o.Year() && t.Month() == o.Month())
 	})
@@ -659,31 +879,49 @@ func setupTemporalPlainYearMonth(temporal *object.Object) {
 		return object.NewTemporalPlainDate(d, t.CalendarID())
 	})
 
-	tgToStringMethod(proto, func(this object.Value) string {
+	tgToStringMethod(proto, "PlainYearMonth", func(this object.Value, args ...object.Value) (string, object.Value) {
 		t, ok := asPlainYearMonth(this)
 		if !ok {
-			return ""
+			return "", nil
 		}
-		return t.ToString()
+		var opts object.Value
+		if len(args) > 0 {
+			opts = args[0]
+		}
+		st, perr := parseToStringSettings(opts, false)
+		if perr != nil {
+			return "", perr
+		}
+		if st.calendarName == "always" || st.calendarName == "critical" {
+			// 带日历注解时输出完整参考日期 (YYYY-MM-DD)。
+			return fmt.Sprintf("%s-%02d%s", t.ToString(), t.RefDay(), calendarAnnotation(st)), nil
+		}
+		return t.ToString() + calendarAnnotation(st), nil
 	})
-	tgMethod(proto, "valueOf", func(this object.Value, args ...object.Value) object.Value {
-		return this
-	})
+	tgValueOf(proto)
 
 	ctor := object.NewBuiltin("PlainYearMonth", func(args ...object.Value) object.Value {
-		if len(args) < 2 {
-			return tgType("PlainYearMonth requires year and month")
+		if len(args) < 2 || args[0] == object.UndefinedSingleton || args[1] == object.UndefinedSingleton {
+			return tgRange("PlainYearMonth requires year and month")
 		}
 		y, _ := argFloat(args, 0)
 		m, _ := argFloat(args, 1)
-		if math.IsNaN(y) || math.IsNaN(m) {
+		if math.IsNaN(y) || math.IsNaN(m) || math.IsInf(y, 0) || math.IsInf(m, 0) {
 			return tgRange("Invalid year or month")
 		}
 		yi, mi := int32(y), int32(m)
 		if mi < 1 || mi > 12 {
 			return tgRange("month must be between 1 and 12")
 		}
-		return object.NewTemporalPlainYearMonth(yi, mi, 1, object.DefaultCalendarID)
+		cal := object.DefaultCalendarID
+		if len(args) > 2 {
+			cid, cerr := ctorCalendarID(args[2])
+			if cerr != nil {
+				return cerr
+			}
+			cal = cid
+		}
+		return object.NewTemporalPlainYearMonth(yi, mi, 1, cal)
 	})
 	ctor.SetProperty("name", object.NewString("PlainYearMonth"))
 	ctor.SetProperty("prototype", proto)
@@ -693,7 +931,11 @@ func setupTemporalPlainYearMonth(temporal *object.Object) {
 		if len(args) == 0 {
 			return tgType("PlainYearMonth.from requires an argument")
 		}
+		// spec: 字段/槽读取先于选项处理，各分支内再做选项校验。
 		if ym, ok := asPlainYearMonth(args[0]); ok {
+			if _, oe := readOverflowOption(argAt(args, 1)); oe != nil {
+				return oe
+			}
 			return ym
 		}
 		switch v := args[0].(type) {
@@ -702,9 +944,34 @@ func setupTemporalPlainYearMonth(temporal *object.Object) {
 			if !ok {
 				return tgRange("Invalid PlainYearMonth string: " + v.Value)
 			}
+			if _, oe := readOverflowOption(argAt(args, 1)); oe != nil {
+				return oe
+			}
 			return object.NewTemporalPlainYearMonth(f.Year, f.Month, 1, object.DefaultCalendarID)
-		case *object.Object:
-			y, m, err := yearMonthFields(v)
+		case *object.TemporalPlainDate:
+			d := v.ISODate()
+			return object.NewTemporalPlainYearMonth(d.Year, d.Month, 1, object.DefaultCalendarID)
+		case *object.TemporalPlainDateTime:
+			d := v.ISODateTime().Date
+			return object.NewTemporalPlainYearMonth(d.Year, d.Month, 1, object.DefaultCalendarID)
+		case *object.TemporalZonedDateTime:
+			d := object.GetISOPartsFromEpoch(v.TimeZoneID(), v.Nanos()).Date
+			return object.NewTemporalPlainYearMonth(d.Year, d.Month, 1, object.DefaultCalendarID)
+		case propBag:
+			switch v.(type) {
+			case *object.Object, *object.Proxy:
+			default:
+				return tgType("PlainYearMonth.from: unsupported argument")
+			}
+			raw, rerr := yearMonthFieldsRaw(v)
+			if rerr != nil {
+				return rerr
+			}
+			ymOverflow, oe := readOverflowOption(argAt(args, 1))
+			if oe != nil {
+				return oe
+			}
+			y, m, err := raw.regulateYM(ymOverflow)
 			if err != nil {
 				return err
 			}
@@ -717,10 +984,13 @@ func setupTemporalPlainYearMonth(temporal *object.Object) {
 		if len(args) < 2 {
 			return tgType("compare requires two PlainYearMonths")
 		}
-		a, _ := asPlainYearMonth(args[0])
-		b, _ := asPlainYearMonth(args[1])
-		if a == nil || b == nil {
-			return tgType("compare: arguments must be PlainYearMonth")
+		a, aerr := toPlainYearMonthValue(args[0])
+		if aerr != nil {
+			return aerr
+		}
+		b, berr := toPlainYearMonthValue(args[1])
+		if berr != nil {
+			return berr
 		}
 		x, y := int64(a.Year())*12+int64(a.Month()), int64(b.Year())*12+int64(b.Month())
 		if x < y {
@@ -731,6 +1001,8 @@ func setupTemporalPlainYearMonth(temporal *object.Object) {
 		}
 		return object.NewNumber(0)
 	})
+
+	tgEraGetters(proto, "PlainYearMonth", func(v object.Value) bool { _, ok := asPlainYearMonth(v); return ok })
 
 	setToStringTag(proto, "Temporal.PlainYearMonth")
 	temporal.SetBuiltinProperty("PlainYearMonth", ctor)
@@ -767,28 +1039,46 @@ func ymDiff(t *object.TemporalPlainYearMonth, args []object.Value, since bool) o
 	if len(args) == 0 {
 		return tgType("missing argument")
 	}
-	other, ok := asPlainYearMonth(args[0])
-	if !ok {
-		return tgType("argument is not a PlainYearMonth")
+	other, cerr := toPlainYearMonthValue(args[0])
+	if cerr != nil {
+		return cerr
 	}
 	var opts object.Value
 	if len(args) > 1 {
 		opts = args[1]
 	}
-	largest, ok := getLargestUnit(opts, []string{"year", "month"})
-	if !ok {
-		return tgRange("Invalid largestUnit for PlainYearMonth")
+	if e := optionsTypeErr(opts); e != nil {
+		return e
 	}
-	a := int64(t.Year())*12 + int64(t.Month())
-	b := int64(other.Year())*12 + int64(other.Month())
-	diff := b - a
+	do, derr := readDiffOptions(opts, []string{"year", "month"})
+	if derr != nil {
+		return derr
+	}
+	largest, smallest, inc, mode := do.largest, do.smallest, do.inc, do.mode
+	if largest == "auto" {
+		largest = "year"
+	}
+	if smallest == "auto" {
+		smallest = "month"
+	}
+	if unitRank(smallest) < unitRank(largest) {
+		return tgRange("smallestUnit is larger than largestUnit")
+	}
+	diff := (int64(other.Year())*12 + int64(other.Month())) -
+		(int64(t.Year())*12 + int64(t.Month()))
 	if since {
 		diff = -diff
+		mode = negateRoundingMode(mode)
 	}
-	if largest == "year" || largest == "auto" {
-		return object.NewTemporalDuration(diff/12, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+	if smallest == "year" {
+		years := roundRatToIncrement(big.NewRat(diff, 12), inc, mode)
+		return object.NewTemporalDuration(years, 0, 0, 0, 0, 0, 0, 0, 0, 0)
 	}
-	return object.NewTemporalDuration(0, diff, 0, 0, 0, 0, 0, 0, 0, 0)
+	r := roundRatToIncrement(big.NewRat(diff, 1), inc, mode)
+	if largest == "year" {
+		return object.NewTemporalDuration(r/12, r%12, 0, 0, 0, 0, 0, 0, 0, 0)
+	}
+	return object.NewTemporalDuration(0, r, 0, 0, 0, 0, 0, 0, 0, 0)
 }
 
 // floorDiv64 向下取整除法 (负数时也正确)。
@@ -843,6 +1133,14 @@ func setupTemporalPlainMonthDay(temporal *object.Object) {
 		if len(args) == 0 {
 			return tgType("with requires an object")
 		}
+		if len(args) > 1 {
+			if e := optionsTypeErr(args[1]); e != nil {
+				return e
+			}
+			if _, oerr := getOverflow(args[1]); oerr != nil {
+				return oerr
+			}
+		}
 		o, ok := args[0].(*object.Object)
 		if !ok {
 			return tgType("with requires an object")
@@ -873,11 +1171,11 @@ func setupTemporalPlainMonthDay(temporal *object.Object) {
 			return tgTypeBadThis("PlainMonthDay")
 		}
 		if len(args) == 0 {
-			return object.NewBoolean(false)
+			return tgType("equals requires an argument")
 		}
-		o, ok := asPlainMonthDay(args[0])
-		if !ok {
-			return object.NewBoolean(false)
+		o, cerr := toPlainMonthDayValue(args[0])
+		if cerr != nil {
+			return cerr
 		}
 		return object.NewBoolean(t.Month() == o.Month() && t.Day() == o.Day())
 	})
@@ -903,29 +1201,59 @@ func setupTemporalPlainMonthDay(temporal *object.Object) {
 		return object.NewTemporalPlainDate(d, t.CalendarID())
 	})
 
-	tgToStringMethod(proto, func(this object.Value) string {
+	tgToStringMethod(proto, "PlainMonthDay", func(this object.Value, args ...object.Value) (string, object.Value) {
 		t, ok := asPlainMonthDay(this)
 		if !ok {
-			return ""
+			return "", nil
 		}
-		return t.ToString()
+		var opts object.Value
+		if len(args) > 0 {
+			opts = args[0]
+		}
+		st, perr := parseToStringSettings(opts, false)
+		if perr != nil {
+			return "", perr
+		}
+		if st.calendarName == "always" || st.calendarName == "critical" {
+			// 带日历注解时输出完整参考日期 (YYYY-MM-DD)。
+			return fmt.Sprintf("%04d-%s%s", t.RefYear(), t.ToString(), calendarAnnotation(st)), nil
+		}
+		return t.ToString() + calendarAnnotation(st), nil
 	})
-	tgMethod(proto, "valueOf", func(this object.Value, args ...object.Value) object.Value {
-		return this
-	})
+	tgValueOf(proto)
 
 	ctor := object.NewBuiltin("PlainMonthDay", func(args ...object.Value) object.Value {
-		if len(args) < 2 {
-			return tgType("PlainMonthDay requires month and day")
+		num := func(i int) (int32, object.Value) {
+			if i >= len(args) || args[i] == object.UndefinedSingleton {
+				return 0, tgRange("PlainMonthDay argument is required")
+			}
+			f, _ := argFloat(args, i)
+			if math.IsNaN(f) || math.IsInf(f, 0) {
+				return 0, tgRange("PlainMonthDay argument must be a finite number")
+			}
+			return int32(math.Trunc(f)), nil
 		}
-		m, _ := argFloat(args, 0)
-		d, _ := argFloat(args, 1)
-		mi, di := int32(m), int32(d)
+		mi, merr := num(0)
+		if merr != nil {
+			return merr
+		}
+		di, derr := num(1)
+		if derr != nil {
+			return derr
+		}
 		// 02-29 在 PlainMonthDay 中是合法的，参考年用 1972 (闰年)
 		if mi < 1 || mi > 12 || di < 1 || di > object.DaysInMonth(1972, mi) {
 			return tgRange("Invalid month-day")
 		}
-		return object.NewTemporalPlainMonthDay(mi, di, 1972, object.DefaultCalendarID)
+		cal := object.DefaultCalendarID
+		if len(args) > 2 {
+			cid, cerr := ctorCalendarID(args[2])
+			if cerr != nil {
+				return cerr
+			}
+			cal = cid
+		}
+		return object.NewTemporalPlainMonthDay(mi, di, 1972, cal)
 	})
 	ctor.SetProperty("name", object.NewString("PlainMonthDay"))
 	ctor.SetProperty("prototype", proto)
@@ -935,7 +1263,11 @@ func setupTemporalPlainMonthDay(temporal *object.Object) {
 		if len(args) == 0 {
 			return tgType("PlainMonthDay.from requires an argument")
 		}
+		// spec: 字段/槽读取先于选项处理，各分支内再做选项校验。
 		if md, ok := asPlainMonthDay(args[0]); ok {
+			if _, oe := readOverflowOption(argAt(args, 1)); oe != nil {
+				return oe
+			}
 			return md
 		}
 		switch v := args[0].(type) {
@@ -944,18 +1276,43 @@ func setupTemporalPlainMonthDay(temporal *object.Object) {
 			if !ok {
 				return tgRange("Invalid PlainMonthDay string: " + v.Value)
 			}
-			return object.NewTemporalPlainMonthDay(f.Month, f.Day, 1972, object.DefaultCalendarID)
-		case *object.Object:
-			mv, okM := v.GetProperty("month")
-			dv, okD := v.GetProperty("day")
-			if !okM || !okD {
-				return tgType("PlainMonthDay.from requires month and day")
+			if _, oe := readOverflowOption(argAt(args, 1)); oe != nil {
+				return oe
 			}
-			return object.NewTemporalPlainMonthDay(int32(toFloat(mv)), int32(toFloat(dv)), 1972,
-				object.DefaultCalendarID)
+			return object.NewTemporalPlainMonthDay(f.Month, f.Day, 1972, object.DefaultCalendarID)
+		case *object.TemporalPlainDate:
+			d := v.ISODate()
+			return object.NewTemporalPlainMonthDay(d.Month, d.Day, 1972, object.DefaultCalendarID)
+		case *object.TemporalPlainDateTime:
+			d := v.ISODateTime().Date
+			return object.NewTemporalPlainMonthDay(d.Month, d.Day, 1972, object.DefaultCalendarID)
+		case *object.TemporalZonedDateTime:
+			d := object.GetISOPartsFromEpoch(v.TimeZoneID(), v.Nanos()).Date
+			return object.NewTemporalPlainMonthDay(d.Month, d.Day, 1972, object.DefaultCalendarID)
+		case propBag:
+			switch v.(type) {
+			case *object.Object, *object.Proxy:
+			default:
+				return tgType("PlainMonthDay.from: unsupported argument")
+			}
+			raw, rerr := monthDayFieldsRaw(v)
+			if rerr != nil {
+				return rerr
+			}
+			mdOverflow, oe := readOverflowOption(argAt(args, 1))
+			if oe != nil {
+				return oe
+			}
+			m, d, ferr := raw.regulateMD(mdOverflow)
+			if ferr != nil {
+				return ferr
+			}
+			return object.NewTemporalPlainMonthDay(m, d, 1972, object.DefaultCalendarID)
 		}
 		return tgType("PlainMonthDay.from: unsupported argument")
 	})
+
+	tgEraGetters(proto, "PlainMonthDay", func(v object.Value) bool { _, ok := asPlainMonthDay(v); return ok })
 
 	setToStringTag(proto, "Temporal.PlainMonthDay")
 	temporal.SetBuiltinProperty("PlainMonthDay", ctor)

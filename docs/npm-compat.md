@@ -181,6 +181,7 @@ import { readFileSync } from "fs";               // 也支持具名导入
 
 ## 相关文档
 
+- 主流库实测兼容矩阵（lodash/axios/dayjs 等）：[`docs/compat-matrix.md`](./compat-matrix.md)
 - 装机命令 `gox install` / `gox add`：[`docs/gox-npm.md`](./gox-npm.md)
 - v1 明确不做清单：[`docs/v1-roadmap.md`](./v1-roadmap.md) §七
 - 未决/未实现总表：`docs/undecided-and-unimplemented.md`

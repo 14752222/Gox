@@ -8,8 +8,35 @@ import (
 	"sort"
 
 	"github.com/14752222/Gox/object"
+	"github.com/14752222/Gox/permissions"
 	"github.com/14752222/Gox/runtime"
 )
+
+// fsWriteOps 是需要 FSWrite 权限的 fs 导出项。检查点统一在 init() 里
+// 包装（而不是散在每个实现里），保证"哪些 API 受控"只有这一处名单。
+var fsWriteOps = []string{
+	"writeFileSync", "writeFile", "appendFileSync", "appendFile",
+	"mkdirSync", "mkdir", "rmdirSync", "rmSync",
+	"unlinkSync", "unlink", "renameSync", "copyFileSync",
+}
+
+// wrapPermission 给 exports 里的具名导出套一个权限检查点：未授权时
+// 直接返回错误值（VM 抛给脚本），不执行原实现。
+func wrapPermission(exports map[string]object.Value, names []string, perm permissions.Perm) {
+	for _, name := range names {
+		b, ok := exports[name].(*object.BuiltinFunction)
+		if !ok {
+			continue
+		}
+		orig := b.Fn
+		exports[name] = object.NewBuiltin(name, func(args ...object.Value) object.Value {
+			if permErr := permissions.Require(perm); permErr != nil {
+				return permErr
+			}
+			return orig(args...)
+		})
+	}
+}
 
 // ===== 核心模块（fs/path/http/process）共用的辅助 =====
 //
@@ -379,6 +406,7 @@ func init() {
 		// `import fs from "fs"` 与 `import * as fs from "fs"` 等价。
 		// 注意这不是 CommonJS 的 module.exports 互操作 —— Gox v0 不做 CJS，
 		// 这里只是给默认导入一个落点，`require("fs")` 依旧不可用。
+		wrapPermission(exports, fsWriteOps, permissions.FSWrite)
 		exports["default"] = builtinNamespaceObject(exports)
 		return exports
 	})

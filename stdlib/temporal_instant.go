@@ -50,9 +50,12 @@ func setupTemporalInstant(env *object.Object) {
 		if len(args) == 0 {
 			return tgType("Instant.prototype.add requires a Duration")
 		}
-		d, ok := toDurationValue(args[0])
-		if !ok {
-			return tgType("Instant.prototype.add: invalid duration")
+		d, derr := toDurationE(args[0])
+		if derr != nil {
+			return derr
+		}
+		if serr := checkDurationUniformSign(d); serr != nil {
+			return serr
 		}
 		if d.HasCalendarUnits() {
 			return tgRange("Instant.add: duration with calendar units requires a relativeTo")
@@ -72,9 +75,12 @@ func setupTemporalInstant(env *object.Object) {
 		if len(args) == 0 {
 			return tgType("Instant.prototype.subtract requires a Duration")
 		}
-		d, ok := toDurationValue(args[0])
-		if !ok {
-			return tgType("Instant.prototype.subtract: invalid duration")
+		d, derr := toDurationE(args[0])
+		if derr != nil {
+			return derr
+		}
+		if serr := checkDurationUniformSign(d); serr != nil {
+			return serr
 		}
 		if d.HasCalendarUnits() {
 			return tgRange("Instant.subtract: duration with calendar units requires a relativeTo")
@@ -109,24 +115,27 @@ func setupTemporalInstant(env *object.Object) {
 		if !ok {
 			return tgTypeBadThis("Instant")
 		}
+		if len(args) == 0 {
+			return tgType("Instant.prototype.round requires an argument")
+		}
 		var opts object.Value
 		if len(args) > 0 {
 			opts = args[0]
 		}
-		smallest, ok := getSmallestUnit(opts, instantUnits)
-		if !ok {
-			return tgRange("Invalid smallestUnit for Instant.round")
+		opts, roe := roundOptionsOf(opts)
+		if roe != nil {
+			return roe
 		}
-		if smallest == "auto" {
+		ro, rerr := readRoundOptions(opts, instantUnits)
+		if rerr != nil {
+			return rerr
+		}
+		smallest, inc, mode := ro.smallest, ro.inc, ro.mode
+		if smallest == "" || smallest == "auto" {
 			return tgRange("smallestUnit cannot be auto")
 		}
-		inc, ok := getRoundingIncrement(opts)
-		if !ok {
-			return tgRange("Invalid roundingIncrement")
-		}
-		mode := getRoundingMode(opts)
-		if mode == "invalid" {
-			return tgRange("Invalid roundingMode")
+		if !validRoundingIncrement(smallest, inc) {
+			return tgRange("Invalid roundingIncrement for " + smallest)
 		}
 		return roundInstantTo(t.Nanos(), smallest, inc, mode)
 	})
@@ -138,11 +147,11 @@ func setupTemporalInstant(env *object.Object) {
 			return tgTypeBadThis("Instant")
 		}
 		if len(args) == 0 {
-			return object.NewBoolean(false)
+			return tgType("equals requires an argument")
 		}
-		o, ok := asInstant(args[0])
-		if !ok {
-			return object.NewBoolean(false)
+		o, cerr := toInstantValue(args[0])
+		if cerr != nil {
+			return cerr
 		}
 		return object.NewBoolean(t.Nanos().Cmp(o.Nanos()) == 0)
 	})
@@ -158,24 +167,48 @@ func setupTemporalInstant(env *object.Object) {
 		}
 		// ZonedDateTime 的 Instant.only 分支: Instant → 新纪元纳秒不变，
 		// 时区只影响墙钟字段的呈现。
-		tz, ok := toTimeZoneID(args[0])
-		if !ok {
-			return tgRange("Invalid time zone")
+		tz, tzTzErr := toTimeZoneIDE(args[0])
+		if tzTzErr != nil {
+			return tzTzErr
 		}
 		return object.NewTemporalZonedDateTime(t.Nanos(), tz, object.DefaultCalendarID)
 	})
 
-	tgToStringMethod(proto, func(this object.Value) string {
+	tgToStringMethod(proto, "Instant", func(this object.Value, args ...object.Value) (string, object.Value) {
 		t, ok := asInstant(this)
 		if !ok {
-			return ""
+			return "", nil
 		}
-		return t.ToString()
+		var opts object.Value
+		if len(args) > 0 {
+			opts = args[0]
+		}
+		st, perr := parseToStringSettings(opts, true)
+		if perr != nil {
+			return "", perr
+		}
+		tz := "UTC"
+		if tzv := optValue(opts, "timeZone"); tzv != nil {
+			id, tzErr := toTimeZoneIDE(tzv)
+			if tzErr != nil {
+				return "", tzErr
+			}
+			tz = id
+		}
+		ns := t.Nanos()
+		if q := st.roundingQuantumNanos(); q > 0 {
+			ns = object.RoundNanos(ns, big.NewInt(q), st.mode)
+		}
+		off := object.TimeZoneOffsetSecondsAt(tz, ns)
+		dt := object.AddOffsetToISODateTime(object.EpochNanosToISODateTime(ns), off)
+		prec := st.precision
+		if st.smallestUnit != "" {
+			prec = precisionForSmallest(st.smallestUnit)
+		}
+		return object.FormatISODate(dt.Date) + "T" + object.FormatISOTime(dt.Time, prec) + object.FormatOffsetSeconds(off), nil
 	})
 
-	tgMethod(proto, "valueOf", func(this object.Value, args ...object.Value) object.Value {
-		return this
-	})
+	tgValueOf(proto)
 
 	// ===== 构造器 =====
 	ctor := object.NewBuiltin("Instant", func(args ...object.Value) object.Value {
@@ -259,13 +292,13 @@ func setupTemporalInstant(env *object.Object) {
 		if len(args) < 2 {
 			return tgType("compare requires two Instants")
 		}
-		a, ok := asInstant(args[0])
-		if !ok {
-			return tgType("compare: first argument is not an Instant")
+		a, ea := toInstantValue(args[0])
+		if ea != nil {
+			return ea
 		}
-		b, ok := asInstant(args[1])
-		if !ok {
-			return tgType("compare: second argument is not an Instant")
+		b, eb := toInstantValue(args[1])
+		if eb != nil {
+			return eb
 		}
 		return object.NewNumber(float64(a.Nanos().Cmp(b.Nanos())))
 	})
@@ -280,30 +313,22 @@ func instantDiffFrom(this *object.TemporalInstant, args []object.Value, since bo
 	if len(args) == 0 {
 		return tgType("missing argument")
 	}
-	other, ok := asInstant(args[0])
-	if !ok {
-		return tgType("argument is not an Instant")
+	other, cerr := toInstantValue(args[0])
+	if cerr != nil {
+		return cerr
 	}
 	var opts object.Value
 	if len(args) > 1 {
 		opts = args[1]
 	}
-	largest, ok := getLargestUnit(opts, instantUnits)
-	if !ok {
-		return tgRange("Invalid largestUnit for Instant")
+	if e := optionsTypeErr(opts); e != nil {
+		return e
 	}
-	smallest, ok := getSmallestUnit(opts, instantUnits)
-	if !ok {
-		return tgRange("Invalid smallestUnit for Instant")
+	do, derr := readDiffOptions(opts, instantUnits)
+	if derr != nil {
+		return derr
 	}
-	inc, ok := getRoundingIncrement(opts)
-	if !ok {
-		return tgRange("Invalid roundingIncrement")
-	}
-	mode := getRoundingMode(opts)
-	if mode == "invalid" {
-		return tgRange("Invalid roundingMode")
-	}
+	largest, su, inc, mode := do.largest, do.smallest, do.inc, do.mode
 
 	// 差的符号由方向决定: until 取 other - this，since 取 this - other。
 	diff := new(big.Int).Sub(other.Nanos(), this.Nanos())
@@ -312,12 +337,15 @@ func instantDiffFrom(this *object.TemporalInstant, args []object.Value, since bo
 	}
 
 	// 先按 smallestUnit 取整，再按 largestUnit 包装成 Duration 字段。
-	if largest == "auto" {
-		largest = "second" // Instant.until/since 的默认最大单位是秒
-	}
-	su := smallest
 	if su == "auto" {
 		su = "nanosecond"
+	}
+	if largest == "auto" {
+		// Instant.until/since 的默认最大单位是秒，且不得小于 smallestUnit
+		largest = resolveAutoLargest(su, "second")
+	}
+	if !validRoundingIncrement(su, inc) {
+		return tgRange("Invalid roundingIncrement for " + su)
 	}
 	// unitRank 越大表示单位越小 (nanosecond 序号最大)，因此合法的区间是
 	// rank(smallest) >= rank(largest)。

@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/14752222/Gox/object"
+	"github.com/14752222/Gox/permissions"
 )
 
 // Location 是一次定位结果。
@@ -177,6 +178,9 @@ func locationOpts(args []object.Value, i int) *object.Object {
 // / useLastLocation() 的形状一致 (双路径不同形状是"附近的人"这类界面最容易
 // 踩的坑)。
 func jsGetLocation(args ...object.Value) object.Value {
+	if permErr := permissions.Require(permissions.GeoMedia); permErr != nil {
+		return permErr
+	}
 	return callNativeWithSink(nmLocationGet, locationOpts(args, 0), nativeOptFunc(args, 1),
 		func(result object.Value) (object.Value, object.Value) {
 			l, ok := locationFromJS(result)
@@ -200,6 +204,9 @@ func jsGetLocation(args ...object.Value) object.Value {
 // (像 EventTarget 的 listener): 事件优先、错误其次。这个不一致是刻意的, 每次推送
 // 都先收 err 会让最常见的写法 `(loc) => ...` 全部错位。
 func jsWatchLocation(args ...object.Value) object.Value {
+	if permErr := permissions.Require(permissions.GeoMedia); permErr != nil {
+		return permErr
+	}
 	cb := nativeOptFunc(args, 0)
 	if cb == nil {
 		return object.NewTypeError("watchLocation: 需要回调函数")

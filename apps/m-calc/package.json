@@ -1,0 +1,13 @@
+{
+  "name": "gox-m-calc",
+  "version": "0.1.0",
+  "private": true,
+  "description": "计算器（移动端）—— grid 按钮盘 + 纯逻辑状态机，Gox 实用应用",
+  "scripts": {
+    "dev": "goxjs dev src/main.js",
+    "start": "goxjs src/main.js"
+  },
+  "devDependencies": {
+    "@goxjs/goxjs": "^0.9.0"
+  }
+}

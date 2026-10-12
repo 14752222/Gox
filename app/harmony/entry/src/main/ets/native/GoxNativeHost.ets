@@ -1,11 +1,13 @@
 /**
- * NativeHost 的鸿蒙 stub 实现 (骨架)。
+ * NativeHost 的鸿蒙 stub 实现 (无上下文兜底)。
  *
- * ## 当前状态: 全部显式 unsupported
+ * ## 当前状态: 仅作兜底 (v1.0 起正式会话走 GoxNativeHostImpl)
  *
- * 鸿蒙壳工程 (Ability + 渲染管线桥) 还没搭起来, 这里先把**契约的形状**立住:
- *   - capabilities() 只声明纯上报型能力 (insets) —— Call 型方法一个不报,
- *     脚本侧 canIUse("camera") 等会诚实回答 false, 调用会拿到显式的
+ * 六能力模块的真实现在同目录 `GoxNativeHostImpl.ets`, 由 pages/Index.ets
+ * 构造会话时注入。本类保留给**拿不到 UIAbilityContext 的场景** (单测 /
+ * 无 Ability 的工具会话) —— GoxSession 的构造参数缺省时退回这里:
+ *   - capabilities() 只声明纯上报型能力 (insets/displayFold) —— Call 型方法
+ *     一个不报, 脚本侧 canIUse("camera") 等会诚实回答 false, 调用会拿到显式的
  *     unsupported reject, 而不是静默假数据;
  *   - call() 对所有方法返回 err(unsupported) —— 逐字与 Go 的 8 个错误码对齐。
  *

@@ -20,7 +20,9 @@ import { hilog } from '@kit.PerformanceAnalysisKit';
 import { util } from '@kit.ArkTS';
 import { display } from '@kit.ArkUI';
 import { image } from '@kit.ImageKit';
+import { common } from '@kit.AbilityKit';
 import { GoxSession, TouchAction } from '../native/GoxBridge';
+import { GoxNativeHostImpl } from '../native/GoxNativeHostImpl';
 
 const TAG: string = 'Gox';
 const DOMAIN: number = 0x0000;
@@ -139,6 +141,8 @@ struct Index {
         hilog.warn(DOMAIN, TAG, '取默认显示器尺寸失败, 用兜底值启动');
       }
 
+      // 六能力模块的真实现 (v1.0): 宿主上下文就在手边 (页面宿主就是
+      // EntryAbility), 直接注入; 不传时 GoxSession 才退回全 unsupported 的 stub。
       const s = new GoxSession(
         () => {
           // 新一帧就绪 → 换 @State 触发重绘
@@ -147,7 +151,8 @@ struct Index {
         (code: number, error: string) => {
           this.status = error.length > 0 ? `脚本结束 (${code}): ${error}` : `脚本结束 (${code})`;
           hilog.info(DOMAIN, TAG, '%{public}s', this.status);
-        }
+        },
+        new GoxNativeHostImpl(ctx as common.UIAbilityContext)
       );
       this.session = s;
 

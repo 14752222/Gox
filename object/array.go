@@ -26,6 +26,26 @@ type Array struct {
 	symbolKeyOrder []*Symbol
 }
 
+// holeValue 是数组洞 (elision) 的栈上标记类型。
+// 只在 VM 栈上短暂存在: OP_NEW_ARRAY / OP_ARRAY_PUSH 写入 Elements 时
+// 转成 nil (Elements 里 nil 即洞, GetProperty/Has 均按洞处理)。
+type holeValue struct{}
+
+func (h *holeValue) Type() ObjectType                     { return UNDEFINED_OBJ }
+func (h *holeValue) Inspect() string                      { return "undefined" }
+func (h *holeValue) IsTruthy() bool                       { return false }
+func (h *holeValue) GetProperty(name string) (Value, bool) { return nil, false }
+func (h *holeValue) SetProperty(name string, val Value)   {}
+
+// HoleSingleton 是洞标记单例。
+var HoleSingleton Value = &holeValue{}
+
+// IsHole 判断值是否为洞标记。
+func IsHole(v Value) bool {
+	_, ok := v.(*holeValue)
+	return ok
+}
+
 // ArrayProto 是所有数组实例的原型对象。
 // 由 stdlib 包初始化时设置。包含 push, pop, map 等方法。
 var ArrayProto Value
@@ -89,22 +109,62 @@ func (a *Array) GetProperty(name string) (Value, bool) {
 		}
 	}
 
-	// 数字索引访问
+	// 数字索引访问: 仅当元素真实存在（非洞）时返回；
+	// 洞与越界索引按规范继续沿原型链查找 (Array.prototype[1]=1 时
+	// [,,,][1] 应读到 1)。
 	if idx, err := strconv.Atoi(name); err == nil {
-		if idx >= 0 && idx < len(a.Elements) {
-			if a.Elements[idx] == nil {
-				return UndefinedSingleton, true
-			}
+		if idx >= 0 && idx < len(a.Elements) && a.Elements[idx] != nil {
 			return a.Elements[idx], true
 		}
-		return UndefinedSingleton, true
 	}
 
 	// 原型链查找
 	if a.proto != nil {
-		return a.proto.GetProperty(name)
+		if v, ok := a.proto.GetProperty(name); ok {
+			return v, true
+		}
+	}
+	// 数字索引读取未命中时仍返回 undefined (JS 语义: arr[100] === undefined，
+	// 不抛错)。非数字属性保持 (nil,false) 让调用方区分"不存在"。
+	if _, err := strconv.Atoi(name); err == nil {
+		return UndefinedSingleton, true
 	}
 	return nil, false
+}
+
+// Has 实现数组的 HasProperty（含原型链、显式描述符；nil 元素视为洞）。
+// Array.prototype 泛型算法 (forEach/map/reduce/...) 的"索引是否存在"
+// 判定必须走这里 —— 直接看 Elements 会漏掉原型上的同名索引。
+func (a *Array) Has(name string) bool {
+	if name == "length" {
+		return true
+	}
+	if _, ok := a.PropDescs[name]; ok {
+		return true
+	}
+	if a.ExtraProps != nil {
+		if _, ok := a.ExtraProps[name]; ok {
+			return true
+		}
+	}
+	if idx, err := strconv.Atoi(name); err == nil {
+		if idx >= 0 && idx < len(a.Elements) && a.Elements[idx] != nil {
+			return true
+		}
+	}
+	if a.proto != nil {
+		return HasPropertyOf(a.proto, name)
+	}
+	return false
+}
+
+// HasPropertyOf 对任意值做 HasProperty 检查（数组走 Has 以正确识别洞）。
+func HasPropertyOf(v Value, name string) bool {
+	if a, ok := v.(*Array); ok {
+		return a.Has(name)
+	}
+	_, ok := v.GetProperty(name)
+	return ok
 }
 
 func (a *Array) SetProperty(name string, val Value) {

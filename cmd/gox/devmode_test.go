@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/14752222/Gox/gfx"
+	_ "github.com/14752222/Gox/gfx/bind" // 注册 gx/theme 等 JS 绑定模块
 )
 
 // TestInitDevMode 钉住 GOX_DEV 的取值口径。

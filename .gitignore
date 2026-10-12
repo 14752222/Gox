@@ -108,3 +108,10 @@ bench-results/perf-stress-*.json
 # 会留下 .pyc。入库没有意义，还会在不同 Python 版本之间反复产生 diff。
 __pycache__/
 *.py[cod]
+test262/
+
+# WASM 产物（rzTQml 探针）：构建生成，不入库
+playground/gox.wasm
+
+# RSS 曲线采样产物（r95WjJ）：CI 只上传 artifact，不入库
+bench-results/rss-*.csv
