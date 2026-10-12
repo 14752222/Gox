@@ -2167,6 +2167,16 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			}
 			// 创建新对象
 			newObj := object.NewObject()
+			// IsConstructor 校验 (规范 EvaluateNew → 检查 IsConstructor(constructor))。
+			// 之前只对 Closure 分支做了箭头/生成器拦截；内建函数里没有 [[Construct]]
+			// 的那些 (原型方法/getter/命名空间函数) 会被错误地当普通调用执行
+			// (Temporal 的 not-a-constructor 族即因此整体失败)。
+			if !object.IsConstructor(fn) {
+				if err := vm.throwNamedError("TypeError", "%s is not a constructor", describeCallee(fn)); err != nil {
+					return err
+				}
+				continue
+			}
 			if closure, ok := fn.(*object.Closure); ok {
 				// IsConstructor 校验 (ES: EvaluateNew → Construct 前检查
 				// IsConstructor(constructor), 无 [[Construct]] 抛 TypeError):

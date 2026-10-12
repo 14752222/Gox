@@ -1,6 +1,7 @@
 package stdlib
 
 import (
+	"fmt"
 	"math"
 	"math/big"
 	"strconv"
@@ -61,13 +62,17 @@ func tgMethod(proto *object.Object, name string, fn func(this object.Value, args
 }
 
 // tgStatic 在构造器上定义静态方法。构造器是 BuiltinFunction 而非 Object。
+// 静态方法 (from/compare/...) 没有 [[Construct]] —— `new Temporal.Duration.from()`
+// 须抛 TypeError 且 isConstructor 为 false (Temporal not-a-constructor 族)。
+// 注意: 构造器**本身** (Temporal.Duration 等) 不经过这里，仍可 new。
 func tgStatic(ctor *object.BuiltinFunction, name string, fn func(args ...object.Value) object.Value) {
-	ctor.SetProperty(name, object.NewBuiltin(name, fn))
+	ctor.SetProperty(name, object.NewBuiltin(name, fn).MarkNotConstructable())
 }
 
 // tgFn 在命名空间对象 (如 Temporal.Now) 上定义普通函数属性。
+// 命名空间函数 (Temporal.Now.instant 等) 同样没有 [[Construct]]。
 func tgFn(ns *object.Object, name string, fn func(args ...object.Value) object.Value) {
-	ns.SetBuiltinProperty(name, object.NewBuiltin(name, fn))
+	ns.SetBuiltinProperty(name, object.NewBuiltin(name, fn).MarkNotConstructable())
 }
 
 // tgIntGetter 定义一个返回整数的 getter。
@@ -2448,13 +2453,34 @@ func roundDateTimeForDisplay(dt object.ISODateTime, quantum int64, mode string) 
 
 // formatZDTOffset 按 offsetName 设置输出偏移后缀。
 func formatZDTOffset(offSec int32, show string) string {
-	crit := show == "critical"
 	if show == "never" {
 		return ""
 	}
-	s := object.FormatOffsetSeconds(offSec)
-	if crit {
+	// ZonedDateTime 的 offset 按规范恒为 ±HH:MM(:SS) 形式，**永不用 "Z"**
+	// 缩写 (FormatUTCOffsetNanoseconds 不产生 Z)。这与 Instant.toString 不同
+	// —— 后者零偏移才写 "Z"。旧实现复用了会折叠成 "Z" 的
+	// FormatOffsetSeconds，导致 UTC 时区输出 "...Z[UTC]" 而规范要求
+	// "...+00:00[UTC]"(Temporal/ZonedDateTime/prototype/toString 整族)。
+	s := formatZDUtcOffset(offSec)
+	if show == "critical" {
 		return "!" + s
 	}
 	return s
+}
+
+// formatZDUtcOffset 输出 ±HH:MM(:SS) 形式的偏移，零偏移为 "+00:00"。
+func formatZDUtcOffset(sec int32) string {
+	sign := "+"
+	if sec < 0 {
+		sign = "-"
+		sec = -sec
+	}
+	h := sec / 3600
+	m := (sec % 3600) / 60
+	sec = sec % 60
+	out := fmt.Sprintf("%s%02d:%02d", sign, h, m)
+	if sec != 0 {
+		out += fmt.Sprintf(":%02d", sec)
+	}
+	return out
 }

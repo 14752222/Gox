@@ -76,6 +76,31 @@ func IsCallable(v Value) bool {
 	return false
 }
 
+// IsConstructor 实现规范的 IsConstructor (sec-ecmascript-data-types-and-values)。
+// 判断值是否实现 [[Construct]] —— 与"可调用"不等价: 箭头函数可调用但不可构造，
+// generator/async 函数同理；内建函数里原型方法/getter/命名空间函数也没有
+// [[Construct]] (靠 NotConstructable 标记)。
+// Proxy 一律视为可构造 (规范由 target 决定，这里放宽)。
+func IsConstructor(v Value) bool {
+	switch f := v.(type) {
+	case *Closure:
+		if f.IsArrow {
+			return false
+		}
+		if f.Fn != nil && (f.Fn.IsGenerator || f.Fn.IsAsync) {
+			return false
+		}
+		return true
+	case *BuiltinFunction:
+		return !f.NotConstructable
+	case *BuiltinMethod:
+		return !f.NotConstructable
+	case *Proxy:
+		return true
+	}
+	return false
+}
+
 // callbackErrorValue 记录最近一次 CallFunction 抛出的原始 JS 值
 // (throw x 的 x)。cbErr 只有 Go error 字符串, 丢失了值本身;
 // Promise.try/executor 等需要把原始值作为 rejection reason。

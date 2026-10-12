@@ -366,6 +366,13 @@ type BuiltinFunction struct {
 	// FuncPrototype 是函数对象自身的 [[Prototype]]。nil 时回退到全局
 	// %Function.prototype% (绝大多数内置函数如此)。
 	FuncPrototype Value
+	// NotConstructable 为 true 时该内建函数**不实现 [[Construct]]** ——
+	// 规范里大量内建函数 (原型方法、getter、命名空间函数如 Temporal.Now.*)
+	// 都没有 [[Construct]]，`new f()` 须抛 TypeError，且
+	// isConstructor(f) (经 Reflect.construct 的 newTarget 校验) 须为 false。
+	// Gox 此前把所有内建一律当可构造 (OP_NEW 直接调 Fn)，导致 Test262 的
+	// not-a-constructor 族整体失败。
+	NotConstructable bool
 }
 
 func (b *BuiltinFunction) Type() ObjectType { return BUILTIN_OBJ }
@@ -527,6 +534,9 @@ type BuiltinMethod struct {
 	// FuncPrototype 是函数对象自身的 [[Prototype]]。nil 时回退到全局
 	// %Function.prototype%。
 	FuncPrototype Value
+	// NotConstructable 见 BuiltinFunction.NotConstructable。原型方法恒无
+	// [[Construct]]，故 NewBuiltinMethod 一律置 true。
+	NotConstructable bool
 }
 
 func (b *BuiltinMethod) Type() ObjectType { return BUILTIN_OBJ }
@@ -571,7 +581,23 @@ func (b *BuiltinMethod) SetProperty(name string, val Value) {
 	// 不可设置
 }
 
-// NewBuiltinMethod 创建内建方法的便捷函数
+// NewBuiltinMethod 创建内建方法的便捷函数。
+// 原型方法按规范一律没有 [[Construct]] (如 Array.prototype.push 不可 new)，
+// 故默认置 NotConstructable。
 func NewBuiltinMethod(name string, fn func(this Value, args ...Value) Value) *BuiltinMethod {
-	return &BuiltinMethod{Name: name, Fn: fn}
+	return &BuiltinMethod{Name: name, Fn: fn, NotConstructable: true}
+}
+
+// NewBuiltinConstructor 创建**可构造**的内建函数 (如 Object/Array 等构造器)。
+// 与 NewBuiltin 的区别仅在于语义标注：默认两者都带 [[Construct]]，显式命名
+// 便于在安装点表达意图 (NotConstructable 为 false)。
+func NewBuiltinConstructor(name string, fn func(args ...Value) Value) *BuiltinFunction {
+	return &BuiltinFunction{Name: name, Fn: fn}
+}
+
+// MarkNotConstructable 把内建函数标记为不实现 [[Construct]] 并返回自身，
+// 便于在安装点链式使用。
+func (b *BuiltinFunction) MarkNotConstructable() *BuiltinFunction {
+	b.NotConstructable = true
+	return b
 }

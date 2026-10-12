@@ -311,6 +311,18 @@ func setupReflectProxy(env *runtime.Environment) {
 			newTarget = args[2]
 		}
 
+		// 规范 sec-reflect.construct 第 1/2 步: target 与 newTarget 都必须
+		// 实现 [[Construct]] (IsConstructor)，否则抛 TypeError。
+		// isConstructor(f) 正是靠反射这一步的失败与否来判定的 (harness/isConstructor.js)，
+		// 因此这里必须真正校验 newTarget —— 旧实现只查 IsCallable(target)，
+		// 对没有 [[Construct]] 的内建 (Temporal 原型方法等) 误判为可构造。
+		if !object.IsConstructor(newTarget) {
+			return object.NewTypeError("Reflect.construct: newTarget is not a constructor")
+		}
+		if !object.IsConstructor(fn) {
+			return object.NewTypeError("Reflect.construct: target is not a constructor")
+		}
+
 		// 1) 创建新对象并绑定原型到 newTarget.prototype
 		// 旧实现直接 new Object()，丢失了原型绑定，且把构造器返回值
 		// 原样返回 (构造器不返回对象时应返回新对象)，导致结果为 undefined。
