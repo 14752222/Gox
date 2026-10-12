@@ -386,6 +386,61 @@ func RoundNanos(total *big.Int, increment *big.Int, mode string) *big.Int {
 	return new(big.Int).Mul(q, increment)
 }
 
+// RoundNanosSigned 是 RoundNanos 的**有符号**版本: 直接实现规范的
+// RoundNumberToIncrement —— roundingMode 的语义相对 0 / ±∞ 定义, 无需调用方
+// 自己镜像模式。用于对**带符号**差值 (如 PlainTime/Instant 的 since/until) 取整;
+// RoundNanos 继续服务那些以"正幅值"为前提的调用方 (toString 的墙钟字段等)。
+//
+// 负数时的差异 (以 expand 为例): RoundNanos 的 floor 基准会把 -1:59:59 在原位
+// 向上凑成 -119 分钟 (向 0), 而 expand 要求离 0 更远即 -120 分钟。规范要求
+// -1:59:59 在 minutes/expand 下平衡为 -2 小时 (round-cross-unit-boundary)。
+func RoundNanosSigned(total *big.Int, increment *big.Int, mode string) *big.Int {
+	if increment == nil || increment.Sign() <= 0 || total.Sign() == 0 {
+		return new(big.Int).Set(total)
+	}
+	neg := total.Sign() < 0
+	abs := new(big.Int).Abs(total)
+	// 求 |total| 的 floor 商与余数。
+	q, r := new(big.Int).DivMod(abs, increment, new(big.Int))
+	if r.Sign() == 0 {
+		return new(big.Int).Set(total)
+	}
+	cmp := new(big.Int).Lsh(r, 1).Cmp(increment)
+	up := false // |total| 的商是否需要 q+1
+	switch mode {
+	case "ceil":
+		// 朝 +∞: 负数向 0 (商不变), 正数远离 0 (q+1)。
+		up = !neg
+	case "floor":
+		// 朝 −∞: 负数远离 0 (q+1), 正数向 0 (商不变)。
+		up = neg
+	case "expand":
+		up = true
+	case "trunc":
+		up = false
+	case "halfCeil":
+		up = cmp > 0 || (cmp == 0 && !neg)
+	case "halfFloor":
+		up = cmp > 0 || (cmp == 0 && neg)
+	case "halfExpand":
+		up = cmp >= 0
+	case "halfTrunc":
+		up = cmp > 0
+	case "halfEven":
+		up = cmp > 0 || (cmp == 0 && q.Bit(0) == 1)
+	default: // 缺省 trunc
+		up = false
+	}
+	if up {
+		q.Add(q, big.NewInt(1))
+	}
+	res := new(big.Int).Mul(q, increment)
+	if neg {
+		res.Neg(res)
+	}
+	return res
+}
+
 // abs64 返回绝对值 (避免 math.Abs 的 float64 往返)。
 func abs64(v int64) int64 {
 	if v < 0 {
