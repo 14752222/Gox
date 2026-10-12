@@ -284,6 +284,15 @@ func setupObjectGlobal() *object.BuiltinFunction {
 		if fp := object.FuncPrototypeOf(args[0]); fp != nil {
 			return fp
 		}
+		// 兜底: 任意实现了鸭子类型入口 `GetProto() Value` 的内建实例
+		// (Temporal 各类型等)。缺这条分支会退化成 null, 于是
+		// `Object.getPrototypeOf(new Temporal.PlainDate(...))
+		//   === Temporal.PlainDate.prototype` 为 false。
+		if ph, ok := args[0].(interface{ GetProto() object.Value }); ok {
+			if p := ph.GetProto(); p != nil {
+				return p
+			}
+		}
 		return object.NullSingleton
 	}))
 
