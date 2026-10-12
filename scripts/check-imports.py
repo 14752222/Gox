@@ -43,9 +43,13 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Go 侧注册方（新增内置模块时把文件加进这里 —— 漏加会让本脚本用旧表判案）。
 GO_FILES = [
     "stdlib/gox_module.go", "stdlib/solid.go", "stdlib/storage.go", "stdlib/update_module.go",
+    "stdlib/crypto.go",
     "gfx/dev.go", "gfx/native_app.go", "gfx/native_device.go", "gfx/native_geo.go",
     "gfx/native_media.go", "gfx/native_permission.go", "gfx/render.go", "gfx/router.go",
-    "gfx/screen.go", "gfx/theme.go", "gfx/view.go", "gfx/viewport.go",
+    "gfx/screen.go", "gfx/view.go", "gfx/viewport.go",
+    # gx/theme 2026-10 从 gfx/theme.go 拆到 gfx/bind/theme.go（绑定层拆分），
+    # 注册点跟着走 —— 清单不更新会让 docs/theme.md 的 import 示例被误判「模块不存在」。
+    "gfx/bind/theme.go",
     # T10 无障碍: 注册 gx/a11y（focusOrder/focusNode/focusNext/focusPrev/roles）。
     # 漏加会让 docs/accessibility.md 的 import 示例被误判成「模块不存在」。
     "gfx/a11y.go",

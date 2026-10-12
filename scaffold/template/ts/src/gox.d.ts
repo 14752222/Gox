@@ -129,6 +129,8 @@ declare module "gox" {
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
   export function createSignal(...args: any[]): any;
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
+  export function crop(...args: any[]): any;
+  /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
   export function current(...args: any[]): any;
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
   export function currentVersion(...args: any[]): any;
@@ -160,6 +162,8 @@ declare module "gox" {
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
   export function downloadAndInstall(...args: any[]): any;
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
+  export function encodeImage(...args: any[]): any;
+  /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
   export function exitApp(...args: any[]): any;
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
   export function focusNext(...args: any[]): any;
@@ -169,6 +173,8 @@ declare module "gox" {
   export function focusOrder(...args: any[]): any;
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
   export function focusPrev(...args: any[]): any;
+  /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
+  export function freeImage(...args: any[]): any;
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
   export function getBrightness(...args: any[]): any;
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
@@ -223,6 +229,8 @@ declare module "gox" {
   export function layoutMode(...args: any[]): any;
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
   export function lazy(...args: any[]): any;
+  /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
+  export function loadImage(...args: any[]): any;
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
   export function locationPlatform(...args: any[]): any;
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
@@ -332,6 +340,8 @@ declare module "gox" {
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
   export function resetViewport(...args: any[]): any;
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
+  export function resize(...args: any[]): any;
+  /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
   export function roles(...args: any[]): any;
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
   export function safeAreaStyle(...args: any[]): any;
@@ -429,6 +439,8 @@ declare module "gox" {
   export function windowInfo(...args: any[]): any;
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
   export function windows(...args: any[]): any;
+  /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
+  export function writeImage(...args: any[]): any;
 }
 
 declare module "gx/a11y" {
@@ -614,15 +626,27 @@ declare module "gx/media" {
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
   export function chooseVideo(...args: any[]): any;
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
+  export function crop(...args: any[]): any;
+  /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
+  export function encodeImage(...args: any[]): any;
+  /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
+  export function freeImage(...args: any[]): any;
+  /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
   export function humanSize(...args: any[]): any;
+  /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
+  export function loadImage(...args: any[]): any;
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
   export function mediaInfo(...args: any[]): any;
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
   export function previewImage(...args: any[]): any;
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
+  export function resize(...args: any[]): any;
+  /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
   export function saveImage(...args: any[]): any;
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
   export function takePhoto(...args: any[]): any;
+  /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
+  export function writeImage(...args: any[]): any;
 }
 
 declare module "gx/permission" {
@@ -857,6 +881,8 @@ declare module "gx/viewport" {
 }
 
 declare module "http" {
+  /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
+  export function WebSocket(...args: any[]): any;
   /** 类型待补: 运行时内置函数 (由 Go 注册, 参数/返回类型未推断). */
   export function createServer(...args: any[]): any;
   /** 类型待补: 默认导出 (内置常量, 类型未推断). */
