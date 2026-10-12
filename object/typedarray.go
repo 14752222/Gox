@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"math/big"
 	"sort"
 	"strings"
 	"sync"
@@ -154,6 +155,37 @@ func (b *ArrayBuffer) Resize(lenArg Value) Value {
 		b.Data = nd
 	}
 	return UndefinedSingleton
+}
+
+// DetachNow 分离缓冲区 (test262 $262.detachArrayBuffer 的宿主实现)。
+// 分离后 Data 置空、Detach 置真; 任何已存在的 TypedArray/DataView 视图
+// 再访问即抛 TypeError (由各自的边界检查负责)。
+func (b *ArrayBuffer) DetachNow() {
+	b.Detach = true
+	b.Data = nil
+	b.MaxByteLength = -1
+}
+
+// elementEquals 判定 searchElement 与视图元素 e 是否 SameValueZero。
+//
+// 与数值比较的关键差异 (BigInt 视图专属): 元素是 BigInt 时, 只有当
+// searchElement 也是 BigInt 且值相等才返回 true —— 不能把两者都转 float
+// 比较 (会丢失 >2^53 的精度, 且 1n 与 1 不该相等)。
+func (t *TypedArray) elementEquals(search Value, e Value) bool {
+	if t.Kind.BigInt {
+		sb, ok := search.(*BigInt)
+		if !ok {
+			return false
+		}
+		eb, ok := e.(*BigInt)
+		if !ok {
+			return false
+		}
+		return sb.Value.Cmp(eb.Value) == 0
+	}
+	a := toNumberValue(search)
+	b := toNumberValue(e)
+	return a == b || (math.IsNaN(a) && math.IsNaN(b))
 }
 
 func clampByteIndex(v float64, n int) int {
@@ -363,8 +395,14 @@ func (t *TypedArray) getElement(i int) Value {
 		return NewInt(int64(v))
 	case w == 8:
 		v := binary.LittleEndian.Uint64(b[off:])
+		if t.Kind.BigInt {
+			// BigInt 视图: 按元素的符号性回绕读出 BigInt64/BigUint64。
+			if t.Kind.Signed {
+				return NewBigIntInt64(int64(v))
+			}
+			return NewBigIntUint64(v)
+		}
 		if t.Kind.Signed {
-			// BigInt 视图: BigInt 未实现, 以 Number 近似 (超出安全整数会失真)
 			return NewNumber(float64(int64(v)))
 		}
 		return NewNumber(float64(v))
@@ -373,13 +411,37 @@ func (t *TypedArray) getElement(i int) Value {
 }
 
 // setElement 写第 i 个元素, 按 ToNumber 语义转换。
+//
+// BigInt 视图的转换可能抛错 (TypeError/RangeError); 此处以 panic(*Error)
+// 抛出, 由 setElementE 捕获后转为返回值。绝大多数调用点不关心抛错
+// (写非 BigInt 视图时永不抛), 故保留无返回值的便捷签名。
 func (t *TypedArray) setElement(i int, val Value) {
+	_ = t.setElementE(i, val)
+}
+
+// setElementE 是 setElement 的显式错误版本。写入 BigInt 视图且值无法转为
+// BigInt 时返回该 *Error (调用方须立即透传), 成功返回 nil。
+func (t *TypedArray) setElementE(i int, val Value) (err Value) {
 	if i < 0 || i >= t.arrLength() {
-		return
+		return nil
 	}
 	b := t.bytes()
 	w := t.Kind.ElemSize
 	off := i * w
+	// BigInt 视图: 转换可能抛错, 单独走一层 recover。
+	if t.Kind.BigInt && w == 8 {
+		defer func() {
+			if r := recover(); r != nil {
+				if e, ok := r.(*Error); ok {
+					err = e
+					return
+				}
+				panic(r)
+			}
+		}()
+		binary.LittleEndian.PutUint64(b[off:], bigIntElementBits(val, t.Kind.Signed))
+		return nil
+	}
 	switch {
 	case t.Kind.Float && w == 4:
 		binary.LittleEndian.PutUint32(b[off:], math.Float32bits(float32(toNumberValue(val))))
@@ -394,6 +456,51 @@ func (t *TypedArray) setElement(i int, val Value) {
 	case w == 8:
 		binary.LittleEndian.PutUint64(b[off:], uint64(int64(toNumberValue(val))))
 	}
+	return nil
+}
+
+// bigIntElementBits 把一个值按 BigInt 视图的元素语义编码为 64 位:
+//   - BigInt 原值直接取模 2^64 (无符号) 或按补码回绕 (有符号);
+//   - Number 按 ToBigInt (须为整数值, 否则抛 RangeError);
+//   - 其余类型 (String/Boolean/null/undefined/object) 抛 TypeError。
+//
+// 出错时调用方需感知 (set 系列要能中止并抛错), 故这里 panic 一个
+// *Error 由 setElementE 捕获; 无错路径零开销。
+func bigIntElementBits(v Value, signed bool) uint64 {
+	switch t := v.(type) {
+	case *BigInt:
+		return bigIntToBits(t, signed)
+	case *Number:
+		if math.IsNaN(t.Value) || math.IsInf(t.Value, 0) || t.Value != math.Trunc(t.Value) {
+			panic(NewRangeError("Cannot convert %v to a BigInt", t.Value))
+		}
+		return bigIntToBits(bigIntFromFloat(t.Value), signed)
+	default:
+		panic(NewTypeError("Cannot convert %s to a BigInt", v.Inspect()))
+	}
+}
+
+// bigIntToBits 把 BigInt 回绕到 64 位。
+func bigIntToBits(b *BigInt, signed bool) uint64 {
+	m := new(big.Int).Mod(b.Value, big64Modulus)
+	if m.Sign() < 0 {
+		m.Add(m, big64Modulus)
+	}
+	u := m.Uint64()
+	if !signed {
+		return u
+	}
+	// 有符号: 读回时按 int64 解释 (补码)
+	return u
+}
+
+var big64Modulus = new(big.Int).Lsh(big.NewInt(1), 64)
+
+// bigIntFromFloat 把整数值 float64 转 BigInt。float64 超过 2^53 时已丢精度,
+// 但规范 ToBigInt(Number) 也按 Number 的值 (而非十进制字面量) 解释, 故与之一致。
+func bigIntFromFloat(f float64) *BigInt {
+	bi, _ := new(big.Float).SetFloat64(f).Int(nil)
+	return NewBigInt(bi)
 }
 
 func toNumberValue(v Value) float64 {
@@ -561,11 +668,17 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 			}
 			src, ok := sargs[0].(*TypedArray)
 			if ok {
+				// 跨 BigInt/非 BigInt 视图互拷是 TypeError (规范 SetTypedArrayFromTypedArray)。
+				if src.Kind.BigInt != ta.Kind.BigInt {
+					return NewTypeError("TypedArray.prototype.set: cannot mix BigInt and non-BigInt views")
+				}
 				if offset+src.arrLength() > ta.arrLength() {
 					return NewRangeError("TypedArray.prototype.set: source is too large")
 				}
 				for i := 0; i < src.arrLength(); i++ {
-					ta.setElement(offset+i, src.getElement(i))
+					if err := ta.setElementE(offset+i, src.getElement(i)); err != nil {
+						return err
+					}
 				}
 				return UndefinedSingleton
 			}
@@ -579,7 +692,9 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 					if i >= ta.arrLength() {
 						return NewRangeError("TypedArray.prototype.set: source is too large")
 					}
-					ta.setElement(i, v)
+					if err := ta.setElementE(i, v); err != nil {
+						return err
+					}
 					i++
 				}
 				return UndefinedSingleton
@@ -604,7 +719,9 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 				if v == nil {
 					v = UndefinedSingleton
 				}
-				ta.setElement(offset+i, v)
+				if err := ta.setElementE(offset+i, v); err != nil {
+					return err
+				}
 			}
 			return UndefinedSingleton
 		})
@@ -653,14 +770,20 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 		})
 	case "indexOf":
 		return iterMethod("indexOf", func(ta *TypedArray, sargs []Value) Value {
-			want := toNumberValue(argOr(sargs, 0))
+			arg := argOr(sargs, 0)
 			n := ta.arrLength()
 			from, err := fromIndexArg(sargs, 1, n)
 			if err != nil {
 				return err
 			}
 			for i := from; i < n; i++ {
-				if toNumberValue(ta.getElement(i)) == want {
+				// indexOf/lastIndexOf 走 HasProperty+Strict Equality: 分离或缩容后
+				// 索引属性不存在 (HasProperty=false), 该点直接跳过 —— 因此这里
+				// 必须先做当前边界判定, 不能只看捕获的 n。
+				if i >= ta.arrLength() {
+					continue
+				}
+				if ta.elementEquals(arg, ta.getElement(i)) {
 					return NewInt(int64(i))
 				}
 			}
@@ -668,7 +791,7 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 		})
 	case "lastIndexOf":
 		return iterMethod("lastIndexOf", func(ta *TypedArray, sargs []Value) Value {
-			want := toNumberValue(argOr(sargs, 0))
+			arg := argOr(sargs, 0)
 			n := ta.arrLength()
 			from := n - 1
 			if len(sargs) > 1 && !isUndef(sargs[1]) {
@@ -684,7 +807,10 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 				}
 			}
 			for i := from; i >= 0; i-- {
-				if toNumberValue(ta.getElement(i)) == want {
+				if i >= ta.arrLength() {
+					continue
+				}
+				if ta.elementEquals(arg, ta.getElement(i)) {
 					return NewInt(int64(i))
 				}
 			}
@@ -692,15 +818,14 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 		})
 	case "includes":
 		return iterMethod("includes", func(ta *TypedArray, sargs []Value) Value {
-			want := toNumberValue(argOr(sargs, 0))
+			arg := argOr(sargs, 0)
 			n := ta.arrLength()
 			from, err := fromIndexArg(sargs, 1, n)
 			if err != nil {
 				return err
 			}
 			for i := from; i < n; i++ {
-				v := toNumberValue(ta.getElement(i))
-				if v == want || (math.IsNaN(v) && math.IsNaN(want)) {
+				if ta.elementEquals(arg, ta.getElement(i)) {
 					return TrueSingleton
 				}
 			}
