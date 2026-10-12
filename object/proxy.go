@@ -74,6 +74,23 @@ func NewProxy(target, handler Value) (*Proxy, *Error) {
 }
 
 // IsObjectLike 粗略判断一个值是否为"对象类"引用类型 (允许作为 handler)。
+// IsArrayValue 实现规范的 IsArray (sec-isarray): 数组为真; Proxy 递归看
+// target (revoked proxy 抛 TypeError); 其余一律假。
+// Array.isArray / ArraySpeciesCreate 的 IsArray 步骤共用此实现, 避免两处
+// 各写一份导致结论分叉。
+func IsArrayValue(v Value) bool {
+	switch a := v.(type) {
+	case *Array:
+		return true
+	case *Proxy:
+		if a.IsRevoked || a.Target == nil {
+			panic(NewTypeError("Cannot perform 'IsArray' on a proxy that has been revoked"))
+		}
+		return IsArrayValue(a.Target)
+	}
+	return false
+}
+
 func IsObjectLike(v Value) bool {
 	// 原始值包装对象 (new Boolean/Number/String/Symbol) 的 Type() 返回其
 	// 包装的原始类型 (供 instanceof 判定), 但它们在语义上是对象 ——

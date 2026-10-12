@@ -173,8 +173,23 @@ func thisTypeError(proto, method string, this object.Value) object.Value {
 
 // isArrayValue 判断值是否为数组。
 func isArrayValue(v object.Value) bool {
-	_, ok := v.(*object.Array)
-	return ok
+	// Proxy 需递归看 target (Array.isArray 的规范语义), 且 revoked proxy
+	// 抛 TypeError —— 统一收敛到 object.IsArrayValue。
+	// panic 在此转为 false 不合适 (revoked 必须抛), 故由调用方 (isArray
+	// 内建) 处理; 内部判定用 safeIsArray 兜底。
+	if p, ok := v.(*object.Proxy); ok && (p.IsRevoked || p.Target == nil) {
+		return false
+	}
+	return object.IsArrayValue(v)
+}
+
+// isArrayValueOrThrow 与 isArrayValue 同义, 但保留 revoked proxy 的 TypeError
+// (Array.isArray 内建须原样抛出)。返回 (是否数组, 错误值)。
+func isArrayValueOrThrow(v object.Value) (bool, object.Value) {
+	if p, ok := v.(*object.Proxy); ok && (p.IsRevoked || p.Target == nil) {
+		return false, object.NewTypeError("Cannot perform 'IsArray' on a proxy that has been revoked")
+	}
+	return object.IsArrayValue(v), nil
 }
 
 // isUndefinedValue 判断值是否为 undefined (含 nil)。

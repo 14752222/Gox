@@ -1168,6 +1168,14 @@ func isConcatSpreadable(v object.Value) (bool, object.Value) {
 	return isArr, nil
 }
 
+// isConstructorValue 判断值是否为构造器 (规范的 IsConstructor)。
+// 内建构造器 (Array/Object/String/...) 在 Gox 里是 *BuiltinFunction,
+// object.IsConstructor 已按 NotConstructable 标记区分; Proxy 一律视为
+// 可构造 (target 决定, 这里放宽)。
+func isConstructorValue(v object.Value) bool {
+	return object.IsConstructor(v)
+}
+
 // isObjectLike 判断值是否为"对象" (IsConstructor/ArraySpeciesCreate 的参数校验用)。
 func isObjectLike(v object.Value) bool {
 	switch v.(type) {
@@ -1201,38 +1209,60 @@ func arraySpeciesCreate(l *arrayLike, length int64) (object.Value, object.Value)
 	mk := func() object.Value {
 		return object.NewArray(make([]object.Value, length))
 	}
-	if l.arr == nil {
+	// 规范的 IsArray(O): Proxy 透过 target 判定 —— 仅凭 l.arr != nil
+	// 会把 "Proxy 包数组" 的接收者误判为非数组, 跳过 species 查找
+	// (create-proxy / is-concat-spreadable-proxy 族)。
+	if !isArrayValue(l.obj) {
 		return mk(), nil
 	}
 	c, _ := l.obj.GetProperty("constructor")
 	if t := callbackThrown(); t != nil {
 		return nil, t
 	}
+	// 规范 ArraySpeciesCreate 6~9 步:
+	//   6. If IsConstructor(C) is true: (跨 realm 的 %Array% 视为 undefined)
+	//   7. If Type(C) is Object: C = Get(C, @@species); null → undefined
+	//   8. If C is undefined, return ArrayCreate(length)
+	//   9. If IsConstructor(C) is false, throw TypeError
+	// 注意 7 的判据是 "是对象" (create-species 族用 {}[@@species]=Ctor),
+	// 而 9 才要求构造器 —— 故 constructor 为原始值 (1/'s'/true) 时必然
+	// 在 9 抛 TypeError (create-ctor-non-object 族)。
+	if !isUndefinedValue(c) && !isNullValue(c) && !isObjectLike(c) {
+		return nil, object.NewTypeError("%s is not a constructor", toStr(c))
+	}
+	if isObjectLike(c) {
+		sVal := object.Value(object.UndefinedSingleton)
+		if desc, found := object.LookupSymbolPropertyDescriptorChain(c, object.GetGlobalSymbol("Symbol.species")); found {
+			if acc, isAcc := desc.Value.(*object.Accessor); isAcc {
+				if acc.Getter != nil && object.IsCallable(acc.Getter) {
+					sVal = object.CallFunction(acc.Getter, c)
+					if t := callbackThrown(); t != nil {
+						return nil, t
+					}
+				}
+			} else if desc.Value != nil {
+				sVal = desc.Value
+			}
+		}
+		// 规范 7.b: Type(C) 是对象且 @@species 取到 null 时, C 归一为
+		// undefined → 第 8 步直接 ArrayCreate (create-species-null 族)。
+		// 注意这与 "constructor 本身就是 null" 不同 —— 后者不走 7, 而是
+		// 落到第 9 步的 IsConstructor(null)=false 抛 TypeError
+		// (create-ctor-non-object 的 null 用例)。
+		if sVal == nil || isNullValue(sVal) {
+			return mk(), nil
+		}
+		c = sVal
+	}
+	// 步骤 8/9: C 为 undefined → 默认数组; 否则 (含 constructor===null) 必须
+	// 是构造器, 否则抛 TypeError。
 	if c == nil || isUndefinedValue(c) {
 		return mk(), nil
 	}
-	if !isObjectLike(c) {
+	if !isConstructorValue(c) {
 		return nil, object.NewTypeError("%s is not a constructor", toStr(c))
 	}
-	sVal := object.Value(object.UndefinedSingleton)
-	if desc, found := object.LookupSymbolPropertyDescriptorChain(c, object.GetGlobalSymbol("Symbol.species")); found {
-		if acc, isAcc := desc.Value.(*object.Accessor); isAcc {
-			if acc.Getter != nil && object.IsCallable(acc.Getter) {
-				sVal = object.CallFunction(acc.Getter, c)
-				if t := callbackThrown(); t != nil {
-					return nil, t
-				}
-			}
-		} else if desc.Value != nil {
-			sVal = desc.Value
-		}
-	}
-	if sVal == nil || isUndefinedValue(sVal) || isNullValue(sVal) {
-		return mk(), nil
-	}
-	if !object.IsCallable(sVal) {
-		return nil, object.NewTypeError("%s is not a constructor", toStr(sVal))
-	}
+	sVal := c
 	r := object.ConstructFunction(sVal, object.NewInt(length))
 	if t := callbackThrown(); t != nil {
 		return nil, t
@@ -1772,7 +1802,11 @@ func setupArrayGlobal() *object.BuiltinFunction {
 		if len(args) == 0 {
 			return object.NewBoolean(false)
 		}
-		_, ok := args[0].(*object.Array)
+		// 规范 IsArray: Proxy 递归看 target, revoked proxy 抛 TypeError。
+		ok, errVal := isArrayValueOrThrow(args[0])
+		if errVal != nil {
+			return errVal
+		}
 		return object.NewBoolean(ok)
 	}))
 	// Array.from(arrayLike, mapFn, thisArg)
