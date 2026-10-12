@@ -25,8 +25,36 @@ func (p *Proxy) IsTruthy() bool   { return true }
 // GetProperty / SetProperty 不在此处理。
 // 属性访问必须经过 VM 的 trap 转发，因此这里返回未找到/静默忽略。
 // VM 在检测到 *object.Proxy 时不会调用这两个方法，而是走 proxy 路径。
-func (p *Proxy) GetProperty(name string) (Value, bool) { return nil, false }
-func (p *Proxy) SetProperty(name string, val Value)    {}
+func (p *Proxy) GetProperty(name string) (Value, bool) {
+	if p.IsRevoked {
+		return nil, false
+	}
+	if trap := GetProxyTrap(p.Handler, "get"); trap != nil {
+		// 经 get trap 转发 (this 绑定 handler)。trap 内异常通过
+		// 回调错误桥留待调用方用 TakeCallbackError 拾取。
+		r := CallFunction(trap, p.Handler, p.Target, NewString(name), p)
+		if r == nil {
+			return nil, false
+		}
+		return r, true
+	}
+	if p.Target != nil {
+		return p.Target.GetProperty(name)
+	}
+	return nil, false
+}
+func (p *Proxy) SetProperty(name string, val Value) {
+	if p.IsRevoked {
+		return
+	}
+	if trap := GetProxyTrap(p.Handler, "set"); trap != nil {
+		CallFunction(trap, p.Handler, p.Target, NewString(name), val, p)
+		return
+	}
+	if p.Target != nil {
+		p.Target.SetProperty(name, val)
+	}
+}
 
 // NewProxy 创建代理对象。
 // target 必须是对象或可调用函数，handler 必须是对象。
@@ -49,7 +77,11 @@ func NewProxy(target, handler Value) (*Proxy, *Error) {
 func IsObjectLike(v Value) bool {
 	switch v.Type() {
 	case OBJECT_OBJ, ARRAY_OBJ, MAP_OBJ, SET_OBJ, ERROR_OBJ, ITERATOR_OBJ,
-		CLOSURE_OBJ, BUILTIN_OBJ, PROXY_OBJ, REGEXP_OBJ, PROMISE_OBJ, DATE_OBJ:
+		CLOSURE_OBJ, BUILTIN_OBJ, PROXY_OBJ, REGEXP_OBJ, PROMISE_OBJ, DATE_OBJ,
+		TEMPORAL_INSTANT_OBJ, TEMPORAL_PLAIN_DATETIME_OBJ, TEMPORAL_PLAIN_DATE_OBJ,
+		TEMPORAL_PLAIN_TIME_OBJ, TEMPORAL_PLAIN_YM_OBJ, TEMPORAL_PLAIN_MD_OBJ,
+		TEMPORAL_ZONED_DATETIME_OBJ, TEMPORAL_DURATION_OBJ, TEMPORAL_TIMEZONE_OBJ,
+		TEMPORAL_CALENDAR_OBJ:
 		return true
 	}
 	return false

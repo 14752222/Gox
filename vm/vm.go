@@ -1707,7 +1707,10 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			a := vm.stack.Pop()
 			res, err := relationalCompare(op, a, b)
 			if err != nil {
-				return err
+				if terr := vm.throwJSError(err); terr != nil {
+					return terr
+				}
+				continue
 			}
 			vm.stack.Push(object.NewBoolean(res))
 		case bytecode.OP_NOT:

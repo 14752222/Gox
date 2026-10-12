@@ -37,6 +37,20 @@ func (e *jsThrow) Error() string { return e.Name + ": " + e.Message }
 // errMixBigInt 是 BigInt 与 Number 混合算术的统一错误。
 var errMixBigInt = &jsThrow{"TypeError", "Cannot mix BigInt with other types, use explicit conversions"}
 
+// isTemporalValue 报告 v 是否是任一 Temporal 对象 (用于关系/算术运算的
+// ToPrimitive 定点: 这些对象的 valueOf 按 spec 无条件抛 TypeError)。
+func isTemporalValue(v object.Value) bool {
+	switch v.Type() {
+	case object.TEMPORAL_DURATION_OBJ, object.TEMPORAL_INSTANT_OBJ,
+		object.TEMPORAL_PLAIN_DATETIME_OBJ, object.TEMPORAL_PLAIN_DATE_OBJ,
+		object.TEMPORAL_PLAIN_TIME_OBJ, object.TEMPORAL_PLAIN_YM_OBJ,
+		object.TEMPORAL_PLAIN_MD_OBJ, object.TEMPORAL_ZONED_DATETIME_OBJ,
+		object.TEMPORAL_TIMEZONE_OBJ, object.TEMPORAL_CALENDAR_OBJ:
+		return true
+	}
+	return false
+}
+
 // binaryArithmetic 处理所有二元算术/位运算符。
 // 非 BigInt 路径保持原有的 double 语义不变。
 func (vm *VM) binaryArithmetic(op bytecode.Opcode, a, b object.Value) (object.Value, error) {
@@ -187,6 +201,11 @@ func toNumberValue(v object.Value) (object.Value, error) {
 // 与算术运算不同，关系比较允许 BigInt 与 Number 混合: 规范先做
 // ToPrimitive，再在"同为 BigInt"和"其余"两种情形下分别比较数学值。
 func relationalCompare(op bytecode.Opcode, a, b object.Value) (bool, error) {
+	// Temporal 对象的 valueOf 无条件抛 TypeError (spec: 各 Temporal 类的
+	// prototype.valueOf), 关系运算的 ToPrimitive(number) 因此必抛。
+	if isTemporalValue(a) || isTemporalValue(b) {
+		return false, &jsThrow{"TypeError", "Cannot compare Temporal objects with relational operators; use compare() or equals()"}
+	}
 	aBig, aIsBig := a.(*object.BigInt)
 	bBig, bIsBig := b.(*object.BigInt)
 

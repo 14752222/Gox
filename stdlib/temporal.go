@@ -31,6 +31,8 @@ func setupTemporal(env *runtime.Environment) {
 
 	setupTemporalNow(temporal)
 
+	tgApplyTemporalLengths(temporal)
+
 	setToStringTag(temporal, "Temporal")
 	env.Declare("Temporal", temporal, false)
 }
@@ -69,9 +71,9 @@ func setupTemporalNow(temporal *object.Object) {
 	tgFn(now, "zonedDateTimeISO", func(args ...object.Value) object.Value {
 		tz := hostTimeZone()
 		if len(args) > 0 {
-			id, ok := toTimeZoneID(args[0])
-			if !ok {
-				return tgRange("Invalid time zone")
+			id, idTzErr := toTimeZoneIDE(args[0])
+			if idTzErr != nil {
+				return idTzErr
 			}
 			tz = id
 		}
@@ -81,9 +83,9 @@ func setupTemporalNow(temporal *object.Object) {
 	tgFn(now, "plainDateTimeISO", func(args ...object.Value) object.Value {
 		tz := hostTimeZone()
 		if len(args) > 0 {
-			id, ok := toTimeZoneID(args[0])
-			if !ok {
-				return tgRange("Invalid time zone")
+			id, idTzErr := toTimeZoneIDE(args[0])
+			if idTzErr != nil {
+				return idTzErr
 			}
 			tz = id
 		}
@@ -93,9 +95,9 @@ func setupTemporalNow(temporal *object.Object) {
 	tgFn(now, "plainDateISO", func(args ...object.Value) object.Value {
 		tz := hostTimeZone()
 		if len(args) > 0 {
-			id, ok := toTimeZoneID(args[0])
-			if !ok {
-				return tgRange("Invalid time zone")
+			id, idTzErr := toTimeZoneIDE(args[0])
+			if idTzErr != nil {
+				return idTzErr
 			}
 			tz = id
 		}
@@ -106,9 +108,9 @@ func setupTemporalNow(temporal *object.Object) {
 	tgFn(now, "plainTimeISO", func(args ...object.Value) object.Value {
 		tz := hostTimeZone()
 		if len(args) > 0 {
-			id, ok := toTimeZoneID(args[0])
-			if !ok {
-				return tgRange("Invalid time zone")
+			id, idTzErr := toTimeZoneIDE(args[0])
+			if idTzErr != nil {
+				return idTzErr
 			}
 			tz = id
 		}

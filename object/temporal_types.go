@@ -455,14 +455,19 @@ func formatISODate(d ISODate) string {
 	return formatISOYear(d.Year) + "-" + padN(d.Month, 2) + "-" + padN(d.Day, 2)
 }
 
+// FormatISOTime 导出 formatISOTime (stdlib 的 toString options 需要)。
+func FormatISOTime(t ISOTime, precision string) string { return formatISOTime(t, precision) }
+
 // formatISOTime 按指定的秒以下精度输出时间。
-// precision: "auto" 按实际值裁剪尾部零，其余为固定小数位数 (0/3/6/9)。
+// precision: "auto" 按实际值裁剪尾部零；"minute" 不含秒；
+// 数字串 "0".."9" 为固定小数位数 (固定精度保留尾部零)。
 func formatISOTime(t ISOTime, precision string) string {
 	s := padN(t.Hour, 2) + ":" + padN(t.Minute, 2)
 	if precision == "minute" {
 		return s
 	}
 	frac := ""
+	fixed := false
 	switch precision {
 	case "auto":
 		switch {
@@ -474,17 +479,21 @@ func formatISOTime(t ISOTime, precision string) string {
 			frac = padN(t.Millisecond, 3)
 		}
 	case "0":
-	case "3":
-		frac = padN(t.Millisecond, 3)
-	case "6":
-		frac = padN(t.Millisecond, 3) + padN(t.Microsecond, 3)
-	case "9":
-		frac = padN(t.Millisecond, 3) + padN(t.Microsecond, 3) + padN(t.Nanosecond, 3)
+	default:
+		if n, err := strconv.Atoi(precision); err == nil && n >= 1 && n <= 9 {
+			nine := padN(t.Millisecond, 3) + padN(t.Microsecond, 3) + padN(t.Nanosecond, 3)
+			frac = nine[:n]
+			fixed = true
+		}
 	}
 	sec := padN(t.Second, 2)
 	if frac != "" {
-		sec += "." + strings.TrimRight(frac, "0")
-		sec = strings.TrimSuffix(sec, ".")
+		if !fixed {
+			frac = strings.TrimRight(frac, "0")
+		}
+		if frac != "" {
+			sec += "." + frac
+		}
 	}
 	return s + ":" + sec
 }
@@ -494,6 +503,10 @@ func formatISODateTime(dt ISODateTime) string {
 }
 
 // formatUTCOffset 输出 ±HH:MM 形式的偏移 (秒级偏移会补 :SS)。
+func FormatOffsetSeconds(sec int32) string {
+	return formatUTCOffset(sec)
+}
+
 func formatUTCOffset(sec int32) string {
 	if sec == 0 {
 		return "Z"
@@ -530,3 +543,9 @@ func AddOffsetToISODateTime(dt ISODateTime, offsetSec int32) ISODateTime {
 	}
 	return ISODateTime{Date: ISODateFromEpochDays(dt.Date.EpochDays() + days), Time: TimeFromNanosOfDay(total)}
 }
+
+// FormatISODate 导出 formatISODate。
+func FormatISODate(d ISODate) string { return formatISODate(d) }
+
+// FormatISODateTime 导出 formatISODateTime。
+func FormatISODateTime(dt ISODateTime) string { return formatISODateTime(dt) }
