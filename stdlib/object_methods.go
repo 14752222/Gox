@@ -270,6 +270,15 @@ func setupObjectGlobal() *object.BuiltinFunction {
 			}
 			return object.NullSingleton
 		}
+		// TypedArray 各具体构造器: [[Prototype]] = %TypedArray%
+		// (test262 harness 经 Object.getPrototypeOf(Int8Array) 取它)。
+		if bf, ok := args[0].(*object.BuiltinFunction); ok {
+			if _, isTA := object.LookupTAKind(bf.Name); isTA {
+				if p := object.GetTypedArrayCtorProto(); p != nil {
+					return p
+				}
+			}
+		}
 		// 函数对象: [[Prototype]] 按种类指向 Function/GeneratorFunction/
 		// AsyncFunction/AsyncGeneratorFunction.prototype。
 		if fp := object.FuncPrototypeOf(args[0]); fp != nil {

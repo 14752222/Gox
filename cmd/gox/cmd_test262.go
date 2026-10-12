@@ -296,7 +296,7 @@ var harnessLibs = map[string]bool{
 	"temporalHelpers.js": true, "compareIterator.js": true, "iterableHelpers.js": true,
 	"floatArrayExactValues.js": true, "proxy-getOwnPropertyDescriptor-trap.js": true,
 	"smi.js": true, "assertRelativeDateMs.js": true, "toNumber.js": true,
-	"values.js": true,
+	"values.js": true, "resizableArrayBufferUtils.js": true,
 }
 
 // 默认 harness: 官方约定 sta.js + assert.js 对所有用例生效（Test262Error /

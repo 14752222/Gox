@@ -5956,7 +5956,7 @@ func (vm *VM) getIndex(obj, index object.Value) object.Value {
 	case *object.TypedArray:
 		if n, ok := index.(*object.Number); ok {
 			idx := int(n.Value)
-			if idx >= 0 && idx < o.Length {
+			if idx >= 0 && idx < o.ArrLength() {
 				return o.GetElement(idx)
 			}
 			return object.UndefinedSingleton

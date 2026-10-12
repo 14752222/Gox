@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"sync"
 )
@@ -60,6 +61,9 @@ func LookupTAKind(name string) (TAKind, bool) {
 type ArrayBuffer struct {
 	Data   []byte
 	Detach bool
+	// MaxByteLength 为 resizable ArrayBuffer (ES2024) 的容量上限;
+	// -1 表示非 resizable。
+	MaxByteLength int
 }
 
 func (b *ArrayBuffer) Type() ObjectType { return OBJECT_OBJ }
@@ -78,6 +82,24 @@ func (b *ArrayBuffer) GetProperty(name string) (Value, bool) {
 		return NewInt(int64(len(b.Data))), true
 	case "detached":
 		return NewBoolean(b.Detach), true
+	case "resizable":
+		return NewBoolean(b.MaxByteLength >= 0), true
+	case "maxByteLength":
+		if b.Detach {
+			return NewInt(0), true
+		}
+		if b.MaxByteLength >= 0 {
+			return NewInt(int64(b.MaxByteLength)), true
+		}
+		return NewInt(int64(len(b.Data))), true
+	case "resize":
+		return NewBuiltinMethod("resize", func(this Value, args ...Value) Value {
+			buf, ok := this.(*ArrayBuffer)
+			if !ok {
+				buf = b
+			}
+			return buf.Resize(argOr(args, 0))
+		}), true
 	case "slice":
 		return NewBuiltin("slice", func(args ...Value) Value {
 			if b.Detach {
@@ -95,13 +117,44 @@ func (b *ArrayBuffer) GetProperty(name string) (Value, bool) {
 			}
 			cp := make([]byte, end-start)
 			copy(cp, b.Data[start:end])
-			return &ArrayBuffer{Data: cp}
+			return &ArrayBuffer{Data: cp, MaxByteLength: -1}
 		}), true
 	}
 	return nil, false
 }
 
-func NewArrayBuffer(n int) *ArrayBuffer { return &ArrayBuffer{Data: make([]byte, n)} }
+func NewArrayBuffer(n int) *ArrayBuffer {
+	return &ArrayBuffer{Data: make([]byte, n), MaxByteLength: -1}
+}
+
+// NewResizableArrayBuffer 创建 resizable ArrayBuffer (初始 n 字节, 上限 max 字节)。
+func NewResizableArrayBuffer(n, max int) *ArrayBuffer {
+	return &ArrayBuffer{Data: make([]byte, n), MaxByteLength: max}
+}
+
+// Resize 实现 ArrayBuffer.prototype.resize (ES2024):
+// 新长度不得超过 maxByteLength, 扩容部分零填充, 缩容直接截断。
+func (b *ArrayBuffer) Resize(lenArg Value) Value {
+	if b.Detach {
+		return NewTypeError("ArrayBuffer.prototype.resize: buffer is detached")
+	}
+	if b.MaxByteLength < 0 {
+		return NewTypeError("ArrayBuffer.prototype.resize: buffer is not resizable")
+	}
+	f := toF64Value(lenArg)
+	if math.IsNaN(f) || f < 0 || f > float64(b.MaxByteLength) || f != float64(int64(f)) {
+		return NewRangeError("ArrayBuffer.prototype.resize: invalid new length")
+	}
+	n := int(f)
+	if n <= len(b.Data) {
+		b.Data = b.Data[:n]
+	} else {
+		nd := make([]byte, n)
+		copy(nd, b.Data)
+		b.Data = nd
+	}
+	return UndefinedSingleton
+}
 
 func clampByteIndex(v float64, n int) int {
 	if math.IsNaN(v) {
@@ -138,51 +191,149 @@ func toF64Value(v Value) float64 {
 	return math.NaN()
 }
 
+// toF64E 是带 ToNumber 语义的版本: 对象先调 valueOf 再调 toString,
+// 回调抛错 (*Error 返回值) 时透传 —— test262 的 return-abrupt 系列
+// 依赖该可观测行为。Symbol 按规范抛 TypeError。
+// err 非 nil 时调用方必须立即返回该错误值。
+func toF64E(v Value) (float64, Value) {
+	switch v.(type) {
+	case *Number, *Boolean, *String, *Null:
+		return toF64Value(v), nil
+	}
+	if v == nil || v == UndefinedSingleton {
+		return math.NaN(), nil
+	}
+	if _, ok := v.(*Symbol); ok {
+		return 0, NewTypeError("Cannot convert a Symbol value to a number")
+	}
+	if vo, ok := v.GetProperty("valueOf"); ok && IsCallable(vo) {
+		r := CallFunction(vo, v)
+		if err, isErr := r.(*Error); isErr {
+			return 0, err
+		}
+		switch r.(type) {
+		case *Number, *Boolean, *String, *Null:
+			return toF64Value(r), nil
+		}
+	}
+	if ts, ok := v.GetProperty("toString"); ok && IsCallable(ts) {
+		r := CallFunction(ts, v)
+		if err, isErr := r.(*Error); isErr {
+			return 0, err
+		}
+		if s, isStr := r.(*String); isStr {
+			return ParseJSNumber(s.Value), nil
+		}
+		switch r.(type) {
+		case *Number, *Boolean, *Null:
+			return toF64Value(r), nil
+		}
+	}
+	return math.NaN(), nil
+}
+
 // ===== TypedArray =====
 
 type TypedArray struct {
 	Kind       TAKind
 	Buffer     *ArrayBuffer
 	ByteOffset int
-	Length     int // 元素个数
+	Length     int // 元素个数; -1 = length-tracking (跟随 buffer 当前字节长)
 	// SymbolProperties 存储以 Symbol 为键的自有属性 (键为 Symbol 唯一 ID)。
 	// 与 *Array 同构: 让 `ta[Symbol.iterator] = fn` 这类覆盖能落地,
 	// 迭代协议解析 (resolveSymbolIterator) 才看得到。
 	SymbolProperties map[uint64]PropertyDescriptor
 	symbolKeyOrder   []*Symbol
-	mu               sync.Mutex
+	// Props 存普通字符串键自有属性 (如用户赋值的 constructor),
+	// 支撑 Symbol.species 派生构造语义 (sample.constructor = {...})。
+	Props map[string]Value
+	mu    sync.Mutex
 }
 
 func (t *TypedArray) Type() ObjectType { return OBJECT_OBJ }
+
+// arrLength 返回当前生效的元素个数:
+//   - length-tracking 视图 (Length == -1) 跟随 buffer 当前字节长;
+//   - 定长视图若 buffer 缩到视图范围之外, 整体视为越界, 长度按 0 计
+//     (ES2024 resizable ArrayBuffer 语义)。
+func (t *TypedArray) arrLength() int {
+	if t.Buffer == nil || t.Buffer.Detach {
+		return 0
+	}
+	avail := len(t.Buffer.Data) - t.ByteOffset
+	if avail <= 0 {
+		return 0
+	}
+	if t.Length < 0 {
+		return avail / t.Kind.ElemSize
+	}
+	if t.Length*t.Kind.ElemSize > avail {
+		return 0
+	}
+	return t.Length
+}
+
+// ArrLength 导出 arrLength (stdlib 用)。
+func (t *TypedArray) ArrLength() int { return t.arrLength() }
+
+// OutOfBounds 报告视图当前是否越界 (ES2024 ValidateTypedArray 的
+// [[IsOutOfBounds]] 语义): buffer 分离, 或定长视图的字节范围超出
+// buffer 当前字节长 (resizable buffer 缩容导致)。越界视图上调用
+// 原型方法必须抛 TypeError。
+func (t *TypedArray) OutOfBounds() bool {
+	if t.Buffer == nil || t.Buffer.Detach {
+		return true
+	}
+	avail := len(t.Buffer.Data) - t.ByteOffset
+	if t.Length < 0 {
+		// length-tracking 视图: byteOffset 超出当前字节长即越界。
+		return avail < 0
+	}
+	return avail < 0 || t.Length*t.Kind.ElemSize > avail
+}
+
 func (t *TypedArray) Inspect() string {
-	parts := make([]string, 0, t.Length)
-	for i := 0; i < t.Length && i < 8; i++ {
+	n := t.arrLength()
+	parts := make([]string, 0, n)
+	for i := 0; i < n && i < 8; i++ {
 		parts = append(parts, ToString(t.getElement(i)))
 	}
-	if t.Length > 8 {
+	if n > 8 {
 		parts = append(parts, "...")
 	}
-	return fmt.Sprintf("%s(%d) [%s]", t.Kind.Name, t.Length, strings.Join(parts, ", "))
+	return fmt.Sprintf("%s(%d) [%s]", t.Kind.Name, n, strings.Join(parts, ", "))
 }
 func (t *TypedArray) IsTruthy() bool { return true }
 func (t *TypedArray) SetProperty(name string, val Value) {
-	// 数字索引越界写被忽略 (与规范一致); length 只读
-	if n, ok := val.(*Number); ok && name == "length" {
-		_ = n
+	// 数字索引写经 vm 索引路径; length 等固定属性只读。
+	switch name {
+	case "length", "byteLength", "byteOffset", "buffer", "BYTES_PER_ELEMENT":
+		return
 	}
+	if _, ok := nameIndex(name); ok {
+		if n, ok2 := nameIndex(name); ok2 {
+			t.setElement(n, val)
+		}
+		return
+	}
+	if t.Props == nil {
+		t.Props = map[string]Value{}
+	}
+	t.Props[name] = val
 }
 
-// bytes 返回本视图的字节切片。
+// bytes 返回本视图当前生效的字节切片。
 func (t *TypedArray) bytes() []byte {
 	if t.Buffer == nil || t.Buffer.Detach {
 		return nil
 	}
-	return t.Buffer.Data[t.ByteOffset : t.ByteOffset+t.Length*t.Kind.ElemSize]
+	n := t.arrLength() * t.Kind.ElemSize
+	return t.Buffer.Data[t.ByteOffset : t.ByteOffset+n]
 }
 
 // getElement 读第 i 个元素 (越界返回 undefined)。
 func (t *TypedArray) getElement(i int) Value {
-	if i < 0 || i >= t.Length {
+	if i < 0 || i >= t.arrLength() {
 		return UndefinedSingleton
 	}
 	b := t.bytes()
@@ -223,7 +374,7 @@ func (t *TypedArray) getElement(i int) Value {
 
 // setElement 写第 i 个元素, 按 ToNumber 语义转换。
 func (t *TypedArray) setElement(i int, val Value) {
-	if i < 0 || i >= t.Length {
+	if i < 0 || i >= t.arrLength() {
 		return
 	}
 	b := t.bytes()
@@ -316,12 +467,18 @@ func (t *TypedArray) GetProperty(name string) (Value, bool) {
 	if n, ok := nameIndex(name); ok {
 		return t.getElement(n), true
 	}
+	// 用户自有属性 (constructor 等)
+	if t.Props != nil {
+		if v, ok := t.Props[name]; ok {
+			return v, true
+		}
+	}
 	// 固定属性
 	switch name {
 	case "length":
-		return NewInt(int64(t.Length)), true
+		return NewInt(int64(t.arrLength())), true
 	case "byteLength":
-		return NewInt(int64(t.Length * t.Kind.ElemSize)), true
+		return NewInt(int64(t.arrLength() * t.Kind.ElemSize)), true
 	case "byteOffset":
 		return NewInt(int64(t.ByteOffset)), true
 	case "buffer":
@@ -344,157 +501,534 @@ func (t *TypedArray) GetProperty(name string) (Value, bool) {
 
 // callMethod 分派 TypedArray 的内建方法。
 func (t *TypedArray) callMethod(name string) (Value, bool) {
+	// 需要回调的通用算法共享一个形态: 捕获起始长度 (规范在入口读
+	// [[ArrayLength]]), 迭代时逐点检查边界 (resizable buffer 缩容后
+	// 越界索引读为 undefined 但仍回调)。
+	iterMethod := func(mName string, fn func(ta *TypedArray, args []Value) Value) (Value, bool) {
+		return NewBuiltinMethod(mName, func(this Value, margs ...Value) Value {
+			ta, ok := this.(*TypedArray)
+			if !ok {
+				return NewTypeError("TypedArray.prototype.%s: receiver must be a TypedArray", mName)
+			}
+			if ta.OutOfBounds() {
+				return NewTypeError("TypedArray.prototype.%s: typed array is out of bounds", mName)
+			}
+			return fn(ta, margs)
+		}), true
+	}
 	switch name {
 	case NewSymbol("Symbol.iterator").Inspect():
 		return NewBuiltin("[Symbol.iterator]", func(args ...Value) Value {
 			return NewArrayIterator(t.ToArray())
 		}), true
-	case "set":
-		return NewBuiltinMethod("set", func(this Value, sargs ...Value) Value {
-			ta, ok := this.(*TypedArray)
-			if !ok {
-				return NewTypeError("TypedArray.prototype.set: receiver must be a TypedArray")
+	case "values":
+		return iterMethod("values", func(ta *TypedArray, args []Value) Value {
+			return NewArrayIterator(ta.ToArray())
+		})
+	case "keys":
+		return iterMethod("keys", func(ta *TypedArray, args []Value) Value {
+			n := ta.arrLength()
+			els := make([]Value, n)
+			for i := 0; i < n; i++ {
+				els[i] = NewInt(int64(i))
 			}
+			return NewArrayIterator(NewArray(els))
+		})
+	case "entries":
+		return iterMethod("entries", func(ta *TypedArray, args []Value) Value {
+			n := ta.arrLength()
+			els := make([]Value, n)
+			for i := 0; i < n; i++ {
+				els[i] = NewArray([]Value{NewInt(int64(i)), ta.getElement(i)})
+			}
+			return NewArrayIterator(NewArray(els))
+		})
+	case "set":
+		return iterMethod("set", func(ta *TypedArray, sargs []Value) Value {
 			if len(sargs) == 0 {
 				return UndefinedSingleton
 			}
 			offset := 0
 			if len(sargs) > 1 {
-				offset = int(toF64Value(sargs[1]))
+				f, err := toF64E(sargs[1])
+				if err != nil {
+					return err
+				}
+				offset = int(f)
+			}
+			if offset < 0 {
+				return NewRangeError("TypedArray.prototype.set: offset is negative")
 			}
 			src, ok := sargs[0].(*TypedArray)
 			if ok {
-				if offset+src.Length > ta.Length {
+				if offset+src.arrLength() > ta.arrLength() {
 					return NewRangeError("TypedArray.prototype.set: source is too large")
 				}
-				for i := 0; i < src.Length; i++ {
+				for i := 0; i < src.arrLength(); i++ {
 					ta.setElement(offset+i, src.getElement(i))
 				}
 				return UndefinedSingleton
 			}
-			next, ok := Iterate(sargs[0])
-			if !ok {
+			if next, ok := Iterate(sargs[0]); ok {
+				i := offset
+				for {
+					v, done := next()
+					if done {
+						break
+					}
+					if i >= ta.arrLength() {
+						return NewRangeError("TypedArray.prototype.set: source is too large")
+					}
+					ta.setElement(i, v)
+					i++
+				}
+				return UndefinedSingleton
+			}
+			// array-like / Proxy 源: 读 length 再逐索引取 (规范
+			// TypedArraySetFromArrayLike 语义; 中途 resize 由 setElement
+			// 边界检查自然覆盖)。
+			lv, ok := sargs[0].GetProperty("length")
+			if !ok || lv == nil {
 				return NewTypeError("TypedArray.prototype.set: invalid source")
 			}
-			i := offset
-			for {
-				v, done := next()
-				if done {
-					break
+			nf, lerr := toF64E(lv)
+			if lerr != nil {
+				return lerr
+			}
+			n := int(nf)
+			if n < 0 || offset+n > ta.arrLength() {
+				return NewRangeError("TypedArray.prototype.set: source is too large")
+			}
+			for i := 0; i < n; i++ {
+				v, _ := sargs[0].GetProperty(fmt.Sprintf("%d", i))
+				if v == nil {
+					v = UndefinedSingleton
 				}
-				if i >= ta.Length {
-					return NewRangeError("TypedArray.prototype.set: source is too large")
-				}
-				ta.setElement(i, v)
-				i++
+				ta.setElement(offset+i, v)
 			}
 			return UndefinedSingleton
-		}), true
+		})
 	case "subarray":
-		return NewBuiltinMethod("subarray", func(this Value, sargs ...Value) Value {
-			ta, ok := this.(*TypedArray)
-			if !ok {
-				return NewTypeError("TypedArray.prototype.subarray: receiver must be a TypedArray")
+		return iterMethod("subarray", func(ta *TypedArray, sargs []Value) Value {
+			start, end, err := ta.rangeArgs(sargs)
+			if err != nil {
+				return err
 			}
-			start, end := ta.rangeArgs(sargs)
 			return &TypedArray{
 				Kind:       ta.Kind,
 				Buffer:     ta.Buffer,
 				ByteOffset: ta.ByteOffset + start*ta.Kind.ElemSize,
 				Length:     end - start,
 			}
-		}), true
+		})
 	case "slice":
-		return NewBuiltinMethod("slice", func(this Value, sargs ...Value) Value {
-			ta, ok := this.(*TypedArray)
-			if !ok {
-				return NewTypeError("TypedArray.prototype.slice: receiver must be a TypedArray")
+		return iterMethod("slice", func(ta *TypedArray, sargs []Value) Value {
+			start, end, err := ta.rangeArgs(sargs)
+			if err != nil {
+				return err
 			}
-			start, end := ta.rangeArgs(sargs)
 			n := end - start
-			out := &TypedArray{
-				Kind:   ta.Kind,
-				Buffer: NewArrayBuffer(n * ta.Kind.ElemSize),
-				Length: n,
+			outV := ta.SpeciesCreate(n)
+			out, ok := outV.(*TypedArray)
+			if !ok {
+				return outV
 			}
 			for i := 0; i < n; i++ {
 				out.setElement(i, ta.getElement(start+i))
 			}
 			return out
-		}), true
+		})
 	case "join":
-		return NewBuiltinMethod("join", func(this Value, sargs ...Value) Value {
-			ta, ok := this.(*TypedArray)
-			if !ok {
-				return NewTypeError("TypedArray.prototype.join: receiver must be a TypedArray")
-			}
+		return iterMethod("join", func(ta *TypedArray, sargs []Value) Value {
 			sep := ","
 			if len(sargs) > 0 && !isUndef(sargs[0]) {
 				sep = ToString(sargs[0])
 			}
-			parts := make([]string, 0, ta.Length)
-			for i := 0; i < ta.Length; i++ {
+			n := ta.arrLength()
+			parts := make([]string, 0, n)
+			for i := 0; i < n; i++ {
 				parts = append(parts, ToString(ta.getElement(i)))
 			}
 			return NewString(strings.Join(parts, sep))
-		}), true
+		})
 	case "indexOf":
-		return NewBuiltinMethod("indexOf", func(this Value, sargs ...Value) Value {
-			ta, ok := this.(*TypedArray)
-			if !ok {
-				return NewTypeError("TypedArray.prototype.indexOf: receiver must be a TypedArray")
-			}
+		return iterMethod("indexOf", func(ta *TypedArray, sargs []Value) Value {
 			want := toNumberValue(argOr(sargs, 0))
-			for i := 0; i < ta.Length; i++ {
+			n := ta.arrLength()
+			from, err := fromIndexArg(sargs, 1, n)
+			if err != nil {
+				return err
+			}
+			for i := from; i < n; i++ {
 				if toNumberValue(ta.getElement(i)) == want {
 					return NewInt(int64(i))
 				}
 			}
 			return NewInt(-1)
-		}), true
-	case "includes":
-		return NewBuiltinMethod("includes", func(this Value, sargs ...Value) Value {
-			ta, ok := this.(*TypedArray)
-			if !ok {
-				return NewTypeError("TypedArray.prototype.includes: receiver must be a TypedArray")
-			}
+		})
+	case "lastIndexOf":
+		return iterMethod("lastIndexOf", func(ta *TypedArray, sargs []Value) Value {
 			want := toNumberValue(argOr(sargs, 0))
-			for i := 0; i < ta.Length; i++ {
+			n := ta.arrLength()
+			from := n - 1
+			if len(sargs) > 1 && !isUndef(sargs[1]) {
+				fv, err := toF64E(sargs[1])
+				if err != nil {
+					return err
+				}
+				f := int(fv)
+				if f < 0 {
+					from = n + f
+				} else if f < from {
+					from = f
+				}
+			}
+			for i := from; i >= 0; i-- {
 				if toNumberValue(ta.getElement(i)) == want {
+					return NewInt(int64(i))
+				}
+			}
+			return NewInt(-1)
+		})
+	case "includes":
+		return iterMethod("includes", func(ta *TypedArray, sargs []Value) Value {
+			want := toNumberValue(argOr(sargs, 0))
+			n := ta.arrLength()
+			from, err := fromIndexArg(sargs, 1, n)
+			if err != nil {
+				return err
+			}
+			for i := from; i < n; i++ {
+				v := toNumberValue(ta.getElement(i))
+				if v == want || (math.IsNaN(v) && math.IsNaN(want)) {
 					return TrueSingleton
 				}
 			}
 			return FalseSingleton
-		}), true
-	case "fill":
-		return NewBuiltinMethod("fill", func(this Value, sargs ...Value) Value {
-			ta, ok := this.(*TypedArray)
-			if !ok {
-				return NewTypeError("TypedArray.prototype.fill: receiver must be a TypedArray")
+		})
+	case "hasOwnProperty":
+		return iterMethod("hasOwnProperty", func(ta *TypedArray, sargs []Value) Value {
+			if len(sargs) == 0 {
+				return FalseSingleton
 			}
+			if sym, ok := sargs[0].(*Symbol); ok {
+				_, found := ta.GetSymbolPropertyDescriptor(sym)
+				return NewBoolean(found)
+			}
+			name := ToString(sargs[0])
+			if n, ok := nameIndex(name); ok {
+				return NewBoolean(n < ta.arrLength())
+			}
+			switch name {
+			case "length", "byteLength", "byteOffset", "buffer", "BYTES_PER_ELEMENT":
+				return TrueSingleton
+			}
+			return FalseSingleton
+		})
+	case "at":
+		return iterMethod("at", func(ta *TypedArray, sargs []Value) Value {
+			n := ta.arrLength()
+			f, err := toF64E(argOr(sargs, 0))
+			if err != nil {
+				return err
+			}
+			i := int(f)
+			if i < 0 {
+				i += n
+			}
+			if i < 0 || i >= n {
+				return UndefinedSingleton
+			}
+			return ta.getElement(i)
+		})
+	case "fill":
+		return iterMethod("fill", func(ta *TypedArray, sargs []Value) Value {
 			var v Value = UndefinedSingleton
 			if len(sargs) > 0 {
 				v = sargs[0]
 			}
-			for i := 0; i < ta.Length; i++ {
+			start, end, err := ta.rangeArgs(sargs[1:])
+			if err != nil {
+				return err
+			}
+			for i := start; i < end; i++ {
 				ta.setElement(i, v)
 			}
 			return ta
-		}), true
-	case "forEach":
-		return NewBuiltinMethod("forEach", func(this Value, sargs ...Value) Value {
-			ta, ok := this.(*TypedArray)
-			if !ok {
-				return NewTypeError("TypedArray.prototype.forEach: receiver must be a TypedArray")
+		})
+	case "copyWithin":
+		return iterMethod("copyWithin", func(ta *TypedArray, sargs []Value) Value {
+			n := ta.arrLength()
+			rel := func(v float64) int {
+				i := int(v)
+				if i < 0 {
+					i += n
+					if i < 0 {
+						i = 0
+					}
+				} else if i > n {
+					i = n
+				}
+				return i
 			}
+			tf, err := toF64E(argOr(sargs, 0))
+			if err != nil {
+				return err
+			}
+			target := rel(tf)
+			ff, err := toF64E(argOr(sargs, 1))
+			if err != nil {
+				return err
+			}
+			from := rel(ff)
+			final := n
+			if len(sargs) > 2 && !isUndef(sargs[2]) {
+				ef, err := toF64E(sargs[2])
+				if err != nil {
+					return err
+				}
+				final = rel(ef)
+			}
+			count := final - from
+			if count > n-target {
+				count = n - target
+			}
+			if count <= 0 {
+				return ta
+			}
+			tmp := make([]Value, count)
+			for i := 0; i < count; i++ {
+				tmp[i] = ta.getElement(from + i)
+			}
+			for i := 0; i < count; i++ {
+				ta.setElement(target+i, tmp[i])
+			}
+			return ta
+		})
+	case "reverse":
+		return iterMethod("reverse", func(ta *TypedArray, sargs []Value) Value {
+			n := ta.arrLength()
+			for i := 0; i < n/2; i++ {
+				a, b := ta.getElement(i), ta.getElement(n-1-i)
+				ta.setElement(i, b)
+				ta.setElement(n-1-i, a)
+			}
+			return ta
+		})
+	case "sort":
+		return iterMethod("sort", func(ta *TypedArray, sargs []Value) Value {
+			n := ta.arrLength()
+			els := make([]Value, n)
+			for i := 0; i < n; i++ {
+				els[i] = ta.getElement(i)
+			}
+			var cmp func(a, b Value) bool
+			if len(sargs) > 0 && IsCallable(sargs[0]) {
+				cmpFn := sargs[0]
+				cmp = func(a, b Value) bool {
+					return toF64Value(CallFunction(cmpFn, UndefinedSingleton, a, b)) < 0
+				}
+			} else {
+				cmp = func(a, b Value) bool {
+					return toNumberValue(a) < toNumberValue(b)
+				}
+			}
+			sort.SliceStable(els, func(i, j int) bool { return cmp(els[i], els[j]) })
+			for i := 0; i < n; i++ {
+				ta.setElement(i, els[i])
+			}
+			return ta
+		})
+	case "forEach":
+		return iterMethod("forEach", func(ta *TypedArray, sargs []Value) Value {
 			if len(sargs) == 0 || !IsCallable(sargs[0]) {
 				return NewTypeError("TypedArray.prototype.forEach: callback must be a function")
 			}
-			for i := 0; i < ta.Length; i++ {
+			n := ta.arrLength()
+			for i := 0; i < n; i++ {
 				CallFunction(sargs[0], argOr(sargs, 1), ta.getElement(i), NewInt(int64(i)), ta)
 			}
 			return UndefinedSingleton
-		}), true
+		})
+	case "map":
+		return iterMethod("map", func(ta *TypedArray, sargs []Value) Value {
+			if len(sargs) == 0 || !IsCallable(sargs[0]) {
+				return NewTypeError("TypedArray.prototype.map: callback must be a function")
+			}
+			n := ta.arrLength()
+			outV := ta.SpeciesCreate(n)
+			out, ok := outV.(*TypedArray)
+			if !ok {
+				return outV
+			}
+			for i := 0; i < n; i++ {
+				out.setElement(i, CallFunction(sargs[0], argOr(sargs, 1), ta.getElement(i), NewInt(int64(i)), ta))
+			}
+			return out
+		})
+	case "filter":
+		return iterMethod("filter", func(ta *TypedArray, sargs []Value) Value {
+			if len(sargs) == 0 || !IsCallable(sargs[0]) {
+				return NewTypeError("TypedArray.prototype.filter: callback must be a function")
+			}
+			n := ta.arrLength()
+			var kept []Value
+			for i := 0; i < n; i++ {
+				v := ta.getElement(i)
+				if CallFunction(sargs[0], argOr(sargs, 1), v, NewInt(int64(i)), ta).IsTruthy() {
+					kept = append(kept, v)
+				}
+			}
+			outV := ta.SpeciesCreate(len(kept))
+			out, ok := outV.(*TypedArray)
+			if !ok {
+				return outV
+			}
+			for i, v := range kept {
+				out.setElement(i, v)
+			}
+			return out
+		})
+	case "every":
+		return iterMethod("every", func(ta *TypedArray, sargs []Value) Value {
+			if len(sargs) == 0 || !IsCallable(sargs[0]) {
+				return NewTypeError("TypedArray.prototype.every: callback must be a function")
+			}
+			n := ta.arrLength()
+			for i := 0; i < n; i++ {
+				if !CallFunction(sargs[0], argOr(sargs, 1), ta.getElement(i), NewInt(int64(i)), ta).IsTruthy() {
+					return FalseSingleton
+				}
+			}
+			return TrueSingleton
+		})
+	case "some":
+		return iterMethod("some", func(ta *TypedArray, sargs []Value) Value {
+			if len(sargs) == 0 || !IsCallable(sargs[0]) {
+				return NewTypeError("TypedArray.prototype.some: callback must be a function")
+			}
+			n := ta.arrLength()
+			for i := 0; i < n; i++ {
+				if CallFunction(sargs[0], argOr(sargs, 1), ta.getElement(i), NewInt(int64(i)), ta).IsTruthy() {
+					return TrueSingleton
+				}
+			}
+			return FalseSingleton
+		})
+	case "find", "findIndex", "findLast", "findLastIndex":
+		return iterMethod(name, func(ta *TypedArray, sargs []Value) Value {
+			if len(sargs) == 0 || !IsCallable(sargs[0]) {
+				return NewTypeError("TypedArray.prototype.%s: callback must be a function", name)
+			}
+			n := ta.arrLength()
+			backwards := name == "findLast" || name == "findLastIndex"
+			for k := 0; k < n; k++ {
+				i := k
+				if backwards {
+					i = n - 1 - k
+				}
+				v := ta.getElement(i)
+				if CallFunction(sargs[0], argOr(sargs, 1), v, NewInt(int64(i)), ta).IsTruthy() {
+					if name == "findIndex" || name == "findLastIndex" {
+						return NewInt(int64(i))
+					}
+					return v
+				}
+			}
+			if name == "findIndex" || name == "findLastIndex" {
+				return NewInt(-1)
+			}
+			return UndefinedSingleton
+		})
+	case "reduce", "reduceRight":
+		return iterMethod(name, func(ta *TypedArray, sargs []Value) Value {
+			if len(sargs) == 0 || !IsCallable(sargs[0]) {
+				return NewTypeError("TypedArray.prototype.%s: callback must be a function", name)
+			}
+			n := ta.arrLength()
+			if n == 0 && len(sargs) < 2 {
+				return NewTypeError("TypedArray.prototype.%s: empty array with no initial value", name)
+			}
+			var acc Value
+			i, step := 0, 1
+			if name == "reduceRight" {
+				i, step = n-1, -1
+			}
+			if len(sargs) > 1 {
+				acc = sargs[1]
+			} else {
+				acc = ta.getElement(i)
+				i += step
+			}
+			for ; i >= 0 && i < n; i += step {
+				acc = CallFunction(sargs[0], UndefinedSingleton, acc, ta.getElement(i), NewInt(int64(i)), ta)
+			}
+			return acc
+		})
+	case "toLocaleString", "toString":
+		return iterMethod("toLocaleString", func(ta *TypedArray, sargs []Value) Value {
+			n := ta.arrLength()
+			parts := make([]string, 0, n)
+			for i := 0; i < n; i++ {
+				parts = append(parts, ToString(ta.getElement(i)))
+			}
+			return NewString(strings.Join(parts, ","))
+		})
+	case "toReversed":
+		return iterMethod("toReversed", func(ta *TypedArray, sargs []Value) Value {
+			n := ta.arrLength()
+			out := NewTypedArray(ta.Kind, n)
+			for i := 0; i < n; i++ {
+				out.setElement(i, ta.getElement(n-1-i))
+			}
+			return out
+		})
+	case "toSorted":
+		return iterMethod("toSorted", func(ta *TypedArray, sargs []Value) Value {
+			n := ta.arrLength()
+			els := make([]Value, n)
+			for i := 0; i < n; i++ {
+				els[i] = ta.getElement(i)
+			}
+			var cmp func(a, b Value) bool
+			if len(sargs) > 0 && IsCallable(sargs[0]) {
+				cmpFn := sargs[0]
+				cmp = func(a, b Value) bool {
+					return toF64Value(CallFunction(cmpFn, UndefinedSingleton, a, b)) < 0
+				}
+			} else {
+				cmp = func(a, b Value) bool {
+					return toNumberValue(a) < toNumberValue(b)
+				}
+			}
+			sort.SliceStable(els, func(i, j int) bool { return cmp(els[i], els[j]) })
+			out := NewTypedArray(ta.Kind, n)
+			for i := 0; i < n; i++ {
+				out.setElement(i, els[i])
+			}
+			return out
+		})
+	case "with":
+		return iterMethod("with", func(ta *TypedArray, sargs []Value) Value {
+			n := ta.arrLength()
+			f, err := toF64E(argOr(sargs, 0))
+			if err != nil {
+				return err
+			}
+			i := int(f)
+			if i < 0 {
+				i += n
+			}
+			if i < 0 || i >= n {
+				return NewRangeError("TypedArray.prototype.with: index out of range")
+			}
+			out := NewTypedArray(ta.Kind, n)
+			for k := 0; k < n; k++ {
+				out.setElement(k, ta.getElement(k))
+			}
+			out.setElement(i, argOr(sargs, 1))
+			return out
+		})
 	case "toBase64":
 		// ES2026 Uint8Array.prototype.toBase64()
 		return NewBuiltinMethod("toBase64", func(this Value, sargs ...Value) Value {
@@ -509,6 +1043,32 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 	return nil, false
 }
 
+// fromIndexArg 解析 indexOf/includes 的 fromIndex (负值按 length 回绕)。
+// err 非 nil 表示 ToNumber 过程中用户回调抛错, 调用方直接透传。
+func fromIndexArg(args []Value, i, n int) (int, Value) {
+	if len(args) <= i || isUndef(args[i]) {
+		return 0, nil
+	}
+	f, err := toF64E(args[i])
+	if err != nil {
+		return 0, err
+	}
+	if math.IsNaN(f) {
+		return n, nil
+	}
+	idx := int(f)
+	if idx < 0 {
+		idx += n
+		if idx < 0 {
+			idx = 0
+		}
+	}
+	if idx > n {
+		idx = n
+	}
+	return idx, nil
+}
+
 func argOr(args []Value, i int) Value {
 	if i < len(args) {
 		return args[i]
@@ -516,8 +1076,9 @@ func argOr(args []Value, i int) Value {
 	return UndefinedSingleton
 }
 
-// rangeArgs 解析 slice/subarray 的 (start, end)。
-func (t *TypedArray) rangeArgs(args []Value) (int, int) {
+// rangeArgs 解析 slice/subarray/fill 的 (start, end)。
+// err 非 nil 表示参数 ToNumber 过程中用户回调抛错, 调用方直接透传。
+func (t *TypedArray) rangeArgs(args []Value) (int, int, Value) {
 	clamp := func(v float64, n int) int {
 		if math.IsNaN(v) {
 			return 0
@@ -534,17 +1095,25 @@ func (t *TypedArray) rangeArgs(args []Value) (int, int) {
 		}
 		return i
 	}
-	start, end := 0, t.Length
-	if len(args) > 0 {
-		start = clamp(toF64Value(args[0]), t.Length)
+	start, end := 0, t.arrLength()
+	if len(args) > 0 && !isUndef(args[0]) {
+		f, err := toF64E(args[0])
+		if err != nil {
+			return 0, 0, err
+		}
+		start = clamp(f, t.arrLength())
 	}
 	if len(args) > 1 && !isUndef(args[1]) {
-		end = clamp(toF64Value(args[1]), t.Length)
+		f, err := toF64E(args[1])
+		if err != nil {
+			return 0, 0, err
+		}
+		end = clamp(f, t.arrLength())
 	}
 	if end < start {
 		end = start
 	}
-	return start, end
+	return start, end, nil
 }
 
 // nameIndex 把属性名解析为非负整数索引。
@@ -571,8 +1140,9 @@ func nameIndex(name string) (int, bool) {
 
 // toArray 导出为普通数组 (迭代器适配用)。
 func (t *TypedArray) ToArray() *Array {
-	els := make([]Value, t.Length)
-	for i := 0; i < t.Length; i++ {
+	n := t.arrLength()
+	els := make([]Value, n)
+	for i := 0; i < n; i++ {
 		els[i] = t.getElement(i)
 	}
 	return NewArray(els)
@@ -667,6 +1237,50 @@ func NewTypedArrayView(kind TAKind, buf *ArrayBuffer, byteOffset, length int) *T
 		ByteOffset: byteOffset,
 		Length:     length,
 	}
+}
+
+// SpeciesCreate 实现 TypedArraySpeciesCreate (map/filter/slice/subarray 用):
+// 读 this.constructor, 再读其 [Symbol.species]; 缺省/为 null|undefined 时
+// 用本类型默认构造器; 否则以 (length) 构造并校验结果是 TypedArray。
+func (t *TypedArray) SpeciesCreate(n int) Value {
+	def := NewTypedArray(t.Kind, n)
+	if t.Props == nil {
+		return def
+	}
+	ctor, ok := t.Props["constructor"]
+	if !ok || ctor == nil || ctor == UndefinedSingleton {
+		return def
+	}
+	var species Value
+	if store, ok := ctor.(SymbolPropertyStore); ok {
+		if sym := GetGlobalSymbol("Symbol.species"); sym != nil {
+			if desc, found := store.GetSymbolPropertyDescriptor(sym); found {
+				if acc, isAcc := desc.Value.(*Accessor); isAcc {
+					// get @@species() { ... } 访问器: 以 constructor 为 receiver 调用
+					if acc.Getter != nil && IsCallable(acc.Getter) {
+						species = CallFunction(acc.Getter, ctor)
+					}
+				} else {
+					species = desc.Value
+				}
+			}
+		}
+	}
+	if species == nil || species == UndefinedSingleton || species == NullSingleton {
+		return def
+	}
+	if !IsCallable(species) {
+		return NewTypeError("TypedArray species constructor is not callable")
+	}
+	res := CallFunction(species, UndefinedSingleton, NewInt(int64(n)))
+	if err, isErr := res.(*Error); isErr {
+		return err
+	}
+	ta, ok := res.(*TypedArray)
+	if !ok {
+		return NewTypeError("TypedArray species constructor did not return a TypedArray")
+	}
+	return ta
 }
 
 // GetElement / SetElement 导出的元素读写 (stdlib 构造器用)。
@@ -899,6 +1513,26 @@ func typedArrayProto(name string) (Value, bool) {
 	defer taProtoRegistryMu.RUnlock()
 	v, ok := taProtoRegistry[name]
 	return v, ok
+}
+
+// %TypedArray% 抽象构造器 (供 Object.getPrototypeOf(Int8Array) === %TypedArray%)。
+var (
+	taCtorProtoMu sync.RWMutex
+	taCtorProto   Value
+)
+
+// SetTypedArrayCtorProto 注册 %TypedArray% 构造器对象。
+func SetTypedArrayCtorProto(v Value) {
+	taCtorProtoMu.Lock()
+	defer taCtorProtoMu.Unlock()
+	taCtorProto = v
+}
+
+// GetTypedArrayCtorProto 返回 %TypedArray% 构造器对象 (未注册为 nil)。
+func GetTypedArrayCtorProto() Value {
+	taCtorProtoMu.RLock()
+	defer taCtorProtoMu.RUnlock()
+	return taCtorProto
 }
 
 // CallTypedArrayMethod 按名称调用 TypedArray 的内建方法

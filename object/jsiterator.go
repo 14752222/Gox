@@ -215,12 +215,50 @@ func Iterate(v Value) (next func() (Value, bool), ok bool) {
 		it := NewArrayIterator(t.ToArray())
 		return it.Next, true
 	case *Object:
-		if fn, found := t.GetProperty(NewSymbol("Symbol.iterator").Inspect()); found && IsCallable(fn) {
-			res := CallFunction(fn, v)
-			if jit, isIt := res.(*JSIterator); isIt {
-				return jit.Next, true
+		// 用户对象经 obj[Symbol.iterator] = fn 实现迭代协议:
+		// 符号键属性在 SymbolProperties 槽, 不在字符串键空间。
+		if sym := GetGlobalSymbol("Symbol.iterator"); sym != nil {
+			if fn, found := t.GetSymbolProperty(sym); found && IsCallable(fn) {
+				if next, ok2 := IteratorNextFrom(CallFunction(fn, v)); ok2 {
+					return next, true
+				}
 			}
 		}
+		if fn, found := t.GetProperty(NewSymbol("Symbol.iterator").Inspect()); found && IsCallable(fn) {
+			if next, ok2 := IteratorNextFrom(CallFunction(fn, v)); ok2 {
+				return next, true
+			}
+		}
+	}
+	return nil, false
+}
+
+// IteratorNextFrom 把 @@iterator 的返回值适配为 next 闭包:
+// 支持 *JSIterator 与用户自建迭代器对象 ({ next() {...} })。
+// next() 返回 {value, done} 时按协议拆包; 直接返回值则视为 value。
+func IteratorNextFrom(res Value) (func() (Value, bool), bool) {
+	if jit, isIt := res.(*JSIterator); isIt {
+		return jit.Next, true
+	}
+	if _, ok := res.GetProperty("next"); ok {
+		next := func() (Value, bool) {
+			nv, found := res.GetProperty("next")
+			if !found || !IsCallable(nv) {
+				return UndefinedSingleton, true
+			}
+			r := CallFunction(nv, res)
+			if r == nil {
+				return UndefinedSingleton, true
+			}
+			if dv, dok := r.GetProperty("done"); dok && dv != nil && dv.IsTruthy() {
+				return UndefinedSingleton, true
+			}
+			if vv, vok := r.GetProperty("value"); vok {
+				return vv, false
+			}
+			return r, false
+		}
+		return next, true
 	}
 	return nil, false
 }
