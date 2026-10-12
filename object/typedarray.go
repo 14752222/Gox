@@ -827,28 +827,95 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 		})
 	case "subarray":
 		return iterMethod("subarray", func(ta *TypedArray, sargs []Value) Value {
-			start, end, err := ta.rangeArgs(sargs)
+			// 规范 sec-%typedarray%.prototype.subarray:
+			//   1. O = this; buffer = O.[[ViewedArrayBuffer]];
+			//   2. srcLength = O.[[ArrayLength]];
+			//   3. relativeBegin = ToIntegerOrInfinity(begin); beginIndex = clamp;
+			//   4. relativeEnd = ToIntegerOrInfinity(end); endIndex = clamp;
+			//   5. newLength = endIndex - beginIndex;
+			//   6. ctor = SpeciesConstructor(O, %TypedArray%);
+			//   7. return TypedArraySpeciesCreate(O, « 𝔽(beginIndex), 𝔽(newLength) »).
+			// 注意 subarray 的 species 参数是 (beginIndex, newLength), 与
+			// slice/map 的 (length) 不同 —— 自定义构造器据此建子视图。
+			beginF, err := toF64E(argOr(sargs, 0))
 			if err != nil {
 				return err
 			}
-			return &TypedArray{
-				Kind:       ta.Kind,
-				Buffer:     ta.Buffer,
-				ByteOffset: ta.ByteOffset + start*ta.Kind.ElemSize,
-				Length:     end - start,
+			endF := math.Inf(1)
+			if len(sargs) > 1 && !isUndef(sargs[1]) {
+				e, err := toF64E(sargs[1])
+				if err != nil {
+					return err
+				}
+				endF = e
 			}
+			// detached / 越界 buffer: 规范在读完 ArrayLength 后若 buffer 不可用
+			// 则由 TypedArrayCreate 抛 TypeError。此处 ToInteger 已产生全部可观测
+			// 副作用, 再判定。
+			if ta.OutOfBounds() {
+				return NewTypeError("TypedArray.prototype.subarray: typed array is detached or out of bounds")
+			}
+			srcLength := ta.arrLength()
+			beginIndex := relIndexOrInf(beginF, srcLength)
+			endIndex := relIndexOrInf(endF, srcLength)
+			newLength := endIndex - beginIndex
+			if newLength < 0 {
+				newLength = 0
+			}
+			return ta.SpeciesConstruct(subarrayArgs(ta, beginIndex, newLength, len(sargs) > 1 && !isUndef(sargs[1])), func() Value {
+				// 默认路径: 与源共享同一 buffer 的新视图。
+				// end 省略时是 length-tracking 视图 (Length=-1)。
+				length := newLength
+				if len(sargs) <= 1 || isUndef(sargs[1]) {
+					length = -1
+				}
+				return &TypedArray{
+					Kind:       ta.Kind,
+					Buffer:     ta.Buffer,
+					ByteOffset: ta.ByteOffset + beginIndex*ta.Kind.ElemSize,
+					Length:     length,
+				}
+			})
 		})
 	case "slice":
 		return iterMethod("slice", func(ta *TypedArray, sargs []Value) Value {
-			start, end, err := ta.rangeArgs(sargs)
+			// 规范 sec-%typedarray%.prototype.slice:
+			//   1. srcLength = ValidateTypedArray(O) (分离 → TypeError);
+			//   2. relativeStart/End = ToIntegerOrInfinity(...); 夹取;
+			//   3. count = max(final - k, 0);
+			//   4. A = TypedArraySpeciesCreate(O, « 𝔽(count) »)。
+			startF, err := toF64E(argOr(sargs, 0))
 			if err != nil {
 				return err
 			}
+			endF := math.Inf(1)
+			if len(sargs) > 1 && !isUndef(sargs[1]) {
+				e, err := toF64E(sargs[1])
+				if err != nil {
+					return err
+				}
+				endF = e
+			}
+			if ta.OutOfBounds() {
+				return NewTypeError("TypedArray.prototype.slice: typed array is detached or out of bounds")
+			}
+			// ToIntegerOrInfinity 的副作用须在边界判定前后一致产生 —— 上面已完成。
+			srcLength := ta.arrLength()
+			start := relIndexOrInf(startF, srcLength)
+			end := relIndexOrInf(endF, srcLength)
 			n := end - start
-			outV := ta.SpeciesCreate(n)
+			if n < 0 {
+				n = 0
+			}
+			outV, threw := ta.SpeciesCreateT(n)
+			if threw {
+				return outV
+			}
+			// TypedArrayCreate 校验: 自定义 species 构造器必须返回 TypedArray,
+			// 否则 TypeError (slice/speciesctor-get-species-custom-ctor-length-throws)。
 			out, ok := outV.(*TypedArray)
 			if !ok {
-				return outV
+				return NewTypeError("TypedArray.prototype.slice: species constructor did not return a TypedArray")
 			}
 			for i := 0; i < n; i++ {
 				out.setElement(i, ta.getElement(start+i))
@@ -1094,10 +1161,13 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 				return NewTypeError("TypedArray.prototype.map: callback must be a function")
 			}
 			n := ta.arrLength()
-			outV := ta.SpeciesCreate(n)
+			outV, threw := ta.SpeciesCreateT(n)
+			if threw {
+				return outV
+			}
 			out, ok := outV.(*TypedArray)
 			if !ok {
-				return outV
+				return NewTypeError("TypedArray.prototype.map: species constructor did not return a TypedArray")
 			}
 			for i := 0; i < n; i++ {
 				v, err := callTypedArrayCB(sargs[0], argOr(sargs, 1), ta.getElement(i), NewInt(int64(i)), ta)
@@ -1125,10 +1195,13 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 					kept = append(kept, v)
 				}
 			}
-			outV := ta.SpeciesCreate(len(kept))
+			outV, threw := ta.SpeciesCreateT(len(kept))
+			if threw {
+				return outV
+			}
 			out, ok := outV.(*TypedArray)
 			if !ok {
-				return outV
+				return NewTypeError("TypedArray.prototype.filter: species constructor did not return a TypedArray")
 			}
 			for i, v := range kept {
 				out.setElement(i, v)
@@ -1543,19 +1616,82 @@ func NewTypedArrayView(kind TAKind, buf *ArrayBuffer, byteOffset, length int) *T
 // Object.defineProperty(sample, "constructor", {get(){...}}) 定义的自有
 // 访问器从不被调用 (test262 speciesctor-get-ctor 断言 calls===1 直接暴露);
 // @@species 也绕过了 Get, 读不到继承来的访问器。此处统一走 Get(O, key)。
-func (t *TypedArray) SpeciesCreate(n int) Value {
-	def := func() Value { return NewTypedArray(t.Kind, n) }
+// subarrayArgs 组装 subarray 传给 species 构造器的参数 (规范 22.2.3.27):
+//   - end 省略且来源是 length-tracking: « buffer, 𝔽(beginByteOffset) »;
+//   - 否则 « buffer, 𝔽(beginByteOffset), 𝔽(newLength) »。
+func subarrayArgs(ta *TypedArray, beginIndex, newLength int, endProvided bool) []Value {
+	buf := Value(ta.Buffer)
+	off := NewInt(int64(ta.ByteOffset + beginIndex*ta.Kind.ElemSize))
+	if !endProvided {
+		return []Value{buf, off}
+	}
+	return []Value{buf, off, NewInt(int64(newLength))}
+}
 
+// relIndexOrInf 实现 subarray/slice 的相对索引换算:
+// NaN→0, +Inf→len, -Inf→0, 其余向零截断后按负数从末尾回绕, 并夹到 [0, len]。
+func relIndexOrInf(f float64, n int) int {
+	if math.IsNaN(f) {
+		return 0
+	}
+	if math.IsInf(f, 1) {
+		return n
+	}
+	if math.IsInf(f, -1) {
+		return 0
+	}
+	i := int(math.Trunc(f))
+	if i < 0 {
+		i += n
+	}
+	if i < 0 {
+		return 0
+	}
+	if i > n {
+		return n
+	}
+	return i
+}
+
+// SpeciesCreateT 是 SpeciesConstruct 的带抛错标志版本: threw=true 表示
+// species 解析/构造过程抛出了异常, 此时第一个返回值为该原始抛出值, 调用方
+// 必须原样透传 (不得用 TypeError 覆盖 —— slice/map/filter 的
+// speciesctor-get-species-abrupt 依赖 getter 抛出的自定义错误被原样传出)。
+func (t *TypedArray) SpeciesCreateT(n int) (Value, bool) {
+	return t.SpeciesConstructT([]Value{NewInt(int64(n))}, func() Value {
+		return NewTypedArray(t.Kind, n)
+	})
+}
+
+// SpeciesCreate 实现 TypedArraySpeciesCreate(O, « 𝔽(n) ») —— 单参数 (长度) 形态。
+func (t *TypedArray) SpeciesCreate(n int) Value {
+	v, _ := t.SpeciesCreateT(n)
+	return v
+}
+
+// SpeciesConstruct 是 SpeciesConstructT 的忽略抛错标志版本。
+func (t *TypedArray) SpeciesConstruct(args []Value, def func() Value) Value {
+	v, _ := t.SpeciesConstructT(args, def)
+	return v
+}
+
+// SpeciesConstructT 实现规范 TypedArraySpeciesCreate 的通用形态:
+// 解析 SpeciesConstructor(O), 以其为构造器传入 args; 无自定义构造器时
+// 回退 def() (默认同类型视图)。返回值 (v, threw): threw=true 时 v 是原始
+// 抛出值。用户构造器的返回值不做 TypedArray 类型校验 (规范允许 species
+// 构造器返回任意对象, subarray/slice 的
+// speciesctor-get-species-custom-ctor-returns-another-instance 依赖这一点)。
+func (t *TypedArray) SpeciesConstructT(args []Value, def func() Value) (Value, bool) {
 	ctor := t.getSpecValue("constructor")
 	if ctor == nil || ctor == UndefinedSingleton {
-		return def()
+		return def(), false
 	}
 	// 规范 7.3.20 步骤 3: Type(C) is not Object → TypeError。
 	// 函数 (Closure/BuiltinFunction) 也是对象, 必须放行 —— 派生类构造器
 	// 正是 Closure, 漏判会让 `class MyU8 extends Uint8Array` 实例的
 	// super() 派生物种解析直接抛 TypeError。
 	if !IsObjectValue(ctor) {
-		return NewTypeError("TypedArray species constructor: constructor is not an object")
+		return NewTypeError("TypedArray species constructor: constructor is not an object"), false
 	}
 	var species Value
 	if sym := GetGlobalSymbol("Symbol.species"); sym != nil {
@@ -1570,31 +1706,24 @@ func (t *TypedArray) SpeciesCreate(n int) Value {
 				} else {
 					species = CallFunction(acc.Getter, ctor)
 					if ev := TakeCallbackErrorValue(); ev != UndefinedSingleton {
-						return ev
+						return ev, true
 					}
 				}
 			}
 		}
 	}
 	if species == nil || species == UndefinedSingleton || species == NullSingleton {
-		return def()
+		return def(), false
 	}
-	if !IsCallable(species) {
-		return NewTypeError("TypedArray species constructor is not a constructor")
+	if !IsConstructor(species) {
+		return NewTypeError("TypedArray species constructor is not a constructor"), false
 	}
-	// new S(n): 走构造路径 (speciesctor 的 this 语义与 [[Construct]] 一致)。
-	res := ConstructFunction(species, NewInt(int64(n)))
+	// new S(...args): 走构造路径 (speciesctor 的 this 语义与 [[Construct]] 一致)。
+	res := ConstructFunction(species, args...)
 	if ev := TakeCallbackErrorValue(); ev != UndefinedSingleton {
-		return ev
+		return ev, true
 	}
-	if err, isErr := res.(*Error); isErr {
-		return err
-	}
-	ta, ok := res.(*TypedArray)
-	if !ok {
-		return NewTypeError("TypedArray species constructor did not return a TypedArray")
-	}
-	return ta
+	return res, false
 }
 
 // getSpecValue 以规范 Get 语义读取 TypedArray 实例的属性: 先自有属性
