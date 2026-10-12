@@ -553,6 +553,19 @@ func init() {
 		}
 		return result
 	})
+	// 注册构造回调: object.ConstructFunction (ArraySpeciesCreate 等) → vm
+	object.SetConstructFunction(func(fn object.Value, args []object.Value) object.Value {
+		if currentVM == nil {
+			return object.UndefinedSingleton
+		}
+		result, err := currentVM.constructValue(fn, args)
+		if err != nil {
+			object.SetCallbackError(err)
+			setCallbackErrorValueFromThrow(err)
+			return object.UndefinedSingleton
+		}
+		return result
+	})
 	// 注册 generator 驱动回调: object.GeneratorNext → vm.genResume
 	object.SetGeneratorNext(func(gen *object.Generator, arg object.Value) (object.Value, bool) {
 		if currentVM == nil {
@@ -1358,6 +1371,8 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			vm.stack.Push(object.NullSingleton)
 		case bytecode.OP_UNDEFINED:
 			vm.stack.Push(object.UndefinedSingleton)
+		case bytecode.OP_HOLE:
+			vm.stack.Push(object.HoleSingleton)
 		case bytecode.OP_TRUE:
 			vm.stack.Push(object.NewBoolean(true))
 		case bytecode.OP_FALSE:
@@ -2232,6 +2247,16 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				if result == nil {
 					result = newObj
 				}
+				// new Boolean/Number/String: 规范构造结果是包装对象
+				// (普通对象 + [[PrimitiveValue]] 内部槽)，不是原始值本身。
+				switch prim := result.(type) {
+				case *object.Boolean:
+					result = object.NewPrimitiveObject(prim, object.BooleanProto)
+				case *object.Number:
+					result = object.NewPrimitiveObject(prim, object.NumberProto)
+				case *object.String:
+					result = object.NewPrimitiveObject(prim, object.StringProto)
+				}
 				// 内建构造器返回 Error 对象时抛出异常 (如 new RegExp("[") → SyntaxError)
 				// ReturnIsValue 的构造器 (如 Error) 返回的 Error 是值，不抛出
 				if errObj, isErr := result.(*object.Error); isErr && !builtin.ReturnIsValue {
@@ -2269,7 +2294,11 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			n := int(operand)
 			elements := make([]object.Value, n)
 			for i := n - 1; i >= 0; i-- {
-				elements[i] = vm.stack.Pop()
+				e := vm.stack.Pop()
+				if object.IsHole(e) {
+					e = nil // 洞在 Elements 里以 nil 表示
+				}
+				elements[i] = e
 			}
 			vm.stack.Push(object.NewArray(elements))
 		case bytecode.OP_NEW_OBJECT:
@@ -2583,6 +2612,9 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 		case bytecode.OP_ARRAY_PUSH:
 			// 弹出值，追加到栈顶下方的数组
 			val := vm.stack.Pop()
+			if object.IsHole(val) {
+				val = nil // 洞在 Elements 里以 nil 表示
+			}
 			arr := vm.stack.Peek()
 			if a, ok := arr.(*object.Array); ok {
 				a.Elements = append(a.Elements, val)
@@ -3054,37 +3086,37 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				vm.stack.Push(resolved)
 				continue
 			}
-		// 2) 同步形状原样交给 ASYNC_ITER_NEXT (它统一处理 next 调用)。
-		// 「裸 next 对象」是 Gox 的非规范扩展 (for-await 自建迭代器),
-		// 判定用 hasNextKey (非触发式) —— GetProperty 会多触发一次
-		// getter, 破坏属性访问顺序 (r6e5qp)。
-		if _, isGen := val.(*object.Generator); isGen {
-			vm.stack.Push(val)
-			continue
-		}
-		if _, isIter := val.(*runtime.Iterator); isIter {
-			vm.stack.Push(val)
-			continue
-		}
-		if o, isObj := val.(*object.Object); isObj && hasNextKey(o) {
-			// 包 Async-from-Sync wrapper: next method 懒缓存 (V8 实测行为),
-			// throw/return 每次 GetMethod —— 见 wrapSyncIterForAsync。
-			// 裸 next 对象按「手写迭代器」处理 (fromSync=false): 值不解包。
-			vm.stack.Push(vm.wrapSyncIterForAsync(o, false))
-			continue
-		}
-		// 3) 同步可迭代 (数组/字符串/Map 等, 规范允许 for-await 与 yield*
-		// 委托消费): [Symbol.iterator] 解析 (generator 结果只能 VM 驱动)
-		// 或 runtime.GetIterable 适配, 转成迭代器形状。JS 迭代器对象再包
-		// Async-from-Sync wrapper (next method 懒缓存 —— V8 实测第二次
-		// next 不再触发 get next; r6e5qp test262 yield-star-sync-next)。
-		if resolved, ok, err := vm.resolveSymbolIterator(val); err != nil {
-			return err
-		} else if ok {
-			// 同步源 (CreateAsyncFromSyncIterator): 委托时步进值须解包。
-			vm.stack.Push(vm.wrapSyncIterForAsync(resolved, true))
-			continue
-		}
+			// 2) 同步形状原样交给 ASYNC_ITER_NEXT (它统一处理 next 调用)。
+			// 「裸 next 对象」是 Gox 的非规范扩展 (for-await 自建迭代器),
+			// 判定用 hasNextKey (非触发式) —— GetProperty 会多触发一次
+			// getter, 破坏属性访问顺序 (r6e5qp)。
+			if _, isGen := val.(*object.Generator); isGen {
+				vm.stack.Push(val)
+				continue
+			}
+			if _, isIter := val.(*runtime.Iterator); isIter {
+				vm.stack.Push(val)
+				continue
+			}
+			if o, isObj := val.(*object.Object); isObj && hasNextKey(o) {
+				// 包 Async-from-Sync wrapper: next method 懒缓存 (V8 实测行为),
+				// throw/return 每次 GetMethod —— 见 wrapSyncIterForAsync。
+				// 裸 next 对象按「手写迭代器」处理 (fromSync=false): 值不解包。
+				vm.stack.Push(vm.wrapSyncIterForAsync(o, false))
+				continue
+			}
+			// 3) 同步可迭代 (数组/字符串/Map 等, 规范允许 for-await 与 yield*
+			// 委托消费): [Symbol.iterator] 解析 (generator 结果只能 VM 驱动)
+			// 或 runtime.GetIterable 适配, 转成迭代器形状。JS 迭代器对象再包
+			// Async-from-Sync wrapper (next method 懒缓存 —— V8 实测第二次
+			// next 不再触发 get next; r6e5qp test262 yield-star-sync-next)。
+			if resolved, ok, err := vm.resolveSymbolIterator(val); err != nil {
+				return err
+			} else if ok {
+				// 同步源 (CreateAsyncFromSyncIterator): 委托时步进值须解包。
+				vm.stack.Push(vm.wrapSyncIterForAsync(resolved, true))
+				continue
+			}
 			if iter, hasIter := runtime.GetIterable(val); hasIter {
 				vm.stack.Push(iter)
 				continue
@@ -3691,6 +3723,42 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 // callFunction 从 Go 代码调用 JS 函数 (闭包或内建函数)。
 // 用于 stdlib 回调桥: 当 BuiltinMethod (如 Array.prototype.map) 需要
 // 调用用户传入的 JS 闭包时，通过此方法执行子帧。
+// constructValue 实现 new fn(...args) 的核心语义 (供 object.ConstructFunction 桥):
+// 内建构造器直接调用; 闭包先以 fn.prototype 为原型建 this, 返回对象则用之。
+func (vm *VM) constructValue(fn object.Value, args []object.Value) (object.Value, error) {
+	if b, ok := fn.(*object.BuiltinFunction); ok {
+		r := b.Fn(args...)
+		if r == nil {
+			return object.UndefinedSingleton, nil
+		}
+		return r, nil
+	}
+	var proto object.Value
+	if pv, ok := fn.GetProperty("prototype"); ok && pv != nil {
+		proto = pv
+	}
+	var newObj object.Value
+	if proto != nil {
+		newObj = object.NewObjectWithProto(proto)
+	} else {
+		newObj = object.NewPlainObject()
+	}
+	r, err := vm.callFunction(fn, newObj, args)
+	if err != nil {
+		return nil, err
+	}
+	// 构造器返回对象则以其为结果, 否则用新建的 this
+	switch r.(type) {
+	case *object.Object, *object.Array, *object.Closure, *object.BuiltinFunction,
+		*object.PrimitiveObject, *object.Error, *object.Map, *object.Set,
+		*object.Proxy, *object.Date, *object.RegExp:
+		if r != nil {
+			return r, nil
+		}
+	}
+	return newObj, nil
+}
+
 func (vm *VM) callFunction(fn object.Value, this object.Value, args []object.Value) (result object.Value, err error) {
 	// 微任务检查点 (ES perform-microtask-checkpoint): frameIdx == -1 表示
 	// 这是一次顶层 Go→JS 调用 (定时器/空闲/严格回调、GUI 事件派发等),
@@ -3840,6 +3908,14 @@ func (vm *VM) throwIfError(result object.Value, returnsRaw bool) (thrown bool, e
 	errObj, isErr := result.(*object.Error)
 	if !isErr || returnsRaw {
 		return false, nil
+	}
+	// 内建方法中转的用户抛值 (回调里 throw 的非 Error 值):
+	// 抛原始值, 保持 instanceof / catch 语义。
+	if errObj.Original != nil {
+		if !vm.handleThrow(errObj.Original) {
+			return true, &ThrowError{Value: errObj.Original}
+		}
+		return true, nil
 	}
 	if !vm.handleThrow(errObj) {
 		return true, &ThrowError{Value: errObj}
@@ -5763,7 +5839,6 @@ func (vm *VM) rebuildGenFrame(gen *object.Generator, reuseLocals bool) *Frame {
 }
 
 // runSuspendedGen 运行已重建帧的 generator 直到下一个 yield 或结束。
-//
 func (vm *VM) runSuspendedGen(gen *object.Generator) (object.Value, bool, error) {
 	genFrameIdx := vm.frameIdx
 	frame := vm.currentFrame()
@@ -5980,6 +6055,21 @@ func (vm *VM) getIndex(obj, index object.Value) object.Value {
 		}
 		return object.UndefinedSingleton
 
+	case *object.PrimitiveObject:
+		// 包装对象: 先查 String 包装的 length/索引字符, 再走普通对象语义
+		if sym, ok := index.(*object.Symbol); ok {
+			if desc, found := object.LookupSymbolPropertyDescriptorChain(o, sym); found {
+				if desc.Value != nil {
+					return desc.Value
+				}
+			}
+			return object.UndefinedSingleton
+		}
+		val, found := o.GetProperty(toJSString(index))
+		if !found {
+			return object.UndefinedSingleton
+		}
+		return val
 	case *object.Object:
 		if s, ok := index.(*object.String); ok {
 			val, found := o.GetProperty(s.Value)
@@ -6471,7 +6561,6 @@ func (vm *VM) throwJSErrorValue(err error) object.Value {
 	return nil
 }
 
-
 // 语义 (规范 7.3.25): 新建对象, 复制 source 的自有可枚举属性 (字符串键 + Symbol
 // 键, 按 OrdinaryOwnPropertyKeys 顺序, 触发 getter), 跳过 excluded 中的键。
 // 非对象源 (Number/Boolean/Symbol/BigInt) 得空对象; 字符串按 UTF-16 索引字符复制。
@@ -6728,8 +6817,9 @@ func (vm *VM) setIndex(obj, index, val object.Value, inStaticInit bool) {
 		if n, ok := index.(*object.Number); ok {
 			idx := int(n.Value)
 			if idx >= 0 {
+				// 跳位写 (arr[5]=1) 产生的空缺是洞 (nil), 不是 undefined 元素
 				for len(o.Elements) <= idx {
-					o.Elements = append(o.Elements, object.UndefinedSingleton)
+					o.Elements = append(o.Elements, nil)
 				}
 				o.Elements[idx] = val
 				return
@@ -6759,6 +6849,13 @@ func (vm *VM) setIndex(obj, index, val object.Value, inStaticInit bool) {
 		if n, ok := index.(*object.Number); ok {
 			o.SetIndexedElement(int(n.Value), val)
 		}
+	case *object.PrimitiveObject:
+		if sym, ok := index.(*object.Symbol); ok {
+			o.SetSymbolProperty(sym, val)
+			return
+		}
+		// String 包装的 length/索引只读 (PrimitiveObject.SetProperty 内部拦截)
+		o.SetProperty(toJSString(index), val)
 	case *object.Object:
 		if s, ok := index.(*object.String); ok {
 			o.SetProperty(s.Value, val)
@@ -6825,6 +6922,9 @@ func (vm *VM) normalizeIndexKey(index object.Value) object.Value {
 
 // toNumber 将任意值转换为 float64。
 func toNumber(v object.Value) float64 {
+	if w, ok := v.(*object.PrimitiveObject); ok {
+		v = w.Primitive
+	}
 	switch val := v.(type) {
 	case *object.Number:
 		return val.Value

@@ -513,6 +513,9 @@ func NamePropertyOf(v Value) (PropertyDescriptor, bool) {
 type BuiltinMethod struct {
 	Name string
 	Fn   func(this Value, args ...Value) Value
+	// Length 是函数的 length 属性值（规范形参个数，不含 rest/默认值之后的）。
+	// 零值即 0，与此前行为一致；由各内建安装点按规范设置。
+	Length int
 	// propKeyOrder 记录 PropDescs 里非结构性自有字符串键的插入顺序 (见
 	// *Closure.propKeyOrder 的说明)。
 	propKeyOrder []string
@@ -554,7 +557,7 @@ func (b *BuiltinMethod) GetProperty(name string) (Value, bool) {
 	case "name":
 		return NewString(b.Name), true
 	case "length":
-		return NewInt(0), true
+		return NewInt(int64(b.Length)), true
 	case "call", "apply", "bind", "toString":
 		return funcProtoLookup(b, name)
 	}

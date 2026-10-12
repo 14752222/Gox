@@ -349,7 +349,7 @@ func Disassemble(ins Instructions, cp *ConstantPool) string {
 // hasOperand 判断操作码是否有有意义的操作数。
 func hasOperand(op Opcode) bool {
 	switch op {
-	case OP_NOP, OP_NULL, OP_UNDEFINED, OP_TRUE, OP_FALSE,
+	case OP_NOP, OP_NULL, OP_UNDEFINED, OP_HOLE, OP_TRUE, OP_FALSE,
 		OP_POP, OP_DUP, OP_SWAP, OP_DUP2, OP_DUP_BELOW2, OP_ITER_BOUNDARY,
 		OP_ITER_CLOSE,
 		OP_REQUIRE_OBJECT_COERCIBLE, OP_OBJECT_REST,

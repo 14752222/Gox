@@ -393,6 +393,10 @@ const (
 	//     TypeError」)。
 	// operand = 迭代器所在隐藏槽号; 栈: [] → [] (自己 LOAD 自己弹)。
 	OP_ITER_CLOSE_ABRUPT Opcode = 0xF4
+
+	// OP_HOLE 把数组洞标记压栈 (数组字面量 elision 专用;
+	// 写入 Elements 时由 OP_NEW_ARRAY/OP_ARRAY_PUSH 转为 nil 即真洞)。
+	OP_HOLE Opcode = 0xF5
 )
 
 // InstructionSize 是每条指令的字节长度 (固定 3 字节)。
@@ -402,7 +406,7 @@ const InstructionSize = 3
 var opcodeNames = map[Opcode]string{
 	OP_NOP: "NOP", OP_POP: "POP", OP_DUP: "DUP", OP_SWAP: "SWAP", OP_POP_N: "POP_N",
 	OP_DUP2: "DUP2", OP_DUP_BELOW2: "DUP_BELOW2", OP_ITER_BOUNDARY: "ITER_BOUNDARY",
-	OP_CONST: "CONST", OP_NULL: "NULL", OP_UNDEFINED: "UNDEFINED",
+	OP_CONST: "CONST", OP_NULL: "NULL", OP_UNDEFINED: "UNDEFINED", OP_HOLE: "HOLE",
 	OP_TRUE: "TRUE", OP_FALSE: "FALSE", OP_INT: "INT",
 	OP_LOAD: "LOAD", OP_STORE: "STORE", OP_STORE_CONST: "STORE_CONST",
 	OP_STORE_CONST_GUARD: "STORE_CONST_GUARD",
