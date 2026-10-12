@@ -12,13 +12,13 @@ import (
 // 继续执行 (test262 request-queue-order 等顺序类用例依赖此语义)。
 //
 // 结构: object 包在 promise settle / 已结算 then 注册时经
-// object.SetMicrotaskEnqueuer 注册的钩子把 job 送进来; 这里按 currentVM
-// 路由到对应 VM 的队列 (与回调桥 object.CallFunction 同一套 currentVM
-// 纪律)。currentVM 为空 (纯 object 上下文) 时同步执行, 回退旧语义。
+// object.SetMicrotaskEnqueuer 注册的钩子把 job 送进来; 这里按当前 VM
+// 路由到对应 VM 的队列 (与回调桥 object.CallFunction 同一套 state 纪律)。
+// 当前 VM 为空 (纯 object 上下文) 时同步执行, 回退旧语义。
 
 func init() {
 	object.SetMicrotaskEnqueuer(func(job func()) {
-		if v := currentVM; v != nil {
+		if v := state.current(); v != nil {
 			v.enqueueMicrotask(job)
 			return
 		}
