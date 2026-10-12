@@ -397,6 +397,14 @@ const (
 	// OP_HOLE 把数组洞标记压栈 (数组字面量 elision 专用;
 	// 写入 Elements 时由 OP_NEW_ARRAY/OP_ARRAY_PUSH 转为 nil 即真洞)。
 	OP_HOLE Opcode = 0xF5
+
+	// OP_SET_CTOR 在类原型上定义 constructor 自有属性 (规范 15.7.14
+	// ClassDefinitionEvaluation: proto.constructor = F, 不可枚举/可写/可配置)。
+	// 无可操作数。栈: [ctor, proto] → [ctor, proto] (不动栈, 供后续
+	// OP_SET_PROP prototype 继续消费)。此前遗漏该步骤, 类原型缺少 constructor,
+	// 属性查找会穿透到父类原型 (extends TypedArray 时派生实例的 constructor
+	// 错误解析为基类构造器)。
+	OP_SET_CTOR Opcode = 0xF6
 )
 
 // InstructionSize 是每条指令的字节长度 (固定 3 字节)。
@@ -407,6 +415,7 @@ var opcodeNames = map[Opcode]string{
 	OP_NOP: "NOP", OP_POP: "POP", OP_DUP: "DUP", OP_SWAP: "SWAP", OP_POP_N: "POP_N",
 	OP_DUP2: "DUP2", OP_DUP_BELOW2: "DUP_BELOW2", OP_ITER_BOUNDARY: "ITER_BOUNDARY",
 	OP_CONST: "CONST", OP_NULL: "NULL", OP_UNDEFINED: "UNDEFINED", OP_HOLE: "HOLE",
+	OP_SET_CTOR: "SET_CTOR",
 	OP_TRUE: "TRUE", OP_FALSE: "FALSE", OP_INT: "INT",
 	OP_LOAD: "LOAD", OP_STORE: "STORE", OP_STORE_CONST: "STORE_CONST",
 	OP_STORE_CONST_GUARD: "STORE_CONST_GUARD",

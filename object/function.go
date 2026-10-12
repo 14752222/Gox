@@ -366,6 +366,11 @@ type BuiltinFunction struct {
 	// FuncPrototype 是函数对象自身的 [[Prototype]]。nil 时回退到全局
 	// %Function.prototype% (绝大多数内置函数如此)。
 	FuncPrototype Value
+	// IsTypedArrayCtor 标记本内建函数是某个 TypedArray 构造器
+	// (Uint8Array 等)。VM 据此识别派生类 super(...) 的父构造器调用,
+	// 把返回的 TypedArray 实例回填为派生构造器帧的 this (super() 走
+	// [[Construct]] 而非普通调用, 见 vm.invokeWithThis)。
+	IsTypedArrayCtor bool
 }
 
 func (b *BuiltinFunction) Type() ObjectType { return BUILTIN_OBJ }
