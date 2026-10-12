@@ -180,7 +180,7 @@ func setupTemporalTimeZone(temporal *object.Object) {
 		return object.NewTemporalTimeZone(id)
 	})
 	ctor.SetProperty("name", object.NewString("TimeZone"))
-	ctor.SetProperty("prototype", proto)
+	tgSetCtorPrototype(ctor, proto)
 	proto.SetBuiltinProperty("constructor", ctor)
 
 	tgStatic(ctor, "from", func(args ...object.Value) object.Value {
@@ -431,7 +431,7 @@ func setupTemporalCalendar(temporal *object.Object) {
 		return object.NewTemporalCalendar(s.Value)
 	})
 	ctor.SetProperty("name", object.NewString("Calendar"))
-	ctor.SetProperty("prototype", proto)
+	tgSetCtorPrototype(ctor, proto)
 	proto.SetBuiltinProperty("constructor", ctor)
 
 	tgStatic(ctor, "from", func(args ...object.Value) object.Value {
@@ -924,7 +924,7 @@ func setupTemporalPlainYearMonth(temporal *object.Object) {
 		return object.NewTemporalPlainYearMonth(yi, mi, 1, cal)
 	})
 	ctor.SetProperty("name", object.NewString("PlainYearMonth"))
-	ctor.SetProperty("prototype", proto)
+	tgSetCtorPrototype(ctor, proto)
 	proto.SetBuiltinProperty("constructor", ctor)
 
 	tgStatic(ctor, "from", func(args ...object.Value) object.Value {
@@ -1256,7 +1256,7 @@ func setupTemporalPlainMonthDay(temporal *object.Object) {
 		return object.NewTemporalPlainMonthDay(mi, di, 1972, cal)
 	})
 	ctor.SetProperty("name", object.NewString("PlainMonthDay"))
-	ctor.SetProperty("prototype", proto)
+	tgSetCtorPrototype(ctor, proto)
 	proto.SetBuiltinProperty("constructor", ctor)
 
 	tgStatic(ctor, "from", func(args ...object.Value) object.Value {

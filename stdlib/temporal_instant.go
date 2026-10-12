@@ -226,7 +226,7 @@ func setupTemporalInstant(env *object.Object) {
 		return object.NewTemporalInstant(ns)
 	})
 	ctor.SetProperty("name", object.NewString("Instant"))
-	ctor.SetProperty("prototype", proto)
+	tgSetCtorPrototype(ctor, proto)
 	proto.SetBuiltinProperty("constructor", ctor)
 
 	tgStatic(ctor, "from", func(args ...object.Value) object.Value {
@@ -244,9 +244,10 @@ func setupTemporalInstant(env *object.Object) {
 		if !ok {
 			return tgRange("Invalid Instant string: " + s)
 		}
-		if f.Calendar != "" && f.Calendar != object.DefaultCalendarID {
-			return tgRange("Unsupported calendar: " + f.Calendar)
-		}
+		// Instant 没有日历槽: 字符串里的 [u-ca=...] 注解一律被**忽略**
+		// (sec-temporal.instant.from: ParseTemporalInstantString 不读日历,
+		// 任何 cal-id 都不参与校验, 也不因未知日历报错)。旧实现拒绝非
+		// iso8601 的注解, 导致 argument-string-calendar-annotation 族失败。
 		dt := f.ISODateTime()
 		ns := dt.EpochNanos()
 		if f.OffsetSeconds != nil {
