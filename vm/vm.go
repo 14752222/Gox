@@ -2226,6 +2226,10 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 					}
 					continue
 				}
+				// 提前抓住构造器帧指针: runFrom 正常结束时会把帧弹出, 但派生类
+				// 构造器 super() 换掉的 this 只体现在该帧上 (隐式返回 undefined
+				// 时 OP_NEW 需据此取 exotic 实例, 而非普通对象占位)。
+				ctorFrame := vm.frames[startIdx]
 				if err := vm.runFrom(startIdx); err != nil {
 					vm.unwindFramesTo(startIdx)
 					if terr := vm.rethrowBridgeError(err); terr != nil {
@@ -2233,11 +2237,24 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 					}
 					continue
 				}
+				// 派生类构造器 (extends TypedArray 等): super() 走 [[Construct]]
+				// 后被替换的 this 挂在构造器帧上, 且派生构造器通常不显式 return
+				// (隐式返回 undefined) —— 此时必须采用构造器帧最终的 this, 而非
+				// 新建的普通对象占位。否则 new MyU8(3) 只得到普通对象, 原型方法
+				// 全部报 "receiver must be a TypedArray"。
+				var ctorThis object.Value
+				if ctorFrame != nil {
+					ctorThis = ctorFrame.This
+				}
 				// 如果构造函数返回对象，使用返回的对象
 				result := vm.stack.Pop()
-				if _, isObj := result.(*object.Object); isObj {
+				if object.IsObjectValue(result) {
 					// 使用构造函数返回的对象
 					vm.stack.Push(result)
+				} else if ctorThis != nil && ctorThis != newObj {
+					// 派生构造器 super() 已把 this 换成 exotic 实例 (TypedArray),
+					// 但派生 ctor 隐式返回 undefined —— 采用帧 this。
+					vm.stack.Push(ctorThis)
 				} else {
 					// 使用 newObj
 					vm.stack.Push(newObj)
@@ -2363,6 +2380,18 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				vm.stack.Push(object.UndefinedSingleton)
 			} else {
 				vm.stack.Push(val)
+			}
+		case bytecode.OP_SET_CTOR:
+			// 栈: [ctor, proto] → [ctor, proto]
+			// 规范 ClassDefinitionEvaluation: 在实例原型上定义 constructor
+			// 自有属性, 不可枚举、可写、可配置。不改变栈 (后续 OP_SET_PROP
+			// prototype 仍要 [ctor, proto])。
+			proto := vm.stack.Peek()
+			ctor := vm.stack.PeekAt(1)
+			if o, ok := proto.(*object.Object); ok && ctor != nil {
+				o.DefineOwnProperty("constructor", object.PropertyDescriptor{
+					Value: ctor, Writable: true, Enumerable: false, Configurable: true,
+				})
 			}
 		case bytecode.OP_SET_PROP:
 			val := vm.stack.Pop()
@@ -3748,13 +3777,8 @@ func (vm *VM) constructValue(fn object.Value, args []object.Value) (object.Value
 		return nil, err
 	}
 	// 构造器返回对象则以其为结果, 否则用新建的 this
-	switch r.(type) {
-	case *object.Object, *object.Array, *object.Closure, *object.BuiltinFunction,
-		*object.PrimitiveObject, *object.Error, *object.Map, *object.Set,
-		*object.Proxy, *object.Date, *object.RegExp:
-		if r != nil {
-			return r, nil
-		}
+	if r != nil && object.IsObjectValue(r) {
+		return r, nil
 	}
 	return newObj, nil
 }
@@ -4195,11 +4219,15 @@ func builtinName(v object.Value) string { return object.BuiltinName(v) }
 //   - 非 nil: 异常继续向外传播, 调用方 return。
 func (vm *VM) invokeWithThis(fn, thisVal object.Value, args []object.Value) error {
 	// 一次性 new.target 传递标记 (super() 前由 OP_NEW_TARGET_MARK 置位):
-	// 只有被调是 Closure 时由 callClosure 消费装配父构造器帧; 内建/代理被调
-	// 不装配 JS 帧, 这里直接丢弃, 避免泄漏给后续无关调用。
+	// 只有被调是 Closure 时由 callClosure 消费装配父构造器帧。内建/代理被调
+	// 不装配 JS 帧, 一般直接丢弃以免泄漏给后续无关调用 —— 但 TypedArray
+	// 派生类的 super(...) 是例外 (见下), 故先记录标记再决定是否清除。
+	superCall := vm.hasPendingNewTarget
 	if _, isClosure := fn.(*object.Closure); !isClosure {
-		vm.hasPendingNewTarget = false
-		vm.pendingNewTarget = nil
+		if !(superCall && isTypedArrayConstructCtor(fn)) {
+			vm.hasPendingNewTarget = false
+			vm.pendingNewTarget = nil
+		}
 	}
 	switch callee := fn.(type) {
 	case *object.BuiltinFunction:
@@ -4210,6 +4238,28 @@ func (vm *VM) invokeWithThis(fn, thisVal object.Value, args []object.Value) erro
 		}
 		if thrown, err := vm.throwIfError(result, callee.ReturnIsValue); thrown {
 			return err
+		}
+		// TypedArray 派生类 super(...): 编译器把 super() 编成 OP_CALL_METHOD
+		// (普通方法调用), 基类是内建构造器; 但规范里 super() 走 [[Construct]],
+		// 结果 (Integer-Indexed exotic 实例) 必须成为派生类构造器帧的 this ——
+		// 否则派生实例只是普通对象, 原型方法全部报 "receiver must be a
+		// TypedArray"。此处把新帧 this 换成返回的 TypedArray。
+		if superCall && thisVal != nil {
+			if ta, isTA := result.(*object.TypedArray); isTA {
+				// 派生类实例的 [[Prototype]] 应为派生类原型 (MyU8.prototype),
+				// 而非同类型的 Uint8Array.prototype。new.target 即派生构造器闭包,
+				// 取其 prototype 作为覆盖。
+				if nt, ok := vm.pendingNewTarget.(*object.Closure); ok {
+					if pv, found := nt.GetProperty("prototype"); found && pv != nil {
+						ta.ProtoOverride = pv
+					}
+				}
+				if f := vm.currentFrame(); f != nil {
+					f.This = ta
+				}
+			}
+			vm.hasPendingNewTarget = false
+			vm.pendingNewTarget = nil
 		}
 		vm.stack.Push(result)
 		if err := vm.checkCallbackErr(); err != nil {
@@ -4269,6 +4319,13 @@ func (vm *VM) invokeWithThis(fn, thisVal object.Value, args []object.Value) erro
 		return vm.throwNamedError("TypeError", "%s is not a function", describeCallee(fn))
 	}
 	return nil
+}
+
+// isTypedArrayConstructCtor 报告 fn 是否为某个 TypedArray 构造器内建函数
+// (Uint8Array / BigInt64Array 等)。供派生类 super(...) 识别父构造器。
+func isTypedArrayConstructCtor(fn object.Value) bool {
+	b, ok := fn.(*object.BuiltinFunction)
+	return ok && b.IsTypedArrayCtor
 }
 
 func describeCallee(v object.Value) string {

@@ -112,6 +112,16 @@ func setupSymbolSpeciesMembers(env *runtime.Environment) {
 		}
 		object.SetWellKnownSymbolAccessor(v, sym, getter)
 	}
+	// TypedArray 构造器同样带 @@species 访问器 (规范 23.2.2.4): 派生类
+	// (class MyU8 extends Uint8Array) 经 SpeciesConstructor 读
+	// Get(C, @@species) 时须得到 C 自身, 否则 super() 派生物种解析失准。
+	for _, kind := range object.TAKindList() {
+		v, ok := env.Get(kind.Name)
+		if !ok || v == nil {
+			continue
+		}
+		object.SetWellKnownSymbolAccessor(v, sym, getter)
+	}
 }
 
 // setupSymbolToPrimitiveMember 装配 %Symbol.prototype%[@@toPrimitive]。

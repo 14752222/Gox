@@ -289,7 +289,17 @@ type TypedArray struct {
 	// Props 存普通字符串键自有属性 (如用户赋值的 constructor),
 	// 支撑 Symbol.species 派生构造语义 (sample.constructor = {...})。
 	Props map[string]Value
-	mu    sync.Mutex
+	// PropDescs 存 Object.defineProperty 定义的字符串键描述符 (TypedArray
+	// 本身不是 OwnPropertyStore 的旧实现, defineProperty 落到这里之前一律
+	// 静默 no-op)。故该字段同时承担符号以外的定义属性落地。
+	PropDescs map[string]PropertyDescriptor
+	propOrder []string
+	// ProtoOverride 是派生类实例 (class MyU8 extends Uint8Array) 的
+	// [[Prototype]] 覆盖: super() 返回的 exotic 实例本该挂派生类原型
+	// (MyU8.prototype), 而非同类型注册表里的 Uint8Array.prototype。
+	// nil 表示走注册表按类型名解析的默认原型。
+	ProtoOverride Value
+	mu            sync.Mutex
 }
 
 func (t *TypedArray) Type() ObjectType { return OBJECT_OBJ }
@@ -584,6 +594,28 @@ func (t *TypedArray) GetProperty(name string) (Value, bool) {
 	if n, ok := nameIndex(name); ok {
 		return t.getElement(n), true
 	}
+	// defineProperty 定义的描述符优先 (访问器调 getter)。
+	if t.PropDescs != nil {
+		if d, ok := t.PropDescs[name]; ok {
+			if acc, isAcc := d.Value.(*Accessor); isAcc {
+				if acc.Getter == nil {
+					return UndefinedSingleton, true
+				}
+				r := CallFunction(acc.Getter, t)
+				if ev := TakeCallbackErrorValue(); ev != UndefinedSingleton {
+					return ev, true
+				}
+				if r == nil {
+					return UndefinedSingleton, true
+				}
+				return r, true
+			}
+			if d.Value == nil {
+				return UndefinedSingleton, true
+			}
+			return d.Value, true
+		}
+	}
 	// 用户自有属性 (constructor 等)
 	if t.Props != nil {
 		if v, ok := t.Props[name]; ok {
@@ -606,14 +638,37 @@ func (t *TypedArray) GetProperty(name string) (Value, bool) {
 	case "BYTES_PER_ELEMENT":
 		return NewInt(int64(t.Kind.ElemSize)), true
 	}
-	// 方法: 先查本类型的原型对象 (Uint8Array.prototype.toBase64 等
-	// 反射访问), 再走内建分派
-	if proto, ok := typedArrayProto(t.Kind.Name); ok {
-		if v, found := proto.GetProperty(name); found {
-			return v, true
-		}
+	// 方法: 先查原型链 (从 GetProto 起, 派生类实例的 ProtoOverride 优先),
+	// 再走内建分派。派生类原型 (MyU8.prototype) 上若有 constructor 等自有
+	// 属性, 必须在这里命中 —— 否则会穿透到底层类型原型。
+	if v, found := t.lookupPrototypeChain(name); found {
+		return v, true
 	}
 	return t.callMethod(name)
+}
+
+// lookupPrototypeChain 沿 [[Prototype]] 链查找字符串自有属性 (不调用元素的
+// getter), 命中返回 (值, true)。起点是 GetProto() —— 派生类实例为
+// ProtoOverride (MyU8.prototype), 普通实例为同类型原型对象。
+func (t *TypedArray) lookupPrototypeChain(name string) (Value, bool) {
+	for cur := t.GetProto(); cur != nil; {
+		if obj, ok := cur.(*Object); ok {
+			if v, found := obj.GetProperty(name); found {
+				return v, true
+			}
+			cur = obj.Proto
+			continue
+		}
+		if gp, ok := cur.(interface{ GetProto() Value }); ok {
+			if v, found := cur.GetProperty(name); found {
+				return v, true
+			}
+			cur = gp.GetProto()
+			continue
+		}
+		break
+	}
+	return nil, false
 }
 
 // callMethod 分派 TypedArray 的内建方法。
@@ -1423,40 +1478,65 @@ func NewTypedArrayView(kind TAKind, buf *ArrayBuffer, byteOffset, length int) *T
 	}
 }
 
-// SpeciesCreate 实现 TypedArraySpeciesCreate (map/filter/slice/subarray 用):
-// 读 this.constructor, 再读其 [Symbol.species]; 缺省/为 null|undefined 时
-// 用本类型默认构造器; 否则以 (length) 构造并校验结果是 TypedArray。
+// SpeciesCreate 实现 TypedArraySpeciesCreate (map/filter/slice/subarray 用)。
+//
+// 规范 (7.3.20 SpeciesConstructor):
+//  1. C = ? Get(O, "constructor")          —— 走原型链, 访问器要被调用
+//  2. C === undefined → 用本类型默认构造器
+//  3. Type(C) !== Object → TypeError
+//  4. S = ? Get(C, @@species)              —— 同样要调用访问器
+//  5. S === null || S === undefined → 用本类型默认构造器
+//  6. IsConstructor(S) 为假 → TypeError
+//  7. 以 new S(n) 构造, 结果须是 TypedArray
+//
+// 关键修正: 旧实现读 t.Props["constructor"] 的**原始描述符**, 于是
+// Object.defineProperty(sample, "constructor", {get(){...}}) 定义的自有
+// 访问器从不被调用 (test262 speciesctor-get-ctor 断言 calls===1 直接暴露);
+// @@species 也绕过了 Get, 读不到继承来的访问器。此处统一走 Get(O, key)。
 func (t *TypedArray) SpeciesCreate(n int) Value {
-	def := NewTypedArray(t.Kind, n)
-	if t.Props == nil {
-		return def
+	def := func() Value { return NewTypedArray(t.Kind, n) }
+
+	ctor := t.getSpecValue("constructor")
+	if ctor == nil || ctor == UndefinedSingleton {
+		return def()
 	}
-	ctor, ok := t.Props["constructor"]
-	if !ok || ctor == nil || ctor == UndefinedSingleton {
-		return def
+	// 规范 7.3.20 步骤 3: Type(C) is not Object → TypeError。
+	// 函数 (Closure/BuiltinFunction) 也是对象, 必须放行 —— 派生类构造器
+	// 正是 Closure, 漏判会让 `class MyU8 extends Uint8Array` 实例的
+	// super() 派生物种解析直接抛 TypeError。
+	if !IsObjectValue(ctor) {
+		return NewTypeError("TypedArray species constructor: constructor is not an object")
 	}
 	var species Value
-	if store, ok := ctor.(SymbolPropertyStore); ok {
-		if sym := GetGlobalSymbol("Symbol.species"); sym != nil {
-			if desc, found := store.GetSymbolPropertyDescriptor(sym); found {
-				if acc, isAcc := desc.Value.(*Accessor); isAcc {
-					// get @@species() { ... } 访问器: 以 constructor 为 receiver 调用
-					if acc.Getter != nil && IsCallable(acc.Getter) {
-						species = CallFunction(acc.Getter, ctor)
-					}
+	if sym := GetGlobalSymbol("Symbol.species"); sym != nil {
+		// 沿原型链查 @@species (Get(C, @@species)): 派生类构造器自身无该
+		// 访问器时, 继承自基类构造器 (Uint8Array) 的 get 访问器应被调用,
+		// 返回 C 本身。
+		if desc, found := LookupSymbolPropertyDescriptorChain(ctor, sym); found {
+			species = desc.Value
+			if acc, isAcc := species.(*Accessor); isAcc {
+				if acc.Getter == nil {
+					species = UndefinedSingleton
 				} else {
-					species = desc.Value
+					species = CallFunction(acc.Getter, ctor)
+					if ev := TakeCallbackErrorValue(); ev != UndefinedSingleton {
+						return ev
+					}
 				}
 			}
 		}
 	}
 	if species == nil || species == UndefinedSingleton || species == NullSingleton {
-		return def
+		return def()
 	}
 	if !IsCallable(species) {
-		return NewTypeError("TypedArray species constructor is not callable")
+		return NewTypeError("TypedArray species constructor is not a constructor")
 	}
-	res := CallFunction(species, UndefinedSingleton, NewInt(int64(n)))
+	// new S(n): 走构造路径 (speciesctor 的 this 语义与 [[Construct]] 一致)。
+	res := ConstructFunction(species, NewInt(int64(n)))
+	if ev := TakeCallbackErrorValue(); ev != UndefinedSingleton {
+		return ev
+	}
 	if err, isErr := res.(*Error); isErr {
 		return err
 	}
@@ -1465,6 +1545,70 @@ func (t *TypedArray) SpeciesCreate(n int) Value {
 		return NewTypeError("TypedArray species constructor did not return a TypedArray")
 	}
 	return ta
+}
+
+// getSpecValue 以规范 Get 语义读取 TypedArray 实例的属性: 先自有属性
+// (访问器需调用 getter), 再沿原型链查。无此属性返回 nil。
+func (t *TypedArray) getSpecValue(name string) Value {
+	if t.PropDescs != nil {
+		if d, ok := t.PropDescs[name]; ok {
+			if acc, isAcc := d.Value.(*Accessor); isAcc {
+				if acc.Getter == nil {
+					return UndefinedSingleton
+				}
+				r := CallFunction(acc.Getter, t)
+				if ev := TakeCallbackErrorValue(); ev != UndefinedSingleton {
+					return ev
+				}
+				if r == nil {
+					return UndefinedSingleton
+				}
+				return r
+			}
+			if d.Value == nil {
+				return UndefinedSingleton
+			}
+			return d.Value
+		}
+	}
+	if t.Props != nil {
+		if v, ok := t.Props[name]; ok {
+			if acc, isAcc := v.(*Accessor); isAcc {
+				if acc.Getter == nil {
+					return UndefinedSingleton
+				}
+				r := CallFunction(acc.Getter, t)
+				if ev := TakeCallbackErrorValue(); ev != UndefinedSingleton {
+					return ev
+				}
+				return r
+			}
+			return v
+		}
+	}
+	// 原型链: 从 GetProto 起 (派生类实例为 ProtoOverride) 沿链查找,
+	// 访问器调用 getter。
+	for cur := t.GetProto(); cur != nil; {
+		if v, found := cur.GetProperty(name); found {
+			if acc, isAcc := v.(*Accessor); isAcc {
+				if acc.Getter == nil {
+					return UndefinedSingleton
+				}
+				r := CallFunction(acc.Getter, t)
+				if ev := TakeCallbackErrorValue(); ev != UndefinedSingleton {
+					return ev
+				}
+				return r
+			}
+			return v
+		}
+		gp, ok := cur.(interface{ GetProto() Value })
+		if !ok {
+			break
+		}
+		cur = gp.GetProto()
+	}
+	return nil
 }
 
 // GetElement / SetElement 导出的元素读写 (stdlib 构造器用)。
@@ -1732,6 +1876,9 @@ func CallTypedArrayMethod(ta *TypedArray, name string, args []Value) (Value, boo
 // GetProto 返回类型化数组的原型 (经注册表按类型名解析)。
 // 迭代协议解析沿原型链查找 Symbol 键时需要它。
 func (t *TypedArray) GetProto() Value {
+	if t.ProtoOverride != nil {
+		return t.ProtoOverride
+	}
 	if p, ok := typedArrayProto(t.Kind.Name); ok {
 		return p
 	}
@@ -1789,3 +1936,140 @@ func (t *TypedArray) DefineOwnSymbolProperty(sym *Symbol, desc PropertyDescripto
 }
 
 func (t *TypedArray) SymbolKeys() []*Symbol { return t.symbolKeyOrder }
+
+// ===== OwnPropertyStore (Object.defineProperty / getOwnPropertyDescriptor /
+// hasOwnProperty / Object.keys 的落点) =====
+//
+// 注意: length / byteLength / byteOffset / buffer 虽然能经实例读取, 但**不是**
+// 自有属性 —— 规范把它们做成 %TypedArray%.prototype 上的访问器 (10.4.5.4
+// ~ 10.4.5.7), 实例仅暴露整数索引与用户定义的字符串键。故 OwnKeys /
+// HasOwn / OwnDescriptor 都不列这几个键 (与 V8 一致:
+// Object.getOwnPropertyNames(new Uint8Array(2)) === ["0","1"]),
+// 实例读它们由 GetProperty 从原型链解析。
+
+// OwnKeys 返回 TypedArray 自有键: 整数索引升序在前, 之后是显式定义的
+// 字符串键 (propOrder 插入顺序) 与 SetProperty 写入的键。
+func (t *TypedArray) OwnKeys() []string {
+	n := t.arrLength()
+	keys := make([]string, 0, n+len(t.propOrder))
+	for i := 0; i < n; i++ {
+		keys = append(keys, Itoa(i))
+	}
+	seen := make(map[string]bool, n+len(t.propOrder))
+	for i := 0; i < n; i++ {
+		seen[Itoa(i)] = true
+	}
+	for _, k := range t.propOrder {
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		keys = append(keys, k)
+	}
+	if t.Props != nil {
+		for k := range t.Props {
+			if seen[k] {
+				continue
+			}
+			seen[k] = true
+			keys = append(keys, k)
+		}
+	}
+	return keys
+}
+
+// EnumerableOwnKeys 返回可枚举自有键: 全部整数索引 (TypedArray 元素恒可枚举)
+// 与显式标记可枚举的字符串键。
+func (t *TypedArray) EnumerableOwnKeys() []string {
+	n := t.arrLength()
+	keys := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		keys = append(keys, Itoa(i))
+	}
+	for _, k := range t.propOrder {
+		if d, ok := t.PropDescs[k]; ok && d.Enumerable {
+			keys = append(keys, k)
+		}
+	}
+	return keys
+}
+
+// HasOwn 检查 name 是否为 TypedArray 自有属性: 范围内的整数索引, 或经
+// defineProperty / 赋值新增的字符串键。length/byteLength/... 非自有。
+func (t *TypedArray) HasOwn(name string) bool {
+	if idx, err := Atoi(name); err == nil && idx >= 0 {
+		return idx < t.arrLength()
+	}
+	if t.PropDescs != nil {
+		if d, ok := t.PropDescs[name]; ok && !d.Deleted {
+			return true
+		}
+	}
+	if t.Props != nil {
+		if _, ok := t.Props[name]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// OwnDescriptor 返回 TypedArray 自有属性描述符:
+//   - 显式 defineProperty 定义的键: 返回存储的完整描述符;
+//   - 范围内的整数索引: {value, writable:true, enumerable:true,
+//     configurable:true} (规范: 元素属性可配置);
+//   - 其余字符串键 (Props 赋值): 普通可写可枚举可配置数据属性。
+func (t *TypedArray) OwnDescriptor(name string) (PropertyDescriptor, bool) {
+	if t.PropDescs != nil {
+		if d, ok := t.PropDescs[name]; ok {
+			if d.Deleted {
+				return PropertyDescriptor{}, false
+			}
+			return d, true
+		}
+	}
+	if idx, err := Atoi(name); err == nil && idx >= 0 && idx < t.arrLength() {
+		v := t.getElement(idx)
+		if v == nil {
+			v = UndefinedSingleton
+		}
+		return PropertyDescriptor{Value: v, Writable: true, Enumerable: true, Configurable: true}, true
+	}
+	if t.Props != nil {
+		if v, ok := t.Props[name]; ok {
+			if _, isAcc := v.(*Accessor); isAcc {
+				return PropertyDescriptor{Value: v, Writable: false, Enumerable: true, Configurable: true}, true
+			}
+			return PropertyDescriptor{Value: v, Writable: true, Enumerable: true, Configurable: true}, true
+		}
+	}
+	return PropertyDescriptor{}, false
+}
+
+// DefineOwn 以完整描述符定义 TypedArray 自有属性 (Object.defineProperty 落点)。
+//
+//   - 整数索引 (范围内): 数据描述符写入元素; 访问器描述符违反 Integer-Indexed
+//     exotic 的 [[DefineOwnProperty]] (元素不可为访问器), 由调用方依据
+//     描述符合法性抛错, 这里按数据落值。
+//   - 其余字符串键: 存入 PropDescs (访问器 getter 由 GetProperty 调用), 数据
+//     属性同时落 Props 以支持不经描述符通道的读取。
+func (t *TypedArray) DefineOwn(name string, desc PropertyDescriptor) bool {
+	if t.PropDescs == nil {
+		t.PropDescs = make(map[string]PropertyDescriptor)
+	}
+	_, hadDesc := t.PropDescs[name]
+	if !hadDesc {
+		t.propOrder = append(t.propOrder, name)
+	}
+	t.PropDescs[name] = desc
+	// 索引: 数据描述符同步写元素, 使 SetProperty 通道外的读也看到新值。
+	if idx, err := Atoi(name); err == nil && idx >= 0 {
+		if _, isAcc := desc.Value.(*Accessor); !isAcc && idx < t.arrLength() {
+			if desc.Value == nil {
+				t.setElement(idx, UndefinedSingleton)
+			} else {
+				t.setElement(idx, desc.Value)
+			}
+		}
+	}
+	return true
+}
