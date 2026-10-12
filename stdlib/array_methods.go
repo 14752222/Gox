@@ -190,7 +190,9 @@ func setupArrayProto() *object.Object {
 		var out int64
 		for i := start; i < end; i++ {
 			if l.has(int64(i)) {
-				setIndexValue(a, out, l.get(int64(i)))
+				if derr := setIndexValueOrErr(a, out, l.get(int64(i))); derr != nil {
+					return derr
+				}
 			}
 			if l.err != nil {
 				return l.err
@@ -248,7 +250,9 @@ func setupArrayProto() *object.Object {
 		copy(deleted, arr.Elements[start:start+deleteCount])
 		for i := range deleted {
 			if deleted[i] != nil {
-				setIndexValue(deletedArr, int64(i), deleted[i])
+				if derr := setIndexValueOrErr(deletedArr, int64(i), deleted[i]); derr != nil {
+					return derr
+				}
 			}
 		}
 		items := []object.Value{}
@@ -297,7 +301,9 @@ func setupArrayProto() *object.Object {
 				if n >= maxArrayLikeLen {
 					return object.NewTypeError("concat result exceeds maximum length")
 				}
-				setIndexValue(a, n, e)
+				if derr := setIndexValueOrErr(a, n, e); derr != nil {
+					return derr
+				}
 				n++
 				continue
 			}
@@ -310,7 +316,9 @@ func setupArrayProto() *object.Object {
 			}
 			for i := int64(0); i < sl.n; i++ {
 				if sl.has(i) {
-					setIndexValue(a, n, sl.get(i))
+					if derr := setIndexValueOrErr(a, n, sl.get(i)); derr != nil {
+						return derr
+					}
 				}
 				if sl.err != nil {
 					return sl.err
@@ -492,7 +500,9 @@ func setupArrayProto() *object.Object {
 			if mapped == nil {
 				mapped = object.UndefinedSingleton
 			}
-			setIndexValue(a, i, mapped)
+			if derr := setIndexValueOrErr(a, i, mapped); derr != nil {
+				return derr
+			}
 		}
 		return a
 	}))
@@ -525,7 +535,9 @@ func setupArrayProto() *object.Object {
 				return thrown
 			}
 			if keep != nil && keep.IsTruthy() {
-				setIndexValue(a, out, elem)
+				if derr := setIndexValueOrErr(a, out, elem); derr != nil {
+					return derr
+				}
 				out++
 			}
 		}
@@ -1204,16 +1216,66 @@ func isObjectLike(v object.Value) bool {
 	return false
 }
 
-// setIndexValue 实现 CreateDataPropertyOrThrow(A, Pk, V) 的宽松版。
+// setIndexValue 实现 CreateDataPropertyOrThrow(A, Pk, V) (规范 sec-createdataproperty)。
+//
+// 与 setIndexValueOrErr 的区别: 该方法吞掉失败 (返回 nil), 仅供"失败也无所谓"
+// 的宽松调用点使用。规范里 concat/map/filter/slice/flatMap 等创建结果对象
+// 一律用 OrThrow 版本 —— 结果对象不可扩展 (species 构造器 preventExtensions)
+// 或索引位是不可配置访问器时必须抛 TypeError (target-array-non-extensible /
+// target-array-with-non-configurable-property 族)。
 func setIndexValue(a object.Value, i int64, v object.Value) {
-	if arr, ok := a.(*object.Array); ok {
-		for int64(len(arr.Elements)) <= i {
-			arr.Elements = append(arr.Elements, nil)
+	setIndexValueOrErr(a, i, v)
+}
+
+// setIndexValueOrErr 实现 CreateDataPropertyOrThrow 并返回失败时的 TypeError。
+//
+// CreateDataProperty 的定义 (7.3.4):
+//  1. Let newDesc be the PropertyDescriptor { [[Value]]: V, [[Writable]]: true,
+//     [[Enumerable]]: true, [[Configurable]]: true }.
+//  2. Return ? O.[[DefineOwnProperty]](P, newDesc).
+//
+// 因此它是 **DefineOwnProperty** 语义: 绕过 setter, 且已存在且不可配置的
+// 属性无法被重新定义 ⇒ 失败 ⇒ OrThrow 抛 TypeError。新索引还要过
+// [[Extensible]]。这里按 *Array / *Object / 其它 三类分别落地。
+func setIndexValueOrErr(a object.Value, i int64, v object.Value) object.Value {
+	switch target := a.(type) {
+	case *object.Array:
+		key := arrayIndexKey(i)
+		if !target.IsExtensible() && int64(len(target.Elements)) <= i {
+			return object.NewTypeError("Cannot define property %s, object is not extensible", key)
 		}
-		arr.Elements[i] = v
-		return
+		// 已显式定义过的索引: 不可配置 ⇒ DefineOwnProperty 失败。
+		if d, ok := target.OwnDescriptor(key); ok && !d.Configurable {
+			return object.NewTypeError("Cannot redefine property: %s", key)
+		}
+		for int64(len(target.Elements)) <= i {
+			target.Elements = append(target.Elements, nil)
+		}
+		target.Elements[i] = v
+		return nil
+	case *object.Object:
+		key := arrayIndexKey(i)
+		// 已存在且不可配置的数据属性: 其值不同或不可写 ⇒ 无法按 CreateDataProperty
+		// 重定义。规范里 CreateDataPropertyOrThrow 只要求"定义成功", 因此
+		// 值相同且可写时仍应成功 (非扩展对象上的既有属性不受影响)。
+		if d, ok := target.Properties[key]; ok {
+			if !d.Configurable {
+				if _, isAcc := d.Value.(*object.Accessor); isAcc {
+					return object.NewTypeError("Cannot redefine property: %s", key)
+				}
+				if !d.Writable || !strictEqualValues(d.Value, v) {
+					return object.NewTypeError("Cannot redefine property: %s", key)
+				}
+			}
+		} else if !target.IsExtensible() {
+			return object.NewTypeError("Cannot add property %s, object is not extensible", key)
+		}
+		target.DefineOwnProperty(key, object.DataProperty(v))
+		return nil
 	}
+	// 其它宿主对象 / Proxy: 走普通 Set 通道, 无法精确判定失败, 保持既有行为。
 	a.SetProperty(arrayIndexKey(i), v)
+	return nil
 }
 
 // arraySpeciesCreate 实现规范的 ArraySpeciesCreate(O, length)。
@@ -1474,7 +1536,9 @@ func genericSplice(l *arrayLike, args []object.Value) object.Value {
 	}
 	for i := 0; i < deleteCount; i++ {
 		if l.has(int64(start + i)) {
-			setIndexValue(deletedArr, int64(i), l.get(int64(start+i)))
+			if derr := setIndexValueOrErr(deletedArr, int64(i), l.get(int64(start+i))); derr != nil {
+				return derr
+			}
 		}
 		if l.err != nil {
 			return l.err

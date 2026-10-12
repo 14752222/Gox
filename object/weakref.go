@@ -140,6 +140,56 @@ func IsObjectValue(v Value) bool {
 	return false
 }
 
+// extensibility 是"可写 [[Extensible]]"的对象子集。*Object 与 *Array 承载
+// 真实的可扩展性状态; 其余对象类型 (函数/Map/Set/Proxy/...) 在 Gox 里尚无
+// [[Extensible]] 槽位, 一律按"可扩展"处理 (与既有行为一致)。
+type extensibility interface {
+	IsExtensible() bool
+	PreventExtensions()
+}
+
+// IsExtensible 实现规范的 IsExtensible (sec-is-extensible)。
+// 非对象值返回 false; 无 [[Extensible]] 槽位的对象类型视为可扩展。
+func IsExtensible(v Value) bool {
+	if e, ok := v.(extensibility); ok {
+		return e.IsExtensible()
+	}
+	return IsObjectValue(v)
+}
+
+// PreventExtensions 实现规范的 [[PreventExtensions]] (sec-setintegritylevel)。
+// 返回是否成功 (不可扩展的对象再调一次也返回 true)。无槽位的对象类型
+// 目前无法真正置位, 按规范"本应成功"返回 true, 但状态不变 ——
+// 这是已知限制, 不影响 Array / 普通对象这两条已接线的路径。
+func PreventExtensions(v Value) bool {
+	if e, ok := v.(extensibility); ok {
+		e.PreventExtensions()
+		return true
+	}
+	return IsObjectValue(v)
+}
+
+// ExtensibleObject 抽象 Object.freeze / seal 需要遍历并改写的"自有属性
+// 描述符表"。*Object 直接暴露 Properties; *Array 的索引/额外属性/描述符
+// 分散在三处, 由 makeNonConfigurable 统一冻结。
+type ExtensibleObject interface {
+	extensibility
+	// freezeProperties 把自有属性按规范改为不可配置 (seal), freeze 为真时
+	// 再置为不可写。
+	freezeProperties(freeze bool)
+}
+
+// FreezeProperties 对实现了 ExtensibleObject 的值执行 seal(不可配置) /
+// freeze(不可配置且不可写)。返回 false 表示该类型不支持 (调用方忽略)。
+func FreezeProperties(v Value, freeze bool) bool {
+	if eo, ok := v.(ExtensibleObject); ok {
+		eo.PreventExtensions()
+		eo.freezeProperties(freeze)
+		return true
+	}
+	return false
+}
+
 // ===== GlobalObject =====
 
 // GlobalBindingInfo 描述全局环境里一个绑定的元信息 (供 globalThis 的自有

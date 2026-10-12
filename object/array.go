@@ -24,6 +24,12 @@ type Array struct {
 	SymbolProperties map[uint64]PropertyDescriptor
 	// symbolKeyOrder 记录 Symbol 键的定义顺序 (getOwnPropertySymbols 用)。
 	symbolKeyOrder []*Symbol
+	// NonExtensible 表示 [[Extensible]] 为 false (Object.preventExtensions /
+	// seal / freeze 后)。采用**反向标志**: 零值即"可扩展", 于是所有
+	// `&Array{}` / NewArray 构造点无需改动即得到正确的默认语义 ——
+	// *Object.Extensible 那种正向布尔必须在每个构造点显式置 true, 漏一处
+	// 就让新数组变成不可扩展 (Array 的构造点远多于 *Object)。
+	NonExtensible bool
 }
 
 // holeValue 是数组洞 (elision) 的栈上标记类型。
@@ -209,18 +215,32 @@ func (a *Array) SetProperty(name string, val Value) {
 		return
 	}
 
-	// 数字索引设置
+	// 数字索引设置。数组的 length 是"最大索引 + 1"的自有属性: 写入
+	// idx >= len(Elements) 等价于**新增**一个自有属性, 因此 [[Extensible]]
+	// 为 false 时必须失败 (规范 10.4.2.1 ArraySetLength / [[DefineOwnProperty]]
+	// 对越界索引的 "if the new length is > oldLen" 分支)。
+	// 已存在的索引 (idx < len(Elements)) 是改值, 不受可扩展性影响。
 	if idx, err := strconv.Atoi(name); err == nil {
 		if idx >= 0 {
-			for len(a.Elements) <= idx {
-				a.Elements = append(a.Elements, UndefinedSingleton)
+			if idx >= len(a.Elements) {
+				if a.NonExtensible {
+					return
+				}
+				for len(a.Elements) <= idx {
+					a.Elements = append(a.Elements, UndefinedSingleton)
+				}
 			}
 			a.Elements[idx] = val
 		}
 		return
 	}
 
-	// 额外属性
+	// 额外属性 (非索引字符串键): 不存在且不可扩展时静默失败。
+	if a.NonExtensible {
+		if _, exists := a.ExtraProps[name]; !exists {
+			return
+		}
+	}
 	if a.ExtraProps == nil {
 		a.ExtraProps = make(map[string]Value)
 	}
@@ -302,6 +322,60 @@ func (a *Array) SymbolKeys() []*Symbol { return a.symbolKeyOrder }
 // 自动设置数组原型。
 func NewArray(elements []Value) *Array {
 	return &Array{Elements: elements, proto: ArrayProto}
+}
+
+// IsExtensible 报告数组的 [[Extensible]] (NonExtensible 的反)。
+func (a *Array) IsExtensible() bool { return !a.NonExtensible }
+
+// PreventExtensions 把数组置为不可扩展 (Object.preventExtensions / seal /
+// freeze 的落点)。与 *Object.Extensible=false 语义一致。
+func (a *Array) PreventExtensions() { a.NonExtensible = true }
+
+// freezeProperties 实现 Object.seal / freeze 对数组自有属性的处理:
+//   - 显式描述符 (PropDescs, 含越界索引) 一律改为不可配置, freeze 再置不可写;
+//   - 范围内的普通索引是隐式数据属性 (writable/enumerable/configurable 均 true),
+//     无法在 PropDescs 缺席时"变只读", 故为它们补写显式描述符;
+//   - length 由 arrayLengthDescriptor 按规范恒不可配置, 无需改写。
+//
+// 不补写显式描述符的话, `Object.freeze([]); arr.push(1)` 仍能写入索引 ——
+// pop/shift/push/unshift 的 set-length-array-is-frozen 族正依赖冻结生效。
+func (a *Array) freezeProperties(freeze bool) {
+	if a.PropDescs == nil {
+		a.PropDescs = make(map[string]PropertyDescriptor)
+	}
+	for i, v := range a.Elements {
+		k := Itoa(i)
+		if d, ok := a.PropDescs[k]; ok {
+			d.Configurable = false
+			if freeze {
+				d.Writable = false
+			}
+			a.PropDescs[k] = d
+			continue
+		}
+		if v == nil {
+			v = UndefinedSingleton
+		}
+		a.PropDescs[k] = PropertyDescriptor{
+			Value:        v,
+			Writable:     !freeze,
+			Enumerable:   true,
+			Configurable: false,
+		}
+	}
+	for k, d := range a.PropDescs {
+		if _, err := Atoi(k); err == nil {
+			continue // 索引已在上面处理 (含越界索引)
+		}
+		if k == "length" {
+			continue
+		}
+		d.Configurable = false
+		if freeze {
+			d.Writable = false
+		}
+		a.PropDescs[k] = d
+	}
 }
 
 // joinStrings 连接字符串切片 (避免引入 strings 包)

@@ -52,6 +52,37 @@ type PropDeleter interface {
 	DeleteOwn(name string) bool
 }
 
+// HasConfigurableOwn 报告值是否有任何可配置的自有属性 —— Object.isSealed
+// 的判据 (非对象值按"无自有属性"返回 false)。索引键与字符串键都经
+// OwnKeys 枚举, 再逐个查描述符。
+func HasConfigurableOwn(v Value) bool {
+	store, ok := v.(OwnPropertyStore)
+	if !ok {
+		return false
+	}
+	for _, k := range store.OwnKeys() {
+		if d, found := store.OwnDescriptor(k); found && d.Configurable {
+			return true
+		}
+	}
+	return false
+}
+
+// HasWritableOrConfigurableOwn 报告值是否存在"可写或可配置"的自有属性 ——
+// Object.isFrozen 的判据。
+func HasWritableOrConfigurableOwn(v Value) bool {
+	store, ok := v.(OwnPropertyStore)
+	if !ok {
+		return false
+	}
+	for _, k := range store.OwnKeys() {
+		if d, found := store.OwnDescriptor(k); found && (d.Writable || d.Configurable) {
+			return true
+		}
+	}
+	return false
+}
+
 // ===== *Object =====
 // 普通对象的自有属性就是 Properties map, 直接对接接口 (行为与此前
 // 内建里的 *Object 分支完全一致)。
