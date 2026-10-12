@@ -29,6 +29,16 @@ func tgType(msg string) object.Value { return object.NewErrorWithName("TypeError
 // canonicalTimeZoneID 校验时区标识符并返回规范形式。
 // 时区标识符大小写不敏感: "uTc"/"etc/utc" 等规范化为 "UTC"。
 func canonicalTimeZoneID(id string) (string, bool) {
+	// 裸偏移串 (如 "+0330"、"-08"、"+03:30") 统一规范化为 ±HH:MM[:SS] 形式,
+	// 使 equals 等比较按规范等价 (argument-valid)。仅处理**不含**小数秒
+	// (无 '.'/',' ) 且无 ISO 主体 (无 'T') 的纯偏移标识符; 其余形态
+	// (含小数秒的注解偏移等) 交给下游按各自规则报错。
+	if len(id) > 0 && (id[0] == '+' || id[0] == '-') &&
+		!strings.ContainsAny(id, "Tt.,") {
+		if off, ok := object.ParseTimeZoneOffsetString(id); ok && off%60 == 0 {
+			return object.FormatOffsetSecondsNumeric(off), true
+		}
+	}
 	if object.IsValidTimeZoneID(id) {
 		return id, true
 	}
