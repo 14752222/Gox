@@ -20,6 +20,9 @@ var NumberProto Value
 // SetNumberProto 设置全局数字原型 (由 stdlib 调用)。
 func SetNumberProto(p Value) { NumberProto = p }
 
+// GetNumberProto 返回全局数字原型 (%Number.prototype%)。
+func GetNumberProto() Value { return NumberProto }
+
 func (n *Number) Type() ObjectType { return NUMBER_OBJ }
 func (n *Number) Inspect() string {
 	return NumberToString(n.Value)

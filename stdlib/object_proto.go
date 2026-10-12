@@ -69,7 +69,13 @@ func setupObjectPrototype(o *object.BuiltinFunction) {
 		if len(args) == 0 {
 			return object.NewBoolean(false)
 		}
-		return object.NewBoolean(hasOwnPropertyImpl(this, args[0]))
+		// 越界 TypedArray 的整数索引查询按规范抛 TypeError (HasOwn 内部
+		// 经 panic 报告), 在此恢复成 JS 错误值返回给 VM。
+		v, errVal := ownPropResult(func() bool { return hasOwnPropertyImpl(this, args[0]) })
+		if errVal != nil {
+			return errVal
+		}
+		return object.NewBoolean(v)
 	}))
 
 	// propertyIsEnumerable(): 自有且 Enumerable=true 的属性。
@@ -335,6 +341,23 @@ func proxyBuiltinTagFor(p *object.Proxy) string {
 		return "Function"
 	}
 	return "Object"
+}
+
+// ownPropResult 把「可能因越界 TypedArray 而 panic」的自有属性查询
+// 收敛为 (bool, 错误值): OwnPropertyStore.HasOwn 的签名是 bool 无法返回
+// 错误, 越界时经 panic(object.TypedArrayOutOfBounds) 报告, 这里在调用点
+// 恢复成可抛出的 JS 错误值 (非 nil 时调用方应直接返回它)。
+func ownPropResult(f func() bool) (result bool, errVal object.Value) {
+	defer func() {
+		if r := recover(); r != nil {
+			if e, ok := r.(*object.Error); ok {
+				errVal = e
+				return
+			}
+			panic(r)
+		}
+	}()
+	return f(), nil
 }
 
 // hasOwnPropertyImpl 实现 hasOwnProperty 的"自有属性"查询。

@@ -32,6 +32,27 @@ func (w *PrimitiveObject) GetProperty(name string) (Value, bool) {
 	return w.Object.GetProperty(name)
 }
 
+// Type 返回包装对象对应的内置类型 (Boolean/Number/String/Symbol 包装),
+// 而不是嵌入的 *Object 的 OBJECT_OBJ。
+//
+// 规范里 `Object(false) instanceof Boolean` 为真: 包装对象是 Boolean 的
+// 实例。MatchBuiltinType 走 Type() 判定, 若返回 OBJECT_OBJ 则整族
+// "applied to primitive" 用例 (callbackfn 的第三个参数 obj instanceof X)
+// 全部失败。
+func (w *PrimitiveObject) Type() ObjectType {
+	switch w.Primitive.(type) {
+	case *Boolean:
+		return BOOLEAN_OBJ
+	case *Number:
+		return NUMBER_OBJ
+	case *String:
+		return STRING_OBJ
+	case *Symbol:
+		return SYMBOL_OBJ
+	}
+	return OBJECT_OBJ
+}
+
 // SetProperty 对 String 包装的 length/索引按规范静默拒绝 (不可写)，
 // 其余属性走普通对象语义。
 func (w *PrimitiveObject) SetProperty(name string, val Value) {
