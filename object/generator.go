@@ -155,53 +155,44 @@ type GeneratorThrowFunc func(gen *Generator, throwVal Value) (Value, bool)
 // 会展开体内的 finally 块。返回值语义同 GeneratorNext (返回值/是否完成)。
 type GeneratorReturnFunc func(gen *Generator, returnVal Value) (Value, bool)
 
-// generatorNext 是 VM 注册的回调。
-var generatorNext GeneratorNextFunc
-
-// generatorThrow 是 VM 注册的异常恢复回调。
-var generatorThrow GeneratorThrowFunc
-
-// generatorReturn 是 VM 注册的 return 完成恢复回调。
-var generatorReturn GeneratorReturnFunc
-
 // SetGeneratorNext 注册生成器驱动回调 (由 vm 包初始化时调用)。
 func SetGeneratorNext(f GeneratorNextFunc) {
-	generatorNext = f
+	defaultBridge.generatorNext = f
 }
 
 // SetGeneratorThrow 注册异常恢复回调 (由 vm 包初始化时调用)。
 func SetGeneratorThrow(f GeneratorThrowFunc) {
-	generatorThrow = f
+	defaultBridge.generatorThrow = f
 }
 
 // SetGeneratorReturn 注册 return 完成恢复回调 (由 vm 包初始化时调用)。
 func SetGeneratorReturn(f GeneratorReturnFunc) {
-	generatorReturn = f
+	defaultBridge.generatorReturn = f
 }
 
 // GeneratorNext 驱动生成器前进一步。
 // 未注册回调时返回 (undefined, true) (视为已完成)。
 func GeneratorNext(gen *Generator, arg Value) (Value, bool) {
-	if generatorNext == nil {
+	if defaultBridge.generatorNext == nil {
 		return UndefinedSingleton, true
 	}
-	return generatorNext(gen, arg)
+	return defaultBridge.generatorNext(gen, arg)
 }
 
 // GeneratorThrow 把 throwVal 作为异常抛入生成器，从 yield 点恢复执行。
 // 未注册回调时视为已完成。
 func GeneratorThrow(gen *Generator, throwVal Value) (Value, bool) {
-	if generatorThrow == nil {
+	if defaultBridge.generatorThrow == nil {
 		return UndefinedSingleton, true
 	}
-	return generatorThrow(gen, throwVal)
+	return defaultBridge.generatorThrow(gen, throwVal)
 }
 
 // GeneratorReturn 把 returnVal 作为 return 完成注入生成器，从 yield 点恢复。
 // 未注册回调时视为已完成。
 func GeneratorReturn(gen *Generator, returnVal Value) (Value, bool) {
-	if generatorReturn == nil {
+	if defaultBridge.generatorReturn == nil {
 		return returnVal, true
 	}
-	return generatorReturn(gen, returnVal)
+	return defaultBridge.generatorReturn(gen, returnVal)
 }
