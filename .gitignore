@@ -109,3 +109,9 @@ bench-results/perf-stress-*.json
 __pycache__/
 *.py[cod]
 test262/
+
+# WASM 产物（rzTQml 探针）：构建生成，不入库
+playground/gox.wasm
+
+# RSS 曲线采样产物（r95WjJ）：CI 只上传 artifact，不入库
+bench-results/rss-*.csv

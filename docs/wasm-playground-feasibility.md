@@ -322,3 +322,36 @@ ERR: Error: Go program has already exited
   编译可行性均未测（体积仍是 Playground 的主要风险）。
 - **未跑 test262 A/B**（本单不需要）；宿主平台 `go build ./...` + `go test ./...` 已全绿
   （`cmd/goxwasm [no test files]`，其余包全 ok，耗时约 2m6s）。
+
+---
+
+## 本轮探针（rzTQml T14，task/rzTQml-wasm-rss 分支，2026-10-11）
+
+前置（宿主屏蔽 `process.exit` + `RunTimers` 定时器泵）已在基线完成。本轮做的是
+**Playground 页面探针本身**：
+
+### 交付物
+
+- `playground/index.html` —— 最小页面：textarea 输入 JS + 运行按钮 + 输出区，
+  `wasm_exec.js` 加载 `gox.wasm`，调 `globalThis.goxRunSource(src)`（Promise 异步，原因见
+  `cmd/goxwasm/main.go` 头注释）。`?auto=1` 供 headless 自动验证。
+- `playground/wasm_exec.js` —— 从 GOROOT 拷贝（与 Go 版本严格匹配，构建脚本每次重拷）。
+- `scripts/build-playground.sh` —— `GOOS=js GOARCH=wasm go build -ldflags="-s -w"`
+  + 拷贝 wasm_exec.js，产物落 `playground/`（`gox.wasm` 为生成物，不入库）。
+
+### 本轮实测（go1.26.2 linux/amd64，Node v22.13.1，Chromium headless）
+
+| 验证项 | 结果 |
+|---|---|
+| `GOOS=js GOARCH=wasm go build ./cmd/goxwasm` | **一次通过**，无平台特定代码阻塞，无需新增 build tag |
+| wasm 体积（strip） | 27,649,784 B ≈ **26.4 MiB**（与上轮 26.0 MiB 同量级，体积仍是上线主要风险） |
+| Node 宿主 `run_node.js` 12 用例 | **全过**（map/闭包/console.log/JSON/模板串/错误路径） |
+| 静态服务器资源加载 | `python3 -m http.server` 下 index/gox.wasm/wasm_exec.js 均 200 |
+| **真实浏览器（Chromium headless）** | **跑通**：`--dump-dom '?auto=1'` 得 `data-probe="done"`、状态「引擎就绪」、`[1,2,3].map(x=>x*2)` 输出 `[2, 4, 6]` —— 上轮「浏览器真机未测」缺口本轮补齐 |
+
+### 结论
+
+**可行（console-only 版已被真实浏览器验证）**。卡点不变：体积 ~26 MiB（需
+gzip/brotli + 流式编译 + 可选剔 `update` 包）；GUI 版不可行（gfx 无浏览器后端，本轮未尝试
+也不建议尝试）。微任务（Promise）正常；宏任务（`setTimeout`）依赖宿主 `RunTimers` 泵，
+Playground 场景如需可后补。
