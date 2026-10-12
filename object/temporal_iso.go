@@ -314,9 +314,25 @@ func ISODateTimeInRange(dt ISODateTime) bool {
 	return true
 }
 
+// ISOYearMonthInRange 检查 PlainYearMonth (以月首日为锚点) 是否可表示。
+// 与 ISODateInRange 不同: 下界放宽到 -271821-04-01 (而非 -04-19),
+// 上界收到 +275760-09-30 (而非 -09-13) —— sec-temporal-yearmonth 的范围
+// 检查锚在"该月第一天"上 (PlainYearMonth/prototype/since 的 string-limits)。
+func ISOYearMonthInRange(year, month int32) bool {
+	if year < -271821 || year > 275760 {
+		return false
+	}
+	if year == -271821 && month < 4 {
+		return false
+	}
+	if year == 275760 && month > 9 {
+		return false
+	}
+	return true
+}
+
 // IsValidISODate 检查 ISO 日期字段是否构成合法日期。
-func IsValidISODate(d ISODate) bool {
-	if d.Month < 1 || d.Month > 12 {
+func IsValidISODate(d ISODate) bool {	if d.Month < 1 || d.Month > 12 {
 		return false
 	}
 	if d.Day < 1 {

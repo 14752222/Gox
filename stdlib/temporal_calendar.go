@@ -948,6 +948,9 @@ func setupTemporalPlainYearMonth(temporal *object.Object) {
 			if !ok {
 				return tgRange("Invalid PlainYearMonth string: " + v.Value)
 			}
+			if !object.ISOYearMonthInRange(f.Year, f.Month) {
+				return tgRange("PlainYearMonth is outside of supported range")
+			}
 			if _, oe := readOverflowOption(argAt(args, 1)); oe != nil {
 				return oe
 			}
@@ -1046,6 +1049,12 @@ func ymDiff(t *object.TemporalPlainYearMonth, args []object.Value, since bool) o
 	other, cerr := toPlainYearMonthValue(args[0])
 	if cerr != nil {
 		return cerr
+	}
+	// since/until 的差值取在"两月首日"之间, 故参数月的首日必须落在
+	// Temporal 可表示区间内 (比 compare/from 的月级上界更严):
+	// -271821-04 的首日 -271821-04-01 越界 → RangeError。
+	if !object.ISODateInRange(object.ISODate{Year: other.Year(), Month: other.Month(), Day: 1}) {
+		return tgRange("PlainYearMonth is outside of supported range")
 	}
 	var opts object.Value
 	if len(args) > 1 {

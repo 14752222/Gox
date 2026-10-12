@@ -1811,9 +1811,7 @@ func toInstantValue(v object.Value) (*object.TemporalInstant, object.Value) {
 		if !ok {
 			return nil, tgRange("Invalid Instant string: " + t.Value)
 		}
-		if e := calendarFromAnnotation(f.Calendar); e != nil {
-			return nil, e
-		}
+		// Instant 无日历槽: [u-ca=...] 注解一律忽略 (不校验、不报错)。
 		dt := f.ISODateTime()
 		ns := dt.EpochNanos()
 		if f.OffsetSeconds != nil {
@@ -1834,9 +1832,7 @@ func toInstantValue(v object.Value) (*object.TemporalInstant, object.Value) {
 		if !ok {
 			return nil, tgRange("Invalid Instant string: " + s)
 		}
-		if e := calendarFromAnnotation(f.Calendar); e != nil {
-			return nil, e
-		}
+		// Instant 无日历槽: [u-ca=...] 注解一律忽略 (不校验、不报错)。
 		dt := f.ISODateTime()
 		ns := dt.EpochNanos()
 		if f.OffsetSeconds != nil {
@@ -1867,6 +1863,11 @@ func toPlainYearMonthValue(v object.Value) (*object.TemporalPlainYearMonth, obje
 		}
 		if e := calendarFromAnnotation(f.Calendar); e != nil {
 			return nil, e
+		}
+		// 该月的**第一天**必须在可表示区间内 (sec-temporal-yearmonth:
+		// 参数串以"月首日"为锚点做范围检查, 而非其自带的日)。
+		if !object.ISOYearMonthInRange(f.Year, f.Month) {
+			return nil, tgRange("PlainYearMonth is outside of supported range")
 		}
 		return object.NewTemporalPlainYearMonth(f.Year, f.Month, 1, object.DefaultCalendarID), nil
 	case propBag:
