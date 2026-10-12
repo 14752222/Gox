@@ -192,6 +192,12 @@ func setupReflectProxy(env *runtime.Environment) {
 		if fp := object.FuncPrototypeOf(target); fp != nil {
 			return fp
 		}
+		// 兜底: 鸭子类型入口 `GetProto() Value` (Temporal 各类型等)。
+		if ph, ok := target.(interface{ GetProto() object.Value }); ok {
+			if p := ph.GetProto(); p != nil {
+				return p
+			}
+		}
 		return object.NullSingleton
 	}))
 
