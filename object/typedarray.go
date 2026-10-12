@@ -1822,6 +1822,17 @@ func (t *TypedArray) SpeciesConstructT(args []Value, def func() Value) (Value, b
 	if ev := TakeCallbackErrorValue(); ev != UndefinedSingleton {
 		return ev, true
 	}
+	// TypedArrayCreate 步骤 3 (规范 22.2.4.6): 单 Number 参数形态下,
+	// 若新建视图是 TypedArray 且其 [[ArrayLength]] < 请求长度, 抛 TypeError。
+	// map/filter/slice 都经此路径 (subarray 走双参数形态, 不适用该检查)。
+	// 漏判会让 speciesctor-get-species-custom-ctor-length-throws 静默通过。
+	if len(args) == 1 {
+		if reqN, ok := args[0].(*Number); ok {
+			if out, isTA := res.(*TypedArray); isTA && out.arrLength() < int(reqN.Value) {
+				return NewTypeError("TypedArrayCreate: species constructor returned a typed array with insufficient length"), false
+			}
+		}
+	}
 	return res, false
 }
 

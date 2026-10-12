@@ -2,6 +2,7 @@ package vm
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/14752222/Gox/bytecode"
 	"github.com/14752222/Gox/object"
@@ -128,6 +129,18 @@ func (vm *VM) callFunction(fn object.Value, this object.Value, args []object.Val
 		result := callee.Fn(this, args...)
 		if result == nil {
 			return object.UndefinedSingleton, nil
+		}
+		// 内建**访问器 getter** 以"返回 *Error"作为抛出信号 (与 OP_CALL
+		// 的 throwIfError 一致)。经此桥 (object.CallFunction) 展开 getter 时,
+		// 若不在此转换, 返回值会被当作普通值持有 —— e.g.
+		// `TypedArray.prototype.byteOffset` 应抛 TypeError, 实际却拿到
+		// 一个 TypeError 对象 (get-%typedarray% 系列的 invoked-as-accessor)。
+		//
+		// 只对访问器 (名字以 "get " 开头) 生效: 普通内建方法返回 *Error
+		// 在若干内部调用点 (Temporal 的 FromXxx 辅助等) 是"把错误值交给
+		// 调用方判定"的既有约定, 一律转换会破坏那些路径。
+		if errObj, isErr := result.(*object.Error); isErr && strings.HasPrefix(callee.Name, "get ") {
+			return nil, &ThrowError{Value: errObj}
 		}
 		return result, nil
 
