@@ -29,10 +29,16 @@ func setupArrayProto() *object.Object {
 		}
 		n := l.n
 		for _, a := range args {
-			l.set(n, a)
+			// 规范的每一步 Set(O, ToString(n), E, true): 写索引失败 (元素位
+			// 只读 / 对象不可扩展) 必须立刻抛 TypeError。
+			if serr := l.setOrThrow(n, a); serr != nil {
+				return serr
+			}
 			n++
 		}
-		l.setLen(n)
+		if lerr := l.setLenOrThrow(n); lerr != nil {
+			return lerr
+		}
 		return object.NewNumber(float64(n))
 	}))
 
@@ -46,12 +52,19 @@ func setupArrayProto() *object.Object {
 			return mv
 		}
 		if l.n == 0 {
-			l.setLen(0)
+			if lerr := l.setLenOrThrow(0); lerr != nil {
+				return lerr
+			}
 			return object.UndefinedSingleton
 		}
 		lastIdx := l.n - 1
 		last := l.get(lastIdx)
-		l.setLen(lastIdx)
+		if lerr := l.setLenOrThrow(lastIdx); lerr != nil {
+			return lerr
+		}
+		if l.err != nil {
+			return l.err
+		}
 		if l.arr == nil {
 			if o, ok := l.obj.(*object.Object); ok {
 				o.DeleteProperty(arrayIndexKey(lastIdx))
@@ -70,26 +83,41 @@ func setupArrayProto() *object.Object {
 			return mv
 		}
 		if l.n == 0 {
-			l.setLen(0)
+			if lerr := l.setLenOrThrow(0); lerr != nil {
+				return lerr
+			}
 			return object.UndefinedSingleton
 		}
 		first := l.get(0)
+		if l.err != nil {
+			return l.err
+		}
 		if l.arr != nil {
-			l.arr.Elements = l.arr.Elements[1:]
-			l.n--
+			// 真实数组: shift 等价于"删掉索引 0 + length-1"。走逐位搬移会把
+			// O(n) 变成逐元素 Set; 这里直接用切片, 但 length 的写入仍必须
+			// 经 setLenOrThrow 以暴露"不可写 ⇒ TypeError"。
+			els := l.arr.Elements
+			if len(els) > 0 {
+				l.arr.Elements = append(els[:0:0], els[1:]...)
+			}
+			if lerr := l.setLenOrThrow(l.n - 1); lerr != nil {
+				return lerr
+			}
 			return first
 		}
 		for i := int64(1); i < l.n; i++ {
 			if l.has(i) {
-				l.set(i-1, l.get(i))
-			} else if o, ok := l.obj.(*object.Object); ok {
-				o.DeleteProperty(arrayIndexKey(i - 1))
+				if serr := l.setOrThrow(i-1, l.get(i)); serr != nil {
+					return serr
+				}
+			} else {
+				l.deleteOrThrow(i - 1)
 			}
 		}
-		if o, ok := l.obj.(*object.Object); ok {
-			o.DeleteProperty(arrayIndexKey(l.n - 1))
+		l.deleteOrThrow(l.n - 1)
+		if lerr := l.setLenOrThrow(l.n - 1); lerr != nil {
+			return lerr
 		}
-		l.setLen(l.n - 1)
 		return first
 	}))
 
@@ -105,29 +133,27 @@ func setupArrayProto() *object.Object {
 		if l.n+int64(len(args)) > maxArrayLikeLen {
 			return object.NewRangeError("Invalid array length")
 		}
-		if l.arr != nil {
-			// 复制到新切片: args 是 VM 的参数切片，直接 append 可能复用其
-			// 底层数组，与 Elements 混用会造成数据错乱。
-			items := make([]object.Value, 0, len(args)+len(l.arr.Elements))
-			items = append(items, args...)
-			items = append(items, l.arr.Elements...)
-			l.arr.Elements = items
-			l.n = int64(len(items))
-			return object.NewNumber(float64(l.n))
-		}
 		n := l.n
 		cnt := int64(len(args))
+		// 真实数组也要逐位走 Set: 元素位可能被 freeze 成只读, 或对象不可
+		// 扩展 (set-length-array-is-frozen 族)。切片快速路径会绕过这些检查。
 		for i := n - 1; i >= 0; i-- {
 			if l.has(i) {
-				l.set(i+cnt, l.get(i))
-			} else if o, ok := l.obj.(*object.Object); ok {
-				o.DeleteProperty(arrayIndexKey(i + cnt))
+				if serr := l.setOrThrow(i+cnt, l.get(i)); serr != nil {
+					return serr
+				}
+			} else {
+				l.deleteOrThrow(i + cnt)
 			}
 		}
 		for i, a := range args {
-			l.set(int64(i), a)
+			if serr := l.setOrThrow(int64(i), a); serr != nil {
+				return serr
+			}
 		}
-		l.setLen(n + cnt)
+		if lerr := l.setLenOrThrow(n + cnt); lerr != nil {
+			return lerr
+		}
 		return object.NewNumber(float64(n + cnt))
 	}))
 
@@ -1834,7 +1860,43 @@ func (l *arrayLike) set(i int64, v object.Value) {
 
 // setLen 设置 length 属性（pop/shift 等需要把新长度写回对象）。
 func (l *arrayLike) setLen(n int64) {
+	l.setLenOrThrow(n)
+}
+
+// lengthWritable 实现规范对 length 可写性的检查:
+//   - 真实数组: length 的自有描述符恒为可写 (但 Object.freeze 会把索引/
+//     length 一并锁死 —— 冻结后的数组 [[Set]] length 必须失败);
+//   - 其它对象: 读 length 自有描述符的 Writable。
+//
+// 用于 pop/shift/push/unshift 的第二步 "Set(O, "length", ..., true)"。
+func (l *arrayLike) lengthWritable() bool {
+	if d, ok := l.ownDescriptor("length"); ok {
+		return d.Writable
+	}
+	return true
+}
+
+// ownDescriptor 查自有属性描述符 (区分 *Array 与其它对象的存储)。
+func (l *arrayLike) ownDescriptor(name string) (object.PropertyDescriptor, bool) {
+	if store, ok := l.obj.(object.OwnPropertyStore); ok {
+		return store.OwnDescriptor(name)
+	}
+	return object.PropertyDescriptor{}, false
+}
+
+// setLenOrThrow 实现规范的 Set(O, "length", newLen, true)。
+// 失败时返回 TypeError: 数组 length 不可写 (freeze / defineProperty) 时
+// push/pop/shift/unshift 必须抛出 (set-length-* 族)。
+//
+// 必须先**真的发起写入**再判定 —— 不能只看 lengthWritable() 短路: 接收者
+// 可能是带 length setter 的普通对象, 那种情况下 Set 会调用 setter 并成功
+// (splice/set_length_no_args 要求 setCallCount === 1)。
+func (l *arrayLike) setLenOrThrow(n int64) object.Value {
 	if l.arr != nil {
+		// 真实数组: length 的自有描述符决定成败, 无需触发任何访问器。
+		if !l.lengthWritable() {
+			return object.NewTypeError("Cannot assign to read only property 'length' of object")
+		}
 		if n < int64(len(l.arr.Elements)) {
 			l.arr.Elements = l.arr.Elements[:n]
 		} else {
@@ -1843,20 +1905,84 @@ func (l *arrayLike) setLen(n int64) {
 			}
 		}
 		l.n = n
-		return
+		return nil
 	}
 	l.obj.SetProperty("length", object.NewInt(n))
+	if t := callbackThrown(); t != nil {
+		return t
+	}
 	l.n = n
+	return nil
+}
+
+// setOrThrow 实现规范的 Set(O, Pk, V, true)。
+//
+// 与宽松的 set 不同, 它按 Throw=true 语义检查失败: 已有且不可写的数据属性、
+// 已有且不可配置的访问器 (无 setter)、以及不可扩展对象上的新属性都要抛
+// TypeError。pop/shift/push/unshift 这些必须把索引写入的失败暴露出来
+// (例如 getter 把 length 改成只读后, 后续 Set 必须抛)。
+//
+// 注意实际失败判据来自 SetProperty 之后的状态检查: Gox 的 SetProperty 是
+// 静默失败式 (非严格模式语义), 这里用"写入后是否真的落到目标"来判定。
+func (l *arrayLike) setOrThrow(i int64, v object.Value) object.Value {
+	key := arrayIndexKey(i)
+	// 已有显式描述符: 不可写数据属性 / 无 setter 的访问器 ⇒ Set 失败。
+	if d, ok := l.ownDescriptor(key); ok {
+		if acc, isAcc := d.Value.(*object.Accessor); isAcc {
+			if acc.Setter == nil || !object.IsCallable(acc.Setter) {
+				return object.NewTypeError("Cannot set property %s of object which has only a getter", key)
+			}
+		} else if !d.Writable {
+			return object.NewTypeError("Cannot assign to read only property %s of object", key)
+		}
+	} else if !object.IsExtensible(l.obj) {
+		// 数组的"新索引"受 [[Extensible]] 约束; 但数组索引的扩展性由
+		// Array.SetProperty 判定, 这里只在明确不可扩展且越界时报错。
+		if l.arr == nil || i >= int64(len(l.arr.Elements)) {
+			return object.NewTypeError("Cannot add property %s, object is not extensible", key)
+		}
+	}
+	l.set(i, v)
+	if t := callbackThrown(); t != nil {
+		return t
+	}
+	return nil
+}
+
+// deleteOrThrow 实现规范的 DeletePropertyOrThrow(O, Pk): 删除失败 (自有
+// 不可配置属性) 时抛 TypeError, 否则忽略结果。shift/unshift 在搬移元素后
+// 要删掉多余索引, 不可配置时必须报错。
+func (l *arrayLike) deleteOrThrow(i int64) object.Value {
+	key := arrayIndexKey(i)
+	if d, ok := l.ownDescriptor(key); ok && !d.Configurable {
+		return object.NewTypeError("Cannot delete property %s of object", key)
+	}
+	if deleter, ok := l.obj.(object.PropDeleter); ok {
+		deleter.DeleteOwn(key)
+	} else if o, ok := l.obj.(*object.Object); ok {
+		o.DeleteProperty(key)
+	}
+	return nil
 }
 
 // maxArrayLikeLen 是 ToLength 的上界 2^53-1。
 const maxArrayLikeLen = 9007199254740991
 
 // checkMutable 拦截会写索引/length 的方法作用于 String 接收者的情形:
-// 字符串的索引与 length 均不可写，规范的 Set(..., Throw=true) 必抛 TypeError。
+// 字符串 (以及 String 包装对象) 的索引与 length 均不可写, 规范的
+// Set(..., Throw=true) 必抛 TypeError。
+//
+// 只拦"String 本质"的接收者 —— 不能用 "length 描述符不可写" 作为判据:
+// 那样 copyWithin/fill 在 {length:{valueOf(){throw}}} 这类对象上会先抛
+// 自己的 TypeError 而不是让 length 的 abrupt 先冒出来
+// (return-abrupt-from-this-length 族), reverse/shift 在冻结数组上也会被
+// 误伤 (Object.freeze 后 length 不可写, 但 reverse 是合法的)。
 func (l *arrayLike) checkMutable() object.Value {
-	if _, ok := l.obj.(*object.String); ok {
-		return object.NewTypeError("Cannot assign to read only property of object")
+	switch l.obj.(type) {
+	case *object.String, *object.PrimitiveObject:
+		if _, isStr := object.UnwrapPrimitive(l.obj).(*object.String); isStr {
+			return object.NewTypeError("Cannot assign to read only property of object")
+		}
 	}
 	return nil
 }

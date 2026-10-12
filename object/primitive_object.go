@@ -67,6 +67,39 @@ func (w *PrimitiveObject) SetProperty(name string, val Value) {
 	w.Object.SetProperty(name, val)
 }
 
+// OwnDescriptor 让 String 包装的 length 与索引字符暴露为**不可写、不可枚举、
+// 不可配置**的自有属性 (规范 10.4.3.1 / 22.1.5)。
+//
+// 不补这一步, 嵌入的 *Object 只知道 Properties 里的用户键:
+// Object.getOwnPropertyDescriptor(Object('ab'), "length") 返回 undefined,
+// hasOwnProperty("length") 为 false, 于是
+// `Array.prototype.push.call('')` 的 "length 不可写 ⇒ 抛 TypeError" 判定
+// 失效 (throws-with-string-receiver 族)。
+func (w *PrimitiveObject) OwnDescriptor(name string) (PropertyDescriptor, bool) {
+	if s, ok := w.Primitive.(*String); ok {
+		ro := func(v Value) PropertyDescriptor {
+			return PropertyDescriptor{Value: v, Writable: false, Enumerable: false, Configurable: false}
+		}
+		if name == "length" {
+			return ro(NewInt(int64(UTF16Len(s.Value)))), true
+		}
+		if idx, err := strconv.Atoi(name); err == nil && idx >= 0 {
+			if ch, ok := CharAtUTF16(s.Value, idx); ok {
+				return ro(NewString(ch)), true
+			}
+		}
+	}
+	return w.Object.OwnDescriptor(name)
+}
+
+// HasOwn 让 String 包装的 length/索引在 hasOwnProperty 下可见。
+func (w *PrimitiveObject) HasOwn(name string) bool {
+	if _, ok := w.OwnDescriptor(name); ok {
+		return true
+	}
+	return w.Object.HasOwn(name)
+}
+
 // UnwrapPrimitive 拆包: 包装对象返回内部原始值，其余原样返回。
 func UnwrapPrimitive(v Value) Value {
 	if w, ok := v.(*PrimitiveObject); ok {

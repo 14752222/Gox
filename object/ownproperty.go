@@ -117,8 +117,16 @@ func (g *GlobalObject) DefineOwn(name string, desc PropertyDescriptor) bool {
 
 // arrayLengthDescriptor 返回 length 自有属性的描述符 (规范: 可写、
 // 不可枚举、不可配置)。
-func arrayLengthDescriptor(n int) PropertyDescriptor {
-	return PropertyDescriptor{Value: NewInt(int64(n)), Writable: true, Enumerable: false, Configurable: false}
+//
+// writable 由 freezeLength 决定: 数组 length 的规范性只允许在 Object.freeze
+// (或 defineProperty 显式改) 后变成不可写 —— 普通数组恒为 true。
+func arrayLengthDescriptorFor(a *Array) PropertyDescriptor {
+	return PropertyDescriptor{
+		Value:        NewInt(int64(len(a.Elements))),
+		Writable:     !a.NonWritableLength,
+		Enumerable:   false,
+		Configurable: false,
+	}
 }
 
 // OwnKeys 返回数组自有键: 整数索引升序 + "length" + defineProperty 定义的
@@ -198,7 +206,7 @@ func (a *Array) OwnDescriptor(name string) (PropertyDescriptor, bool) {
 		return d, true
 	}
 	if name == "length" {
-		return arrayLengthDescriptor(len(a.Elements)), true
+		return arrayLengthDescriptorFor(a), true
 	}
 	if idx, err := Atoi(name); err == nil && idx >= 0 && idx < len(a.Elements) {
 		v := a.Elements[idx]

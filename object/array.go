@@ -30,6 +30,9 @@ type Array struct {
 	// *Object.Extensible 那种正向布尔必须在每个构造点显式置 true, 漏一处
 	// 就让新数组变成不可扩展 (Array 的构造点远多于 *Object)。
 	NonExtensible bool
+	// NonWritableLength 表示 length 自有属性不可写 (Object.freeze 后)。
+	// 同样是反向标志, 普通数组 length 恒可写 (规范的 ArraySetLength 默认)。
+	NonWritableLength bool
 }
 
 // holeValue 是数组洞 (elision) 的栈上标记类型。
@@ -177,6 +180,11 @@ func (a *Array) SetProperty(name string, val Value) {
 	if name == "length" {
 		// 可以通过设置 length 截断或扩展数组
 		if n, ok := val.(*Number); ok {
+			// freeze 之后 length 不可写 (规范 ArraySetLength 的第 1 步)。
+			// 静默失败, 由调用方 (setLenOrThrow / 严格模式赋值) 判定。
+			if a.NonWritableLength {
+				return
+			}
 			newLen := int(n.Value)
 			if newLen >= 0 {
 				if newLen < len(a.Elements) {
@@ -342,6 +350,11 @@ func (a *Array) PreventExtensions() { a.NonExtensible = true }
 func (a *Array) freezeProperties(freeze bool) {
 	if a.PropDescs == nil {
 		a.PropDescs = make(map[string]PropertyDescriptor)
+	}
+	if freeze {
+		// length 也要变只读: 否则 Object.freeze(arr) 后 isFrozen 仍返回 false
+		// (HasWritableOrConfigurableOwn 会看到 length.writable === true)。
+		a.NonWritableLength = true
 	}
 	for i, v := range a.Elements {
 		k := Itoa(i)
