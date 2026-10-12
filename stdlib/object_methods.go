@@ -342,7 +342,12 @@ func setupObjectGlobal() *object.BuiltinFunction {
 		// 统一自有属性接口: 普通对象 / globalThis / 数组 / 函数类一视同仁
 		// (数组索引与 length、函数的 name/length/prototype 都是自有属性)。
 		if store, ok := args[0].(object.OwnPropertyStore); ok {
-			return object.NewBoolean(store.HasOwn(key))
+			// 越界 TypedArray 的整数索引查询按规范抛 TypeError。
+			v, errVal := ownPropResult(func() bool { return store.HasOwn(key) })
+			if errVal != nil {
+				return errVal
+			}
+			return object.NewBoolean(v)
 		}
 		return object.NewBoolean(false)
 	}))
