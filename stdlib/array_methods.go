@@ -312,14 +312,21 @@ func setupArrayProto() *object.Object {
 		if errVal != nil {
 			return errVal
 		}
-		if len(args) < 1 {
-			return object.NewNumber(-1)
+		// 缺省 searchElement 即 undefined (规范 IndexOf 的 searchElement 参数
+		// 不传时为 undefined), 故 [undefined].indexOf() === 0。
+		var target object.Value = object.UndefinedSingleton
+		if len(args) > 0 {
+			target = args[0]
 		}
-		target := args[0]
 		n := int(l.n)
 		fromIdx := 0
 		if len(args) > 1 {
-			f := toInt(args[1])
+			// fromIndex 先 ToIntegerOrInfinity: 对象经 ToPrimitive(number)
+			// (先 valueOf 后 toString), 用户 valueOf/toString 抛错原样传播。
+			f, ferr := toIntegerOrInfinity(args[1])
+			if ferr != nil {
+				return ferr
+			}
 			if f >= int64(n) {
 				return object.NewNumber(-1)
 			}
@@ -1045,14 +1052,19 @@ func setupArrayProto() *object.Object {
 		if errVal != nil {
 			return errVal
 		}
-		if len(args) < 1 {
-			return object.NewNumber(-1)
+		// 缺省 searchElement 即 undefined (同 indexOf)。
+		var target object.Value = object.UndefinedSingleton
+		if len(args) > 0 {
+			target = args[0]
 		}
-		target := args[0]
 		n := int(l.n)
 		fromIdx := n - 1
 		if len(args) > 1 {
-			f := toInt(args[1])
+			// 同 indexOf: fromIndex 走 ToIntegerOrInfinity (对象先 ToPrimitive)。
+			f, ferr := toIntegerOrInfinity(args[1])
+			if ferr != nil {
+				return ferr
+			}
 			if f < 0 {
 				fromIdx = n + int(f)
 			} else if f < int64(n) {
@@ -1505,6 +1517,42 @@ func asArrayLike(method string, this object.Value) (*arrayLike, object.Value) {
 		}
 	}
 	return &arrayLike{obj: this, n: n}, nil
+}
+
+// toIntegerOrInfinity 实现规范的 ToIntegerOrInfinity:
+// 对象先 ToPrimitive(number hint) (先 valueOf 后 toString), 再 ToNumber,
+// 最后 NaN→0、±∞ 保留、其余向零取整。返回 (值, 错误值)。
+//
+// indexOf/lastIndexOf 等以 fromIndex 为参数的算法必须走这条路径:
+// fromIndex 是对象时其 valueOf/toString 必须被调用, 且抛错原样传播。
+func toIntegerOrInfinity(v object.Value) (int64, object.Value) {
+	f := 0.0
+	if isObjectValue(v) {
+		var nerr object.Value
+		f, nerr = toNumberViaPrimitive(v)
+		if nerr != nil {
+			return 0, nerr
+		}
+	} else {
+		f = toFloat(v)
+	}
+	switch {
+	case math.IsNaN(f), f == 0:
+		return 0, nil
+	case math.IsInf(f, 1):
+		return math.MaxInt64, nil
+	case math.IsInf(f, -1):
+		return math.MinInt64, nil
+	}
+	truncated := math.Trunc(f)
+	const int64Limit = 9223372036854775808.0
+	if truncated >= int64Limit {
+		return math.MaxInt64, nil
+	}
+	if truncated <= -int64Limit {
+		return math.MinInt64, nil
+	}
+	return int64(truncated), nil
 }
 
 // toObjectValue 实现规范的 ToObject (sec-object-type):
