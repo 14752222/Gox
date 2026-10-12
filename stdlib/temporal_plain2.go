@@ -81,11 +81,17 @@ func setupTemporalPlainDate(temporal *object.Object) {
 		if !isBag {
 			return tgType("PlainDate.prototype.with requires an object")
 		}
-		// spec: 先按字母序读字段并校验 (day=-1 等在此抛 RangeError),
-		// 之后才 GetOptionsObject 读 overflow —— 故非法字段优先于 options 类型错误。
-		raw, rerr := readDateFieldsRaw(bag)
+		// spec 顺序: RejectObjectWithCalendarOrTimeZone → PrepareTemporalFields
+		// (字母序, 至少一个字段→否则 TypeError) → GetOptionsObject → overflow。
+		if e := rejectTemporalLikeObject(bag); e != nil {
+			return e
+		}
+		raw, rerr := readDateFieldsPlain(bag)
 		if rerr != nil {
 			return rerr
+		}
+		if !raw.hasYear && !raw.hasMonth && !raw.hasMonthCode && !raw.hasDay {
+			return tgType("no supported properties found")
 		}
 		if verr := validateDateFieldsReject(raw); verr != nil {
 			return verr

@@ -155,23 +155,57 @@ func setupTemporalDuration(temporal *object.Object) {
 		if len(args) == 0 {
 			return tgType("Duration.prototype.with requires an object")
 		}
-		newD, ok := durationFromFieldsObject(args[0])
-		if !ok {
-			return tgType("Duration.prototype.with: invalid fields")
+		bag, isBag := plainBagOf(args[0])
+		if !isBag {
+			return tgType("Duration.prototype.with requires an object")
 		}
-		// 未指定的字段沿用原值
-		pick := func(v int64, def int64) int64 {
-			if v != 0 {
+		// ToPartialDuration: 按字母序读十个字段, 只接受"存在且非 undefined"
+		// 的字段; 至少一个字段存在, 否则 TypeError。
+		names := []string{"days", "hours", "microseconds", "milliseconds",
+			"minutes", "months", "nanoseconds", "seconds", "weeks", "years"}
+		vals := map[string]int64{}
+		any := false
+		for _, k := range names {
+			v, found := bag.GetProperty(k)
+			if !found || v == object.UndefinedSingleton {
+				continue
+			}
+			if e, isErr := v.(*object.Error); isErr {
+				return e
+			}
+			f, cerr := tgToNumber(v)
+			if cerr != nil {
+				return cerr
+			}
+			if math.IsNaN(f) || math.IsInf(f, 0) || f != math.Trunc(f) {
+				return tgRange("Duration field must be an integer")
+			}
+			vals[k] = int64(f)
+			any = true
+		}
+		if !any {
+			return tgType("Duration.prototype.with: no recognized fields")
+		}
+		pick := func(k string, def int64) int64 {
+			if v, ok := vals[k]; ok {
 				return v
 			}
 			return def
 		}
-		return object.NewTemporalDuration(
-			pick(newD.Years(), d.Years()), pick(newD.Months(), d.Months()),
-			pick(newD.Weeks(), d.Weeks()), pick(newD.Days(), d.Days()),
-			pick(newD.Hours(), d.Hours()), pick(newD.Minutes(), d.Minutes()),
-			pick(newD.Seconds(), d.Seconds()), pick(newD.Milliseconds(), d.Milliseconds()),
-			pick(newD.Microseconds(), d.Microseconds()), pick(newD.Nanoseconds(), d.Nanoseconds()))
+		r := object.NewTemporalDuration(
+			pick("years", d.Years()), pick("months", d.Months()),
+			pick("weeks", d.Weeks()), pick("days", d.Days()),
+			pick("hours", d.Hours()), pick("minutes", d.Minutes()),
+			pick("seconds", d.Seconds()), pick("milliseconds", d.Milliseconds()),
+			pick("microseconds", d.Microseconds()), pick("nanoseconds", d.Nanoseconds()))
+		// 符号必须一致 (含与 this 混合), 且量级须在范围内。
+		if serr := checkDurationUniformSign(r); serr != nil {
+			return serr
+		}
+		if cerr := checkDurationRange(r); cerr != nil {
+			return cerr
+		}
+		return r
 	})
 
 	// ===== 舍入与总量 =====
