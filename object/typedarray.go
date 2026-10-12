@@ -1139,16 +1139,39 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 		})
 	case "fill":
 		return iterMethod("fill", func(ta *TypedArray, sargs []Value) Value {
+			// 规范 sec-%typedarray%.prototype.fill:
+			//  1. len = O.[[ArrayLength]];
+			//  2. value = BigInt 元素 ? ToBigInt(value) : ToNumber(value)  <-- 先转换一次
+			//  3. relativeStart/End = ToIntegerOrInfinity(...); 夹取;
+			//  4. IsDetachedBuffer → TypeError;
+			//  5. 循环逐点写 (用已转换的值, 不再重复转换)。
 			var v Value = UndefinedSingleton
 			if len(sargs) > 0 {
 				v = sargs[0]
+			}
+			var cv Value
+			if ta.Kind.BigInt {
+				bv, err := toBigIntE(v)
+				if err != nil {
+					return err
+				}
+				cv = bv
+			} else {
+				nf, err := toF64E(v)
+				if err != nil {
+					return err
+				}
+				cv = NewNumber(nf)
 			}
 			start, end, err := ta.rangeArgs(sargs[1:])
 			if err != nil {
 				return err
 			}
+			if ta.Buffer == nil || ta.Buffer.Detach {
+				return NewTypeError("TypedArray.prototype.fill: buffer is detached")
+			}
 			for i := start; i < end; i++ {
-				ta.setElement(i, v)
+				ta.setElementE(i, cv)
 			}
 			return ta
 		})
