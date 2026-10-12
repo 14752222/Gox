@@ -276,6 +276,69 @@ func toF64E(v Value) (float64, Value) {
 
 // ===== TypedArray =====
 
+// toBigIntE 是带 ToBigInt 语义的版本 (对象先 valueOf 再 toString),
+// 供 with/fill 等需要显式先转换值的方法使用。返回的 Value 是 *BigInt。
+// 用户回调抛出/转换失败时返回该错误值。
+func toBigIntE(v Value) (Value, Value) {
+	switch t := v.(type) {
+	case *BigInt:
+		return t, nil
+	case *Number:
+		if math.IsNaN(t.Value) || math.IsInf(t.Value, 0) || t.Value != math.Trunc(t.Value) {
+			return nil, NewRangeError("Cannot convert %v to a BigInt", t.Value)
+		}
+		return bigIntFromFloat(t.Value), nil
+	case *Boolean:
+		if t.Value {
+			return NewBigInt(big.NewInt(1)), nil
+		}
+		return NewBigInt(big.NewInt(0)), nil
+	case *String:
+		bi, ok := ParseBigIntString(t.Value)
+		if !ok {
+			return nil, NewSyntaxError(fmt.Sprintf("Cannot convert %s to a BigInt", t.Inspect()))
+		}
+		return NewBigInt(bi), nil
+	}
+	if v == nil || v == UndefinedSingleton || v == NullSingleton {
+		return nil, NewTypeError("Cannot convert %s to a BigInt", v.Inspect())
+	}
+	if _, ok := v.(*Symbol); ok {
+		return nil, NewTypeError("Cannot convert a Symbol value to a BigInt")
+	}
+	// 对象: 先 valueOf 再 toString。
+	if vo, ok := v.GetProperty("valueOf"); ok && IsCallable(vo) {
+		r := CallFunction(vo, v)
+		if ev := TakeCallbackErrorValue(); ev != UndefinedSingleton {
+			return nil, ev
+		}
+		if err, isErr := r.(*Error); isErr {
+			return nil, err
+		}
+		switch r.(type) {
+		case *BigInt, *Number, *Boolean, *String:
+			return toBigIntE(r)
+		}
+	}
+	if ts, ok := v.GetProperty("toString"); ok && IsCallable(ts) {
+		r := CallFunction(ts, v)
+		if ev := TakeCallbackErrorValue(); ev != UndefinedSingleton {
+			return nil, ev
+		}
+		if err, isErr := r.(*Error); isErr {
+			return nil, err
+		}
+		if s, isStr := r.(*String); isStr {
+			bi, ok := ParseBigIntString(s.Value)
+			if !ok {
+				return nil, NewSyntaxError(fmt.Sprintf("Cannot convert %s to a BigInt", s.Inspect()))
+			}
+			return NewBigInt(bi), nil
+		}
+	}
+	return nil, NewTypeError("Cannot convert %s to a BigInt", v.Inspect())
+}
+
 type TypedArray struct {
 	Kind       TAKind
 	Buffer     *ArrayBuffer
@@ -650,6 +713,11 @@ func (t *TypedArray) GetProperty(name string) (Value, bool) {
 	case "byteLength":
 		return NewInt(int64(t.arrLength() * t.Kind.ElemSize)), true
 	case "byteOffset":
+		// 规范 get %TypedArray%.prototype.byteOffset: [[IsOutOfBounds]] 为真
+		// 时返回 0 (resizable 缩容/分离后)。
+		if t.OutOfBounds() {
+			return NewInt(0), true
+		}
 		return NewInt(int64(t.ByteOffset)), true
 	case "buffer":
 		if t.Buffer == nil {
@@ -1414,23 +1482,45 @@ func (t *TypedArray) callMethod(name string) (Value, bool) {
 		})
 	case "with":
 		return iterMethod("with", func(ta *TypedArray, sargs []Value) Value {
-			n := ta.arrLength()
+			// 规范 %TypedArray%.prototype.with:
+			//  1. len = O.[[ArrayLength]] (先捕获)
+			//  2. relativeIndex = ToIntegerOrInfinity(index)
+			//  3. actualIndex = index>=0 ? rel : len+rel
+			//  4. numericValue = BigInt 元素 ? ToBigInt(value) : ToNumber(value)  <-- 先转换
+			//  5. IsValidIntegerIndex 校验 -> RangeError
+			l := ta.arrLength()
 			f, err := toF64E(argOr(sargs, 0))
 			if err != nil {
 				return err
 			}
-			i := int(f)
+			i := toIntegerOrInfinity(f)
+			actual := i
 			if i < 0 {
-				i += n
+				actual = l + i
 			}
-			if i < 0 || i >= n {
+			// 值先做类型转换 (可能触发用户回调/resize), 再校验索引。
+			val := argOr(sargs, 1)
+			if ta.Kind.BigInt {
+				bv, berr := toBigIntE(val)
+				if berr != nil {
+					return berr
+				}
+				val = bv
+			} else {
+				nf, nerr := toF64E(val)
+				if nerr != nil {
+					return nerr
+				}
+				val = NewNumber(nf)
+			}
+			if actual < 0 || actual >= ta.arrLength() {
 				return NewRangeError("TypedArray.prototype.with: index out of range")
 			}
-			out := NewTypedArray(ta.Kind, n)
-			for k := 0; k < n; k++ {
+			out := NewTypedArray(ta.Kind, l)
+			for k := 0; k < l; k++ {
 				out.setElement(k, ta.getElement(k))
 			}
-			out.setElement(i, argOr(sargs, 1))
+			out.setElement(actual, val)
 			return out
 		})
 	case "toBase64":
