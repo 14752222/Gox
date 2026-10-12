@@ -49,8 +49,11 @@ func TestMediaImageAPIScript(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读示例脚本: %v", err)
 	}
-	script := strings.ReplaceAll(string(src), "__IN__", in)
-	script = strings.ReplaceAll(script, "__OUT__", out)
+	// 占位符落在 JS 字符串字面量里, Windows 反斜杠路径必须按 JS 转义 ——
+	// 否则 `F:\tmp\...` 的 `\t` 会被解析成 TAB, open 报 invalid argument
+	// (2026-10-12 CI windows job 红); 正斜杠在 Windows 的 Go os 包同样合法。
+	script := strings.ReplaceAll(string(src), "__IN__", filepath.ToSlash(in))
+	script = strings.ReplaceAll(script, "__OUT__", filepath.ToSlash(out))
 
 	v, err := vm.EvalVM(script)
 	if err != nil {

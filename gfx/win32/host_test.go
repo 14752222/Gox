@@ -10,12 +10,33 @@ package win32
 // 单独钉住。
 
 import (
+	"fmt"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/14752222/Gox/gfx"
 	"github.com/14752222/Gox/object"
 )
+
+// TestMain 守住"网卡枚举不得在包 init 里做"这条纪律。
+//
+// init 已经跑过了 (导入包时就会跑), 这里能做的是确认 init 之后**没有**网络快照
+// 被上报 —— 若有人把 hostNetworkType() 挪回 init, 本机有网卡时就会读到
+// connected=true, 这条断言即红 (无非崩路径下能被观察到的最接近的信号)。
+//
+// 必须挂在 TestMain (跑在任何用例之前), 不能是普通 Test: 本文件里靠前的用例
+// (TestHostCall* 等) 会合法地经 win32Host.Call → reportNetworkLazy 把快照写成
+// 「已连接」, 普通用例执行顺序排在它们之后, 断言必被污染误红
+// (2026-10-12 CI windows job 实测: 本机/CI 全包跑必红, 单跑即绿)。
+func TestMain(m *testing.M) {
+	if n := gfx.Network(); n.Connected {
+		fmt.Fprintf(os.Stderr, "包 init 之后网络快照不应是「已连接」 —— 说明网卡枚举又回到 init 里了 "+
+			"(这会把「枚举崩掉」放大成「进程起不来」), 实际 %+v\n", n)
+		os.Exit(1)
+	}
+	os.Exit(m.Run())
+}
 
 // TestHostCapabilities 验证能力声明与内核调用点一一对应 (host.go 文件头)。
 //
@@ -212,18 +233,6 @@ func TestHostNetworkTypeOffsetsSanity(t *testing.T) {
 	if offIpAddressList != wantOffIpAddressList || offDescription != wantOffDescription {
 		t.Fatalf("偏移与 SDK 不符: IpAddressList=%d (要 %d), Description=%d (要 %d)",
 			offIpAddressList, wantOffIpAddressList, offDescription, wantOffDescription)
-	}
-}
-
-// TestInitDoesNotEnumerateNetwork 守住"网卡枚举不得在包 init 里做"这条纪律。
-//
-// init 已经跑过了 (导入包时就会跑), 这里能做的是确认 init 之后**没有**网络快照
-// 被上报 —— 若有人把 hostNetworkType() 挪回 init, 本机有网卡时就会读到
-// connected=true, 这条断言即红 (无非崩路径下能被观察到的最接近的信号)。
-func TestInitDoesNotEnumerateNetwork(t *testing.T) {
-	if n := gfx.Network(); n.Connected {
-		t.Fatalf("包 init 之后网络快照不应是「已连接」 —— 说明网卡枚举又回到 init 里了 "+
-			"(这会把「枚举崩掉」放大成「进程起不来」), 实际 %+v", n)
 	}
 }
 
