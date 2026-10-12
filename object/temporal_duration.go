@@ -344,9 +344,63 @@ func TotalOfUnit(d *TemporalDuration, unit string, relativeTo *ISODateTime) (flo
 	if !ok {
 		return 0, false
 	}
+	// 年/月/周: 按规范的 TotalRelativeDuration —— 先取"整单位"个数, 再把
+	// 余下部分除以"该单位在终点前的实际长度"(闰年/月长各异)。直接用
+	// ISO 平均长度 (365.2425 天) 会得到 1.50037 而非精确的 1.5 ——
+	// PlainDate/prototype/until 的 roundingmode-half-boundary 整族。
+	switch unit {
+	case "year", "years", "month", "months":
+		wantYear := unit == "year" || unit == "years"
+		sign := int64(1)
+		if target.EpochNanos().Cmp(relativeTo.EpochNanos()) < 0 {
+			sign = -1
+		}
+		// 逐单位逼近: 求最大的 n 使 relativeTo + n 个单位不越过 target。
+		n := int64(0)
+		for {
+			next := addCalendarUnits(*relativeTo, n+sign, wantYear)
+			if sign > 0 {
+				if next.EpochNanos().Cmp(target.EpochNanos()) > 0 {
+					break
+				}
+			} else if next.EpochNanos().Cmp(target.EpochNanos()) < 0 {
+				break
+			}
+			n += sign
+		}
+		anchor := addCalendarUnits(*relativeTo, n, wantYear)
+		unitLen := new(big.Int).Sub(
+			addCalendarUnits(anchor, sign, wantYear).EpochNanos(), anchor.EpochNanos())
+		rem := new(big.Int).Sub(target.EpochNanos(), anchor.EpochNanos())
+		if unitLen.Sign() == 0 {
+			break
+		}
+		ratio := new(big.Rat).SetFrac(rem, unitLen)
+		ratio.Add(ratio, big.NewRat(n, 1))
+		f, _ := ratio.Float64()
+		return f, true
+	case "week", "weeks":
+		// 周是固定 7 天, 用总纳秒除以周长即可 (上面的 divisor 路径已足够
+		// 精确), 落入下方。
+	}
 	diff := new(big.Int).Sub(target.EpochNanos(), relativeTo.EpochNanos())
 	f, _ := new(big.Float).SetInt(diff).Float64()
 	return f / divisor, true
+}
+
+// addCalendarUnits 在 ISO 日期时间上加 n 个年 (wantYear) 或月。时间部分不变。
+func addCalendarUnits(dt ISODateTime, n int64, wantYear bool) ISODateTime {
+	var y, mo int32
+	if wantYear {
+		y, mo = int32(n), 0
+	} else {
+		y, mo = int32(n/12), int32(n%12)
+	}
+	d, ok := AddDateDuration(dt.Date, y, mo, 0, 0, "constrain")
+	if !ok {
+		return dt
+	}
+	return ISODateTime{Date: d, Time: dt.Time}
 }
 
 // RoundNanos 按 roundingMode 与 increment 对纳秒值取整。

@@ -118,7 +118,11 @@ func setupTemporalDuration(temporal *object.Object) {
 		if serr := checkDurationUniformSign(o); serr != nil {
 			return serr
 		}
-		return balancedDurationAdd(d, o)
+		r := balancedDurationAdd(d, o)
+		if cerr := checkDurationRange(r); cerr != nil {
+			return cerr
+		}
+		return r
 	})
 	tgMethod(proto, "subtract", func(this object.Value, args ...object.Value) object.Value {
 		d, ok := asDuration(this)
@@ -135,7 +139,11 @@ func setupTemporalDuration(temporal *object.Object) {
 		if serr := checkDurationUniformSign(o); serr != nil {
 			return serr
 		}
-		return balancedDurationAdd(d, o.Negated())
+		r := balancedDurationAdd(d, o.Negated())
+		if cerr := checkDurationRange(r); cerr != nil {
+			return cerr
+		}
+		return r
 	})
 
 	tgMethod(proto, "with", func(this object.Value, args ...object.Value) object.Value {

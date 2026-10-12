@@ -18,8 +18,10 @@ package object
 //   - TemporalTimeZoneString       IANA 名 或 UTC 偏移串
 
 import (
+	"fmt"
 	"math"
 	"math/big"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -810,6 +812,10 @@ func ParseTemporalDurationString(s string) (DurationFields, bool) {
 	var (
 		value     float64
 		haveValue bool
+		// 精确数字串: value 的整数部分与小数部分原始文本。用于整数分量
+		// 超过 float64 精确范围时 (如 9007199254740991.999999999) 的精确落库。
+		intStr  string
+		fracStr string
 	)
 	largest := ""
 
@@ -830,17 +836,18 @@ func ParseTemporalDurationString(s string) (DurationFields, bool) {
 			ok = carryFraction(&value, &out.Months, 12)
 		case 'M':
 			if inTimePart {
-				// 小数分钟按纳秒折算 (1min = 6e10ns)。
-				ns := value * 60 * 1e9
+				// 整数分钟直接落字段, 只有小数部分才按纳秒折算 ——
+				// 大整数 (如 2501999792983) 乘以 6e10 会超出 float64 的
+				// 精确整数范围, 直接缩放会引入虚假纳秒。
+				out.Minutes += int64(math.Trunc(value))
+				frac := value - math.Trunc(value)
+				ns := frac * 60 * 1e9
 				if r := math.Round(ns); math.Abs(ns-r) < 0.5 {
-					ns = r
-				} else {
+					out.Seconds += int64(r) / 1000000000
+					out.Nanoseconds += int64(r) % 1000000000
+				} else if frac != 0 {
 					return false
 				}
-				out.Minutes = int64(ns / 6e10)
-				ns = math.Mod(ns, 6e10)
-				out.Seconds += int64(ns / 1e9)
-				out.Nanoseconds += int64(math.Mod(ns, 1e9))
 				ok = true
 			} else {
 				out.Months = int64(value)
@@ -854,34 +861,54 @@ func ParseTemporalDurationString(s string) (DurationFields, bool) {
 			out.Days = int64(value)
 			ok = carryFraction(&value, &out.Hours, 24)
 		case 'H':
-			// 小数小时直接按纳秒折算 (1h = 3.6e12ns): ≤9 位小数必然精确。
-			ns := value * 3600 * 1e9
+			// 整数小时直接落字段 (大整数如 2501999792983 不能乘 3.6e12:
+			// 会超出 float64 精确整数范围); 小数部分才按纳秒折算。
+			out.Hours += int64(math.Trunc(value))
+			frac := value - math.Trunc(value)
+			ns := frac * 3600 * 1e9
 			if r := math.Round(ns); math.Abs(ns-r) < 0.5 {
 				ns = r
-			} else {
+			} else if frac != 0 {
 				return false
 			}
-			out.Hours = int64(ns / 3.6e12)
-			ns = math.Mod(ns, 3.6e12)
+			ns = math.Round(ns)
 			out.Minutes += int64(ns / 6e10)
 			ns = math.Mod(ns, 6e10)
 			out.Seconds += int64(ns / 1e9)
 			out.Nanoseconds += int64(math.Mod(ns, 1e9))
 			ok = true
 		case 'S':
-			whole := math.Trunc(value)
-			nanos := (value - whole) * 1e9
-			// 与 H/M 分支同一套容差: float64 读入 6~9 位小数会引入
-			// 亚纳秒级表示误差 (1.123456 → 123456000.00000001), 严格
-			// `nanos == Trunc(nanos)` 会把这些合法串判非法
-			// (Duration/*/argument-*-max、string-with-skipped-units 等)。
-			if r := math.Round(nanos); math.Abs(nanos-r) < 0.5 {
-				out.Seconds = int64(whole)
-				out.Nanoseconds += int64(r)
-				ok = true
+			// 用原始数字串做精确整数落库: 秒的整数部分可接近 2^53, 若先
+			// 经 float64 再拆分会把 9007199254740991.999999999 舍成
+			// 9007199254740992.0, 触发范围检查误判 (Duration/from/
+			// argument-duration-max 等)。
+			if iv, ierr := strconv.ParseInt(intStr, 10, 64); ierr == nil {
+				if fracStr == "" {
+					out.Seconds = iv
+					ok = true
+				} else if ns, nerr := fracToNanoseconds(fracStr); nerr == nil {
+					out.Seconds = iv
+					out.Nanoseconds += ns
+					ok = true
+				}
+			}
+			if !ok {
+				// 退化路径: 整数部分超出 int64 时按 float64 近似。
+				whole := math.Trunc(value)
+				nanos := (value - whole) * 1e9
+				// 与 H/M 分支同一套容差: float64 读入 6~9 位小数会引入
+				// 亚纳秒级表示误差 (1.123456 → 123456000.00000001), 严格
+				// `nanos == Trunc(nanos)` 会把这些合法串判非法
+				// (Duration/*/argument-*-max、string-with-skipped-units 等)。
+				if r := math.Round(nanos); math.Abs(nanos-r) < 0.5 {
+					out.Seconds = int64(whole)
+					out.Nanoseconds += int64(r)
+					ok = true
+				}
 			}
 		}
 		value, haveValue = 0, false
+		intStr, fracStr = "", ""
 		return ok
 	}
 
@@ -907,6 +934,8 @@ func ParseTemporalDurationString(s string) (DurationFields, bool) {
 				p.pos++
 			}
 			intPart := p.s[start:p.pos]
+			intStr = intPart
+			fracStr = ""
 			if p.take('.') || p.take(',') {
 				fStart := p.pos
 				for p.isDigit() {
@@ -915,7 +944,8 @@ func ParseTemporalDurationString(s string) (DurationFields, bool) {
 				if fStart == p.pos {
 					return out, false
 				}
-				v, err := parseFloat64(intPart + "." + p.s[fStart:p.pos])
+				fracStr = p.s[fStart:p.pos]
+				v, err := parseFloat64(intPart + "." + fracStr)
 				if err != nil {
 					return out, false
 				}
@@ -981,6 +1011,32 @@ func ParseTemporalDurationString(s string) (DurationFields, bool) {
 			-out.Milliseconds, -out.Microseconds, -out.Nanoseconds
 	}
 	return out, true
+}
+
+// fracToNanoseconds 把秒的小数部分数字串精确折算为纳秒 (最多 9 位;
+// 超过 9 位且非零 → 误差)。仅接受纯数字串 (调用方已剥离小数点/逗号)。
+func fracToNanoseconds(frac string) (int64, error) {
+	if frac == "" {
+		return 0, nil
+	}
+	if len(frac) > 9 {
+		// 丢弃第 10 位起; 只要这些都为零就可精确表示。
+		for _, c := range frac[9:] {
+			if c != '0' {
+				return 0, fmt.Errorf("sub-nanosecond precision")
+			}
+		}
+		frac = frac[:9]
+	}
+	// 右侧补零到 9 位。
+	for len(frac) < 9 {
+		frac += "0"
+	}
+	ns, err := strconv.ParseInt(frac, 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	return ns, nil
 }
 
 // fieldSet 报告某个单位是否已被赋值 (用于检测重复单位)。

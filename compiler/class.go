@@ -74,13 +74,36 @@ func (c *Compiler) compileClassBody(className string, superClass ast.Expression,
 	c.strict = true
 	defer func() { c.strict = prevStrict }()
 
-	// 父类名 (super 引用目标; 仅支持 Identifier 形式的 extends)
+	// 父类名 (super 引用目标)。Identifier 形式直接用其名; 任意表达式形式
+	// (如 `extends Temporal.Duration` / `extends mixin(Base)`) 先把表达式
+	// 求值到一个**合成局部变量**, 再把该变量名当作 superName —— 这样后续
+	// constructor / super() / 静态 super / eval-home 全部沿用同一套
+	// emitSuperLoad(名字) 机制, 无需为每种语境另设表达式求值路径。
 	superName := ""
 	if superClass != nil {
 		if ident, ok := superClass.(*ast.Identifier); ok {
 			superName = ident.Value
 		} else {
-			return fmt.Errorf("compiler: class extends must reference an identifier")
+			c.superClassSeq++
+			tmp := fmt.Sprintf("\x00super#%d", c.superClassSeq)
+			// 先算父类表达式 (仅在当前位置求值一次, 符合规范 ClassDefinition
+			// 对 ClassHeritage 的单次求值语义)。
+			if err := c.compileExpression(superClass); err != nil {
+				return err
+			}
+			sym, err := c.declareOnce(tmp, false, false)
+			if err != nil {
+				return err
+			}
+			if c.isGlobalScope() && !c.moduleMode {
+				c.emitter.EmitNoOperand(bytecode.OP_DUP)
+				nameIdx := c.constants.AddConstant(object.NewString(tmp))
+				c.emitter.Emit(bytecode.OP_DECLARE, nameIdx)
+				c.emitter.EmitNoOperand(bytecode.OP_POP)
+			} else {
+				c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
+			}
+			superName = tmp
 		}
 	}
 

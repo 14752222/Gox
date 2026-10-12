@@ -584,10 +584,12 @@ func dateTimeDiffFrom(from object.ISODateTime, args []object.Value, since bool) 
 	if unitRank(su) < unitRank(largest) {
 		return tgRange("smallestUnit is larger than largestUnit")
 	}
-	// since 反转方向并对舍入模式取反
+	// since 反转方向: 交换 from/to 即可。calendarRoundDiff 内部会按
+	// 实际次序再归一化并镜像方向性模式, 此处**不**再 negateRoundingMode
+	// —— 否则与内部的镜像叠加成双重取反 (roundingmode-half-boundary 的
+	// -1.5 年 trunc 该得 -1 却得 -2)。
 	if since {
 		from, to = to, from
-		mode = negateRoundingMode(mode)
 	}
 	return calendarRoundDiff(from, to, largest, su, inc, mode)
 }
