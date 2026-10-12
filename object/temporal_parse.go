@@ -828,6 +828,10 @@ func ParseTemporalDurationString(s string) (DurationFields, bool) {
 		fracStr string
 	)
 	largest := ""
+	// sawFraction: 已经出现过一个带小数的组件。规范文法要求含小数的组件
+	// 必须是最后一个设计符 —— 之后再出现任何组件 (纵使其值为 0, 如
+	// "PT0.1H0M") 一律非法。
+	sawFraction := false
 
 	// flush 把已读到的 value 落到 unit 对应的字段上，并把小数部分
 	// 折算到下一级单位。消费完毕后必须清空 haveValue——否则循环末尾会
@@ -838,6 +842,14 @@ func ParseTemporalDurationString(s string) (DurationFields, bool) {
 		}
 		if largest == "" {
 			largest = string(unit)
+		}
+		if fracStr != "" {
+			// 小数只允许出现在 timePart (T 之后的最后一个组件); datePart
+			// (年/月/周/日) 带小数一律非法 (P0.5Y、P1Y1M1W0,5D 等)。
+			if !inTimePart {
+				return false
+			}
+			sawFraction = true
 		}
 		ok := false
 		switch unit {
@@ -892,7 +904,8 @@ func ParseTemporalDurationString(s string) (DurationFields, bool) {
 			// 经 float64 再拆分会把 9007199254740991.999999999 舍成
 			// 9007199254740992.0, 触发范围检查误判 (Duration/from/
 			// argument-duration-max 等)。
-			if iv, ierr := strconv.ParseInt(intStr, 10, 64); ierr == nil {
+			iv, ierr := strconv.ParseInt(intStr, 10, 64)
+			if ierr == nil {
 				if fracStr == "" {
 					out.Seconds = iv
 					ok = true
@@ -901,8 +914,9 @@ func ParseTemporalDurationString(s string) (DurationFields, bool) {
 					out.Nanoseconds += ns
 					ok = true
 				}
-			}
-			if !ok {
+				// fracStr 超纳秒精度 (10 位起非零): 整数部分虽可精确表示,
+				// 但小数无法精确落库 → 非法, 不得退化 (argument-string-invalid)。
+			} else {
 				// 退化路径: 整数部分超出 int64 时按 float64 近似。
 				whole := math.Trunc(value)
 				nanos := (value - whole) * 1e9
@@ -938,6 +952,9 @@ func ParseTemporalDurationString(s string) (DurationFields, bool) {
 		if c >= '0' && c <= '9' {
 			if haveValue {
 				return out, false // 连续两组数字缺少单位分隔符
+			}
+			if sawFraction {
+				return out, false // 含小数的组件之后不得再出现组件
 			}
 			start := p.pos
 			for p.isDigit() {
@@ -1012,6 +1029,17 @@ func ParseTemporalDurationString(s string) (DurationFields, bool) {
 	}
 	if haveValue || !sawAny {
 		return out, false // 尾部多余的数值 / 空 Duration (仅有 P)
+	}
+	// 亚秒统一平衡: 解析过程中小数部分可能只落在 Nanoseconds (如 123456789)
+	// 或由 H/M 折算出的纳秒, 需平衡为 ms/us/ns 标准区间并把溢出进到 Seconds
+	// (P1Y1M1W1DT1H1M1.123456789S 应得 ms=123,us=456,ns=789)。
+	{
+		ms, us, ns := BalanceTimeSubsecond(out.Milliseconds, out.Microseconds, out.Nanoseconds)
+		// BalanceTimeSubsecond 只归一亚秒三级, 毫秒位可能仍 >999: 把整秒进位到 Seconds。
+		out.Seconds += ms / 1000
+		out.Milliseconds = ms % 1000
+		out.Microseconds = us
+		out.Nanoseconds = ns
 	}
 	out.LargestUnit = largest
 	if out.Negative {
