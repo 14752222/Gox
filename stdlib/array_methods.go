@@ -885,51 +885,25 @@ func setupArrayProto() *object.Object {
 
 	// sort(compareFn): 排序数组 (原地修改并返回自身)
 	p.SetBuiltinProperty("sort", object.NewBuiltinMethod("sort", func(this object.Value, args ...object.Value) object.Value {
+		// 规范 sec-array.prototype.sort 第 2 步: IsCallable(comparefn)
+		// 必须在 ToObject/读 length **之前** 观察 —— comparefn 非函数/非
+		// undefined 时立即抛 TypeError, 不得触发 this.length 的 getter
+		// (comparefn-nonfunction-call-throws 族)。
+		var compareFn object.Value
+		if len(args) > 0 && !isUndefinedValue(args[0]) {
+			if !object.IsCallable(args[0]) {
+				return object.NewTypeError("%s is not a function", toStr(args[0]))
+			}
+			compareFn = args[0]
+		}
 		l, errVal := asArrayLike("sort", this)
 		if errVal != nil {
 			return errVal
 		}
-		if l.arr == nil {
-			if mv := l.checkMutable(); mv != nil {
-				return mv
-			}
+		if mv := l.checkMutable(); mv != nil {
+			return mv
 		}
-		if l.arr == nil {
-			return genericSort(l, args)
-		}
-		arr := l.arr
-		if len(args) > 0 && !isUndefinedValue(args[0]) {
-			compareFn := args[0]
-			if !object.IsCallable(compareFn) {
-				return object.NewTypeError("%s is not a function", toStr(compareFn))
-			}
-			// 比较器抛异常时记录并尽快结束排序 (数组可能处于部分有序状态，
-			// 与 V8 的实现定义行为一致)；排序结束后把异常抛给调用方。
-			var sortThrown object.Value
-			sort.SliceStable(arr.Elements, func(i, j int) bool {
-				if sortThrown != nil {
-					return false
-				}
-				result := object.CallFunction(compareFn, object.UndefinedSingleton,
-					arr.Elements[i], arr.Elements[j])
-				if thrown := callbackThrown(); thrown != nil {
-					sortThrown = thrown
-					return false
-				}
-				return toFloat(result) < 0
-			})
-			if sortThrown != nil {
-				return sortThrown
-			}
-			return arr
-		}
-		// 默认排序遵循规范的 SortCompare: 先把元素转成字符串再比较。
-		// 旧实现遇到两个 Number 时按数值比较，导致 [10, 9].sort() 得到
-		// [9, 10]；按规范应为 [10, 9] (因为 "10" < "9")。
-		sort.SliceStable(arr.Elements, func(i, j int) bool {
-			return defaultSortLess(arr.Elements[i], arr.Elements[j])
-		})
-		return arr
+		return specSort(l, compareFn)
 	}))
 
 	// toString(): 数组转字符串 (等价于无参 join)
@@ -1271,6 +1245,91 @@ func arraySpeciesCreate(l *arrayLike, length int64) (object.Value, object.Value)
 		return nil, object.NewTypeError("species constructor did not return an object")
 	}
 	return r, nil
+}
+
+// specSort 是 Array.prototype.sort 的规范路径, 对真实数组与类数组对象
+// 一视同仁: 全程经 Get/Set/Delete 访问属性 (支持访问器), 且按规范处理
+// 洞与 undefined。
+//
+// 规范语义 (sec-array.prototype.sort / SortCompare):
+//   - 先把 undefined 元素与"洞"一同排到最后, 再做稳定排序;
+//   - 排序用 SortCompare: 有 comparefn 时直接调用 (返回 <0 视为前);
+//     无 comparefn 时把两侧转字符串按码元序比较, undefined 恒排后。
+//
+// 之前对真实数组直接 sort.SliceStable(Elements, ...): 绕过访问器、把 nil
+// 洞当成 undefined、且自定义比较器下不把 undefined 挪到末尾 ——
+// precise-* / S15.4.4.11_* 族即因此失败。
+func specSort(l *arrayLike, compareFn object.Value) object.Value {
+	n := int(l.n)
+	// 步骤 1: 读外部元素 (索引 < n 且存在者), 洞与 undefined 记下不参与排序。
+	vals := make([]object.Value, 0, n)
+	undefIdx := make([]int, 0)
+	holeIdx := make([]int, 0)
+	for i := 0; i < n; i++ {
+		if !l.has(int64(i)) {
+			holeIdx = append(holeIdx, i)
+		} else {
+			v := l.get(int64(i))
+			if l.err != nil {
+				return l.err
+			}
+			if isUndefinedValue(v) {
+				undefIdx = append(undefIdx, i)
+			} else {
+				vals = append(vals, v)
+			}
+		}
+	}
+
+	var sortThrown object.Value
+	less := func(a, b object.Value) bool {
+		if sortThrown != nil {
+			return false
+		}
+		var r float64
+		if compareFn != nil {
+			rv := object.CallFunction(compareFn, object.UndefinedSingleton, a, b)
+			if thrown := callbackThrown(); thrown != nil {
+				sortThrown = thrown
+				return false
+			}
+			r = toFloat(rv)
+			if math.IsNaN(r) {
+				r = 0
+			}
+		} else {
+			as := sortKeyString(a)
+			bs := sortKeyString(b)
+			switch {
+			case as < bs:
+				r = -1
+			case as > bs:
+				r = 1
+			}
+		}
+		return r < 0
+	}
+	sort.SliceStable(vals, func(i, j int) bool { return less(vals[i], vals[j]) })
+	if sortThrown != nil {
+		return sortThrown
+	}
+
+	// 步骤 2: 回写 —— 排序值在前, 随后 undefined, 最后洞。
+	idx := 0
+	for _, v := range vals {
+		l.set(int64(idx), v)
+		idx++
+	}
+	for range undefIdx {
+		l.set(int64(idx), object.UndefinedSingleton)
+		idx++
+	}
+	if o, ok := l.obj.(*object.Object); ok {
+		for _, i := range holeIdx {
+			o.DeleteProperty(arrayIndexKey(int64(i)))
+		}
+	}
+	return l.obj
 }
 
 // genericSort 是 sort 作用于非数组类对象时的规范路径:
