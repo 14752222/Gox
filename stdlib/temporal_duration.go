@@ -3,6 +3,7 @@ package stdlib
 import (
 	"math"
 	"math/big"
+	"strconv"
 	"strings"
 
 	"github.com/14752222/Gox/object"
@@ -227,6 +228,8 @@ func setupTemporalDuration(temporal *object.Object) {
 		}
 		// 规范读取顺序: largestUnit → relativeTo → roundingIncrement →
 		// roundingMode → smallestUnit；逐项 get+cast，语义校验延迟到读完后。
+		largestProvided := optValue(opts, "largestUnit") != nil
+		smallestProvided := optValue(opts, "smallestUnit") != nil
 		lv, _, e := castUnitOption(opts, "largestUnit")
 		if e != nil {
 			return e
@@ -266,26 +269,55 @@ func setupTemporalDuration(temporal *object.Object) {
 		if uerr != nil {
 			return uerr
 		}
-		relTo, hasRel := relativeToISOValue(relV)
+		relTo, relErr, hasRel := toRelativeTemporalObject(relV)
+		if relErr != nil {
+			return relErr
+		}
+
+		// 规范: 舍入到日历单位 (year/month/week/day) 且带 relativeTo 时,
+		// roundingIncrement 不受 "必须整除上级" 约束, 只要求 increment >= 1；
+		// 但若显式指定了更大的日历 largestUnit (需跨日历单位 balance),
+		// 则 increment 必须为 1, 否则 RangeError。
+		explicitLargest := largest
+		isCalUnit := func(u string) bool {
+			return u == "year" || u == "month" || u == "week" || u == "day"
+		}
+		validInc := func(u string) bool {
+			if hasRel && isCalUnit(u) {
+				if inc < 1 {
+					return false
+				}
+				if explicitLargest != "auto" && explicitLargest != u &&
+					isCalUnit(explicitLargest) && unitRank(explicitLargest) < unitRank(u) {
+					return inc == 1
+				}
+				return true
+			}
+			return validRoundingIncrement(u, inc)
+		}
+
+		if !largestProvided && !smallestProvided {
+			return tgRange("Duration.prototype.round requires either largestUnit or smallestUnit")
+		}
 
 		if hasRel {
 			if smallest == "auto" {
-				smallest = "nanosecond"			}
+				smallest = "nanosecond"
+			}
 			if largest == "auto" {
 				largest = durationDefaultLargest(d, smallest)
 			}
 			if unitRank(smallest) < unitRank(largest) {
 				return tgRange("smallestUnit is larger than largestUnit")
 			}
-			// 用相对起点把日历单位也折算成纳秒后统一舍入
-			end, ok := object.AddDateTime(*relTo, d, "constrain")
+			if !validInc(smallest) {
+				return tgRange("Invalid roundingIncrement for " + smallest)
+			}
+			end, ok := relEndDateTime(relTo, d)
 			if !ok {
 				return tgRange("Duration is out of range")
 			}
-			if !validRoundingIncrement(smallest, inc) {
-				return tgRange("Invalid roundingIncrement for " + smallest)
-			}
-			dur := calendarRoundDiff(*relTo, end, largest, smallest, inc, mode)
+			dur := calendarRoundDiff(relTo.Wall, end, largest, smallest, inc, mode)
 			if e := checkDurationRange(dur); e != nil {
 				return e
 			}
@@ -311,7 +343,11 @@ func setupTemporalDuration(temporal *object.Object) {
 			return tgRange("Invalid roundingIncrement for " + smallest)
 		}
 		rounded := roundNanosToUnit(d.TimeTotalNanos(), smallest, inc, mode)
-		return durationFromNanosByLargest(rounded, largest)
+		res := durationFromNanosByLargest(rounded, largest)
+		if e := checkDurationRange(res); e != nil {
+			return e
+		}
+		return res
 	})
 
 	tgMethod(proto, "total", func(this object.Value, args ...object.Value) object.Value {
@@ -381,8 +417,32 @@ func setupTemporalDuration(temporal *object.Object) {
 		if perr != nil {
 			return "", perr
 		}
-		_ = st
-		return d.ToString(), nil
+		// Duration 的 smallestUnit 只能是 second 及以下 (规范 GetTemporalUnit
+		// 限定 subsecond 单位); minute 及以上 → RangeError。
+		if st.smallestUnit == "minute" {
+			return "", tgRange("Invalid smallestUnit for Duration.toString: minute")
+		}
+		// 显示位数: smallestUnit 决定固定位数, 否则由 fractionalSecondDigits
+		// 决定; "auto" → -1 (裁剪尾部 0)。
+		digits := -1
+		if st.smallestUnit != "" {
+			switch precisionForSmallest(st.smallestUnit) {
+			case "0":
+				digits = 0
+			case "3":
+				digits = 3
+			case "6":
+				digits = 6
+			default:
+				digits = 9
+			}
+		} else if st.precision != "auto" {
+			if n, err := strconv.Atoi(st.precision); err == nil {
+				digits = n
+			}
+		}
+		quantum := st.roundingQuantumNanos()
+		return d.ToStringWithPrecision(digits, quantum, st.mode), nil
 	})
 	tgValueOf(proto)
 
@@ -516,6 +576,13 @@ func totalOfUnitRel(d *object.TemporalDuration, unit string, rel temporalRelativ
 	return object.TotalOfUnit(d, unit, &dt)
 }
 
+// relEndDateTime 把 duration 加到相对起点的墙钟上，返回终点墙钟。
+// 日历单位运算在墙钟上进行 (与 total 的 zoned 确切时刻路径不同 ——
+// round 的日历差值本就以墙钟字段计算)。
+func relEndDateTime(rel temporalRelativeTo, d *object.TemporalDuration) (object.ISODateTime, bool) {
+	return object.AddDateTime(rel.Wall, d, "constrain")
+}
+
 // relativeToISO 从 options.relativeTo 提取锚点时间点。
 func relativeToISO(opts object.Value) (*object.ISODateTime, bool) {
 	rel, err, ok := toRelativeTemporalObject(optValue(opts, "relativeTo"))
@@ -606,8 +673,18 @@ func relativeFromString(s string) (temporalRelativeTo, object.Value, bool) {
 	var ns *big.Int
 	if f.OffsetSeconds != nil {
 		// 有显式 offset: 先由墙钟 + offset 得到 epoch, 再校验与 tz 一致。
-		ns = dt.EpochNanos()
-		ns = ns.Sub(ns, big.NewInt(int64(*f.OffsetSeconds)*object.NanosPerSecond))
+		// 规范: offset 与 [TZ] 注解必须相容 (含子分钟残留舍入的边界),
+		// 否则 RangeError —— rounding-not-accepted 整族。
+		cands := object.GetPossibleInstantsFor(tz, dt)
+		n, ok := object.DisambiguatePossibleInstants(cands, tz, dt, "compatible")
+		if !ok {
+			return z, tgRange("Invalid relativeTo string: " + s), true
+		}
+		actualOff := object.TimeZoneOffsetSecondsAt(tz, n)
+		if int32(*f.OffsetSeconds) != actualOff {
+			return z, tgRange("UTC offset does not match the time zone: " + s), true
+		}
+		ns = n
 	} else {
 		cands := object.GetPossibleInstantsFor(tz, dt)
 		n, ok := object.DisambiguatePossibleInstants(cands, tz, dt, "compatible")

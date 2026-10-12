@@ -219,6 +219,173 @@ func (t *TemporalDuration) ToString() string {
 	return sb.String()
 }
 
+// ToStringWithPrecision 按显示精度输出 TemporalDurationString。
+//
+// digits 为小数秒位数: >=0 固定输出该位数 (不足补零, 0 则无小数点);
+// -1 表示 auto (裁剪尾部 0)。quantum 为舍入量子 (纳秒), 0 表示不舍入。
+//
+// 舍入对象是**整个时间部分** (时/分/秒/亚秒), 舍入后按规范 BalanceTimeDuration
+// 平衡到天: 进位的上限是 duration 的自然最大单位与 "day" 的较小者
+// (round-cross-unit-boundary: 1:59:59.9 expand→2H, 但 30D+23:59:60 只进到 31D,
+// 不再进月; 而仅有秒单位时 59.9→60S 保持为 60S 不进分钟)。
+func (t *TemporalDuration) ToStringWithPrecision(digits int, quantum int64, mode string) string {
+	// 整个时间部分折算为精确纳秒 (big.Int, 避免 float64 大值溢出/丢精度)。
+	timeNanos := new(big.Int)
+	addField := func(v int64, per int64) {
+		if v != 0 {
+			timeNanos.Add(timeNanos, new(big.Int).Mul(big.NewInt(v), big.NewInt(per)))
+		}
+	}
+	addField(t.hours, NanosPerHour)
+	addField(t.minutes, NanosPerMinute)
+	addField(t.seconds, NanosPerSecond)
+	addField(t.milliseconds, NanosPerMillisecond)
+	addField(t.microseconds, NanosPerMicrosecond)
+	addField(t.nanoseconds, 1)
+
+	if quantum > 0 {
+		r := RoundNanosSigned(timeNanos, big.NewInt(quantum), mode)
+		neg := t.Sign() < 0
+		if neg && r.Sign() > 0 {
+			r.SetInt64(0)
+		}
+		if !neg && r.Sign() < 0 {
+			r.SetInt64(0)
+		}
+		timeNanos = r
+	}
+
+	// 平衡顶: duration 的自然最大非零单位, clamp 到 "day" (规范 BalanceTimeDuration
+	// 的 largestUnit 不超过 day, 故时间部分最多进到天, 不进周/月/年)。
+	top := t.naturalLargestUnit()
+	days := t.days
+	switch top {
+	case "year", "month", "week", "day":
+		// 允许整个时间部分进到天。
+		dayNanos := big.NewInt(NanosPerDay)
+		extra, rem := new(big.Int), new(big.Int)
+		extra.QuoRem(timeNanos, dayNanos, rem)
+		timeNanos = rem
+		days += extra.Int64()
+		top = "day"
+	}
+
+	// 自顶向下按 top 逐级拆分: 从 top 对应单位开始, 依次取模落到下一级。
+	// top 之上的单位只出现一次 (小时可任意大), 之后的每级都规范取模。
+	neg := timeNanos.Sign() < 0
+	abs := new(big.Int).Abs(timeNanos)
+	take := func(m int64) *big.Int { // abs / m 的商, 并把余数写回 abs
+		q, r := new(big.Int).QuoRem(abs, big.NewInt(m), new(big.Int))
+		abs = q
+		return r
+	}
+	var ns, us, ms, secs, mins, hrs int64
+	ns = take(1000).Int64()
+	us = take(1000).Int64()
+	ms = take(1000).Int64()
+	switch top {
+	case "year", "month", "week", "day", "hour":
+		// 顶为小时或更粗: 分钟及秒规范拆分, 余值即小时 (可 >24)。
+		secs = take(60).Int64()
+		mins = take(60).Int64()
+		hrs = abs.Int64()
+	case "minute":
+		// 顶为分钟: 秒规范拆分, 余值全归分钟 (不进小时)。
+		secs = take(60).Int64()
+		mins = abs.Int64()
+	default: // second 及更细: 不向上平衡, 秒即全部余值。
+		secs = abs.Int64()
+	}
+	if neg {
+		hrs, mins, secs = -hrs, -mins, -secs
+		ms, us, ns = -ms, -us, -ns
+	}
+
+	var sb strings.Builder
+	if t.Sign() < 0 {
+		sb.WriteByte('-')
+	}
+	sb.WriteByte('P')
+	prefixLen := sb.Len()
+	appendUnit := func(v int64, unit byte) {
+		if v == 0 {
+			return
+		}
+		if v < 0 {
+			v = -v
+		}
+		sb.WriteString(fmt.Sprintf("%d%c", v, unit))
+	}
+	appendUnit(t.years, 'Y')
+	appendUnit(t.months, 'M')
+	appendUnit(t.weeks, 'W')
+	appendUnit(days, 'D')
+	dateWritten := sb.Len() > prefixLen
+
+	timeEmpty := hrs == 0 && mins == 0 && secs == 0 && ms == 0 && us == 0 && ns == 0
+	if timeEmpty {
+		if !dateWritten {
+			if digits > 0 {
+				sb.WriteString("T0." + strings.Repeat("0", digits) + "S")
+			} else {
+				sb.WriteString("T0S")
+			}
+		}
+		return sb.String()
+	}
+	sb.WriteByte('T')
+	appendUnit(hrs, 'H')
+	appendUnit(mins, 'M')
+
+	if secs != 0 || ms != 0 || us != 0 || ns != 0 || digits >= 0 {
+		s := secs
+		if s < 0 {
+			s = -s
+		}
+		f := ms*NanosPerMillisecond + us*NanosPerMicrosecond + ns
+		if f < 0 {
+			f = -f
+		}
+		if digits < 0 {
+			if f == 0 {
+				sb.WriteString(fmt.Sprintf("%dS", s))
+			} else {
+				d := strings.TrimRight(fmt.Sprintf("%09d", f), "0")
+				sb.WriteString(fmt.Sprintf("%d.%sS", s, d))
+			}
+		} else if digits == 0 {
+			sb.WriteString(fmt.Sprintf("%dS", s))
+		} else {
+			d := fmt.Sprintf("%09d", f)[:digits]
+			sb.WriteString(fmt.Sprintf("%d.%sS", s, d))
+		}
+	}
+	return sb.String()
+}
+
+// naturalLargestUnit 返回 duration 中最大的非零单位名 (rank 最高者)。
+// 全零时返回 "nanosecond"。用于 toString 舍入后平衡的上限判定。
+func (t *TemporalDuration) naturalLargestUnit() string {
+	switch {
+	case t.years != 0:
+		return "year"
+	case t.months != 0:
+		return "month"
+	case t.weeks != 0:
+		return "week"
+	case t.days != 0:
+		return "day"
+	case t.hours != 0:
+		return "hour"
+	case t.minutes != 0:
+		return "minute"
+	case t.seconds != 0:
+		return "second"
+	default:
+		return "nanosecond"
+	}
+}
+
 // ===== 时间部分平衡 =====
 
 // BalanceTimeSubsecond 把亚秒字段平衡成毫秒/微秒/纳秒的标准区间。
