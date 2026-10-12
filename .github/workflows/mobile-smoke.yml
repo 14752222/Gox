@@ -43,11 +43,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
-      # website/ · npm/ · gox-logo-concepts/ 是独立仓库的子模块，与 ci.yml 同理，
-      # 不显式拉取就是空目录。
+      # 子模块已全部摘除（npm/website 等是独立仓库，本作业不读它们）。
       - uses: actions/checkout@v4
-        with:
-          submodules: true
 
       - uses: actions/setup-go@v5
         with:
@@ -107,8 +104,6 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
-        with:
-          submodules: true
 
       - uses: actions/setup-go@v5
         with:
@@ -201,9 +196,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     steps:
+      # npm/ 是独立仓库（gox-npm）：断言子包定义同步与 tarball 检查要读
+      # npm/package.json 与 npm/packages/*，显式 checkout 到 npm/。
+      - uses: actions/checkout@v4
       - uses: actions/checkout@v4
         with:
-          submodules: true
+          repository: 14752222/gox-npm
+          path: npm
 
       - uses: actions/setup-go@v5
         with:

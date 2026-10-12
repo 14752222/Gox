@@ -61,9 +61,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     steps:
+      # 子模块已摘除，本工作流不读 npm/website —— 普通 checkout。
       - uses: actions/checkout@v4
-        with:
-          submodules: true
 
       # 与 ci.yml 同款: 锁 go.mod 声明的版本。字体渲染在 Go 侧是自绘
       # (真形字光栅化), 但 PNG 编码输出仍可能随 Go 补丁版变 —— 素材可比性

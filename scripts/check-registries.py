@@ -394,14 +394,14 @@ def line_of(text, pattern):
 
 
 def load_pkg():
-    # npm/ 2026-09-24 起是独立仓库（gox-npm）的子模块：裸 clone 时这里会缺文件，
-    # 所以先给一条能直接照做的提示，而不是把 FileNotFoundError 包成一句"读取失败"。
+    # npm/ 是独立仓库（gox-npm）：2026-10-12 起不再挂子模块，CI 由 workflow
+    # 显式 checkout；本地裸 clone 时这里会缺文件，先给一条能直接照做的提示。
     path = os.path.join(ROOT, "npm", "package.json")
     if not os.path.exists(path):
         raise Fail(
-            "npm/package.json 不存在 —— npm/ 现在是独立仓库的子模块，"
-            "请先跑 git submodule update --init"
-            "（克隆时用 git clone --recurse-submodules）"
+            "npm/package.json 不存在 —— npm/ 是独立仓库 gox-npm（14752222/gox-npm），"
+            "请先 git clone https://github.com/14752222/gox-npm npm"
+            "（CI 里由 workflow 的 actions/checkout 自动拉取）"
         )
     try:
         with open(path, encoding="utf-8") as f:

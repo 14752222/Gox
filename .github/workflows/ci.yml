@@ -41,11 +41,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      # website/ · npm/ · gox-logo-concepts/ 是独立仓库的子模块，
-      # 不显式拉取就是空目录 —— 让 CI 环境与真实工作副本保持一致。
+      # npm/ 是独立仓库（gox-npm），已不挂子模块：check-registries.py 要读
+      # npm/package.json 与 npm/packages/*，显式 checkout 到 npm/。
+      - uses: actions/checkout@v4
       - uses: actions/checkout@v4
         with:
-          submodules: true
+          repository: 14752222/gox-npm
+          path: npm
 
       - name: 内置组件四处同步 / gx 模块三处同步 / 版本号一致 / npm 清单自洽 / 文档 import 一致
         run: |
@@ -185,11 +187,9 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
-      # website/ · npm/ · gox-logo-concepts/ 是独立仓库的子模块，
-      # 不显式拉取就是空目录 —— 让 CI 环境与真实工作副本保持一致。
+      # 子模块已全部摘除（npm/website 等是独立仓库，测试矩阵不读它们），
+      # 普通 checkout 即可。
       - uses: actions/checkout@v4
-        with:
-          submodules: true
 
       # 不写 check-latest: true：测试里有字节级 golden 比对（icongen），
       # PNG 压缩输出随 Go 补丁版本变化 —— CI 的工具链必须与刷新 golden 时用的

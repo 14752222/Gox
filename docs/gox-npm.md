@@ -12,16 +12,16 @@
 |---|---|
 | **是** | 一个把纯 JS 依赖装到 `node_modules/` 的安装器（类似 `npm install` 的最小可用子集） |
 | **不是** | Node 本身；不执行 `postinstall`、不跑生命周期脚本、不做传递依赖树 |
-| **不是** | `npm/` 子模块那个包（那个包叫 `@goxjs/goxjs`，只分发 Gox 二进制，见 §5） |
+| **不是** | gox-npm 仓库那个包（那个包叫 `@goxjs/goxjs`，只分发 Gox 二进制，见 §5） |
 
-**与 `npm/` 子模块的分工**（两者都走 npm registry，但角色完全不同）：
+**与 gox-npm 仓的分工**（两者都走 npm registry，但角色完全不同）：
 
 ```
 npm i -g @goxjs/goxjs      # 装「gox / goxjs 这个命令」——二进制分发器
 gox install                # 装「你工程的 JS 依赖」——包安装器，落到 ./node_modules
 ```
 
-- `@goxjs/goxjs`（仓库 `npm/` 子模块）= **平台二进制分发**。`bin/gox.js` 只做
+- `@goxjs/goxjs`（gox-npm 仓库）= **平台二进制分发**。`bin/gox.js` 只做
   一件事：探测平台后 `spawn` 对应架构的 Gox 二进制。
 - `gox install`（本命令，`cmd/gox/cmd_npm.go`）= **依赖包安装**。给工程装纯 JS
   依赖，供 VM 的 `import` 用。

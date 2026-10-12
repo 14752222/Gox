@@ -1,7 +1,7 @@
 # @goxjs/goxjs 发版手册（npm）
 
-> **一句话**：在 `npm/`（**独立仓库 `gox-npm` 的子模块**）里改 `version` 并提交推送 →
-> 回主仓库提交子模块指针再 push 到 `main`。剩下的由
+> **一句话**：在 `npm/`（**独立仓库 `gox-npm`**，本地是它的工作副本）里改 `version` 并推送 →
+> 回主仓打 `v*` tag 并推送（tag 必须与 gox-npm 版本一致）。剩下的由
 > `.github/workflows/release.yml` 全自动完成：判重（版本已在 registry 上就跳过）→
 > 注册表一致性校验（内置组件四处 / gx 模块三处 / 版本号 / npm 清单 / **移动端子包自洽**）→
 > 交叉编译五平台二进制 → **交叉编译移动端平台子包** → 打包内容校验 → OIDC 发布（主包 + 子包）→
@@ -59,14 +59,14 @@
 ## 3. 一次发版的完整流程（可直接复制）
 
 ```bash
-# 0) 主仓库与子模块都干净（npm/ · website/ · gox-logo-concepts/ 是子模块）
+# 0) 主仓库与 gox-npm 工作副本都干净（npm/ 是独立仓库，主仓里没有它）
 git status --porcelain            # 只该有你这次要提交的改动
-git submodule status              # 每行开头不该有 + 或 -
+git -C npm status --porcelain     # gox-npm 工作副本也不该有脏改动
 git log --oneline -1
 
 # 1) 改版本号（0.3.0 / 0.3.1 …）与包 README
-#    ⚠️ npm/ 是一个**独立仓库**（子模块）：改完要在它里面提交并推送，否则主仓库
-#       记下的指针还是旧提交，CI 打包出来的会是旧版本号。
+#    ⚠️ npm/ 是一个**独立仓库**（gox-npm）：改完要在它里面提交并推送 —— CI 打包
+#       读的是 gox-npm 默认分支最新提交，没推上去就是旧版本号。
 $EDITOR npm/package.json npm/README.md
 git -C npm commit -am "chore(release): 0.3.0"
 git -C npm push
@@ -82,14 +82,13 @@ done
 bash scripts/build-npm.sh --into-package
 ( cd npm && npm pack --pack-destination ../dist/npm-pack )
 tar -tzf dist/npm-pack/goxjs-goxjs-*.tgz | sort      # 必须看到 5 个平台的 binaries/ + README.md
-rm -rf npm/binaries                                  # 预检产物别留在子模块里（CI 里是 always() 清）
+rm -rf npm/binaries                                  # 预检产物别留在 gox-npm 工作副本里（CI 里是 always() 清）
 
-# 4) 回主仓库提交子模块指针 + 推送 —— 这一推才是"发版"
+# 4) 回主仓打 tag 并推送 —— tag 必须与 gox-npm 默认分支的版本一致（decide 闸门核对）
 #    （版本号在 registry 上不存在时才会真发；只推 gox-npm 不会触发这条流水线）
-git add npm README.md docs/ website/ \
-        .github/workflows/release.yml   # 只 add 自己这次动的文件, 别用 -A
-git commit -m "chore(release): 0.3.0"
-git push Gox main:main
+git tag v0.3.0
+git push Gox v0.3.0
+#    主仓若有配套改动（README / docs 等），照常 commit + push main 即可，与发版互不干扰
 
 # 5) 验收（1 分钟内完成；registry 有边缘缓存，查太早会看不到）
 curl -s "https://registry.npmjs.org/@goxjs%2Fgoxjs/0.3.0" | head -c 400
@@ -122,13 +121,12 @@ curl -s "https://registry.npmjs.org/-/npm/v1/attestations/@goxjs%2Fgoxjs@0.3.0" 
 - 发布前必须把 npm 升到 **≥ 11.5.1**（Node 22 自带 10.x，workflow 里有一步 `npm install -g npm@latest` 并卡版本）。
 - 打包布局三条纪律（0.2.0 空壳包的教训）：**产物不进包目录**（编到 `dist/npm/binaries/` 再复制）、
   **包目录放占位 `.npmignore`**、**`.gitignore` 里不出现 `npm/` 下任何路径**。
-  （2026-09-24 `npm/` 拆成子模块后，这里的「`.gitignore`」指的是 **gox-npm 仓库根的那一份** ——
-  主仓库的 `.gitignore` 已经管不到包目录了；那条教训的原文也搬进了 `gox-npm/.gitignore`。）
+  （`npm/` 是独立仓库 gox-npm，这里的「`.gitignore`」指的是 **gox-npm 仓库根的那一份** ——
+  主仓库的 `.gitignore` 管不到包目录；那条教训的原文也住在 `gox-npm/.gitignore`。）
 
 **本地侧**：`gh` CLI / GitHub token 都不是必需的（发版由 CI 完成）。主仓库的远端名是 `Gox`
 （不是 `origin`），且本机 git 不支持多级引用，一律 `git push Gox main:main`。
-三个子模块的远端都叫 `origin`（`git submodule add` 时写的是 SSH URL），用 `git -C <目录> push`
-即可 —— 推送走 SSH key，不需要配 HTTPS 凭据。
+gox-npm 工作副本的远端叫 `origin`，用 `git -C npm push` 即可 —— 推送走 SSH key，不需要配 HTTPS 凭据。
 
 ## 5. 验收口径（不看 CI 颜色，看 registry）
 
@@ -200,5 +198,5 @@ curl -s "https://registry.npmjs.org/-/npm/v1/attestations/@goxjs%2Fgoxjs@0.3.0" 
 - `scripts/check-registries-selftest.py` —— 上一条的负向自测，证明它真的会红
 - `scripts/build-npm.sh` —— 五平台交叉编译 + 可选 `--into-package`
 - `npm/package.json` / `npm/bin/gox.js` / `npm/README.md` —— 包定义三件套；2026-09-24 起住在
-  **独立仓库** [gox-npm](https://github.com/14752222/gox-npm)（主仓库里只留子模块指针）
+  **独立仓库** [gox-npm](https://github.com/14752222/gox-npm)（主仓里没有这个目录；CI 由 workflow 显式 checkout）
 - `tdrive 项目资产盘的 `agent_doc/gui-component-status.md`` —— 每次能力落地后追加的「落地记录」

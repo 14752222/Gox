@@ -12,10 +12,10 @@
 #   - 版本号一致由下方「版本号一致」步骤承担（npm/package.json ↔
 #     config.mts 的 softwareVersion ↔ index.md 的「当前版本 **vX.Y.Z**」）。
 #
-# website/ · npm/ 是独立仓库的子模块：官网改动提交在 gox-website，主仓库这边
-#   只看到 gitlink 指针变化，路径是 `website`（没有斜杠）—— `website/**` 匹配
-#   不到，所以 paths 里必须单独列一条裸 `website`。只推 gox-website 不触发本
-#   工作流，必须回主仓库提交子模块指针。
+# website/ · npm/ 是独立仓库（gox-website / gox-npm），2026-10-12 起不再挂子模块：
+#   构建时由 workflow 显式 checkout 到 website/ 与 npm/。官网内容改动只推
+#   gox-website 不会触发本工作流 —— 由每日 schedule 或手动 workflow_dispatch
+#   拉最新构建；pages.yml 自身改动仍走 on-push。
 #
 # 一次性前置（仓库设置，代码改不了）：Settings → Pages → Build and deployment →
 #   Source 必须选 **GitHub Actions**。
@@ -28,10 +28,11 @@ on:
   push:
     branches: [main]
     paths:
-      - 'website'
-      - 'website/**'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
+  schedule:
+    # 每天 04:00（UTC+8）拉 gox-website 默认分支最新构建部署。
+    - cron: '0 20 * * *'
 
 permissions:
   contents: read
@@ -48,11 +49,17 @@ jobs:
     name: 检查 + 构建
     runs-on: ubuntu-latest
     steps:
-      # website/ · npm/ 是子模块，不显式拉取就是空目录
-      # （版本号一致步骤要读 npm/package.json）。
+      # website/ · npm/ 是独立仓库（gox-website / gox-npm），显式 checkout 到
+      # 同名目录（默认分支最新），下方所有步骤路径不变。
+      - uses: actions/checkout@v7
       - uses: actions/checkout@v7
         with:
-          submodules: true
+          repository: 14752222/gox-website
+          path: website
+      - uses: actions/checkout@v7
+        with:
+          repository: 14752222/gox-npm
+          path: npm
 
       - name: 版本号一致（npm ↔ config.mts ↔ index.md）
         run: |

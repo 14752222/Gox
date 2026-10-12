@@ -129,7 +129,7 @@ jobs:
   #
   # 壳工程 ↔ 引擎版本错配是 JNI / NAPI 契约不匹配、**运行时才崩**，编译期拦不住，
   # 所以宁可在发布前就此卡住。三层里前两层已由 check-registries.py 覆盖，这里补：
-  #   ① 引擎版本 == npm/package.json 版本（在主仓与 gox-npm 子模块之间）
+  #   ① 引擎版本 == npm/package.json 版本（在主仓与 gox-npm 仓之间）
   #   ② 平台子包定义已同步（packaging/npm-mobile/ → npm/packages/，防手改生成物）
   #   ③ 壳工程里声明的 engineVersion / engineVersionRange 与引擎版本相符
   #      —— 声明文件 app/{android,harmony,ios}/gox-engine.json 已落地（2026-10-10 自动化轮次，
@@ -142,11 +142,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      # npm/ 是独立仓库（gox-npm）的子模块，不显式拉取就是空目录 ——
-      # 版本一致性、子包定义同步都要读到里面的 package.json。
+      # npm/ 是独立仓库（gox-npm），已不挂子模块：版本一致性、子包定义同步
+      # 都要读到里面的 package.json，显式 checkout 到 npm/（默认分支最新）。
+      - uses: actions/checkout@v4
       - uses: actions/checkout@v4
         with:
-          submodules: true
+          repository: 14752222/gox-npm
+          path: npm
 
       - uses: actions/setup-node@v4
         with:

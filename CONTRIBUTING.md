@@ -33,7 +33,7 @@ go test ./...
 先在 GitHub fork `14752222/Gox`，再把下面的 `YOUR_NAME` 换成你的用户名：
 
 ```bash
-git clone --recurse-submodules https://github.com/YOUR_NAME/Gox.git
+git clone https://github.com/YOUR_NAME/Gox.git
 cd Gox
 git remote add upstream https://github.com/14752222/Gox.git
 git switch -c fix/issue-NUMBER
@@ -54,12 +54,9 @@ git push -u origin fix/issue-NUMBER
 查看第一条错误，并在本地重跑上面的对应命令；注册表一致性失败时重点查看
 `python3 scripts/check-registries.py --list` 的输出。
 
-`website/`、`npm/`、`gox-logo-concepts/` 是主仓记录提交指针的三个子模块。
-通常只提交主仓里的指针更新，不要为同一次主仓改动另给子模块开 PR；克隆后若目录为空，运行：
-
-```bash
-git submodule update --init --recursive
-```
+`website/`、`npm/`、`gox-logo-concepts/` 是三个独立仓库，2026-10-12 起不再以子模块挂在主仓。
+CI（ci / release / pages / mobile-*）会在构建时自动 checkout `npm/` 与 `website/`；本地要跑
+`scripts/check-registries.py` 的话，先 `git clone https://github.com/14752222/gox-npm npm`。
 
 ## 提交规范
 

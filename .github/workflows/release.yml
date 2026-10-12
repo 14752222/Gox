@@ -52,7 +52,8 @@
 #   判空与「为什么跳过」集中在 scripts/check-signing-creds.sh（三处调用同一份判据），
 #   跳过逻辑有没有被改坏由 scripts/check-signing-workflow.py 静态校验（ci.yml 里跑）。
 #
-# 发版动作：改 npm/package.json 的 version（子包版本须同号）→ 提交 → push 到 main
+# 发版动作：去 gox-npm 仓改 npm/package.json 的 version（子包版本须同号）并 push；
+#   再回主仓打 tag —— decide 的闸门会核对 tag 与 gox-npm 默认分支的版本一致
 #           （或打 tag），registry 上出现带 provenance 证明的新版本即成功。
 # ─────────────────────────────────────────────────────────────────────────────
 name: release
@@ -88,10 +89,13 @@ jobs:
       publish: ${{ steps.guard.outputs.publish }}
       version: ${{ steps.guard.outputs.version }}
     steps:
-      # npm/ 等目录是独立仓库的子模块，判重与打包都要读到里面的 package.json。
+      # npm/ 是独立仓库（gox-npm），已不挂子模块：判重与打包都要读到里面的
+      # package.json，由这里显式 checkout 到 npm/（gox-npm 默认分支最新）。
+      - uses: actions/checkout@v7
       - uses: actions/checkout@v7
         with:
-          submodules: true
+          repository: 14752222/gox-npm
+          path: npm
 
       # ── 版本号闸门（r4yycE，B 路：维持手写，但把检查升级成发版硬闸门）────────
       # 放在 decide 的**第一步**：发版一旦走到 publish，二进制已经交叉编译完了，
@@ -200,10 +204,13 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      # npm/ 等目录是独立仓库的子模块，判重与打包都要读到里面的 package.json。
+      # npm/ 是独立仓库（gox-npm），已不挂子模块：判重与打包都要读到里面的
+      # package.json，由这里显式 checkout 到 npm/（gox-npm 默认分支最新）。
+      - uses: actions/checkout@v7
       - uses: actions/checkout@v7
         with:
-          submodules: true
+          repository: 14752222/gox-npm
+          path: npm
 
       # 发版前的第一道闸门：注册表 / 版本号静态一致性（与 ci.yml 同一份判据）。
       # 必须放在这里，因为 tag 推送、Release 发布、workflow_dispatch 这三条入口
@@ -703,9 +710,12 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 30
     steps:
+      # npm/packages/（gox-npm 仓）定义移动端平台子包 —— 显式 checkout 到 npm/。
+      - uses: actions/checkout@v7
       - uses: actions/checkout@v7
         with:
-          submodules: true
+          repository: 14752222/gox-npm
+          path: npm
 
       - uses: actions/setup-go@v7
         with:

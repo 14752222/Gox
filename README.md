@@ -99,12 +99,15 @@ flex 布局 + JSX + 信号驱动更新，win32 / X11 / cocoa 窗口后端）、�
 
 ### 从源码构建
 
-> `npm/` · `website/` · `gox-logo-concepts/` 是三个**独立仓库**，以 git submodule 挂在
-> 本仓库里。克隆必须带 `--recurse-submodules`；已有克隆补 `git submodule update --init`。
-> 否则这三个目录是空的，`scripts/check-registries.py` 会因为读不到 `npm/package.json` 而失败。
+> `npm/` · `website/` · `gox-logo-concepts/` 是三个**独立仓库**（[gox-npm](https://github.com/14752222/gox-npm) ·
+> [gox-website](https://github.com/14752222/gox-website) ·
+> [gox-logo-concepts](https://github.com/14752222/gox-logo-concepts)），2026-10-12 起不再以
+> git submodule 挂载，克隆主仓不需要 `--recurse-submodules`。CI 构建时会自动 checkout
+> `npm/` 与 `website/`；本地要跑 `scripts/check-registries.py` 的话，先
+> `git clone https://github.com/14752222/gox-npm npm`（否则读不到 `npm/package.json`）。
 
 ```bash
-git clone --recurse-submodules https://github.com/14752222/Gox.git
+git clone https://github.com/14752222/Gox.git
 cd Gox
 go build ./cmd/gox   # 生成可执行文件；Windows 下为 gox.exe
 ```
@@ -537,11 +540,11 @@ REPL 内建命令：`:help`（帮助）、`:clear`（重置全局环境）、`:e
 | `test/` | 测试相关：`bench/` 性能剖析基准（fib、函数调用、对象操作、数值解析） |
 | `testdata/` | 可直接运行的示例脚本（语言特性、宿主 API、GUI 示例） |
 | `docs/` | **对外文档**（GUI 指南、运行时 API 教程、分发与发版手册）——过程性台账由维护者在仓库外维护（不随仓库发布） |
-| `npm/` | **子模块** → [gox-npm](https://github.com/14752222/gox-npm)：npm 包 `@goxjs/goxjs` 的**定义**（`package.json` / `bin/gox.js` / 包说明），二进制由发版流水线现场编译，不进仓库 |
+| `npm/` | **独立仓库** [gox-npm](https://github.com/14752222/gox-npm)（CI 构建时自动 checkout）：npm 包 `@goxjs/goxjs` 的**定义**（`package.json` / `bin/gox.js` / 包说明），二进制由发版流水线现场编译，不进仓库 |
 | `scripts/` | 构建与检查脚本：`build-npm.sh` 交叉编译五个平台的二进制；`check-registries.py` 注册表一致性（内置组件四处 / gx 模块三处 / 版本号 / npm 清单），配 `check-registries-selftest.py` 做负向自测（`check-site.py` 只认顶层 `*.html`，官网 2026-09-25 迁 VitePress 后已不适用，死链改由 `vitepress build` 把关）；`check-imports.py` 文档/示例的 import 与内置模块导出表一致（编译期报错级 + 文件模块静默 undefined 级） |
 | `.github/workflows/` | CI：`ci.yml` 常规闸门（注册表一致性 + `go build`/`vet`/`test`）；`release.yml` 发版流水线（push main / tag / Release → npm）；`pages.yml` 官网发布 |
-| `website/` | **子模块** → [gox-website](https://github.com/14752222/gox-website)：官网源码，推 main 后由 `pages.yml` 发布到 GitHub Pages |
-| `gox-logo-concepts/` | **子模块** → [gox-logo-concepts](https://github.com/14752222/gox-logo-concepts)：logo 概念稿与官网资产生成脚本（`make_assets.py`） |
+| `website/` | **独立仓库** [gox-website](https://github.com/14752222/gox-website)（CI 构建时自动 checkout）：官网源码，由 `pages.yml` 每日定时或手动触发发布到 GitHub Pages |
+| `gox-logo-concepts/` | **独立仓库** [gox-logo-concepts](https://github.com/14752222/gox-logo-concepts)：logo 概念稿与官网资产生成脚本（`make_assets.py`） |
 
 ## 开发与测试
 
@@ -561,11 +564,11 @@ go run ./test/bench    # 生成 cpu.prof 性能剖析
 认证走 npm Trusted Publishing (OIDC)，仓库里不需要任何 secret / token：
 
 ```bash
-# 1. 改版本号 —— npm/package.json 的 version 是唯一真源，而 npm/ 是独立仓库：
+# 1. 改版本号 —— npm/package.json 的 version 是唯一真源，npm/ 是独立仓库（本地是它的工作副本）：
 $EDITOR npm/package.json
 git -C npm commit -am "chore(release): 0.2.1" && git -C npm push
-# 2. 回主仓库提交子模块指针并推送（这一推才触发发版）
-git add npm && git commit -m "chore(release): 0.2.1" && git push origin main
+# 2. 回主仓打 tag 并推送 —— tag 必须与 gox-npm 默认分支的版本一致（decide 闸门会核对）
+git tag v0.2.1 && git push origin v0.2.1
 # 3. 剩下交给 CI：交叉编译五平台二进制 → 冒烟测试 → 打包校验 → npm publish --provenance
 #    发布成功后自动打 v0.2.1 标签并建 Release
 ```

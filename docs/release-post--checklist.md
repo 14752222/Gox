@@ -64,7 +64,7 @@ test262 language 合规率 <当批数字>；class extends 仅标识符；await u
 |---|---|---|
 | GitHub Releases | repo → Releases → 对应 `v0.9.0` → Edit → description 用 §2 模板 | 网页端（待人工） |
 | npm 包页 | `@goxjs/goxjs` 的 README「已知限制」小节随包发布（源头在 **gox-npm 仓库**的 `npm/README.md`，随版本走） | 改 `gox-npm` 仓库（待人工/下次发版带上） |
-| 官网 | `website/index.md` / 下载页的版本号与平台矩阵 | 改 website 子模块（待人工） |
+| 官网 | `website/index.md` / 下载页的版本号与平台矩阵 | 改 gox-website 仓库（待人工） |
 
 ## 4. 待人工勾选项（账号操作，本工作流不执行）
 

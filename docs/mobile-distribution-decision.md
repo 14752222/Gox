@@ -461,10 +461,10 @@ exit=0
 3. **harmony 全链路缺口**：CI 产不出 HAP，也产不出 harmony 子包（`release.yml` 明确不含）；
    `gox create` 脚手架还缺 harmony 骨架 —— 三者都需要「自建 runner + DevEco」或另立单。
 4. **Android 只有 debug 签名**：无 keystore.properties ⇒ 不可上架（§4.1）。
-5. **workspace 内的先天盲区**：`npm/` 是 git submodule，在本 worktree 里是空目录 ⇒
-   `gen-npm-mobile-pkgs.py --check` / `check-registries.py` **本地跑会因缺 `npm/package.json` 报
-   `FileNotFoundError`**。这是 worktree 事实，不是脚本缺陷（CI `submodules: true` 下正常）。
-   本轮**没有**、也不应去初始化或改动 `npm/`。
+5. **workspace 内的先天盲区**：`npm/` 是独立仓库 gox-npm（2026-10-12 前是 git submodule），
+   不 clone 它就是空目录 ⇒ `gen-npm-mobile-pkgs.py --check` / `check-registries.py` **本地跑会因缺
+   `npm/package.json` 报 `FileNotFoundError`**。这是事实，不是脚本缺陷（CI 由 workflow 显式 checkout，正常）。
+   本轮**没有**、也不应去改动 `npm/`。
 6. **本机无法验证 Android/iOS 构建**：无 NDK / 无 Xcode（Windows 主机）⇒ APK 与壳工程 zip 的
    构建链路只能靠 CI 或真机验证；本轮未做。
 7. **nightly prerelease 无清理策略**：长期会累积。需要时另立「保留最近 N 个」的单。
