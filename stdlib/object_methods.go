@@ -232,6 +232,14 @@ func setupObjectGlobal() *object.BuiltinFunction {
 			}
 			return object.NullSingleton
 		}
+		// TypedArray 实例: [[Prototype]] = 本类型 prototype (派生类实例则
+		// 是 ProtoOverride —— super() 回填的派生类原型)。
+		if ta, ok := args[0].(*object.TypedArray); ok {
+			if p := ta.GetProto(); p != nil {
+				return p
+			}
+			return object.NullSingleton
+		}
 		// Date 实例的 [[Prototype]] 取自包级注册表 (object.DateProto),
 		// 与 Temporal 各类型同法 —— 缺这条分支会退化成 null, 于是
 		// `Object.getPrototypeOf(new Date()) === Date.prototype` 为 false

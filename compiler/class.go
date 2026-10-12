@@ -123,6 +123,13 @@ func (c *Compiler) compileClassBody(className string, superClass ast.Expression,
 	// 创建 prototype 对象
 	c.emitter.EmitNoOperand(bytecode.OP_NEW_OBJECT) // [ctor, proto]
 
+	// 规范 ClassDefinitionEvaluation 步骤 15: 在实例原型上先定义 constructor
+	// 自有属性 (不可枚举/可写/可配置), **早于**方法定义 —— 于是显式/computed
+	// 名为 "constructor" 的方法定义会随后覆盖它 (computed-property-names/
+	// class/method/constructor.js 依赖这一顺序)。OP_SET_CTOR 不动栈
+	// ([ctor, proto])。
+	c.emitter.EmitNoOperand(bytecode.OP_SET_CTOR)
+
 	// 实例方法挂到 prototype
 	for _, m := range methods {
 		if m.IsConstructor {

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/14752222/Gox/object"
+	"github.com/14752222/Gox/stdlib"
 	"github.com/14752222/Gox/vm"
 )
 
@@ -519,9 +520,12 @@ func runCase(root string, c *test262Case, timeout time.Duration) test262Result {
 				doneCh <- outcome{err: herr, harnessErr: true}
 				return
 			}
+			// module 用例的 harness 走 EvalVM (拿不到 EvalFileVMT262 的 $262 注入),
+			// 故在此显式补上宿主全局, 使 module 用例里的 $DETACHBUFFER 可用。
+			stdlib.SetupTest262Globals(hvm.Globals())
 			engine, err = vm.EvalModuleFileVMWithGlobals(tmpPath, hvm.Globals())
 		} else {
-			engine, err = vm.EvalFileVM(tmpPath)
+			engine, err = vm.EvalFileVMT262(tmpPath)
 		}
 		if err != nil {
 			doneCh <- outcome{err: err}

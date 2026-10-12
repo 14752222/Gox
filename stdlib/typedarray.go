@@ -109,6 +109,7 @@ func setupTypedArrays(env *runtime.Environment) {
 		ctor := object.NewBuiltin(kind.Name, func(args ...object.Value) object.Value {
 			return constructTypedArray(kind, args)
 		})
+		ctor.IsTypedArrayCtor = true
 		ctor.SetProperty("BYTES_PER_ELEMENT", object.NewInt(int64(kind.ElemSize)))
 		// 静态方法
 		ctor.SetProperty("of", object.NewBuiltin("of", func(args ...object.Value) object.Value {
@@ -174,6 +175,11 @@ func setupTypedArrays(env *runtime.Environment) {
 				return object.UndefinedSingleton
 			}))
 		}
+		// 规范: <Type>Array.prototype.constructor === <Type>Array (不可枚举、
+		// 可写、可配置)。缺失会让 sample.constructor 解析为 undefined,
+		// SpeciesConstructor 的默认构造器回退与  verifiyProperty 类用例失败。
+		proto.SetBuiltinProperty("constructor", ctor)
+		proto.SetBuiltinProperty("BYTES_PER_ELEMENT", object.NewInt(int64(kind.ElemSize)))
 		ctor.SetProperty("prototype", proto)
 		object.SetTypedArrayProto(kind.Name, proto)
 		env.Declare(kind.Name, ctor, false)

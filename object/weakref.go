@@ -132,7 +132,9 @@ func IsObjectValue(v Value) bool {
 	switch v.(type) {
 	case *Object, *Array, *Map, *Set, *Error, *Closure, *BuiltinFunction,
 		*BuiltinMethod, *RegExp, *Promise, *Generator, *Proxy, *JSIterator,
-		*WeakRef, *GlobalObject, *FinalizationRegistry:
+		*WeakRef, *GlobalObject, *FinalizationRegistry,
+		*TypedArray, *ArrayBuffer, *DataView, *Date, *PrimitiveObject,
+		*Observable, *ObservableList, *ObservableMap:
 		return true
 	}
 	return false

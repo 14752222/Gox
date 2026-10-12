@@ -161,11 +161,15 @@ func (vm *VM) checkCallbackErr() error {
 
 func (vm *VM) invokeWithThis(fn, thisVal object.Value, args []object.Value) error {
 	// 一次性 new.target 传递标记 (super() 前由 OP_NEW_TARGET_MARK 置位):
-	// 只有被调是 Closure 时由 callClosure 消费装配父构造器帧; 内建/代理被调
-	// 不装配 JS 帧, 这里直接丢弃, 避免泄漏给后续无关调用。
+	// 只有被调是 Closure 时由 callClosure 消费装配父构造器帧。内建/代理被调
+	// 不装配 JS 帧, 一般直接丢弃以免泄漏给后续无关调用 —— 但 TypedArray
+	// 派生类的 super(...) 是例外 (见下), 故先记录标记再决定是否清除。
+	superCall := vm.hasPendingNewTarget
 	if _, isClosure := fn.(*object.Closure); !isClosure {
-		vm.hasPendingNewTarget = false
-		vm.pendingNewTarget = nil
+		if !(superCall && isTypedArrayConstructCtor(fn)) {
+			vm.hasPendingNewTarget = false
+			vm.pendingNewTarget = nil
+		}
 	}
 	switch callee := fn.(type) {
 	case *object.BuiltinFunction:
@@ -176,6 +180,28 @@ func (vm *VM) invokeWithThis(fn, thisVal object.Value, args []object.Value) erro
 		}
 		if thrown, err := vm.throwIfError(result, callee.ReturnIsValue); thrown {
 			return err
+		}
+		// TypedArray 派生类 super(...): 编译器把 super() 编成 OP_CALL_METHOD
+		// (普通方法调用), 基类是内建构造器; 但规范里 super() 走 [[Construct]],
+		// 结果 (Integer-Indexed exotic 实例) 必须成为派生类构造器帧的 this ——
+		// 否则派生实例只是普通对象, 原型方法全部报 "receiver must be a
+		// TypedArray"。此处把新帧 this 换成返回的 TypedArray。
+		if superCall && thisVal != nil {
+			if ta, isTA := result.(*object.TypedArray); isTA {
+				// 派生类实例的 [[Prototype]] 应为派生类原型 (MyU8.prototype),
+				// 而非同类型的 Uint8Array.prototype。new.target 即派生构造器闭包,
+				// 取其 prototype 作为覆盖。
+				if nt, ok := vm.pendingNewTarget.(*object.Closure); ok {
+					if pv, found := nt.GetProperty("prototype"); found && pv != nil {
+						ta.ProtoOverride = pv
+					}
+				}
+				if f := vm.currentFrame(); f != nil {
+					f.This = ta
+				}
+			}
+			vm.hasPendingNewTarget = false
+			vm.pendingNewTarget = nil
 		}
 		vm.stack.Push(result)
 		if err := vm.checkCallbackErr(); err != nil {
@@ -235,6 +261,13 @@ func (vm *VM) invokeWithThis(fn, thisVal object.Value, args []object.Value) erro
 		return vm.throwNamedError("TypeError", "%s is not a function", describeCallee(fn))
 	}
 	return nil
+}
+
+// isTypedArrayConstructCtor 报告 fn 是否为某个 TypedArray 构造器内建函数
+// (Uint8Array / BigInt64Array 等)。供派生类 super(...) 识别父构造器。
+func isTypedArrayConstructCtor(fn object.Value) bool {
+	b, ok := fn.(*object.BuiltinFunction)
+	return ok && b.IsTypedArrayCtor
 }
 
 func describeCallee(v object.Value) string {

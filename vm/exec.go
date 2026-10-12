@@ -1008,6 +1008,10 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 					}
 					continue
 				}
+				// 提前抓住构造器帧指针: runFrom 正常结束时会把帧弹出, 但派生类
+				// 构造器 super() 换掉的 this 只体现在该帧上 (隐式返回 undefined
+				// 时 OP_NEW 需据此取 exotic 实例, 而非普通对象占位)。
+				ctorFrame := vm.frames[startIdx]
 				if err := vm.runFrom(startIdx); err != nil {
 					vm.unwindFramesTo(startIdx)
 					if terr := vm.rethrowBridgeError(err); terr != nil {
@@ -1015,11 +1019,24 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 					}
 					continue
 				}
+				// 派生类构造器 (extends TypedArray 等): super() 走 [[Construct]]
+				// 后被替换的 this 挂在构造器帧上, 且派生构造器通常不显式 return
+				// (隐式返回 undefined) —— 此时必须采用构造器帧最终的 this, 而非
+				// 新建的普通对象占位。否则 new MyU8(3) 只得到普通对象, 原型方法
+				// 全部报 "receiver must be a TypedArray"。
+				var ctorThis object.Value
+				if ctorFrame != nil {
+					ctorThis = ctorFrame.This
+				}
 				// 如果构造函数返回对象，使用返回的对象
 				result := vm.stack.Pop()
-				if _, isObj := result.(*object.Object); isObj {
+				if object.IsObjectValue(result) {
 					// 使用构造函数返回的对象
 					vm.stack.Push(result)
+				} else if ctorThis != nil && ctorThis != newObj {
+					// 派生构造器 super() 已把 this 换成 exotic 实例 (TypedArray),
+					// 但派生 ctor 隐式返回 undefined —— 采用帧 this。
+					vm.stack.Push(ctorThis)
 				} else {
 					// 使用 newObj
 					vm.stack.Push(newObj)
@@ -1154,6 +1171,18 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				vm.stack.Push(object.UndefinedSingleton)
 			} else {
 				vm.stack.Push(val)
+			}
+		case bytecode.OP_SET_CTOR:
+			// 栈: [ctor, proto] → [ctor, proto]
+			// 规范 ClassDefinitionEvaluation: 在实例原型上定义 constructor
+			// 自有属性, 不可枚举、可写、可配置。不改变栈 (后续 OP_SET_PROP
+			// prototype 仍要 [ctor, proto])。
+			proto := vm.stack.Peek()
+			ctor := vm.stack.PeekAt(1)
+			if o, ok := proto.(*object.Object); ok && ctor != nil {
+				o.DefineOwnProperty("constructor", object.PropertyDescriptor{
+					Value: ctor, Writable: true, Enumerable: false, Configurable: true,
+				})
 			}
 		case bytecode.OP_SET_PROP:
 			val := vm.stack.Pop()

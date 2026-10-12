@@ -380,6 +380,11 @@ type BuiltinFunction struct {
 	// 合法。VM 在用 `new` 调用内建时经 EnterConstructCall 置位,
 	// 构造器体以 object.IsConstructCall() 读取。
 	RequiresNew bool
+	// IsTypedArrayCtor 标记本内建函数是某个 TypedArray 构造器
+	// (Uint8Array 等)。VM 据此识别派生类 super(...) 的父构造器调用,
+	// 把返回的 TypedArray 实例回填为派生构造器帧的 this (super() 走
+	// [[Construct]] 而非普通调用, 见 vm.invokeWithThis)。
+	IsTypedArrayCtor bool
 }
 
 // constructCallDepth 记录当前是否处于"内建经 new 调用"的同步窗口。
