@@ -358,6 +358,14 @@ func init() {
 				}
 				return object.NewString(humanSize(int64(nativeNumberValue(args[0]))))
 			}),
+
+			// ===== 图片处理 (同步 API, 见 native_image.go) =====
+			"loadImage":   scr("loadImage", jsLoadImage),
+			"resize":      scr("resize", jsResizeImage),
+			"crop":        scr("crop", jsCropImage),
+			"encodeImage": scr("encodeImage", jsEncodeImage),
+			"writeImage":  scr("writeImage", jsWriteImage),
+			"freeImage":   scr("freeImage", jsFreeImage),
 		}
 	})
 }

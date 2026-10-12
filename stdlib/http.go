@@ -47,6 +47,10 @@ func setupHTTP(env *runtime.Environment) {
 	env.Declare("fetch", object.NewBuiltin("fetch", func(args ...object.Value) object.Value {
 		return httpRequest("fetch", args)
 	}), false)
+
+	// ===== 全局 WebSocket(url) 构造器 =====
+	// 与 fetch 同理对齐浏览器口径: 全局可用，也可 `import { WebSocket } from "http"`。
+	env.Declare("WebSocket", wsConstructor, false)
 }
 
 func init() {
@@ -68,6 +72,9 @@ func init() {
 			"request": object.NewBuiltin("request", func(args ...object.Value) object.Value {
 				return httpRequest("request", args)
 			}),
+
+			// WebSocket 客户端 (浏览器风格): new WebSocket(url), 实现见 websocket.go
+			"WebSocket": wsConstructor,
 		}
 
 		// Node 互操作（v1 边界）: 默认导出 = 模块命名空间对象。

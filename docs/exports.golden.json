@@ -120,11 +120,17 @@
       "chooseImage",
       "chooseOneImage",
       "chooseVideo",
+      "crop",
+      "encodeImage",
+      "freeImage",
       "humanSize",
+      "loadImage",
       "mediaInfo",
       "previewImage",
+      "resize",
       "saveImage",
-      "takePhoto"
+      "takePhoto",
+      "writeImage"
     ],
     "gx/permission": [
       "authorize",
@@ -247,6 +253,7 @@
       "widthClass"
     ],
     "http": [
+      "WebSocket",
       "createServer",
       "get",
       "request"
@@ -307,6 +314,7 @@
     "createResource",
     "createRouter",
     "createSignal",
+    "crop",
     "current",
     "currentVersion",
     "devEval",
@@ -321,11 +329,13 @@
     "digest",
     "distanceBetween",
     "downloadAndInstall",
+    "encodeImage",
     "exitApp",
     "focusNext",
     "focusNode",
     "focusOrder",
     "focusPrev",
+    "freeImage",
     "getBrightness",
     "getLocation",
     "getRandomValues",
@@ -353,6 +363,7 @@
     "lastLocation",
     "layoutMode",
     "lazy",
+    "loadImage",
     "locationPlatform",
     "matchBreakpoint",
     "mediaInfo",
@@ -407,6 +418,7 @@
     "resetBreakpoints",
     "resetDisplays",
     "resetViewport",
+    "resize",
     "roles",
     "safeAreaStyle",
     "saveFile",
@@ -455,6 +467,7 @@
     "widthClass",
     "window",
     "windowInfo",
-    "windows"
+    "windows",
+    "writeImage"
   ]
 }
