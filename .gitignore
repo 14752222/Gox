@@ -119,3 +119,13 @@ bench-results/rss-*.csv
 # 独立仓库的本地 checkout（CI 由 workflow 显式拉取；本地预检用，勿提交）
 /npm/
 /website/
+
+# gfx 运行时字体种子（NotoSansSC 两套 otf，合计约 17MB）。这是**本地运行资源**：
+# gfx/font.go 按 <exe 或工作目录>/assets/fonts/ 查找它，仓库根的这份只是本地副本，
+# 没有任何构建脚本从这里拷贝。入库无意义（17MB 二进制、无法 diff），但一旦漏掉规则，
+# 一次 git add -A 就会把它永久写进历史。
+/assets/fonts/
+
+# IDE 配置：JetBrains 的 .idea/ 是本机产物，内容随 OS / 插件版本 / 打开方式漂移，
+# 已入库的 5 个文件会在不同会话之间反复产生无关 diff。
+/.idea/
