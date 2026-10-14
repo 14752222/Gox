@@ -14,15 +14,34 @@
 #
 # website/ · npm/ 是独立仓库（gox-website / gox-npm），2026-10-12 起不再挂子模块：
 #   构建时由 workflow 显式 checkout 到 website/ 与 npm/。官网内容改动只推
-#   gox-website 不会触发本工作流 —— 由每日 schedule 或手动 workflow_dispatch
-#   拉最新构建；pages.yml 自身改动仍走 on-push。
+#   gox-website 不会触发本工作流 —— 三条入口：
+#     1) 每日 schedule 兜底（04:00 UTC+8）；
+#     2) 手动 workflow_dispatch；
+#     3) gox-website 推送后由其 notify-gox-pages.yml 发 repository_dispatch
+#        （event_type: gox-site-updated）立即触发，见 2026-10-14 增补说明。
+#   pages.yml 自身改动仍走 on-push。
 #
-# 一次性前置（仓库设置，代码改不了）：Settings → Pages → Build and deployment →
-#   Source 必须选 **GitHub Actions**。
+# ── 2026-10-14 增补：repository_dispatch 即时部署（路线 A）────────────────────
+#   官网仓不是子模块，仅靠 cron 最多滞后 24h。为让「推 gox-website 即上线」，
+#   在 gox-website 加 .github/workflows/notify-gox-pages.yml，用跨仓 token
+#   （secrets.GOX_DISPATCH_TOKEN）向本仓发 repository_dispatch。
+#   本工作流因此需要 actions: write —— repository_dispatch 事件的触发者身份是
+#   GITHUB_TOKEN，默认只读；该步骤用重跑构建换取一个可写 token，只用于取
+#   commit，不下发任何写操作。若不需要即时部署、只保留定时，可整段删除。
+#
+# 一次性前置（仓库设置，代码改不了）：
+#   1) Settings → Pages → Build and deployment → Source 必须选 **GitHub Actions**；
+#   2) Settings → Actions → General → Workflow permissions 选 **Read and write**，
+#      否则下面的 actions: write 会被仓库级默认值压回只读（403 时先查这里）；
+#   3) gox-website 仓库 Secrets 配 GOX_DISPATCH_TOKEN（classic PAT 勾 repo，
+#      或 fine-grained PAT 显式授权 Gox: Contents: Read and write）。
 #
 # 与 release.yml 的关系：完全独立，互不触发。
 # ─────────────────────────────────────────────────────────────────────────────
 name: pages
+
+run-name: >-
+  pages · ${{ github.event_name == 'repository_dispatch' && format('官网更新 {0}', github.event.client_payload.site_sha) || github.event_name }}
 
 on:
   push:
@@ -30,6 +49,8 @@ on:
     paths:
       - '.github/workflows/pages.yml'
   workflow_dispatch:
+  repository_dispatch:
+    types: [gox-site-updated]
   schedule:
     # 每天 04:00（UTC+8）拉 gox-website 默认分支最新构建部署。
     - cron: '0 20 * * *'
@@ -38,6 +59,9 @@ permissions:
   contents: read
   pages: write
   id-token: write
+  # repository_dispatch 由 GITHUB_TOKEN 触发，默认只读；下面「取最新 commit」
+  # 步骤用它重跑一次本工作流，以便拿到带 contents:write 的 token 调 git/commits。
+  actions: write
 
 # 官网发布是串行资源：连续两次推送只跑最后一次，避免旧构建覆盖新构建
 concurrency:
@@ -49,6 +73,36 @@ jobs:
     name: 检查 + 构建
     runs-on: ubuntu-latest
     steps:
+      # repository_dispatch 事件的 head_sha 是主仓的 commit（不是官网仓的），
+      # 下面的 checkout 却取 gox-website 默认分支 HEAD，两者可能来自不同时刻。
+      # 若本次携带 site_sha，先校验它仍是官网仓 HEAD；不一致则用 GITHUB_TOKEN
+      # （contents: write，见顶部 actions: write）重跑构建，让新的一轮拿到真正
+      # 的最新提交。仅用 API 读，不做任何写操作；重跑即结束本次运行。
+      - name: 取最新 commit（repository_dispatch 专用）
+        id: head
+        if: github.event_name == 'repository_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WANT: ${{ github.event.client_payload.site_sha }}
+        run: |
+          set -euo pipefail
+          HEAD=$(gh api /repos/14752222/gox-website/commits/main --jq .sha)
+          echo "本次事件 site_sha: ${WANT:-（未提供）}"
+          echo "官网仓当前 HEAD: $HEAD"
+          echo "site_sha=$HEAD" >> "$GITHUB_OUTPUT"
+          if [ -n "$WANT" ] && [ "$WANT" != "${HEAD:0:${#WANT}}" ]; then
+            echo "site_sha 已过期（$WANT），重跑构建以取最新提交。"
+            gh api --method POST "/repos/14752222/Gox/actions/workflows/pages.yml/dispatches" \
+              -f ref=main
+            echo "rerun=1" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 由过期事件让位重跑
+        if: steps.head.outputs.rerun == '1'
+        run: |
+          echo "已触发新的 workflow_dispatch，本次结束（避免部署旧提交覆盖新构建）。"
+          exit 0
+
       # website/ · npm/ 是独立仓库（gox-website / gox-npm），显式 checkout 到
       # 同名目录（默认分支最新），下方所有步骤路径不变。
       - uses: actions/checkout@v7
