@@ -886,6 +886,58 @@ func (c *Compiler) prescanScope(stmts []ast.Statement) error {
 					return err
 				}
 			}
+		case *ast.ExportDeclaration:
+			// `export function f(){}` / `export const x = …` 在 AST 里是
+			// ExportDeclaration 包着真正的声明, 所以上面几个 case 看不到它们。
+			// 不拆包的话被导出的绑定永远不参与预登记 —— 症状与 import 那条完全
+			// 一样 (函数被提升编译时解析不到同级后位的 export function),
+			// 且更常见: 模块里"先写调用方、后写被调方"是自然写法。
+			// 只处理"声明式导出"; `export {a}` / `export … from` 不引入新绑定。
+			// export default 的匿名声明同样不引入可被引用的名字。
+			if s.IsDefault || s.Declaration == nil {
+				continue
+			}
+			if err := c.prescanScope([]ast.Statement{s.Declaration}); err != nil {
+				return err
+			}
+		case *ast.ImportDeclaration:
+			// 导入绑定也必须预登记 —— 与上面 let/const 同理, 但缺口更隐蔽:
+			// compileStatements 先把列表里的函数声明**整体提升编译**, 再按源码
+			// 序编译其余语句。于是 `import {X} from "m"` 写在文件顶部、函数
+			// 声明紧跟其后时, 函数体在 import 语句"被编译到"之前就要解析 X。
+			// 此时作用域里还没有 X 的符号, 解析退化成 OP_LOAD_GLOBAL, 运行期
+			// 报 `ReferenceError: X is not defined` —— 而 X 明明就在同一文件
+			// 顶部 import 了。
+			//
+			// 只在**非全局作用域**预登记: 全局作用域 (入口脚本) 的 import 走
+			// OP_DECLARE 写进共享全局环境 (见 compileImportDeclaration 的
+			// isGlobalScope 分支), 靠按名查全局侥幸可用; 而模块顶层/函数体/块
+			// 必须靠预登记。若在全局层也预登记, compileImportDeclaration 稍后
+			// 的 declareOnce 会认领到同一符号从而改走 OP_STORE 局部槽位, 破坏
+			// REPL 跨输入的状态保持语义。
+			if c.isGlobalScope() {
+				continue
+			}
+			// 命名导入: 绑的是**本地名**, 与 compileImportDeclaration 口径一致。
+			for _, item := range s.NamedImports {
+				if item.Local == "" {
+					continue
+				}
+				if err := c.prescanDeclare(item.Local, true, false); err != nil {
+					return err
+				}
+			}
+			// 默认导入与命名空间导入各绑一个名。
+			if s.DefaultName != "" {
+				if err := c.prescanDeclare(s.DefaultName, true, false); err != nil {
+					return err
+				}
+			}
+			if s.Namespace != "" {
+				if err := c.prescanDeclare(s.Namespace, true, false); err != nil {
+					return err
+				}
+			}
 		}
 	}
 	return nil

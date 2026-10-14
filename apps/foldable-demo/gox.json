@@ -1,0 +1,10 @@
+{
+  "name": "foldable-demo",
+  "title": "折叠屏适配",
+  "appId": "com.gox.apps.foldable",
+  "version": "0.1.0",
+  "permissions": [],
+  "desktop": {
+    "windowed": true
+  }
+}

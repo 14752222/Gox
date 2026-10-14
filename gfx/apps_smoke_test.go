@@ -43,6 +43,8 @@ var appSuite = []appSmokeCase{
 	{dir: "m-calc", minWins: 1, mustTag: []string{"grid"}},
 	// 跨端 1 (多屏: 两个窗口)
 	{dir: "multiscreen", minWins: 2, mustTag: []string{"column"}},
+	// 折叠屏 1 (四场景: 单双栏 / 折痕避让 / Tabletop / 跨屏拖拽)
+	{dir: "foldable-demo", minWins: 1, mustTag: []string{"column", "row", "button"}},
 }
 
 func TestAppsSuiteSmoke(t *testing.T) {
@@ -52,6 +54,14 @@ func TestAppsSuiteSmoke(t *testing.T) {
 			object.GlobalScheduler().ClearAll()
 			t.Cleanup(func() { object.GlobalScheduler().ClearAll() })
 			t.Setenv("GOX_STORAGE_DIR", t.TempDir())
+
+			// 屏表也必须逐用例复位: 应用可以调 gx/screen 的 reportPosture 往
+			// 宿主上报一块"折叠屏"(foldable-demo 就是这么演示的), 上报是**整表
+			// 覆盖**且会一直留着 —— 不复位的话后面按真实屏断言的密度/DPI 用例
+			// 会读到上一轮塞进来的假屏, 表现成一串"3x 屏上应为 48, got 16"的
+			// 假失败 (与用例本身无关, 纯粹是串味)。
+			ResetDisplaysForTest()
+			t.Cleanup(ResetDisplaysForTest)
 
 			factory := &seqFactory{}
 			SetDefaultFactory(factory)

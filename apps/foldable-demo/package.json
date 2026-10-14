@@ -1,0 +1,13 @@
+{
+  "name": "gox-foldable-demo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "折叠屏适配演示 —— 单双栏自适应 / 折痕避让 / Tabletop / 跨屏拖拽四场景，Gox 实用应用",
+  "scripts": {
+    "dev": "goxjs dev src/main.js",
+    "start": "goxjs src/main.js"
+  },
+  "devDependencies": {
+    "@goxjs/goxjs": "^0.10.0"
+  }
+}
