@@ -83,6 +83,13 @@ type Parser struct {
 	// module 标记本编译单元素是 ES module: 模块顶层恒严格 (无需指令)。
 	module bool
 
+	// noIn 在解析 `for (x in obj)` 的**赋值目标**时置位: 该窗口内 IN 不是
+	// 中缀运算符, 否则 parseExpression 会把 `x in obj` 整体当成一个
+	// BinaryExpression 吃掉, 头部就再也看不到 in 关键字了 (规范对应
+	// Expression[~In] —— for-in 左值的 [In] 参数为假)。
+	// 仅 parseForInLHS 设置, 用 defer 复位; 作用范围严格限制在该目标表达式内。
+	noIn bool
+
 	// usedJSXFactory 记录"本文件出现过需要 h 的 JSX"(小写标签被降级成
 	// h(...) 调用)。ParseProgram 把它交到 ast.Program.UsesJSX 上，由 compiler
 	// 决定要不要补 `import { h } from "gx/gfx"` —— 见 parser/jsx.go 的约定说明。
@@ -1206,19 +1213,12 @@ func (p *Parser) parseForStatement() ast.Statement {
 	// 所以判定统一交给 forBindingKeyword。
 	if p.curTokenIs(lexer.LET) || p.curTokenIs(lexer.CONST) || p.curTokenIs(lexer.VAR) {
 		kw := p.forBindingKeyword()
-		destructuring := p.peekTokenIs(lexer.LBRACKET) || p.peekTokenIs(lexer.LBRACE)
 		if kw == lexer.OF {
 			return p.parseForOfStatement()
 		}
 		if kw == lexer.IN {
-			if destructuring {
-				// ES 允许 for (const [k, v] in obj); 本运行时只做了解构 + for-of。
-				// 显式报出来 —— 否则它会掉进 parseForInStatement, 报一句
-				// "expected variable name in for...in", 看不出真正的原因。
-				p.addError("destructuring binding in for...in is not supported, " +
-					"use for...of or bind a single key variable")
-				return nil
-			}
+			// 解构绑定 (for (const [a, b] in obj)) 与 for-of 同构: for...in
+			// 每轮产出的**键字符串**同样可以按模式解构成多个绑定, 规范允许。
 			return p.parseForInStatement()
 		}
 	}
@@ -1226,6 +1226,13 @@ func (p *Parser) parseForStatement() ast.Statement {
 	// `for ([a, b] of xs)` 这类赋值目标形态, 或传统 for 三段式。
 	if p.isForOfLHS() {
 		return p.parseForOfLHS(forToken, false)
+	}
+	// 无声明 for-in: `for (x in obj)` / `for (obj.k in o)` / `for ([a,b] in o)`。
+	// 必须排在传统 for 之前 —— 深度 0 的 `in` 按规范优先解释为 for-in 关键字
+	// (node 对 `for (i = "x" in a; ...)` 报的正是 "Invalid left-hand side
+	// in for-loop", 即它已把左侧当成 for-in 左值)。
+	if p.isForInLHS() {
+		return p.parseForInLHS(forToken)
 	}
 	return p.parseTraditionalFor()
 }
@@ -1315,31 +1322,152 @@ func (p *Parser) forBindingKeyword() lexer.TokenType {
 	return lexer.ILLEGAL
 }
 
+// isForInLHS 判定当前无声明关键字的 for 头部是不是「LHSExpression in ...」形态。
+//
+// 与 isForOfLHS 同构, 但认 IN 且**不能**像 for-of 那样只看深度 0 —— `in` 本身是
+// 二元运算符 (`for (i = a in b; ...)` 是合法的传统 for init), 所以额外要求它
+// 出现在**头部第一个 token 之后、且左侧是一个完整可作赋值的形状**时才算 for-in。
+// 实际采用的判据与规范一致: 从 cur 扫到收口的 ')' , 在深度 0 处遇到 `;` 即为
+// 传统三段式 (提前返回 false); 在深度 0 处遇到 IN 且不是在 for 后面的第一个
+// token 位置 (那是 `for (in ...)`, 非法, 交给后续报错) 即为 for-in。
+//
+// 排除项: IN 前一个是 DOT / OPTIONAL_CHAIN 时它是属性名 (for (i = a.in; ...));
+// 深度 > 0 的 IN (for (m['in'] in xs)) 不算。
+func (p *Parser) isForInLHS() bool {
+	depth := 0
+	prev := lexer.ILLEGAL
+	for i := 0; i <= maxArrowScanLimit; i++ {
+		tok := p.peekTokenAt(i)
+		switch tok.Type {
+		case lexer.EOF:
+			return false
+		case lexer.LPAREN, lexer.LBRACE, lexer.LBRACKET:
+			depth++
+		case lexer.RPAREN, lexer.RBRACE, lexer.RBRACKET:
+			if depth == 0 {
+				return false // for 头部收口 ')'
+			}
+			depth--
+		case lexer.SEMICOLON:
+			if depth == 0 {
+				return false // 传统三段式
+			}
+		case lexer.IN:
+			if depth == 0 && prev != lexer.DOT && prev != lexer.OPTIONAL_CHAIN {
+				return true
+			}
+		}
+		prev = tok.Type
+	}
+	return false
+}
+
 func (p *Parser) parseForInStatement() *ast.ForInStatement {
 	stmt := &ast.ForInStatement{Token: p.curToken()}
 	isLet := p.curTokenIs(lexer.LET)
 	isVar := p.curTokenIs(lexer.VAR)
 	p.nextToken() // skip let/const/var
 
-	if !p.isBindingName() {
-		p.addError("expected variable name in for...in")
-		return nil
-	}
-	variable := &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
-	stmt.Variable = variable
+	if p.curTokenIs(lexer.LBRACKET) || p.curTokenIs(lexer.LBRACE) {
+		// 解构绑定: for (const [a, b] in obj) / for (const {length} in str)
+		// 与 for-of 完全同构: for...in 每轮产出的是**键字符串**, 模式解析的
+		// 就是这个字符串本身 (不是 obj[k]), 见 test262 for-in 的头部绑定用例。
+		pattern := p.parseDestructuringPattern(p.curTokenIs(lexer.LBRACKET))
+		if pattern == nil {
+			return nil
+		}
+		stmt.Pattern = pattern
+		// VarDecl 是个只有合成名的空壳, 编译器只用它分辨 let / const / var
+		// (与 for-of / let [a, b] = … 的口径一致), 这个名字本身不代表任何绑定。
+		name := &ast.Identifier{Token: stmt.Token, Value: "__destructure__"}
+		switch {
+		case isLet:
+			stmt.VarDecl = &ast.LetStatement{Token: stmt.Token, Name: name}
+		case isVar:
+			stmt.VarDecl = &ast.VarStatement{Token: stmt.Token, Name: name}
+		default:
+			stmt.VarDecl = &ast.ConstStatement{Token: stmt.Token, Name: name}
+		}
+	} else {
+		if !p.isBindingName() {
+			p.addError("expected variable name in for...in")
+			return nil
+		}
+		variable := &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
+		stmt.Variable = variable
 
-	switch {
-	case isLet:
-		stmt.VarDecl = &ast.LetStatement{Token: stmt.Token, Name: variable}
-	case isVar:
-		stmt.VarDecl = &ast.VarStatement{Token: stmt.Token, Name: variable}
-	default:
-		stmt.VarDecl = &ast.ConstStatement{Token: stmt.Token, Name: variable}
+		switch {
+		case isLet:
+			stmt.VarDecl = &ast.LetStatement{Token: stmt.Token, Name: variable}
+		case isVar:
+			stmt.VarDecl = &ast.VarStatement{Token: stmt.Token, Name: variable}
+		default:
+			stmt.VarDecl = &ast.ConstStatement{Token: stmt.Token, Name: variable}
+		}
 	}
 
 	if !p.expectPeek(lexer.IN) {
 		return nil
 	}
+	return p.finishForIn(stmt)
+}
+
+// parseForInLHS 解析无声明关键字的 for-in 头部 (cur 是头部第一个 token):
+//
+//	for (x in obj)          标识符赋值目标
+//	for (obj.k in o)        成员访问赋值目标
+//	for ([a, b] in obj)     数组解构目标 (每轮是**赋值**, 写入外部已有绑定)
+//	for ({a} in obj)        对象解构目标
+//
+// 与 parseForOfLHS 同构 (差别只在关键字是 IN、结果类型是 ForInStatement)。
+// 头部目标写进 Target 字段; VarDecl / Variable / Pattern 保持 nil, 编译器据此
+// 走**赋值**路径 (bindAssign) 而非声明路径。
+func (p *Parser) parseForInLHS(forToken lexer.Token) *ast.ForInStatement {
+	stmt := &ast.ForInStatement{Token: forToken}
+
+	if p.curTokenIs(lexer.LBRACKET) || p.curTokenIs(lexer.LBRACE) {
+		// 解构赋值目标: for ([a, b] in obj)。与 for-of 字段口径保持一致 ——
+		// 模式一律放 Pattern, 由 VarDecl 是否为 nil 区分「声明绑定 vs 赋值」:
+		// 这里 VarDecl 留 nil, 即赋值形态 (每轮写外部已有绑定)。
+		pattern := p.parseDestructuringPattern(p.curTokenIs(lexer.LBRACKET))
+		if pattern == nil {
+			return nil
+		}
+		stmt.Pattern = pattern
+		if !p.expectPeek(lexer.IN) {
+			return nil
+		}
+		return p.finishForIn(stmt)
+	}
+
+	// 目标表达式要在 **no-in 窗口**内解析: `for (x in obj)` 的 `in` 是头部
+	// 关键字而非二元运算符, 不屏蔽的话 parseExpression 会把 `x in obj` 整个
+	// 吃成一个 BinaryExpression, 头部就看不到 in 了 (规范 Expression[~In])。
+	prevNoIn := p.noIn
+	p.noIn = true
+	target := p.parseExpression(LOWEST)
+	p.noIn = prevNoIn
+	if target == nil {
+		return nil
+	}
+	switch target.(type) {
+	case *ast.Identifier, *ast.MemberExpression:
+		// 可作 for-in 赋值目标: 标识符 / 成员访问
+	default:
+		p.addError("SyntaxError: invalid left-hand side in for...in loop")
+		return nil
+	}
+	stmt.Target = target
+
+	if !p.expectPeek(lexer.IN) {
+		return nil
+	}
+	return p.finishForIn(stmt)
+}
+
+// finishForIn 从 IN 上继续: 解析被迭代对象、循环体。parseForInStatement 与
+// parseForInLHS 的公共收尾 (对称于 finishForOf)。
+func (p *Parser) finishForIn(stmt *ast.ForInStatement) *ast.ForInStatement {
 	p.nextToken()
 	stmt.Iterable = p.parseExpression(LOWEST)
 
@@ -2258,6 +2386,7 @@ func (p *Parser) parseExpression(precedence Precedence) ast.Expression {
 	for !p.peekTokenIs(lexer.SEMICOLON) && !p.peekTokenIs(lexer.RBRACE) && !p.peekTokenIs(lexer.EOF) &&
 		!p.peekTokenIs(lexer.RPAREN) && !p.peekTokenIs(lexer.RBRACKET) && !p.peekTokenIs(lexer.COMMA) &&
 		!p.peekTokenIs(lexer.COLON) && !p.peekTokenIs(lexer.ARROW) &&
+		!(p.noIn && p.peekTokenIs(lexer.IN)) &&
 		(precedence < getPrecedence(p.peekToken().Literal) || p.peekTokenIs(lexer.BACKTICK)) {
 		// 后缀 ++/-- 的规范限制 (ES2023 §13.4 PostfixExpression): 操作数与运算符
 		// 之间**不得有行终止符**。`x\n++y` 必须是 `x; ++y;`, 而不是 `(x++); y`。

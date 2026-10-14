@@ -433,29 +433,55 @@ func (c *Compiler) compileForInStatement(stmt *ast.ForInStatement) error {
 	// var (函数作用域, 槽位在块之前分配) 与外层 let 保持单实例共享。
 	sealFrom := c.scope.NumLocals()
 
-	// 声明循环变量
-	varKind := bytecode.OP_STORE
-	if _, ok := stmt.VarDecl.(*ast.ConstStatement); ok {
-		varKind = bytecode.OP_STORE_CONST
-	}
-	if _, isVarDecl := stmt.VarDecl.(*ast.VarStatement); isVarDecl {
-		// var: 共享函数作用域层绑定 (语义与 for-of 的 var 分支一致)
-		fn := c.scope.FuncLayer()
-		sym := fn.ResolveLocal(stmt.Variable.Value)
-		if sym == nil {
-			sym = fn.Define(stmt.Variable.Value, false)
-			sym.IsVarLike = true
-			sym.Declared = true
+	// 绑定本次迭代的值 (栈顶)。四条路径, 与 for-of 头部**逐条同构** (for-in 每轮
+	// 产出的"值"是键字符串, 与 for-of 产出的元素在绑定语义上无差别):
+	//   解构    for ([a,b] in o) / for (const [a,b] in o) → compilePatternBind
+	//   赋值    for (x in o) / for (obj.k in o)           → compileForOfTargetAssign
+	//   var     for (var x in o)                          → 函数作用域层共享槽位
+	//   let/const for (let x in o)                        → 每轮新建块作用域槽位
+	if stmt.Pattern != nil {
+		// 三态分流 (与 for-of 同口径): VarDecl 为 nil 是**赋值**目标
+		// (for ([a, b] in o) 写外部已有绑定); var 声明落函数作用域层;
+		// let/const 落每轮块作用域。
+		pattKind := bindAssign
+		if stmt.VarDecl != nil {
+			pattKind = bindLexical
+			if _, isVar := stmt.VarDecl.(*ast.VarStatement); isVar {
+				pattKind = bindVar
+			}
 		}
-		if fn.Parent() == nil && !c.moduleMode {
-			nameIdx := c.constants.AddConstant(object.NewString(stmt.Variable.Value))
-			c.emitter.Emit(bytecode.OP_STORE_GLOBAL, nameIdx)
-		} else {
-			c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
+		if err := c.compilePatternBind(stmt.Pattern, pattKind); err != nil {
+			return err
+		}
+	} else if stmt.Target != nil {
+		// 无声明赋值目标 for (x in o) / for (obj.k in o): 每轮是赋值, 写外部绑定。
+		if err := c.compileForOfTargetAssign(stmt.Target); err != nil {
+			return err
 		}
 	} else {
-		sym := c.scope.Define(stmt.Variable.Value, varKind == bytecode.OP_STORE_CONST)
-		c.emitter.Emit(varKind, uint16(sym.Slot))
+		varKind := bytecode.OP_STORE
+		if _, ok := stmt.VarDecl.(*ast.ConstStatement); ok {
+			varKind = bytecode.OP_STORE_CONST
+		}
+		if _, isVarDecl := stmt.VarDecl.(*ast.VarStatement); isVarDecl {
+			// var: 共享函数作用域层绑定 (语义与 for-of 的 var 分支一致)
+			fn := c.scope.FuncLayer()
+			sym := fn.ResolveLocal(stmt.Variable.Value)
+			if sym == nil {
+				sym = fn.Define(stmt.Variable.Value, false)
+				sym.IsVarLike = true
+				sym.Declared = true
+			}
+			if fn.Parent() == nil && !c.moduleMode {
+				nameIdx := c.constants.AddConstant(object.NewString(stmt.Variable.Value))
+				c.emitter.Emit(bytecode.OP_STORE_GLOBAL, nameIdx)
+			} else {
+				c.emitter.Emit(bytecode.OP_STORE, uint16(sym.Slot))
+			}
+		} else {
+			sym := c.scope.Define(stmt.Variable.Value, varKind == bytecode.OP_STORE_CONST)
+			c.emitter.Emit(varKind, uint16(sym.Slot))
+		}
 	}
 
 	ctx := c.pushControl(c.takePendingLabel(), true)

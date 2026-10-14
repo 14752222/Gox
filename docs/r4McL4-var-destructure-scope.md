@@ -139,3 +139,7 @@ const (
 （只有 `Variable *Identifier`），parser 直接报
 `destructuring binding in for...in is not supported`。这是 **parser 层**的显式缺口，
 不在本次 `compiler/` 修复范围内。
+
+> **后续**：该 parser 层缺口已由 `docs/forin-destructure-head.md` 一并补齐 ——
+> `ForInStatement` 现在有 `Pattern` / `Target` 两个字段，解构绑定、解构赋值、
+> 无声明赋值三种头部形态全部支持。本节保留作为该单的原始边界记录。

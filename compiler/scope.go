@@ -410,9 +410,22 @@ func (c *Compiler) collectVarBindingsStmt(stmt ast.Statement, out *[]varBinding,
 			}
 		}
 	case *ast.ForInStatement:
-		if _, isVarDecl := node.VarDecl.(*ast.VarStatement); isVarDecl && node.Variable != nil {
-			if err := declare(node.Variable.Value); err != nil {
-				return err
+		if _, isVarDecl := node.VarDecl.(*ast.VarStatement); isVarDecl {
+			if node.Variable != nil {
+				if err := declare(node.Variable.Value); err != nil {
+					return err
+				}
+			}
+			// 解构 var (for (var [p] in …)): Variable 为 nil, 真实绑定名只在
+			// Pattern 里 —— 与 for-of 同口径, 提升到函数作用域层。
+			if node.Pattern != nil {
+				var names []string
+				collectBindingNames(node.Pattern, &names)
+				for _, n := range names {
+					if err := declare(n); err != nil {
+						return err
+					}
+				}
 			}
 		}
 		if node.Body != nil {

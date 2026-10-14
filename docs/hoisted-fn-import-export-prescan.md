@@ -176,6 +176,9 @@ case *ast.ExportDeclaration:
 
 - 与 `rLGyHa` 同族的 **`var` 解构** 缺陷（走 `compileVarStatement` 独立路径）
   仍未修，本次同样未涉及。
+  > **后续**：已由 `r4McL4`（`docs/r4McL4-var-destructure-scope.md`）修复 ——
+  > 引入三态 `bindKind` 把 var 解构的登记落点改到函数作用域层，并补上提升。
+  > for-in 侧的同一条由 `docs/forin-destructure-head.md` 补齐。
 - `export class C extends B {}` 里父类名若来自后置的 `export const`，理论上
   走的是同一套预登记，但 `emitSuperLoad` 另有 `moduleMode` 分支兜底；本次未
   专门补测，留待有实际触发时再评估。

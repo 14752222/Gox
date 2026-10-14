@@ -370,18 +370,54 @@ func (fos *ForOfStatement) String() string {
 func (fos *ForOfStatement) statementNode() {}
 
 // ForInStatement 表示 for...in 循环。
-// 例如: for (let k in obj) { ... }
+// 三种头部形态:
+//
+//	for (let k in obj)        声明绑定: VarDecl + Variable
+//	for (const [a, b] in obj) 声明 + 解构: VarDecl (合成名空壳) + Pattern
+//	for (x in obj)            无声明赋值: Target (VarDecl / Variable / Pattern 均 nil)
 type ForInStatement struct {
 	Token    lexer.Token // FOR
-	VarDecl  Statement   // let k (LetStatement 或 ConstStatement)
-	Variable *Identifier // 迭代变量名
+	VarDecl  Statement   // let k (LetStatement / ConstStatement / VarStatement)
+	Variable *Identifier // 迭代变量名 (声明形态); 解构/赋值形态为 nil
+	Pattern  Expression  // ArrayPattern / ObjectPattern (声明形态); 其余为 nil
+	Target   Expression  // 无声明赋值目标 (标识符/成员访问/解构模式); 声明形态为 nil
 	Iterable Expression
 	Body     *BlockStatement
 }
 
 func (fis *ForInStatement) TokenLiteral() string { return fis.Token.Literal }
 func (fis *ForInStatement) String() string {
-	return "for (" + fis.VarDecl.String() + " in " + fis.Iterable.String() + ") " + fis.Body.String()
+	head := ""
+	if fis.VarDecl != nil {
+		if fis.Pattern != nil {
+			// 解构绑定: VarDecl 只是个带合成名的空壳 (见 parser.parseForInStatement),
+			// 直接打印它会把头部显示成 `__destructure__`, 与源码对不上。
+			head = forKeywordOf(fis.VarDecl) + " " + fis.Pattern.String()
+		} else {
+			head = fis.VarDecl.String()
+		}
+	} else if fis.Pattern != nil {
+		head = fis.Pattern.String()
+	} else if fis.Target != nil {
+		head = fis.Target.String()
+	} else if fis.Variable != nil {
+		head = fis.Variable.String()
+	}
+	return "for (" + head + " in " + fis.Iterable.String() + ") " + fis.Body.String()
+}
+
+// forKeywordOf 返回声明式头部 (let/const/var) 的关键字, 供解构头部的 String()
+// 还原源码形状。非三种声明时返回空串。
+func forKeywordOf(decl Statement) string {
+	switch decl.(type) {
+	case *LetStatement:
+		return "let"
+	case *ConstStatement:
+		return "const"
+	case *VarStatement:
+		return "var"
+	}
+	return ""
 }
 func (fis *ForInStatement) statementNode() {}
 

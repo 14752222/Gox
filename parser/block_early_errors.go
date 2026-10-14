@@ -300,7 +300,7 @@ func (p *Parser) checkForHeadRedeclaration(stmt ast.Statement) {
 		if v == nil {
 			return
 		}
-		headNames = forDeclHeadNames(v.VarDecl)
+		headNames = forInHeadLexicalNames(v)
 		body, tok = v.Body, v.Token
 	case *ast.ForStatement:
 		if v == nil {
@@ -359,6 +359,20 @@ func forOfHeadLexicalNames(v *ast.ForOfStatement) []string {
 	if v.Pattern != nil {
 		// 复用共享的模式遍历 (ast.PatternBoundNames 期望初始值形如
 		// AssignmentExpression{Left: 模式}, 这里包一层同一形状)。
+		names = append(names, ast.PatternBoundNames(&ast.AssignmentExpression{Left: v.Pattern})...)
+	}
+	return names
+}
+
+// forInHeadLexicalNames 取 for-in 头部的词法绑定名。
+//
+// 与 forOfHeadLexicalNames 完全同构: 解构绑定 (for (const [a, b] in obj)) 的真实
+// 名字在 ForInStatement.Pattern 里, VarDecl 只是个带合成名的空壳, 必须补上 ——
+// 否则 these names 不参与 LexicallyDeclaredNames, 诸如同层 let 重复声明的早错
+// 会漏报。
+func forInHeadLexicalNames(v *ast.ForInStatement) []string {
+	names := forDeclHeadNames(v.VarDecl)
+	if v.Pattern != nil {
 		names = append(names, ast.PatternBoundNames(&ast.AssignmentExpression{Left: v.Pattern})...)
 	}
 	return names

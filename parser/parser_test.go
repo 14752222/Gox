@@ -1089,24 +1089,99 @@ func TestForHeaderBindingKeywordBoundary(t *testing.T) {
 	assertTraditionalFor(`for (let [a, b] = [1, 2]; a < 3; a = a + 1) {}`)
 	assertTraditionalFor(`for (const {a} = {a: 1}; a < 3; a = a + 1) {}`)
 
-	// 解构 + for...in: 显式拒绝, 并给出与 "expected variable name in for...in" 不同的文案
-	for _, input := range []string{
-		`for (const [k, v] in obj) {}`,
-		`for (let [k, v] in obj) {}`,
-		`for (const {a} in obj) {}`,
+	// 解构 + for...in: 现已支持 (与 for-of 同构)。头部解构绑定进 Pattern,
+	// VarDecl 是带合成名的空壳 (用于分辨 let/const/var), 与 for-of 字段口径一致。
+	for _, tc := range []struct {
+		input string
+		decl  string // 期望的关键字
+	}{
+		{`for (const [k, v] in obj) {}`, "const"},
+		{`for (let [k, v] in obj) {}`, "let"},
+		{`for (var [k, v] in obj) {}`, "var"},
+		{`for (const {a} in obj) {}`, "const"},
 	} {
-		l := lexer.New(input)
+		l := lexer.New(tc.input)
 		p := New(l)
-		p.ParseProgram()
-		if !p.Errors().HasErrors() {
-			t.Fatalf("%q: expected an error", input)
+		program := p.ParseProgram()
+		checkParserErrors(t, p)
+
+		if len(program.Statements) != 1 {
+			t.Fatalf("%q: expected 1 statement, got %d", tc.input, len(program.Statements))
 		}
-		got := p.Errors().Errors[0].Message
-		const want = "destructuring binding in for...in is not supported, " +
-			"use for...of or bind a single key variable"
-		if got != want {
-			t.Fatalf("%q: first error = %q, want %q", input, got, want)
+		fis, ok := program.Statements[0].(*ast.ForInStatement)
+		if !ok {
+			t.Fatalf("%q: expected ForInStatement, got %T", tc.input, program.Statements[0])
 		}
+		if fis.Pattern == nil {
+			t.Fatalf("%q: expected a destructuring Pattern, got nil", tc.input)
+		}
+		if fis.Variable != nil {
+			t.Fatalf("%q: Variable should be nil for a destructuring head, got %q", tc.input, fis.Variable.Value)
+		}
+		// VarDecl 只用来分辨声明形态: 名字是合成名, 关键字要跟源码一致。
+		switch tc.decl {
+		case "const":
+			if _, ok := fis.VarDecl.(*ast.ConstStatement); !ok {
+				t.Fatalf("%q: expected ConstStatement head, got %T", tc.input, fis.VarDecl)
+			}
+		case "let":
+			if _, ok := fis.VarDecl.(*ast.LetStatement); !ok {
+				t.Fatalf("%q: expected LetStatement head, got %T", tc.input, fis.VarDecl)
+			}
+		case "var":
+			if _, ok := fis.VarDecl.(*ast.VarStatement); !ok {
+				t.Fatalf("%q: expected VarStatement head, got %T", tc.input, fis.VarDecl)
+			}
+		}
+	}
+
+	// 无声明赋值形态: for (x in obj) / for (obj.k in o) / for ([a,b] in o)。
+	// 前两者左值进 Target, 解构目标进 Pattern (与 for-of 的字段划分一致);
+	// 共同点是 VarDecl / Variable 均为 nil —— 编译器据此走赋值路径而非声明路径。
+	for _, tc := range []struct {
+		input string
+		check func(t *testing.T, fis *ast.ForInStatement)
+	}{
+		{`for (x in obj) {}`, func(t *testing.T, fis *ast.ForInStatement) {
+			id, ok := fis.Target.(*ast.Identifier)
+			if !ok || id.Value != "x" {
+				t.Fatalf("expected identifier target x, got %T", fis.Target)
+			}
+		}},
+		{`for (obj.k in o) {}`, func(t *testing.T, fis *ast.ForInStatement) {
+			if _, ok := fis.Target.(*ast.MemberExpression); !ok {
+				t.Fatalf("expected member target, got %T", fis.Target)
+			}
+		}},
+		{`for ([a, b] in o) {}`, func(t *testing.T, fis *ast.ForInStatement) {
+			// 解构赋值目标与 for-of 同口径: 模式进 Pattern, 且**没有**声明头,
+			// 由 "Pattern != nil && VarDecl == nil" 表达赋值语义。
+			if _, ok := fis.Pattern.(*ast.ArrayPattern); !ok {
+				t.Fatalf("expected array pattern, got %T", fis.Pattern)
+			}
+		}},
+		{`for ({a} in o) {}`, func(t *testing.T, fis *ast.ForInStatement) {
+			if _, ok := fis.Pattern.(*ast.ObjectPattern); !ok {
+				t.Fatalf("expected object pattern, got %T", fis.Pattern)
+			}
+		}},
+	} {
+		l := lexer.New(tc.input)
+		p := New(l)
+		program := p.ParseProgram()
+		checkParserErrors(t, p)
+
+		fis, ok := program.Statements[0].(*ast.ForInStatement)
+		if !ok {
+			t.Fatalf("%q: expected ForInStatement, got %T", tc.input, program.Statements[0])
+		}
+		if fis.Pattern == nil && fis.Target == nil {
+			t.Fatalf("%q: expected a Target (or Pattern) for the assignment form", tc.input)
+		}
+		if fis.VarDecl != nil || fis.Variable != nil {
+			t.Fatalf("%q: assignment form must not carry a declaration head", tc.input)
+		}
+		tc.check(t, fis)
 	}
 
 	// 模式不闭合: 扫描有距离上限, 必须返回而不是卡住; 报错要能指出问题所在
