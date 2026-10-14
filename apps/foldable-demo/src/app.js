@@ -56,17 +56,35 @@ function ScenarioAdaptive() {
   const w = () => getWin().width;
   const cls = () => widthClass();
 
+  // 条目数据源。列表一律走 `each` 指令（不在子节点区塞现算的数组字面量 ——
+  // 那是**快照**：值在进 h() 之前就求值完了，窗口宽度变了列数也不会重建。
+  // `gox lint apps` 的 snapshot-child 规则就抓这一类）。
+  const nums = (from, to) => {
+    const out = [];
+    for (let i = from; i < to; i++) out.push({ id: i, label: "· 条目 " + (i + 1) });
+    return out;
+  };
+
+  // 单栏/双栏切换靠**重建列表**：`each` 的源数组换了，行按 key 重建。
   const Cols = () => {
     bp();
     const n = panes(w());
-    const items = [];
-    for (let i = 0; i < 6; i++) items.push(<text font={font.xs} color={colors.muted}>· 条目 {i + 1}</text>);
-    // 单栏：一列直排；双栏：把前 3 条与后 3 条分到两列。
-    if (n === 1) return <column gap={2}>{items}</column>;
+    // 单栏：一列直排；双栏：前 3 条与后 3 条分到两列。
+    if (n === 1) {
+      return (
+        <column gap={2}>
+          <view each={nums(0, 6)} key="id">{(it) => <text font={font.xs} color={colors.muted}>{it.label}</text>}</view>
+        </column>
+      );
+    }
     return (
       <row gap={space.md} alignItems="top">
-        <column gap={2}>{items.slice(0, 3)}</column>
-        <column gap={2}>{items.slice(3)}</column>
+        <column gap={2}>
+          <view each={nums(0, 3)} key="id">{(it) => <text font={font.xs} color={colors.muted}>{it.label}</text>}</view>
+        </column>
+        <column gap={2}>
+          <view each={nums(3, 6)} key="id">{(it) => <text font={font.xs} color={colors.muted}>{it.label}</text>}</view>
+        </column>
       </row>
     );
   };
