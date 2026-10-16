@@ -23,6 +23,9 @@ func Available() bool { return false }
 // Backend 报告当前构建的 GPU 后端名 (调试面板 / canIUse 式能力探测用)。
 func Backend() string { return "none" }
 
+// BackendKind 报告适配器种类 (三轨同形): 默认轨恒 "none"。
+func BackendKind() string { return "none" }
+
 // New 恒返回 ErrNotBuilt。宿主拿到 error 就不安装呈现包装器, 窗口照常用
 // 平台后端的 CPU blit —— 这是「没开 GPU = PC 零 cgo」的执行点。
 func New(inner gfx.Surface) (*Surface, error) { return nil, ErrNotBuilt }

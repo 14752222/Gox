@@ -114,7 +114,7 @@ func mountAndSettle(t *testing.T, src string, s gfx.Surface, ev *captureSurface,
 			ev.push(interactions[round])
 		case round == len(interactions): // 空转一轮, 让副作用落到画面上
 			ev.push(gfx.Event{Kind: gfx.EventMouseLeave})
-		case round == len(interactions) + 1: // 取帧后关窗 (关窗轮会把窗口摘掉)
+		case round == len(interactions)+1: // 取帧后关窗 (关窗轮会把窗口摘掉)
 			ev.push(gfx.Event{Kind: gfx.EventClose})
 		}
 		round++

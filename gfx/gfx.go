@@ -177,6 +177,18 @@ type WindowFactory interface {
 
 var defaultFactory WindowFactory
 
+// DefaultFactory 返回当前默认窗口后端 (SetDefaultFactory 的只读视图)。
+//
+// 存在的理由主要是**诊断与基准**: 呈现路径基准 (gfx/present_bench_test.go,
+// 外部测试包) 要拿一个真平台 Surface 来量 PutImage/DIB 的成本, 而平台包
+// (gfx/x11 等) 的导入是 init 副作用, 由调用方自行 import; 这里只提供
+// 「取」。包内代码继续直接用 defaultFactory, 不走这个 getter。
+func DefaultFactory() WindowFactory {
+	appMu.Lock()
+	defer appMu.Unlock()
+	return defaultFactory
+}
+
 // SetDefaultFactory 注册默认窗口后端 (由平台包 init 调用)。
 //
 // 传 nil 表示"撤销后端", 此时**顺带清空窗口注册表** (P3-6)。

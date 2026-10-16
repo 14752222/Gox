@@ -39,6 +39,9 @@ func Available() bool { return false }
 // Backend 报告后端名。
 func Backend() string { return "cgo" }
 
+// BackendKind 报告适配器种类 (三轨同形): 骨架阶段恒 "none"。
+func BackendKind() string { return "none" }
+
 // New 暂不可用: 骨架阶段返回 ErrNotBuilt, 宿主退回 CPU blit。
 func New(inner gfx.Surface) (*Surface, error) { return nil, ErrNotBuilt }
 

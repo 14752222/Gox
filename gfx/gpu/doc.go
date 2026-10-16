@@ -23,6 +23,12 @@
 //	    return s, err == nil   // nogpu 轨 err != nil → 不包装 → 退回 CPU blit
 //	})
 //
+// 包装前的分流判据 (cmd/gox/gpu_present_init.go):
+// Available() 恒假的轨 (nogpu / cgo 骨架) 天然不包装; wgpu 轨再看
+// BackendKind(): "hardware" 才包装 —— "software" (无 GPU 硬件的回退适配器)
+// 做合成比 CPU blit 慢约 5 倍 (4K 实测, 见 scripts/bench-present-4k.sh),
+// 生产路径不包装, GOX_GPU=software 可强制 (CI 像素级验证用)。
+//
 // ## 三轨的取舍
 //
 //   - wgpu 轨: 纯 Go WebGPU (gogpu/wgpu), 自带 WGSL 着色器编译器,

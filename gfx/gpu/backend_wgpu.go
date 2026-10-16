@@ -21,6 +21,7 @@ var (
 	devOnce sync.Once
 	devInst *wgpu.Device
 	devErr  error
+	devInfo gputypes.AdapterInfo // 建 device 时那张适配器的信息 (Backend() 用)
 )
 
 // Device 返回进程级共享 GPU device; 不可用时 (无适配器/驱动) 返回 error,
@@ -47,6 +48,7 @@ func Device() (*wgpu.Device, error) {
 			return
 		}
 		devInst = d
+		devInfo = ad.Info()
 	})
 	return devInst, devErr
 }
@@ -57,14 +59,36 @@ func Available() bool {
 	return err == nil
 }
 
-// Backend 报告当前实际拿到的后端 (调试面板 / canIUse 式能力探测用)。
-// 无硬件适配器时是 "software" —— 调用方可以据此告诉用户「在用软渲染」。
+// Backend 报告当前实际拿到的后端 (调试面板 / canIUse 式能力探测用):
+// "wgpu-vulkan-hw" / "wgpu-metal-hw" / "wgpu-software" / "none"。
+// 软件适配器 (DeviceTypeCPU: SwiftShader/llvmpipe/wgpu 纯 Go 软件 HAL)
+// 统一报 "wgpu-software" —— 它的 API 后端字段是 Empty, 报出来只会误导。
 func Backend() string {
 	_, err := Device()
 	if err != nil {
 		return "none"
 	}
-	return "wgpu"
+	if devInfo.DeviceType == gputypes.DeviceTypeCPU {
+		return "wgpu-software"
+	}
+	return fmt.Sprintf("wgpu-%s-hw", devInfo.Backend.String())
+}
+
+// BackendKind 报告适配器种类: "hardware" / "software" / "none"。
+//
+// 呈现包装策略靠它分流: 无 GPU 硬件时软件后端做合成**比 CPU blit 慢**
+// (4K 实测约 5x, 见 scripts/bench-present-4k.sh —— 纯 Go 软光栅每 Draw
+// 还全量重建管线/深度缓冲, 100MB/帧分配), 所以生产路径只在 hardware 时
+// 包装; software 是 CI/无头验证的确定性后端, 由调用方显式选择。
+func BackendKind() string {
+	_, err := Device()
+	if err != nil {
+		return "none"
+	}
+	if devInfo.DeviceType == gputypes.DeviceTypeCPU {
+		return "software"
+	}
+	return "hardware"
 }
 
 // Surface 实现 gfx.Surface: 事件/尺寸/等待委托内层平台 Surface,
@@ -82,13 +106,21 @@ type Surface struct {
 	sampler  *wgpu.Sampler
 
 	// fbTex 是 CPU 帧缓冲的 GPU 镜像 (持久, 尺寸随窗口变化重建)。
-	fbTex   *wgpu.Texture
-	fbView  *wgpu.TextureView
-	bindGrp *wgpu.BindGroup
+	fbTex    *wgpu.Texture
+	fbView   *wgpu.TextureView
+	bindGrp  *wgpu.BindGroup
 	fbW, fbH int
 
 	// target 是合成目标: 窗口化时为 swapchain 纹理, 离屏时为这张纹理。
 	target *wgpu.Texture
+	// targetView 是 target 的视图 (随 target 重建; 每帧建视图再 Release
+	// 是白付一笔驱动调用, 4K 下尤其冤 —— 缓存之)。
+	targetView *wgpu.TextureView
+
+	// uploadScratch 是子纹理上传的复用缓冲 (按最大脏区增长)。wgpu 的
+	// WriteTexture 语义保证调用返回时数据已被拷走, 所以下一帧可以直接
+	// 覆写 —— 每帧 make 33MB 再让 GC 追, 是白给应用 CPU 加税。
+	uploadScratch []byte
 
 	// 帧统计 (给 gx/dev 的调试面板用: "GPU 呈现路径到底走了哪条路")。
 	frames        int // 呈现帧数
@@ -230,7 +262,7 @@ func (s *Surface) ensureTargets(w, h int) error {
 	// 帧缓冲镜像: CopyDst (CPU 上传) + TextureBinding (着色器采样)
 	fb, err := s.dev.CreateTexture(&wgpu.TextureDescriptor{
 		Label: "gpu-framebuffer", Dimension: gputypes.TextureDimension2D,
-		Size: wgpu.Extent3D{Width: uint32(w), Height: uint32(h), DepthOrArrayLayers: 1},
+		Size:          wgpu.Extent3D{Width: uint32(w), Height: uint32(h), DepthOrArrayLayers: 1},
 		MipLevelCount: 1, SampleCount: 1,
 		Format: gputypes.TextureFormatRGBA8Unorm,
 		Usage:  gputypes.TextureUsageTextureBinding | gputypes.TextureUsageCopyDst,
@@ -255,7 +287,7 @@ func (s *Surface) ensureTargets(w, h int) error {
 	// 合成目标: 窗口化时由 swapchain 提供; 离屏 (测试/无头) 用这张纹理。
 	tgt, err := s.dev.CreateTexture(&wgpu.TextureDescriptor{
 		Label: "gpu-present-target", Dimension: gputypes.TextureDimension2D,
-		Size: wgpu.Extent3D{Width: uint32(w), Height: uint32(h), DepthOrArrayLayers: 1},
+		Size:          wgpu.Extent3D{Width: uint32(w), Height: uint32(h), DepthOrArrayLayers: 1},
 		MipLevelCount: 1, SampleCount: 1,
 		Format: gputypes.TextureFormatRGBA8Unorm,
 		Usage:  gputypes.TextureUsageRenderAttachment | gputypes.TextureUsageCopySrc,
@@ -263,7 +295,17 @@ func (s *Surface) ensureTargets(w, h int) error {
 	if err != nil {
 		return err
 	}
-	s.fbTex, s.fbView, s.bindGrp, s.target = fb, view, bindGrp, tgt
+	// targetView 先建成功再交接线 (CreateTextureView 失败时不能留下
+	// "target 已换 / view 还是旧的" 的不一致状态, 否则下一帧会拿旧视图
+	// 采样新尺寸的帧缓冲 —— 静默错帧, 比跳过一帧难查得多)。
+	tgtView, err := s.dev.CreateTextureView(tgt, nil)
+	if err != nil {
+		return err
+	}
+	if s.targetView != nil {
+		s.targetView.Release() // 重建 (resize) 时释放旧视图
+	}
+	s.fbTex, s.fbView, s.bindGrp, s.target, s.targetView = fb, view, bindGrp, tgt, tgtView
 	s.fbW, s.fbH = w, h
 	return nil
 }
@@ -295,7 +337,11 @@ func (s *Surface) ShowRegions(img *image.RGBA, rects []image.Rectangle) {
 			continue
 		}
 		rowBytes := r.Dx() * 4
-		sub := make([]byte, rowBytes*r.Dy())
+		need := rowBytes * r.Dy()
+		if cap(s.uploadScratch) < need {
+			s.uploadScratch = make([]byte, need) // 只增不减: 按最大脏区一次到位
+		}
+		sub := s.uploadScratch[:need]
 		stride := img.Stride // image.RGBA 可能有对齐 padding
 		for y := 0; y < r.Dy(); y++ {
 			off := (r.Min.Y+y)*stride + r.Min.X*4
@@ -311,18 +357,13 @@ func (s *Surface) ShowRegions(img *image.RGBA, rects []image.Rectangle) {
 		}
 	}
 	// 2. 合成: Load (保留目标旧内容) + 逐脏区 scissor 重绘 —— 只碰变化区域
-	view, err := s.dev.CreateTextureView(s.target, nil)
-	if err != nil {
-		return
-	}
-	defer view.Release()
 	enc, err := s.dev.CreateCommandEncoder(&wgpu.CommandEncoderDescriptor{Label: "gfx-frame"})
 	if err != nil {
 		return
 	}
 	pass, err := enc.BeginRenderPass(&wgpu.RenderPassDescriptor{
 		ColorAttachments: []wgpu.RenderPassColorAttachment{{
-			View: view, LoadOp: gputypes.LoadOpLoad, StoreOp: gputypes.StoreOpStore,
+			View: s.targetView, LoadOp: gputypes.LoadOpLoad, StoreOp: gputypes.StoreOpStore,
 		}},
 	})
 	if err != nil {
