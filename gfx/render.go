@@ -2016,6 +2016,10 @@ func Mount(root *GuiNode, cfg WindowConfig) (*Window, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create window: %w", err)
 	}
+	// 呈现包装器 (GPU 合成) 在建窗之后、首帧之前套上: 事件/尺寸/窗口操作仍走
+	// 平台 Surface, 只有 Show/ShowRegions 被换掉。包装失败时退回平台 Surface
+	// (软件光栅化 + CPU blit), 降级而不失败 —— 见 SetPresentWrapper 的说明。
+	surface = wrapPresent(surface)
 
 	a := &app{
 		surface:    surface,

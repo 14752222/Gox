@@ -199,6 +199,54 @@ func SetDefaultFactory(f WindowFactory) {
 	}
 }
 
+// SetPresentWrapper 注册「呈现包装器」—— GPU 呈现后端的唯一接入点。
+//
+// 平台后端 (win32 / x11 / cocoa) 建好 Surface 之后, 由它决定要不要把**上屏
+// 那一跳**换成 GPU 合成:
+//
+//	surface := defaultFactory.Create(cfg)     // 平台窗口 + 事件 + 尺寸
+//	if wrapped, ok := presentWrapper(surface); ok {
+//	    surface = wrapped                     // 只接管 Show/ShowRegions
+//	}
+//
+// 包装器拿到的 inner 仍然负责事件、尺寸、窗口操作、可选平台能力 (原生对话框
+// / 视频层 / IME) —— 它自己只替换「像素怎么上屏」。这跟 nativeVideoHost 那一
+// 类"可选能力走可选接口"是同一套做法: 不扩 Surface 契约, 不加必选依赖。
+//
+// 返回 ok=false 表示"这次不包装" (GPU 不可用 / 被开关关掉 / 该窗口不适合),
+// 调用方继续用 inner, 行为**降级**而不是失败 —— 软件光栅化 + CPU blit 始终是
+// 兜底路径, GPU 只是加速器。nil = 不包装 (注册前的默认, 也是纯软件构建的常态)。
+//
+// 谁该调它: 宿主入口 (cmd/gox 之类) 在决定"要不要带 GPU"时调一次; 平台包
+// 不要调 —— 平台包只该管窗口, 呈现策略属于宿主配置。
+var presentWrapper func(inner Surface) (Surface, bool)
+
+// SetPresentWrapper 安装呈现包装器; 传 nil 撤销。非并发安全: 只在启动时调用
+// (与 SetDefaultFactory 同一纪律)。
+func SetPresentWrapper(f func(inner Surface) (Surface, bool)) {
+	appMu.Lock()
+	defer appMu.Unlock()
+	presentWrapper = f
+}
+
+// wrapPresent 在窗口创建后应用包装器; 无包装器或包装失败时原样返回 inner。
+//
+// 静默降级是刻意的: GPU 拿不到 (无驱动 / 无适配器 / 窗口句柄不可用) 不该让
+// 窗口开不出来。诊断走 gx/dev 的警告环, 而不是把错误抛给脚本。
+func wrapPresent(inner Surface) Surface {
+	appMu.Lock()
+	f := presentWrapper
+	appMu.Unlock()
+	if f == nil {
+		return inner
+	}
+	wrapped, ok := f(inner)
+	if !ok || wrapped == nil {
+		return inner
+	}
+	return wrapped
+}
+
 // ===== 跨线程唤醒原语 (rl65eE) =====
 //
 // 问题: Post 的 check-then-sleep 竞态 —— Pump 在睡进 WaitEvents **之前**
