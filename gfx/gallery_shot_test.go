@@ -143,10 +143,7 @@ func galleryScriptNames(t *testing.T) []string {
 // 的那个", 步骤与轮次就错位了。这里要的那两步点击因此拆成两个轮次。
 func renderGalleryShot(t *testing.T, name string) *image.RGBA {
 	t.Helper()
-	src, err := os.ReadFile(filepath.Join(galleryScriptDir, name))
-	if err != nil {
-		t.Fatalf("读脚本: %v", err)
-	}
+	path := filepath.Join(galleryScriptDir, name)
 	// 演示脚本可能注册定时器, 而调度器是进程级单例 (同 runDemoSteps 的理由)。
 	object.GlobalScheduler().ClearAll()
 	t.Cleanup(func() { object.GlobalScheduler().ClearAll() })
@@ -155,9 +152,14 @@ func renderGalleryShot(t *testing.T, name string) *image.RGBA {
 	SetDefaultFactory(&galleryFactory{fake})
 	t.Cleanup(func() { SetDefaultFactory(nil) })
 
-	v, err := vm.EvalVM(string(src))
+	// 走 EvalFileVM 而不是 EvalVM: 前者的 moduleBase 是**脚本所在目录**
+	// (testdata/shots/), 截图脚本里 `import "../datav/dashboard.js"` 这类
+	// 相对导入才会按文件路径解析 —— 与 `./gox testdata/shots/x.js` 直接
+	// 运行的语义一致 (EvalVM 以进程 CWD 为基准, 跑在 gfx/ 包目录下会把
+	// ../ 指到仓库外)。无 import 的脚本两者等价。
+	v, err := vm.EvalFileVM(path)
 	if err != nil {
-		t.Fatalf("EvalVM: %v", err)
+		t.Fatalf("EvalFileVM: %v", err)
 	}
 	a := currentApp()
 	if a == nil {
@@ -195,6 +197,9 @@ func renderGalleryShot(t *testing.T, name string) *image.RGBA {
 		// 取帧必须在关窗**之前**: 关窗那一轮会把窗口从注册表摘掉, 之后的
 		// 帧再也不会来 (而 shotsImage 读的是"最近一次上屏的帧")。
 		frame = shotsImage(fake)
+		// 画布尺寸断言同样赶在关窗前: 树摘掉后 Box 还是旧值, 但趁手里有
+		// 活树一并查了, 诊断信息 (哪个画布没拿到尺寸) 更实。
+		galleryAssertCanvasesLaidOut(t, name, a.root)
 		fake.push(Event{Kind: EventClose})
 		return Pump(maxWait)
 	}
@@ -242,6 +247,25 @@ func galleryAssertNotBlank(t *testing.T, name string, img *image.RGBA) {
 		t.Fatalf("%s: 画面近乎空白 (%s, 阈值 颜色>=%d 非底色像素>=%d) —— "+
 			"组件可能被画成了空盒子, 先查四处注册表 (node.go / layout.go / raster.go)",
 			name, st, galleryMinColors, galleryMinInk)
+	}
+}
+
+// galleryAssertCanvasesLaidOut 断言每个自绘画布都拿到了非零布局盒。
+//
+// 为什么整帧判据之外还要单查画布: "组件画成空盒子"有两种形态, 整帧的
+// 颜色/墨量判据只能抓第一种 (整个画面空)。第二种是**单块画布没尺寸**:
+// 组件对 width prop 做算术时传入百分比字符串 ("24%") —— 字符串减数字得
+// NaN, 布局把 NaN 当 0/负值收下, onDraw 在空盒上跑完不报错, 那一块
+// 内容静默消失, 而同屏别的面板照样 rich, 整帧断言照旧绿 (2026-10-15
+// 实测: KPI 卡的四个大数字就是这么没的)。逐个节点查盒才抓得到。
+func galleryAssertCanvasesLaidOut(t *testing.T, name string, root *GuiNode) {
+	t.Helper()
+	for _, c := range findAll(root, "canvas") {
+		if c.Box.W <= 0 || c.Box.H <= 0 {
+			t.Fatalf("%s: canvas 布局盒为 %v (有 onDraw 但没拿到尺寸) —— "+
+				"查组件里对 width/height prop 的算术: 百分比字符串参与运算会得 NaN",
+				name, c.Box)
+		}
 	}
 }
 

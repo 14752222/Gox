@@ -129,3 +129,11 @@ bench-results/rss-*.csv
 # IDE 配置：JetBrains 的 .idea/ 是本机产物，内容随 OS / 插件版本 / 打开方式漂移，
 # 已入库的 5 个文件会在不同会话之间反复产生无关 diff。
 /.idea/
+
+# gx-datav 的规格截图与手工跑 dashboard.js 留下的产物。
+# dashboard-shot.png 是 2026-10-15 手工核 GUI 形态时写下的（脚本不生成它），
+# 仓库里没有任何文档/脚本引用；画廊截图 testdata/shots/<GOOS>/*.png 由
+# gfx/gallery_shot_test.go 按平台重新生成（字体来自系统，三平台像素本就不同），
+# 入库既不可 diff 又必然过时。两者都是**产物**，不是源码。
+testdata/datav/*-shot.png
+testdata/shots/*/
