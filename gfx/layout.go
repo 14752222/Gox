@@ -637,6 +637,20 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 				h = nh
 			}
 		}
+	case "audio":
+		// 音频 (S9): 没有画面, 占位是一条窄条。没有显式尺寸时给
+		// audioDefaultW×audioDefaultH (浏览器 <audio controls> 的量级)。
+		// 同样必须非 0 (理由同 image/video): 0 尺寸子树被整支跳过,
+		// 用户看到的是"什么都没有", 而不是"这里本该有条音频"。
+		if w == 0 || h == 0 {
+			nw, nh := audioDefaultW, audioDefaultH
+			if w == 0 {
+				w = nw
+			}
+			if h == 0 {
+				h = nh
+			}
+		}
 	case "canvas":
 		// 画布: canvas 不是容器 (stretchesCross 为 false), 拿不到父容器的
 		// 交叉轴拉伸, 所以**两个方向都要给缺省值** —— 否则不写 width/height

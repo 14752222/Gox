@@ -51,6 +51,11 @@ type fakeSurface struct {
 	// 现在就是这状态, 所以它同时是 `<video>` 降级路径的默认场景。
 	video *fakeVideoHost
 
+	// audio 非空时, fakeSurface 就同时满足 nativeAudioHost 可选接口 (S9)。
+	// 与 video 同一套写法: 字段在共享设施里, 假宿主 (fakeAudioHost) 与转发
+	// 方法定义在 audio_test.go。**nil = 这个后端没有平台音频层**。
+	audio *fakeAudioHost
+
 	// imeEditors 记录 M2 的"编辑框状态回传"(fakeSurface 因此同时满足
 	// imeEditorReporter 可选接口)。字段放共享设施、转发方法放 ime_test.go ——
 	// 与 dialog / video 同一套写法。

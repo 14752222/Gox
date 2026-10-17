@@ -1624,6 +1624,9 @@ func (a *app) redraw() {
 		// 平台视频表面 (S8) 在**本帧布局算完之后**对齐 (见 video.go):
 		// 它是叠在窗口之上的另一层, 不参与脏矩形 diff, 位置就是刚刚算出的 Box。
 		flushVideoSurfaces(a)
+		// 平台音频源 (S9) 同理: 没有矩形要对齐, 但受控属性 (playing/muted/…)
+		// 的变化要在这时候发给宿主 (见 audio.go)。
+		flushAudioNodes(a)
 		markAllPrev(root)
 		// M2: 编辑框状态回传给人看的那一侧 (宿主 InputConnection / 候选词窗)。
 		// 必须在 Layout 之后 —— 光标矩形要用刚算出的 Box。
@@ -1640,6 +1643,7 @@ func (a *app) redraw() {
 	a.dirtyNodes = dirtyNodes // diffRects 读取
 	Layout(root, w, h)
 	flushVideoSurfaces(a) // 同 full 分支: 表面位置跟着本帧布局走
+	flushAudioNodes(a)    // 同 full 分支: 受控属性变化跟着本帧发给宿主
 	// M2: 同 full 分支 —— 局部帧也要回传 (光标移动/文本变化大多走的是局部帧,
 	// 漏了这里等于"打字时光标位置不回传", 候选词窗会停在旧位置)。
 	a.reportIMEEditor()
