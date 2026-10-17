@@ -64,6 +64,13 @@ flex 布局 + JSX + 信号驱动更新，win32 / X11 / cocoa 窗口后端）、�
 - **自研 GUI 渲染层** —— `gx/gfx` 模块：flex 风格布局（`column`/`row`/`grid`、百分比尺寸、min-max 钳位、
   `flexShrink`、折行）、圆角/线性渐变/阴影装饰、命中测试、脏矩形局部重绘；win32（纯 syscall）、X11 与 macOS（cocoa, purego）
   窗口后端。详见 **[GUI 开发指南](docs/gui-guide.md)**
+- **媒体组件（`<video>` / `<audio>`）** —— 内核只定义**宿主契约**（`nativeVideoHost` / `nativeAudioHost`）：
+  能挂载、能收事件、`playing` / `muted` / `loop` / `volume` / `fit` 全受控，**后端没这块能力就明说缺**
+  （封面占位 + 一次 `onError({code:"unsupported"})` + `canIUse("video"/"audio")` 照实回答 `false`），
+  绝不假装在播。Linux 默认构建挂 `gfx/softmedia` 软件后端，**真的能播**：视频 GIF（含 disposal 合成）
+  与 MJPEG，音频 WAV（PCM 8/16/24/32 位 + IEEE float），音频经 PulseAudio `purego` dlopen 输出（零 cgo），
+  无声卡时降级 null sink（播放时钟与事件照真）。h264 / aac / mp3 留给平台媒体层，
+  边界见 [media-decision.md](docs/media-decision.md)
 - **原生感的交互组件** —— 表单控件（`input`/`textarea`/`select`/`slider`/`checkbox`/`radio`/`switch`）、
   弹层（`dialog`/`drawer`/`toast`）、选项卡（`tabs`，keep-alive 页语义 + 受控/非受控双模式）、滚动容器、自绘画布，
   以及**自绘菜单栏与右键菜单**（下拉/子菜单/快捷键/禁用项，不依赖系统菜单 API）

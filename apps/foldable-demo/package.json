@@ -8,6 +8,6 @@
     "start": "goxjs src/main.js"
   },
   "devDependencies": {
-    "@goxjs/goxjs": "^0.10.0"
+    "@goxjs/goxjs": "^0.11.0"
   }
 }

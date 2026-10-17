@@ -12,11 +12,11 @@
 ## 1. 三平台口径对照表（每发一版填一行）
 
 > 填写原则：**版本号、平台矩阵、合规率三个数字在三处必须逐字符一致**；任何一处先改，
-> 另外两处当天跟上。当前最新版：**v0.9.0**（npm `@goxjs/goxjs@0.9.0`）。
+> 另外两处当天跟上。当前最新版：**v0.11.0**（npm `@goxjs/goxjs@0.11.0`）。
 
 | 口径项 | GitHub Releases 说明 | npm 包页（@goxjs/goxjs） | 官网 |
 |---|---|---|---|
-| 当前版本号 | `v0.9.0`（tag 与 `npm/package.json` version 必须相等，见发版手册 §6「标签与版本号不一致」条） | 包版本 `0.9.0`（`npm view @goxjs/goxjs@latest version` 复核） | 首页/下载页展示的最新版本号 |
+| 当前版本号 | `v0.11.0`（tag 与 `npm/package.json` version 必须相等，见发版手册 §6「标签与版本号不一致」条） | 包版本 `0.11.0`（`npm view @goxjs/goxjs@latest version` 复核） | 首页/下载页展示的最新版本号 |
 | 平台支持矩阵 | Release assets 列表（5 个平台二进制，见 §2） | `npm pack` 产物内的 `binaries/<os>-<arch>/gox[.exe]` 同 5 平台 | 下载页平台勾选列表 |
 | 五平台明细 | darwin-x64 / darwin-arm64 / linux-x64 / linux-arm64 / windows-x64 | 同上（`npm/bin/gox.js` 按 `osName + '-' + process.arch` 选二进制） | 同上；**不提供** linux-armv7、windows-arm64 等，别列 |
 | 已知缺口（test262） | 70.8% language 合规率（16809/23726，2026-10-06 批次四口径；新版本以当批 A/B 回填） | README「已知限制」小节同数字 | 同左 |

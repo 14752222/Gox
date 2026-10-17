@@ -546,14 +546,33 @@ jobs:
 
           # 平台子包：每个是独立 package.json + 产物，各自发。
           # ⚠️ 每个子包都要在 npmjs.com 上单独配 Trusted Publishing（同一组
-          #    org/repo/workflow 字段），否则会以误导性的 404 收场。
+          #    org/repo/workflow 字段），否则 npm 报 ENEEDAUTH（v0.10.0 实况：主包
+          #   发成功、四个子包全挂在这）。
+          #
+          # **子包失败不阻断本作业**（rGox11）：主包是桌面用户唯一会装的东西，而
+          # 子包的发布资格依赖"有人在 npmjs.com 上手工给这个包点一次 Trusted
+          # Publishing"——那是仓库外的动作，CI 修不了。让一个仓库外的待办把已经发
+          # 成功的主包连同"打 tag + 建 Release"一起拖成红,等于把"移动端子包待配"
+          # 伪装成"发版失败"。所以这里逐个尝试、逐个记账,最后只报 warning。
+          SUBFAILED=""
           for d in dist/npm-mobile-pkgs/*/; do
             [ -d "$d" ] || continue
             pj="$(cd "$d" && pwd)/package.json"
             pkgname=$(node -p "require(process.argv[1]).name" "$pj")
             echo "==> 发布平台子包 $pkgname"
-            ( cd "$d" && npm publish --access public --provenance )
+            if ( cd "$d" && npm publish --access public --provenance ); then
+              echo "::notice::平台子包 $pkgname 发布成功"
+            else
+              SUBFAILED="$SUBFAILED $pkgname"
+              echo "::error::平台子包 $pkgname 发布失败（多半是该包在 npmjs.com 上没配 Trusted Publishing，症状是 ENEEDAUTH/404）；主包不受影响，本步骤不因此失败"
+            fi
           done
+
+          if [ -n "$SUBFAILED" ]; then
+            echo "::warning::以下平台子包本版未发布:$SUBFAILED —— 需先在 npmjs.com 为各子包单独配 Trusted Publishing（org=14752222 / repo=Gox / workflow=release.yml），下版自动补上。主包已发布成功。"
+          else
+            echo "::notice::全部平台子包发布成功"
+          fi
 
       - name: 打 tag + 建 Release（仅 push 到 main 且真发布时）
         if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && !inputs.dry_run }}

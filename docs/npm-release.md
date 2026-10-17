@@ -177,7 +177,10 @@ gox-npm 工作副本的远端叫 `origin`，用 `git -C npm push` 即可 —— 
 - **`mobile/` 绝不能回到主包**：主包 `files` 一旦出现 `mobile/`，`check-registries.py:523` 直接红
   （M5 的红线：桌面包必须保持 ~20MB，不能被移动端顶到 ~72MB）。
 - **每个子包都要在 npmjs.com 上单独配 Trusted Publishing**（同一组 `org/repo/workflow` 字段），
-  否则该子包首次发布以**误导性的 404** 收场（与主包 §4 的坑同源）。
+  否则该子包首次发布以 **`ENEEDAUTH` / 404** 收场（与主包 §4 的坑同源）。
+  **子包失败不阻断发版**：主包发完后子包逐个尝试，失败只写一条 `::error::` 注解，收尾汇总成
+  一条 `::warning::`，tag 与 Release 照常建。v0.10.0 就是在这里把整个 publish 作业拖红 ——
+  主包其实已经发成功了，但"打 tag + 建 Release"排在它后面，于是一起没跑，Release 只能人工补。
 - 三个移动平台里，**android / ios 进 CI**（NDK / Xcode）；**harmony 进不了托管 CI**
   （要 DevEco SDK）—— 该子包目前只能本地或自建 runner 手工发。
 - **成品 APK/HAP/壳工程 zip** 不走 npm，走 `.github/workflows/mobile-release.yml`（§8 列出）。
