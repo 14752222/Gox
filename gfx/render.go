@@ -51,7 +51,11 @@ type app struct {
 	closed     bool
 	closeOnce  sync.Once
 	dirtyNodes map[*GuiNode]struct{} // 属性变化的节点 (框可能不变)
-	focused    *GuiNode              // 键盘事件焦点 (点击更新, 默认根)
+	// extraDirty 是"像素变了但不对应任何节点"的矩形 (外部叠加层: 软媒体
+	// 视频帧, 见 InvalidateRect)。diffRects 只遍历渲染树, 看不到它们,
+	// 所以单列一张表, 在 redraw 的局部分支并进脏区。
+	extraDirty []Rect
+	focused    *GuiNode // 键盘事件焦点 (点击更新, 默认根)
 
 	// 交互状态 (P1-4 / P2-8): 悬停链与按压捕获目标。
 	// 只保存"当前生效"的链, 与新的链做差集即可知道哪些节点需要翻转状态。
@@ -392,6 +396,36 @@ func markNodeDirty(n *GuiNode) {
 		a.dirtyNodes = map[*GuiNode]struct{}{}
 	}
 	a.dirtyNodes[n] = struct{}{}
+	a.mu.Unlock()
+}
+
+// InvalidateRect 把"一块矩形像素变了"标成脏, 即使它不对应任何渲染节点。
+//
+// 存在的理由: **外部叠加层**的像素变化 diffRects 看不见 —— 它只遍历渲染树,
+// 而软媒体后端 (gfx/softmedia) 的视频帧是把解码结果直接合成进 *image.RGBA 的,
+// 那一块矩形里没有任何节点的属性发生过变化。没有这条入口, 视频播放时
+// 界面不重绘, 画面就停在封面上。
+//
+// 与 Invalidate (整帧) 的分工: 视频帧每秒来 30 次, 每次都整帧重绘等于
+// 把 4K 全屏光栅化+blit 的成本按帧率付 —— 外部矩形让每次重绘只付
+// "那一个视频框"的钱。
+//
+// 语义同 markFullDirty 的无参形式: 标 **activeApp** (没有具体节点归属的
+// 调用点)。多窗口下"哪个窗口在播视频"由调用方自己保证 (软媒体后端按
+// 挂载时的窗口记)。
+func InvalidateRect(r Rect) {
+	if r.W <= 0 || r.H <= 0 {
+		return // 退化矩形: 标了也是一次空重绘
+	}
+	appMu.Lock()
+	a := activeApp
+	appMu.Unlock()
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.needDraw = true
+	a.extraDirty = append(a.extraDirty, r)
 	a.mu.Unlock()
 }
 
@@ -1606,6 +1640,8 @@ func (a *app) redraw() {
 	a.fullDirty = false
 	dirtyNodes := a.dirtyNodes
 	a.dirtyNodes = nil
+	extraDirty := a.extraDirty
+	a.extraDirty = nil
 	root := a.root
 	a.mu.Unlock()
 
@@ -1647,7 +1683,9 @@ func (a *app) redraw() {
 	// M2: 同 full 分支 —— 局部帧也要回传 (光标移动/文本变化大多走的是局部帧,
 	// 漏了这里等于"打字时光标位置不回传", 候选词窗会停在旧位置)。
 	a.reportIMEEditor()
-	rects := mergeRects(a.diffRects(), 16)
+	// 外部叠加层的矩形 (InvalidateRect) 并进脏区: 它们不在渲染树里,
+	// diffRects 看不到; 整帧分支不需要 —— 全帧重画已经覆盖了它们。
+	rects := mergeRects(append(a.diffRects(), extraDirty...), 16)
 	a.dirtyNodes = nil
 
 	totalArea := 0

@@ -86,6 +86,11 @@ type VideoSurfaceOptions struct {
 	Loop     bool
 	Controls bool // 请求平台自带的播放控件 (有就画, 没有就忽略)
 	Volume   float64
+	// Fit 是帧的适配模式 (contain 缺省 / cover / fill, 见 videoFit)。
+	// 平台视频表面通常自己处理缩放, 可以忽略; **软媒体后端**
+	// (gfx/softmedia, 把帧合成进 *image.RGBA) 必须按它落位, 否则
+	// cover 会被画成 contain, 留出一条黑边。
+	Fit string
 }
 
 // VideoEvent 是宿主上报回来的播放状态事件。
@@ -244,6 +249,7 @@ func videoOptions(n *GuiNode) VideoSurfaceOptions {
 		Loop:     propBoolOr(n, "loop", false),
 		Controls: propBoolOr(n, "controls", false),
 		Volume:   1,
+		Fit:      videoFit(n),
 	}
 	if v, ok := n.PropNum("volume"); ok {
 		opts.Volume = clampUnit(v)
