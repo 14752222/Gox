@@ -158,16 +158,18 @@ func TestRadioStates(t *testing.T) {
 	root.Children = []*GuiNode{off, on}
 	img := renderTree(root, 40, 60)
 
-	// 圆环: 顶部/左右在环上, 四角在圆外, 中心空心
-	assertPx(t, img, 9, 1, pxFieldEdge, "radio 圆环顶部")
-	assertPx(t, img, 1, 9, pxFieldEdge, "radio 圆环左侧")
+	// 圆环: 顶部/左右在环上, 四角在圆外, 中心空心。
+	// 顶部/左侧恰好压在圆周上 ⇒ 抗锯齿之后是"边框色与底色"的过渡色, 不能
+	// 再断言精确色值 —— 那是 AA 的预期产物, 不是回归。
+	assertBlend(t, img, 9, 1, pxWhite, pxFieldEdge, "radio 圆环顶部")
+	assertBlend(t, img, 1, 9, pxWhite, pxFieldEdge, "radio 圆环左侧")
 	assertPx(t, img, 0, 0, pxWhite, "radio 圆角外应为空")
 	assertPx(t, img, 9, 9, pxWhite, "未选中圆内应为空")
 
 	// 选中: 中心实心圆点
 	b := on.Box
 	assertPx(t, img, b.X+9, b.Y+9, pxAccent, "radio 选中圆点")
-	assertPx(t, img, b.X+9, b.Y+1, pxFieldEdge, "选中仍保留圆环")
+	assertBlend(t, img, b.X+9, b.Y+1, pxWhite, pxFieldEdge, "选中仍保留圆环")
 }
 
 func TestSwitchStates(t *testing.T) {
@@ -193,15 +195,17 @@ func TestFillCircleAndStrokeCircle(t *testing.T) {
 	FillRect(img, Rect{0, 0, 20, 20}, pxWhite)
 	FillCircle(img, 10, 10, 8, red)
 	assertPx(t, img, 10, 10, red, "实心圆圆心")
-	assertPx(t, img, 10, 2, red, "实心圆上端点")
+	// 上端点恰好落在圆周上 ⇒ 半覆盖的过渡色 (抗锯齿), 不是纯前景色。
+	assertBlend(t, img, 10, 2, pxWhite, red, "实心圆上端点")
 	assertPx(t, img, 1, 1, pxWhite, "实心圆四角之外")
 
 	img2 := image.NewRGBA(image.Rect(0, 0, 20, 20))
 	FillRect(img2, Rect{0, 0, 20, 20}, pxWhite)
 	StrokeCircle(img2, 10, 10, 8, red)
-	assertPx(t, img2, 10, 2, red, "圆环顶部")
-	assertPx(t, img2, 2, 10, red, "圆环左端")
-	assertPx(t, img2, 18, 10, red, "圆环右端")
+	// 圆环的三点都压在圆周上 ⇒ 半覆盖的过渡色 (抗锯齿), 不是纯前景色。
+	assertBlend(t, img2, 10, 2, pxWhite, red, "圆环顶部")
+	assertBlend(t, img2, 2, 10, pxWhite, red, "圆环左端")
+	assertBlend(t, img2, 18, 10, pxWhite, red, "圆环右端")
 	assertPx(t, img2, 10, 10, pxWhite, "圆环内部应为空")
 }
 

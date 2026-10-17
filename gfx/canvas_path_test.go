@@ -89,9 +89,11 @@ func TestFillRingLeavesHole(t *testing.T) {
 func TestFillRingSectorRespectsAngles(t *testing.T) {
 	img := testImg(40, 40)
 	FillRing(img, 20, 20, 15, 9, 0, math.Pi/2, testRed)
-	// (32,20) 距圆心 12 ⇒ 落在 [9,15] 环带上, 且角度为 0 (在扫过角内)。
-	if got := pixAt(img, 32, 20); got != testRed {
-		t.Fatalf("(32,20) 应在 0~π/2 环带内, 实际 %v", got)
+	// (32,22) 距圆心 12.2 ⇒ 落在 [9,15] 环带上, 且角度 0.165 (在扫过角内)。
+	// 刻意不取 (32,20): 它正好压在 start=0 的**角向边界**上, 抗锯齿后是半
+	// 覆盖的过渡色 —— 那是 AA 的预期产物, 断言纯色反而会误报。
+	if got := pixAt(img, 32, 22); got != testRed {
+		t.Fatalf("(32,22) 应在 0~π/2 环带内, 实际 %v", got)
 	}
 	// (8,20) 同样距圆心 12, 但角度是 π ⇒ 不在扫过角内。
 	if got := pixAt(img, 8, 20); got == testRed {
@@ -255,9 +257,14 @@ func TestCtxArcPrimitives(t *testing.T) {
 	img2 := testImg(60, 60)
 	ctx2 := makeCtx(&canvasTarget{img: img2, box: Rect{X: 0, Y: 0, W: 60, H: 60}})
 	ctxCall(t, ctx2, "strokeArc", cn(30), cn(30), cn(20), cn(0), cn(2*math.Pi), cs("#ff0000"))
-	// 圆环上: 圆心正上方 (30,10) 应是红; 圆心 (30,30) 不该是红。
-	if got := pixAt(img2, 30, 10); got != testRed {
-		t.Fatalf("strokeArc: (30,10) 应是红, 实际 %v", got)
+	// 圆环上: 圆心正上方 (30,10) 应是红 —— 但弧顶未必落在多边形的采样顶点上,
+	// 叠加抗锯齿后它是接近纯红的过渡色, 所以断言"红占优"而不是精确色值;
+	// 起点 (50,30) 恰好是采样顶点 ⇒ 那里必须是纯红。
+	if got := pixAt(img2, 30, 10); got.R != 0xFF || got.G > 0x40 || got.B > 0x40 {
+		t.Fatalf("strokeArc: (30,10) 应是红占优, 实际 %v", got)
+	}
+	if got := pixAt(img2, 50, 30); got != testRed {
+		t.Fatalf("strokeArc: 弧起点 (50,30) 应是纯红, 实际 %v", got)
 	}
 	if got := pixAt(img2, 30, 30); got == testRed {
 		t.Fatalf("strokeArc: 圆心不该被填")

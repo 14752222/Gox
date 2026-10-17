@@ -602,7 +602,7 @@ func drawWidget(img *image.RGBA, n *GuiNode, disabled bool) {
 }
 
 // paintCheckbox 画复选框: 18x18 边框空盒, 选中时填强调色并画勾。
-// 勾用两段 2px 粗的短线拼接, 斜率按 18px 盒子近似 (不做抗锯齿)。
+// 勾用两段 2px 粗的短线拼接, 斜率按 18px 盒子近似 (走 fillLine 的抗锯齿)。
 func paintCheckbox(img *image.RGBA, n *GuiNode, disabled bool) {
 	b := n.Box
 	if b.W <= 0 || b.H <= 0 {
@@ -777,71 +777,30 @@ func StrokeRect(img *image.RGBA, r Rect, c color.RGBA) {
 
 // ===== P0 绘制原语: 圆 / 粗线 =====
 
-// FillCircle 以 (cx,cy) 为圆心、r 为半径填充实心圆 (逐行扫描 x²+y²≤r²,
-// 不做抗锯齿)。坐标按像素中心对齐, 圆心与半径都是整数像素。
+// FillCircle 以 (cx,cy) 为圆心、r 为半径填充实心圆 (**覆盖率抗锯齿**, 实现
+// 见 antialias.go 的 fillDiscAA)。圆心与半径按整数像素给出 —— 圆心像素是
+// 满覆盖, 边缘一圈按到圆周的距离过渡。
 func FillCircle(img *image.RGBA, cx, cy, r int, c color.RGBA) {
 	if r <= 0 {
 		return
 	}
-	rr := r * r
-	for dy := -r; dy <= r; dy++ {
-		// 该行半宽 = floor(sqrt(r²-dy²))
-		dx := isqrt(rr - dy*dy)
-		if dx < 0 {
-			continue
-		}
-		FillRect(img, Rect{X: cx - dx, Y: cy + dy, W: 2*dx + 1, H: 1}, c)
-	}
+	fillDiscAA(img, float64(cx)+0.5, float64(cy)+0.5, float64(r), c)
 }
 
-// StrokeCircle 画 1px 圆环 (外半径 r 与内半径 r-1 之间的环带)。
+// StrokeCircle 画一个圆环: 外半径 r、环宽 1px (**覆盖率抗锯齿**) —— 走
+// fillRingAA 的径向环带覆盖, 不再"外圆逐行挖掉内圆"地拼矩形。
 func StrokeCircle(img *image.RGBA, cx, cy, r int, c color.RGBA) {
 	if r <= 0 {
 		return
 	}
-	inner := r - 1
-	rr, ir := r*r, inner*inner
-	for dy := -r; dy <= r; dy++ {
-		dx := isqrt(rr - dy*dy)
-		if dx < 0 {
-			continue
-		}
-		ix := -1
-		if inner > 0 {
-			if v := ir - dy*dy; v >= 0 {
-				ix = isqrt(v)
-			}
-		}
-		if ix < 0 {
-			FillRect(img, Rect{X: cx - dx, Y: cy + dy, W: 2*dx + 1, H: 1}, c)
-			continue
-		}
-		// 环带: 左端到右端挖掉中间 [cx-ix, cx+ix]
-		FillRect(img, Rect{X: cx - dx, Y: cy + dy, W: dx - ix, H: 1}, c)
-		FillRect(img, Rect{X: cx + ix + 1, Y: cy + dy, W: dx - ix, H: 1}, c)
-	}
+	fillRingAA(img, float64(cx)+0.5, float64(cy)+0.5, float64(r), float64(r-1), 0, tau, c)
 }
 
-// fillLine 画任意斜率的粗线: 主轴步进 + 每次落一个 thickness² 的实心方块。
-// 用于勾/箭头等"近似即可"的装饰线 (不追求抗锯齿与端点形状)。
+// fillLine 画任意斜率的线 (线宽 thickness, **覆盖率抗锯齿**, 实现见
+// antialias.go 的 fillLineAA)。用于勾/箭头/分隔线/折线等装饰线 —— 整数端点
+// 的横竖线仍然整行/整列实色, 不会因为 AA 糊成两条半亮的线。
 func fillLine(img *image.RGBA, x0, y0, x1, y1, thickness int, c color.RGBA) {
-	if thickness < 1 {
-		thickness = 1
-	}
-	dx, dy := x1-x0, y1-y0
-	steps := abs(dx)
-	if abs(dy) > steps {
-		steps = abs(dy)
-	}
-	if steps == 0 {
-		FillRect(img, Rect{X: x0 - thickness/2, Y: y0 - thickness/2, W: thickness, H: thickness}, c)
-		return
-	}
-	for i := 0; i <= steps; i++ {
-		x := x0 + dx*i/steps
-		y := y0 + dy*i/steps
-		FillRect(img, Rect{X: x - thickness/2, Y: y - thickness/2, W: thickness, H: thickness}, c)
-	}
+	fillLineAA(img, float64(x0), float64(y0), float64(x1), float64(y1), thickness, c)
 }
 
 // StrokeDashedRect 画 1px 虚线矩形 (焦点框): 每条边按 dash 段实、gap 段空

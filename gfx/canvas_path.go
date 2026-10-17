@@ -26,8 +26,8 @@ import (
 // "顺时针"与肉眼看到的一致) —— 与 HTML canvas 的 arc 约定相同, 便于把
 // 现成的图表代码搬过来。
 //
-// 像素级取整不抗锯齿: 与既有原语 (FillCircle / fillLine) 保持一致, 整条
-// 渲染链路都是硬边, 单独给路径做抗锯齿反而格格不入。
+// 抗锯齿: 与既有原语一样走**覆盖率**合成 (见 antialias.go) —— fillPath
+// 落在那里, strokePath 直接把浮点端点交给 fillLineAA (不再取整)。
 
 // ===== 仿射变换 =====
 
@@ -156,75 +156,12 @@ func (p *canvasPath) arc(cx, cy, r, start, end float64, counterclockwise bool) {
 
 // ===== 光栅化 =====
 
-// fillPath 用扫描线 even-odd 规则填充路径的所有子路径。
-//
-// 逐行求交点是 O(rows × edges), 对画布尺寸 (几百 px) 足够; 不追求
-// nonzero 规则 —— 甜甜圈靠 fillRing 直接画, 不靠两个反向子路径挖洞。
-func fillPath(img *image.RGBA, p *canvasPath, c color.RGBA) {
-	if img == nil || len(p.subs) == 0 {
-		return
-	}
-	// 全部子路径的边收集到一起, 一起求交 (even-odd 跨子路径生效)。
-	type edge struct{ x0, y0, x1, y1 float64 }
-	var edges []edge
-	minY, maxY := math.MaxFloat64, -math.MaxFloat64
-	for _, s := range p.subs {
-		n := len(s.pts)
-		for i := 0; i < n; i++ {
-			a := s.pts[i]
-			b := s.pts[(i+1)%n]
-			if i == n-1 && !s.closed {
-				break // 未闭合: 最后一点不连回起点
-			}
-			if a.y == b.y {
-				continue // 水平边不影响交点计数
-			}
-			edges = append(edges, edge{a.x, a.y, b.x, b.y})
-			minY = math.Min(minY, math.Min(a.y, b.y))
-			maxY = math.Max(maxY, math.Max(a.y, b.y))
-		}
-	}
-	if len(edges) == 0 {
-		return
-	}
-	y0 := int(math.Floor(minY))
-	y1 := int(math.Ceil(maxY))
-	for y := y0; y <= y1; y++ {
-		yc := float64(y) + 0.5
-		var xs []float64
-		for _, e := range edges {
-			lo, hi := e.y0, e.y1
-			if lo > hi {
-				lo, hi = hi, lo
-			}
-			// 半开区间 [lo, hi): 避免顶点被算两次
-			if yc < lo || yc >= hi {
-				continue
-			}
-			t := (yc - e.y0) / (e.y1 - e.y0)
-			xs = append(xs, e.x0+t*(e.x1-e.x0))
-		}
-		if len(xs) < 2 {
-			continue
-		}
-		// 插入排序: 交点数通常 < 20, 比 sort.Slice 的开销小。
-		for i := 1; i < len(xs); i++ {
-			for j := i; j > 0 && xs[j] < xs[j-1]; j-- {
-				xs[j], xs[j-1] = xs[j-1], xs[j]
-			}
-		}
-		for i := 0; i+1 < len(xs); i += 2 {
-			xa := int(math.Ceil(xs[i] - 0.5))
-			xb := int(math.Ceil(xs[i+1] - 0.5))
-			if xb <= xa {
-				continue
-			}
-			FillRect(img, Rect{X: xa, Y: y, W: xb - xa, H: 1}, c)
-		}
-	}
-}
+// fillPath (扫描线填充, 覆盖率抗锯齿) 的实现见 antialias.go。
 
-// strokePath 沿路径的边落线 (线宽 w, 硬边)。
+// strokePath 沿路径的边落线 (线宽 w, 覆盖率抗锯齿)。
+//
+// 端点**不再取整**: 直接把浮点坐标交给 fillLineAA —— 取整会把折线顶点抖到
+// 整像素上, 那本身就是斜线锯齿的一部分来源。
 func strokePath(img *image.RGBA, p *canvasPath, w int, c color.RGBA) {
 	if img == nil || len(p.subs) == 0 {
 		return
@@ -241,8 +178,7 @@ func strokePath(img *image.RGBA, p *canvasPath, w int, c color.RGBA) {
 		for i := 0; i < last; i++ {
 			a := s.pts[i]
 			b := s.pts[(i+1)%n]
-			fillLine(img, int(math.Round(a.x)), int(math.Round(a.y)),
-				int(math.Round(b.x)), int(math.Round(b.y)), w, c)
+			fillLineAA(img, a.x, a.y, b.x, b.y, w, c)
 		}
 	}
 }
@@ -271,10 +207,12 @@ func StrokeArc(img *image.RGBA, cx, cy, r int, start, end float64, c color.RGBA)
 }
 
 // FillRing 填充环形扇区 (环形图 / 甜甜圈图的每一片): 外半径 rOuter 与内半径
-// rInner 之间、从 start 到 end 扫过的环带。
+// rInner 之间、从 start 到 end 扫过的环带 (**覆盖率抗锯齿**, 实现见
+// antialias.go 的 fillRingAA)。
 //
-// 走「按行判定」而不是「外扇形挖掉内扇形」: 后者在 rInner 很小的时候会在
-// 圆心附近留下难看的锯齿, 而环形图恰恰常用很小的内半径。
+// 走 fillRingAA 的"径向环带 × 角向扇区"覆盖, 而不是"外扇形挖掉内扇形"
+// —— 后者在 rInner 很小的时候会在圆心附近留下难看的锯齿, 而环形图恰恰常用
+// 很小的内半径。
 func FillRing(img *image.RGBA, cx, cy, rOuter, rInner int, start, end float64, c color.RGBA) {
 	if img == nil || rOuter <= 0 || rInner >= rOuter {
 		return
@@ -291,28 +229,7 @@ func FillRing(img *image.RGBA, cx, cy, rOuter, rInner int, start, end float64, c
 	for sweep > 2*math.Pi {
 		sweep -= 2 * math.Pi
 	}
-	ro2, ri2 := float64(rOuter*rOuter), float64(rInner*rInner)
-	for dy := -rOuter; dy <= rOuter; dy++ {
-		for dx := -rOuter; dx <= rOuter; dx++ {
-			d2 := float64(dx*dx + dy*dy)
-			if d2 > ro2 || d2 < ri2 {
-				continue
-			}
-			// 角度判定: atan2 的 0 在 +x 轴, 正向为 (y 朝下时) 顺时针,
-			// 与 FillArc 的约定一致。整圈 (sweep >= 2π-ε) 跳过判定。
-			if sweep < 2*math.Pi-1e-9 {
-				ang := math.Atan2(float64(dy), float64(dx))
-				rel := ang - start
-				for rel < 0 {
-					rel += 2 * math.Pi
-				}
-				if rel > sweep {
-					continue
-				}
-			}
-			FillRect(img, Rect{X: cx + dx, Y: cy + dy, W: 1, H: 1}, c)
-		}
-	}
+	fillRingAA(img, float64(cx)+0.5, float64(cy)+0.5, float64(rOuter), float64(rInner), start, sweep, c)
 }
 
 // ===== ctx 状态与新增原语 =====

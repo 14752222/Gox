@@ -158,7 +158,7 @@ onBackPress(() => {
 
 内置自绘图标集（24×24 逻辑坐标、按 ctx.width 等比缩放，任意尺寸可用）：
 `home / search / user / gear / bell / chat / folder / calendar / heart / plus /
-check / arrow-left` 共 12 个。自绘用直线+矩形+圆拼装（内核 canvas 无抗锯齿/路径/变换），
+check / arrow-left` 共 12 个。自绘用直线+矩形+圆拼装（内核光栅有覆盖率抗锯齿，但无渐变），
 像素风但零依赖；要精致图标就走方案 B 的 image 路径。
 
 ## 6. 坑位清单（每一条都对应一次真实的踩法）

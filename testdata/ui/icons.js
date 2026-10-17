@@ -13,8 +13,8 @@
 //     { icon: icons.home }                 → canvas 自绘
 //     { icon: "assets/home.png" }          → <image src=... /> (相对进程工作目录)
 //
-// 刻意不做: 抗锯齿 / 路径 / 变换 (内核 canvas 目前没有), 所以图标全部用
-// 直线 + 矩形 + 圆拼装 —— 看得出来是像素风, 但三平台观感一致且零依赖。
+// 刻意不做: 路径 / 变换 (图标用不上, 直线+矩形+圆够拼), 抗锯齿由内核统一
+// 提供 (gfx/antialias.go) —— 三平台观感一致且零依赖。
 import { h } from "gx/gfx";
 
 const draw = (fn) => fn;

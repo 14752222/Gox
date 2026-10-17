@@ -164,23 +164,10 @@ func withAlpha(c color.RGBA, f float64) color.RGBA {
 	return color.RGBA{R: c.R, G: c.G, B: c.B, A: uint8(float64(c.A) * f)}
 }
 
-// drawThickLine 画一条任意方向的粗线 (以方块填充, 无抗锯齿 —— 与内核
-// 其它装饰线同一路线: 观感一致、零依赖)。
+// drawThickLine 画一条任意方向的粗线: 直接用内核的 fillLineAA (覆盖率抗锯齿,
+// 与 fillLine 同一口径 —— 转圈的 spinner 不该是唯一带锯齿的东西)。
 func drawThickLine(img *image.RGBA, x0, y0, x1, y1, thick int, c color.RGBA) {
-	if thick < 1 {
-		thick = 1
-	}
-	steps := max(absInt(x1-x0), absInt(y1-y0))
-	if steps == 0 {
-		FillRect(img, Rect{X: x0 - thick/2, Y: y0 - thick/2, W: thick, H: thick}, c)
-		return
-	}
-	for i := 0; i <= steps; i++ {
-		t := float64(i) / float64(steps)
-		x := int(float64(x0) + (float64(x1)-float64(x0))*t)
-		y := int(float64(y0) + (float64(y1)-float64(y0))*t)
-		FillRect(img, Rect{X: x - thick/2, Y: y - thick/2, W: thick, H: thick}, c)
-	}
+	fillLineAA(img, float64(x0), float64(y0), float64(x1), float64(y1), thick, c)
 }
 
 func absInt(v int) int {

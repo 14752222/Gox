@@ -357,7 +357,7 @@ func paintSelect(img *image.RGBA, n *GuiNode, disabled bool) {
 	paintChevron(img, b, tint(colorInputEdge, disabled))
 }
 
-// paintChevron 画下拉箭头 (v 形): 两段 2px 粗线拼成, 不追求抗锯齿。
+// paintChevron 画下拉箭头 (v 形): 两段 2px 粗线拼成 (走 fillLine 的抗锯齿)。
 func paintChevron(img *image.RGBA, b Rect, c color.RGBA) {
 	cx := b.X + b.W - selectArrowW/2 - 1
 	cy := b.Y + b.H/2
