@@ -474,6 +474,10 @@ func drawNode(img *image.RGBA, n *GuiNode) {
 		// (不在 *image.RGBA 里, 所以不经过这里)。装饰在自己这条分支里补画,
 		// 否则 <video background=…> 会静默失效。
 		paintVideo(img, n, disabled)
+	case "audio":
+		// 音频 (S9): 没有画面, 内核只画占位条 (浅色底 + 声波柱); 真正的
+		// 声音由平台音频层输出。装饰同样在自己这条分支里补画。
+		paintAudio(img, n, disabled)
 	case "canvas":
 		paintCanvas(img, n, disabled)
 	case "slider":

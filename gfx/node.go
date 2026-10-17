@@ -292,6 +292,10 @@ var knownTags = map[string]struct{}{
 	// 内核不含解码器, 内联播放走平台视频层 (nativeVideoHost 可选能力):
 	// 后端接了才有画面, 没接就画封面/占位并诚实报一次 unsupported。
 	"video": {},
+	// S9 音频: video 的无画面孪生体 (见 audio.go 的文件头与
+	// docs/media-decision.md)。同样契约 + 降级: 后端接了才真的放音乐,
+	// 没接就画占位条并诚实报一次 unsupported。
+	"audio": {},
 	// P3-1 自绘画布
 	"canvas": {},
 	// P2-8 滑块
@@ -872,6 +876,8 @@ func disposeNode(n *GuiNode) {
 	// 只靠下次 flush 兜底是不行的 —— 子树销毁后可能再也没有重绘
 	// (没有脏区就不进 redraw), 那块平台表面会一直浮在窗口上关不掉。
 	videoRelease(n)
+	// 音频源 (S9) 同理: 节点一走, 音乐不能继续放到窗口关闭。
+	audioRelease(n)
 }
 
 // removeChild 从 Children 里摘掉一个子节点 (存在才摘)。

@@ -313,11 +313,15 @@ func CanIUse(cap string) bool {
 	if _, ok := object.LookupBuiltinModule("gx/" + cap); ok {
 		return true
 	}
-	// 3. 平台层的能力: 目前只有 `<video>` 的内联播放 —— 它不是内置模块,
-	//    而是窗口后端可选实现的 nativeVideoHost (见 video.go)。不认这条的话
-	//    canIUse("video") 恒为 false, 脚本就没法"先问再选路"。
+	// 3. 平台层的能力: `<video>` 的内联播放与 `<audio>` 的播放 —— 它们不是
+	//    内置模块, 而是窗口后端可选实现的 nativeVideoHost / nativeAudioHost
+	//    (见 video.go / audio.go)。不认这两条的话 canIUse 恒为 false,
+	//    脚本就没法"先问再选路"。
 	if cap == "video" || cap == "video.inline" {
 		return VideoInlineSupported()
+	}
+	if cap == "audio" || cap == "audio.inline" {
+		return AudioInlineSupported()
 	}
 	return false
 }

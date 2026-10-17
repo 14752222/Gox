@@ -91,7 +91,11 @@ EXEMPT_LAYOUT = {
                       "radio", "rating", "search", "separator", "slider", "spacer", "switch",
                       # video: 叶子控件（无流式子节点），但它**有** drawNode 分支
                       # （paintVideo 自己画封面/占位 + 装饰），所以只在这张表里。
-                      "video"]
+                      "video",
+                      # audio (S9): video 的无画面孪生体，同为叶子控件；drawNode 分支
+                      # 是 paintAudio（浅色占位条 + 声波柱），intrinsicSize 分支给
+                      # 300×36 兜底（gfx/audio.go）。
+                      "audio"]
 }
 EXEMPT_LAYOUT.update({
     "#text": TEXT_NODE,

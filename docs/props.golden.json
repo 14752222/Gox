@@ -2,10 +2,11 @@
   "说明": "本文件由 python3 scripts/gen-props-golden.py 生成，是「gfx 内核认得哪些 属性/事件」的唯一机器可读真相。真源是 gfx/*.go 的**读取点**（写入点不算），由 tools/propdump（go/ast + 调用图）抽出后按标签归拢。改了 gfx 的读取点后请重新生成并提交 —— CI 会用「实抽 vs 本文件」diff 兜住漏改。",
   "生成方式": "python3 scripts/gen-props-golden.py",
   "真源": "gfx/*.go（PropNum/PropStr/PropBool/PropHas/PropHandler/Props[\"…\"] 的读取点 + callHandler/handlerInChain 的事件派发点），经 tools/propdump 抽取",
-  "tagCount": 62,
+  "tagCount": 63,
   "tags": [
     "#text",
     "alert",
+    "audio",
     "avatar",
     "badge",
     "button",
@@ -92,6 +93,7 @@
     "ellipsis",
     "escapeClipping",
     "filter",
+    "fit",
     "flexGrow",
     "flexShrink",
     "focusable",
@@ -271,7 +273,6 @@
       "message"
     ],
     "video": [
-      "fit",
       "poster"
     ],
     "view": [

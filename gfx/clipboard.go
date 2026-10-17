@@ -34,15 +34,7 @@ type clipboardHost interface {
 // 走窗口而不是"进程级"是有意的: Windows 的 `OpenClipboard` 要一个属于本线程
 // 的窗口句柄, 没有窗口 (纯 CLI 脚本) 时本来也没有剪贴板可用。
 func clipboardBackend() (clipboardHost, bool) {
-	a := currentApp()
-	if a == nil {
-		return nil, false
-	}
-	a.mu.Lock()
-	s := a.surface
-	a.mu.Unlock()
-	c, ok := s.(clipboardHost)
-	return c, ok
+	return capabilityOf[clipboardHost](currentApp())
 }
 
 // readClipboardText 读系统剪贴板里的文本; 拿不到 (无窗口 / 后端不支持 /

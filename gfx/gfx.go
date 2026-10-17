@@ -177,6 +177,18 @@ type WindowFactory interface {
 
 var defaultFactory WindowFactory
 
+// DefaultFactory 返回当前默认窗口后端 (SetDefaultFactory 的只读视图)。
+//
+// 存在的理由主要是**诊断与基准**: 呈现路径基准 (gfx/present_bench_test.go,
+// 外部测试包) 要拿一个真平台 Surface 来量 PutImage/DIB 的成本, 而平台包
+// (gfx/x11 等) 的导入是 init 副作用, 由调用方自行 import; 这里只提供
+// 「取」。包内代码继续直接用 defaultFactory, 不走这个 getter。
+func DefaultFactory() WindowFactory {
+	appMu.Lock()
+	defer appMu.Unlock()
+	return defaultFactory
+}
+
 // SetDefaultFactory 注册默认窗口后端 (由平台包 init 调用)。
 //
 // 传 nil 表示"撤销后端", 此时**顺带清空窗口注册表** (P3-6)。
@@ -197,6 +209,77 @@ func SetDefaultFactory(f WindowFactory) {
 		}
 		activeApp = nil
 	}
+}
+
+// SetPresentWrapper 注册「呈现包装器」—— GPU 呈现后端的唯一接入点。
+//
+// 平台后端 (win32 / x11 / cocoa) 建好 Surface 之后, 由它决定要不要把**上屏
+// 那一跳**换成 GPU 合成:
+//
+//	surface := defaultFactory.Create(cfg)     // 平台窗口 + 事件 + 尺寸
+//	for _, w := range presentWrappers {       // 按注册顺序依次包装
+//	    if wrapped, ok := w(surface); ok {
+//	        surface = wrapped                 // 只接管 Show/ShowRegions
+//	    }
+//	}
+//
+// 包装器拿到的 inner 仍然负责事件、尺寸、窗口操作、可选平台能力 (原生对话框
+// / 剪贴板 / 视频层 / IME) —— 它自己只替换「像素怎么上屏」。这跟
+// nativeVideoHost 那一类"可选能力走可选接口"是同一套做法: 不扩 Surface
+// 契约, 不加必选依赖。
+//
+// 返回 ok=false 表示"这次不包装" (GPU 不可用 / 被开关关掉 / 该窗口不适合),
+// 调用方继续用 inner, 行为**降级**而不是失败 —— 软件光栅化 + CPU blit 始终是
+// 兜底路径, GPU 只是加速器。空链 = 不包装 (注册前的默认, 也是纯软件构建的常态)。
+//
+// 谁该调它: 宿主入口 (cmd/gox 之类) 在决定"要不要带 GPU"时调一次; 平台包
+// 不要调 —— 平台包只该管窗口, 呈现策略属于宿主配置。
+//
+// ## 多个包装器: 链式叠加, 不是互相覆盖
+//
+// 先注册的包在**里层**, 后注册的包在**外层**。GPU (-tags gpu) 与软媒体
+// (softmedia, Linux 默认) 同时启用时的层次必须是:
+//
+//	平台 Surface → GPU 合成 → 软媒体视频帧合成
+//
+// 软媒体把视频帧写进 *image.RGBA, 然后才轮到 GPU 把这张图上屏 —— 反过来的
+// 话软媒体只能在 GPU 的纹理上写字, 那需要另一套完全不同的接口。cmd/gox 里
+// gpu_present_init.go 先注册 (文件名序在前), softmedia_init.go 后注册,
+// 天然就是这个顺序; 两边文件头都写了这条约定, 改名/挪文件前先读。
+var presentWrappers []func(inner Surface) (Surface, bool)
+
+// SetPresentWrapper 安装一个呈现包装器; 传 nil 清空全链 (测试复位用)。
+// 非并发安全: 只在启动时调用 (与 SetDefaultFactory 同一纪律)。
+func SetPresentWrapper(f func(inner Surface) (Surface, bool)) {
+	appMu.Lock()
+	defer appMu.Unlock()
+	if f == nil {
+		presentWrappers = nil
+		return
+	}
+	presentWrappers = append(presentWrappers, f)
+}
+
+// wrapPresent 在窗口创建后按注册顺序应用全部包装器。
+//
+// 静默降级是刻意的: 单个包装器拿不到 (无驱动 / 软媒体不支持某格式) 不该让
+// 窗口开不出来 —— 跳过它, 剩下的链与平台后端照常工作。诊断走 gx/dev 的
+// 警告环, 而不是把错误抛给脚本。
+func wrapPresent(inner Surface) Surface {
+	appMu.Lock()
+	wrappers := presentWrappers
+	appMu.Unlock()
+	s := inner
+	for _, w := range wrappers {
+		if w == nil {
+			continue
+		}
+		wrapped, ok := w(s)
+		if ok && wrapped != nil {
+			s = wrapped
+		}
+	}
+	return s
 }
 
 // ===== 跨线程唤醒原语 (rl65eE) =====

@@ -315,3 +315,85 @@ func BenchmarkDirtyFrame1000Nodes(b *testing.B) {
 		activeApp.redraw()
 	}
 }
+
+// ===== 外部叠加层: InvalidateRect =====
+
+// TestInvalidateRectExternalOverlay 外部叠加层 (软媒体视频帧) 的矩形标脏。
+//
+// 场景: 界面上没有任何节点发生变化, 但有一块矩形里的像素变了 (解码出来的
+// 视频帧要盖上去)。diffRects 只遍历渲染树, 看不到这种变化 —— 没有
+// InvalidateRect, 播放中的视频永远停在封面那一帧。
+//
+// 三条断言: (1) 确实重绘了且是**局部**帧 (不是整帧); (2) 脏区覆盖那个矩形;
+// (3) 矩形里的内容真的被重画了 (先把帧缓冲涂脏, 再看它有没有被恢复)。
+func TestInvalidateRectExternalOverlay(t *testing.T) {
+	root := mkNode("column", nil)
+	mountChildren(root, withStr(mkNode("rect", map[string]float64{"width": 120, "height": 80}), "background", "#c0392b"))
+	fake, a := mountTestApp(t, root, 400, 300)
+
+	// 基线: 无脏区时再 redraw 一次是空操作 (连 ShowRegions 都不该调)
+	shown0 := fake.shown
+	a.redraw()
+	if fake.shown != shown0 {
+		t.Fatalf("没有脏区时不该上屏 (shown %d → %d)", shown0, fake.shown)
+	}
+
+	// 把帧缓冲涂蓝, 模拟"那一块还是上一帧的旧内容"
+	fake.mu.Lock()
+	FillRect(fake.img, Rect{X: 50, Y: 60, W: 80, H: 40}, color.RGBA{R: 0, G: 0, B: 255, A: 255})
+	fake.mu.Unlock()
+
+	InvalidateRect(Rect{X: 50, Y: 60, W: 80, H: 40})
+	a.redraw()
+
+	fake.mu.Lock()
+	regions := fake.regions
+	img := fake.img
+	fake.mu.Unlock()
+
+	if regions == nil {
+		t.Fatalf("InvalidateRect 之后该有一次局部上屏 (实际是整帧或没上屏)")
+	}
+	covered := false
+	area := 0
+	for _, r := range regions {
+		area += r.Dx() * r.Dy()
+		if r.Min.X <= 50 && r.Min.Y <= 60 && r.Max.X >= 130 && r.Max.Y >= 100 {
+			covered = true
+		}
+	}
+	if !covered {
+		t.Fatalf("脏区没有覆盖 InvalidateRect 的矩形: %v", regions)
+	}
+	if area >= 400*300 {
+		t.Fatalf("只是外部矩形变了, 不该整帧重绘 (脏区面积 %d)", area)
+	}
+	// 矩形里的蓝被重画掉了 (红条节点在该区域内的部分恢复成本色)
+	if c := img.RGBAAt(60, 70); c == (color.RGBA{R: 0, G: 0, B: 255, A: 255}) {
+		t.Fatalf("矩形内容没有被重画 (仍是蓝色): %v", c)
+	}
+
+	// 外部矩形只生效一次: 再 redraw 又是空操作
+	shown1 := fake.shown
+	a.redraw()
+	if fake.shown != shown1 {
+		t.Fatalf("extraDirty 该被消费掉, 不该每帧都重绘同一块 (shown %d → %d)", shown1, fake.shown)
+	}
+}
+
+// TestInvalidateRectDegenerate 退化矩形 (0 宽/高) 不标脏: 标了也是一次
+// 空重绘, 而"外部层每帧都来一次空重绘"正是这条入口要避免的浪费。
+func TestInvalidateRectDegenerate(t *testing.T) {
+	root := mkNode("column", nil)
+	mountChildren(root, mkNode("rect", map[string]float64{"width": 50, "height": 50}))
+	fake, a := mountTestApp(t, root, 200, 150)
+
+	shown0 := fake.shown
+	InvalidateRect(Rect{})
+	InvalidateRect(Rect{X: 10, Y: 10, W: 0, H: 20})
+	InvalidateRect(Rect{X: 10, Y: 10, W: 20, H: -5})
+	a.redraw()
+	if fake.shown != shown0 {
+		t.Fatalf("退化矩形不该触发重绘 (shown %d → %d)", shown0, fake.shown)
+	}
+}

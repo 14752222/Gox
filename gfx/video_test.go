@@ -35,6 +35,7 @@ import (
 // 不需要真窗口、真解码器、真视频文件。
 
 type fakeVideoAttach struct {
+	ID   uint64
 	Rect Rect
 	Src  string
 	Opts VideoSurfaceOptions
@@ -55,7 +56,6 @@ type fakeVideoCommand struct {
 type fakeVideoHost struct {
 	mu        sync.Mutex
 	supported bool   // VideoInlineSupported 的返回值
-	nextID    uint64 // 句柄分配器 (从 1 起, 0 保留给"还没挂")
 	attachErr error  // 非空时 VideoSurfaceAttach 失败
 
 	attachs  []fakeVideoAttach
@@ -75,19 +75,19 @@ func (f *fakeVideoHost) VideoInlineSupported() bool {
 	return f.supported
 }
 
-func (f *fakeVideoHost) VideoSurfaceAttach(r Rect, src string, opts VideoSurfaceOptions) (uint64, error) {
+// VideoSurfaceAttach: id 由内核分配 (契约改过: 句柄全局唯一, 后端不自己编号)。
+func (f *fakeVideoHost) VideoSurfaceAttach(id uint64, r Rect, src string, opts VideoSurfaceOptions) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.attachErr != nil {
 		// 失败的尝试也记一笔 (但不进 live): 用例要断言"宿主还能恢复,
 		// 所以内核每帧都在重试", 只记成功的调用就看不出这件事。
-		f.attachs = append(f.attachs, fakeVideoAttach{Rect: r, Src: src, Opts: opts, Err: f.attachErr})
-		return 0, f.attachErr
+		f.attachs = append(f.attachs, fakeVideoAttach{ID: id, Rect: r, Src: src, Opts: opts, Err: f.attachErr})
+		return f.attachErr
 	}
-	f.nextID++
-	f.attachs = append(f.attachs, fakeVideoAttach{Rect: r, Src: src, Opts: opts})
-	f.live[f.nextID] = src
-	return f.nextID, nil
+	f.attachs = append(f.attachs, fakeVideoAttach{ID: id, Rect: r, Src: src, Opts: opts})
+	f.live[id] = src
+	return nil
 }
 
 func (f *fakeVideoHost) VideoSurfaceRect(id uint64, r Rect) error {
@@ -148,10 +148,19 @@ func (f *fakeVideoHost) liveIDs() []uint64 {
 	return out
 }
 
+// lastID 返回最近一次**成功**挂载的句柄。
+//
+// 句柄现在由内核分配 (后端不再自己编号), 所以从挂载记录里读回来 —— 失败的
+// 尝试也记在 attachs 里, 取最近一条成功的才是"当前挂着的那个"。
 func (f *fakeVideoHost) lastID() uint64 {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.nextID
+	for i := len(f.attachs) - 1; i >= 0; i-- {
+		if f.attachs[i].Err == nil {
+			return f.attachs[i].ID
+		}
+	}
+	return 0
 }
 
 // commandNames 返回从第 from 条起的指令名序列 (用它断言"这一轮到底发了什么",
@@ -179,11 +188,11 @@ func (f *fakeSurface) VideoInlineSupported() bool {
 	return f.video.VideoInlineSupported()
 }
 
-func (f *fakeSurface) VideoSurfaceAttach(r Rect, src string, opts VideoSurfaceOptions) (uint64, error) {
+func (f *fakeSurface) VideoSurfaceAttach(id uint64, r Rect, src string, opts VideoSurfaceOptions) error {
 	if f.video == nil {
-		return 0, errors.New("test: 未注入假视频宿主")
+		return errors.New("test: 未注入假视频宿主")
 	}
-	return f.video.VideoSurfaceAttach(r, src, opts)
+	return f.video.VideoSurfaceAttach(id, r, src, opts)
 }
 
 func (f *fakeSurface) VideoSurfaceRect(id uint64, r Rect) error {

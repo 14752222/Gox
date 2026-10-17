@@ -98,6 +98,9 @@ bench-results/.goja-build-err
 # 存档：留着会让 bench-results/ 每跑一次就多几个文件，把真正的跨版本存档淹掉。
 bench-results/perf-probe-*.json
 bench-results/perf-stress-*.json
+# 4K 呈现 A/B 基准（scripts/bench-present-4k.sh）的 txt 口径产物：同属观测产物，
+# 结论写进提交信息/文档，文件本身不入库。
+bench-results/present-4k-*.txt
 
 # macOS 访达噪音与仓库根目录的临时构建产物（gox CLI 用 scripts/build-npm.sh 出包，
 # 根目录的 gox 只是随手 go build 的二进制，不该入库）。

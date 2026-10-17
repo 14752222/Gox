@@ -259,10 +259,9 @@ func imeEditorSnapshot(n *GuiNode) IMEEditor {
 // 语言边界 (光标闪烁不改变快照, 不会诱发重复上报)。
 func (a *app) reportIMEEditor() {
 	a.mu.Lock()
-	s := a.surface
 	n := a.focused
 	a.mu.Unlock()
-	r, ok := s.(imeEditorReporter)
+	r, ok := capabilityOf[imeEditorReporter](a)
 	if !ok {
 		return
 	}
