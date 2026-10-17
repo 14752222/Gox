@@ -657,8 +657,13 @@ jobs:
           set -euo pipefail
           OUT=$(dist/universal/gox-darwin-universal version)
           echo "$OUT"
-          [ "$OUT" = "gox $VERSION" ] || {
-            echo "::error::universal 产物版本输出「$OUT」与发版版本 gox $VERSION 不一致"
+          # 只比第一行：`gox version` 自 rFf4lR 起还打印 commit / commit-time /
+          # built / toolchain 四行身份信息（那正是"产物能唯一定位工作树"的出口），
+          # 整段比等号的写法在那天就永远不可能成立 —— v0.10.0 / v0.11.0 的
+          # Release 因此都是 0 assets（本作业挂在这里，后面的上传没跑到）。
+          FIRST=$(printf '%s\n' "$OUT" | head -1)
+          [ "$FIRST" = "gox $VERSION" ] || {
+            echo "::error::universal 产物版本输出首行「$FIRST」与发版版本 gox $VERSION 不一致；完整输出：$OUT"
             exit 1
           }
 
