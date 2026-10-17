@@ -93,6 +93,7 @@
     "ellipsis",
     "escapeClipping",
     "filter",
+    "fit",
     "flexGrow",
     "flexShrink",
     "focusable",
@@ -272,7 +273,6 @@
       "message"
     ],
     "video": [
-      "fit",
       "poster"
     ],
     "view": [

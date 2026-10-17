@@ -140,18 +140,9 @@ func (a *app) modalBump() {
 	if c == nil {
 		return
 	}
-	if s := c.surfaceOf(); s != nil {
-		if m, ok := s.(windowManager); ok {
-			m.Activate()
-		}
+	if m, ok := capabilityOf[windowManager](c); ok {
+		m.Activate()
 	}
-}
-
-// surfaceOf 取本窗口的 Surface (加锁读)。
-func (a *app) surfaceOf() Surface {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.surface
 }
 
 // closeModalChild 递归关掉本窗口挡着的模态子窗口 (由 app.close 调用)。

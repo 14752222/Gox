@@ -44,6 +44,14 @@ type app struct {
 	mu         sync.Mutex
 	id         int // 窗口身份 (P3-7): Mount 时分配, 用于路由作用域等"按窗口记账"的设施
 	surface    Surface
+	// present 是"像素上屏"用的 Surface: 呈现包装器链 (GPU 合成 / 软媒体
+	// 视频帧) 的终点, 无包装器时与 surface 是同一个 (测试直构 app 不设它,
+	// 走 presentSurface() 的回退)。与 surface 分开持是为了让**可选能力**
+	// (剪贴板/光标/原生对话框/IME/截屏/waker) 永远断言在平台面上 —— 包装器
+	// 内嵌的是 Surface 接口, inner 的可选方法不会提升出来, 让能力断言也走
+	// 包装面的话, 每加一个包装器就悄悄吃掉一层平台能力 (GPU 模式下
+	// win32/cocoa 的对话框与唤醒优化正是这么丢的)。
+	present    Surface
 	root       *GuiNode
 	img        *image.RGBA
 	needDraw   bool
@@ -583,17 +591,61 @@ func (a *app) pump(maxWait time.Duration) bool {
 	return a.processEvents()
 }
 
+// presentSurface 返回"像素上屏 + 事件等待"用的 Surface: 有包装器链时是链的
+// 终点 (GPU/软媒体的包装面), 没有就是平台面本身。
+//
+// 回退规则 (present == nil → surface) 是给测试直构 &app{} 用的: 包装器只
+// 在 render() 建窗时套, 单测里没有真窗口, 也不需要包装。
+func (a *app) presentSurface() Surface {
+	if a.present != nil {
+		return a.present
+	}
+	return a.surface
+}
+
+// capabilityOf 在**两个面**上依次断言可选能力 T: 先看呈现链终点 (包装面),
+// 再看平台面。
+//
+// 为什么两个都看: 包装器可以实现平台没有的能力 —— 软媒体的
+// nativeVideoHost / nativeAudioHost 就住在包装面上 (它是软件解码的后端,
+// 平台面当然没有); 而平台的能力 (剪贴板/光标/原生对话框/IME/鼠标捕获/
+// waker) 也不能被包装挡掉 —— 包装器内嵌的是 Surface 接口, inner 的可选
+// 方法不会提升出来, 只断言一个面就等于逼每个包装器把全部可选能力转发一遍,
+// 漏一个就悄悄坏一个 (软媒体若只转发了 waker, 将来 x11 加了剪贴板能力也会
+// 被它挡掉)。顺序上包装面优先: 它实现了某个能力即视为有意接管 (尽可以内部
+// 再转发给平台面)。
+//
+// surface / present 都是 Mount 时一次性写好、之后只读, 不加锁。
+func capabilityOf[T any](a *app) (T, bool) {
+	var zero T
+	if a == nil {
+		return zero, false
+	}
+	if h, ok := a.presentSurface().(T); ok {
+		return h, true
+	}
+	if a.surface == nil {
+		return zero, false
+	}
+	h, ok := a.surface.(T)
+	return h, ok
+}
+
 // waitEvents 等待本窗口的事件。优先走后端的 waker 可选能力 (把跨线程 Post
 // 的唤醒信号并进平台等待集合, 见 gfx.go 的 wakeCh), 未实现该能力的后端退回
 // 普通 WaitEvents。返回 false 表示事件源已结束。
 //
 // 单独抽出来是为了让多窗口 Pump 与单窗口 pump 共用同一套"优先 waker"的选择
 // 逻辑 —— 两处各写一遍迟早会在某条路径上漏掉 waker (那边就退回无界睡死)。
+//
+// waker 断言走 capabilityOf: 包装器 (软媒体) 转发了 waker 就用它的 (它的
+// 等待路径要看得见"窗口关了"); 没转发 (GPU 面) 就落到平台面的原生实现,
+// 优化不丢。
 func (a *app) waitEvents(maxWait time.Duration) bool {
-	if w, ok := a.surface.(waker); ok {
+	if w, ok := capabilityOf[waker](a); ok {
 		return w.WaitEventsWake(maxWait, WakeChan())
 	}
-	return a.surface.WaitEvents(maxWait)
+	return a.presentSurface().WaitEvents(maxWait)
 }
 
 // surfaceAlive 报告窗口是否还没被标记关闭。
@@ -789,7 +841,7 @@ func (a *app) tickCaretBlink() {
 // takeEvent 非阻塞取一条窗口事件。
 func (a *app) takeEvent() (Event, bool) {
 	select {
-	case ev := <-a.surface.Events():
+	case ev := <-a.presentSurface().Events():
 		return ev, true
 	default:
 		return Event{}, false
@@ -877,7 +929,6 @@ func (a *app) setFocus(target *GuiNode) {
 	a.mu.Lock()
 	old := a.focused
 	a.focused = target
-	s := a.surface
 	a.mu.Unlock()
 	// 输入框 (P2-1) 的"获焦"是画在节点上的状态 (边框颜色 + 是否画光标):
 	// 节点级字段让绘制侧不必反查 app。这里与 a.focused 严格同步。
@@ -893,7 +944,7 @@ func (a *app) setFocus(target *GuiNode) {
 	// P2-7: 焦点变了, 输入法的开关跟着变 —— 只有落在 input/textarea 上才开,
 	// 在按钮/画布上敲字不该弹出候选窗。后端不支持 (X11 / 假 Surface) 时
 	// 这里的类型断言直接落空, 退化成"输入法一直开着"。
-	if c, ok := s.(imeController); ok {
+	if c, ok := capabilityOf[imeController](a); ok {
 		c.SetIMEEnabled(imeTarget(target) != nil)
 	}
 	if old != nil {
@@ -1305,10 +1356,7 @@ type capturer interface {
 // 那次 MouseUp** —— 不主动放弃就会留下一个卡死的 dragTarget (下次鼠标移进窗口
 // 时, 明明没按键也会拖着滑块跑)。
 func (a *app) hasPointerCapture() bool {
-	a.mu.Lock()
-	s := a.surface
-	a.mu.Unlock()
-	_, ok := s.(capturer)
+	_, ok := capabilityOf[capturer](a)
 	return ok
 }
 
@@ -1316,9 +1364,8 @@ func (a *app) hasPointerCapture() bool {
 func (a *app) beginDrag(n *GuiNode) {
 	a.mu.Lock()
 	a.dragTarget = n
-	s := a.surface
 	a.mu.Unlock()
-	if c, ok := s.(capturer); ok {
+	if c, ok := capabilityOf[capturer](a); ok {
 		c.CapturePointer()
 	}
 }
@@ -1343,7 +1390,6 @@ func (a *app) endDrag() {
 	a.dragTarget = nil
 	td := a.textDrag
 	a.textDrag = nil
-	s := a.surface
 	a.mu.Unlock()
 	if t == nil && td == nil {
 		return
@@ -1351,7 +1397,7 @@ func (a *app) endDrag() {
 	if t != nil {
 		t.slideValSet = false
 	}
-	if c, ok := s.(capturer); ok {
+	if c, ok := capabilityOf[capturer](a); ok {
 		c.ReleasePointer()
 	}
 }
@@ -1500,6 +1546,21 @@ func takeCallbackErr() error {
 	return nil
 }
 
+// windowCloser 是呈现包装器的可选能力: 窗口**真正关闭**时被调用一次
+// (EventClose 到达 / WaitEvents 返回 false, 两条路都汇入 a.close())。
+//
+// 为什么需要它: 包装器可能养着不归窗口生命周期管的活儿 —— 软媒体的播放器
+// 时钟 goroutine 就是。用户点 X 之后 Pump 停了、注册表空了, 但 goroutine
+// 还在跑: gfx.Post 的队列没人 Drain, 会以 timeupdate 的节奏无限增长,
+// 直到进程退出。内核的 a.close() 不销毁渲染树、也不会来 Detach (src 还在),
+// 所以停机的通知只能由内核在关闭漏斗上主动发。
+//
+// 与 capturer / clipboardHost 同一套纪律: 可选能力走可选接口, 包装器不实现
+// 就什么也不发生 (纯呈现包装器没有需要停的东西)。
+type windowCloser interface {
+	WindowClosed()
+}
+
 // close 结束本窗口 (从注册表摘除, 幂等)。
 //
 // 与 P3-5 的差异: 不再无条件把 activeApp 清空 —— 那是单窗口的写法,
@@ -1510,6 +1571,18 @@ func (a *app) close() {
 		a.mu.Lock()
 		a.closed = true
 		a.mu.Unlock()
+		// 先告诉呈现包装器"窗口没了" (见 windowCloser): 它里面若有跨帧活着的
+		// 子系统 (软媒体播放器), 这是它们唯一的停机通知点。放在模态清理之前
+		// 无所谓, 但必须放在 unregisterApp 之前 —— 摘了注册表就拿不到面了。
+		if w, ok := a.presentSurface().(windowCloser); ok {
+			w.WindowClosed()
+		}
+		// 媒体表面跟着窗口一起收: 窗口不会再重绘, 全局状态表里的条目只能
+		// 现在清 (见 videoReleaseForApp / audioReleaseForApp 的注释)。放在
+		// WindowClosed 之后 —— 先让包装器停掉播放器 goroutine, 再摘句柄,
+		// 免得停机途中又往回投事件。
+		videoReleaseForApp(a)
+		audioReleaseForApp(a)
 		// 模态关系先解: 被本窗口挡着的父窗口要立刻恢复可交互 (不等下一帧),
 		// 本窗口挡着的模态子窗口要跟着关掉 —— 否则它会变成"永远置顶、
 		// 关不掉、也没人能解除遮挡"的孤儿 (见 modal.go 的文件头)。
@@ -1670,7 +1743,7 @@ func (a *app) redraw() {
 		FillRect(a.img, Rect{0, 0, w, h}, white)
 		Draw(a.img, root)
 		a.drawFocusRing(a.img)
-		a.surface.ShowRegions(a.img, nil)
+		a.presentSurface().ShowRegions(a.img, nil)
 		devFrameTick(true)
 		return
 	}
@@ -1701,7 +1774,7 @@ func (a *app) redraw() {
 		FillRect(a.img, Rect{0, 0, w, h}, white)
 		Draw(a.img, root)
 		a.drawFocusRing(a.img)
-		a.surface.ShowRegions(a.img, nil)
+		a.presentSurface().ShowRegions(a.img, nil)
 		devFrameTick(true)
 		return
 	}
@@ -1722,7 +1795,7 @@ func (a *app) redraw() {
 		// 焦点框在所有内容之上重画一次: 它可能横跨多个脏区, 逐区补画
 		// 反而更绕; 框始终画在焦点节点自身的盒内, 所以仍落在脏区内。
 		a.drawFocusRing(a.img)
-		a.surface.ShowRegions(a.img, clipRects)
+		a.presentSurface().ShowRegions(a.img, clipRects)
 		devFrameTick(false)
 	}
 }
@@ -2058,13 +2131,13 @@ func Mount(root *GuiNode, cfg WindowConfig) (*Window, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create window: %w", err)
 	}
-	// 呈现包装器 (GPU 合成) 在建窗之后、首帧之前套上: 事件/尺寸/窗口操作仍走
-	// 平台 Surface, 只有 Show/ShowRegions 被换掉。包装失败时退回平台 Surface
-	// (软件光栅化 + CPU blit), 降级而不失败 —— 见 SetPresentWrapper 的说明。
-	surface = wrapPresent(surface)
-
+	// 呈现包装器 (GPU 合成 / 软媒体视频帧) 在建窗之后、首帧之前套上: 事件/
+	// 尺寸/窗口操作仍走平台 Surface (a.surface), 只有 Show/ShowRegions 与
+	// 事件等待换成包装面 (a.present, 见 presentSurface)。包装失败时链上跳过
+	// 那一层, 继续用平台 Surface (软件光栅化 + CPU blit), 降级而不失败。
 	a := &app{
 		surface:    surface,
+		present:    wrapPresent(surface),
 		root:       root,
 		fullDirty:  true,
 		dirtyNodes: map[*GuiNode]struct{}{},

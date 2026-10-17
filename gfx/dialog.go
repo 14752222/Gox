@@ -107,15 +107,7 @@ type nativeDialogHost interface {
 // 与剪贴板同理, 走窗口而不是"进程级": 消息框需要一个 owner 窗口
 // (既是模态归属, 也是居中定位的依据), 没有窗口时也无从弹起。
 func dialogBackend() (nativeDialogHost, bool) {
-	a := currentApp()
-	if a == nil {
-		return nil, false
-	}
-	a.mu.Lock()
-	s := a.surface
-	a.mu.Unlock()
-	d, ok := s.(nativeDialogHost)
-	return d, ok
+	return capabilityOf[nativeDialogHost](currentApp())
 }
 
 // ===== 同步落地: Go 侧真正阻塞到用户作答 =====

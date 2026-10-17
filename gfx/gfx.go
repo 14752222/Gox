@@ -217,46 +217,69 @@ func SetDefaultFactory(f WindowFactory) {
 // 那一跳**换成 GPU 合成:
 //
 //	surface := defaultFactory.Create(cfg)     // 平台窗口 + 事件 + 尺寸
-//	if wrapped, ok := presentWrapper(surface); ok {
-//	    surface = wrapped                     // 只接管 Show/ShowRegions
+//	for _, w := range presentWrappers {       // 按注册顺序依次包装
+//	    if wrapped, ok := w(surface); ok {
+//	        surface = wrapped                 // 只接管 Show/ShowRegions
+//	    }
 //	}
 //
 // 包装器拿到的 inner 仍然负责事件、尺寸、窗口操作、可选平台能力 (原生对话框
-// / 视频层 / IME) —— 它自己只替换「像素怎么上屏」。这跟 nativeVideoHost 那一
-// 类"可选能力走可选接口"是同一套做法: 不扩 Surface 契约, 不加必选依赖。
+// / 剪贴板 / 视频层 / IME) —— 它自己只替换「像素怎么上屏」。这跟
+// nativeVideoHost 那一类"可选能力走可选接口"是同一套做法: 不扩 Surface
+// 契约, 不加必选依赖。
 //
 // 返回 ok=false 表示"这次不包装" (GPU 不可用 / 被开关关掉 / 该窗口不适合),
 // 调用方继续用 inner, 行为**降级**而不是失败 —— 软件光栅化 + CPU blit 始终是
-// 兜底路径, GPU 只是加速器。nil = 不包装 (注册前的默认, 也是纯软件构建的常态)。
+// 兜底路径, GPU 只是加速器。空链 = 不包装 (注册前的默认, 也是纯软件构建的常态)。
 //
 // 谁该调它: 宿主入口 (cmd/gox 之类) 在决定"要不要带 GPU"时调一次; 平台包
 // 不要调 —— 平台包只该管窗口, 呈现策略属于宿主配置。
-var presentWrapper func(inner Surface) (Surface, bool)
+//
+// ## 多个包装器: 链式叠加, 不是互相覆盖
+//
+// 先注册的包在**里层**, 后注册的包在**外层**。GPU (-tags gpu) 与软媒体
+// (softmedia, Linux 默认) 同时启用时的层次必须是:
+//
+//	平台 Surface → GPU 合成 → 软媒体视频帧合成
+//
+// 软媒体把视频帧写进 *image.RGBA, 然后才轮到 GPU 把这张图上屏 —— 反过来的
+// 话软媒体只能在 GPU 的纹理上写字, 那需要另一套完全不同的接口。cmd/gox 里
+// gpu_present_init.go 先注册 (文件名序在前), softmedia_init.go 后注册,
+// 天然就是这个顺序; 两边文件头都写了这条约定, 改名/挪文件前先读。
+var presentWrappers []func(inner Surface) (Surface, bool)
 
-// SetPresentWrapper 安装呈现包装器; 传 nil 撤销。非并发安全: 只在启动时调用
-// (与 SetDefaultFactory 同一纪律)。
+// SetPresentWrapper 安装一个呈现包装器; 传 nil 清空全链 (测试复位用)。
+// 非并发安全: 只在启动时调用 (与 SetDefaultFactory 同一纪律)。
 func SetPresentWrapper(f func(inner Surface) (Surface, bool)) {
 	appMu.Lock()
 	defer appMu.Unlock()
-	presentWrapper = f
+	if f == nil {
+		presentWrappers = nil
+		return
+	}
+	presentWrappers = append(presentWrappers, f)
 }
 
-// wrapPresent 在窗口创建后应用包装器; 无包装器或包装失败时原样返回 inner。
+// wrapPresent 在窗口创建后按注册顺序应用全部包装器。
 //
-// 静默降级是刻意的: GPU 拿不到 (无驱动 / 无适配器 / 窗口句柄不可用) 不该让
-// 窗口开不出来。诊断走 gx/dev 的警告环, 而不是把错误抛给脚本。
+// 静默降级是刻意的: 单个包装器拿不到 (无驱动 / 软媒体不支持某格式) 不该让
+// 窗口开不出来 —— 跳过它, 剩下的链与平台后端照常工作。诊断走 gx/dev 的
+// 警告环, 而不是把错误抛给脚本。
 func wrapPresent(inner Surface) Surface {
 	appMu.Lock()
-	f := presentWrapper
+	wrappers := presentWrappers
 	appMu.Unlock()
-	if f == nil {
-		return inner
+	s := inner
+	for _, w := range wrappers {
+		if w == nil {
+			continue
+		}
+		wrapped, ok := w(s)
+		if ok && wrapped != nil {
+			s = wrapped
+		}
 	}
-	wrapped, ok := f(inner)
-	if !ok || wrapped == nil {
-		return inner
-	}
-	return wrapped
+	return s
 }
 
 // ===== 跨线程唤醒原语 (rl65eE) =====

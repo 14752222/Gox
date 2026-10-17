@@ -35,6 +35,7 @@ var knownPropsUniversal = map[string]struct{}{
 	"ellipsis":         {},
 	"escapeClipping":   {},
 	"filter":           {},
+	"fit":              {},
 	"flexGrow":         {},
 	"flexShrink":       {},
 	"focusable":        {},
@@ -216,7 +217,6 @@ var knownPropsByTag = map[string]map[string]struct{}{
 		"message": {},
 	},
 	"video": {
-		"fit":    {},
 		"poster": {},
 	},
 	"view": {

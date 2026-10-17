@@ -235,7 +235,6 @@ func (a *app) applyCursorShape(shape string) {
 		return
 	}
 	a.mu.Lock()
-	s := a.surface
 	prev := a.cursorShape
 	if prev == shape {
 		a.mu.Unlock()
@@ -243,7 +242,7 @@ func (a *app) applyCursorShape(shape string) {
 	}
 	a.cursorShape = shape
 	a.mu.Unlock()
-	if h, ok := s.(cursorHost); ok {
+	if h, ok := capabilityOf[cursorHost](a); ok {
 		h.SetCursor(shape)
 	}
 }

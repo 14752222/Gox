@@ -4,6 +4,7 @@ import (
 	"image"
 	"image/color"
 	"sync"
+	"sync/atomic"
 
 	"github.com/14752222/Gox/object"
 )
@@ -20,7 +21,7 @@ import (
 // 所以契约更小:
 //
 //	AudioInlineSupported() bool
-//	AudioAttach(src string, opts AudioPlayOptions) (uint64, error)
+//	AudioAttach(id uint64, src string, opts AudioPlayOptions) error
 //	AudioCommand(id uint64, cmd AudioCommand, value float64) error
 //	AudioDetach(id uint64) error
 //
@@ -116,8 +117,11 @@ type nativeAudioHost interface {
 	// AudioInlineSupported 报告本后端能否播放音频。
 	// 返回 false 的后端会被内核当成"没有这块能力"(组件降级, canIUse 为 false)。
 	AudioInlineSupported() bool
-	// AudioAttach 开始播放 src, 返回 > 0 的句柄。
-	AudioAttach(src string, opts AudioPlayOptions) (uint64, error)
+	// AudioAttach 开始播放 src。
+	//
+	// id 由**内核**分配并保证进程内唯一 (理由同 VideoSurfaceAttach:
+	// ResolveAudioEvent 全局按 id 回表, 后端自己编号会让多窗口串台)。
+	AudioAttach(id uint64, src string, opts AudioPlayOptions) error
 	// AudioCommand 下发控制指令 (Value 的含义见各命令)。
 	AudioCommand(id uint64, cmd AudioCommand, value float64) error
 	// AudioDetach 停止播放并释放资源。
@@ -130,16 +134,9 @@ type nativeAudioHost interface {
 // 没有窗口就无从断言。虽然音频输出本身是进程级的, "这个后端放不了音乐"
 // 仍是窗口后端的属性。
 func audioHostOf(a *app) (nativeAudioHost, bool) {
-	if a == nil {
-		return nil, false
-	}
-	a.mu.Lock()
-	s := a.surface
-	a.mu.Unlock()
-	if s == nil {
-		return nil, false
-	}
-	h, ok := s.(nativeAudioHost)
+	// capabilityOf: 软媒体的 nativeAudioHost 实现在**包装面**上 (平台面没有),
+	// 而平台自己的音频层 (若将来有) 也不能被包装挡掉。
+	h, ok := capabilityOf[nativeAudioHost](a)
 	if !ok || !h.AudioInlineSupported() {
 		return nil, false
 	}
@@ -187,7 +184,14 @@ var (
 	audioMu     sync.Mutex
 	audioStates = map[*GuiNode]*audioState{}
 	audioWarned bool // "本后端没有平台音频层" 的进程级去重
+	// audioIDSeed: 与 videoIDSeed 同理, 句柄全局唯一 (见 nativeAudioHost)。
+	audioIDSeed atomic.Uint64
 )
+
+// nextAudioID 分配下一个全局唯一的音频源句柄 (从 1 开始, 0 留给"没挂上")。
+func nextAudioID() uint64 {
+	return audioIDSeed.Add(1)
+}
 
 // warnAudioNoHost 是降级告警的出口。做成变量便于单测替换成计数器。
 var warnAudioNoHost = func(src string) {
@@ -312,8 +316,8 @@ func audioSyncNode(a *app, n *GuiNode, host nativeAudioHost, hasHost bool) {
 	}
 
 	if st.id == 0 {
-		id, err := host.AudioAttach(audioSrcOf(n), audioOptions(n))
-		if err != nil {
+		id := nextAudioID()
+		if err := host.AudioAttach(id, audioSrcOf(n), audioOptions(n)); err != nil {
 			if !st.reported {
 				st.reported = true
 				warnAudioAttach(audioSrcOf(n), err)
@@ -370,6 +374,24 @@ func audioReleaseLocked(host nativeAudioHost, n *GuiNode, st *audioState) {
 		_ = host.AudioDetach(st.id)
 	}
 	delete(audioStates, n)
+}
+
+// audioReleaseForApp 关窗时一次性摘掉**这个窗口**的全部音频源 (理由同
+// videoReleaseForApp: 窗口不会再重绘, 全局状态表里的条目必须现在清掉 ——
+// 否则声源还在放, 事件也还会往已销毁的脚本里投)。
+func audioReleaseForApp(a *app) {
+	audioMu.Lock()
+	defer audioMu.Unlock()
+	host, hasHost := audioHostOf(a)
+	for n, st := range audioStates {
+		if st.app != a {
+			continue
+		}
+		if st.id != 0 && hasHost {
+			_ = host.AudioDetach(st.id)
+		}
+		delete(audioStates, n)
+	}
 }
 
 // audioRelease 是给 disposeNode 用的出口: 节点离开渲染树时立刻释放音频源。

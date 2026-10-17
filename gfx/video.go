@@ -4,6 +4,7 @@ import (
 	"image"
 	"image/color"
 	"sync"
+	"sync/atomic"
 
 	"github.com/14752222/Gox/object"
 )
@@ -121,7 +122,13 @@ type nativeVideoHost interface {
 	// 返回 false 的后端会被内核当成"没有这块能力"(组件降级, canIUse 为 false)。
 	VideoInlineSupported() bool
 	// VideoSurfaceAttach 在客户区矩形 r 处叠加一块播放 src 的视频表面。
-	VideoSurfaceAttach(r Rect, src string, opts VideoSurfaceOptions) (uint64, error)
+	//
+	// id 由**内核**分配并保证进程内唯一, 后端把它当不透明句柄存起来即可
+	// (不要自己编号): ResolveVideoEvent 是**全局按 id 回表**的, 若每个后端
+	// 从 1 开始编号, 两个窗口各自的第一个 <video> 都会拿到 1, 事件就会串到
+	// 别的窗口的节点上 —— 多窗口下表现为"A 的视频事件打进 B 的脚本"。
+	// 0 留给"没有表面", 内核永远不会发 0 下来。
+	VideoSurfaceAttach(id uint64, r Rect, src string, opts VideoSurfaceOptions) error
 	// VideoSurfaceRect 跟随布局移动/缩放已有表面。
 	VideoSurfaceRect(id uint64, r Rect) error
 	// VideoSurfaceCommand 下发控制指令 (Value 的含义见各命令)。
@@ -135,16 +142,9 @@ type nativeVideoHost interface {
 // 走窗口 (Surface) 而不是"进程级": 视频表面是**贴在某个窗口里**的,
 // 没有窗口就无从谈位置, 这与 nativeDialogHost 需要一个 owner 窗口同理。
 func videoHostOf(a *app) (nativeVideoHost, bool) {
-	if a == nil {
-		return nil, false
-	}
-	a.mu.Lock()
-	s := a.surface
-	a.mu.Unlock()
-	if s == nil {
-		return nil, false
-	}
-	h, ok := s.(nativeVideoHost)
+	// capabilityOf: 软媒体的 nativeVideoHost 实现在**包装面**上 (平台面没有),
+	// 而平台自己的视频层 (win32/cocoa 若有) 也不能被包装挡掉。
+	h, ok := capabilityOf[nativeVideoHost](a)
 	if !ok || !h.VideoInlineSupported() {
 		return nil, false
 	}
@@ -194,7 +194,15 @@ var (
 	videoMu     sync.Mutex
 	videoStates = map[*GuiNode]*videoState{}
 	videoWarned bool // "本后端没有平台视频层" 的进程级去重
+	// videoIDSeed 是视频表面句柄的分配源 (见 nativeVideoHost 的注释)。
+	// 进程级而非窗口级: 句柄回表是全局的, 两个窗口都从 1 开始编号就会串台。
+	videoIDSeed atomic.Uint64
 )
+
+// nextVideoID 分配下一个全局唯一的视频表面句柄 (从 1 开始, 0 留给"没挂上")。
+func nextVideoID() uint64 {
+	return videoIDSeed.Add(1)
+}
 
 // warnVideoNoHost 是降级告警的出口。做成变量便于单测替换成计数器。
 var warnVideoNoHost = func(src string) {
@@ -357,8 +365,8 @@ func videoSyncNode(a *app, n *GuiNode, host nativeVideoHost, hasHost bool) {
 	}
 
 	if st.id == 0 {
-		id, err := host.VideoSurfaceAttach(n.Box, videoSrcOf(n), videoOptions(n))
-		if err != nil {
+		id := nextVideoID()
+		if err := host.VideoSurfaceAttach(id, n.Box, videoSrcOf(n), videoOptions(n)); err != nil {
 			if !st.reported {
 				st.reported = true
 				warnVideoAttach(videoSrcOf(n), err)
@@ -429,6 +437,27 @@ func videoReleaseLocked(host nativeVideoHost, n *GuiNode, st *videoState) {
 		_ = host.VideoSurfaceDetach(st.id)
 	}
 	delete(videoStates, n)
+}
+
+// videoReleaseForApp 关窗时一次性摘掉**这个窗口**的全部视频表面。
+//
+// 为什么不等 flush 兜底: flush 只在有脏区重绘时才跑, 而窗口关闭之后永远
+// 不会再来一次 —— 那些条目会留在**全局**的 videoStates 里, 节点与脚本都
+// 已经销毁, 只剩一堆"句柄还在、回调已死"的僵尸条目 (事件回表时还要被
+// 遍历到)。关窗就清, 是最晚也最确定的时机。
+func videoReleaseForApp(a *app) {
+	videoMu.Lock()
+	defer videoMu.Unlock()
+	host, hasHost := videoHostOf(a)
+	for n, st := range videoStates {
+		if st.app != a {
+			continue
+		}
+		if st.id != 0 && hasHost {
+			_ = host.VideoSurfaceDetach(st.id)
+		}
+		delete(videoStates, n)
+	}
 }
 
 // videoRelease 是给 disposeNode 用的出口: 节点离开渲染树时立刻释放平台表面。
