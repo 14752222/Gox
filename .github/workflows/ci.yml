@@ -174,6 +174,35 @@ jobs:
             exit 1
           fi
 
+  # ── WCAG 对比度闸门（Prism S2）──────────────────────────────────────────────
+  # 为什么单独一个作业：它是**纯计算**（gfx/contrast.go 只用标准库），既不要
+  #   xvfb 也不要字体，更不需要三平台矩阵 —— 塞进 build-test 会让它为了几条
+  #   算术白等三个 runner 各装一遍apt 依赖；而失败的归因也完全不同：这里红了
+  #   是"某个色的对比度掉到阈值下"，不是"某个平台画不出来"。
+  #
+  # 守的是 docs/accessibility.md §9 那份承诺：prism-light / prism-dark 的每一条
+  #   文字与控件边界配对都过 WCAG 2.1 AA。色值一旦被为了"好看"调浅，这里立刻
+  #   红，且错误信息里直接给实测比值与两个色值 —— 不需要先翻 WCAG 才知道动到
+  #   了哪条契约。
+  #
+  # 只跑 -run 'TestContrast'：这条闸门要在 1 分钟内给出答案，不能让 gfx 包里
+  #   那批窗口 / 字体用例（需要 X server 与 Noto CJK）把它拖进 xvfb 的世界。
+  contrast:
+    name: WCAG 对比度断言（prism-light / prism-dark）
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      # 不写 check-latest: true（全仓刻意如此）：见 build-test 的同款注释 ——
+      # 工具链漂移会让字节级 golden 无意义地红一轮。
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: WCAG 对比度断言
+        run: go test ./gfx/ -run 'TestContrast' -count=1 -v
+
   build-test:
     name: 编译 / vet / 测试 (${{ matrix.os }})
     # 三平台矩阵 (T02)：Gox 的三个桌面后端各守一个平台 —— win32 / cocoa / x11。

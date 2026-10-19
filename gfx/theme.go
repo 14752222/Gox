@@ -316,13 +316,22 @@ func SetTheme(t Theme) {
 	markAllWindowsDirty()
 }
 
-// SetThemeNamed 按预设名切换 ("light"/"dark"), 未知名返回 false 且不动现状。
+// SetThemeNamed 按预设名切换 ("light"/"dark"/"prism-light"/"prism-dark"),
+// 未知名返回 false 且不动现状。
+//
+// 两套 Prism 预设与 v1 **并存**而不是替换: 旧预设的色值是存量契约, 改一个就
+// 等于给所有已上线的应用发一次无请求的视觉更新; 想要 Prism 的观感由调用方
+// 显式点名 (gox.json 的 "theme" 字段或 setTheme("prism-dark"))。
 func SetThemeNamed(name string) bool {
 	switch name {
 	case "light":
 		SetTheme(themeLight())
 	case "dark":
 		SetTheme(themeDark())
+	case "prism-light":
+		SetTheme(prismLight())
+	case "prism-dark":
+		SetTheme(prismDark())
 	default:
 		return false
 	}
@@ -331,12 +340,23 @@ func SetThemeNamed(name string) bool {
 }
 
 // ToggleDark 在亮/暗间切换; 当前是自定义主题时按"最近一次预设名"的反面切。
+//
+// 换向**停留在同一家族内**: 当前是 prism-dark 时切到 prism-light, 而不是跳到
+// v1 的 light —— 那样一回合一换, 观感会在"冷青 slate"与"绿色灰白"之间来回
+// 断裂, 而用户只是想开个夜间模式。
 func ToggleDark() {
-	if themeName == "dark" {
+	switch themeName {
+	case "dark":
 		SetThemeNamed("light")
-		return
+	case "prism-light":
+		SetThemeNamed("prism-dark")
+	case "prism-dark":
+		SetThemeNamed("prism-light")
+	default:
+		// "light" 与 "custom" 都落到这里: custom 无法反推它源自哪个家族,
+		// 沿用 v1 的行为切到 v1 暗色。
+		SetThemeNamed("dark")
 	}
-	SetThemeNamed("dark")
 }
 
 // ApplyOverrides 在当前主题上覆盖若干 token (key = 字段名小驼峰, 如
