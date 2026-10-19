@@ -1,8 +1,9 @@
 // 画廊截图: <skeleton> —— 由 gfx/gallery_shot_test.go 离屏渲染成 PNG
 // 运行: ./gox testdata/shots/skeleton.js
 //
-// 三种骨架形态: 纯文本行、头像 + 文本、卡片。shimmer 的呼吸相位在离屏帧里
-// 固定在初始值，所以这里验的是**块之间的间距与圆角**，以及 avatar 变体。
+// 三种骨架形态: 纯文本行、头像 + 文本、卡片。呼吸在离屏帧里冻在一个灰度上
+// (明暗是颜色的插值, 不是透明度), 所以这里验的是**块之间的间距、RadiusMD
+// 的圆角**, 以及 avatar 变体 —— 圆角是 S7 的验收点: 直角灰条看着像表格线。
 import { render } from "gox";
 
 render(

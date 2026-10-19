@@ -220,6 +220,10 @@ func registerApp(a *app) {
 func unregisterApp(a *app) {
 	appMu.Lock()
 	delete(apps, a.surface)
+	// Prism S7: 顺手摘掉这棵树上的加载态登记 (spinner / skeleton / 不定进度)。
+	// 见 unregisterTickersIn 的注释 —— 不摘的话, 关掉的窗口会把 16ms 心跳
+	// 一直背到进程结束。
+	unregisterTickersIn(a.root)
 	if activeApp == a {
 		activeApp = nil
 		for _, other := range apps {
@@ -980,7 +984,8 @@ func (a *app) handleKey(key, name string, ev Event) {
 	}
 	// T10 无障碍: Tab / Shift+Tab 在遍历序里换焦点 (绕回)。排在字段消费之后
 	// —— 输入框里按 Tab 也是"离开这个字段", 不是插入制表符 (文本编辑器的
-	// 制表符不在 v1 范围内)。焦点框由 drawFocusRing 照旧绘制。
+	// 制表符不在 v1 范围内)。焦点环由 drawFocusRing 统一绘制 (Prism S3 起是
+	// 画在盒外的 2px 实线环, 见 decor.go)。
 	if name == "onKeyDown" && key == "Tab" {
 		if a.a11yTab(ev.Shift) {
 			return
@@ -1806,7 +1811,7 @@ func (a *app) redraw() {
 	}
 }
 
-// drawFocusRing 给当前焦点节点画虚线框 (P1-3)。根节点接焦时不需要
+// drawFocusRing 给当前焦点节点画焦点环 (P1-3)。根节点接焦时不需要
 // 焦点反馈 (点击空白处即焦点回到根), 可用根节点 props.hideFocusRing
 // 整体关闭 (演示脚本里想拍"无焦点框"的画面时用)。
 func (a *app) drawFocusRing(img *image.RGBA) {

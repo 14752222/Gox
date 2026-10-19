@@ -1,21 +1,25 @@
 // 画廊截图: <progress> —— 由 gfx/gallery_shot_test.go 离屏渲染成 PNG
 // 运行: ./gox testdata/shots/progress.js
 //
-// 四档进度（0 / 35% / 75% / 100%）+ 自定义色 + 显式宽度。
-// progress 的缺省高度只有 8px，直接排进 column 会因为父容器的 stretch 拿到
-// 0 宽度而变成空盒 —— 所以这里显式给 width，模拟真实用法。
-// 轨道厚度是 S7 的验收点，四档并列才能看出"轨道与填充是否共用同一套圆角与厚度"。
+// 五条并列, 覆盖 S7 的三处验收点:
+//   1. 轨道厚度 6 (Space3) + 胶囊圆角 —— 满格那条右端是圆头而不是方角,
+//      且填充与轨道共用同一套圆角 (不再有"填充方角压在圆角轨道上");
+//   2. level 走语义色 (success / warn), 与 alert 同 prop 名同取值;
+//   3. indeterminate 是 1/3 轨道宽的滑块循环位移, 两端被轨道剪掉。
+//
+// 缺省高度就是 6, 不必显式给 height; 宽度必须给 —— progress 靠父容器
+// stretch 拿宽度, 离屏脚本里没容器撑它就会退化成 0 宽空盒。
 import { render } from "gox";
 
 render(
-  <window title="progress" width={360} height={260}>
-    <column gap={14} padding={16}>
-      {/* 轨道与填充上下叠放，厚度差靠 height 拉开，便于看清两者边界 */}
-      <progress value={0} width={300} height={8} />
-      <progress value={0.35} width={300} height={8} />
-      <progress value={0.75} width={300} height={8} />
-      <progress value={1} width={300} height={8} />
-      <progress value={0.6} width={300} height={12} color="#1a5fb4" />
+  <window title="progress" width={360} height={200}>
+    <column gap={16} padding={16}>
+      <progress value={0} width={300} />
+      <progress value={0.35} width={300} />
+      <progress value={0.7} width={300} level="success" />
+      <progress value={0.5} width={300} level="warn" />
+      <progress value={0.9} width={300} level="danger" />
+      <progress width={300} indeterminate={true} />
     </column>
   </window>
 );

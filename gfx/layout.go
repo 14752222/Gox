@@ -53,7 +53,13 @@ func Layout(root *GuiNode, w, h int) {
 // 换算, 不用"先相加再换算" —— 两个口径在 Scale=1 时相同, 但 Scale=2 时
 // 只有"各自换算"才保住"覆盖语义" (上 40 / 其余 12 的比值不变)。
 func paddingOf(n *GuiNode) (top, right, bottom, left int) {
-	base, _ := n.PropNum("padding")
+	base, ok := n.PropNum("padding")
+	if !ok && n != nil && n.Tag == "empty" {
+		// Prism S7: <empty> 自带 Space6 (16) 的呼吸, 脚本没写 padding 时
+		// 内边距就是这个默认值 (写了则以脚本为准 —— 与 intrinsicEmpty 里的
+		// emptyPadDp 是同一条规矩的两半: 那边撑盒子, 这边缩内容区)。
+		base = float64(emptyPadDp(n))
+	}
 	if base < 0 {
 		base = 0
 	}
@@ -117,7 +123,7 @@ func layoutNode(n *GuiNode) {
 		layoutSelect(n)
 	case "select-option":
 		// 下拉项: 一行内容垂直居中 + 8px 左留白 (与 button 同一套排布)
-		layoutInlineRow(n, fieldPadX, 0)
+		layoutInlineRow(n, Space(fieldPadX), 0)
 	case "select-popup":
 		// 下拉弹层: 纵排选项 (盒子由 layoutSelect 定: 贴在字段正下方且等宽)
 		layoutStack(n, false)
@@ -154,6 +160,19 @@ func layoutNode(n *GuiNode) {
 		layoutAvatar(n)
 	case "empty":
 		layoutEmpty(n)
+	case "progress":
+		// 只有不定进度需要帧推进: 确定进度的 value 由脚本写, 值不变就不
+		// 该重绘。反过来 indeterminate 一开就必须上心跳, 否则挂在树上时
+		// 滑块永远停在入树那一帧的相位上 (与 S6 抽屉"没人起心跳就停在 0"
+		// 同一个坑)。
+		//
+		// reduced-motion 下同样不上心跳: 相位已被冻结 (progressIndetPhase),
+		// 每帧重绘只会画出同一张图。
+		if n.progressIndeterminate() && !prefersReducedMotion() {
+			registerTicker(n)
+		} else {
+			unregisterTicker(n)
+		}
 	case "spinner":
 		layoutSpinner(n)
 	case "skeleton":
@@ -433,8 +452,12 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 		}
 	case "table-header", "table-row", "table-cell", "tree-row":
 		// 内部行 (Go 侧构造): 高度固定, 宽度由表格布局分配给整行
+		//
+		// Prism S8: 与 layoutTable 里真正在排的那份行高必须是同一个数 ——
+		// 表格自己用的是 Space(tableRowH), 这里原来是裸值, 于是 2x 上出现
+		// "测量说 32、布局按 64 排"的分裂。
 		if h == 0 {
-			h = tableRowH
+			h = Space(tableRowH)
 		}
 	case "list-item":
 		return listItemIntrinsic(n, w, h)
@@ -443,26 +466,28 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 		// (见 hittest.go 的 touchHitBox) —— 视觉尺寸跟命中区尺寸是两件事,
 		// 放大盒子会让一排复选框把行距撑开。
 		if w == 0 {
-			w = 18
+			w = Space(18) // Prism S8: 视觉尺寸随密度换算
 		}
 		if h == 0 {
-			h = 18
+			h = Space(18)
 		}
 	case "switch":
 		// Prism S4: 36×20 方形轨道 → 44×26 胶囊轨道。44 同时是 TouchMin,
 		// 于是开关自己就满足触控下限, 不必再补命中区。
 		if w == 0 {
-			w = 44
+			w = Space(44) // Prism S4 的 44 恰好等于 TouchMin 的数值
 		}
 		if h == 0 {
-			h = 26
+			h = Space(26)
 		}
 	case "progress":
 		if w == 0 {
 			w = 200
 		}
 		if h == 0 {
-			h = 8
+			// Prism S7: 8 → 6 (Space3)。8px 的轨道配 6px 填充是 v1 方条的
+			// 尺寸, 改成胶囊之后 6 才是"一根有厚度的线"而不是"一块补丁"。
+			h = progressTrackH
 		}
 	case "separator":
 		// 横线: 高 1、宽 0 → 由父容器 stretch 撑开; 纵线: 反之。
@@ -500,21 +525,21 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 		}
 		tw, _ := MeasureText(label, n.FontSize())
 		if w == 0 {
-			w = tw + 2*fieldPadX + selectArrowW
-			if w < selectMinW {
-				w = selectMinW
+			w = tw + 2*Space(fieldPadX) + Space(selectArrowW)
+			if w < Space(selectMinW) {
+				w = Space(selectMinW)
 			}
 		}
 		if h == 0 {
-			h = fieldRowH
+			h = Space(fieldRowH)
 		}
 	case "select-option":
 		tw, _ := MeasureText(n.TextContent(), n.FontSize())
 		if w == 0 {
-			w = tw + 2*fieldPadX
+			w = tw + 2*Space(fieldPadX)
 		}
 		if h == 0 {
-			h = selectRowH
+			h = Space(selectRowH)
 		}
 	case "label":
 		cw, ch := intrinsicLabel(n)
@@ -563,14 +588,18 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 	case "toast":
 		// 提示卡片: 宽按 message 文本 + 左侧色条 + 两侧留白; 高给 36 (单行
 		// 文本在 36px 卡片里垂直居中看起来才不局促)。
+		//
+		// Prism S8: 三个数都是**设计像素** —— 高那一路尤其要换算: `th` 来自
+		// MeasureText (已按密度放大), 加数不放大就会出现"2x 屏上文字顶天立地、
+		// 英文下缘被切"。`Space()` 在 1x 恒等, 桌面既有几何不受影响。
 		tw, th := MeasureText(n.toastMessage(), n.FontSize())
 		if w == 0 {
-			w = tw + toastAccentW + 2*fieldPadX
+			w = tw + Space(toastAccentW) + 2*Space(fieldPadX)
 		}
 		if h == 0 {
-			h = th + 16
-			if h < 36 {
-				h = 36
+			h = th + Space(16)
+			if h < Space(36) {
+				h = Space(36)
 			}
 		}
 	case "input", "search":
@@ -579,39 +608,42 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 		// 缺省值, 需要更宽就显式写 width。(search 是 input 的字段变体, 同一
 		// 套缺省。)
 		if w == 0 {
-			w = inputMinW
+			w = Space(inputMinW)
 		}
 		if h == 0 {
-			h = fieldRowH
+			h = Space(fieldRowH)
 		}
 	case "rating":
-		// 星级: 每颗星占一个 20px 方格 (max 缺省 5 ⇒ 100x20)。星形半径按
+		// 星级: 每颗星占一个 20dp 方格 (max 缺省 5 ⇒ 100x20)。星形半径按
 		// min(格宽, 高) 自适应, 拉大组件星形跟着变大, 不会溢出。
 		if w == 0 {
-			w = n.ratingMax() * ratingCellSize
+			w = n.ratingMax() * Space(ratingCellSize)
 		}
 		if h == 0 {
-			h = ratingCellSize
+			h = Space(ratingCellSize)
 		}
 	case "scroll":
 		// 滚动视口: 宽度不给固有值 (0 → 父容器 stretch 时铺满, 或脚本显式
 		// width); 高度必须给缺省值 —— column 的主轴是高度, 0 高会变成
 		// 不可见的空盒, 整个滚动区消失。
 		if h == 0 {
-			h = scrollDefH
+			h = Space(scrollDefH) // Prism S8: 缺省高度按设计像素换算
 		}
 	case "textarea":
 		// 多行输入框: 宽固定缺省 (理由同 input), 高 = 行数 × 行高 + 上下内边距。
 		// 行数用 `rows` 覆盖 (与 HTML textarea 同名)。
+		//
+		// Prism S8: 高这一路三项里唯一会自己放大的是 lineHeight (它跟字号走),
+		// 内边距不换算就会出现"2x 屏上下留白只剩一半"。
 		if w == 0 {
-			w = textareaMinW
+			w = Space(textareaMinW)
 		}
 		if h == 0 {
 			rows := textareaDefaultRows
 			if v, ok := n.PropNum("rows"); ok && int(v) > 0 {
 				rows = int(v)
 			}
-			h = rows*lineHeight(n.FontSize()) + 2*textareaPadY
+			h = rows*lineHeight(n.FontSize()) + 2*Space(textareaPadY)
 		}
 	case "image":
 		// 图片: 未显式给尺寸时用**自然尺寸**; 加载失败给一个非 0 的兜底尺寸。
@@ -620,7 +652,8 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 		if w == 0 || h == 0 {
 			nw, nh := imageNaturalSize(n)
 			if nw <= 0 || nh <= 0 {
-				nw, nh = imgPlaceholderW, imgPlaceholderH
+				// Prism S8: 兜底尺寸是"设计出来的一块占位", 按 dp 给。
+				nw, nh = Space(imgPlaceholderW), Space(imgPlaceholderH)
 			}
 			if w == 0 {
 				w = nw
@@ -637,7 +670,8 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 		if w == 0 || h == 0 {
 			nw, nh := videoPosterNaturalSize(n)
 			if nw <= 0 || nh <= 0 {
-				nw, nh = videoDefaultW, videoDefaultH
+				// Prism S8: 16:9 缺省是设计像素 (与 imgPlaceholder 同款)。
+				nw, nh = Space(videoDefaultW), Space(videoDefaultH)
 			}
 			if w == 0 {
 				w = nw
@@ -652,7 +686,8 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 		// 同样必须非 0 (理由同 image/video): 0 尺寸子树被整支跳过,
 		// 用户看到的是"什么都没有", 而不是"这里本该有条音频"。
 		if w == 0 || h == 0 {
-			nw, nh := audioDefaultW, audioDefaultH
+			// Prism S8: 缺省占位 (浏览器 <audio controls> 的量级) 按设计像素算。
+			nw, nh := Space(audioDefaultW), Space(audioDefaultH)
 			if w == 0 {
 				w = nw
 			}
@@ -666,20 +701,20 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 		// 的 canvas 是个 0 尺寸空盒, 被 drawNode 整支跳过, 界面上看不到,
 		// 而 onDraw 明明在跑 (最难排查的一类"没反应")。
 		if w == 0 {
-			w = canvasDefW
+			w = Space(canvasDefW) // Prism S8: 缺省画布按设计像素算
 		}
 		if h == 0 {
-			h = canvasDefH
+			h = Space(canvasDefH)
 		}
 	case "slider":
 		// 滑块: 横向一条, 宽高都按内容定 (轨道在盒内居中铺开), 与 input/select
 		// 一样不参与交叉轴 stretch —— 被拉满的滑块很难看, 也失去了"预设长度"
 		// 这个语义。需要更宽就显式写 width。
 		if w == 0 {
-			w = sliderDefW
+			w = Space(sliderDefW) // Prism S8: 随密度换算
 		}
 		if h == 0 {
-			h = sliderDefH
+			h = Space(sliderDefH)
 		}
 	case "menubar":
 		// 菜单栏: 高度固定一行, 宽度撑满父容器 (它是"窗口顶部的一条",
@@ -689,10 +724,10 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 			w = menuBarContentWidth(n)
 		}
 		if h == 0 {
-			h = menuBarH
+			h = Space(menuBarH)
 		}
 	case "menu":
-		// 菜单标题: 一行 26px (右键菜单是纯弹层, 自身无尺寸)。
+		// 菜单标题: 一行 (右键菜单是纯弹层, 自身无尺寸)。
 		if n.ctxMenu {
 			return 0, 0
 		}
@@ -700,7 +735,7 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 			w = n.menuTitleWidth()
 		}
 		if h == 0 {
-			h = menuBarH
+			h = Space(menuBarH)
 		}
 	case "menuitem":
 		// 菜单项在声明位置上不绘制也不占位 (它的文字由下拉弹层里的
@@ -708,7 +743,7 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 		// 子 menu (子菜单) 恰恰要能被 layoutMenu 走到, 所以给一个非 0 的
 		// 名义行高, 保证子树不被剪掉。
 		if h == 0 {
-			h = menuItemH
+			h = Space(menuItemH) // Prism S8: 随密度换算
 		}
 	}
 	if n.Tag == "#text" {

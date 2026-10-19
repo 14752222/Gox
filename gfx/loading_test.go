@@ -26,6 +26,9 @@ func TestSpinnerIntrinsicSize(t *testing.T) {
 }
 
 func TestSpinnerLayoutPaintsTicks(t *testing.T) {
+	// spinner 一挂载就登记帧心跳; 用例不关窗口, 得自己摘 —— 否则心跳会一路
+	// 漏到后面的用例 (clearAnimTickerForTest 的注释)。
+	t.Cleanup(clearAnimTickerForTest)
 	root := mkNode("column", map[string]float64{"padding": 10})
 	sp := mkNode("spinner", map[string]float64{"size": 32})
 	mountChildren(root, sp)
@@ -46,30 +49,85 @@ func TestSpinnerLayoutPaintsTicks(t *testing.T) {
 	}
 }
 
-// 相位随时间前进: 用替换过的 spinnerEpoch 制造两个不同时刻。
-func TestSpinnerHeadAdvances(t *testing.T) {
-	old := spinnerEpoch
-	t.Cleanup(func() { spinnerEpoch = old })
+// 弧的起始角随时间前进: 用替换过的 loopEpoch 制造两个不同时刻。
+func TestSpinnerArcStartAdvances(t *testing.T) {
+	// 隔离 reduced-motion: 它一旦开着, 弧就被钉在 12 点, 这条用例测的
+	// "会转" 反而应当失败。
+	forceMotionForTest(t, true)
 
-	spinnerEpoch = time.Now()
-	h0 := spinnerHead()
-	// 前进 1/3 周期 → 头部索引应前进约 4 格 (12 格/周期)
-	spinnerEpoch = time.Now().Add(-spinnerPeriod / 3)
-	h1 := spinnerHead()
-	if h0 == h1 {
-		t.Fatalf("spinner 相位未随时间前进 (h0=%d h1=%d)", h0, h1)
+	old := loopEpoch
+	t.Cleanup(func() { loopEpoch = old })
+
+	loopEpoch = time.Now()
+	a0 := spinnerArcStart()
+	// 前进 1/3 周期 → 起始角应前进 1/3 圈
+	loopEpoch = time.Now().Add(-spinnerPeriod / 3)
+	a1 := spinnerArcStart()
+	if absFloat(a1-a0) < 1e-6 {
+		t.Fatalf("spinner 弧起始角未随时间前进 (a0=%f a1=%f)", a0, a1)
 	}
-	// 相位应始终落在 [0, ticks)
-	for _, h := range []int{h0, h1} {
-		if h < 0 || h >= spinnerTicks {
-			t.Fatalf("spinner 头部索引越界: %d", h)
+	// 相位应始终落在 [0, tau) 的等价区间 (起点 -tau/4, 跨度一圈)
+	for _, a := range []float64{a0, a1} {
+		if a < -tau/4-1e-9 || a > -tau/4+tau+1e-9 {
+			t.Fatalf("spinner 弧起始角越界: %f", a)
 		}
 	}
+}
+
+// reduced-motion: 弧钉在 12 点不动, 且不再上心跳。
+//
+// 这条是 S7 的硬要求, 也是本文件里唯一一条"必须开着 reduced-motion 才成立"
+// 的断言: 转圈是持续位移的无限循环, 对晕动症用户是最典型的触发源。
+func TestSpinnerFreezesUnderReducedMotion(t *testing.T) {
+	forceMotionForTest(t, false)
+
+	if got, want := spinnerArcStart(), -tau/4; absFloat(got-want) > 1e-9 {
+		t.Fatalf("reduced-motion 下弧起始角 = %f, want %f (12 点方向)", got, want)
+	}
+	// 换一个时刻再取一次, 仍应是同一个角
+	old := loopEpoch
+	t.Cleanup(func() { loopEpoch = old })
+	loopEpoch = time.Now().Add(-spinnerPeriod / 2)
+	if got, want := spinnerArcStart(), -tau/4; absFloat(got-want) > 1e-9 {
+		t.Fatalf("reduced-motion 下弧起始角随动了: %f", got)
+	}
+
+	// 也不该上心跳
+	oldTickers := tickerNodes
+	tickerNodes = map[*GuiNode]struct{}{}
+	t.Cleanup(func() { tickerNodes = oldTickers })
+	root := mkNode("column", nil)
+	sp := mkNode("spinner", nil)
+	mountChildren(root, sp)
+	renderTree(root, 120, 120)
+	if _, ok := tickerNodes[sp]; ok {
+		t.Fatalf("reduced-motion 下 spinner 不该登记帧推进 (画面是静止的)")
+	}
+}
+
+// forceMotionForTest 把 reduced-motion 开关钉死 (motion=true → 允许动)。
+//
+// 两个方向都要能钉: "reduced" 验证降级, "motion" 让"会动"的那几条用例不
+// 因为环境里恰好设了 GOX_REDUCED_MOTION 而假红 —— 环境变量是进程级的,
+// 单条用例改不掉它, 只能用这个优先级更高的显式开关盖住。
+func forceMotionForTest(t *testing.T, motion bool) {
+	t.Helper()
+	reduced := !motion
+	SetReducedMotion(&reduced)
+	t.Cleanup(func() { SetReducedMotion(nil) })
+}
+
+func absFloat(v float64) float64 {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 // 挂载后登记进帧集合, 心跳启动。
 func TestSpinnerRegistersTicker(t *testing.T) {
 	// 隔离全局状态: 用例之间不许串味
+	forceMotionForTest(t, true)
 	oldTickers := tickerNodes
 	tickerNodes = map[*GuiNode]struct{}{}
 	oldRunning := animRunning
@@ -132,6 +190,7 @@ func TestSkeletonPaintsRows(t *testing.T) {
 
 // active=false 不登记 (省电); active=true (缺省) 登记。
 func TestSkeletonActiveControlsTicker(t *testing.T) {
+	forceMotionForTest(t, true) // 否则"缺省会呼吸"这条前提不成立
 	oldTickers := tickerNodes
 	tickerNodes = map[*GuiNode]struct{}{}
 	t.Cleanup(func() { tickerNodes = oldTickers })
@@ -150,15 +209,65 @@ func TestSkeletonActiveControlsTicker(t *testing.T) {
 	}
 }
 
-// 呼吸系数在 [0.55, 1.0] 之间, 且随时间变化。
+// 呼吸相位在 [0,1] 之间, 且随时间变化。
 func TestSkeletonBreathRange(t *testing.T) {
-	old := spinnerEpoch
-	t.Cleanup(func() { spinnerEpoch = old })
+	forceMotionForTest(t, true)
+	old := loopEpoch
+	t.Cleanup(func() { loopEpoch = old })
+	seen := map[float64]bool{}
 	for _, d := range []time.Duration{0, skeletonPeriod / 4, skeletonPeriod / 2, skeletonPeriod} {
-		spinnerEpoch = time.Now().Add(-d)
-		b := skeletonBreath()
-		if b < 0.55 || b > 1.0 {
-			t.Fatalf("呼吸系数越界: d=%v b=%f", d, b)
+		loopEpoch = time.Now().Add(-d)
+		b := skeletonBreath(true)
+		if b < 0 || b > 1 {
+			t.Fatalf("呼吸相位越界: d=%v b=%f", d, b)
 		}
+		seen[b] = true
+	}
+	if len(seen) < 2 {
+		t.Fatalf("呼吸相位不随时间变化: %v", seen)
+	}
+	// 关掉呼吸 → 恒定 0 (静态占位是确定的一块灰)
+	loopEpoch = time.Now().Add(-skeletonPeriod / 3)
+	if got := skeletonBreath(false); got != 0 {
+		t.Fatalf("active=false 的骨架相位 = %f, want 0", got)
+	}
+}
+
+// reduced-motion: 呼吸相位冻结在中值, 且不再上心跳。
+//
+// 骨架是大面积明暗变化, 是 reduced-motion 规范里点名要关掉的一类动效。
+// 冻在中值而不是最暗端: 最暗端与 active=false 撞色, 会让人以为"这块是不是
+// 没加载出来"; 中值本身就是"这是块占位"的信息。
+func TestSkeletonFreezesUnderReducedMotion(t *testing.T) {
+	forceMotionForTest(t, false)
+	old := loopEpoch
+	t.Cleanup(func() { loopEpoch = old })
+	for _, d := range []time.Duration{0, skeletonPeriod / 4, skeletonPeriod / 2} {
+		loopEpoch = time.Now().Add(-d)
+		if got := skeletonBreath(true); got != 0.5 {
+			t.Fatalf("reduced-motion 下骨架相位 = %f (d=%v), want 0.5", got, d)
+		}
+	}
+
+	oldTickers := tickerNodes
+	tickerNodes = map[*GuiNode]struct{}{}
+	t.Cleanup(func() { tickerNodes = oldTickers })
+	sk := mkNode("skeleton", nil)
+	renderTree(mkMountWrap(sk), 200, 160)
+	if _, ok := tickerNodes[sk]; ok {
+		t.Fatalf("reduced-motion 下 skeleton 不该登记帧推进")
+	}
+}
+
+// 呼吸的两端是两级确定的灰度, 与画在什么底色上无关 (见 skeletonBreathColor)。
+func TestSkeletonBreathColorIsOpaque(t *testing.T) {
+	for _, phase := range []float64{0, 0.5, 1} {
+		c := skeletonBreathColor(phase)
+		if c.A != 255 {
+			t.Fatalf("phase=%v 的骨架色 alpha=%d, 应为不透明 (呼吸走颜色插值)", phase, c.A)
+		}
+	}
+	if skeletonBreathColor(0) == skeletonBreathColor(1) {
+		t.Fatalf("骨架呼吸两端灰度相同, 呼吸不会可见")
 	}
 }

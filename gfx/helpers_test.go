@@ -747,6 +747,25 @@ func renderTree(root *GuiNode, w, h int) *image.RGBA {
 	return renderTreeThemed(root, w, h)
 }
 
+// clearAnimTickerForTest 清空帧心跳的登记集合, 供 t.Cleanup 直接挂
+// (t.Cleanup(clearAnimTickerForTest))。
+//
+// 为什么必须每个用例自己清: tickerNodes / animRunning 是**进程级**状态, 而
+// 组件级用例建完树就丢 —— 没人走 disposeNode → cancelAnim 那条摘除路径, 于是
+// 上一个用例里的 spinner / skeleton / 不定进度会把 16ms 心跳一路带下去, 症状
+// 是"某个静止演示脚本的首帧有动画在跑" (components_test.go 的 transition_demo
+// 断言)。生产路径没有这个问题: 关窗口会 dispose 整棵树。
+//
+// 顺带撤掉已排上的心跳回调: 只清集合不清回调的话, 下一次 registerTicker 会
+// 再排一个, 心跳变成两路, 逐帧推进的用例会跑出双倍速度。
+func clearAnimTickerForTest() {
+	for n := range tickerNodes {
+		delete(tickerNodes, n)
+	}
+	animRunning = false
+	object.GlobalScheduler().ClearAll()
+}
+
 // renderTreeThemed 按**当前**主题渲染, 不做任何主题重置。
 // 只有显式验证主题切换效果的用例才该用它。
 func renderTreeThemed(root *GuiNode, w, h int) *image.RGBA {
