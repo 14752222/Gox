@@ -3,6 +3,7 @@ package gfx
 import (
 	"image"
 	"image/color"
+	"time"
 )
 
 // S4/T09 drawer 抽屉弹层。
@@ -31,12 +32,16 @@ import (
 // 只多一个 progress 字段, 不需要新增任何定时器。
 
 const (
-	// drawerDefaultW 是未指定 width 时的抽屉宽度。
+	// drawerDefaultW 是未指定 width 时的抽屉宽度 (**设计像素**, 同 fieldRowH)。
 	drawerDefaultW = 280
-	// drawerSlideFrames 是滑入/滑出的动画帧数 (按 animFrame=16ms 约 160ms)。
-	// 取值与 tooltip/select 弹层的观感统一: 太快像闪, 太慢挡操作。
-	drawerSlideFrames = 10
 )
+
+// drawerSlideFrames 是滑入/滑出的动画帧数: MotionSlow (260ms) 按 animFrame
+// (16ms) 折算。reduced-motion 时 MotionDuration 返回 0 → 0 帧, advanceDrawer
+// 立即到位 (无动画) —— 这是 MotionDuration 存在的意义, 调用点不要各自 if。
+func drawerSlideFrames() int {
+	return MotionDuration(MotionSlow) / int(animFrame/time.Millisecond)
+}
 
 // drawerSide 读取 side prop, 只认 "left"/"right", 缺省 "right"。
 // 抽屉贴哪边不改变模态语义, 只改定位与滑入方向。
@@ -49,12 +54,12 @@ func (n *GuiNode) drawerSide() string {
 }
 
 // drawerWidth 读取 width prop (逻辑单位, 内核换算成设备像素 —— 见 density.go);
-// 非法/缺省回落 drawerDefaultW (内置度量, 设备像素)。
+// 非法/缺省回落 drawerDefaultW (内置度量, **设计像素** → Space() 换算)。
 func (n *GuiNode) drawerWidth() int {
 	if v, ok := n.PropNum("width"); ok && v > 0 {
 		return dpToPx(v) // 逻辑值 → 设备像素 (density.go)
 	}
-	return drawerDefaultW
+	return Space(drawerDefaultW)
 }
 
 // drawerPanel 返回抽屉内容卡片: 第一个流内子节点。
@@ -79,13 +84,19 @@ func (n *GuiNode) drawerProgress() float64 {
 // advanceDrawer 推进一步滑入动画, 返回是否还在动画中。
 //
 // 用帧计数而不是 wall-clock: 与 tabs/select 的过渡动画同款, 在单测里可
-// 精确推进帧数而不依赖 sleep。step 是每帧 1/drawerSlideFrames。
+// 精确推进帧数而不依赖 sleep。step 是每帧 1/drawerSlideFrames()。
 func (n *GuiNode) advanceDrawer() bool {
 	target := 0.0
 	if n.overlayVisible() {
 		target = 1.0
 	}
-	step := 1.0 / float64(drawerSlideFrames)
+	frames := drawerSlideFrames()
+	if frames <= 0 {
+		// reduced-motion: 没有中间帧, 一步到位。
+		n.drawerAnim = target
+		return false
+	}
+	step := 1.0 / float64(frames)
 	// 收尾阈值加一点容差: 浮点累积会让"距目标正好一步"变成略大于一步
 	// (0.1 的 9 次累加 = 0.8999999999999999, 目标距离 = 0.10000000000000009),
 	// 严格比较就会多走一帧。1e-9 远小于一帧位移, 只吸收这种舍入误差。
@@ -135,6 +146,16 @@ func layoutDrawer(n *GuiNode) {
 		n.Box = Rect{}
 		return
 	}
+	// 动画心跳是"按需上表"的 (静止态零开销), 而抽屉的进度是节点自身字段 ——
+	// 没人替它上表的话, 挂载即 open 的抽屉会永远停在 progress=0 (遮罩与面板
+	// 底都不画, 只剩子节点裸奔)。布局每帧都对账: 没到位就确保心跳在跑。
+	target := 0.0
+	if n.overlayVisible() {
+		target = 1.0
+	}
+	if n.drawerAnim != target {
+		ensureAnimTicker()
+	}
 	n.Box = n.windowBox()
 	panel := n.drawerPanel()
 	if panel == nil {
@@ -147,14 +168,19 @@ func layoutDrawer(n *GuiNode) {
 	placeAbsoluteIn(n, pr)
 }
 
-// paintDrawer 画抽屉: 遮罩 + 内容卡片 (带侧边阴影)。
+// paintDrawer 画抽屉 (Prism S6): Scrim 遮罩 (随滑入淡入) + 单侧圆角的内容卡片
+// (带侧边投影)。
 //
-// 卡片缺省外观 (白底 + 边框) 在卡片自己没给 background/border 时补上, 让
-// 最简用法 <drawer open={x}><column>...</column></drawer> 就有可看的样子 ——
+// 卡片缺省外观 (surfaceOverlay 底) 在卡片自己没给 background/border 时补上,
+// 让最简用法 <drawer open={x}><column>...</column></drawer> 就有可看的样子 ——
 // 与 paintDialog 的处理一致。
 //
 // 滑入: 卡片按 progress 做水平位移。progress=0 时卡片整体在窗口外, 只剩遮罩
 // (遮罩此时也按 progress 淡入, 观感上与滑入同步)。
+//
+// 单侧圆角的做法: 软光栅没有 path 裁剪, 画不出"只有一边圆"的矩形 —— 先画
+// 整块圆角矩形, 再拿一个不带圆角的矩形把**贴窗边缘那一侧**盖回直角 (滑入
+// 到位后那一侧与窗口边缘重合, 圆角会被当成"面板缺了一角")。
 func paintDrawer(img *image.RGBA, n *GuiNode, disabled bool) {
 	if n.Box.W <= 0 || n.Box.H <= 0 {
 		return
@@ -163,8 +189,8 @@ func paintDrawer(img *image.RGBA, n *GuiNode, disabled bool) {
 	if progress <= 0 {
 		return
 	}
-	// 遮罩淡入: 与卡片同步。
-	FillRect(img, n.Box, withAlpha(colorMask, progress))
+	// 遮罩淡入: 与卡片同步。Scrim token (prism 55% 黑 / v1 40%, 与 Mask 同值)。
+	FillRect(img, n.Box, withAlpha(colorScrim, progress))
 
 	panel := n.drawerPanel()
 	if panel == nil || panel.Box.W <= 0 || panel.Box.H <= 0 {
@@ -184,8 +210,23 @@ func paintDrawer(img *image.RGBA, n *GuiNode, disabled bool) {
 	_, hasBg := panel.PropStr("background")
 	_, hasBd := panel.PropStr("border")
 	if !hasBg && !hasBd {
-		FillRect(img, drawRect, tint(colorPopupFace, disabled))
-		StrokeRect(img, drawRect, tint(colorPopupEdge, disabled))
+		face := tint(colorSurfaceOverlay, disabled)
+		rad := Radius(RadiusLG)
+		// 侧边投影: 阴影落在抽屉与内容之间 (向右滑出的抽屉, 影在卡片左侧)。
+		if !disabled {
+			sh := shadowSpec{x: -4, y: 0, blur: 10, c: color.RGBA{A: 48}}
+			if side == "left" {
+				sh.x = 4
+			}
+			paintShadow(img, drawRect, rad, sh)
+		}
+		fillRoundRect(img, drawRect, rad, face)
+		// 把贴窗边缘那侧补回直角 (见函数头注释)。
+		if side == "left" {
+			FillRect(img, Rect{X: drawRect.X, Y: drawRect.Y, W: rad, H: drawRect.H}, face)
+		} else {
+			FillRect(img, Rect{X: drawRect.X + drawRect.W - rad, Y: drawRect.Y, W: rad, H: drawRect.H}, face)
+		}
 	}
 	// 侧边分隔线: 抽屉贴边, 与内容之间那条线是"层次感"的来源。
 	edgeX := drawRect.X

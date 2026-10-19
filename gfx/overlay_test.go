@@ -446,9 +446,13 @@ func TestDialogMaskAlphaAndCenteredCard(t *testing.T) {
 	if card.Box.X != 70 || card.Box.Y != 40 || card.Box.W != 60 || card.Box.H != 40 {
 		t.Fatalf("内容卡片未居中: %v (want 70,40,60,40)", card.Box)
 	}
-	// 卡片缺省白底 (dialog 补的), 盖在遮罩之上
-	assertPx(t, img, card.Box.X+5, card.Box.Y+5, pxPopupFace, "卡片缺省白底")
-	assertPx(t, img, card.Box.X, card.Box.Y, pxPopupEdge, "卡片缺省边框")
+	// 卡片缺省白底 (dialog 补的), 盖在遮罩之上。取卡片中心而不是 (+5,+5):
+	// Prism S6 起卡片是 r16 圆角, 1px 圆角描边的抗锯齿带在 45° 方向上往
+	// 卡片内侧渗几个像素, 角附近采不到纯色 (那是 AA, 不是没画)。
+	assertPx(t, img, card.Box.X+card.Box.W/2, card.Box.Y+card.Box.H/2, pxPopupFace, "卡片缺省白底")
+	// 边框取样取边中点而不是角: Prism S6 起卡片是 r16 圆角, 角像素落在
+	// 圆角覆盖之外 (透出遮罩), 只有边的直段恒为边框色。
+	assertPx(t, img, card.Box.X, card.Box.Y+card.Box.H/2, pxPopupEdge, "卡片缺省边框")
 }
 
 func TestClosedDialogInvisibleAndPassThrough(t *testing.T) {

@@ -192,14 +192,26 @@ func TestDrawerSlideProgress(t *testing.T) {
 	d, _ := mkDrawer(true, "right", 200)
 	d.drawerAnim = 0
 
-	// 从 0 起步: 每帧 +1/drawerSlideFrames, 到 1 停
-	for i := 0; i < drawerSlideFrames-1; i++ {
+	// 帧数来自 MotionDuration(MotionSlow) (Prism S6: 时长走 token,
+	// reduced-motion 时为 0 → 立即到位)。
+	frames := drawerSlideFrames()
+	if frames <= 0 {
+		if d.advanceDrawer() {
+			t.Fatalf("reduced-motion 下不该有中间帧")
+		}
+		if d.drawerProgress() != 1 {
+			t.Fatalf("reduced-motion 下应一步到位, got %v", d.drawerProgress())
+		}
+		return
+	}
+	// 从 0 起步: 每帧 +1/frames, 到 1 停
+	for i := 0; i < frames-1; i++ {
 		if !d.advanceDrawer() {
 			t.Fatalf("第 %d 帧不该已到位", i)
 		}
 	}
 	if d.advanceDrawer() {
-		t.Fatalf("第 %d 帧应到位 (1.0)", drawerSlideFrames)
+		t.Fatalf("第 %d 帧应到位 (1.0)", frames)
 	}
 	if d.drawerProgress() != 1 {
 		t.Fatalf("到位后进度 = %v, want 1", d.drawerProgress())

@@ -1,7 +1,6 @@
 package gfx
 
 import (
-	"image/color"
 	"testing"
 
 	"github.com/14752222/Gox/object"
@@ -88,9 +87,14 @@ func TestTooltipShowsAfterDeadlineAndPaints(t *testing.T) {
 
 	// 重绘后弹层有墨迹: 深色底 + 中间文字行有非底色像素
 	img := renderTree(root, 400, 200)
-	// 半透明深灰叠在白底上的 src-over 混合结果 (与 dialog 遮罩用例同一算法):
-	// 38*242/255 + 255*13/255 = 49
-	assertPx(t, img, popup.Box.X+2, popup.Box.Y+2, color.RGBA{49, 49, 49, 255}, "弹层深色底")
+	// 深底断言取"明显暗于白底"而不是精确色值: Prism S6 给弹层加了投影
+	// (paintShadow 的盒式模糊, 面底叠在影上后的第三位色阶依赖模糊窗覆盖
+	// 分布) 且加了圆角 —— 语义 ("深底") 跨平台稳定, 精确整数值不稳定。
+	// 采样点取左侧内边距带的中点: 在圆角弧之外 (中高度)、在文字起点之左。
+	px := img.RGBAAt(popup.Box.X+3, popup.Box.Y+popup.Box.H/2)
+	if int(px.R)+int(px.G)+int(px.B) > 200 {
+		t.Fatalf("弹层底应为深色 (实测 %+v)", px)
+	}
 	if !hasInkIn(img, Rect{popup.Box.X + tipPadX, popup.Box.Y, popup.Box.W - 2*tipPadX, popup.Box.H}) {
 		t.Fatalf("弹层未绘制提示文本")
 	}

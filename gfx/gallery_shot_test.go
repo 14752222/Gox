@@ -61,6 +61,16 @@ var galleryClickTargets = map[string]string{
 	"tree": "tree",
 }
 
+// galleryHoverTargets 是需要"先悬停再截图"的脚本 → 悬停到哪个标签的实例上。
+//
+// 与点击不同：悬停弹层 (tooltip) 有 wall-clock 延迟 (缺省 500ms)，而且
+// EventMouseLeave 会立刻把它关掉 —— 所以这类脚本不走 settle 轮的 MouseLeave，
+// 而是「移入 → 空转一轮（泵被 nextTooltipWake 钳到延迟到点，醒来物化弹层）
+// → 再移入一次取稳定帧」。空转轮绝不能推事件：推了就睡不到延迟到点。
+var galleryHoverTargets = map[string]string{
+	"tooltip": "tooltip",
+}
+
 // gallerySettleRounds 是取帧前的"空转"轮数 (每轮投一个无害的 EventMouseLeave)。
 //
 // 为什么不是 0: 首帧在 Mount 里就出了, 但脚本挂载后可能还有一轮副作用要跑
@@ -190,30 +200,60 @@ func renderGalleryShot(t *testing.T, name string) *image.RGBA {
 
 	// 步骤表: 每轮 pump 执行一步; 表走完后那一轮取帧并关窗。
 	var steps []func()
-	if tag, ok := galleryClickTargets[strings.TrimSuffix(name, ".js")]; ok {
-		field := findFirst(a.root, tag)
-		if field == nil {
-			t.Fatalf("脚本里没有 <%s> 节点, 没法点开它", tag)
+	base := strings.TrimSuffix(name, ".js")
+	if tag, ok := galleryHoverTargets[base]; ok {
+		node := findFirst(a.root, tag)
+		if node == nil {
+			t.Fatalf("脚本里没有 <%s> 节点, 没法悬停它", tag)
 		}
-		if field.Box.W <= 0 || field.Box.H <= 0 {
-			t.Fatalf("<%s> 没有布局尺寸 (%v), 布局阶段可能就漏了它", tag, field.Box)
+		if node.Box.W <= 0 || node.Box.H <= 0 {
+			t.Fatalf("<%s> 没有布局尺寸 (%v), 布局阶段可能就漏了它", tag, node.Box)
 		}
-		x, y := centerOf(field)
+		x, y := centerOf(node)
 		steps = append(steps,
-			func() { fake.push(Event{Kind: EventMouseDown, X: x, Y: y}) },
-			func() { fake.push(Event{Kind: EventMouseUp, X: x, Y: y}) },
+			func() { fake.push(Event{Kind: EventMouseMove, X: x, Y: y}) },
+			func() {}, // 空转: 泵睡到 tooltip 延迟到点 (见 galleryHoverTargets)
+			func() { fake.push(Event{Kind: EventMouseMove, X: x, Y: y}) },
 		)
-	}
-	for i := 0; i < gallerySettleRounds; i++ {
-		steps = append(steps, func() { fake.push(Event{Kind: EventMouseLeave}) })
+	} else {
+		if tag, ok := galleryClickTargets[base]; ok {
+			field := findFirst(a.root, tag)
+			if field == nil {
+				t.Fatalf("脚本里没有 <%s> 节点, 没法点开它", tag)
+			}
+			if field.Box.W <= 0 || field.Box.H <= 0 {
+				t.Fatalf("<%s> 没有布局尺寸 (%v), 布局阶段可能就漏了它", tag, field.Box)
+			}
+			x, y := centerOf(field)
+			steps = append(steps,
+				func() { fake.push(Event{Kind: EventMouseDown, X: x, Y: y}) },
+				func() { fake.push(Event{Kind: EventMouseUp, X: x, Y: y}) },
+			)
+		}
+		for i := 0; i < gallerySettleRounds; i++ {
+			steps = append(steps, func() { fake.push(Event{Kind: EventMouseLeave}) })
+		}
 	}
 
 	round := 0
+	animWait := 0
 	var frame *image.RGBA
 	pump := func(maxWait time.Duration) bool {
 		if round < len(steps) {
 			steps[round]()
 			round++
+			return Pump(maxWait)
+		}
+		// 取帧前先等抽屉滑入到位 (Prism S6): 动画心跳是 16ms 定时器, 一轮
+		// pump 只推一帧 —— 步骤表走完就取帧拍到的是"滑到一半"的中间态
+		// (遮罩只淡入了一点、面板底还没铺到静止位置)。上限 40 轮是死循环
+		// 保险 (spinner/skeleton 那类无限加载动画不走这条 —— 它们不在
+		// drawerAnimateNodes 里)。
+		if len(drawerAnimateNodes(a.root)) > 0 && animWait < 40 {
+			animWait++
+			// 绝不能推事件: 有事件泵会立刻醒来, 16ms 的心跳定时器就永远
+			// 轮不到到期 (实测: 每轮推 MouseLeave 时进度停在 0)。空转一轮,
+			// 泵睡到 maxWait (= 下一帧心跳) 醒来, animTick 推进一帧。
 			return Pump(maxWait)
 		}
 		// 取帧必须在关窗**之前**: 关窗那一轮会把窗口从注册表摘掉, 之后的

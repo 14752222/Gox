@@ -16,10 +16,13 @@ import (
 // 卡片上", 不必往树里塞一个 Go 造的子节点 —— 树结构保持与 JS 写的一致,
 // 调试时看到的就是脚本描述的那棵树。
 
-// toastMargin 是 toast 距窗口右上角的边距。
+// toastMargin 是 toast 距窗口右上角的边距 (**设计像素**, 用点见 Space())。
 const toastMargin = 16
 
-// toastAccentW 是 toast 左侧 level 色条宽度。
+// toastAccentW 是 toast 左侧 level 色条宽度 (**设计像素**, 用点见 Space())。
+//
+// Prism S8: 它参与"文本左边到多少"的计算, 必须与 device-independent 的文字
+// 同一套口径 —— 否则 2x 屏上叠加后的左上角会有一个只放大了一半的色条。
 const toastAccentW = 4
 
 // ===== 布局 =====
@@ -71,8 +74,8 @@ func layoutToast(n *GuiNode) {
 	win := n.windowBox()
 	tw, th := n.intrinsicSize()
 	n.Box = Rect{
-		X: win.X + win.W - tw - toastMargin,
-		Y: win.Y + toastMargin,
+		X: win.X + win.W - tw - Space(toastMargin),
+		Y: win.Y + Space(toastMargin),
 		W: tw, H: th,
 	}
 	area := inner(n)
@@ -89,17 +92,20 @@ func layoutToast(n *GuiNode) {
 
 // ===== 绘制 =====
 
-// paintDialog 画遮罩。半透明黑铺满整个窗口, 靠 FillRect 的预乘 src-over
-// 真混合透出下方内容 (P2-2 已放开 alpha, 这里只是第一个真实用户)。
+// paintDialog 画遮罩 + 内容卡片缺省外观 (Prism S6)。
 //
-// 内容卡片的缺省外观 (白底 + 1px 边) 也在这里补: dialog 是"弹出一个面板"
-// 语义, 让最简用法 <dialog open={x}><column>...</column></dialog> 就有
-// 可看的样子。卡片自己给了 background/border 时不插手。
+// 遮罩走 Scrim token (prism 预设 55% 黑, v1 与 Mask 同值 40%): FillRect 的
+// 预乘 src-over 真混合透出下方内容。Scrim 与 Mask 拆成两个 token 的意义在于
+// 预设可以分别标定 —— 组件只认 scrim, mask 留给脚本侧兼容。
+//
+// 卡片缺省: r16 圆角 + surfaceRaised 底 + 1px popupEdge 描边 + 投影
+// (paintShadow: 偏移轮廓 + 两轮盒式模糊, 软光栅对高斯的诚实近似)。卡片自己
+// 给了 background/border 时不插手。
 func paintDialog(img *image.RGBA, n *GuiNode) {
 	if n.Box.W <= 0 || n.Box.H <= 0 {
 		return
 	}
-	FillRect(img, n.Box, colorMask)
+	FillRect(img, n.Box, colorScrim)
 	for _, c := range n.Children {
 		if !c.isFlowChild() {
 			continue
@@ -112,8 +118,10 @@ func paintDialog(img *image.RGBA, n *GuiNode) {
 		if c.Box.W <= 0 || c.Box.H <= 0 {
 			continue
 		}
-		FillRect(img, c.Box, colorPopupFace)
-		StrokeRect(img, c.Box, colorPopupEdge)
+		rad := Radius(RadiusXL)
+		paintShadow(img, c.Box, rad, shadowSpec{x: 0, y: 6, blur: 16, c: color.RGBA{A: 72}})
+		fillRoundRect(img, c.Box, rad, colorSurfaceRaised)
+		strokeRoundRectW(img, c.Box, rad, 1, colorPopupEdge)
 	}
 }
 
@@ -125,7 +133,10 @@ func paintToast(img *image.RGBA, n *GuiNode, disabled bool) {
 	}
 	FillRect(img, b, tint(colorPopupFace, disabled))
 	StrokeRect(img, b, tint(colorPopupEdge, disabled))
-	FillRect(img, Rect{X: b.X, Y: b.Y, W: toastAccentW, H: b.H},
+	// Prism S8: 色条宽、文本起始 x 与右侧留白必须走同一套换算, 否则高密屏上
+	// 文字会压在色条上 (色条没放大, 文字放大了)。
+	accentW := Space(toastAccentW)
+	FillRect(img, Rect{X: b.X, Y: b.Y, W: accentW, H: b.H},
 		tint(toastLevelColor(n), disabled))
 
 	msg := n.toastMessage()
@@ -134,8 +145,8 @@ func paintToast(img *image.RGBA, n *GuiNode, disabled bool) {
 	}
 	size := n.FontSize()
 	_, th := MeasureText(msg, size)
-	x := b.X + toastAccentW + fieldPadX
-	maxW := b.X + b.W - fieldPadX - x
+	x := b.X + accentW + Space(fieldPadX)
+	maxW := b.X + b.W - Space(fieldPadX) - x
 	if maxW < 0 {
 		maxW = 0
 	}
