@@ -262,7 +262,7 @@ func (n *GuiNode) isFocused() bool { return n.focused }
 // 出现, 极难查。
 func (a *app) setCaretFromX(in *GuiNode, x int) {
 	runes := []rune(in.inputValue())
-	textX := in.Box.X + fieldPadX + searchLeading(in)
+	textX := in.Box.X + Space(fieldPadX) + searchLeading(in)
 	// 单行框没有软换行: 整行就是一个视觉段, 于是可以复用同一套换算。
 	whole := taVisual{line: 0, start: 0, end: len(runes)}
 	caret := taColAtX(runes, whole, x-textX, resolveTextStyle(in))
@@ -327,11 +327,11 @@ func paintField(img *image.RGBA, n *GuiNode, disabled bool, leading int) {
 
 	st := resolveTextStyle(n)
 	text, textColor := n.inputText()
-	maxW := b.W - 2*fieldPadX - leading
+	maxW := b.W - 2*Space(fieldPadX) - leading
 	if maxW < 0 {
 		maxW = 0
 	}
-	textX := b.X + fieldPadX + leading
+	textX := b.X + Space(fieldPadX) + leading
 
 	// 光标 x = 字段左留白 + 让位 + "光标之前那截文本"的宽度。placeholder
 	// 不参与计算: 值是空的时候光标就在最左边, 不能因为占了位的灰字而右移。

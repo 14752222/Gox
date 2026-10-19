@@ -34,6 +34,9 @@ import (
 //
 // 下拉项 (select-option) 仍用 selectRowH: 弹层里一行 36 太疏, 选项行比字段
 // 矮是正常的 (浏览器原生下拉也是这样)。
+// 以下常量是**设计像素** (dp), 取值处一律经 Space() 换算 —— Prism S8 之前的
+// 漏洞: 它们是裸物理像素, 于是 2x 屏上字段行还是 36px, 而框里的字已经按
+// dpToPx 放大到 32px, 上下只剩 2px 呼吸 (中文的下缘会被切)。
 const (
 	fieldRowH    = 36 // 字段行高 (input / search / select / datepicker / colorpicker / upload)
 	selectRowH   = 28 // 下拉项行高
@@ -385,11 +388,11 @@ func paintSelect(img *image.RGBA, n *GuiNode, disabled bool) {
 	}
 	if text != "" {
 		_, th := MeasureText(text, size)
-		maxW := b.W - 2*fieldPadX - selectArrowW
+		maxW := b.W - 2*Space(fieldPadX) - Space(selectArrowW)
 		if maxW < 0 {
 			maxW = 0
 		}
-		DrawText(img, img.Bounds(), text, b.X+fieldPadX, b.Y+(b.H-th)/2, size,
+		DrawText(img, img.Bounds(), text, b.X+Space(fieldPadX), b.Y+(b.H-th)/2, size,
 			tint(textColor, disabled), maxW)
 	}
 	paintChevron(img, b, tint(colorInputEdge, disabled))
@@ -408,7 +411,7 @@ func (n *GuiNode) selectEdge(disabled bool) color.RGBA {
 
 // paintChevron 画下拉箭头 (v 形): 两段 2px 粗线拼成 (走 fillLine 的抗锯齿)。
 func paintChevron(img *image.RGBA, b Rect, c color.RGBA) {
-	cx := b.X + b.W - selectArrowW/2 - 1
+	cx := b.X + b.W - Space(selectArrowW)/2 - 1
 	cy := b.Y + b.H/2
 	fillLine(img, cx-4, cy-2, cx, cy+2, 2, c)
 	fillLine(img, cx, cy+2, cx+4, cy-2, 2, c)

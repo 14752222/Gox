@@ -143,7 +143,9 @@ func sliderKnobLeft(n *GuiNode, knobW int) int {
 // sliderValueFromX 把轨道上的一点反算成量化后的值 (点击跳值 / 拖动都走它)。
 func sliderValueFromX(n *GuiNode, x int) float64 {
 	b := n.Box
-	knobW := sliderKnobW
+	// Prism S8: 滑块尺寸也经 Space() 换算 —— 它定义了控件长什么样,
+	// 不换算的结果不是小一点, 而是在 2x 屏上看起来像换了另一个控件。
+	knobW := Space(sliderKnobW)
 	if knobW > b.W {
 		knobW = b.W
 	}
@@ -174,14 +176,14 @@ func paintSlider(img *image.RGBA, n *GuiNode, disabled bool) {
 	if b.W <= 0 || b.H <= 0 {
 		return
 	}
-	knobW, knobH := sliderKnobW, sliderKnobH
+	knobW, knobH := Space(sliderKnobW), Space(sliderKnobH)
 	if knobW > b.W {
 		knobW = b.W
 	}
 	if knobH > b.H {
 		knobH = b.H
 	}
-	trackH := sliderTrackH
+	trackH := Space(sliderTrackH)
 	if trackH > b.H {
 		trackH = b.H
 	}

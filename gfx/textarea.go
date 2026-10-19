@@ -189,16 +189,19 @@ func (n *GuiNode) taCaretX(model []taVisual, st TextStyle) int {
 }
 
 // taArea 返回可编辑/可绘制的内容区 (盒内缩 textareaPadX/PadY)。
+// Prism S8: 内边距是设计像素 (与 intrinsicSize 里撑盒子用的同一份数字) ——
+// 多行的高度 = 行数 × 行高 + 上下留白, 而行高跟字号已经被放大过了。
 func (n *GuiNode) taArea() Rect {
-	w := n.Box.W - 2*textareaPadX
-	h := n.Box.H - 2*textareaPadY
+	padX, padY := Space(textareaPadX), Space(textareaPadY)
+	w := n.Box.W - 2*padX
+	h := n.Box.H - 2*padY
 	if w < 0 {
 		w = 0
 	}
 	if h < 0 {
 		h = 0
 	}
-	return Rect{X: n.Box.X + textareaPadX, Y: n.Box.Y + textareaPadY, W: w, H: h}
+	return Rect{X: n.Box.X + padX, Y: n.Box.Y + padY, W: w, H: h}
 }
 
 // taContentHeight 是全部**视觉**行的总高 (软换行之后行数才是屏幕行数)。

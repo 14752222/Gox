@@ -28,7 +28,8 @@ import (
 // 组件画廊的 a11y 面板与回归清单都读它。
 //
 // 与既有机制的关系: 焦点状态本身 (a.focused / GuiNode.focused) 完全没有
-// 换 —— 点击获焦、输入框光标、焦点虚线框 (drawFocusRing) 都照旧。这一层只是
+// 换 —— 点击获焦、输入框光标、焦点环都是既有机制（环的样式本身在 Prism S3
+// 改成了"盒外 2px 实线"，见 decor.go 的 strokeFocusRing）。这一层只是
 // 把"谁能拿焦点、怎么用键盘换焦点"从"只有鼠标能改"扩到"键盘也能改"。
 
 // a11yNativeFocusable 是"不写 focusable 也进 Tab 序"的标签集合。

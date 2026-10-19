@@ -95,25 +95,69 @@ func hitEscapesLayer(root *GuiNode, x, y int, recurse func(*GuiNode, int, int) *
 	return recurse(root, x, y)
 }
 
-// touchHitBox 是小控件的**命中区** (Prism S4): 视觉尺寸不变, 但命中区补到
-// TouchMin (44)。
+// touchHitBox 是小控件的**命中区** (Prism S4 起, S8 扩触觉不重要全集):
+// 视觉尺寸不变, 但命中区补到 TouchMin (44)。
 //
 // 为什么只在这里扩、不改 Box: 视觉尺寸与命中尺寸是两件事。checkbox 是 18×18,
 // 而 Apple HIG / Material 与 WCAG 2.1 SC 2.5.5 的触控下限是 44 —— 把盒子放大到
 // 44 会撑开整行 (一排复选框之间凭空多出 26px), 而扩大命中区只是让"点在图标
 // 旁边一点"也算数。命中区重叠时的取舍按 z 序: 遍历是倒序的, 后声明的先命中。
+//
+// 哪些标签会被补, 分两类:
+//   - **checkbox / radio**: 18×18, 无条件补。这是 S4 就发出去的既有行为 (改它
+//     会让已经依赖"点在图标边上"的脚本静默失效), 而且 18 连鼠标都不算宽裕;
+//   - **其余交互控件** (button / switch / tag / icon / menu-item / list-item /
+//     slider / rating …): 只在**触摸模式**下补 (见 touchmode.go)。它们 26~36 高,
+//     对鼠标够用, 只有手指才需要 44 —— 无条件补会让"桌子上的表格行"与"桌上
+//     的 Toolbar 按钮"互相吃点击, 那是比漏点更难查的一类 bug。
+//
+// 触觉模式下额外的一条约束: 只有**自己带 onClick** 的节点才参与扩展。命中区
+// 扩展必然与邻居重叠, 让不带处理器的节点也参与, 只会把 HitTestDeep 的悬停归属
+// (hover 探针走的是同一套通报序) 搅乱, 却换不来任何手指能摸到的收益。
 func touchHitBox(n *GuiNode) Rect {
-	if n.Tag != "checkbox" && n.Tag != "radio" {
+	if alwaysTouchExpand(n.Tag) {
+		return TouchInflate(n.Box, true, true)
+	}
+	if !touchModeActive() || n.PropHandler("onClick") == nil {
 		return n.Box
 	}
-	b := n.Box
-	if b.W >= TouchMin && b.H >= TouchMin {
-		return b
+	if touchRowTag(n.Tag) {
+		return touchHitRectRow(n.Box)
 	}
-	// 以盒子为中心外扩 (不是从左上角长): 控件画在哪, 命中区就围在哪。
-	dx := max(TouchMin-b.W, 0) / 2
-	dy := max(TouchMin-b.H, 0) / 2
-	return Rect{X: b.X - dx, Y: b.Y - dy, W: b.W + 2*dx, H: b.H + 2*dy}
+	if !touchExpandTag(n.Tag) {
+		return n.Box
+	}
+	return TouchInflate(n.Box, true, true)
+}
+
+// alwaysTouchExpand 是"无条件补到 44"的标签 —— 只有视觉远小于任何输入设备
+// 舒适尺寸的那一档 (checkbox / radio 的 18×18)。
+func alwaysTouchExpand(tag string) bool {
+	return tag == "checkbox" || tag == "radio"
+}
+
+// touchRowTag 是"整行"类标签: 只补垂直方向 (见 touchHitRectRow 的理由)。
+func touchRowTag(tag string) bool {
+	switch tag {
+	case "list-item", "table-row", "tree-row", "menu-item":
+		return true
+	}
+	return false
+}
+
+// touchExpandTag 是触觉模式下两轴都补的交互控件。
+//
+// slider / switch 这类"拖动型"控件一并包进来是刻意的: 拖动手势一旦在按下那
+// 一判定成"没按到", 后面就没有第二次机会了 —— 而它们的起点常常落在 Thumb
+// 之外的轨道边缘上。
+func touchExpandTag(tag string) bool {
+	switch tag {
+	case "button", "switch", "slider", "checkbox", "radio", "tag",
+		"icon", "avatar", "upload", "select", "input", "search",
+		"textarea", "rating", "datepicker", "colorpicker", "table-cell":
+		return true
+	}
+	return false
 }
 
 // hittableIn 判断子节点 c 是否在父节点 parent 内可命中 (x, y 在 c 的框内)。

@@ -53,6 +53,24 @@ const (
 	cpReadoutH = 20
 )
 
+// cpMetrics 是色板弹层的**物理像素**度量 (上面的常量都是设计像素)。
+//
+// 与 datepicker 的 dateMetrics 同一套理由: 四处使用它 —— 固有尺寸、布局、
+// 绘制、`dx/step` 的命中反算 —— 一处没换算就是"点相邻两格串位"。`step` 单列
+// 是因为它就是命中公式里的那个除数, 少包一层就少一处漏。
+type cpMetrics struct {
+	pad      int // 弹层四周内边距
+	cellSize int // 色块边长
+	cellGap  int // 色块间距
+	step     int // cellSize + cellGap: 网格步进
+	readoutH int // 底部回显行高
+}
+
+func cpMetricsOf() cpMetrics {
+	cell, gap := Space(cpCellSize), Space(cpCellGap)
+	return cpMetrics{pad: Space(cpPopupPad), cellSize: cell, cellGap: gap, step: cell + gap, readoutH: Space(cpReadoutH)}
+}
+
 // cpDefaultPalette 是缺省色板 (24 色, 缺省 8 列 ⇒ 3 行): 灰阶 7 + 白 + 棕 + 16 个色相。
 //
 // 刻意的排布: 第一行是灰阶与白 (最常用的"中性色"), 后两行按色相绕着
@@ -392,12 +410,13 @@ func colorLayoutFor(cp *GuiNode) (colorLayout, bool) {
 	if rows < 1 {
 		rows = 1
 	}
+	m := cpMetricsOf()
 	return colorLayout{
 		popup: b,
 		cols:  cols,
 		rows:  rows,
-		gridX: b.X + cpPopupPad,
-		gridY: b.Y + cpPopupPad,
+		gridX: b.X + m.pad,
+		gridY: b.Y + m.pad,
 	}, true
 }
 
@@ -409,8 +428,9 @@ func colorpickerPopupSize(cp *GuiNode) (w, h int) {
 	if rows < 1 {
 		rows = 1
 	}
-	w = 2*cpPopupPad + cols*cpCellSize + (cols-1)*cpCellGap
-	h = 2*cpPopupPad + rows*cpCellSize + (rows-1)*cpCellGap + cpReadoutH
+	m := cpMetricsOf()
+	w = 2*m.pad + cols*m.cellSize + (cols-1)*m.cellGap
+	h = 2*m.pad + rows*m.cellSize + (rows-1)*m.cellGap + m.readoutH
 	return w, h
 }
 
@@ -443,11 +463,11 @@ func intrinsicColorpicker(n *GuiNode) (w, h int) {
 		text = n.colorPlaceholder()
 	}
 	tw, _ := MeasureText(text, n.FontSize())
-	w = tw + 2*fieldPadX + cpSwatchSize + searchIconGap
-	if w < cpFieldMinW {
-		w = cpFieldMinW
+	w = tw + 2*Space(fieldPadX) + Space(cpSwatchSize) + Space(searchIconGap)
+	if minW := Space(cpFieldMinW); w < minW {
+		w = minW
 	}
-	h = fieldRowH
+	h = Space(fieldRowH)
 	return w, h
 }
 
@@ -470,10 +490,13 @@ func paintColorpicker(img *image.RGBA, n *GuiNode, disabled bool) {
 	}
 	StrokeRect(img, b, tint(edge, disabled))
 
+	// Prism S8: 色块边长与色块—文字间隙随密度换算 (与 intrinsicColorpicker
+	// 同一套口径, 否则 2x 屏上文字会压到色块上)。
+	swSize, gap := Space(cpSwatchSize), Space(searchIconGap)
 	sw := Rect{
-		X: b.X + fieldPadX,
-		Y: b.Y + (b.H-cpSwatchSize)/2,
-		W: cpSwatchSize, H: cpSwatchSize,
+		X: b.X + Space(fieldPadX),
+		Y: b.Y + (b.H-swSize)/2,
+		W: swSize, H: swSize,
 	}
 	if cur, ok := n.colorValue(); ok {
 		if c, ok := ParseColor(cur); ok {
@@ -490,8 +513,8 @@ func paintColorpicker(img *image.RGBA, n *GuiNode, disabled bool) {
 	}
 	if text != "" {
 		_, th := MeasureText(text, size)
-		x := sw.X + sw.W + searchIconGap
-		maxW := b.X + b.W - fieldPadX - x
+		x := sw.X + sw.W + gap
+		maxW := b.X + b.W - Space(fieldPadX) - x
 		if maxW < 0 {
 			maxW = 0
 		}
@@ -515,12 +538,13 @@ func paintColorpickerPopup(img *image.RGBA, n *GuiNode, disabled bool) {
 	size := cp.FontSize()
 	disabled = disabled || cp.disabledInChain()
 
+	m := cpMetricsOf()
 	for i, hex := range pal {
 		col, row := i%l.cols, i/l.cols
 		cell := Rect{
-			X: l.gridX + col*(cpCellSize+cpCellGap),
-			Y: l.gridY + row*(cpCellSize+cpCellGap),
-			W: cpCellSize, H: cpCellSize,
+			X: l.gridX + col*m.step,
+			Y: l.gridY + row*m.step,
+			W: m.cellSize, H: m.cellSize,
 		}
 		if c, ok := ParseColor(hex); ok {
 			FillRect(img, cell, tint(c, disabled))
@@ -546,7 +570,7 @@ func paintColorpickerPopup(img *image.RGBA, n *GuiNode, disabled bool) {
 	if readout != "" {
 		rw, rh := MeasureText(readout, size)
 		rx := l.popup.X + (l.popup.W-rw)/2
-		ry := l.popup.Y + l.popup.H - cpReadoutH + (cpReadoutH-rh)/2
+		ry := l.popup.Y + l.popup.H - m.readoutH + (m.readoutH-rh)/2
 		if ry+rh > l.popup.Y+l.popup.H {
 			ry = l.popup.Y + l.popup.H - rh
 		}
@@ -556,6 +580,11 @@ func paintColorpickerPopup(img *image.RGBA, n *GuiNode, disabled bool) {
 
 // ===== 命中 =====
 
+// TODO(Prism): 触摸模式命中区 —— 色块之间那 4px 缝隙在触摸模式下应并入相邻
+// 色块 (`cell + gap` 整体映射到最近一格), 而不是逐格按中心向外膨胀: 格子
+// 是彼此紧挨的, 每格各自补到 44 会让相邻矩形互相覆盖, 命中结果取决于遍历序,
+// 症状是"点左边那块选中了右边那块"。
+//
 // colorHitAt 把弹层里的一次按下翻译成动作, 返回被点中的色块下标
 // (-1 = 这次按下不在弹层里, 调用方继续走通用流程; 点在弹层空白处返回 -2,
 // 表示"已消费但不动作")。
@@ -569,15 +598,15 @@ func (n *GuiNode) colorHitAt(x, y int) int {
 	if dx < 0 || dy < 0 {
 		return -2
 	}
-	col := dx / (cpCellSize + cpCellGap)
-	row := dy / (cpCellSize + cpCellGap)
+	m := cpMetricsOf()
+	col, row := dx/m.step, dy/m.step
 	if col >= l.cols || row >= l.rows {
 		return -2
 	}
-	if dx%(cpCellSize+cpCellGap) >= cpCellSize {
+	if dx%m.step >= m.cellSize {
 		return -2
 	}
-	if dy%(cpCellSize+cpCellGap) >= cpCellSize {
+	if dy%m.step >= m.cellSize {
 		return -2
 	}
 	idx := row*l.cols + col

@@ -219,7 +219,7 @@ func caretRectOf(n *GuiNode) (x, y, w, h int) {
 	}
 	// input / search: 与 paintField 完全同序 —— 字段左留白 + 放大镜让位 +
 	// "光标之前那截文本"的宽度。placeholder 不参与 (值是空时光标在最左边)。
-	cx := b.X + fieldPadX + searchLeading(n)
+	cx := b.X + Space(fieldPadX) + searchLeading(n)
 	if n.hasInputValue() {
 		runes := []rune(n.inputValue())
 		cw, _ := MeasureText(string(runes[:n.caretIndex(runes)]), size)

@@ -29,9 +29,11 @@ const (
 // searchLeading 报告字段里"文字区左移量" (图标占位); 非 search 标签恒为 0。
 // 绘制 (paintField) 与点击定位 (setCaretFromX) 都经它取值 —— 两处各写一份
 // 迟早漂移, 表现为"光标画的位置和点击落点对不上"。
+// Prism S8: 图标占位是设计像素 —— 它是一个"让文字左移多少"的量, 而它所让位的
+// 那个字已经按密度放大了。
 func searchLeading(n *GuiNode) int {
 	if n.Tag == "search" {
-		return searchIconW + searchIconGap
+		return Space(searchIconW) + Space(searchIconGap)
 	}
 	return 0
 }
@@ -47,8 +49,9 @@ func paintSearch(img *image.RGBA, n *GuiNode, disabled bool) {
 	if fn == nil {
 		return // 内置图标表被改动了名字 —— 与 <icon> 同口径: 不画, 不崩
 	}
-	fn(img, Rect{X: b.X + fieldPadX, Y: b.Y + (b.H-searchIconW)/2, W: searchIconW, H: searchIconW},
-		searchIconW, tint(colorPlaceholder, disabled))
+	iconW := Space(searchIconW)
+	fn(img, Rect{X: b.X + Space(fieldPadX), Y: b.Y + (b.H-iconW)/2, W: iconW, H: iconW},
+		iconW, tint(colorPlaceholder, disabled))
 }
 
 // dispatchSearch 派发 onSearch({value}) (Enter 提交入口; 值取当前受控值)。
