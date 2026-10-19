@@ -534,7 +534,7 @@ func intrinsicDatepicker(n *GuiNode) (w, h int) {
 	if w < dpFieldMinW {
 		w = dpFieldMinW
 	}
-	h = selectRowH
+	h = fieldRowH
 	return w, h
 }
 

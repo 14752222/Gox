@@ -47,8 +47,12 @@ const (
 	// 不该让框宽跟着跳)。
 	textareaMinW = 240
 	// textareaPadX / textareaPadY 是文本框内容与边框的间距。
-	textareaPadX = 6
-	textareaPadY = 4
+	//
+	// Prism S3: 6/4 → 12/8。多行框与单行字段同属"输入类", 内边距必须同一档
+	// (v1 里 textarea 比 input 窄 6px, 两个框并排时首行文字不在一条竖线上);
+	// 纵向 8 是给首行/末行的呼吸量, 与 36 高单行框的上下留白同量级。
+	textareaPadX = 12
+	textareaPadY = 8
 )
 
 // textareaInChain 从 n 起沿祖先链找第一个 textarea (键盘/滚轮/点击分流用)。
@@ -434,12 +438,15 @@ func paintTextarea(img *image.RGBA, n *GuiNode, disabled bool) {
 	if b.W <= 0 || b.H <= 0 {
 		return
 	}
-	FillRect(img, b, tint(n.fieldFace(colorFieldFace), disabled))
-	edge := colorInputEdge
-	if n.isFocused() && !disabled {
-		edge = colorFocusRing
+	// Prism S3: 与单行字段同一套外观 (圆角面 + 三档边框)。
+	rad := resolveRadiusPx(b, nodeRadiusPx(n, RadiusMD))
+	fillRoundRect(img, b, rad, tint(n.fieldFace(colorFieldFace), disabled))
+	edge := n.fieldEdge(colorInputEdge, disabled)
+	if rad > 0 {
+		strokeRoundRectW(img, b, rad, 1, edge)
+	} else {
+		StrokeRect(img, b, edge)
 	}
-	StrokeRect(img, b, tint(edge, disabled))
 
 	area := n.taArea()
 	if area.W <= 0 || area.H <= 0 {

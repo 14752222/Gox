@@ -26,12 +26,18 @@ import (
 
 // slider 的缺省几何。轨道只占盒子中间的一条, 滑块比轨道高 —— 与 switch
 // 的思路一致 (盒子尺寸由布局决定, 视觉在盒内居中铺开)。
+//
+// Prism S4: 轨道 4 → 6、滑块 12 → 18。18 的滑块在 26 高的盒子里留出上下各 4,
+// 与 switch 的滑块同一档 (两个"可拖的小圆"在屏幕上该一样大); 轨道加粗到 6 是
+// 为了在 36 高的字段行里仍然看得见 (v1 的 4px 在圆角字段旁边几乎消失)。
 const (
 	sliderDefW   = 160 // 缺省宽
-	sliderDefH   = 24  // 缺省高
-	sliderTrackH = 4   // 轨道高
-	sliderKnobW  = 12  // 滑块宽
-	sliderKnobH  = 12  // 滑块高
+	sliderDefH   = 26  // 缺省高 (滑块 18 + 上下各 4)
+	sliderTrackH = 6   // 轨道高
+	sliderKnobW  = 18  // 滑块宽
+	sliderKnobH  = 18  // 滑块高
+	// sliderKnobHover 是悬停时的放大系数 (按半径算, 见 paintSlider)。
+	sliderKnobHover = 1.15
 )
 
 // sliderInChain 找祖先链上最近的 slider (命中的可能是它的子节点)。
@@ -180,19 +186,39 @@ func paintSlider(img *image.RGBA, n *GuiNode, disabled bool) {
 		trackH = b.H
 	}
 	ty := b.Y + (b.H-trackH)/2
-	FillRect(img, Rect{X: b.X, Y: ty, W: b.W, H: trackH}, tint(colorTrack, disabled))
+	trackR := trackH / 2 // 轨道两端做成胶囊: 与 switch 同一套"小控件该圆"的约定
+	trackBox := Rect{X: b.X, Y: ty, W: b.W, H: trackH}
+	fillRoundRect(img, trackBox, trackR, tint(colorTrack, disabled))
 
 	knobLeft := sliderKnobLeft(n, knobW)
+	// 滑块(直径 18)比轨道(6)高得多, 圆盘四周会留出一圈 >4px 的空白。这圈空白
+	// 不铺底色就会露出宿主自己的背景 —— 禁用态下漏出的正是没降饱和的原色
+	// (实测 4 个像素)。只铺滑块所在的那一小块盒底 (比圆盘大 1px 收边), 不铺
+	// 整盒: 盒子里轨道以外的上下留白该保持背景, 那是"滑块盒比轨道高"的留白。
+	if b.H > trackH && knobH > trackH {
+		slot := Rect{
+			X: knobLeft, Y: b.Y,
+			W: knobW, H: b.H,
+		}
+		FillRect(img, slot, tint(n.faceColor(colorTrack), disabled))
+	}
 	if fillW := knobLeft + knobW/2 - b.X; fillW > 0 {
-		FillRect(img, Rect{X: b.X, Y: ty, W: fillW, H: trackH},
+		fillRoundRect(img, Rect{X: b.X, Y: ty, W: fillW, H: trackH}, trackR,
 			tint(n.faceColor(colorAccent), disabled))
 	}
 
-	knob := Rect{X: knobLeft, Y: b.Y + (b.H-knobH)/2, W: knobW, H: knobH}
-	// 滑块是白底: 用 fieldFace (而非 faceColor 的提亮) 才能表达出悬停/按压 ——
-	// 白色提亮再提也没变化, fieldFace 走的是"轻微染色"那条路。
-	FillRect(img, knob, tint(n.fieldFace(colorKnob), disabled))
-	StrokeRect(img, knob, tint(colorFieldEdge, disabled))
+	// 悬停放大 (Prism S4): 按半径乘 1.15 而不是给盒子加边框 —— 软光栅没有
+	// 变换矩阵, "放大"只能用更大的半径画同一个圆。
+	r := float64(knobW) / 2
+	if n.hovered && !disabled {
+		r *= sliderKnobHover
+	}
+	cx := float64(knobLeft+knobW/2) + 0.5
+	cy := float64(b.Y+b.H/2) + 0.5
+	// e2 描边: 没有阴影模糊的旋钮在浅色轨道上会"飘", 用一圈比轨道稍深的
+	// 1px 环压住边缘 (与 switch 滑块的观感一致)。
+	fillDiscAA(img, cx, cy, r, tint(n.fieldFace(colorKnob), disabled))
+	fillRingAA(img, cx, cy, r, r-1, 0, tau, tint(colorBorderControl, disabled))
 }
 
 // ===== 交互 =====

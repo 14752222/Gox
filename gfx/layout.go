@@ -439,6 +439,9 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 	case "list-item":
 		return listItemIntrinsic(n, w, h)
 	case "checkbox", "radio":
+		// 视觉 18×18 不变 (Prism S4): 触控命中区另在 hittest 层补到 TouchMin
+		// (见 hittest.go 的 touchHitBox) —— 视觉尺寸跟命中区尺寸是两件事,
+		// 放大盒子会让一排复选框把行距撑开。
 		if w == 0 {
 			w = 18
 		}
@@ -446,11 +449,13 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 			h = 18
 		}
 	case "switch":
+		// Prism S4: 36×20 方形轨道 → 44×26 胶囊轨道。44 同时是 TouchMin,
+		// 于是开关自己就满足触控下限, 不必再补命中区。
 		if w == 0 {
-			w = 36
+			w = 44
 		}
 		if h == 0 {
-			h = 20
+			h = 26
 		}
 	case "progress":
 		if w == 0 {
@@ -474,13 +479,16 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 	case "button":
 		// 内容尺寸: 让缺省外观有实体高度 (此前 button 无尺寸 → 0 高空盒,
 		// 既不可见也命不中)。v1 多子节点按横排累加, 不做自动换行。
+		//
+		// Prism S3: 高度有 36 的下限 —— 只按"内容 + 内边距"算的话, 一个
+		// font={11} 的小按钮会缩到 27, 同排按钮高低不齐。
 		cw, ch := n.contentSize()
 		padX, padY := n.buttonPadding()
 		if w == 0 {
 			w = cw + 2*padX
 		}
 		if h == 0 {
-			h = ch + 2*padY
+			h = max(Space(buttonH), ch+2*padY)
 		}
 	case "select":
 		// 字段行: 高 28; 宽 = 当前值/placeholder 文本 + 两侧留白 + 箭头。
@@ -498,7 +506,7 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 			}
 		}
 		if h == 0 {
-			h = selectRowH
+			h = fieldRowH
 		}
 	case "select-option":
 		tw, _ := MeasureText(n.TextContent(), n.FontSize())
@@ -566,14 +574,15 @@ func (n *GuiNode) intrinsicSize() (w, h int) {
 			}
 		}
 	case "input", "search":
-		// 单行输入框: 高 28 (与 select 同一套字段常量); 宽度按内容算不合适
-		// —— 文字会随打字变长, 宽度跟着跳变很难看, 所以给一个固定缺省值,
-		// 需要更宽就显式写 width。(search 是 input 的字段变体, 同一套缺省。)
+		// 单行输入框: 高 36 (与 select / button 同一套字段常量); 宽度按内容
+		// 算不合适 —— 文字会随打字变长, 宽度跟着跳变很难看, 所以给一个固定
+		// 缺省值, 需要更宽就显式写 width。(search 是 input 的字段变体, 同一
+		// 套缺省。)
 		if w == 0 {
 			w = inputMinW
 		}
 		if h == 0 {
-			h = selectRowH
+			h = fieldRowH
 		}
 	case "rating":
 		// 星级: 每颗星占一个 20px 方格 (max 缺省 5 ⇒ 100x20)。星形半径按
@@ -884,10 +893,22 @@ func (n *GuiNode) gapOf() int {
 	return dpToPx(v)
 }
 
-// layoutButton 摆放 button 的内容区: 内边距走 buttonPadding (缺省 8/6)。
+// layoutButton 摆放 button 的内容区: 内边距走 buttonPadding (缺省 16/10)。
+//
+// 按压时内容整体下移 1px (Prism S3): 规范要的按压反馈是 scale(.985), 而软光栅
+// 没有变换矩阵 —— "面更沉一档" (pressFace) 加"内容下移 1px"合起来才是那个观感。
+// 只挪内容、不改盒子: 盒高跟着按压缩放的话, 同排按钮会在按下瞬间抖一下。
 func layoutButton(n *GuiNode) {
 	padX, padY := n.buttonPadding()
 	layoutInlineRow(n, padX, padY)
+	if !n.pressed || n.disabledInChain() {
+		return
+	}
+	for _, c := range n.Children {
+		if c.isFlowChild() {
+			c.Box.Y++
+		}
+	}
 }
 
 // layoutInlineRow 摆放"单行内容": 子节点按声明序横排, 交叉轴垂直居中,

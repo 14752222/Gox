@@ -147,7 +147,7 @@ const Panel = () => {
 // ===== 界面 =====
 
 render(
-  <window title="gx/view — loops & conditions, mechanics visible" width={700} height={580}>
+  <window title="gx/view — loops & conditions, mechanics visible" width={700} height={620}>
     <column gap={10} padding={14}>
       <text font={17}>gx/view — For / Show / Switch / Match</text>
       <text font={11} color="#8a93a0">

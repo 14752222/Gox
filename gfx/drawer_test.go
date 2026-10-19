@@ -94,7 +94,8 @@ func TestDrawerClosedIsInert(t *testing.T) {
 	if d.Box != (Rect{}) {
 		t.Fatalf("关闭的 drawer 盒子应为空: %v", d.Box)
 	}
-	assertPx(t, img, btn.Box.X+2, btn.Box.Y+2, pxBtnFace, "关闭的 drawer 不该画遮罩")
+	// 取面中心而不是角: button 现在有 8px 圆角, 四角落在盒外
+	assertPx(t, img, btn.Box.X+btn.Box.W/2, btn.Box.Y+btn.Box.H/2, pxBtnFace, "关闭的 drawer 不该画遮罩")
 	if hit := HitTest(root, btn.Box.X+2, btn.Box.Y+2); hit != btn {
 		t.Fatalf("关闭的 drawer 不应拦截点击, got %v", hit)
 	}

@@ -269,6 +269,96 @@ func effectiveOpacity(n *GuiNode) float64 {
 	return v
 }
 
+// ===== 小控件状态过渡 (Prism S4) =====
+//
+// checkbox / radio / switch 的"选中"是一跳到位的状态切换, 而 Prism 要它有
+// 过渡。这里给它们一条**独立于 prop 过渡**的路径, 三个理由:
+//
+//  1. animate.go 的 v1 承诺是"颜色过渡故意不做" (animatableProps 只有数值
+//     几何量), 强行把颜色塞进 prop 过渡会要求脚本写 `transition={{…}}`;
+//     而控件动效是**组件自带**的, 不该让使用方 opt-in。
+//  2. 补的不是 prop: `checked` 在动画第一帧就已经是终值了 (受控模型), 而
+//     animState 的机制是"prop 变、显示值滞后" —— 两者方向相反。
+//  3. 只补一个 [0,1] 的进度标量, 绘制侧自己决定"它该作用在颜色上还是位移上"
+//     (复选框是渐显、单选是胀开、开关是位移 + 变色)。
+//
+// 时长一律走 MotionDuration(): reduced-motion 下它返回 0, 于是这里**根本不起
+// 表** (不进 ctrlAnimNodes、不挂心跳定时器), 控件直接落终值 —— 这正是
+// "开启时不排队动画对象"这条要求的实现方式。
+
+// ctrlAnimNodes 是"有小控件过渡在跑"的节点集合, 与 animNodes 分开: 两者的
+// 清理条件不同 (前者清 n.ctrl, 后者清 n.anim), 混在一个循环里很容易漏删。
+var ctrlAnimNodes = map[*GuiNode]struct{}{}
+
+// controlAnimMS 是各控件状态过渡的时长档 (Prism S4):
+// 勾选/圆点是一次"确认"的微交互 (Fast), 开关的滑块要走完 26px 的行程 (Base)。
+func controlAnimMS(tag string) int {
+	if tag == "switch" {
+		return MotionBase
+	}
+	return MotionFast
+}
+
+// startControlTransition 在 checked 变化时起一段过渡。
+//
+// 调用点在 node.go 的 startPropTransition (响应式 prop 的写回路径): 静态
+// checked 不动画 —— 组件刚出现时"从 0 长出勾"是入场动画, 那该由脚本显式表达。
+func (n *GuiNode) startControlTransition(checked bool) {
+	to := 0.0
+	if checked {
+		to = 1
+	}
+	from := n.controlPhase()
+	// reduced-motion: MotionDuration 返回 0 → 不起表、不挂心跳, 直接落终值。
+	dur := time.Duration(MotionDuration(controlAnimMS(n.Tag))) * time.Millisecond
+	if dur <= 0 || from == to {
+		n.ctrl = nil
+		delete(ctrlAnimNodes, n)
+		markNodeDirty(n)
+		return
+	}
+	n.ctrl = &animState{from: from, to: to, start: animNow(), dur: dur}
+	ctrlAnimNodes[n] = struct{}{}
+	ensureAnimTicker()
+	markNodeDirty(n)
+}
+
+// controlPhase 返回控件"选中度"的当前显示值 [0,1]。
+//
+// 绘制侧 (paintCheckbox / paintRadio / paintSwitch) 只读它, 不读 checked:
+// 动画期间 checked 已经是终值了。
+func (n *GuiNode) controlPhase() float64 {
+	target := 0.0
+	if n.checked() {
+		target = 1
+	}
+	s := n.ctrl
+	if s == nil {
+		return target
+	}
+	if now := animNow(); !s.done(now) {
+		return s.at(now)
+	}
+	// 已走完: 就地清理 (不必等心跳), 免得"画完最后一帧"与"清表"之间那几帧
+	// 反复命中同一个 animState。
+	n.ctrl = nil
+	delete(ctrlAnimNodes, n)
+	return s.to
+}
+
+// tickCtrlAnims 推进一帧小控件过渡, 报告是否还有活着的。
+func tickCtrlAnims(now time.Time) bool {
+	for n := range ctrlAnimNodes {
+		if n.ctrl == nil || n.ctrl.done(now) {
+			n.ctrl = nil
+			delete(ctrlAnimNodes, n)
+			continue
+		}
+		markNodeDirty(n)
+	}
+	return len(ctrlAnimNodes) > 0
+}
+
 // ===== 子树淡出 (opacity) =====
 
 // fadeStack 是绘制期的"当前不透明度"栈。
@@ -359,7 +449,8 @@ func animTick() {
 	}
 	loadingActive := tickerTick()
 	drawerActive := drawerTick()
-	if len(animNodes) > 0 || loadingActive || drawerActive {
+	ctrlActive := tickCtrlAnims(now)
+	if len(animNodes) > 0 || ctrlActive || loadingActive || drawerActive {
 		scheduleAnimTick()
 		return
 	}
@@ -375,6 +466,11 @@ func cancelAnim(n *GuiNode) {
 		n.anim = nil
 	}
 	delete(animNodes, n)
+	// 小控件过渡同理: 离树的 checkbox/switch 不该再被帧心跳标脏。
+	if n.ctrl != nil {
+		n.ctrl = nil
+	}
+	delete(ctrlAnimNodes, n)
 	// 加载态集合一并摘除: spinner/skeleton 离树后不该再被帧心跳标脏。
 	unregisterTicker(n)
 }

@@ -599,19 +599,23 @@ func (n *GuiNode) textDrawnByTextAncestor() bool {
 }
 
 // backgroundFor 返回节点纯色填充面: 显式 background prop 优先 (渐变写法
-// 不是纯色面, 这里返回 false), button 无显式值时回落缺省浅灰面。
+// 不是纯色面, 这里返回 false), button 无显式值时回落 Prism 的抬升面
+// (colorSurfaceRaised —— 见 decor.go 的 backgroundPaint)。
 func (n *GuiNode) backgroundFor() (color.RGBA, bool) {
 	solid, grad, ok := n.backgroundPaint()
 	if ok && grad == nil {
 		return solid, true
 	}
 	if !ok && n.Tag == "button" {
-		return colorBtnFace, true
+		return colorSurfaceRaised, true
 	}
 	return color.RGBA{}, false
 }
 
-// borderFor 返回节点描边色: 同上, button 缺省 1px 深灰边框。
+// borderFor 返回节点描边色: 同上, button 缺省 1px 控件级边框。
+//
+// 悬停时"升一档" (Prism S3): 白/浅面上 hover 的提亮已经顶到 255 无从体现,
+// 反馈只能由边框承担 —— 这也是"发丝边"缺省能成立的前提 (边才是可变的那一层)。
 func (n *GuiNode) borderFor() (color.RGBA, bool) {
 	if s, ok := n.PropStr("border"); ok {
 		if c, ok := ParseColor(s); ok {
@@ -619,7 +623,10 @@ func (n *GuiNode) borderFor() (color.RGBA, bool) {
 		}
 	}
 	if n.Tag == "button" {
-		return colorBtnEdge, true
+		if n.hovered && !n.disabledInChain() {
+			return colorTextSecondary, true
+		}
+		return colorBorderControl, true
 	}
 	return color.RGBA{}, false
 }
@@ -643,22 +650,31 @@ func drawWidget(img *image.RGBA, n *GuiNode, disabled bool) {
 	}
 }
 
-// paintCheckbox 画复选框: 18x18 边框空盒, 选中时填强调色并画勾。
-// 勾用两段 2px 粗的短线拼接, 斜率按 18px 盒子近似 (走 fillLine 的抗锯齿)。
+// paintCheckbox 画复选框: 18x18 圆角空盒 (Prism S4 缺省 r4), 选中时填强调色
+// 并画勾; 勾用两段 2px 粗的短线拼接, 斜率按 18px 盒子近似 (走 fillLine 的抗锯齿)。
+//
+// 选中/取消是一次 **MotionFast 的渐显** (见 controlPhase): 填充与勾都按进度
+// 乘 alpha —— 软光栅没有图层合成, "半透明的强调色合成到盒子上"就是颜色插值
+// 的等价结果, 且这条路径能被 reduced-motion 直接关成瞬时 (dur=0 → 不起表)。
 func paintCheckbox(img *image.RGBA, n *GuiNode, disabled bool) {
 	b := n.Box
 	if b.W <= 0 || b.H <= 0 {
 		return
 	}
+	rad := resolveRadiusPx(b, nodeRadiusPx(n, RadiusXS))
 	edge := tint(n.propColor("border", colorFieldEdge), disabled)
-	if n.checked() {
-		FillRect(img, b, tint(n.faceColor(colorAccent), disabled))
+	phase := n.controlPhase()
+	if phase > 0 {
+		fill := tint(n.faceColor(colorAccent), disabled)
+		fill.A = uint8(float64(fill.A) * phase)
+		fillRoundRect(img, b, rad, fill)
 	}
-	StrokeRect(img, b, edge)
-	if !n.checked() {
+	strokeRoundRectW(img, b, rad, 1, edge)
+	if phase <= 0 {
 		return
 	}
 	mark := tint(n.propColor("color", colorAccentText), disabled)
+	mark.A = uint8(float64(mark.A) * phase)
 	// 勾: 起点 (22%,50%) → 折点 (39%,67%) → 终点 (72%,28%), 按盒子比例取点
 	start := image.Pt(b.X+pct(b.W, 22), b.Y+pct(b.H, 50))
 	bottom := image.Pt(b.X+pct(b.W, 39), b.Y+pct(b.H, 67))
@@ -681,47 +697,55 @@ func paintRadio(img *image.RGBA, n *GuiNode, disabled bool) {
 	}
 	cx, cy := b.X+b.W/2, b.Y+b.H/2
 	StrokeCircle(img, cx, cy, r, tint(n.propColor("border", colorFieldEdge), disabled))
-	if n.checked() {
+	// 圆点按"选中度"长出来 (MotionFast): 半径直接乘进度, 于是出场是"从中心
+	// 胀开"而不是"淡入" —— 单选框的选中语义比复选框更强, 位移比透明度明显。
+	if phase := n.controlPhase(); phase > 0 {
 		dotR := min(b.W, b.H) / 4 // 18px 盒子 → 直径约 8px
 		if dotR < 1 {
 			dotR = 1
 		}
-		FillCircle(img, cx, cy, dotR, tint(n.faceColor(colorAccent), disabled))
+		fillDiscAA(img, float64(cx)+0.5, float64(cy)+0.5, float64(dotR)*phase,
+			tint(n.faceColor(colorAccent), disabled))
 	}
 }
 
-// paintSwitch 画开关: 36x20 方形轨道 + 16x16 方块滑块, 位置由 checked 决定。
-// (v1 方形轨道, 圆角轨道留待绘制系统升级。)
+// switchKnobD 是滑块直径 (Prism S4)。轨道 44×26 - 上下各留 4 = 18, 于是滑块
+// 与轨道的间隙四周一致 (v1 的方块滑块是 16×16, 左右间隙 2、上下间隙 2, 比例
+// 全靠盒子尺寸碰运气)。
+const switchKnobD = 18
+
+// paintSwitch 画开关: 44x26 **胶囊**轨道 + 18 圆形滑块, 位置由"选中度"插值
+// (Prism S4 —— v1 的方形轨道这次一并升级)。
+//
+// 圆角取哨兵 RadiusFull: 绘制侧按 min(w,h)/2 算, 于是脚本把开关拉宽 (常见:
+// 放进 stretch 的行里) 时也仍然是胶囊, 不会退化成"很长的圆角矩形"。
 func paintSwitch(img *image.RGBA, n *GuiNode, disabled bool) {
 	b := n.Box
 	if b.W <= 0 || b.H <= 0 {
 		return
 	}
-	checked := n.checked()
-	track := n.interactiveFace(colorSwitchOff) // 关闭态也做悬停/按压反馈
-	if checked {
-		track = n.faceColor(colorAccent)
-	}
-	FillRect(img, b, tint(track, disabled))
+	phase := n.controlPhase()
+	// 轨道色按进度在"关"与"开"之间插值: 滑块在动的同时底色也在变, 看不出
+	// "先变色再滑动"的两段感。
+	off := n.interactiveFace(colorSwitchOff) // 关闭态也做悬停/按压反馈
+	on := n.faceColor(colorAccent)
+	track := mixColor(off, on, phase)
+	fillRoundRect(img, b, resolveRadiusPx(b, nodeRadiusPx(n, RadiusFull)), tint(track, disabled))
 
-	knobW := b.H * 16 / 20 // 20px 高时 16px 宽 (盒子被拉伸时按比例)
-	if knobW > b.W/2 {
-		knobW = b.W / 2
-	}
-	if knobW < 2 {
+	d := min(Space(switchKnobD), min(b.W, b.H))
+	if d < 2 {
 		return
 	}
-	kw := knobW
-	kh := b.H - 4
-	if kh < 2 {
-		kh = b.H
+	inset := (b.H - d) / 2
+	if inset < 0 {
+		inset = 0
 	}
-	ky := b.Y + (b.H-kh)/2
-	kx := b.X + 2
-	if checked {
-		kx = b.X + b.W - kw - 2
-	}
-	FillRect(img, Rect{X: kx, Y: ky, W: kw, H: kh}, tint(colorKnob, disabled))
+	cy := b.Y + b.H/2
+	left := b.X + inset
+	right := b.X + b.W - d - inset
+	// MotionBase 的 decelerate 位移 (controlPhase 内部按 easeOut 推进)
+	cx := left + int(float64(right-left)*phase+0.5)
+	FillCircle(img, cx+d/2, cy, d/2, tint(colorKnob, disabled))
 }
 
 // paintProgress 画进度条: 轨道浅灰 + 前景按 value 比例填充, value 已钳位 [0,1]。

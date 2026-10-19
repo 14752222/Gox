@@ -41,9 +41,9 @@ import (
 // 跨窗口不共享任何状态: 键盘焦点、拖动目标、快捷键表都是"本窗口"的 ——
 // 键盘事件由平台投递到具体窗口, 天然隔离。
 type app struct {
-	mu         sync.Mutex
-	id         int // 窗口身份 (P3-7): Mount 时分配, 用于路由作用域等"按窗口记账"的设施
-	surface    Surface
+	mu      sync.Mutex
+	id      int // 窗口身份 (P3-7): Mount 时分配, 用于路由作用域等"按窗口记账"的设施
+	surface Surface
 	// present 是"像素上屏"用的 Surface: 呈现包装器链 (GPU 合成 / 软媒体
 	// 视频帧) 的终点, 无包装器时与 surface 是同一个 (测试直构 app 不设它,
 	// 走 presentSurface() 的回退)。与 surface 分开持是为了让**可选能力**
@@ -952,12 +952,14 @@ func (a *app) setFocus(target *GuiNode) {
 			a.callHandler(h, "onBlur", nil)
 		}
 		markNodeDirty(old)
+		a.invalidateFocusRing(old)
 	}
 	if target != nil {
 		if h := handlerInChain(target, "onFocus"); h != nil {
 			a.callHandler(h, "onFocus", nil)
 		}
 		markNodeDirty(target)
+		a.invalidateFocusRing(target)
 	}
 }
 
@@ -1226,6 +1228,10 @@ func (a *app) handleMouseDown(x, y int) {
 		a.setPress(pressChainOf(sl))
 		a.beginDrag(sl)
 		a.sliderDrag(sl, x)
+		// Prism S4: 拖动期间焦点环要一直可见 —— v1 只在 MouseUp 时设焦点
+		// (见 handleMouseUp), 于是"按住滑块拖"的整个过程里没有任何焦点反馈,
+		// 而拖动恰恰是最需要确认"我在操作哪一个"的时刻。
+		a.setFocus(sl)
 		return
 	}
 	// tabs 标签条 (S4 rPrfGD): 标签按钮是组件自绘区 (页子树之外),
@@ -1832,12 +1838,25 @@ func (a *app) drawFocusRing(img *image.RGBA) {
 	if coveredByOverlay(n, root) {
 		return
 	}
-	// 内缩 1px: 不覆盖节点自己的边框 (button 缺省有 1px 边), 框看得清
-	r := Rect{X: n.Box.X + 1, Y: n.Box.Y + 1, W: n.Box.W - 2, H: n.Box.H - 2}
-	if r.W < 2 || r.H < 2 {
+	// Prism S3: 2px 实线环 + 2px 底色间隙 (环画在盒子**外侧**, 不再压控件
+	// 自己的边框)。圆角跟随控件的 radius prop —— v1 的虚线框是直角, 圆角
+	// 按钮配直角框是这批控件最难看的一处。
+	strokeFocusRing(img, n.Box, nodeRadiusPx(n, defaultRadiusFor(n.Tag)), colorFocusRing)
+}
+
+// invalidateFocusRing 把"焦点环占的那一圈"标脏。
+//
+// 为什么要它: 环现在画在盒子**外** 4px, 而 diffRects 只按节点的框算脏区 ——
+// 焦点挪走后, 旧环那一圈不属于任何节点的框, 不补标就会在画面上留下一个
+// 永远擦不掉的方框 (局部重绘下尤其明显)。
+func (a *app) invalidateFocusRing(n *GuiNode) {
+	if n == nil {
 		return
 	}
-	StrokeDashedRect(img, r, colorFocusRing, 2, 2)
+	a.mu.Lock()
+	a.needDraw = true
+	a.extraDirty = append(a.extraDirty, focusRingRect(n.Box))
+	a.mu.Unlock()
 }
 
 // ===== gx/gfx 模块注册 =====

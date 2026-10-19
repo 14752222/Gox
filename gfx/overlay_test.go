@@ -43,15 +43,18 @@ func TestSelectClosedGeometryAndFace(t *testing.T) {
 
 	img := renderTree(root, 300, 160)
 
-	if sel.Box.H != selectRowH {
-		t.Fatalf("select 行高 = %d, want %d", sel.Box.H, selectRowH)
+	// Prism S3: 字段行高 28 → 36
+	if sel.Box.H != fieldRowH {
+		t.Fatalf("select 行高 = %d, want %d", sel.Box.H, fieldRowH)
 	}
 	if sel.Box.W < selectMinW {
 		t.Fatalf("select 宽度 = %d, want >= %d", sel.Box.W, selectMinW)
 	}
 	// 闭合态: 白底 + 1px #999 边框 (与 input 同一套外观)
-	assertPx(t, img, sel.Box.X+4, sel.Box.Y+selectRowH/2, pxFieldFace, "字段白底")
-	assertPx(t, img, sel.Box.X, sel.Box.Y, pxInputEdge, "字段边框")
+	// Prism S3: 字段改成圆角 r8 —— 盒角 (0,0) 落在圆角外, 那里是背景不是边框;
+	// 取上边框的中点验边, 取盒内中部验白底。
+	assertPx(t, img, sel.Box.X+4, sel.Box.Y+sel.Box.H/2, pxFieldFace, "字段白底")
+	assertPx(t, img, sel.Box.X+sel.Box.W/2, sel.Box.Y, pxInputEdge, "字段边框")
 	// 标签 (当前值 "banana") 真的画出来了: 文本行内有非底色的像素
 	if !hasInkIn(img, Rect{sel.Box.X + fieldPadX, sel.Box.Y, sel.Box.W - fieldPadX*2 - selectArrowW, sel.Box.H}) {
 		t.Fatalf("select 未绘制当前值文本")
@@ -123,7 +126,9 @@ func TestSelectPopupEscapesFieldBox(t *testing.T) {
 	// 未高亮且未被悬停的项仍是弹层白底
 	assertPx(t, img, rows[0].Box.X+2, rows[0].Box.Y+selectRowH/2, pxPopupFace, "普通项为弹层白底")
 	// 弹层 1px 边框在字段盒子之外也画出来了 (父盒没裁掉它)
-	assertPx(t, img, sel.popup.Box.X, sel.popup.Box.Y+sel.popup.Box.H-1, pxPopupEdge, "弹层下边框")
+	// 弹层下边框: 取底边中点 —— 弹层现在有 8px 圆角, 左下角落在圆外
+	assertPx(t, img, sel.popup.Box.X+sel.popup.Box.W/2, sel.popup.Box.Y+sel.popup.Box.H-1,
+		pxPopupEdge, "弹层下边框")
 }
 
 func TestSelectOptionClickChoosesClosesAndRefocuses(t *testing.T) {
@@ -457,7 +462,8 @@ func TestClosedDialogInvisibleAndPassThrough(t *testing.T) {
 	if dlg.Box != (Rect{}) {
 		t.Fatalf("关闭的 dialog 盒子应为空: %v", dlg.Box)
 	}
-	assertPx(t, img, btn.Box.X+2, btn.Box.Y+2, pxBtnFace, "关闭的 dialog 不该画遮罩")
+	// 取面中心而不是角: button 现在有 8px 圆角, 四角落在盒外
+	assertPx(t, img, btn.Box.X+btn.Box.W/2, btn.Box.Y+btn.Box.H/2, pxBtnFace, "关闭的 dialog 不该画遮罩")
 	// 关闭的弹层也不拦截: 点击照旧命中它下面的按钮
 	if hit := HitTest(root, btn.Box.X+2, btn.Box.Y+2); hit != btn {
 		t.Fatalf("关闭的 dialog 不应拦截点击, got %v", hit)

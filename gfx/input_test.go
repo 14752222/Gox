@@ -32,9 +32,10 @@ func TestInputDefaultGeometryAndOverrides(t *testing.T) {
 	mountChildren(root, in)
 	Layout(root, 400, 300)
 
-	if in.Box.W != inputMinW || in.Box.H != selectRowH {
+	// Prism S3: 字段行高 28 → 36 (与 select / datepicker / button 齐平)
+	if in.Box.W != inputMinW || in.Box.H != fieldRowH {
 		t.Fatalf("input 缺省尺寸 = %dx%d, want %dx%d",
-			in.Box.W, in.Box.H, inputMinW, selectRowH)
+			in.Box.W, in.Box.H, inputMinW, fieldRowH)
 	}
 
 	// 输入框不参与交叉轴 stretch: 宽度按固定缺省值, 不做"随文字变长"的
@@ -68,14 +69,15 @@ func TestInputFaceBorderAndFocusColor(t *testing.T) {
 	if got := img.RGBAAt(in.Box.X+3, in.Box.Y+3); got != pxWhite {
 		t.Fatalf("未获焦底色 = %v, want 白底", got)
 	}
-	if got := img.RGBAAt(in.Box.X, in.Box.Y+1); got != pxInputEdge {
+	// 边框取上边中点: 字段现在是圆角 (缺省 r8), 左上角落在盒外
+	if got := img.RGBAAt(in.Box.X+in.Box.W/2, in.Box.Y); got != pxInputEdge {
 		t.Fatalf("未获焦边框 = %v, want %v", got, pxInputEdge)
 	}
 
 	// 获焦: 边框换强调蓝 (光标像素另有用例)
 	in.focused = true
 	img2 := renderTree(root, 300, 160)
-	if got := img2.RGBAAt(in.Box.X, in.Box.Y+1); got != colorFocusRing {
+	if got := img2.RGBAAt(in.Box.X+in.Box.W/2, in.Box.Y); got != colorFocusRing {
 		t.Fatalf("获焦边框 = %v, want %v", got, colorFocusRing)
 	}
 }
@@ -162,7 +164,7 @@ func TestInputDisabledDrawsNoCaretAndKeepsIdleBorder(t *testing.T) {
 	resetCaretPhase(time.Now())
 	img := renderTree(root, 300, 160)
 
-	if got := img.RGBAAt(in.Box.X, in.Box.Y+1); got != dim(pxInputEdge) {
+	if got := img.RGBAAt(in.Box.X+in.Box.W/2, in.Box.Y); got != dim(pxInputEdge) {
 		t.Fatalf("禁用边框 = %v, want %v (不随焦点变蓝)", got, dim(pxInputEdge))
 	}
 	if got := img.RGBAAt(in.Box.X+fieldPadX, in.Box.Y+in.Box.H/2); got != dim(pxWhite) {

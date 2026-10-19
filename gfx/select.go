@@ -27,9 +27,17 @@ import (
 // 触发 onChange({value}) 并收起弹层, 显示内容仍取决于下一轮 value prop。
 
 // 字段类组件的公共尺寸 (select / 后续 input 共用)。
+//
+// Prism S3: 字段行高 28 → 36, 水平留白 8 → 12。36 与 button 同高, 于是"一行
+// 标签 + 输入 + 按钮"在横排里是齐的 (v1 里字段比按钮矮一截); 12 的留白是
+// 36 高字段的呼吸量 (8 在 28 高上够用, 在 36 高上显得挤)。
+//
+// 下拉项 (select-option) 仍用 selectRowH: 弹层里一行 36 太疏, 选项行比字段
+// 矮是正常的 (浏览器原生下拉也是这样)。
 const (
-	selectRowH   = 28 // 字段行高
-	fieldPadX    = 8  // 字段内水平留白
+	fieldRowH    = 36 // 字段行高 (input / search / select / datepicker / colorpicker / upload)
+	selectRowH   = 28 // 下拉项行高
+	fieldPadX    = 12 // 字段内水平留白
 	selectArrowW = 18 // 右侧下拉箭头占位宽度
 	selectMinW   = 80 // 无显式宽度时的最小宽度
 )
@@ -37,6 +45,24 @@ const (
 // selectPopupZ 是下拉弹层的 zIndex: 弹层之间仍可互相压盖 (弹层标签另有
 // overlayZBase 的抬升, 见 layer.go)。
 const selectPopupZ = 100
+
+// popupShadowProp 是弹层的 e3 投影 (Prism S3)。
+//
+// e3 在原规范里是"模糊半径较大的柔和投影"。gfx 有真的盒式模糊 (decor.go 的
+// paintShadow), 所以这里不必退化成"1px 边 + 偏移描边" —— 直接给 y 偏移 2、
+// blur 6、20% 黑, 出来的就是"紧贴在弹层下沿的一层薄阴影", 这正是 e3 在
+// 弹层上的观感 (大 blur 反而会把小弹层糊脏)。
+func popupShadowProp() *object.Object {
+	sh := object.NewObject()
+	sh.SetProperty("x", object.NewNumber(0))
+	sh.SetProperty("y", object.NewNumber(2))
+	sh.SetProperty("blur", object.NewNumber(6))
+	sh.SetProperty("color", object.NewString(popupShadowHex))
+	return sh
+}
+
+// popupShadowHex 是弹层投影的颜色+alpha (约 20% 黑)。
+const popupShadowHex = "#00000033"
 
 // selectOption 是一个下拉项 (value 供脚本使用, label 用于显示)。
 type selectOption struct {
@@ -225,6 +251,13 @@ func buildSelectPopup(sel *GuiNode) *GuiNode {
 	withStrProp(popup, "background", colorPopupFaceHex)
 	withStrProp(popup, "border", colorPopupEdgeHex)
 	withNumProp(popup, "padding", 1) // 让 1px 边框不压在首行上
+	// Prism S3: 弹层圆角 8 + e3 投影。
+	//
+	// 圆角与阴影都写成 props 而不是在绘制分支里特判: 弹层走的是通用盒子
+	// 分支 (paintBoxDecor), 只有走同一条路才能保证"脚本显式给 radius/shadow"
+	// 与内核缺省长得一样 —— 缺省不该是第二套实现。
+	withNumProp(popup, "radius", float64(RadiusMD))
+	popup.Props["shadow"] = popupShadowProp()
 	withBoolProp(popup, "escapeClipping", true)
 	withNumProp(popup, "zIndex", selectPopupZ)
 	popup.Parent = sel
@@ -332,12 +365,17 @@ func paintSelect(img *image.RGBA, n *GuiNode, disabled bool) {
 	if b.W <= 0 || b.H <= 0 {
 		return
 	}
-	FillRect(img, b, tint(n.fieldFace(colorFieldFace), disabled))
-	edge := colorInputEdge
-	if n.expanded {
-		edge = colorFocusRing
+	// Prism S3: 与 input 同一套字段外观 (圆角 r8 + 三档边框)。展开态的边框
+	// 走 fieldEdge 的获焦档 —— 展开中的下拉与获焦的字段是同一个"我现在正在
+	// 操作它"的语义。
+	rad := resolveRadiusPx(b, nodeRadiusPx(n, RadiusMD))
+	fillRoundRect(img, b, rad, tint(n.fieldFace(colorFieldFace), disabled))
+	edge := n.selectEdge(disabled)
+	if rad > 0 {
+		strokeRoundRectW(img, b, rad, 1, edge)
+	} else {
+		StrokeRect(img, b, edge)
 	}
-	StrokeRect(img, b, tint(edge, disabled))
 
 	size := n.FontSize()
 	text, ok := n.selectLabel()
@@ -357,6 +395,17 @@ func paintSelect(img *image.RGBA, n *GuiNode, disabled bool) {
 	paintChevron(img, b, tint(colorInputEdge, disabled))
 }
 
+// selectEdge 是 select 闭合态的边框色: 展开时取获焦档, 其余与字段一致
+// (显式 border → 悬停 → 静息)。抽出来是因为 select 的"获焦"是 expanded 而
+// 不是 focused —— 键盘焦点与展开态在这个组件上是两件事。
+func (n *GuiNode) selectEdge(disabled bool) color.RGBA {
+	edge := n.fieldEdge(colorInputEdge, disabled)
+	if n.expanded && !disabled {
+		return colorFocusRing
+	}
+	return edge
+}
+
 // paintChevron 画下拉箭头 (v 形): 两段 2px 粗线拼成 (走 fillLine 的抗锯齿)。
 func paintChevron(img *image.RGBA, b Rect, c color.RGBA) {
 	cx := b.X + b.W - selectArrowW/2 - 1
@@ -372,7 +421,9 @@ func paintSelectOption(img *image.RGBA, n *GuiNode, disabled bool) {
 		return
 	}
 	if n.optionHighlighted() {
-		FillRect(img, n.Box, tint(colorOptionActive, disabled))
+		// Prism S3: 选中/高亮项用 colorAccentSubtle (与旧 colorOptionActive
+		// 同档, 换成 Prism 的语义名 —— 它就是"强调色的弱化版")。
+		FillRect(img, n.Box, tint(colorAccentSubtle, disabled))
 		return
 	}
 	if bg, ok := n.backgroundFor(); ok {

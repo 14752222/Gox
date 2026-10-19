@@ -495,7 +495,9 @@ func TestModelMisuseWarnsAndDegrades(t *testing.T) {
 // 手工设成脚本里 <window> 的尺寸 —— 顺带能断言"内容没溢出窗口"
 // (窗口不是滚动容器: 溢出部分既画不出来也点不中)。
 func TestModelDemoScript(t *testing.T) {
-	const demoW, demoH = 700, 705
+	// Prism S3: 字段行高 28 → 36, 11 行字段各长 8px ⇒ 内容从 687 长到 775,
+	// 705 的窗口装不下。窗口跟到 793 (内容 775 + 下边距 14 + 余量)。
+	const demoW, demoH = 700, 793
 
 	object.GlobalScheduler().ClearAll()
 	t.Cleanup(func() { object.GlobalScheduler().ClearAll() })

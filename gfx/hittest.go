@@ -95,11 +95,32 @@ func hitEscapesLayer(root *GuiNode, x, y int, recurse func(*GuiNode, int, int) *
 	return recurse(root, x, y)
 }
 
+// touchHitBox 是小控件的**命中区** (Prism S4): 视觉尺寸不变, 但命中区补到
+// TouchMin (44)。
+//
+// 为什么只在这里扩、不改 Box: 视觉尺寸与命中尺寸是两件事。checkbox 是 18×18,
+// 而 Apple HIG / Material 与 WCAG 2.1 SC 2.5.5 的触控下限是 44 —— 把盒子放大到
+// 44 会撑开整行 (一排复选框之间凭空多出 26px), 而扩大命中区只是让"点在图标
+// 旁边一点"也算数。命中区重叠时的取舍按 z 序: 遍历是倒序的, 后声明的先命中。
+func touchHitBox(n *GuiNode) Rect {
+	if n.Tag != "checkbox" && n.Tag != "radio" {
+		return n.Box
+	}
+	b := n.Box
+	if b.W >= TouchMin && b.H >= TouchMin {
+		return b
+	}
+	// 以盒子为中心外扩 (不是从左上角长): 控件画在哪, 命中区就围在哪。
+	dx := max(TouchMin-b.W, 0) / 2
+	dy := max(TouchMin-b.H, 0) / 2
+	return Rect{X: b.X - dx, Y: b.Y - dy, W: b.W + 2*dx, H: b.H + 2*dy}
+}
+
 // hittableIn 判断子节点 c 是否在父节点 parent 内可命中 (x, y 在 c 的框内)。
 // 绝对定位子节点默认被父盒裁剪, 露出父盒的部分画不出来, 也就不该被点中
 // —— 这条与 drawNode 里 clipTo(父盒) 的行为一一对应。
 func hittableIn(c, parent *GuiNode, x, y int) bool {
-	if !c.Box.Contains(x, y) {
+	if !touchHitBox(c).Contains(x, y) {
 		return false
 	}
 	// 滚动容器: 视口之外的子内容既画不出来也不该被点中 (与 drawNode 里

@@ -447,7 +447,7 @@ func intrinsicColorpicker(n *GuiNode) (w, h int) {
 	if w < cpFieldMinW {
 		w = cpFieldMinW
 	}
-	h = selectRowH
+	h = fieldRowH
 	return w, h
 }
 

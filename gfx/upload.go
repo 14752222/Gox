@@ -338,7 +338,7 @@ func intrinsicUpload(n *GuiNode) (w, h int) {
 	if w < upFieldMinW {
 		w = upFieldMinW
 	}
-	h = selectRowH
+	h = fieldRowH
 	return w, h
 }
 

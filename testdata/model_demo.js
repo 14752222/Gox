@@ -60,7 +60,7 @@ const Line = (p, ...kids) => (
 // ===== 界面 =====
 
 render(
-  <window title="gx/model — two-way binding" width={700} height={705}>
+  <window title="gx/model — two-way binding" width={700} height={793}>
     <column gap={9} padding={14}>
       <text font={17}>gx/model — 受控组件的一条指令</text>
       <text font={11} color="#8a93a0" wrap width={660}>

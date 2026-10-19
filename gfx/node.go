@@ -194,6 +194,13 @@ type GuiNode struct {
 	// **注意受控模型的这个分离**: 一旦起动画, Props[prop] 就已被写成**终值**,
 	// 布局/绘制必须读 effectivePropNum (动画期间只认 animState), 否则会跳变。
 	anim map[string]*animState
+
+	// 小控件的"选中度"过渡 (Prism S4): checkbox / radio / switch 的填充、
+	// 勾、滑块位移都读 controlPhase() 的 [0,1] 进度。与 anim 分开是因为它
+	// 补的不是某个 prop, 而是**控件自身的视觉状态** —— prop (checked) 在
+	// 动画一开始就已经是终值了, 走 effectivePropNum 那条路反而会把
+	// "受控值"读成插值。
+	ctrl *animState
 }
 
 // Rect 是布局矩形 (客户区像素坐标)。
@@ -504,6 +511,17 @@ func isEventPropName(name string) bool {
 	return len(name) > 2 && name[0] == 'o' && name[1] == 'n'
 }
 
+// propBoolValue 把响应式 prop 的新值当布尔读 (非布尔/缺失一律 false)。
+//
+// 与 checked() 的区别: checked() 读的是**已落库的** Props (终值), 这里读的是
+// 这一轮 effect 刚算出来的那个值。
+func propBoolValue(v object.Value) bool {
+	if b, ok := v.(*object.Boolean); ok {
+		return b.Value
+	}
+	return false
+}
+
 // reactiveProp 用 createEffect 包一层响应式属性: 求值 → 写回 Props → 标脏。
 //
 // P3-2 起多一条分流: 若该属性在 animatableProps 里**且**节点配了 transition,
@@ -533,6 +551,23 @@ func (n *GuiNode) reactiveProp(name string, getter object.Value) {
 // 三个来源 (属性白名单 / transition 配置 / 目标值类型), 内联进 effect 闭包
 // 会把"响应式写回"这条主线上最该保持直观的一段搅浑。
 func (n *GuiNode) startPropTransition(name string, v object.Value) bool {
+	// 小控件的 checked: 组件自带过渡 (Prism S4), 不要求脚本配 transition。
+	// 这里只**起表**, prop 照旧由调用方写回终值 —— 显示值由 controlPhase()
+	// 在绘制时插值, 与"prop 是唯一真相"这条不冲突。
+	if name == "checked" && (n.Tag == "checkbox" || n.Tag == "radio" || n.Tag == "switch") {
+		// 首次赋值不起过渡 (与 CSS transition 的口径一致): 组件刚挂上时
+		// "从 0 长出勾"是入场动画, 那该由脚本显式表达。更重要的是它会**污染
+		// 全局**: 一个静态 checked={true} 的响应式表单会在挂载瞬间挂上心跳
+		// 定时器, 而纯 Go 用例里没人泵它 —— 后面断言"静止时 animRunning 为
+		// false"的测试就会莫名其妙地红。
+		if _, had := n.Props[name]; !had {
+			n.ctrl = nil
+			delete(ctrlAnimNodes, n)
+			return false
+		}
+		n.startControlTransition(propBoolValue(v))
+		return false
+	}
 	if !animatableProps[name] || !n.hasTransition() {
 		return false
 	}
@@ -1107,14 +1142,23 @@ func (n *GuiNode) progressValue() float64 {
 	return v
 }
 
-// buttonPadX / buttonPadY 是 button 缺省内边距 (水平 8px 为任务约定;
-// 纵向给 6px 让默认外观有可点击的实体高度)。
+// button 的缺省几何 (Prism S3): 高 36、左右内边距 16。
+//
+// 36 是这一档控件 (与 input / textarea / select 同高) 的桌面触控与鼠标通用
+// 高度: 比 v1 的"内容 + 6px"高了 8px, 让一排按钮在视觉上真正成行; 16 的水平
+// 留白是"按钮比输入框更宽"这条直觉的来源 (字段是 12)。
+//
+// 纵向内边距按"36 - 16 号默认字"居中反推: 默认按钮的字是 16, 于是 10 + 16 + 10
+// 正好落在 36, 显式字号更大时按钮随之长高 (不被裁掉)。
+//
+// 数值是**设计像素**: 经 Space() 换算 (见 density.go), 高分屏上等比放大。
 const (
-	buttonPadX = 8
-	buttonPadY = 6
+	buttonH    = 36
+	buttonPadX = 16
+	buttonPadY = 10
 )
 
-// buttonPadding 返回 button 的内容内边距: padding prop 优先, 缺省 8/6
+// buttonPadding 返回 button 的内容内边距: padding prop 优先, 缺省 16/10
 // (缺省值是内核内置度量, 按设备像素算, 不参与 dp 换算 —— 见 density.go)。
 func (n *GuiNode) buttonPadding() (padX, padY int) {
 	if v, ok := n.PropNum("padding"); ok {
@@ -1124,7 +1168,7 @@ func (n *GuiNode) buttonPadding() (padX, padY int) {
 		}
 		return p, p
 	}
-	return buttonPadX, buttonPadY
+	return Space(buttonPadX), Space(buttonPadY)
 }
 
 // ===== 交互反馈语义 (P1-4) =====
@@ -1154,12 +1198,35 @@ func (n *GuiNode) interactiveFace(c color.RGBA) color.RGBA {
 		return c
 	}
 	if n.pressed {
-		return darken(c, 24)
+		return n.pressFace(c)
 	}
 	if n.hovered {
-		return brighten(c, 12)
+		return n.hoverFace(c)
 	}
 	return c
+}
+
+// hoverFace 是悬停态的面: 常规面提亮; 亮面 (button 的新白底属于这一类)
+// 则改用浅染色档 —— brighten 在 255 上是恒等操作, 不改的话"悬停无反馈"。
+//
+// 染的是 colorStateHover 而不是继续提亮: 白面上唯一能表达"浮起来"的手段是
+// 让它比周围**稍暗一点且带色相**, 与字段类组件的 fieldFace 同一条思路。
+func (n *GuiNode) hoverFace(c color.RGBA) color.RGBA {
+	if isLightFace(c) {
+		return colorStateHover
+	}
+	return brighten(c, hoverBrighten)
+}
+
+// pressFace 是按压态的面: 常规面压暗; 亮面走比 hover 再深一档的染色。
+//
+// 配套还有"内容下移 1px" (见 layout.go 的 layoutButton): 软光栅没有变换矩阵,
+// scale(.985) 只能用"面更沉 + 内容位移"两件事一起近似。
+func (n *GuiNode) pressFace(c color.RGBA) color.RGBA {
+	if isLightFace(c) {
+		return colorStatePress
+	}
+	return darken(c, pressDarken)
 }
 
 // faceColor 读取组件交互面颜色 (background prop → fallback) 并叠加

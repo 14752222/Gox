@@ -30,8 +30,9 @@ func TestWidgetIntrinsicSize(t *testing.T) {
 	if rd.Box.W != 18 || rd.Box.H != 18 {
 		t.Fatalf("radio 固有尺寸 = %v, want 18x18", rd.Box)
 	}
-	if sw.Box.W != 36 || sw.Box.H != 20 {
-		t.Fatalf("switch 固有尺寸 = %v, want 36x20", sw.Box)
+	// Prism S4: 36x20 方形轨道 → 44x26 胶囊轨道。
+	if sw.Box.W != 44 || sw.Box.H != 26 {
+		t.Fatalf("switch 固有尺寸 = %v, want 44x26", sw.Box)
 	}
 	if pr.Box.W != 200 || pr.Box.H != 8 {
 		t.Fatalf("progress 固有尺寸 = %v, want 200x8", pr.Box)
@@ -137,15 +138,17 @@ func TestCheckboxStates(t *testing.T) {
 	root.Children = []*GuiNode{unchecked, checked}
 	img := renderTree(root, 40, 40)
 
-	// 未选中: 1px 边框空盒
-	assertPx(t, img, 0, 0, pxFieldEdge, "checkbox 左上边框")
-	assertPx(t, img, 17, 17, pxFieldEdge, "checkbox 右下边框")
+	// 未选中: 1px 边框空盒。
+	// Prism S4 起复选框是**圆角** (缺省 r4), 四角落在圆外 —— 边框断言必须取
+	// 边中点, 取角拿到的是底色 (那正是圆角生效的证据, 不是回归)。
+	assertPx(t, img, 0, 9, pxFieldEdge, "checkbox 左边框")
+	assertPx(t, img, 17, 9, pxFieldEdge, "checkbox 右边框")
 	assertPx(t, img, 14, 14, pxWhite, "未选中盒内应为空")
 
 	// 选中: 强调色填充 + 白勾 + 保留边框
 	b := checked.Box
 	assertPx(t, img, b.X+14, b.Y+14, pxAccent, "选中填充色")
-	assertPx(t, img, b.X, b.Y, pxFieldEdge, "选中仍保留边框")
+	assertPx(t, img, b.X, b.Y+9, pxFieldEdge, "选中仍保留边框")
 	if n := countColor(img, Rect{b.X + 1, b.Y + 1, b.W - 2, b.H - 2}, pxWhite); n < 8 {
 		t.Fatalf("选中态未画出勾 (盒内白像素 = %d)", n)
 	}
@@ -224,13 +227,14 @@ func TestButtonIntrinsicAndDefaultStyle(t *testing.T) {
 	if plain.Box.H <= 0 {
 		t.Fatalf("button 高度不应为 0: %v", plain.Box)
 	}
-	// 缺省浅灰底 + 1px 深灰边框
+	// Prism S3: 抬升面 (白) + 1px 发丝边。边框取上边中点 —— 圆角 r8 之后
+	// 四角落在盒外, 取角拿到的是底色。
 	assertPx(t, img, plain.Box.X+3, plain.Box.Y+plain.Box.H/2, pxBtnFace, "button 缺省底色")
-	assertPx(t, img, plain.Box.X, plain.Box.Y, pxBtnEdge, "button 缺省边框")
-	// 文本子节点垂直居中 (水平方向 v1 左对齐 + 8px 内边距)
+	assertPx(t, img, plain.Box.X+plain.Box.W/2, plain.Box.Y, pxBtnEdge, "button 缺省边框")
+	// 文本子节点垂直居中 (水平方向左对齐 + 16px 内边距, Prism S3 之前是 8)
 	label := plain.Children[0]
 	if label.Box.X != plain.Box.X+buttonPadX {
-		t.Fatalf("文本子节点未按 8px 内边距左对齐: %v", label.Box)
+		t.Fatalf("文本子节点未按内边距左对齐: %v", label.Box)
 	}
 	wantY := plain.Box.Y + (plain.Box.H-th)/2
 	if label.Box.Y != wantY {
@@ -637,8 +641,9 @@ func checkDemoTree(t *testing.T, name string, root *GuiNode, fake *fakeSurface) 
 			t.Fatalf("radio 数量 = %d, want 3", n)
 		}
 		sw := findFirst(root, "switch")
-		if sw == nil || sw.Box.W != 36 || sw.Box.H != 20 {
-			t.Fatalf("switch 未按 36x20 布局: %v", sw)
+		// Prism S4: 开关从 36x20 方形轨道升级为 44x26 胶囊轨道
+		if sw == nil || sw.Box.W != 44 || sw.Box.H != 26 {
+			t.Fatalf("switch 未按 44x26 布局: %v", sw)
 		}
 		// 脚本里 notify 初值为 true → 开关打开: 左轨道强调色、右滑块白色
 		img := shotsImage(fake)
@@ -733,8 +738,9 @@ func checkDemoTree(t *testing.T, name string, root *GuiNode, fake *fakeSurface) 
 			t.Fatalf("slider_demo 的 slider 数量 = %d, want 3", len(sls))
 		}
 		for i, sl := range sls {
-			if sl.Box.W != 200 || sl.Box.H != 24 {
-				t.Fatalf("第 %d 个滑块尺寸 = %v, want 200x24", i, sl.Box)
+			// Prism S4: 滑块 12 → 18, 盒子随之从 24 高长到 26
+			if sl.Box.W != 200 || sl.Box.H != 26 {
+				t.Fatalf("第 %d 个滑块尺寸 = %v, want 200x26", i, sl.Box)
 			}
 		}
 		if v, _ := sls[2].PropBool("disabled"); !v {
@@ -891,14 +897,14 @@ func checkDemoTree(t *testing.T, name string, root *GuiNode, fake *fakeSurface) 
 			t.Fatalf("list_demo 的 separator 数量 = %d, want 1", n)
 		}
 	case "select_demo.js":
-		// 下拉演示: 两个字段行 (高 28, 显式宽 220), 初始都是闭合态
+		// 下拉演示: 两个字段行 (Prism S3 起高 36, 显式宽 220), 初始都是闭合态
 		sels := findAll(root, "select")
 		if len(sels) != 2 {
 			t.Fatalf("select_demo 的 select 数量 = %d, want 2", len(sels))
 		}
 		for i, s := range sels {
-			if s.Box.H != selectRowH || s.Box.W != 220 {
-				t.Fatalf("第 %d 个 select 未按 220x%d 布局: %v", i, selectRowH, s.Box)
+			if s.Box.H != fieldRowH || s.Box.W != 220 {
+				t.Fatalf("第 %d 个 select 未按 220x%d 布局: %v", i, fieldRowH, s.Box)
 			}
 			if s.expanded || s.popup != nil {
 				t.Fatalf("第 %d 个 select 初始不应处于展开态", i)
@@ -911,8 +917,9 @@ func checkDemoTree(t *testing.T, name string, root *GuiNode, fake *fakeSurface) 
 		if img == nil {
 			t.Fatalf("未捕获上屏帧")
 		}
-		assertPx(t, img, sels[0].Box.X+4, sels[0].Box.Y+selectRowH/2, pxFieldFace, "select_demo 字段白底")
-		assertPx(t, img, sels[0].Box.X+4, sels[0].Box.Y, pxBtnEdge, "select_demo 字段 1px 边框")
+		assertPx(t, img, sels[0].Box.X+4, sels[0].Box.Y+fieldRowH/2, pxFieldFace, "select_demo 字段白底")
+		// 边框取上边中点: 字段也是圆角 (缺省 r8), 四角落在盒外
+		assertPx(t, img, sels[0].Box.X+sels[0].Box.W/2, sels[0].Box.Y, pxBtnEdge, "select_demo 字段 1px 边框")
 	case "menu_demo.js":
 		// 菜单演示: 顶部菜单栏 (26px, 铺满宽), 三个标题 + 右侧状态文本;
 		// 初始无弹层 (所有菜单都是收起的), 也没挂右键菜单。
@@ -992,8 +999,8 @@ func checkDemoTree(t *testing.T, name string, root *GuiNode, fake *fakeSurface) 
 		if in == nil {
 			t.Fatalf("input_demo 缺少 input 节点")
 		}
-		if in.Box.H != selectRowH || in.Box.W != 260 {
-			t.Fatalf("input 未按 260x%d 布局: %v", selectRowH, in.Box)
+		if in.Box.H != fieldRowH || in.Box.W != 260 {
+			t.Fatalf("input 未按 260x%d 布局: %v", fieldRowH, in.Box)
 		}
 		if in.Box.W != 260 {
 			t.Fatalf("input 宽度 = %d, want 260", in.Box.W)
