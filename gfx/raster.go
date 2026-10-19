@@ -71,6 +71,48 @@ var (
 	colorSelection = color.RGBA{R: 0x9C, G: 0xC4, B: 0xEC, A: 0xB0}
 )
 
+// Prism 扩展 token 的投影缓存 (S1)。与上面那批同构：事实来源是 theme.go 的
+// themeCurrent，SetTheme 时由 syncThemeVars 整体回写。初值 = themeLight() 里
+// 对应的推导值，保证首帧（SetTheme 尚未被调用时）与旧视觉一致。
+var (
+	colorSurfaceBase    = color.RGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 255}
+	colorSurfaceSunken  = color.RGBA{R: 0xFA, G: 0xFA, B: 0xFA, A: 255}
+	colorSurfaceRaised  = color.RGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 255}
+	colorSurfaceOverlay = color.RGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 255}
+	colorSurfaceInset   = color.RGBA{R: 0xF3, G: 0xF3, B: 0xF3, A: 255}
+
+	colorTextSecondary = color.RGBA{R: 0x55, G: 0x55, B: 0x55, A: 255}
+	colorTextMuted     = color.RGBA{R: 0x77, G: 0x77, B: 0x77, A: 255}
+	colorTextDisabled  = color.RGBA{R: 0xAA, G: 0xAA, B: 0xAA, A: 255}
+	colorTextInverse   = color.RGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 255}
+
+	colorBorderDecorative = color.RGBA{R: 0xD0, G: 0xD0, B: 0xD0, A: 255}
+	colorBorderControl    = color.RGBA{R: 0x99, G: 0x99, B: 0x99, A: 255}
+
+	colorAccentSubtle = color.RGBA{R: 0xDC, G: 0xE8, B: 0xF8, A: 255}
+
+	colorInfoSubtle = color.RGBA{R: 0xE6, G: 0xF0, B: 0xFD, A: 255}
+	colorInfoText   = color.RGBA{R: 0x1D, G: 0x4E, B: 0x89, A: 255}
+
+	colorSuccess       = color.RGBA{R: 0x27, G: 0xAE, B: 0x60, A: 255}
+	colorSuccessSubtle = color.RGBA{R: 0xE7, G: 0xF6, B: 0xED, A: 255}
+	colorSuccessText   = color.RGBA{R: 0x1E, G: 0x7A, B: 0x45, A: 255}
+
+	colorWarning       = color.RGBA{R: 0xE8, G: 0x89, B: 0x0C, A: 255}
+	colorWarningSubtle = color.RGBA{R: 0xFD, G: 0xF3, B: 0xE2, A: 255}
+	colorWarningText   = color.RGBA{R: 0x8A, G: 0x52, B: 0x08, A: 255}
+
+	colorDangerSubtle = color.RGBA{R: 0xFB, G: 0xE9, B: 0xE7, A: 255}
+	colorDangerText   = color.RGBA{R: 0x91, G: 0x2B, B: 0x20, A: 255}
+
+	colorStateHover       = color.RGBA{R: 0xF0, G: 0xF4, B: 0xF9, A: 255}
+	colorStatePress       = color.RGBA{R: 0xE0, G: 0xE9, B: 0xF4, A: 255}
+	colorStateSelected    = color.RGBA{R: 0xDC, G: 0xE8, B: 0xF8, A: 255}
+	colorStateRowHover    = color.RGBA{R: 0xEE, G: 0xF3, B: 0xFA, A: 255}
+	colorScrollThumbHover = color.RGBA{R: 0x88, G: 0x88, B: 0x88, A: 255}
+	colorScrim            = color.RGBA{R: 0, G: 0, B: 0, A: 0x66}
+)
+
 // 弹层缺省外观的十六进制写法: Go 侧构造节点时写进 props, 于是"缺省样式"
 // 与"脚本显式给的样式"走完全同一条读取路径 (没有第二套默认值逻辑)。
 const (

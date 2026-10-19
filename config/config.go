@@ -81,6 +81,21 @@ type Config struct {
 	// 证书（gox build android 会自动生成调试证书）; 用户自备证书时在这
 	// 里写路径与密码（密码建议走环境变量注入, 避免入库）。
 	Cert CertConfig `json:"cert,omitempty"`
+	// UI 是界面行为配置（Prism S8）。
+	UI UIConfig `json:"ui,omitempty"`
+}
+
+// UIConfig 是界面行为配置段。
+//
+// 只放"用户偏好"而非"设计取值"：设计取值（间距/圆角/时长）是 gfx 的 token
+// 常量，由主题系统统一管理；这里允许应用声明的是"这台设备上要不要动效"
+// 这类与用户体感相关的开关。
+type UIConfig struct {
+	// ReducedMotion 关闭全部过渡动画（等同系统「减少动态效果」）。
+	//
+	// 优先级低于环境变量 GOX_REDUCED_MOTION、高于平台能力探测，见
+	// gfx/motion.go 的 prefersReducedMotion。零值 = 未声明，跟随系统。
+	ReducedMotion bool `json:"reducedMotion,omitempty"`
 }
 
 // CertConfig 是证书配置段。v1 只接 android（build 链路里唯一自动签名的
@@ -324,6 +339,23 @@ func (c *Config) fillDefaults() {
 	}
 }
 
+// ThemeNames 是全部合法预设名（与 gfx.SetThemeNamed 的分支一一对应）。
+//
+// 放在 config 包而不是 gfx 包：这是"配置文件合法性"的口径，gfx 不该为了
+// 一个字符串列表反向依赖配置层；两处一致性由 config 的用例与 gfx 的
+// theme 用例各自盯住自己的那一半。
+var ThemeNames = []string{"light", "dark", "prism-light", "prism-dark"}
+
+// IsKnownTheme 报告 name 是否是合法预设名。
+func IsKnownTheme(name string) bool {
+	for _, n := range ThemeNames {
+		if n == name {
+			return true
+		}
+	}
+	return false
+}
+
 // DefaultAppID 由项目名推导缺省 appId: com.gox.<name>，
 // 短横线等非法字符收敛为下划线（Android applicationId 要求合法 Java 包名段）。
 func DefaultAppID(name string) string {
@@ -365,10 +397,14 @@ func (c Config) Validate() error {
 	if !versionRe.MatchString(c.Version) {
 		return fmt.Errorf("version %q 不合法: 需要 x.y.z 形式（可带 -后缀）", c.Version)
 	}
-	// theme 只认两个预设名（gx/theme 的 SetThemeNamed 同一口径）; 空值合法
+	// theme 只认预设名（与 gx/theme 的 SetThemeNamed 同一口径）; 空值合法
 	// （= 亮色缺省）, 写别的名字必然不生效, 启动时报出来好查错别字。
-	if c.Theme != "" && c.Theme != "light" && c.Theme != "dark" {
-		return fmt.Errorf("theme %q 不合法: 只支持 \"light\" / \"dark\"", c.Theme)
+	//
+	// prism-light / prism-dark 是 Prism 设计系统的两套预设（S2）：它们与
+	// light/dark 并存而非替换 —— 旧预设的色值一个都没改，存量脚本视觉零变化，
+	// 想换观感的应用在新项目里显式选 prism 即可。
+	if c.Theme != "" && !IsKnownTheme(c.Theme) {
+		return fmt.Errorf("theme %q 不合法: 只支持 \"light\" / \"dark\" / \"prism-light\" / \"prism-dark\"", c.Theme)
 	}
 	if c.Icon == "" {
 		return fmt.Errorf("icon 不能为空")

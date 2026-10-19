@@ -56,6 +56,9 @@ var galleryClickTargets = map[string]string{
 	"select":      "select",
 	"datepicker":  "datepicker",
 	"colorpicker": "colorpicker",
+	// tree 的展开态同样是运行时状态（treeOpen），不点开就只有根节点一行 ——
+	// 收起态拍不出"同级缩进 + 叶子占位对齐"这两处最易错位的几何。
+	"tree": "tree",
 }
 
 // gallerySettleRounds 是取帧前的"空转"轮数 (每轮投一个无害的 EventMouseLeave)。
@@ -77,6 +80,25 @@ const (
 	galleryMinColors = 8   // 实测最小的一份 (label) 也有 ~40 种
 	galleryMinInk    = 400 // 实测最小的一份 (label) 也有 ~1500 个非底色像素
 )
+
+// galleryShapeOnlyScripts 是"本身就是纯几何"的脚本 —— 它们没有文字，也就
+// 没有字形抗锯齿产生的那几百种过渡色，画面里只有轨道色/填充色/背景色三种。
+//
+// 为什么给它们单独一条判据而不是整体下调阈值: 颜色数是"组件被画成空盒子"
+// 最灵敏的探针，整体下调等于对所有组件放宽（空盒子也能过）。这里只对确知
+// 没有文字的组件放宽，且**非底色像素阈值保持不变** —— 那才是"真的画了东西"
+// 的证据。
+var galleryShapeOnlyScripts = map[string]bool{
+	"progress": true, // 纯矩形轨道 + 纯色填充，无文字无抗锯齿
+}
+
+// galleryMinColorsFor 返回某个脚本适用的颜色数下限。
+func galleryMinColorsFor(name string) int {
+	if galleryShapeOnlyScripts[strings.TrimSuffix(name, ".js")] {
+		return 3
+	}
+	return galleryMinColors
+}
 
 // galleryFactory 是"按 <window> 声明的尺寸开面"的工厂。
 //
@@ -243,10 +265,11 @@ func galleryInkStats(img *image.RGBA) galleryInk {
 func galleryAssertNotBlank(t *testing.T, name string, img *image.RGBA) {
 	t.Helper()
 	st := galleryInkStats(img)
-	if st.Colors < galleryMinColors || st.Ink < galleryMinInk {
+	minColors := galleryMinColorsFor(name)
+	if st.Colors < minColors || st.Ink < galleryMinInk {
 		t.Fatalf("%s: 画面近乎空白 (%s, 阈值 颜色>=%d 非底色像素>=%d) —— "+
 			"组件可能被画成了空盒子, 先查四处注册表 (node.go / layout.go / raster.go)",
-			name, st, galleryMinColors, galleryMinInk)
+			name, st, minColors, galleryMinInk)
 	}
 }
 
