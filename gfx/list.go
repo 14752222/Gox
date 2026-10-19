@@ -2,7 +2,6 @@ package gfx
 
 import (
 	"image"
-	"image/color"
 
 	"github.com/14752222/Gox/object"
 )
@@ -36,10 +35,19 @@ import (
 // 的是**常量与配色**, 那才是真正该统一的东西。
 
 const (
-	listRowH = 28 // 行高 (与 tableRowH / treeRowH 同值)
-	listPadX = 10 // 行内左右留白
-	listPadY = 4  // 行内上下留白
+	// listRowH 是行高 (Prism S5: 28 → 32, 与 tableRowH / treeRowH 同值)。
+	// 比字段行高 36 矮一档; **刻意小于 TouchMin (44)**: 桌面上鼠标行不必
+	// 满足触控下限, 触控场景该用卡片式列表而不是把每行撑到 44。
+	listRowH = 32
+	// listPadYToken 是行内上下留白的设计像素 (Space2 = 4); 写进 padding prop
+	// 时经 Space() 换算成物理像素。
+	listPadYToken = Space2
+	// listSelectBarW 是选中行左侧的强调指示条宽度 (Prism S5)。
+	listSelectBarW = 3
 )
+
+// listPadX 返回行内左右留白 (物理像素, Space5 = 12)。
+func listPadX() int { return Space(Space5) }
 
 // ===== 布局 =====
 
@@ -58,23 +66,23 @@ func applyListPadding(n *GuiNode) {
 	if _, ok := n.Props["padding"]; ok {
 		return
 	}
-	n.Props["padding"] = object.NewNumber(float64(listPadY))
+	n.Props["padding"] = object.NewNumber(float64(Space(listPadYToken)))
 	if _, ok := n.Props["paddingLeft"]; !ok {
-		n.Props["paddingLeft"] = object.NewNumber(float64(listPadX))
+		n.Props["paddingLeft"] = object.NewNumber(float64(listPadX()))
 	}
 	if _, ok := n.Props["paddingRight"]; !ok {
-		n.Props["paddingRight"] = object.NewNumber(float64(listPadX))
+		n.Props["paddingRight"] = object.NewNumber(float64(listPadX()))
 	}
 }
 
 // listItemIntrinsic 列表行的固有尺寸: 高固定 listRowH; 宽按内容 + 两侧留白。
 func listItemIntrinsic(n *GuiNode, w, h int) (int, int) {
 	if h == 0 {
-		h = listRowH
+		h = Space(listRowH) // Prism S8: 行高按设计像素换算
 	}
 	if w == 0 {
 		cw, _ := n.contentSize()
-		w = cw + 2*listPadX
+		w = cw + 2*listPadX()
 	}
 	return w, h
 }
@@ -83,6 +91,11 @@ func listItemIntrinsic(n *GuiNode, w, h int) (int, int) {
 
 // paintListItem 画列表行: 选中底 > 悬停底 > 无底, 再画行底线。
 // 优先级与字段控件一致 (选中是持续态, 悬停是瞬时态, 选中时不该被悬停盖掉)。
+//
+// Prism S5: 选中行除了整行铺 colorStateSelected, 再在左侧压一条强调色
+// 指示条 —— 软光栅没有透明度/阴影, "选中"在浅底上单靠色差不够醒目, 而
+// 一条 3px 的实色竖条在彩色屏幕上与灰阶上都读得出来 (也是评审样张
+// testdata/shots/list-item.js 说明里提的那条"左强调条")。
 func paintListItem(img *image.RGBA, n *GuiNode, disabled bool) {
 	b := n.Box
 	if b.W <= 0 || b.H <= 0 {
@@ -90,14 +103,16 @@ func paintListItem(img *image.RGBA, n *GuiNode, disabled bool) {
 	}
 	switch {
 	case n.listSelected():
-		FillRect(img, b, tint(colorListItemSelected, disabled))
+		FillRect(img, b, tint(colorStateSelected, disabled))
+		FillRect(img, Rect{X: b.X, Y: b.Y, W: Space(listSelectBarW), H: b.H},
+			tint(colorAccent, disabled))
 	case n.hovered && n.PropHandler("onClick") != nil:
 		// 悬停反馈只在行真的可点时给 —— 纯展示的行悬停变色是误导
-		FillRect(img, b, tint(colorListItemHover, disabled))
+		FillRect(img, b, tint(colorStateRowHover, disabled))
 	}
 	if n.listDivider() {
 		FillRect(img, Rect{X: b.X, Y: b.Y + b.H - 1, W: b.W, H: 1},
-			tint(colorListItemEdge, disabled))
+			tint(colorBorderDecorative, disabled))
 	}
 }
 
@@ -117,10 +132,3 @@ func (n *GuiNode) listDivider() bool {
 	}
 	return v
 }
-
-// 列表行配色。
-var (
-	colorListItemHover    = color.RGBA{R: 0xEE, G: 0xF3, B: 0xFA, A: 255} // 行悬停底
-	colorListItemSelected = color.RGBA{R: 0xDC, G: 0xE8, B: 0xF8, A: 255} // 行选中底 (与下拉项高亮同色)
-	colorListItemEdge     = color.RGBA{R: 0xE4, G: 0xE4, B: 0xE4, A: 255} // 行底线
-)

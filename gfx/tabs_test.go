@@ -274,3 +274,24 @@ func TestTabsDemoSmoke(t *testing.T) {
 		},
 	})
 }
+
+func TestTabsIndicatorFollowsActive(t *testing.T) {
+	// Prism S5: 激活指示条是 2px accent、横贯整个标签; 未选中标签的文字
+	// 降到 secondary (不是 placeholder, 也不是 accent)。←/→ 切页时激活页
+	// 换人, 指示条跟着走 (a11yTabsArrow 只动激活页下标)。
+	root := mkNode("column", map[string]float64{"padding": 10})
+	tb, _ := mkTabs([]string{"File", "Edit"}, 320, 160, 120, 80)
+	mountChildren(root, tb)
+	img := renderTree(root, 400, 300)
+	r0 := tb.tabStrip[0]
+	for _, dx := range []int{1, tabItemPadX + 1, r0.W - 1} {
+		for _, dy := range []int{1, 2} {
+			if c := img.RGBAAt(r0.X+dx, r0.Y+r0.H-dy); c != colorAccent {
+				t.Fatalf("激活指示条 (%d,%d) = %v, want accent", dx, dy, c)
+			}
+		}
+	}
+	if c := img.RGBAAt(r0.X+1, r0.Y+r0.H-3); c == colorAccent {
+		t.Fatalf("指示条厚度超过 2px")
+	}
+}

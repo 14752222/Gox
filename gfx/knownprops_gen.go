@@ -17,6 +17,8 @@ var knownPropsUniversal = map[string]struct{}{
 	"aria-label":       {},
 	"autoplay":         {},
 	"background":       {},
+	"badge":            {},
+	"badgeDot":         {},
 	"border":           {},
 	"borderStyle":      {},
 	"borderWidth":      {},
@@ -27,13 +29,16 @@ var knownPropsUniversal = map[string]struct{}{
 	"colors":           {},
 	"columns":          {},
 	"controls":         {},
+	"count":            {},
 	"current":          {},
 	"cursor":           {},
 	"delay":            {},
 	"description":      {},
 	"disabled":         {},
+	"dot":              {},
 	"ellipsis":         {},
 	"escapeClipping":   {},
+	"expanded":         {},
 	"filter":           {},
 	"fit":              {},
 	"flexGrow":         {},
@@ -85,6 +90,7 @@ var knownPropsUniversal = map[string]struct{}{
 	"radius":           {},
 	"resizable":        {},
 	"role":             {},
+	"rowSelected":      {},
 	"shadow":           {},
 	"side":             {},
 	"src":              {},
@@ -98,6 +104,7 @@ var knownPropsUniversal = map[string]struct{}{
 	"total":            {},
 	"transition":       {},
 	"value":            {},
+	"variant":          {},
 	"vlist":            {},
 	"volume":           {},
 	"width":            {},
@@ -115,12 +122,9 @@ var knownPropsByTag = map[string]map[string]struct{}{
 		"closeable": {},
 	},
 	"avatar": {
-		"shape": {},
-		"size":  {},
-	},
-	"badge": {
-		"count": {},
-		"dot":   {},
+		"shape":  {},
+		"size":   {},
+		"status": {},
 	},
 	"column": {
 		"alignItems":     {},
@@ -128,7 +132,9 @@ var knownPropsByTag = map[string]map[string]struct{}{
 		"justifyContent": {},
 	},
 	"empty": {
-		"desc": {},
+		"desc":           {},
+		"subDesc":        {},
+		"subDescription": {},
 	},
 	"form": {
 		"alignItems":     {},
@@ -162,6 +168,9 @@ var knownPropsByTag = map[string]map[string]struct{}{
 		"label":    {},
 		"shortcut": {},
 	},
+	"progress": {
+		"indeterminate": {},
+	},
 	"row": {
 		"alignItems":     {},
 		"avoidReserved":  {},
@@ -179,6 +188,7 @@ var knownPropsByTag = map[string]map[string]struct{}{
 		"justifyContent": {},
 	},
 	"separator": {
+		"inset":    {},
 		"vertical": {},
 	},
 	"skeleton": {
@@ -204,7 +214,8 @@ var knownPropsByTag = map[string]map[string]struct{}{
 		"rows": {},
 	},
 	"table-row": {
-		"_zebra": {},
+		"_zebra":   {},
+		"selected": {},
 	},
 	"tag": {
 		"closable":  {},
@@ -215,6 +226,9 @@ var knownPropsByTag = map[string]map[string]struct{}{
 	},
 	"toast": {
 		"message": {},
+	},
+	"tree-row": {
+		"selected": {},
 	},
 	"video": {
 		"poster": {},

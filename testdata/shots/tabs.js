@@ -1,9 +1,10 @@
 // 画廊截图: <tabs> —— 由 gfx/gallery_shot_test.go 离屏渲染成 PNG
 // 运行: ./gox testdata/shots/tabs.js
 //
-// 三页各占一屏的是同一组 tabs，这里只拍第一页（激活态）—— 重点是标签条的
-// 槽底、选中片与指示条三者的层次关系（S5 把它们从"只有下划线"改成
-// "槽底 + 白片 + 发丝边"）。
+// 三页各占一屏的是同一组 tabs，这里只拍第一页（激活态）—— 重点是标签条
+// 的三段层次：未选中 secondary 文字 + 标签间的 1px 发丝分隔线、选中
+// colorText 文字 + 横贯标签的 2px 强调色指示条、条底那条 1px 分界线
+// （Prism S5 把 v1 的"激活项整条染 accent"改成"文字降档 + 指示条承担选中"）。
 import { createSignal, render } from "gox";
 
 const [page, setPage] = createSignal("a");

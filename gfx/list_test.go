@@ -8,7 +8,7 @@ import (
 // ===== S4 list-item =====
 //
 // 用例覆盖四条不变量:
-//   1. 行高固定 listRowH, 与 table/select 同一套常量;
+//   1. 行高固定 listRowH (S5 起 32), 与 table/tree 同一套常量;
 //   2. selected / hover 各自改变底色, 且 selected 优先于 hover;
 //   3. divider 缺省开、给了 false 才关;
 //   4. 纯展示行 (无 onClick) 悬停不变色 —— 悬停反馈只在行可点时给。
@@ -19,8 +19,8 @@ func TestListItemRowHeight(t *testing.T) {
 	mountChildren(root, item)
 	renderTree(root, 300, 200)
 
-	if item.Box.H != listRowH {
-		t.Fatalf("list-item 行高 = %d, want %d", item.Box.H, listRowH)
+	if item.Box.H != Space(listRowH) {
+		t.Fatalf("list-item 行高 = %d, want %d", item.Box.H, Space(listRowH))
 	}
 }
 
@@ -41,10 +41,15 @@ func TestListItemSelectedWinsOverHover(t *testing.T) {
 	if !item.listSelected() {
 		t.Fatalf("selected prop 未读到")
 	}
-	// 选中底色应压过悬停底色
+	// 选中底色应压过悬停底色 (Prism S5: 选中底走 colorStateSelected token)
 	got := img.RGBAAt(item.Box.X+item.Box.W/2, item.Box.Y+item.Box.H/2)
-	if got != colorListItemSelected {
-		t.Fatalf("行底色 = %v, want 选中底色 %v", got, colorListItemSelected)
+	if got != colorStateSelected {
+		t.Fatalf("行底色 = %v, want 选中底色 %v", got, colorStateSelected)
+	}
+	// 左强调条: 选中行左侧 listSelectBarW 宽是 accent 实色 (S5 新增的信号)
+	bar := img.RGBAAt(item.Box.X+1, item.Box.Y+item.Box.H/2)
+	if bar != colorAccent {
+		t.Fatalf("选中行左强调条 = %v, want accent %v", bar, colorAccent)
 	}
 }
 
@@ -61,7 +66,7 @@ func TestListItemHoverOnlyWhenClickable(t *testing.T) {
 	if item.hovered {
 		// hoverable() 把它算进去了, 但绘制时按有无 onClick 决定是否上色
 		got := img.RGBAAt(item.Box.X+item.Box.W/2, item.Box.Y+item.Box.H/2)
-		if got == colorListItemHover {
+		if got == colorStateRowHover {
 			t.Fatalf("无 onClick 的展示行不该画悬停底色")
 		}
 	}
