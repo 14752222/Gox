@@ -341,7 +341,10 @@ func TestTagVariantIsTonal(t *testing.T) {
 		if got := tagTextColor(tg); got != tc.ink {
 			t.Fatalf("variant=%s 的 tag 文字色 = %v, want %v", tc.variant, got, tc.ink)
 		}
-		if !hasColorNear(img, tg.Box.X+tg.Box.W/2, tg.Box.Y+tg.Box.H/2, tc.ink, 12) {
+		// 扫整个盒内而不是中心 ±12px: 中文标签的字形宽度随平台字体变
+		// (macOS PingFang 比 Linux 的宽), 中心采样窗在 macOS 上抓不到文字。
+		inner := Rect{X: tg.Box.X + 2, Y: tg.Box.Y + 2, W: tg.Box.W - 4, H: tg.Box.H - 4}
+		if countColor(img, inner, tc.ink) == 0 {
 			t.Fatalf("variant=%s 的 tag 内未落同族文字色 %v", tc.variant, tc.ink)
 		}
 	}
