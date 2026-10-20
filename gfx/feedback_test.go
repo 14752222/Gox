@@ -345,6 +345,17 @@ func TestTagVariantIsTonal(t *testing.T) {
 		// (macOS PingFang 比 Linux 的宽), 中心采样窗在 macOS 上抓不到文字。
 		inner := Rect{X: tg.Box.X + 2, Y: tg.Box.Y + 2, W: tg.Box.W - 4, H: tg.Box.H - 4}
 		if countColor(img, inner, tc.ink) == 0 {
+			// 诊断: 盒内到底渲染成了什么颜色 (跨平台字体差异排障用)
+			seen := map[color.RGBA]int{}
+			for y := inner.Y; y < inner.Y+inner.H; y++ {
+				for x := inner.X; x < inner.X+inner.W; x++ {
+					seen[img.RGBAAt(x, y)]++
+				}
+			}
+			t.Logf("variant=%s 盒 %v 内颜色分布:", tc.variant, tg.Box)
+			for c, n := range seen {
+				t.Logf("  %v × %d", c, n)
+			}
 			t.Fatalf("variant=%s 的 tag 内未落同族文字色 %v", tc.variant, tc.ink)
 		}
 	}
