@@ -334,11 +334,11 @@ func intrinsicUpload(n *GuiNode) (w, h int) {
 		text = n.uploadPlaceholder()
 	}
 	tw, _ := MeasureText(text, n.FontSize())
-	w = tw + 2*fieldPadX + upFieldIconW + searchIconGap
-	if w < upFieldMinW {
-		w = upFieldMinW
+	w = tw + 2*Space(fieldPadX) + Space(upFieldIconW) + Space(searchIconGap)
+	if minW := Space(upFieldMinW); w < minW {
+		w = minW
 	}
-	h = selectRowH
+	h = Space(fieldRowH)
 	return w, h
 }
 
@@ -350,15 +350,18 @@ func paintUpload(img *image.RGBA, n *GuiNode, disabled bool) {
 	if b.W <= 0 || b.H <= 0 {
 		return
 	}
+	// Prism S8: 虚线的线段长/间隔与图标边长随密度换算 —— 前者不换算会在高密屏
+	// 上退化成一圈看不见断口的细锯齿, 后者不换算会在字段里显得比旁边的字小一半。
 	FillRect(img, b, tint(n.fieldFace(colorFieldFace), disabled))
-	StrokeDashedRect(img, b, tint(colorInputEdge, disabled), upDashedGap, upDashedGap)
+	StrokeDashedRect(img, b, tint(colorInputEdge, disabled), Space(upDashedGap), Space(upDashedGap))
 
 	if fn := builtinIcons["folder"]; fn != nil {
+		iconW := Space(upFieldIconW)
 		fn(img, Rect{
-			X: b.X + fieldPadX,
-			Y: b.Y + (b.H-upFieldIconW)/2,
-			W: upFieldIconW, H: upFieldIconW,
-		}, upFieldIconW, tint(colorPlaceholder, disabled))
+			X: b.X + Space(fieldPadX),
+			Y: b.Y + (b.H-iconW)/2,
+			W: iconW, H: iconW,
+		}, iconW, tint(colorPlaceholder, disabled))
 	}
 	size := n.FontSize()
 	text, ok := n.uploadDisplay()
@@ -369,8 +372,8 @@ func paintUpload(img *image.RGBA, n *GuiNode, disabled bool) {
 	if text == "" {
 		return
 	}
-	x := b.X + fieldPadX + upFieldIconW + searchIconGap
-	maxW := b.X + b.W - fieldPadX - x
+	x := b.X + Space(fieldPadX) + upFieldIconW + searchIconGap
+	maxW := b.X + b.W - Space(fieldPadX) - x
 	if maxW < 0 {
 		maxW = 0
 	}

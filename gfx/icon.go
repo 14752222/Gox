@@ -31,12 +31,15 @@ const (
 )
 
 // iconSize 读 size prop (逻辑单位, 内核换算成设备像素 —— 见 density.go),
-// 非法/缺省回落 iconDefaultSize (内置度量, 设备像素)。
+// 非法/缺省回落 iconDefaultSize (内置度量, **设计像素** → Space() 换算)。
+//
+// Prism S8: 缺省值与显式值过去走两条不同的口径 (显示值换算、缺省值不换算),
+// 于是 2x 屏上写了 size={16} 的图标比不写 size 的**小一半**。
 func (n *GuiNode) iconSize() int {
 	if v, ok := n.PropNum("size"); ok && v > 0 {
 		return dpToPx(v) // 逻辑值 → 设备像素 (density.go)
 	}
-	return iconDefaultSize
+	return Space(iconDefaultSize)
 }
 
 // iconName 读 name prop。

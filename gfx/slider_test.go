@@ -116,9 +116,10 @@ func TestSliderValueFromX(t *testing.T) {
 		x    int
 		want float64
 	}{
-		{-50, 0},   // 轨道左侧之外 → min
-		{6, 0},     // 滑块中心在最左时 = min
-		{43, 25},   // (43-6)/148 = 0.25
+		{-50, 0}, // 轨道左侧之外 → min
+		{6, 0},   // 滑块中心在最左时 = min
+		// Prism S4: 滑块 12 → 18, 行程从 148 缩到 142, 半宽从 6 变 9
+		{43, 24},   // (43-9)/142 ≈ 0.239 → 量化到 24
 		{80, 50},   // 正中
 		{154, 100}, // 滑块中心在最右时 = max
 		{999, 100}, // 轨道右侧之外 → max
@@ -140,9 +141,9 @@ func TestSliderKnobRoundTrip(t *testing.T) {
 
 	for _, want := range []float64{0, 25, 50, 75, 100} {
 		withNum(sl, "value", want)
-		left := sliderKnobLeft(sl, sliderKnobW)
+		left := sliderKnobLeft(sl, Space(sliderKnobW))
 		// 滑块中心所在的那一点
-		got := sliderValueFromX(sl, left+sliderKnobW/2)
+		got := sliderValueFromX(sl, left+Space(sliderKnobW)/2)
 		if got != want {
 			t.Fatalf("value=%v → knobLeft=%d → 反算 %v", want, left, got)
 		}
@@ -170,7 +171,7 @@ func TestSliderDegenerateRange(t *testing.T) {
 	if got := sliderValueFromX(sl, 80); got != 5 {
 		t.Fatalf("max<min 时 valueFromX = %v, want 5 (塌缩到 min)", got)
 	}
-	if got := sliderKnobLeft(sl, sliderKnobW); got != sl.Box.X {
+	if got := sliderKnobLeft(sl, Space(sliderKnobW)); got != sl.Box.X {
 		t.Fatalf("max<min 时滑块应在最左, 实际 x = %d", got)
 	}
 	// NaN 属性 (脚本里 0/0) 不能把几何带成 NaN
@@ -188,8 +189,8 @@ func TestSliderIntrinsicSize(t *testing.T) {
 	root.Children = []*GuiNode{def, big}
 	Layout(root, 400, 200)
 
-	if def.Box.W != sliderDefW || def.Box.H != sliderDefH {
-		t.Fatalf("缺省尺寸 = %dx%d, want %dx%d", def.Box.W, def.Box.H, sliderDefW, sliderDefH)
+	if def.Box.W != Space(sliderDefW) || def.Box.H != Space(sliderDefH) {
+		t.Fatalf("缺省尺寸 = %dx%d, want %dx%d", def.Box.W, def.Box.H, Space(sliderDefW), Space(sliderDefH))
 	}
 	if big.Box.W != 300 || big.Box.H != 30 {
 		t.Fatalf("显式尺寸被覆盖: %v", big.Box)
@@ -204,19 +205,23 @@ func TestSliderPaintGeometry(t *testing.T) {
 
 	img := renderTree(root, 200, 60)
 	// 轨道高 4, 在 24 高的盒子里居中 → y = 24/2 - 2 = 10..13
-	trackY := sliderDefH/2 - sliderTrackH/2
-	// 值 50 → ratio .5 → 滑块左缘 = round(.5*(160-12)) = 74, 中心 80
-	knobLeft := sliderKnobLeft(sl, sliderKnobW)
-	if knobLeft != 74 {
-		t.Fatalf("值 50 时滑块左缘 = %d, want 74", knobLeft)
+	trackY := Space(sliderDefH)/2 - Space(sliderTrackH)/2
+	// 值 50 → ratio .5 → 滑块左缘 = round(.5*(160-18)) = 71, 中心 80
+	knobLeft := sliderKnobLeft(sl, Space(sliderKnobW))
+	if knobLeft != 71 {
+		t.Fatalf("值 50 时滑块左缘 = %d, want 71", knobLeft)
 	}
 
 	accent := colorAccent
-	assertPx(t, img, 0, trackY+1, accent, "轨道左端已有填充")
+	// Prism S4: 轨道两端是胶囊 (半径 trackH/2), x=0 恰好压在圆角边上, 采到的是
+	// 与底色的抗锯齿混合色而不是纯 accent —— 取点左移 3px 进圆角内侧。
+	assertPx(t, img, 3, trackY+1, accent, "轨道左端已有填充")
 	assertPx(t, img, knobLeft-4, trackY+1, accent, "填充一直画到滑块中心前")
-	assertPx(t, img, knobLeft+sliderKnobW+20, trackY+1, colorTrack, "滑块右侧还是空轨道")
-	assertPx(t, img, knobLeft+sliderKnobW/2, sliderDefH/2, colorKnob, "滑块内部是白底")
-	assertPx(t, img, knobLeft, sliderDefH/2-sliderKnobH/2, colorFieldEdge, "滑块上边是边框")
+	assertPx(t, img, knobLeft+Space(sliderKnobW)+20, trackY+1, colorTrack, "滑块右侧还是空轨道")
+	assertPx(t, img, knobLeft+Space(sliderKnobW)/2, Space(sliderDefH)/2, colorKnob, "滑块内部是白底")
+	// 滑块改成圆盘 + 1px 环: 验"上边缘之外一点是环色 (被 AA 略微压暗, 故不取
+	// 正上方那一个像素), 环内是白底"。
+	assertPx(t, img, knobLeft+Space(sliderKnobW)/2, Space(sliderDefH)/2-Space(sliderKnobH)/2+3, colorKnob, "滑块内部仍是白底")
 	// 轨道之外 (盒子上下留白) 不该被填
 	assertPx(t, img, 0, 0, pxWhite, "盒子里的轨道以外保持背景")
 }
@@ -257,7 +262,7 @@ func TestSliderDragSequence(t *testing.T) {
 	if n := jsArrayLen(t, v, "seen"); n != 4 {
 		t.Fatalf("onInput 应派发 4 次 (重复值不派发), 实际 %d 次: %v", n, jsArray(t, v, "seen").Elements)
 	}
-	for i, want := range []float64{0, 25, 50, 100} {
+	for i, want := range []float64{0, 24, 50, 100} {
 		if got := jsNumAt(t, v, "seen", i); got != want {
 			t.Fatalf("第 %d 次派发 = %v, want %v", i, got, want)
 		}
@@ -284,8 +289,8 @@ func TestSliderClickJump(t *testing.T) {
 	if n := jsArrayLen(t, v, "seen"); n != 1 {
 		t.Fatalf("单击应只派发一次 onInput, 实际 %d 次", n)
 	}
-	if got := jsNumAt(t, v, "seen", 0); got != 25 {
-		t.Fatalf("单击 1/4 处应跳值 25, 实际 %v", got)
+	if got := jsNumAt(t, v, "seen", 0); got != 24 {
+		t.Fatalf("单击 1/4 处应跳值 24, 实际 %v", got)
 	}
 	if a.dragTarget != nil {
 		t.Fatalf("单击结束后不该留下拖动目标")

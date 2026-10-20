@@ -21,8 +21,8 @@ import (
 //
 // 结构约定:
 //   - nodes 是数据, 由 Go 侧展开成 tree-row 节点树 (脚本写不到, 但登记进
-//     knownTags 以免内部构造被当成未知标签)。每个可见节点一行, 行高 28
-//     (与表格/字段控件同一套常量)。
+//     knownTags 以免内部构造被当成未知标签)。每个可见节点一行, 行高 32
+//     (Prism S5, 与 table/list 同一套常量)。
 //   - 展开态是**节点的运行时状态** (treeOpen), 不来自 props: 与 select 的
 //     expanded、tooltip 的 tipPopup 同类 —— 点箭头展开/收起是渲染层的临时
 //     UI 状态, 不需要脚本回写 (想受控可用 onToggle 自己记)。
@@ -30,19 +30,30 @@ import (
 //     立即切换, 整帧标脏)。
 //   - 缩进 = 深度 × treeIndent + 前导箭头占位, 保证同层节点文字左对齐;
 //     叶子节点不画箭头, 但**保留占位宽度** (否则叶子与父节点的文字会错位)。
+//     缩进与左侧基础留白都走 Space token。
+//   - 展开箭头是 **v 形 chevron** (与 select 的下拉箭头同一笔画), 收起时
+//     朝右、展开时朝下 —— v1 的实心三角在 32px 行里显得笨重, 而字符箭头
+//     (+/-) 在不同字体下宽高不一。
 //
 // 为什么不内置搜索/多选/拖拽: 那是 IDE 级树控件的领域, 与"提供 tree 的
 // 节点组件封装"这个目标(见任务描述)不匹配。这里给最小的可用形态: 层级
 // 展示 + 展开收起 + 选中回调。
 
 const (
-	treeRowH     = 28 // 行高 (与 tableRowH 同值, 便于混排对齐)
-	treeIndent   = 16 // 每层缩进
-	treeArrowW   = 16 // 箭头列宽 (叶子也占位, 保证文字左对齐)
-	treePadX     = 6  // 左侧基础留白
+	// treeRowH 是行高 (Prism S5: 28 → 32, 与 tableRowH / listRowH 同值)。
+	// **刻意小于 TouchMin (44)**: 桌面端鼠标行不必满足触控下限。
+	treeRowH = 32
+	// treeIndent 是每层缩进 (设计像素, Space6 = 16)。
+	treeIndent = Space6
+	// treeArrowW 是箭头列宽 (叶子也占位, 保证文字左对齐)。
+	treeArrowW = 16
+	// treeArrowGap 是箭头与文字间距 (Space1 = 2)。
+	treeArrowGap = Space1
 	treeMinW     = 120
-	treeArrowGap = 2 // 箭头与文字间距
 )
+
+// treePadX 返回左侧基础留白 (物理像素, Space4 = 8)。
+func treePadX() int { return Space(Space4) }
 
 // treeNode 是一个节点的解析结果 (标题 / 唯一键 / 子节点)。
 type treeNode struct {
@@ -132,6 +143,12 @@ func buildTreeRows(parent *GuiNode, nodes []treeNode, depth int, openSet map[str
 		hasKids := len(node.children) > 0
 		row.treeExpandable = hasKids
 		row.treeOpen = hasKids && openSet[node.key]
+		// 受控选中 (Prism S5): <tree rowSelected={key}> 在构造期拷到对应行。
+		// 树是"数据 → 可见行"的单向流, 选中态也走数据而不是另存一份运行时
+		// 状态 —— 重建 (展开/收起) 后选中行还是同一个 key, 不会漂移。
+		if sel, ok := root.PropStr("rowSelected"); ok && sel == node.key {
+			row.Props["selected"] = &object.Boolean{Value: true}
+		}
 		parent.Children = append(parent.Children, row)
 
 		if hasKids {
@@ -208,12 +225,14 @@ func (n *GuiNode) treeOpenSet() map[string]bool {
 func layoutTree(n *GuiNode) {
 	ensureTreeBuilt(n)
 	area := inner(n)
+	// Prism S8: 行高是参与排版的尺寸, 经 Space() 换算。
+	rowH := Space(treeRowH)
 	y := area.Y
 	for _, r := range treeRows(n) {
-		r.Box = Rect{X: area.X, Y: y, W: area.W, H: treeRowH}
+		r.Box = Rect{X: area.X, Y: y, W: area.W, H: rowH}
 		layoutNode(r)
 		placeAbsoluteIn(r, r.Box)
-		y += treeRowH
+		y += rowH
 	}
 	placeAbsoluteIn(n, area)
 }
@@ -222,7 +241,7 @@ func layoutTree(n *GuiNode) {
 // 行数 × 行高。
 func treeIntrinsic(n *GuiNode) (int, int) {
 	ensureTreeBuilt(n)
-	return treeMinW, len(treeRows(n)) * treeRowH
+	return Space(treeMinW), len(treeRows(n)) * Space(treeRowH)
 }
 
 // ensureTreeBuilt 惰性构建 (与 ensureTableBuilt 同理): 首次布局时物化可见行。
@@ -269,39 +288,63 @@ func paintTreeRow(img *image.RGBA, n *GuiNode, disabled bool) {
 	if b.W <= 0 || b.H <= 0 {
 		return
 	}
-	if n.hovered {
-		FillRect(img, b, tint(colorTreeRowHover, disabled))
+	// 底色优先级与 table/list 同一套: 选中 > 悬停。
+	if n.treeSelected() {
+		FillRect(img, b, tint(colorStateSelected, disabled))
+	} else if n.hovered {
+		FillRect(img, b, tint(colorStateRowHover, disabled))
 	}
-	x := b.X + treePadX + n.treeDepth*treeIndent
+	x := b.X + treePadX() + n.treeDepth*Space(treeIndent)
 	// 箭头列 (仅展开中的父节点或可展开节点画)
 	if n.treeHasChildren() {
-		drawTreeArrow(img, x, b.Y+b.H/2, n.treeOpen, tint(colorTreeText, disabled))
+		drawTreeChevron(img, x+Space(chevronInset), b.Y+b.H/2, n.treeOpen, tint(treeChevronColor(n), disabled))
 	}
-	textX := x + treeArrowW + treeArrowGap
+	textX := x + Space(treeArrowW) + treeArrowGap // Prism S8: 箭头列随密度放大
 	tw, th := MeasureText(n.treeLabel, n.FontSize())
 	if tw > 0 && textX < b.X+b.W {
 		DrawText(img, img.Bounds(), n.treeLabel, textX, b.Y+(b.H-th)/2, n.FontSize(),
-			tint(n.textColor(), disabled), b.X+b.W-textX-treePadX)
+			tint(n.textColor(), disabled), b.X+b.W-textX-treePadX())
 	}
 }
 
-// drawTreeArrow 画展开指示三角: 收起 = 右向 ▶, 展开 = 下向 ▼。
-// 用 4×4 的三角块像素级画 (小尺寸下比矢量更锐利)。
-func drawTreeArrow(img *image.RGBA, x, cy int, open bool, c color.RGBA) {
-	const s = 4
+// chevronInset 是 v 形箭头在箭头列里的水平内缩: 让 8px 宽的 chevron 居
+// 于 16px 的箭头列中, 与文字的距离才和 select 的下拉箭头一致。
+const chevronInset = 4
+
+// drawTreeChevron 画展开指示的 v 形折线 (Prism S5)。
+//
+// 收起 = ">" (顶点朝右), 展开 = "v" (顶点朝下): 两者是同一笔画旋转, 展开
+// 那一笔与 select 的 paintChevron 形状完全相同 —— 用户在"展开这个"与
+// "打开下拉"两种动作上看到的是同一个记号。
+//
+// 走 fillLine (覆盖率抗锯齿) 而不是逐像素 FillRect: 斜线在小尺寸下逐像素
+// 会出锯齿, 而 S5 之后的行高 32 让这条线有足够空间做 AA。
+func drawTreeChevron(img *image.RGBA, x, cy int, open bool, c color.RGBA) {
+	const half, thick = 4, 2
 	if open {
-		// ▼: 上边宽, 逐行收窄
-		for i := 0; i < s; i++ {
-			w := s - i
-			FillRect(img, Rect{X: x + i, Y: cy - s/2 + i, W: w, H: 1}, c)
-		}
+		// v: (x-4, cy-2) → (x, cy+2) → (x+4, cy-2)
+		fillLine(img, x-half, cy-2, x, cy+2, thick, c)
+		fillLine(img, x, cy+2, x+half, cy-2, thick, c)
 		return
 	}
-	// ▶: 左边高, 逐列收窄
-	for i := 0; i < s; i++ {
-		h := s - i
-		FillRect(img, Rect{X: x + i, Y: cy - h/2, W: 1, H: h}, c)
+	// >: (x-2, cy-4) → (x+2, cy) → (x-2, cy+4)
+	fillLine(img, x-2, cy-half, x+2, cy, thick, c)
+	fillLine(img, x+2, cy, x-2, cy+half, thick, c)
+}
+
+// treeChevronColor 是箭头的笔画色: 选中行上要比 secondary 更重 (选中底的
+// 蓝灰会让 secondary 糊掉), 其余走 secondary —— 箭头是提示而不是内容。
+func treeChevronColor(n *GuiNode) color.RGBA {
+	if n.treeSelected() {
+		return colorText
 	}
+	return colorTextSecondary
+}
+
+// treeSelected 报告这一行是否是选中节点 (受控 prop, 与 list-item 同款)。
+func (n *GuiNode) treeSelected() bool {
+	v, ok := n.PropBool("selected")
+	return ok && v
 }
 
 // treeHasChildren 这一行是否可展开 (有无子节点)。由构造期写入 —— 绘制时
@@ -309,9 +352,3 @@ func drawTreeArrow(img *image.RGBA, x, cy int, open bool, c color.RGBA) {
 func (n *GuiNode) treeHasChildren() bool {
 	return n.treeExpandable
 }
-
-// 树配色。
-var (
-	colorTreeRowHover = color.RGBA{R: 0xEE, G: 0xF3, B: 0xFA, A: 255} // 行悬停底
-	colorTreeText     = color.RGBA{R: 0x55, G: 0x55, B: 0x55, A: 255} // 箭头色
-)

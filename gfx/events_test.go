@@ -199,7 +199,13 @@ func TestPressStateVisualAndDispatch(t *testing.T) {
 	}
 }
 
-// ===== 焦点: 虚线焦点框像素 (回调顺序见全链路测试) =====
+// ===== 焦点: 焦点环像素 (回调顺序见全链路测试) =====
+
+// ringPx 是"焦点环上"的一个取样点 (Prism S3)。
+//
+// 环画在盒子**外侧**: 让开 focusRingGap(2) 的底色间隙后画 focusRingW(2) 宽的
+// 实线, 于是环带占 [X-4, X-2)。取 X-3 正好落在环带中间, 取边中点避开圆角。
+func ringPx(b Rect) (int, int) { return b.X - 3, b.Y + b.H/2 }
 
 func TestFocusRingPixels(t *testing.T) {
 	root := mkNode("column", map[string]float64{"gap": 10, "padding": 12})
@@ -207,26 +213,28 @@ func TestFocusRingPixels(t *testing.T) {
 	root.Children = []*GuiNode{a1, b1}
 	fake, app := mountTestApp(t, root, 300, 160)
 
-	// 首帧: 无焦点 → 无焦点框
-	if c := shotsImage(fake).RGBAAt(a1.Box.X+1, a1.Box.Y+1); c == pxRing {
-		t.Fatalf("首帧不该有焦点框")
+	// 首帧: 无焦点 → 无焦点环
+	if c := shotsImage(fake).RGBAAt(ringPx(a1.Box)); c == pxRing {
+		t.Fatalf("首帧不该有焦点环")
 	}
 
 	pushAndPump(t, fake, app, Event{Kind: EventMouseUp, X: a1.Box.X + 2, Y: a1.Box.Y + 2})
 	if app.focused != a1 {
 		t.Fatalf("点击后焦点应落在 A 上: %v", app.focused)
 	}
-	// 焦点框落在 A 的盒内 1px 处 (2px 实线起笔)
-	assertPx(t, shotsImage(fake), a1.Box.X+1, a1.Box.Y+1, pxRing, "A 的焦点框")
-	if c := shotsImage(fake).RGBAAt(b1.Box.X+1, b1.Box.Y+1); c == pxRing {
-		t.Fatalf("B 不该有焦点框")
+	// 环落在 A 的盒外 2~4px 处 (与控件之间留 2px 底色间隙)
+	ax, ay := ringPx(a1.Box)
+	assertPx(t, shotsImage(fake), ax, ay, pxRing, "A 的焦点环")
+	if c := shotsImage(fake).RGBAAt(ringPx(b1.Box)); c == pxRing {
+		t.Fatalf("B 不该有焦点环")
 	}
 
 	pushAndPump(t, fake, app, Event{Kind: EventMouseUp, X: b1.Box.X + 2, Y: b1.Box.Y + 2})
 	img := shotsImage(fake)
-	assertPx(t, img, b1.Box.X+1, b1.Box.Y+1, pxRing, "B 的焦点框")
-	if c := img.RGBAAt(a1.Box.X+1, a1.Box.Y+1); c == pxRing {
-		t.Fatalf("A 的旧焦点框未被擦掉 (局部重绘下会残留)")
+	bx, by := ringPx(b1.Box)
+	assertPx(t, img, bx, by, pxRing, "B 的焦点环")
+	if c := img.RGBAAt(ringPx(a1.Box)); c == pxRing {
+		t.Fatalf("A 的旧焦点环未被擦掉 (环在盒外, 不补标脏区就会残留)")
 	}
 }
 

@@ -5,6 +5,7 @@ import (
 	"image/color"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // 软件光栅化 (P2): 实心矩形、1px 边框、背景色。
@@ -69,6 +70,48 @@ var (
 	// 文本选区高亮底 (input / textarea)。半透明: 它画在文字**之下**, 不透明
 	// 会把选中的字盖掉。初值 = 亮色主题的 selection, 随主题经 syncThemeVars 更新。
 	colorSelection = color.RGBA{R: 0x9C, G: 0xC4, B: 0xEC, A: 0xB0}
+)
+
+// Prism 扩展 token 的投影缓存 (S1)。与上面那批同构：事实来源是 theme.go 的
+// themeCurrent，SetTheme 时由 syncThemeVars 整体回写。初值 = themeLight() 里
+// 对应的推导值，保证首帧（SetTheme 尚未被调用时）与旧视觉一致。
+var (
+	colorSurfaceBase    = color.RGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 255}
+	colorSurfaceSunken  = color.RGBA{R: 0xFA, G: 0xFA, B: 0xFA, A: 255}
+	colorSurfaceRaised  = color.RGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 255}
+	colorSurfaceOverlay = color.RGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 255}
+	colorSurfaceInset   = color.RGBA{R: 0xF3, G: 0xF3, B: 0xF3, A: 255}
+
+	colorTextSecondary = color.RGBA{R: 0x55, G: 0x55, B: 0x55, A: 255}
+	colorTextMuted     = color.RGBA{R: 0x77, G: 0x77, B: 0x77, A: 255}
+	colorTextDisabled  = color.RGBA{R: 0xAA, G: 0xAA, B: 0xAA, A: 255}
+	colorTextInverse   = color.RGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 255}
+
+	colorBorderDecorative = color.RGBA{R: 0xD0, G: 0xD0, B: 0xD0, A: 255}
+	colorBorderControl    = color.RGBA{R: 0x99, G: 0x99, B: 0x99, A: 255}
+
+	colorAccentSubtle = color.RGBA{R: 0xDC, G: 0xE8, B: 0xF8, A: 255}
+
+	colorInfoSubtle = color.RGBA{R: 0xE6, G: 0xF0, B: 0xFD, A: 255}
+	colorInfoText   = color.RGBA{R: 0x1D, G: 0x4E, B: 0x89, A: 255}
+
+	colorSuccess       = color.RGBA{R: 0x27, G: 0xAE, B: 0x60, A: 255}
+	colorSuccessSubtle = color.RGBA{R: 0xE7, G: 0xF6, B: 0xED, A: 255}
+	colorSuccessText   = color.RGBA{R: 0x1E, G: 0x7A, B: 0x45, A: 255}
+
+	colorWarning       = color.RGBA{R: 0xE8, G: 0x89, B: 0x0C, A: 255}
+	colorWarningSubtle = color.RGBA{R: 0xFD, G: 0xF3, B: 0xE2, A: 255}
+	colorWarningText   = color.RGBA{R: 0x8A, G: 0x52, B: 0x08, A: 255}
+
+	colorDangerSubtle = color.RGBA{R: 0xFB, G: 0xE9, B: 0xE7, A: 255}
+	colorDangerText   = color.RGBA{R: 0x91, G: 0x2B, B: 0x20, A: 255}
+
+	colorStateHover       = color.RGBA{R: 0xF0, G: 0xF4, B: 0xF9, A: 255}
+	colorStatePress       = color.RGBA{R: 0xE0, G: 0xE9, B: 0xF4, A: 255}
+	colorStateSelected    = color.RGBA{R: 0xDC, G: 0xE8, B: 0xF8, A: 255}
+	colorStateRowHover    = color.RGBA{R: 0xEE, G: 0xF3, B: 0xFA, A: 255}
+	colorScrollThumbHover = color.RGBA{R: 0x88, G: 0x88, B: 0x88, A: 255}
+	colorScrim            = color.RGBA{R: 0, G: 0, B: 0, A: 0x66}
 )
 
 // 弹层缺省外观的十六进制写法: Go 侧构造节点时写进 props, 于是"缺省样式"
@@ -211,6 +254,15 @@ func (n *GuiNode) textColor() color.RGBA {
 			if c, ok := ParseColor(s); ok {
 				return c
 			}
+		}
+		// 容器组件内的缺省文字色跟随语义 (Prism S6/S7 tonal: subtle 底配同
+		// 族深字, 对比度是逐对算过的)。显式写的 color 优先 —— 上面的分支
+		// 先命中。
+		switch p.Tag {
+		case "alert":
+			return alertTextColor(p)
+		case "tag":
+			return tagTextColor(p)
 		}
 	}
 	return colorText
@@ -503,6 +555,12 @@ func drawNode(img *image.RGBA, n *GuiNode) {
 			// 收集, 并在常规内容之后以"根层级"重画一次 (不受父盒裁剪)。
 			continue
 		}
+		// <menu> 里声明的 menuitem/separator 是**数据**而不是就地渲染的节点
+		// (它们的可见形态是弹层里的 menu-item 行)。它们拿不到布局盒, 但
+		// #text 子节点不受空盒裁剪, 会在 (0,0) 画出幽灵文字 —— 这里整支跳过。
+		if n.Tag == "menu" && (c.Tag == "menuitem" || c.Tag == "separator" || c.Tag == "menuseparator") {
+			continue
+		}
 		sub := img
 		switch {
 		case n.Tag == "scroll":
@@ -520,9 +578,13 @@ func drawNode(img *image.RGBA, n *GuiNode) {
 		}
 		drawNode(sub, c)
 	}
-	// badge 的徽标本体画在宿主内容之后: 它溢出到右上角外, 后画才不会被
-	// 宿主里靠右的内容盖住 (也不受父盒裁剪 —— 徽标本来就允许出框)。
-	if n.Tag == "badge" {
+	// 徽标本体画在宿主内容之后: 它溢出到右上角外, 后画才不会被宿主里靠右
+	// 的内容盖住 (也不受父盒裁剪 —— 徽标本来就允许出框)。
+	//
+	// S7 起它不只服务 <badge count> 包裹式, 也服务 <button badge={3}> 这种
+	// 直接写在宿主上的形式: 徽标 99% 的用法就是"给一个已有尺寸的控件加个
+	// 角标", 那句话写在宿主上最自然, 不必为一个装饰多套一层节点。
+	if n.badgeSpec().visible() {
 		paintBadge(img, n, disabled)
 	}
 }
@@ -557,19 +619,23 @@ func (n *GuiNode) textDrawnByTextAncestor() bool {
 }
 
 // backgroundFor 返回节点纯色填充面: 显式 background prop 优先 (渐变写法
-// 不是纯色面, 这里返回 false), button 无显式值时回落缺省浅灰面。
+// 不是纯色面, 这里返回 false), button 无显式值时回落 Prism 的抬升面
+// (colorSurfaceRaised —— 见 decor.go 的 backgroundPaint)。
 func (n *GuiNode) backgroundFor() (color.RGBA, bool) {
 	solid, grad, ok := n.backgroundPaint()
 	if ok && grad == nil {
 		return solid, true
 	}
 	if !ok && n.Tag == "button" {
-		return colorBtnFace, true
+		return colorSurfaceRaised, true
 	}
 	return color.RGBA{}, false
 }
 
-// borderFor 返回节点描边色: 同上, button 缺省 1px 深灰边框。
+// borderFor 返回节点描边色: 同上, button 缺省 1px 控件级边框。
+//
+// 悬停时"升一档" (Prism S3): 白/浅面上 hover 的提亮已经顶到 255 无从体现,
+// 反馈只能由边框承担 —— 这也是"发丝边"缺省能成立的前提 (边才是可变的那一层)。
 func (n *GuiNode) borderFor() (color.RGBA, bool) {
 	if s, ok := n.PropStr("border"); ok {
 		if c, ok := ParseColor(s); ok {
@@ -577,7 +643,10 @@ func (n *GuiNode) borderFor() (color.RGBA, bool) {
 		}
 	}
 	if n.Tag == "button" {
-		return colorBtnEdge, true
+		if n.hovered && !n.disabledInChain() {
+			return colorTextSecondary, true
+		}
+		return colorBorderControl, true
 	}
 	return color.RGBA{}, false
 }
@@ -594,29 +663,50 @@ func drawWidget(img *image.RGBA, n *GuiNode, disabled bool) {
 	case "progress":
 		paintProgress(img, n, disabled)
 	case "separator":
-		// 分隔线: 盒子即细条 (横 1px 高 / 纵 1px 宽), 直接填充
-		FillRect(img, n.Box, tint(n.propColor("background", colorTrack), disabled))
+		// 分隔线: 盒子即细条 (横 1px 高 / 纵 1px 宽), 直接填充。
+		//
+		// 色走 BorderDecorative 而不是 Track (Prism S7): 分隔线是**装饰线**,
+		// 它故意不过 1.4.11 的 3:1 (过了一整页都是横杠); 而 track 是"轨道/
+		// 滑块槽"的功能色, 两者被 S1 拆成两个 token 就是为了这种场合。
+		// v1 亮色预设里两者恰好同值 (#D0D0D0), 所以这次换 token 在旧预设
+		// 下零视觉变化, 换到 prism 预设才显出装饰线更轻。
+		//
+		// 缩进 (inset): 盒子仍然被父容器 stretch 撑满 —— 这是布局契约, 不能
+		// 改; 缩进只改**落笔的那一段** (横线两头各缩, 纵线上下各缩)。列表里
+		// 想让分隔线让开左侧图标时写 inset={4}, 档位走 Space token 而不是裸
+		// 像素, 免得各处手写 13 / 15 / 17 三种"看起来差不多"的缩进。
+		FillRect(img, separatorLineRect(n),
+			tint(n.propColor("background", colorBorderDecorative), disabled))
 	case "spacer":
 		// 弹性占位: 不绘制任何内容, 仅参与布局 (flexGrow 撑开主轴)
 	}
 }
 
-// paintCheckbox 画复选框: 18x18 边框空盒, 选中时填强调色并画勾。
-// 勾用两段 2px 粗的短线拼接, 斜率按 18px 盒子近似 (走 fillLine 的抗锯齿)。
+// paintCheckbox 画复选框: 18x18 圆角空盒 (Prism S4 缺省 r4), 选中时填强调色
+// 并画勾; 勾用两段 2px 粗的短线拼接, 斜率按 18px 盒子近似 (走 fillLine 的抗锯齿)。
+//
+// 选中/取消是一次 **MotionFast 的渐显** (见 controlPhase): 填充与勾都按进度
+// 乘 alpha —— 软光栅没有图层合成, "半透明的强调色合成到盒子上"就是颜色插值
+// 的等价结果, 且这条路径能被 reduced-motion 直接关成瞬时 (dur=0 → 不起表)。
 func paintCheckbox(img *image.RGBA, n *GuiNode, disabled bool) {
 	b := n.Box
 	if b.W <= 0 || b.H <= 0 {
 		return
 	}
+	rad := resolveRadiusPx(b, nodeRadiusPx(n, RadiusXS))
 	edge := tint(n.propColor("border", colorFieldEdge), disabled)
-	if n.checked() {
-		FillRect(img, b, tint(n.faceColor(colorAccent), disabled))
+	phase := n.controlPhase()
+	if phase > 0 {
+		fill := tint(n.faceColor(colorAccent), disabled)
+		fill.A = uint8(float64(fill.A) * phase)
+		fillRoundRect(img, b, rad, fill)
 	}
-	StrokeRect(img, b, edge)
-	if !n.checked() {
+	strokeRoundRectW(img, b, rad, 1, edge)
+	if phase <= 0 {
 		return
 	}
 	mark := tint(n.propColor("color", colorAccentText), disabled)
+	mark.A = uint8(float64(mark.A) * phase)
 	// 勾: 起点 (22%,50%) → 折点 (39%,67%) → 终点 (72%,28%), 按盒子比例取点
 	start := image.Pt(b.X+pct(b.W, 22), b.Y+pct(b.H, 50))
 	bottom := image.Pt(b.X+pct(b.W, 39), b.Y+pct(b.H, 67))
@@ -639,65 +729,110 @@ func paintRadio(img *image.RGBA, n *GuiNode, disabled bool) {
 	}
 	cx, cy := b.X+b.W/2, b.Y+b.H/2
 	StrokeCircle(img, cx, cy, r, tint(n.propColor("border", colorFieldEdge), disabled))
-	if n.checked() {
+	// 圆点按"选中度"长出来 (MotionFast): 半径直接乘进度, 于是出场是"从中心
+	// 胀开"而不是"淡入" —— 单选框的选中语义比复选框更强, 位移比透明度明显。
+	if phase := n.controlPhase(); phase > 0 {
 		dotR := min(b.W, b.H) / 4 // 18px 盒子 → 直径约 8px
 		if dotR < 1 {
 			dotR = 1
 		}
-		FillCircle(img, cx, cy, dotR, tint(n.faceColor(colorAccent), disabled))
+		fillDiscAA(img, float64(cx)+0.5, float64(cy)+0.5, float64(dotR)*phase,
+			tint(n.faceColor(colorAccent), disabled))
 	}
 }
 
-// paintSwitch 画开关: 36x20 方形轨道 + 16x16 方块滑块, 位置由 checked 决定。
-// (v1 方形轨道, 圆角轨道留待绘制系统升级。)
+// switchKnobD 是滑块直径 (Prism S4)。轨道 44×26 - 上下各留 4 = 18, 于是滑块
+// 与轨道的间隙四周一致 (v1 的方块滑块是 16×16, 左右间隙 2、上下间隙 2, 比例
+// 全靠盒子尺寸碰运气)。
+const switchKnobD = 18
+
+// paintSwitch 画开关: 44x26 **胶囊**轨道 + 18 圆形滑块, 位置由"选中度"插值
+// (Prism S4 —— v1 的方形轨道这次一并升级)。
+//
+// 圆角取哨兵 RadiusFull: 绘制侧按 min(w,h)/2 算, 于是脚本把开关拉宽 (常见:
+// 放进 stretch 的行里) 时也仍然是胶囊, 不会退化成"很长的圆角矩形"。
 func paintSwitch(img *image.RGBA, n *GuiNode, disabled bool) {
 	b := n.Box
 	if b.W <= 0 || b.H <= 0 {
 		return
 	}
-	checked := n.checked()
-	track := n.interactiveFace(colorSwitchOff) // 关闭态也做悬停/按压反馈
-	if checked {
-		track = n.faceColor(colorAccent)
-	}
-	FillRect(img, b, tint(track, disabled))
+	phase := n.controlPhase()
+	// 轨道色按进度在"关"与"开"之间插值: 滑块在动的同时底色也在变, 看不出
+	// "先变色再滑动"的两段感。
+	off := n.interactiveFace(colorSwitchOff) // 关闭态也做悬停/按压反馈
+	on := n.faceColor(colorAccent)
+	track := mixColor(off, on, phase)
+	fillRoundRect(img, b, resolveRadiusPx(b, nodeRadiusPx(n, RadiusFull)), tint(track, disabled))
 
-	knobW := b.H * 16 / 20 // 20px 高时 16px 宽 (盒子被拉伸时按比例)
-	if knobW > b.W/2 {
-		knobW = b.W / 2
-	}
-	if knobW < 2 {
+	d := min(Space(switchKnobD), min(b.W, b.H))
+	if d < 2 {
 		return
 	}
-	kw := knobW
-	kh := b.H - 4
-	if kh < 2 {
-		kh = b.H
+	inset := (b.H - d) / 2
+	if inset < 0 {
+		inset = 0
 	}
-	ky := b.Y + (b.H-kh)/2
-	kx := b.X + 2
-	if checked {
-		kx = b.X + b.W - kw - 2
-	}
-	FillRect(img, Rect{X: kx, Y: ky, W: kw, H: kh}, tint(colorKnob, disabled))
+	cy := b.Y + b.H/2
+	left := b.X + inset
+	right := b.X + b.W - d - inset
+	// MotionBase 的 decelerate 位移 (controlPhase 内部按 easeOut 推进)
+	cx := left + int(float64(right-left)*phase+0.5)
+	FillCircle(img, cx+d/2, cy, d/2, tint(colorKnob, disabled))
 }
 
-// paintProgress 画进度条: 轨道浅灰 + 前景按 value 比例填充, value 已钳位 [0,1]。
+// paintProgress 画进度条 (Prism S7): 胶囊轨道 + 胶囊填充。
+//
+// v1 是两根 FillRect 上下叠 (轨道浅灰 + 前景实心矩形), 只有三种颜色、四条
+// 硬边。改成胶囊之后: 轨道与填充共用"短边的一半"这个半径, 于是脚本把进度条
+// 拉高 (height=12) 或拉宽 (放进 stretch 的行) 都仍然是胶囊, 不会退化成
+// "很长的圆角矩形"。
+//
+// 颜色来源按优先级: level prop (语义四色, 与 alert 同名同义) → background
+// prop (历史口径: _progress 上的 background 一直是填充色) → 强调色。
 func paintProgress(img *image.RGBA, n *GuiNode, disabled bool) {
 	b := n.Box
 	if b.W <= 0 || b.H <= 0 {
 		return
 	}
-	FillRect(img, b, tint(colorTrack, disabled))
-	fw := int(float64(b.W) * n.progressValue())
+	rad := min(b.W, b.H) / 2
+	fillRoundRect(img, b, rad, tint(colorTrack, disabled))
+	fill := tint(n.progressFillColor(), disabled)
+	if n.progressIndeterminate() {
+		paintProgressIndeterminate(img, b, rad, fill)
+		return
+	}
+	fw := int(float64(b.W)*n.progressValue() + 0.5)
 	if fw <= 0 {
 		return
 	}
 	if fw > b.W {
 		fw = b.W
 	}
-	FillRect(img, Rect{X: b.X, Y: b.Y, W: fw, H: b.H},
-		tint(n.propColor("background", colorAccent), disabled))
+	fillRoundRect(img, Rect{X: b.X, Y: b.Y, W: fw, H: b.H}, rad, fill)
+}
+
+// paintProgressIndeterminate 画不定进度的滑块: 一段 1/3 轨道宽的胶囊在轨道
+// 上来回扫。
+//
+// 没有变换矩阵, 位移只能靠"每帧改落笔的 x" —— 于是相位就是动的唯一来源,
+// 让相位停住即位移消失 (reduced-motion 走这条, 见 progressIndetPhase)。
+//
+// 滑块扫到两端时会探出轨道, 所以落笔前先把画布裁到轨道盒 (clipTo): 没有
+// 路径裁剪, 裁剪是靠子图的 Rect 收窄实现的 (FillRect / blendPixel 都以
+// img.Rect.Min 为原点, 子图外自然不落笔)。代价是滑块两端在轨道口被切成
+// 硬边 —— 一条 6px 高的条上这点差别看不出来, 而溢出到轨道外会直接毁形。
+func paintProgressIndeterminate(img *image.RGBA, b Rect, rad int, fill color.RGBA) {
+	bw := int(float64(b.W) * progressIndetFrac)
+	if bw < 2*rad {
+		bw = 2 * rad
+	}
+	if bw > b.W {
+		bw = b.W
+	}
+	// 行程 = 轨道宽 + 滑块宽: 从"整个滑块在左口外"扫到"整个滑块在右口外"。
+	travel := b.W + bw
+	pos := b.X - bw + int(progressIndetPhase()*float64(travel))
+	fillRoundRect(clipTo(img, b), Rect{X: pos, Y: b.Y, W: bw, H: b.H}, rad, fill)
 }
 
 // clip 求矩形与画布的交集。
@@ -873,4 +1008,129 @@ func min(a, b int) int {
 		return a
 	}
 	return b
+}
+
+// ===== 进度条 (Prism S7) =====
+
+// progressTrackH 是轨道厚度缺省值 (= Space3, 6dp)。
+//
+// 6 而不是 v1 的 8: 胶囊把"厚度"这件事放大了 (圆头两端各吃掉 3px 直段),
+// 8px 的胶囊在满屏宽上是"一条横躺的药片"而不是"一根有厚度的线"。
+const progressTrackH = Space3
+
+// 不定进度滑块的几何与节奏。
+const (
+	// progressIndetFrac 是滑块宽度占轨道宽的比例。
+	progressIndetFrac = 1.0 / 3.0
+	// progressIndetPeriod 是滑块扫完一整趟的周期。
+	//
+	// 与 spinner / skeleton 的循环同属 MotionSlow 那一档的"慢循环":
+	// MotionSlow(260ms) 是**过渡**的量级, 套在无限循环上会显得焦躁
+	// (260ms 扫完 300px = 每秒四个来回)。1200ms 与 skeletonPeriod 齐平。
+	progressIndetPeriod = 1200 * time.Millisecond
+	// progressIndetRest 是 reduced-motion 时滑块停住的相位。
+	progressIndetRest = 0.25
+)
+
+// progressFillColor 决定填充色: level prop 给语义色, 否则 background prop,
+// 都没有才回落强调色。
+//
+// level 与 alert 用同一个 prop 名、同一套取值 (info/success/warn/danger),
+// 于是"换 level 就换色"在脚本里是同一条肌肉记忆。
+func (n *GuiNode) progressFillColor() color.RGBA {
+	switch lv, _ := n.PropStr("level"); lv {
+	case "success":
+		return colorSuccess
+	case "warn", "warning":
+		return colorWarning
+	case "error", "danger":
+		return colorDanger
+	case "info":
+		return colorInfo
+	}
+	return n.propColor("background", colorAccent)
+}
+
+// progressIndeterminate 读 indeterminate prop。
+func (n *GuiNode) progressIndeterminate() bool {
+	v, _ := n.PropBool("indeterminate")
+	return v
+}
+
+// progressIndetPhase 返回不定进度滑块在一个周期内的相位 [0,1)。
+//
+// reduced-motion 时恒返回 progressIndetRest —— 滑块停在轨道靠左 1/4 处,
+// 仍然是"进度还在走"的形状, 只是不再位移。这是本轮三处无限循环 (spinner
+// 旋转 / skeleton 呼吸 / 不定进度位移) 共用的降级规矩: **相位冻结**, 而不是
+// 把时长调成 0 —— 循环没有终点, "快进到结束"对它没有意义。
+func progressIndetPhase() float64 {
+	if prefersReducedMotion() {
+		return progressIndetRest
+	}
+	el := time.Since(loopEpoch)
+	if el < 0 {
+		el = 0
+	}
+	return float64(el%progressIndetPeriod) / float64(progressIndetPeriod)
+}
+
+// separatorInsetPx 读 <separator inset={N}> 的缩进像素数 (两端各缩这么多)。
+//
+// N 是 **Space 档位** 而不是像素: inset={4} = Space4 = 8 设计像素。这与
+// 老 prop (padding / radius, 裸 dp) 的口径不同, 但 S7 的验收点就是"间距出
+// 自 Space 台阶", 新增 prop 不该继承那套裸数字的历史包袱。
+//
+// 越界值夹回 [0, Space10] 而不是报错: 分隔线是装饰件, 脚本里档位写大不该
+// 让整页渲染崩掉 —— 夹住之后最坏情况只是"这条线被缩没了"。
+func (n *GuiNode) separatorInsetPx() int {
+	step := -1
+	if v, ok := n.PropNum("inset"); ok {
+		step = int(v)
+	} else if s, ok := n.PropStr("inset"); ok {
+		s = strings.TrimPrefix(strings.TrimSpace(strings.ToLower(s)), "space")
+		if v, err := strconv.Atoi(s); err == nil {
+			step = v
+		}
+	}
+	if step <= 0 {
+		return 0
+	}
+	// Space 台阶是 1..10, 但 Space(11) 这种用法不该沉默地变成 0 ——
+	// 超出最高档就给最高档 (40dp), 与"刻度表没有 11"不冲突。
+	if step > 10 {
+		step = 10
+	}
+	return Space(stepsToDp[step])
+}
+
+// stepsToDp 把 Space 档位号映到设计像素 (tokens.go 的台阶表, 索引 0 = Space0)。
+//
+// 为什么要有这张表: tokens.go 只有具名常量 Space1..Space10, 而 prop 里来的是
+// 一个数字, 没有"由号取常量"的通路 —— 与其写 10 个 case, 一张 [11]int 更不容易
+// 抄错, 也让 tokens.go 保持零改动 (S1 已冻结)。
+var stepsToDp = [11]int{0, 2, 4, 6, 8, 12, 16, 20, 24, 32, 40}
+
+// separatorLineRect 给出真正落笔的那一段: 盒子保留 stretch 后的满宽, 只把两端
+// (纵向是上下) 按 inset 缩掉。
+//
+// 缩到 0 或负就直接还回空矩形 —— "线缩没了"在视觉上等于不画, 总比给负宽度
+// 让 FillRect 反向涂一片要好。
+func separatorLineRect(n *GuiNode) Rect {
+	b := n.Box
+	ins := n.separatorInsetPx()
+	if ins <= 0 {
+		return b
+	}
+	if n.vertical() {
+		h := b.H - 2*ins
+		if h <= 0 {
+			return Rect{}
+		}
+		return Rect{X: b.X, Y: b.Y + ins, W: b.W, H: h}
+	}
+	w := b.W - 2*ins
+	if w <= 0 {
+		return Rect{}
+	}
+	return Rect{X: b.X + ins, Y: b.Y, W: w, H: b.H}
 }

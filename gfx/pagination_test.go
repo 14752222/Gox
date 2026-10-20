@@ -190,3 +190,16 @@ func eqInts(a, b []int) bool {
 	}
 	return true
 }
+
+func TestPaginationButtonsUniformSquare(t *testing.T) {
+	// Prism S5: 页码/翻页按钮统一 32×32 (RadiusSM), 不再"高 28、宽随文字"。
+	root := mkNode("column", map[string]float64{"padding": 12})
+	pg := mkNode("pagination", map[string]float64{"total": 50, "pageSize": 10, "current": 1})
+	mountChildren(root, pg)
+	renderTree(root, 500, 120)
+	for i, g := range pg.pageBtns {
+		if g.rect.W != Space(pageBtnSize) || g.rect.H != Space(pageBtnSize) {
+			t.Fatalf("按钮 #%d 不是 %dx%d: %v", i, Space(pageBtnSize), Space(pageBtnSize), g.rect)
+		}
+	}
+}

@@ -161,10 +161,10 @@ func TestTreeIndentIncreasesWithDepth(t *testing.T) {
 		t.Fatalf("深度不对: %d / %d", rows[0].treeDepth, rows[1].treeDepth)
 	}
 	// 行高统一 + y 等距
-	if rows[0].Box.H != treeRowH || rows[1].Box.H != treeRowH {
-		t.Fatalf("行高不是 %d: %d / %d", treeRowH, rows[0].Box.H, rows[1].Box.H)
+	if rows[0].Box.H != Space(treeRowH) || rows[1].Box.H != Space(treeRowH) {
+		t.Fatalf("行高不是 %d: %d / %d", Space(treeRowH), rows[0].Box.H, rows[1].Box.H)
 	}
-	if rows[1].Box.Y != rows[0].Box.Y+treeRowH {
+	if rows[1].Box.Y != rows[0].Box.Y+Space(treeRowH) {
 		t.Fatalf("行 y 不等距: %d → %d", rows[0].Box.Y, rows[1].Box.Y)
 	}
 	// 缩进在绘制期生效: 子行的文字墨迹应比父行靠右 → 用箭头列位置间接验证。
@@ -269,4 +269,43 @@ func clickRow(t *testing.T, fake *fakeSurface, a *app, row *GuiNode) {
 	x, y := row.Box.X+2, row.Box.Y+row.Box.H/2
 	pushAndPump(t, fake, a, Event{Kind: EventMouseDown, X: x, Y: y})
 	pushAndPump(t, fake, a, Event{Kind: EventMouseUp, X: x, Y: y})
+}
+
+func TestTreeRowSelectedHighlights(t *testing.T) {
+	// Prism S5: <tree rowSelected={key}> 高亮对应节点 (选中底), 箭头转正色。
+	tbl := mkTree(mkTreeNode("src", mkTreeNode("main.go")), mkTreeNode("README.md"))
+	withStr(tbl, "rowSelected", "README.md")
+	root := mkNode("column", map[string]float64{})
+	mountChildren(root, tbl)
+	img := renderTree(root, 300, 300)
+	rows := treeRows(tbl)
+	if !rows[1].treeSelected() {
+		t.Fatalf("rowSelected=README.md 未落到该行")
+	}
+	c := img.RGBAAt(rows[1].Box.X+rows[1].Box.W-6, rows[1].Box.Y+rows[1].Box.H/2)
+	if c != colorStateSelected {
+		t.Fatalf("选中节点底色 = %v, want colorStateSelected %v", c, colorStateSelected)
+	}
+}
+
+func TestTreeChevronNotSolidTriangle(t *testing.T) {
+	// S5 起展开箭头是 v 形折线 (笔画 secondary), 不是实心三角。
+	// 判据: 箭头列里出现 secondary 墨 (笔画色), 且收起态的笔画集中在
+	// 箭头列中段 (chevron 宽 8px, 三角是整个 4×4 块)。
+	tbl := mkTree(mkTreeNode("src", mkTreeNode("a")))
+	root := mkNode("column", map[string]float64{})
+	mountChildren(root, tbl)
+	img := renderTree(root, 300, 300)
+	row := treeRows(tbl)[0]
+	found := false
+	for dy := -6; dy <= 6; dy++ {
+		for dx := 0; dx < treeArrowW; dx++ {
+			if img.RGBAAt(row.Box.X+treePadX()+dx, row.Box.Y+row.Box.H/2+dy) == colorTextSecondary {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("箭头列里没有 chevron 笔画 (secondary 墨)")
+	}
 }

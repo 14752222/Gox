@@ -75,6 +75,8 @@
     "aria-label",
     "autoplay",
     "background",
+    "badge",
+    "badgeDot",
     "border",
     "borderStyle",
     "borderWidth",
@@ -85,13 +87,16 @@
     "colors",
     "columns",
     "controls",
+    "count",
     "current",
     "cursor",
     "delay",
     "description",
     "disabled",
+    "dot",
     "ellipsis",
     "escapeClipping",
+    "expanded",
     "filter",
     "fit",
     "flexGrow",
@@ -143,6 +148,7 @@
     "radius",
     "resizable",
     "role",
+    "rowSelected",
     "shadow",
     "side",
     "src",
@@ -156,6 +162,7 @@
     "total",
     "transition",
     "value",
+    "variant",
     "vlist",
     "volume",
     "width",
@@ -172,11 +179,8 @@
     ],
     "avatar": [
       "shape",
-      "size"
-    ],
-    "badge": [
-      "count",
-      "dot"
+      "size",
+      "status"
     ],
     "column": [
       "alignItems",
@@ -184,7 +188,9 @@
       "justifyContent"
     ],
     "empty": [
-      "desc"
+      "desc",
+      "subDesc",
+      "subDescription"
     ],
     "form": [
       "alignItems",
@@ -218,6 +224,9 @@
       "label",
       "shortcut"
     ],
+    "progress": [
+      "indeterminate"
+    ],
     "row": [
       "alignItems",
       "avoidReserved",
@@ -235,6 +244,7 @@
       "justifyContent"
     ],
     "separator": [
+      "inset",
       "vertical"
     ],
     "skeleton": [
@@ -260,7 +270,8 @@
       "rows"
     ],
     "table-row": [
-      "_zebra"
+      "_zebra",
+      "selected"
     ],
     "tag": [
       "closable",
@@ -271,6 +282,9 @@
     ],
     "toast": [
       "message"
+    ],
+    "tree-row": [
+      "selected"
     ],
     "video": [
       "poster"

@@ -262,7 +262,7 @@ func (n *GuiNode) isFocused() bool { return n.focused }
 // 出现, 极难查。
 func (a *app) setCaretFromX(in *GuiNode, x int) {
 	runes := []rune(in.inputValue())
-	textX := in.Box.X + fieldPadX + searchLeading(in)
+	textX := in.Box.X + Space(fieldPadX) + searchLeading(in)
 	// 单行框没有软换行: 整行就是一个视觉段, 于是可以复用同一套换算。
 	whole := taVisual{line: 0, start: 0, end: len(runes)}
 	caret := taColAtX(runes, whole, x-textX, resolveTextStyle(in))
@@ -271,6 +271,31 @@ func (a *app) setCaretFromX(in *GuiNode, x int) {
 	}
 	in.caret = caret
 	markNodeDirty(in)
+}
+
+// fieldEdge 是字段类组件 (input / textarea / select) 的边框色 (Prism S3)。
+//
+// 三档, 优先级从高到低:
+//  1. **显式 border prop** —— invalid 态走的就是这条路。内核没有 `invalid` /
+//     `error` prop (加了就要动 knownprops_gen.go 与 docs/props.golden.json,
+//     那两份不在本次改版的可改清单里), 而 `border` 是既有机制, 脚本写
+//     `border="#c0392b"` 就能表达"这一格填错了";
+//  2. **悬停** → colorTextSecondary, 比静息的控件级灰升一档;
+//  3. **获焦** → 强调色。它紧贴控件, 与外侧那圈"留 2px 间隙"的焦点环合起来
+//     就是规范要的双 ring (内 ring = 边框, 外 ring = 焦点环)。
+func (n *GuiNode) fieldEdge(fallback color.RGBA, disabled bool) color.RGBA {
+	if s, ok := n.PropStr("border"); ok {
+		if c, ok := ParseColor(s); ok {
+			return tint(c, disabled)
+		}
+	}
+	if n.isFocused() && !disabled {
+		return colorFocusRing
+	}
+	if n.hovered && !n.disabledInChain() {
+		return colorTextSecondary
+	}
+	return tint(fallback, disabled)
 }
 
 // paintInput 绘制单行输入框: 字段底 + 边框 (获焦转强调色) + 文本/placeholder +
@@ -289,21 +314,24 @@ func paintField(img *image.RGBA, n *GuiNode, disabled bool, leading int) {
 	if b.W <= 0 || b.H <= 0 {
 		return
 	}
-	FillRect(img, b, tint(n.fieldFace(colorFieldFace), disabled))
-
-	edge := colorInputEdge
-	if n.isFocused() && !disabled {
-		edge = colorFocusRing
+	// Prism S3: 字段走圆角面 (缺省 r8) —— v1 的直角字段与新的圆角按钮放在
+	// 同一行时, 两者的"角"不搭。
+	rad := resolveRadiusPx(b, nodeRadiusPx(n, RadiusMD))
+	fillRoundRect(img, b, rad, tint(n.fieldFace(colorFieldFace), disabled))
+	edge := n.fieldEdge(colorInputEdge, disabled)
+	if rad > 0 {
+		strokeRoundRectW(img, b, rad, 1, edge)
+	} else {
+		StrokeRect(img, b, edge)
 	}
-	StrokeRect(img, b, tint(edge, disabled))
 
 	st := resolveTextStyle(n)
 	text, textColor := n.inputText()
-	maxW := b.W - 2*fieldPadX - leading
+	maxW := b.W - 2*Space(fieldPadX) - leading
 	if maxW < 0 {
 		maxW = 0
 	}
-	textX := b.X + fieldPadX + leading
+	textX := b.X + Space(fieldPadX) + leading
 
 	// 光标 x = 字段左留白 + 让位 + "光标之前那截文本"的宽度。placeholder
 	// 不参与计算: 值是空的时候光标就在最左边, 不能因为占了位的灰字而右移。

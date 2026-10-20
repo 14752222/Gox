@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/14752222/Gox/object"
 	"github.com/14752222/Gox/vm"
@@ -30,11 +31,14 @@ func TestWidgetIntrinsicSize(t *testing.T) {
 	if rd.Box.W != 18 || rd.Box.H != 18 {
 		t.Fatalf("radio 固有尺寸 = %v, want 18x18", rd.Box)
 	}
-	if sw.Box.W != 36 || sw.Box.H != 20 {
-		t.Fatalf("switch 固有尺寸 = %v, want 36x20", sw.Box)
+	// Prism S4: 36x20 方形轨道 → 44x26 胶囊轨道。
+	if sw.Box.W != 44 || sw.Box.H != 26 {
+		t.Fatalf("switch 固有尺寸 = %v, want 44x26", sw.Box)
 	}
-	if pr.Box.W != 200 || pr.Box.H != 8 {
-		t.Fatalf("progress 固有尺寸 = %v, want 200x8", pr.Box)
+	// Prism S7: 8 → 6。轨道改胶囊之后 8px 在满宽上是"一条横躺的药片",
+	// 6px 才是"一根有厚度的线"。
+	if pr.Box.W != 200 || pr.Box.H != 6 {
+		t.Fatalf("progress 固有尺寸 = %v, want 200x6", pr.Box)
 	}
 	// spacer: 主轴(纵向)不占位, 交叉轴由 stretch 撑满
 	if sp.Box.H != 0 || sp.Box.W != 400 {
@@ -62,12 +66,72 @@ func TestSeparatorBothDirections(t *testing.T) {
 	if hsep.Box.W != 392 || hsep.Box.H != 1 {
 		t.Fatalf("横向 separator = %v, want 宽 392 高 1", hsep.Box)
 	}
-	assertPx(t, img, 200, 4, pxTrack, "分隔线颜色")
+	// 断言直接跟 token 而不是抄一份 #D0D0D0: 分隔线换到 BorderDecorative 之后,
+	// 切到 prism 预设 (#E2E8F0) 这条断言仍然成立, 抄常量则会在换预设时假红。
+	assertPx(t, img, 200, 4, colorBorderDecorative, "分隔线颜色")
 	// 纵线: 宽 1, 显式 height=20
 	if vsep.Box.W != 1 || vsep.Box.H != 20 {
 		t.Fatalf("纵向 separator = %v, want 宽 1 高 20", vsep.Box)
 	}
-	assertPx(t, img, 4, vsep.Box.Y+10, pxTrack, "纵向分隔线颜色")
+	assertPx(t, img, 4, vsep.Box.Y+10, colorBorderDecorative, "纵向分隔线颜色")
+}
+
+func TestSeparatorInsetUsesSpaceSteps(t *testing.T) {
+	// 盒子仍然被 stretch 撑满 (布局契约不能改), 缩进只改落笔的那一段:
+	// 满宽线 [4, 396), 缩进线 (inset=4 → Space4=8) [12, 388)。
+	root := mkNode("column", map[string]float64{"padding": 4})
+	full := mkNode("separator", nil)
+	ins := withNum(mkNode("separator", nil), "inset", 4)
+	root.Children = []*GuiNode{full, ins}
+	img := renderTree(root, 400, 300)
+
+	line := colorBorderDecorative
+	page := img.RGBAAt(300, 200) // 远离两条线的底色
+	if full.Box.W != 392 || ins.Box.W != 392 {
+		t.Fatalf("inset 不该改动盒子: full=%v ins=%v", full.Box, ins.Box)
+	}
+	// 满宽线: 两端都画到
+	assertPx(t, img, 6, full.Box.Y, line, "满宽线左端")
+	assertPx(t, img, 393, full.Box.Y, line, "满宽线右端")
+	// 缩进线: 让开的那两段是底色, 中间仍是线
+	assertPx(t, img, 6, ins.Box.Y, page, "缩进线左端外侧不该有墨")
+	assertPx(t, img, 393, ins.Box.Y, page, "缩进线右端外侧不该有墨")
+	assertPx(t, img, 20, ins.Box.Y, line, "缩进线中段")
+
+	// 纵向同理: 24 高的竖线, inset=3 (Space3=6) → 只画中间 12 行。
+	vroot := mkNode("column", map[string]float64{"padding": 4})
+	vins := withBool(withNum(mkNode("separator", map[string]float64{"height": 24}), "inset", 3), "vertical", true)
+	vroot.Children = []*GuiNode{vins}
+	vimg := renderTree(vroot, 400, 300)
+	assertPx(t, vimg, 4, vins.Box.Y, page, "竖线上端外侧不该有墨")
+	assertPx(t, vimg, 4, vins.Box.Y+23, page, "竖线下端外侧不该有墨")
+	assertPx(t, vimg, 4, vins.Box.Y+12, line, "竖线中段")
+
+	// 档位是台阶而不是像素: 越界夹到 Space10 (40), 负数与 0 视为不缩进。
+	if got := withNum(mkNode("separator", nil), "inset", 99).separatorInsetPx(); got != Space(40) {
+		t.Fatalf("inset=99 → %d, want Space10=%d", got, Space(40))
+	}
+	if got := withNum(mkNode("separator", nil), "inset", -3).separatorInsetPx(); got != 0 {
+		t.Fatalf("inset=-3 → %d, want 0", got)
+	}
+	if got := withStr(mkNode("separator", nil), "inset", "space6").separatorInsetPx(); got != Space(16) {
+		t.Fatalf(`inset="space6" → %d, want %d`, got, Space(16))
+	}
+}
+
+func TestSeparatorInsetTooWideDrawsNothing(t *testing.T) {
+	// 缩进把线缩没了: 不该画, 更不该给 FillRect 喂负宽度 (会反向涂一片)。
+	root := mkNode("column", map[string]float64{"padding": 4})
+	tooWide := withNum(mkNode("separator", map[string]float64{"width": 10}), "inset", 5)
+	root.Children = []*GuiNode{tooWide}
+	img := renderTree(root, 400, 300)
+
+	line := colorBorderDecorative
+	for x := tooWide.Box.X; x < tooWide.Box.X+tooWide.Box.W; x++ {
+		if img.RGBAAt(x, tooWide.Box.Y) == line {
+			t.Fatalf("线被 inset 缩没后仍在 x=%d 落墨", x)
+		}
+	}
 }
 
 func TestSpacerDrawsNothingAndGrows(t *testing.T) {
@@ -108,16 +172,19 @@ func TestProgressFillWidths(t *testing.T) {
 		root := mkNode("column", nil)
 		pr := mkNode("progress", map[string]float64{"value": tc.value})
 		root.Children = []*GuiNode{pr}
-		img := renderTree(root, 200, 8)
+		img := renderTree(root, 200, 6)
 
-		if pr.Box.W != 200 || pr.Box.H != 8 {
+		if pr.Box.W != 200 || pr.Box.H != 6 {
 			t.Fatalf("value=%v: progress 尺寸 = %v", tc.value, pr.Box)
 		}
+		// 取样点要避开填充的**圆头** (半径 = 高的一半 = 3): 胶囊两端各
+		// 有 3px 是覆盖率抗锯齿带, 在那里断言"纯正的前景色/轨道色"必然撞
+		// 进过渡像素。往里退 4px 取到的是直段。
 		if tc.filled > 0 {
-			assertPx(t, img, tc.filled-1, 4, pxAccent, "填充末端")
+			assertPx(t, img, tc.filled-4, 3, pxAccent, "填充直段")
 		}
 		if tc.filled < 200 {
-			assertPx(t, img, tc.filled, 4, pxTrack, "填充之后的轨道")
+			assertPx(t, img, tc.filled+2, 3, pxTrack, "填充之后的轨道")
 		}
 	}
 
@@ -130,6 +197,76 @@ func TestProgressFillWidths(t *testing.T) {
 	assertPx(t, img, 5, 2, pxRed, "progress 前景色可覆盖")
 }
 
+// level prop 给语义色 (与 alert 同名同义), 缺省强调色。
+func TestProgressLevelColors(t *testing.T) {
+	cases := []struct {
+		level string
+		want  color.RGBA
+	}{
+		{"success", colorSuccess},
+		{"warn", colorWarning},
+		{"danger", colorDanger},
+		{"info", colorInfo},
+	}
+	for _, tc := range cases {
+		root := mkNode("column", nil)
+		pr := mkNode("progress", map[string]float64{"value": 1, "width": 20, "height": 6})
+		withStr(pr, "level", tc.level)
+		root.Children = []*GuiNode{pr}
+		img := renderTree(root, 20, 6)
+		assertPx(t, img, 10, 3, tc.want, "level="+tc.level+" 的填充色")
+	}
+}
+
+// 不定进度: 滑块会在轨道上位移, 且**不会**画出轨道之外。
+func TestProgressIndeterminateStaysInsideTrack(t *testing.T) {
+	forceMotionForTest(t, true)
+	// 不定进度会登记帧心跳 (这是它的功能), 但用例结束后没人 dispose 这棵树,
+	// 心跳会漏到后面的用例里 —— 自己收拾。
+	t.Cleanup(clearAnimTickerForTest)
+	root := mkNode("column", nil)
+	pr := mkNode("progress", map[string]float64{"width": 120, "height": 6})
+	withBool(pr, "indeterminate", true)
+	root.Children = []*GuiNode{pr}
+
+	// 轨道外的两列必须是底色: 滑块探出轨道口时会被 clipTo 剪掉。
+	old := loopEpoch
+	t.Cleanup(func() { loopEpoch = old })
+	// 相位 0 是"滑块整个还在左口外"的那一瞬 (行程是 轨道宽+滑块宽 正是为了
+	// 让循环回卷发生在看不见的地方), 所以这里取行程中段的三帧。
+	for _, d := range []time.Duration{progressIndetPeriod / 4, progressIndetPeriod / 2, progressIndetPeriod * 3 / 4} {
+		loopEpoch = time.Now().Add(-d)
+		img := renderTree(root, 130, 20)
+		// 盒子左上 (0,0), 轨道占 x∈[0,120)
+		assertPx(t, img, 121, 0, pxWhite, "轨道右侧以外不该有墨")
+		assertPx(t, img, 122, 1, pxWhite, "轨道右侧以外不该有墨")
+		// 轨道内确实有滑块
+		if got := countColor(img, Rect{0, 0, 120, 6}, pxAccent); got < 20 {
+			t.Fatalf("相位 %v 下轨道内的填充像素只有 %d 个, 滑块可能没画", d, got)
+		}
+	}
+	// 相位变化 ⇒ 滑块位移
+	loopEpoch = time.Now()
+	first := progressIndetPhase()
+	loopEpoch = time.Now().Add(-progressIndetPeriod / 2)
+	if absFloat(progressIndetPhase()-first) < 1e-6 {
+		t.Fatalf("不定进度相位未随时间前进")
+	}
+}
+
+// reduced-motion: 不定进度滑块停住。
+func TestProgressIndeterminateFreezesUnderReducedMotion(t *testing.T) {
+	forceMotionForTest(t, false)
+	old := loopEpoch
+	t.Cleanup(func() { loopEpoch = old })
+	for _, d := range []time.Duration{0, progressIndetPeriod / 3, progressIndetPeriod / 2} {
+		loopEpoch = time.Now().Add(-d)
+		if got := progressIndetPhase(); got != progressIndetRest {
+			t.Fatalf("reduced-motion 下相位 = %f (d=%v), want %f", got, d, progressIndetRest)
+		}
+	}
+}
+
 func TestCheckboxStates(t *testing.T) {
 	root := mkNode("column", nil)
 	unchecked := withBool(mkNode("checkbox", nil), "checked", false)
@@ -137,15 +274,17 @@ func TestCheckboxStates(t *testing.T) {
 	root.Children = []*GuiNode{unchecked, checked}
 	img := renderTree(root, 40, 40)
 
-	// 未选中: 1px 边框空盒
-	assertPx(t, img, 0, 0, pxFieldEdge, "checkbox 左上边框")
-	assertPx(t, img, 17, 17, pxFieldEdge, "checkbox 右下边框")
+	// 未选中: 1px 边框空盒。
+	// Prism S4 起复选框是**圆角** (缺省 r4), 四角落在圆外 —— 边框断言必须取
+	// 边中点, 取角拿到的是底色 (那正是圆角生效的证据, 不是回归)。
+	assertPx(t, img, 0, 9, pxFieldEdge, "checkbox 左边框")
+	assertPx(t, img, 17, 9, pxFieldEdge, "checkbox 右边框")
 	assertPx(t, img, 14, 14, pxWhite, "未选中盒内应为空")
 
 	// 选中: 强调色填充 + 白勾 + 保留边框
 	b := checked.Box
 	assertPx(t, img, b.X+14, b.Y+14, pxAccent, "选中填充色")
-	assertPx(t, img, b.X, b.Y, pxFieldEdge, "选中仍保留边框")
+	assertPx(t, img, b.X, b.Y+9, pxFieldEdge, "选中仍保留边框")
 	if n := countColor(img, Rect{b.X + 1, b.Y + 1, b.W - 2, b.H - 2}, pxWhite); n < 8 {
 		t.Fatalf("选中态未画出勾 (盒内白像素 = %d)", n)
 	}
@@ -224,13 +363,14 @@ func TestButtonIntrinsicAndDefaultStyle(t *testing.T) {
 	if plain.Box.H <= 0 {
 		t.Fatalf("button 高度不应为 0: %v", plain.Box)
 	}
-	// 缺省浅灰底 + 1px 深灰边框
+	// Prism S3: 抬升面 (白) + 1px 发丝边。边框取上边中点 —— 圆角 r8 之后
+	// 四角落在盒外, 取角拿到的是底色。
 	assertPx(t, img, plain.Box.X+3, plain.Box.Y+plain.Box.H/2, pxBtnFace, "button 缺省底色")
-	assertPx(t, img, plain.Box.X, plain.Box.Y, pxBtnEdge, "button 缺省边框")
-	// 文本子节点垂直居中 (水平方向 v1 左对齐 + 8px 内边距)
+	assertPx(t, img, plain.Box.X+plain.Box.W/2, plain.Box.Y, pxBtnEdge, "button 缺省边框")
+	// 文本子节点垂直居中 (水平方向左对齐 + 16px 内边距, Prism S3 之前是 8)
 	label := plain.Children[0]
 	if label.Box.X != plain.Box.X+buttonPadX {
-		t.Fatalf("文本子节点未按 8px 内边距左对齐: %v", label.Box)
+		t.Fatalf("文本子节点未按内边距左对齐: %v", label.Box)
 	}
 	wantY := plain.Box.Y + (plain.Box.H-th)/2
 	if label.Box.Y != wantY {
@@ -494,8 +634,14 @@ func TestExampleScriptsMount(t *testing.T) {
 			// 定时器调度器是进程级单例: 演示脚本注册的 setInterval/setTimeout
 			// 若不清掉会泄漏到后续测试的事件循环里, 在别的 VM 上跑出
 			// "xxx is not defined" 这种跟本用例毫无关系的报错。
-			object.GlobalScheduler().ClearAll()
-			t.Cleanup(func() { object.GlobalScheduler().ClearAll() })
+			//
+			// 帧心跳是同一类进程级状态, 而且多一层: 关窗口会把这棵树的加载态
+			// 登记摘掉 (unregisterApp → unregisterTickersIn), 但"表还挂着"的
+			// 标记要等下一次心跳到点才翻 —— ClearAll 偏偏把那次心跳撤了, 标记
+			// 就永远翻不过来。不一起清掉, 下一个演示的"首帧应静止"会假红
+			// (transition_demo 那条断言)。
+			clearAnimTickerForTest()
+			t.Cleanup(clearAnimTickerForTest)
 
 			src, err := os.ReadFile(filepath.Join("..", "testdata", name))
 			if err != nil {
@@ -637,8 +783,9 @@ func checkDemoTree(t *testing.T, name string, root *GuiNode, fake *fakeSurface) 
 			t.Fatalf("radio 数量 = %d, want 3", n)
 		}
 		sw := findFirst(root, "switch")
-		if sw == nil || sw.Box.W != 36 || sw.Box.H != 20 {
-			t.Fatalf("switch 未按 36x20 布局: %v", sw)
+		// Prism S4: 开关从 36x20 方形轨道升级为 44x26 胶囊轨道
+		if sw == nil || sw.Box.W != 44 || sw.Box.H != 26 {
+			t.Fatalf("switch 未按 44x26 布局: %v", sw)
 		}
 		// 脚本里 notify 初值为 true → 开关打开: 左轨道强调色、右滑块白色
 		img := shotsImage(fake)
@@ -649,8 +796,10 @@ func checkDemoTree(t *testing.T, name string, root *GuiNode, fake *fakeSurface) 
 		assertPx(t, img, sw.Box.X+30, sw.Box.Y+10, pxWhite, "form_demo 滑块在右")
 	case "progress_demo.js":
 		pr := findFirst(root, "progress")
-		if pr == nil || pr.Box.W != 200 || pr.Box.H != 8 {
-			t.Fatalf("progress 未按 200x8 布局: %v", pr)
+		// Prism S7: 8 → 6 (progressTrackH)。轨道改胶囊之后 6 才是"一根有厚度
+		// 的线", 8 会成"一块补丁" —— 这是本次重设计的目标几何, 断言跟着改。
+		if pr == nil || pr.Box.W != 200 || pr.Box.H != 6 {
+			t.Fatalf("progress 未按 200x6 布局: %v", pr)
 		}
 		if n := countTag(root, "separator"); n != 2 {
 			t.Fatalf("separator 数量 = %d, want 2", n)
@@ -733,8 +882,9 @@ func checkDemoTree(t *testing.T, name string, root *GuiNode, fake *fakeSurface) 
 			t.Fatalf("slider_demo 的 slider 数量 = %d, want 3", len(sls))
 		}
 		for i, sl := range sls {
-			if sl.Box.W != 200 || sl.Box.H != 24 {
-				t.Fatalf("第 %d 个滑块尺寸 = %v, want 200x24", i, sl.Box)
+			// Prism S4: 滑块 12 → 18, 盒子随之从 24 高长到 26
+			if sl.Box.W != 200 || sl.Box.H != 26 {
+				t.Fatalf("第 %d 个滑块尺寸 = %v, want 200x26", i, sl.Box)
 			}
 		}
 		if v, _ := sls[2].PropBool("disabled"); !v {
@@ -750,11 +900,11 @@ func checkDemoTree(t *testing.T, name string, root *GuiNode, fake *fakeSurface) 
 			t.Fatalf("未捕获上屏帧")
 		}
 		// 值 40 → ratio .4 → 滑块左缘 = round(.4*(200-12)) = 75, 填充到 81
-		trackY := sls[0].Box.Y + (24-sliderTrackH)/2
-		if n := countColor(img, Rect{X: sls[0].Box.X, Y: trackY, W: 60, H: sliderTrackH}, colorAccent); n == 0 {
+		trackY := sls[0].Box.Y + (24-Space(sliderTrackH))/2
+		if n := countColor(img, Rect{X: sls[0].Box.X, Y: trackY, W: 60, H: Space(sliderTrackH)}, colorAccent); n == 0 {
 			t.Fatalf("滑块左段应已填充强调色")
 		}
-		if n := countColor(img, Rect{X: sls[0].Box.X + 120, Y: trackY, W: 60, H: sliderTrackH}, colorTrack); n == 0 {
+		if n := countColor(img, Rect{X: sls[0].Box.X + 120, Y: trackY, W: 60, H: Space(sliderTrackH)}, colorTrack); n == 0 {
 			t.Fatalf("滑块右段应还是空轨道")
 		}
 		// 禁用滑块整盒降饱和: 不再出现"纯轨道色"
@@ -891,14 +1041,14 @@ func checkDemoTree(t *testing.T, name string, root *GuiNode, fake *fakeSurface) 
 			t.Fatalf("list_demo 的 separator 数量 = %d, want 1", n)
 		}
 	case "select_demo.js":
-		// 下拉演示: 两个字段行 (高 28, 显式宽 220), 初始都是闭合态
+		// 下拉演示: 两个字段行 (Prism S3 起高 36, 显式宽 220), 初始都是闭合态
 		sels := findAll(root, "select")
 		if len(sels) != 2 {
 			t.Fatalf("select_demo 的 select 数量 = %d, want 2", len(sels))
 		}
 		for i, s := range sels {
-			if s.Box.H != selectRowH || s.Box.W != 220 {
-				t.Fatalf("第 %d 个 select 未按 220x%d 布局: %v", i, selectRowH, s.Box)
+			if s.Box.H != fieldRowH || s.Box.W != 220 {
+				t.Fatalf("第 %d 个 select 未按 220x%d 布局: %v", i, fieldRowH, s.Box)
 			}
 			if s.expanded || s.popup != nil {
 				t.Fatalf("第 %d 个 select 初始不应处于展开态", i)
@@ -911,8 +1061,9 @@ func checkDemoTree(t *testing.T, name string, root *GuiNode, fake *fakeSurface) 
 		if img == nil {
 			t.Fatalf("未捕获上屏帧")
 		}
-		assertPx(t, img, sels[0].Box.X+4, sels[0].Box.Y+selectRowH/2, pxFieldFace, "select_demo 字段白底")
-		assertPx(t, img, sels[0].Box.X+4, sels[0].Box.Y, pxBtnEdge, "select_demo 字段 1px 边框")
+		assertPx(t, img, sels[0].Box.X+4, sels[0].Box.Y+fieldRowH/2, pxFieldFace, "select_demo 字段白底")
+		// 边框取上边中点: 字段也是圆角 (缺省 r8), 四角落在盒外
+		assertPx(t, img, sels[0].Box.X+sels[0].Box.W/2, sels[0].Box.Y, pxBtnEdge, "select_demo 字段 1px 边框")
 	case "menu_demo.js":
 		// 菜单演示: 顶部菜单栏 (26px, 铺满宽), 三个标题 + 右侧状态文本;
 		// 初始无弹层 (所有菜单都是收起的), 也没挂右键菜单。
@@ -992,8 +1143,8 @@ func checkDemoTree(t *testing.T, name string, root *GuiNode, fake *fakeSurface) 
 		if in == nil {
 			t.Fatalf("input_demo 缺少 input 节点")
 		}
-		if in.Box.H != selectRowH || in.Box.W != 260 {
-			t.Fatalf("input 未按 260x%d 布局: %v", selectRowH, in.Box)
+		if in.Box.H != fieldRowH || in.Box.W != 260 {
+			t.Fatalf("input 未按 260x%d 布局: %v", fieldRowH, in.Box)
 		}
 		if in.Box.W != 260 {
 			t.Fatalf("input 宽度 = %d, want 260", in.Box.W)

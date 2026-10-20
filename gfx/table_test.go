@@ -11,7 +11,7 @@ import (
 //
 // 用例覆盖五条不变量:
 //   1. columns/rows 数据被展开成表头 + 数据行的节点树, 文本进单元格;
-//   2. 行高统一 28, 行按 y 等距排布, 各列宽度不重叠;
+//   2. 行高统一 (S5 起 32), 行按 y 等距排布, 各列宽度不重叠;
 //   3. 显式列宽优先, 未给的列按内容比例分剩余宽度;
 //   4. zebra / borderless / align 这三个开关真的改变了像素;
 //   5. 没有 onRowClick 时行不可点, 挂了之后点击回调收到 {index, row}。
@@ -115,8 +115,8 @@ func TestTableRowGeometry(t *testing.T) {
 	renderTree(root, 400, 200)
 
 	hdr := findFirst(root, "table-header")
-	if hdr.Box.H != tableRowH {
-		t.Fatalf("表头行高 = %d, want %d", hdr.Box.H, tableRowH)
+	if hdr.Box.H != Space(tableRowH) {
+		t.Fatalf("表头行高 = %d, want %d", hdr.Box.H, Space(tableRowH))
 	}
 	rows := findAll(root, "table-row")
 	if len(rows) != 2 {
@@ -126,8 +126,8 @@ func TestTableRowGeometry(t *testing.T) {
 	if rows[0].Box.Y != hdr.Box.Y+hdr.Box.H {
 		t.Fatalf("首行未紧贴表头: row.Y=%d want %d", rows[0].Box.Y, hdr.Box.Y+hdr.Box.H)
 	}
-	if rows[1].Box.Y != rows[0].Box.Y+tableRowH {
-		t.Fatalf("行间距 = %d, want %d", rows[1].Box.Y-rows[0].Box.Y, tableRowH)
+	if rows[1].Box.Y != rows[0].Box.Y+Space(tableRowH) {
+		t.Fatalf("行间距 = %d, want %d", rows[1].Box.Y-rows[0].Box.Y, Space(tableRowH))
 	}
 	// 同一行内两列水平相邻不重叠
 	c0, c1 := rows[0].Children[0], rows[0].Children[1]
@@ -235,7 +235,7 @@ func TestTableBorderlessReachesRowsAndCells(t *testing.T) {
 		t.Fatalf("单元格未通过 owner 链读到 borderless")
 	}
 	// 单元格右缘不该有竖网格线 (取边框列中点像素, 应为白底)
-	edge := tint(colorTableEdge, false)
+	edge := tableEdgeColor(false)
 	c := img.RGBAAt(cell.Box.X+cell.Box.W-1, cell.Box.Y+cell.Box.H/2)
 	if c == edge {
 		t.Fatalf("borderless 表格仍画了单元格竖线: %v", c)
@@ -357,5 +357,52 @@ func TestTableHeaderPaintsDistinctFace(t *testing.T) {
 	}
 	if hdrPx != (color.RGBA{R: 0xF3, G: 0xF3, B: 0xF3, A: 255}) {
 		t.Fatalf("表头底色 = %v, want {243,243,243,255}", hdrPx)
+	}
+}
+
+func TestTableRowSelectedHighlights(t *testing.T) {
+	// Prism S5: <table rowSelected={行下标}> 高亮对应行 —— 选中底 +
+	// 左侧强调条。内部行不对脚本开放, 所以受控量写在宿主上, 构造期拷到行。
+	tbl := mkTable([]string{"A"}, [][]string{{"1"}, {"2"}, {"3"}})
+	withNum(tbl, "rowSelected", 1)
+	root := mkNode("column", map[string]float64{})
+	mountChildren(root, tbl)
+	img := renderTree(root, 200, 200)
+	rows := findAll(root, "table-row")
+	if !rows[1].tableRowSelected() {
+		t.Fatalf("rowSelected=1 未落到第 2 行")
+	}
+	c := img.RGBAAt(rows[1].Box.X+rows[1].Box.W-4, rows[1].Box.Y+rows[1].Box.H/2)
+	if c != colorStateSelected {
+		t.Fatalf("选中行底色 = %v, want colorStateSelected %v", c, colorStateSelected)
+	}
+	bar := img.RGBAAt(rows[1].Box.X+1, rows[1].Box.Y+rows[1].Box.H/2)
+	if bar != colorAccent {
+		t.Fatalf("选中行左指示条 = %v, want accent %v", bar, colorAccent)
+	}
+	// 其它行不该有选中底
+	c2 := img.RGBAAt(rows[0].Box.X+rows[0].Box.W-4, rows[0].Box.Y+rows[0].Box.H/2)
+	if c2 == colorStateSelected {
+		t.Fatalf("非选中行不该有选中底色")
+	}
+}
+
+func TestTableColumnWidthFitsCellText(t *testing.T) {
+	// S4 的既定 bug: 列宽只按表头量, "button" 被截成 "butto"。列宽必须
+	// 由该列最宽的单元格参与决定 (无显式 width 时)。
+	tbl := mkTable([]string{"组件"}, [][]string{{"button"}, {"select"}})
+	root := mkNode("column", map[string]float64{})
+	mountChildren(root, tbl)
+	img := renderTree(root, 400, 200)
+	cell := findFirst(root, "table-cell")
+	tw, _ := MeasureText("button", tbl.FontSize())
+	pad := tableCellPadX()
+	if cell.Box.W < tw+2*pad {
+		t.Fatalf("列宽 %d 装不下单元格文本 %d+%d*2 —— 文字会被截断", cell.Box.W, tw, pad)
+	}
+	// 内容区里应能找到完整 "button" 的墨 (最右一个字符不是空白)
+	tw2, _ := MeasureText("button", tbl.FontSize())
+	if !hasInkIn(img, Rect{X: cell.Box.X + pad + tw2 - 4, Y: cell.Box.Y, W: 5, H: cell.Box.H}) {
+		t.Fatalf("单元格文本被截断 (最后一个字符没有墨)")
 	}
 }

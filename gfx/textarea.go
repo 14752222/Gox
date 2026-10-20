@@ -47,8 +47,12 @@ const (
 	// 不该让框宽跟着跳)。
 	textareaMinW = 240
 	// textareaPadX / textareaPadY 是文本框内容与边框的间距。
-	textareaPadX = 6
-	textareaPadY = 4
+	//
+	// Prism S3: 6/4 → 12/8。多行框与单行字段同属"输入类", 内边距必须同一档
+	// (v1 里 textarea 比 input 窄 6px, 两个框并排时首行文字不在一条竖线上);
+	// 纵向 8 是给首行/末行的呼吸量, 与 36 高单行框的上下留白同量级。
+	textareaPadX = 12
+	textareaPadY = 8
 )
 
 // textareaInChain 从 n 起沿祖先链找第一个 textarea (键盘/滚轮/点击分流用)。
@@ -185,16 +189,19 @@ func (n *GuiNode) taCaretX(model []taVisual, st TextStyle) int {
 }
 
 // taArea 返回可编辑/可绘制的内容区 (盒内缩 textareaPadX/PadY)。
+// Prism S8: 内边距是设计像素 (与 intrinsicSize 里撑盒子用的同一份数字) ——
+// 多行的高度 = 行数 × 行高 + 上下留白, 而行高跟字号已经被放大过了。
 func (n *GuiNode) taArea() Rect {
-	w := n.Box.W - 2*textareaPadX
-	h := n.Box.H - 2*textareaPadY
+	padX, padY := Space(textareaPadX), Space(textareaPadY)
+	w := n.Box.W - 2*padX
+	h := n.Box.H - 2*padY
 	if w < 0 {
 		w = 0
 	}
 	if h < 0 {
 		h = 0
 	}
-	return Rect{X: n.Box.X + textareaPadX, Y: n.Box.Y + textareaPadY, W: w, H: h}
+	return Rect{X: n.Box.X + padX, Y: n.Box.Y + padY, W: w, H: h}
 }
 
 // taContentHeight 是全部**视觉**行的总高 (软换行之后行数才是屏幕行数)。
@@ -434,12 +441,15 @@ func paintTextarea(img *image.RGBA, n *GuiNode, disabled bool) {
 	if b.W <= 0 || b.H <= 0 {
 		return
 	}
-	FillRect(img, b, tint(n.fieldFace(colorFieldFace), disabled))
-	edge := colorInputEdge
-	if n.isFocused() && !disabled {
-		edge = colorFocusRing
+	// Prism S3: 与单行字段同一套外观 (圆角面 + 三档边框)。
+	rad := resolveRadiusPx(b, nodeRadiusPx(n, RadiusMD))
+	fillRoundRect(img, b, rad, tint(n.fieldFace(colorFieldFace), disabled))
+	edge := n.fieldEdge(colorInputEdge, disabled)
+	if rad > 0 {
+		strokeRoundRectW(img, b, rad, 1, edge)
+	} else {
+		StrokeRect(img, b, edge)
 	}
-	StrokeRect(img, b, tint(edge, disabled))
 
 	area := n.taArea()
 	if area.W <= 0 || area.H <= 0 {

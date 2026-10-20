@@ -20,7 +20,7 @@ import (
 //     (Layout 本来就每帧跑, 增量可忽略)。
 //   - 裁剪: 进入 scroll 子树时把可绘制范围收缩到视口 (见 raster.go 的
 //     drawNode), 于是"内容溢出容器"不会画到外面。
-//   - 滚动条: 右侧/底部 8px 轨道 + 滑块 (边长 = 视口/内容 比例, 位置 = 偏移
+//   - 滚动条: 右侧/底部 8dp 轨道 + 滑块 (边长 = 视口/内容 比例, 位置 = 偏移
 //     比例, 最短 scrollMinThumb)。滑块可拖拽 (beginScrollDrag → scrollDragTo,
 //     与 slider 共用 render.go 的 dragTarget 捕获基建)。
 //
@@ -28,9 +28,11 @@ import (
 // 同类): 来自用户滚动与布局测量结果, 不是 props。
 
 const (
-	scrollTrackW   = 8  // 滚动条轨道厚度 (右侧竖向与底部横向共用)
-	scrollMinThumb = 24 // 滑块最小边长 (内容极长时也要能抓住)
-	scrollDefH     = 200
+	// 前两个是**设计像素** (Prism S8: 滚动条是"要用手指/鼠标抓住"的东西,
+	// 轨道厚度与滑块下限不跟着显示密度走就退化成一条抓不住的发丝)。
+	scrollTrackW   = 8   // 滚动条轨道厚度 (右侧竖向与底部横向共用)
+	scrollMinThumb = 24  // 滑块最小边长 (内容极长时也要能抓住)
+	scrollDefH     = 200 // 滚动视口缺省高度 (设计像素, 取值处经 Space())
 
 	// wheelDeltaUnit 是 Windows 一格滚轮的原始增量 (WHEEL_DELTA)。
 	// scrollNotch 是一格滚轮对应的内容位移像素 (约两行列表项)。
@@ -60,7 +62,7 @@ func (n *GuiNode) scrollAxes() (v, h bool) {
 	v = n.contentH > area.H
 	w := area.W
 	if v {
-		w -= scrollTrackW
+		w -= Space(scrollTrackW)
 	}
 	h = n.contentW > w
 	return v, h
@@ -71,13 +73,13 @@ func (n *GuiNode) scrollViewport() Rect {
 	area := inner(n)
 	v, h := n.scrollAxes()
 	if v {
-		area.W -= scrollTrackW
+		area.W -= Space(scrollTrackW)
 		if area.W < 0 {
 			area.W = 0
 		}
 	}
 	if h {
-		area.H -= scrollTrackW
+		area.H -= Space(scrollTrackW)
 		if area.H < 0 {
 			area.H = 0
 		}
@@ -180,13 +182,13 @@ func (n *GuiNode) scrollThumb() (Rect, bool) {
 	area := inner(n)
 	vp := n.scrollViewport()
 	max := n.scrollMaxOffset()
-	if max <= 0 || vp.H <= 0 || area.W < scrollTrackW {
+	if max <= 0 || vp.H <= 0 || area.W < Space(scrollTrackW) {
 		return Rect{}, false
 	}
 	// max > 0 蕴含 contentH > vp.H >= 1, 除法安全。
 	th := vp.H * vp.H / n.contentH
-	if th < scrollMinThumb {
-		th = scrollMinThumb
+	if th < Space(scrollMinThumb) {
+		th = Space(scrollMinThumb)
 	}
 	if th > vp.H {
 		th = vp.H
@@ -196,8 +198,8 @@ func (n *GuiNode) scrollThumb() (Rect, bool) {
 		pos = span * n.offsetY / max
 	}
 	return Rect{
-		X: area.X + area.W - scrollTrackW + 1, Y: area.Y + pos,
-		W: scrollTrackW - 2, H: th,
+		X: area.X + area.W - Space(scrollTrackW) + 1, Y: area.Y + pos,
+		W: Space(scrollTrackW) - 2, H: th,
 	}, true
 }
 
@@ -207,12 +209,12 @@ func (n *GuiNode) scrollThumbX() (Rect, bool) {
 	area := inner(n)
 	vp := n.scrollViewport()
 	max := n.scrollMaxOffsetX()
-	if max <= 0 || vp.W <= 0 || area.H < scrollTrackW {
+	if max <= 0 || vp.W <= 0 || area.H < Space(scrollTrackW) {
 		return Rect{}, false
 	}
 	tw := vp.W * vp.W / n.contentW
-	if tw < scrollMinThumb {
-		tw = scrollMinThumb
+	if tw < Space(scrollMinThumb) {
+		tw = Space(scrollMinThumb)
 	}
 	if tw > vp.W {
 		tw = vp.W
@@ -222,8 +224,8 @@ func (n *GuiNode) scrollThumbX() (Rect, bool) {
 		pos = span * n.offsetX / max
 	}
 	return Rect{
-		X: area.X + pos, Y: area.Y + area.H - scrollTrackW + 1,
-		W: tw, H: scrollTrackW - 2,
+		X: area.X + pos, Y: area.Y + area.H - Space(scrollTrackW) + 1,
+		W: tw, H: Space(scrollTrackW) - 2,
 	}, true
 }
 
@@ -481,13 +483,13 @@ func layoutScroll(n *GuiNode) {
 		if v || h {
 			w, hgt := area.W, area.H
 			if v {
-				w -= scrollTrackW
+				w -= Space(scrollTrackW)
 				if w < 0 {
 					w = 0
 				}
 			}
 			if h {
-				hgt -= scrollTrackW
+				hgt -= Space(scrollTrackW)
 				if hgt < 0 {
 					hgt = 0
 				}
@@ -545,7 +547,7 @@ func (n *GuiNode) scrollAxesWith(contentH, contentW int) (v, h bool) {
 	v = contentH > area.H
 	w := area.W
 	if v {
-		w -= scrollTrackW
+		w -= Space(scrollTrackW)
 	}
 	h = contentW > w
 	return v, h
@@ -638,20 +640,20 @@ func paintScroll(img *image.RGBA, n *GuiNode, disabled bool) {
 	area := inner(n)
 	if thumb, ok := n.scrollThumb(); ok {
 		FillRect(img, Rect{
-			X: area.X + area.W - scrollTrackW, Y: area.Y,
-			W: scrollTrackW, H: area.H,
+			X: area.X + area.W - Space(scrollTrackW), Y: area.Y,
+			W: Space(scrollTrackW), H: area.H,
 		}, tint(colorScrollTrack, disabled))
 		FillRect(img, thumb, tint(colorScrollThumb, disabled))
 	}
 	if thumb, ok := n.scrollThumbX(); ok {
 		trackW := area.W
 		if _, vok := n.scrollThumb(); vok {
-			trackW -= scrollTrackW
+			trackW -= Space(scrollTrackW)
 		}
 		if trackW > 0 {
 			FillRect(img, Rect{
-				X: area.X, Y: area.Y + area.H - scrollTrackW,
-				W: trackW, H: scrollTrackW,
+				X: area.X, Y: area.Y + area.H - Space(scrollTrackW),
+				W: trackW, H: Space(scrollTrackW),
 			}, tint(colorScrollTrack, disabled))
 		}
 		FillRect(img, thumb, tint(colorScrollThumb, disabled))

@@ -239,8 +239,8 @@ click 路径，行为不变。这一条是长按多选 / 滑动删除能用的�
 | `menubar` | `background` / `border` | 菜单栏容器（缺省 26px 高、自动铺满容器宽）；**它只是个普通容器**，脚本自己写 `column { menubar; 内容 }`，gfx 不会往 root 里偷偷插一条 |
 | `menu` | `label`（或 `title`、或文本子节点） | 菜单标题；作为 `<menubar>` 的直接子节点时是**顶级菜单**（下拉挂在标题正下方），嵌在 `<menuitem>` 里时是**子菜单**（挂在触发项右侧）。空菜单点了不展开 |
 | `menuitem` | `label` / `shortcut` / `disabled` / `onClick` | 菜单项；点中派发 `onClick({x, y})` 并收起整棵菜单。`disabled` 灰字且点了没反应（**也不收起**）；内嵌一个 `<menu>` 即成为子菜单触发器（点击展开/收起右侧下拉，自身不派发 `onClick`）。分隔线用已有的 `<separator>`，它照样可命中（点了没反应） |
-| `table` | `columns` / `rows` / `zebra` / `borderless` / `onRowClick` / `width` | 声明式数据表格：喂 `columns` + `rows` 两组数据即可（`columns` 可写字符串数组简写或 `{key, label, width?, align?}`；`rows` 可按列下标或按 `key` 取），表头 / 网格线 / 列宽分配都由组件负责。行高固定 28px，行**默认不可点**，挂 `onRowClick` 才派发 `{index, row}`。`columns` / `rows` 在**首次布局时物化**成内部行 —— 数据变了要换 prop 值触发重建，就地改数组元素不反映 |
-| `tree` | `nodes` / `onSelect` | 声明式树：`nodes` 是递归的 `{label, key?, children?}`（纯字符串数组当叶子简写）。展开 / 收起是**渲染层状态**（点有子节点的行即切换），初始全收起；展开态按 `key` 跨重建保留（不给 `key` 时用 `label`，同层必须唯一） |
+| `table` | `columns` / `rows` / `zebra` / `borderless` / `onRowClick` / `width` | 声明式数据表格：喂 `columns` + `rows` 两组数据即可（`columns` 可写字符串数组简写或 `{key, label, width?, align?}`；`rows` 可按列下标或按 `key` 取），表头 / 网格线 / 列宽分配都由组件负责。行高固定 32px（Prism S5），行**默认不可点**，挂 `onRowClick` 才派发 `{index, row}`；写 `rowSelected={行下标}` 可以高亮一行（左侧强调条 + 选中底色）。`columns` / `rows` 在**首次布局时物化**成内部行 —— 数据变了要换 prop 值触发重建，就地改数组元素不反映 |
+| `tree` | `nodes` / `onSelect` / `rowSelected` | 声明式树：`nodes` 是递归的 `{label, key?, children?}`（纯字符串数组当叶子简写）。展开 / 收起是**渲染层状态**（点有子节点的行即切换），初始全收起；展开态按 `key` 跨重建保留（不给 `key` 时用 `label`，同层必须唯一）。`rowSelected={key}` 高亮对应节点（选中底色，箭头转正色） |
 | `list-item` | `selected` / `divider` / `height` | 列表行：普通容器 + “行”这套约定（固定 28px 行高、左右 10px 留白、悬停高亮、选中底色、行底线缺省开）。`selected` 是**受控**选中态（只影响底色，状态由脚本持有）；没挂 `onClick` 的行悬停不变色 |
 | `tooltip` | `text` / `placement` / `delay` | 悬停提示：包住触发元素，鼠标停留 `delay` 毫秒（缺省 500）后在 `placement`（`top` / `bottom` / `left` / `right`，缺省 `bottom`，贴边自动翻边）弹一段深色小字。布局透明（盒子就是触发元素的盒子），弹层**不挡交互** |
 
@@ -1515,6 +1515,7 @@ import { devSnapshot } from "gx/dev";
 | [gui-patterns.md](gui-patterns.md) | 用户态模式手册（路由、状态、主题等惯用法） |
 | [gui-model-binding.md](gui-model-binding.md) | `model` 双向绑定：接口设计、语义表、与 Vue 的对照、反例 |
 | [accessibility.md](accessibility.md) | 无障碍与键盘导航规范：焦点模型 / 键位表 / aria 语义 / `gx/a11y` 模块 / 验收清单（T10） |
+| [prism-design-system.md](prism-design-system.md) | Prism 设计系统：61 色 token 表与 WCAG 实测、4pt 间距与圆角档位、三档动效与 reduced-motion、组件缺省几何、密度/断点/触摸模式的自适应口径（数值由 `gfx/prism_tokens_test.go` 导出，不会漂） |
 | [desktop-distribution.md](desktop-distribution.md) | 各平台分发注意事项（图标、签名、打包格式） |
 
 > 组件现状台账、需求提示词、样式/选型调研、未决清单等**过程性文档不随仓库发布**：

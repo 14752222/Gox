@@ -747,6 +747,25 @@ func renderTree(root *GuiNode, w, h int) *image.RGBA {
 	return renderTreeThemed(root, w, h)
 }
 
+// clearAnimTickerForTest 清空帧心跳的登记集合, 供 t.Cleanup 直接挂
+// (t.Cleanup(clearAnimTickerForTest))。
+//
+// 为什么必须每个用例自己清: tickerNodes / animRunning 是**进程级**状态, 而
+// 组件级用例建完树就丢 —— 没人走 disposeNode → cancelAnim 那条摘除路径, 于是
+// 上一个用例里的 spinner / skeleton / 不定进度会把 16ms 心跳一路带下去, 症状
+// 是"某个静止演示脚本的首帧有动画在跑" (components_test.go 的 transition_demo
+// 断言)。生产路径没有这个问题: 关窗口会 dispose 整棵树。
+//
+// 顺带撤掉已排上的心跳回调: 只清集合不清回调的话, 下一次 registerTicker 会
+// 再排一个, 心跳变成两路, 逐帧推进的用例会跑出双倍速度。
+func clearAnimTickerForTest() {
+	for n := range tickerNodes {
+		delete(tickerNodes, n)
+	}
+	animRunning = false
+	object.GlobalScheduler().ClearAll()
+}
+
 // renderTreeThemed 按**当前**主题渲染, 不做任何主题重置。
 // 只有显式验证主题切换效果的用例才该用它。
 func renderTreeThemed(root *GuiNode, w, h int) *image.RGBA {
@@ -958,19 +977,22 @@ func needDraw(a *app) bool {
 // =====================================================================
 
 var (
-	pxWhite      = color.RGBA{R: 255, G: 255, B: 255, A: 255}
-	pxAccent     = color.RGBA{R: 0x27, G: 0xAE, B: 0x60, A: 255}
-	pxTrack      = color.RGBA{R: 0xD0, G: 0xD0, B: 0xD0, A: 255}
-	pxSwitchOff  = color.RGBA{R: 0xC8, G: 0xC8, B: 0xC8, A: 255}
-	pxFieldEdge  = color.RGBA{R: 0x55, G: 0x55, B: 0x55, A: 255}
-	pxBtnFace    = color.RGBA{R: 0xE8, G: 0xE8, B: 0xE8, A: 255}
+	pxWhite     = color.RGBA{R: 255, G: 255, B: 255, A: 255}
+	pxAccent    = color.RGBA{R: 0x27, G: 0xAE, B: 0x60, A: 255}
+	pxTrack     = color.RGBA{R: 0xD0, G: 0xD0, B: 0xD0, A: 255}
+	pxSwitchOff = color.RGBA{R: 0xC8, G: 0xC8, B: 0xC8, A: 255}
+	pxFieldEdge = color.RGBA{R: 0x55, G: 0x55, B: 0x55, A: 255}
+	// Prism S3: button 的缺省面从 Win95 配方的灰底 (#e8e8e8) 换成抬升面 (白);
+	// 禁用态不再是与 grayTint 取平均, 而是"混 45% 禁用色" (opacity .45 的近似)。
+	pxBtnFace    = color.RGBA{R: 0xFF, G: 0xFF, B: 0xFF, A: 255}
 	pxBtnEdge    = color.RGBA{R: 0x99, G: 0x99, B: 0x99, A: 255}
-	pxBtnFaceOff = color.RGBA{R: 211, G: 211, B: 211, A: 255} // 禁用态 (与 190 取平均)
+	pxBtnFaceOff = color.RGBA{R: 217, G: 217, B: 217, A: 255} // 白面混 45% #aaaaaa
 	pxRed        = color.RGBA{R: 0xC0, G: 0x39, B: 0x2B, A: 255}
 
-	// 交互反馈色 (与 raster.go 的偏移量对齐)
-	pxBtnHover = color.RGBA{R: 244, G: 244, B: 244, A: 255} // #e8e8e8 +12
-	pxBtnPress = color.RGBA{R: 208, G: 208, B: 208, A: 255} // #e8e8e8 -24
+	// 交互反馈色。Prism S3 起白面走"染色档" (255 提无可提), 见 node.go 的
+	// hoverFace / pressFace —— 悬停 = colorStateHover, 按压 = colorStatePress。
+	pxBtnHover = colorStateHover
+	pxBtnPress = colorStatePress
 	pxRing     = color.RGBA{R: 0x1A, G: 0x5F, B: 0xB4, A: 255}
 
 	// 字段 / 弹层系 (直连源码色板)

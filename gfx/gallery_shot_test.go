@@ -56,6 +56,19 @@ var galleryClickTargets = map[string]string{
 	"select":      "select",
 	"datepicker":  "datepicker",
 	"colorpicker": "colorpicker",
+	// tree 的展开态同样是运行时状态（treeOpen），不点开就只有根节点一行 ——
+	// 收起态拍不出"同级缩进 + 叶子占位对齐"这两处最易错位的几何。
+	"tree": "tree",
+}
+
+// galleryHoverTargets 是需要"先悬停再截图"的脚本 → 悬停到哪个标签的实例上。
+//
+// 与点击不同：悬停弹层 (tooltip) 有 wall-clock 延迟 (缺省 500ms)，而且
+// EventMouseLeave 会立刻把它关掉 —— 所以这类脚本不走 settle 轮的 MouseLeave，
+// 而是「移入 → 空转一轮（泵被 nextTooltipWake 钳到延迟到点，醒来物化弹层）
+// → 再移入一次取稳定帧」。空转轮绝不能推事件：推了就睡不到延迟到点。
+var galleryHoverTargets = map[string]string{
+	"tooltip": "tooltip",
 }
 
 // gallerySettleRounds 是取帧前的"空转"轮数 (每轮投一个无害的 EventMouseLeave)。
@@ -77,6 +90,25 @@ const (
 	galleryMinColors = 8   // 实测最小的一份 (label) 也有 ~40 种
 	galleryMinInk    = 400 // 实测最小的一份 (label) 也有 ~1500 个非底色像素
 )
+
+// galleryShapeOnlyScripts 是"本身就是纯几何"的脚本 —— 它们没有文字，也就
+// 没有字形抗锯齿产生的那几百种过渡色，画面里只有轨道色/填充色/背景色三种。
+//
+// 为什么给它们单独一条判据而不是整体下调阈值: 颜色数是"组件被画成空盒子"
+// 最灵敏的探针，整体下调等于对所有组件放宽（空盒子也能过）。这里只对确知
+// 没有文字的组件放宽，且**非底色像素阈值保持不变** —— 那才是"真的画了东西"
+// 的证据。
+var galleryShapeOnlyScripts = map[string]bool{
+	"progress": true, // 纯矩形轨道 + 纯色填充，无文字无抗锯齿
+}
+
+// galleryMinColorsFor 返回某个脚本适用的颜色数下限。
+func galleryMinColorsFor(name string) int {
+	if galleryShapeOnlyScripts[strings.TrimSuffix(name, ".js")] {
+		return 3
+	}
+	return galleryMinColors
+}
 
 // galleryFactory 是"按 <window> 声明的尺寸开面"的工厂。
 //
@@ -168,30 +200,60 @@ func renderGalleryShot(t *testing.T, name string) *image.RGBA {
 
 	// 步骤表: 每轮 pump 执行一步; 表走完后那一轮取帧并关窗。
 	var steps []func()
-	if tag, ok := galleryClickTargets[strings.TrimSuffix(name, ".js")]; ok {
-		field := findFirst(a.root, tag)
-		if field == nil {
-			t.Fatalf("脚本里没有 <%s> 节点, 没法点开它", tag)
+	base := strings.TrimSuffix(name, ".js")
+	if tag, ok := galleryHoverTargets[base]; ok {
+		node := findFirst(a.root, tag)
+		if node == nil {
+			t.Fatalf("脚本里没有 <%s> 节点, 没法悬停它", tag)
 		}
-		if field.Box.W <= 0 || field.Box.H <= 0 {
-			t.Fatalf("<%s> 没有布局尺寸 (%v), 布局阶段可能就漏了它", tag, field.Box)
+		if node.Box.W <= 0 || node.Box.H <= 0 {
+			t.Fatalf("<%s> 没有布局尺寸 (%v), 布局阶段可能就漏了它", tag, node.Box)
 		}
-		x, y := centerOf(field)
+		x, y := centerOf(node)
 		steps = append(steps,
-			func() { fake.push(Event{Kind: EventMouseDown, X: x, Y: y}) },
-			func() { fake.push(Event{Kind: EventMouseUp, X: x, Y: y}) },
+			func() { fake.push(Event{Kind: EventMouseMove, X: x, Y: y}) },
+			func() {}, // 空转: 泵睡到 tooltip 延迟到点 (见 galleryHoverTargets)
+			func() { fake.push(Event{Kind: EventMouseMove, X: x, Y: y}) },
 		)
-	}
-	for i := 0; i < gallerySettleRounds; i++ {
-		steps = append(steps, func() { fake.push(Event{Kind: EventMouseLeave}) })
+	} else {
+		if tag, ok := galleryClickTargets[base]; ok {
+			field := findFirst(a.root, tag)
+			if field == nil {
+				t.Fatalf("脚本里没有 <%s> 节点, 没法点开它", tag)
+			}
+			if field.Box.W <= 0 || field.Box.H <= 0 {
+				t.Fatalf("<%s> 没有布局尺寸 (%v), 布局阶段可能就漏了它", tag, field.Box)
+			}
+			x, y := centerOf(field)
+			steps = append(steps,
+				func() { fake.push(Event{Kind: EventMouseDown, X: x, Y: y}) },
+				func() { fake.push(Event{Kind: EventMouseUp, X: x, Y: y}) },
+			)
+		}
+		for i := 0; i < gallerySettleRounds; i++ {
+			steps = append(steps, func() { fake.push(Event{Kind: EventMouseLeave}) })
+		}
 	}
 
 	round := 0
+	animWait := 0
 	var frame *image.RGBA
 	pump := func(maxWait time.Duration) bool {
 		if round < len(steps) {
 			steps[round]()
 			round++
+			return Pump(maxWait)
+		}
+		// 取帧前先等抽屉滑入到位 (Prism S6): 动画心跳是 16ms 定时器, 一轮
+		// pump 只推一帧 —— 步骤表走完就取帧拍到的是"滑到一半"的中间态
+		// (遮罩只淡入了一点、面板底还没铺到静止位置)。上限 40 轮是死循环
+		// 保险 (spinner/skeleton 那类无限加载动画不走这条 —— 它们不在
+		// drawerAnimateNodes 里)。
+		if len(drawerAnimateNodes(a.root)) > 0 && animWait < 40 {
+			animWait++
+			// 绝不能推事件: 有事件泵会立刻醒来, 16ms 的心跳定时器就永远
+			// 轮不到到期 (实测: 每轮推 MouseLeave 时进度停在 0)。空转一轮,
+			// 泵睡到 maxWait (= 下一帧心跳) 醒来, animTick 推进一帧。
 			return Pump(maxWait)
 		}
 		// 取帧必须在关窗**之前**: 关窗那一轮会把窗口从注册表摘掉, 之后的
@@ -243,10 +305,11 @@ func galleryInkStats(img *image.RGBA) galleryInk {
 func galleryAssertNotBlank(t *testing.T, name string, img *image.RGBA) {
 	t.Helper()
 	st := galleryInkStats(img)
-	if st.Colors < galleryMinColors || st.Ink < galleryMinInk {
+	minColors := galleryMinColorsFor(name)
+	if st.Colors < minColors || st.Ink < galleryMinInk {
 		t.Fatalf("%s: 画面近乎空白 (%s, 阈值 颜色>=%d 非底色像素>=%d) —— "+
 			"组件可能被画成了空盒子, 先查四处注册表 (node.go / layout.go / raster.go)",
-			name, st, galleryMinColors, galleryMinInk)
+			name, st, minColors, galleryMinInk)
 	}
 }
 

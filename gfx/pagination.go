@@ -22,13 +22,25 @@ import (
 // 若干页, 中间用省略号占位 (省略号不可点)。
 
 const (
-	pageBtnMinW   = 30 // 页码按钮最小宽度
-	pageBtnH      = 28 // 按钮高
-	pageBtnGap    = 4  // 按钮间距
-	pagePadX      = 10 // 按钮内左右边距
-	pageEllipsisW = 22 // 省略号占位宽
-	pageMaxSlots  = 7  // 超过这个页数就开始折叠
+	// pageBtnSize 是页码/翻页按钮的统一边长 (Prism S5: 32×32, 与集合行高
+	// 同档)。S4 是"高 28、宽随文字长"的胶囊, 一排页码宽度参差; S5 取方形
+	// —— 页码是 1~3 位数字, 居中放 32×32 里视觉重量一致。
+	//
+	// **刻意小于 TouchMin (44)**: 桌面端鼠标目标, 触控场景由脚本换成
+	// "上一页/下一页 + 页码输入"形态。
+	pageBtnSize = 32
+	// pageBtnGap 是按钮间距 (Space2 = 4)。
+	pageBtnGap = Space2
+	// pageBtnRadiusToken 是按钮圆角 (RadiusSM = 6)。
+	pageBtnRadiusToken = RadiusSM
+	// pageEllipsisW 是省略号占位宽 (与按钮同宽, 保持一排格子等距)。
+	pageEllipsisW = pageBtnSize
+	// pageMaxSlots 超过这个页数就开始折叠。
+	pageMaxSlots = 7
 )
+
+// pageBtnRadius 返回按钮圆角 (物理像素)。
+func pageBtnRadius() int { return Radius(pageBtnRadiusToken) }
 
 // pageGoto 是命中表里的一项。-1 表示省略号 (不可点)。
 type pageGoto struct {
@@ -115,38 +127,28 @@ func intrinsicPagination(n *GuiNode) (w, h int) {
 	w = 0
 	for i, s := range slots {
 		if i > 0 {
-			w += pageBtnGap
+			w += Space(pageBtnGap)
 		}
 		w += n.pageSlotWidth(s, fontSize)
 	}
 	// 前后各加一个"上一页/下一页"按钮
 	prevW := n.pageNavWidth("‹", fontSize)
 	nextW := n.pageNavWidth("›", fontSize)
-	w += prevW + pageBtnGap + pageBtnGap + nextW
-	return w, pageBtnH
+	w += prevW + Space(pageBtnGap) + Space(pageBtnGap) + nextW
+	// Prism S8: 按钮边长与返回值都按设计像素换算 (否则 2x 屏上一排页码只有
+	// 半个字号高, 与同一行的表格行高 64 完全不成比例)。
+	return w, Space(pageBtnSize)
 }
 
-// pageSlotWidth 返回一个页码槽位的宽度 (正文号用测得宽 + 内边距, 但不小于最小值)。
+// pageSlotWidth 返回一个页码槽位的宽度。S5 起统一 32×32, 不再按文字测宽:
+// 一排页码宽度一致, 页数变化时按钮不会左右跳。
 func (n *GuiNode) pageSlotWidth(slot, fontSize int) int {
-	if slot < 0 {
-		return pageEllipsisW
-	}
-	tw, _ := MeasureText(itoa(slot), fontSize)
-	w := tw + 2*pagePadX
-	if w < pageBtnMinW {
-		w = pageBtnMinW
-	}
-	return w
+	return Space(pageBtnSize)
 }
 
-// pageNavWidth 返回"上一页/下一页"按钮宽度。
+// pageNavWidth 返回"上一页/下一页"按钮宽度 (同样 32×32)。
 func (n *GuiNode) pageNavWidth(label string, fontSize int) int {
-	tw, _ := MeasureText(label, fontSize)
-	w := tw + 2*pagePadX
-	if w < pageBtnMinW {
-		w = pageBtnMinW
-	}
-	return w
+	return Space(pageBtnSize)
 }
 
 // layoutPagination 布局分页器: 横排按钮, 几何记进 pageBtns (命中/绘制共用)。
@@ -165,23 +167,23 @@ func layoutPagination(n *GuiNode) {
 
 	// 上一页
 	pw := n.pageNavWidth("‹", fontSize)
-	n.pageBtns = append(n.pageBtns, pageGoto{rect: Rect{X: x, Y: y, W: pw, H: pageBtnH}, page: cur - 1})
-	x += pw + pageBtnGap
+	n.pageBtns = append(n.pageBtns, pageGoto{rect: Rect{X: x, Y: y, W: pw, H: Space(pageBtnSize)}, page: cur - 1})
+	x += pw + Space(pageBtnGap)
 	// 页码槽位
 	for _, s := range slots {
 		w := n.pageSlotWidth(s, fontSize)
-		n.pageBtns = append(n.pageBtns, pageGoto{rect: Rect{X: x, Y: y, W: w, H: pageBtnH}, page: s})
-		x += w + pageBtnGap
+		n.pageBtns = append(n.pageBtns, pageGoto{rect: Rect{X: x, Y: y, W: w, H: Space(pageBtnSize)}, page: s})
+		x += w + Space(pageBtnGap)
 	}
 	// 下一页
 	nw := n.pageNavWidth("›", fontSize)
-	n.pageBtns = append(n.pageBtns, pageGoto{rect: Rect{X: x, Y: y, W: nw, H: pageBtnH}, page: cur + 1})
+	n.pageBtns = append(n.pageBtns, pageGoto{rect: Rect{X: x, Y: y, W: nw, H: Space(pageBtnSize)}, page: cur + 1})
 
 	placeAbsoluteIn(n, area)
 }
 
-// paintPagination 画分页按钮: 当前页 accent 底白字, 其余浅灰底; 不可用的
-// 上一页/下一页变淡。
+// paintPagination 画分页按钮 (Prism S5): 当前页 accent 实底 + accentText
+// 文字, 其余浅灰底; 不可用的上一页/下一页变淡; 省略号用 colorTextMuted。
 func paintPagination(img *image.RGBA, n *GuiNode, disabled bool) {
 	fontSize := n.FontSize()
 	pages := n.paginationPageCount()
@@ -201,10 +203,11 @@ func paintPagination(img *image.RGBA, n *GuiNode, disabled bool) {
 		default:
 			slot := slots[i-1]
 			if slot < 0 {
-				// 省略号: 灰字, 不可点
+				// 省略号: 不可点, 用 muted 而不是 placeholder —— 它是
+				// "中间还有页"的说明文字, 不是"这里该填内容"的占位。
 				tw, th := MeasureText("…", fontSize)
 				DrawText(img, img.Bounds(), "…", r.X+(r.W-tw)/2, r.Y+(r.H-th)/2, fontSize,
-					tint(colorPlaceholder, disabled), tw)
+					tint(colorTextMuted, disabled), tw)
 				continue
 			}
 			drawPageBtn(img, r, itoa(slot), fontSize, slot == cur, true, disabled)
@@ -212,8 +215,12 @@ func paintPagination(img *image.RGBA, n *GuiNode, disabled bool) {
 	}
 }
 
-// drawPageBtn 画一个分页按钮: 底 + 居中文本。current 时强调色底白字,
-// enabled=false 时整体变淡 (但仍可见 —— 用户要能看见"这里有个按钮")。
+// drawPageBtn 画一个分页按钮: 底 + 居中文本。current 时强调色实底 +
+// accentText 文字 (这是"我在第几页"最直接的信号); enabled=false 时整体
+// 变淡 (但仍可见 —— 用户要能看见"这里有个按钮")。
+//
+// 圆角走 RadiusSM, 与 S3 的字段/按钮同一族但更小: 32px 的方形按钮配 r8
+// 会显得"胖", r6 才和行高 32 的密度相称。
 func drawPageBtn(img *image.RGBA, r Rect, label string, fontSize int, current, enabled, disabled bool) {
 	var face, ink color.RGBA
 	switch {
@@ -221,21 +228,29 @@ func drawPageBtn(img *image.RGBA, r Rect, label string, fontSize int, current, e
 		face = tint(colorAccent, disabled)
 		ink = tint(colorAccentText, disabled)
 	case !enabled:
-		face = tint(colorTrack, disabled)
-		ink = tint(colorPlaceholder, disabled)
+		face = tint(colorSurfaceSunken, disabled)
+		ink = tint(colorTextDisabled, disabled)
 	default:
-		face = tint(colorBtnFace, disabled)
+		face = tint(colorSurfaceRaised, disabled)
 		ink = tint(colorText, disabled)
 	}
-	fillRoundRect(img, r, 4, face)
+	fillRoundRect(img, r, pageBtnRadius(), face)
+	// 非当前按钮描一圈装饰边: 白底压在白色页面上时没有边界, 描边是它
+	// 唯一能被看见的轮廓。当前页是实色块, 不需要 (描了反而糊一圈)。
+	if !current {
+		strokeRoundRectW(img, r, pageBtnRadius(), 1, tint(colorBorderDecorative, disabled))
+	}
 	tw, th := MeasureText(label, fontSize)
 	DrawText(img, img.Bounds(), label, r.X+(r.W-tw)/2, r.Y+(r.H-th)/2, fontSize, ink, tw)
 }
 
-// pageBtnAt 返回 (x,y) 命中的页码 (1-based); 命中省略号或空白返回 0。
+// pageBtnAt 返回 (x,y) 命中的页码 (1-based); 命中省略号、落在按钮区之外返回 0。
+//
+// Prism S8: 命中走 touchHitContains —— 触摸模式下页码按钮的命中区补到 44。
+// 32×32 的页码是桌面鼠标尺寸, 手指点上板块边上的那一颗几乎必然偏出去。
 func (n *GuiNode) pageBtnAt(x, y int) int {
 	for _, g := range n.pageBtns {
-		if g.rect.Contains(x, y) {
+		if touchHitContains(g.rect, x, y) {
 			if g.page < 1 {
 				return 0
 			}

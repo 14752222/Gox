@@ -56,11 +56,11 @@ import (
 // 菜单尺寸常量。全部收在这里, 绘制与布局共用同一份数值 —— 菜单最容易出的
 // 一类问题是"测得的高度"与"画出来的高度"差几个像素, 表现为分隔线压字。
 const (
-	menuBarH        = 26 // 菜单栏 (menubar) 高度
-	menuTitlePadX   = 10 // 菜单标题左右留白
-	menuItemH       = 24 // 菜单项行高
-	menuSepH        = 9  // 分隔线占位高度 (线画在中间)
-	menuPadY        = 4  // 下拉弹层上下内边距
+	menuBarH        = 26     // 菜单栏 (menubar) 高度
+	menuTitlePadX   = 10     // 菜单标题左右留白
+	menuItemH       = 32     // 菜单项行高 (Prism: 与集合组件行高统一为 32)
+	menuSepH        = 9      // 分隔线占位高度 (线画在中间)
+	menuPadY        = Space3 // 下拉弹层内边距 (6, Space token; 四边同值)
 	menuMinW        = 120
 	menuItemPadX    = 12 // 菜单项左留白 (图标/勾选位的代替)
 	menuShortcutGap = 24 // label 与快捷键文字之间的最小间隙
@@ -93,6 +93,18 @@ type menuItemSpec struct {
 // 它决定下拉往哪边挂: 一级菜单往下, 子菜单往右。
 func menuIsTop(n *GuiNode) bool {
 	return n.Parent != nil && n.Parent.Tag == "menubar"
+}
+
+// menuDropsDown 报告 menu 的下拉该"往下挂"还是"往右挂"。
+//
+// 只有嵌在 menuitem 里的才是"往右挂的子菜单"; 其余宿主 (menubar / column 等
+// 普通容器, 含 Prism S6 新增的声明式 expanded 用法) 都按一级菜单往下挂 ——
+// 往右挂需要一个"触发项行盒"做定位源, 普通容器里没有那一行。
+func menuDropsDown(n *GuiNode) bool {
+	if n.Parent == nil {
+		return true
+	}
+	return n.Parent.Tag != "menuitem" && n.Parent.Tag != "menu-item"
 }
 
 // menuTitle 读取菜单标题文本 (第 1 个文本子节点的内容)。
@@ -132,7 +144,9 @@ func (n *GuiNode) menuItems() []menuItemSpec {
 				it.submenu = sub
 			}
 			out = append(out, it)
-		case "separator":
+		case "separator", "menuseparator":
+			// 两种标签名都收: <separator> 是内核标签, <menuseparator> 是
+			// JSX 里更自然的写法 (避免与通用分隔线撞名)。
 			out = append(out, menuItemSpec{sep: true})
 		}
 	}
@@ -223,7 +237,7 @@ func (a *app) openMenu(m *GuiNode) {
 	}
 	m.expanded = true
 	m.menuHighlight = -1
-	m.menuPopup = a.buildMenuPopup(m, items, menuIsTop(m))
+	m.menuPopup = a.buildMenuPopup(m, items, menuDropsDown(m))
 	markFullDirtyFor(m)
 }
 
@@ -309,8 +323,9 @@ func expandedMenus(root *GuiNode) []*GuiNode {
 // (挂在父项右侧)。定位差异在 layoutMenu 里, 这里只管节点结构。
 func (a *app) buildMenuPopup(m *GuiNode, items []menuItemSpec, dirDown bool) *GuiNode {
 	popup := &GuiNode{Tag: "menu-popup", Props: map[string]object.Value{}}
-	withStrProp(popup, "background", colorPopupFaceHex)
-	withStrProp(popup, "border", colorPopupEdgeHex)
+	// 底板/边框**不写死 prop**: paintMenuPopup 的缺省回落到 surfaceOverlay /
+	// popupEdge token, 这样切主题 (prism-light ↔ prism-dark) 时已打开的菜单
+	// 不必重建也能吃到新色板 —— 写死 hex 字符串会把旧主题的颜色钉在节点上。
 	withNumProp(popup, "padding", menuPadY)
 	withBoolProp(popup, "escapeClipping", true)
 	z := menuPopupZ
@@ -565,8 +580,7 @@ func (a *app) openContextMenu(x, y int, items []*GuiNode) {
 	m.expanded = true
 	m.menuHighlight = -1
 	popup := &GuiNode{Tag: "menu-popup", Props: map[string]object.Value{}}
-	withStrProp(popup, "background", colorPopupFaceHex)
-	withStrProp(popup, "border", colorPopupEdgeHex)
+	// 同 buildMenuPopup: 底板/边框走 token 缺省, 不写死 (见那边的注释)。
 	withNumProp(popup, "padding", menuPadY)
 	withBoolProp(popup, "escapeClipping", true)
 	withNumProp(popup, "zIndex", menuCtxZ)
@@ -892,7 +906,7 @@ func layoutMenuBar(n *GuiNode) {
 			continue
 		}
 		tw := c.menuTitleWidth()
-		c.Box = Rect{X: x, Y: area.Y, W: tw, H: menuBarH}
+		c.Box = Rect{X: x, Y: area.Y, W: tw, H: Space(menuBarH)}
 		layoutNode(c)
 		x += tw
 	}
@@ -905,7 +919,7 @@ func (n *GuiNode) menuTitleWidth() int {
 		return dpToPx(w) // 逻辑值 → 设备像素 (density.go)
 	}
 	tw, _ := MeasureText(n.menuTitle(), n.FontSize())
-	return tw + 2*menuTitlePadX
+	return tw + 2*Space(menuTitlePadX)
 }
 
 // layoutMenu 布局 menu 自身 (标题行) 与它的下拉弹层。
@@ -914,6 +928,22 @@ func (n *GuiNode) menuTitleWidth() int {
 // 里的前一个标题因为文字变化而变宽, 都会让正确的落点发生变化。布局本来
 // 每帧都跑, 顺带算出来是最省事也最不会漂的做法。
 func layoutMenu(n *GuiNode) {
+	// 声明式 expanded prop (Prism S6): <menu expanded={true}> 直接以展开态
+	// 挂载, 画廊/文档类脚本不必模拟一次点击。prop 存在时它是受控语义 ——
+	// 与 dialog 的 open prop 同款约定 (写死了就归脚本管, 交互不再翻转它)。
+	// 同步放在布局里而不是 Mount 里: 函数值 prop (expanded={() => v()}) 的
+	// effect 在 Mount 之后才跑, 布局每帧对账才能跟上信号翻转。
+	if !n.ctxMenu {
+		if v, ok := n.PropBool("expanded"); ok {
+			if a := appOfNode(n); a != nil {
+				if v && !n.expanded {
+					a.openMenu(n)
+				} else if !v && n.expanded {
+					a.closeMenu(n)
+				}
+			}
+		}
+	}
 	popup := menuPopupOf(n)
 	if popup == nil {
 		return
@@ -927,7 +957,7 @@ func layoutMenu(n *GuiNode) {
 		layoutNode(popup)
 		return
 	}
-	if menuIsTop(n) {
+	if menuDropsDown(n) {
 		// 一级菜单: 下拉贴在标题正下方、左对齐
 		popup.Box = Rect{X: n.Box.X, Y: n.Box.Y + n.Box.H, W: pw, H: ph}
 	} else {
@@ -972,30 +1002,34 @@ func clampSubmenuTop(win Rect, y, h int) int {
 // menuPopupSize 算下拉弹层的固有尺寸: 宽取"最宽一行 (标签+快捷键)",
 // 高按行类型累加 (普通项 24, 分隔线 9)。
 func menuPopupSize(popup *GuiNode) (int, int) {
-	maxW := menuMinW
+	maxW := Space(menuMinW) // Prism S8: 弹层下限宽度也按设计像素算
 	h := 0
+	// Prism S8: 菜单行是“整行都是一个点击目标”的典型场景，行高必须随密度
+	// 走 —— 否则 2x 屏上一行 32px 装一个 32px 的字，文字直接贴到分隔线上。
 	for _, row := range popup.Children {
-		rh := menuItemH
+		rh := Space(menuItemH)
 		if row.menuSep {
-			rh = menuSepH
+			rh = Space(menuSepH)
 			h += rh
 			continue
 		}
-		w := menuItemPadX + measureOr0(row.menuLabel, row.FontSize())
+		w := Space(menuItemPadX) + measureOr0(row.menuLabel, row.FontSize())
 		if row.menuShortcutText != "" {
-			w += menuShortcutGap + measureOr0(row.menuShortcutText, row.FontSize())
+			w += Space(menuShortcutGap) + measureOr0(row.menuShortcutText, row.FontSize())
 		}
 		// 子菜单标记 (右侧小三角) 的占位
 		if row.menuSub {
-			w += 16
+			w += Space(16)
 		}
-		w += menuItemPadX
+		w += Space(menuItemPadX)
 		if w > maxW {
 			maxW = w
 		}
 		h += rh
 	}
-	return maxW, h + 2*menuPadY + 2 // padding + 边框
+	// Prism S8: menuPadY 是设计像素, 而 h 里已经混了换算过的行高 —— 那个 +2
+	// 是边框, 属于刻意留在物理像素的发丝尺度 (与 table 的 1px 网格线同款)。
+	return maxW, h + 2*Space(menuPadY) + 2 // padding + 边框
 }
 
 // measureOr0 是 MeasureText 的容错包装 (空串直接 0, 免得白算一次字体)。
@@ -1015,9 +1049,9 @@ func layoutMenuPopup(n *GuiNode) {
 	area := inner(n)
 	y := area.Y
 	for _, row := range n.Children {
-		h := menuItemH
+		h := Space(menuItemH)
 		if row.menuSep {
-			h = menuSepH
+			h = Space(menuSepH)
 		}
 		row.Box = Rect{X: area.X, Y: y, W: area.W, H: h}
 		layoutNode(row)
@@ -1081,8 +1115,8 @@ func paintMenu(img *image.RGBA, n *GuiNode, disabled bool) {
 	}
 	size := n.FontSize()
 	_, th := MeasureText(title, size)
-	x := n.Box.X + menuTitlePadX
-	maxW := n.Box.W - menuTitlePadX
+	x := n.Box.X + Space(menuTitlePadX)
+	maxW := n.Box.W - Space(menuTitlePadX)
 	if maxW < 0 {
 		maxW = 0
 	}
@@ -1090,15 +1124,23 @@ func paintMenu(img *image.RGBA, n *GuiNode, disabled bool) {
 		n.Box.Y+(n.Box.H-th)/2, size, tint(n.textColor(), disabled), maxW)
 }
 
-// paintMenuPopup 画下拉弹层的底板。**必须在自己的 paint 里补画 background/
-// border**: menu-popup 被 drawNode 的 case 截走, 通用盒子分支管不到它。
+// paintMenuPopup 画下拉弹层的底板 (Prism S6): r12 圆角 + surfaceOverlay 底 +
+// 1px popupEdge 描边 + 投影。**必须在自己的 paint 里补画 background/border**:
+// menu-popup 被 drawNode 的 case 截走, 通用盒子分支管不到它。
+//
+// 投影用 decor.go 的 paintShadow (轮廓掩码 + 两轮盒式模糊): 软光栅没有高斯
+// 也没有合成图层, 这是对"浮层浮起来"最便宜的诚实近似。先画影再画面。
 func paintMenuPopup(img *image.RGBA, n *GuiNode, disabled bool) {
 	b := n.Box
 	if b.W <= 0 || b.H <= 0 {
 		return
 	}
-	FillRect(img, b, tint(n.propColor("background", colorPopupFace), disabled))
-	StrokeRect(img, b, tint(n.propColor("border", colorPopupEdge), disabled))
+	rad := Radius(RadiusLG)
+	if !disabled {
+		paintShadow(img, b, rad, shadowSpec{x: 0, y: 3, blur: 8, c: color.RGBA{A: 48}})
+	}
+	fillRoundRect(img, b, rad, tint(n.propColor("background", colorSurfaceOverlay), disabled))
+	strokeRoundRectW(img, b, rad, 1, tint(n.propColor("border", colorPopupEdge), disabled))
 }
 
 // paintMenuItem 画一行菜单项: 悬停/高亮底 + 标签 + 右侧快捷键 + 子菜单三角。
@@ -1111,35 +1153,49 @@ func paintMenuItem(img *image.RGBA, n *GuiNode, disabled bool) {
 		return
 	}
 	if n.menuSep {
-		// 分隔线: 中间一条 1px 线, 左右各留 8px (与常见桌面菜单一致)
+		// 分隔线: 中间一条 1px 装饰线 (borderDecorative, 豁免 1.4.11),
+		// 左右各留 8px (与常见桌面菜单一致)
 		y := b.Y + b.H/2
-		c := tint(colorMenuSep, disabled)
+		c := tint(colorBorderDecorative, disabled)
 		FillRect(img, Rect{X: b.X + 8, Y: y, W: b.W - 16, H: 1}, c)
 		return
 	}
 	itemDisabled := disabled || n.menuDisabled
-	if n.menuItemHighlighted() && !itemDisabled {
-		FillRect(img, b, tint(colorMenuHighlight, disabled))
+	// 高亮分两档 (Prism S6): 悬停是"指针路过"用 stateHover (浅一档);
+	// 键盘光标是"选中即触发"用 stateSelected (accentSubtle 同档, 更肯定)。
+	// 圆角小片 + 左右内缩 2px, 不再是从边到边的硬条。
+	if !itemDisabled {
+		hi := Rect{X: b.X + 2, Y: b.Y + 1, W: b.W - 4, H: b.H - 2}
+		switch {
+		case n.hovered:
+			fillRoundRect(img, hi, Radius(RadiusSM), tint(colorStateHover, disabled))
+		case n.menuItemHighlighted():
+			fillRoundRect(img, hi, Radius(RadiusSM), tint(colorStateSelected, disabled))
+		}
 	}
 	size := n.FontSize()
 	textColor := colorText
 	if itemDisabled {
-		textColor = colorPlaceholder
+		textColor = colorTextDisabled
 	}
 	_, th := MeasureText(n.menuLabel, size)
 	y := b.Y + (b.H-th)/2
 	// 快捷键先量宽度, 标签的可用宽度要给它让位
 	scW := measureOr0(n.menuShortcutText, size)
-	maxW := b.W - 2*menuItemPadX - scW - menuShortcutGap
+	// Prism S8: 绘制侧与布局侧必须用同一套物理像素 (两侧都经 Space()),
+	// 否则 2x 屏上"文字往左偏、快捷键压到标签上"。
+	padX := Space(menuItemPadX)
+	maxW := b.W - 2*padX - scW - Space(menuShortcutGap)
 	if maxW < 0 {
 		maxW = 0
 	}
-	DrawText(img, img.Bounds(), n.menuLabel, b.X+menuItemPadX, y, size,
+	DrawText(img, img.Bounds(), n.menuLabel, b.X+padX, y, size,
 		tint(textColor, disabled), maxW)
 	if n.menuShortcutText != "" {
-		sx := b.X + b.W - menuItemPadX - scW
+		// 快捷键右对齐、弱化色 (textMuted): 它是辅助信息, 不该与标签同级抢眼。
+		sx := b.X + b.W - padX - scW
 		DrawText(img, img.Bounds(), n.menuShortcutText, sx, y, size,
-			tint(colorMenuShortcut, disabled), scW)
+			tint(colorTextMuted, disabled), scW)
 	}
 	if n.menuSub {
 		paintSubmenuArrow(img, b, tint(textColor, disabled))
@@ -1157,10 +1213,15 @@ func (n *GuiNode) menuItemHighlighted() bool {
 
 // paintSubmenuArrow 画子菜单指示三角 (向右的实心小三角)。
 func paintSubmenuArrow(img *image.RGBA, b Rect, c color.RGBA) {
-	cx := b.X + b.W - menuItemPadX + 2
+	cx := b.X + b.W - Space(menuItemPadX) + Space(2)
 	cy := b.Y + b.H/2
 	for i := 0; i < 4; i++ {
-		FillRect(img, Rect{X: cx + i, Y: cy - 3 + i, W: 1, H: 7 - 2*i}, c)
+		// Prism S8: 三角本身也按密度放大 (否则 2x 屏上它是半个字号的小点)。
+		u := Space(1)
+		if u < 1 {
+			u = 1
+		}
+		FillRect(img, Rect{X: cx + i*u, Y: cy - 3*u + i*u, W: u, H: (7 - 2*i) * u}, c)
 	}
 }
 

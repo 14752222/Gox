@@ -472,6 +472,38 @@ type dateLayout struct {
 	next  Rect
 }
 
+// dateMetrics 是日历弹层的**物理像素**度量。
+//
+// 为什么要一次性算齐、而不是各用点现取: 网格同时喂四处 —— 固有尺寸、布局、
+// 绘制、`(x-gridX)/cellW` 的命中反算。一处漏掉换算的症状不是"格子小一点",
+// 而是"点在 3 号选中了 10 号"; 而这类偏差在 1x 上都看不到
+// (Space 在 Scale<=1 时恒等), 只在真机高密屏上出现。
+//
+// Prism S8 之前这些数是裸物理像素: 2x 屏上格子还是 28×24, 格子里的日期数字
+// 已经按 dpToPx 放大一倍 —— 两位数直接顶到格子边缘。
+type dateMetrics struct {
+	pad      int // 弹层四周内边距
+	headH    int // 月份头高 (标题 + 左右翻月热区)
+	weekH    int // 星期行高
+	cellW    int // 单个日期格的宽
+	cellH    int // 单个日期格的高
+	navW     int // 左右翻月热区宽
+	readoutH int // 底部回显行高
+}
+
+// dateMetricsOf 取当前帧的日历度量 (常量是设计像素, 这里换成设备像素)。
+func dateMetricsOf() dateMetrics {
+	return dateMetrics{
+		pad:      Space(dpPopupPad),
+		headH:    Space(dpHeadH),
+		weekH:    Space(dpWeekH),
+		cellW:    Space(dpCellW),
+		cellH:    Space(dpCellH),
+		navW:     Space(dpNavW),
+		readoutH: Space(dpReadoutH),
+	}
+}
+
 func dateLayoutOf(dp *GuiNode) (dateLayout, bool) {
 	if dp == nil || dp.popup == nil {
 		return dateLayout{}, false
@@ -480,19 +512,21 @@ func dateLayoutOf(dp *GuiNode) (dateLayout, bool) {
 	if b.W <= 0 || b.H <= 0 {
 		return dateLayout{}, false
 	}
+	m := dateMetricsOf()
 	l := dateLayout{popup: b, rows: dp.dateGridRows()}
-	l.headY = b.Y + dpPopupPad
-	l.weekY = l.headY + dpHeadH
-	l.gridY = l.weekY + dpWeekH
-	l.prev = Rect{X: b.X + dpPopupPad, Y: l.headY, W: dpNavW, H: dpHeadH}
-	l.next = Rect{X: b.X + b.W - dpPopupPad - dpNavW, Y: l.headY, W: dpNavW, H: dpHeadH}
+	l.headY = b.Y + m.pad
+	l.weekY = l.headY + m.headH
+	l.gridY = l.weekY + m.weekH
+	l.prev = Rect{X: b.X + m.pad, Y: l.headY, W: m.navW, H: m.headH}
+	l.next = Rect{X: b.X + b.W - m.pad - m.navW, Y: l.headY, W: m.navW, H: m.headH}
 	return l, true
 }
 
 // datepickerPopupSize 算日历弹层的尺寸 (宽度按 7 格, 高度按行数 + 回显行)。
 func datepickerPopupSize(dp *GuiNode) (w, h int) {
-	w = 2*dpPopupPad + 7*dpCellW
-	h = 2*dpPopupPad + dpHeadH + dpWeekH + dp.dateGridRows()*dpCellH + dpReadoutH
+	m := dateMetricsOf()
+	w = 2*m.pad + 7*m.cellW
+	h = 2*m.pad + m.headH + m.weekH + dp.dateGridRows()*m.cellH + m.readoutH
 	return w, h
 }
 
@@ -530,11 +564,14 @@ func intrinsicDatepicker(n *GuiNode) (w, h int) {
 		text = n.datePlaceholder()
 	}
 	tw, _ := MeasureText(text, n.FontSize())
-	w = tw + 2*fieldPadX + dpFieldIconW + searchIconGap
-	if w < dpFieldMinW {
-		w = dpFieldMinW
+	// Prism S8: 图标边长与最小宽也都是设计像素 —— 它们是"文字旁边还塞得下什么"
+	// 的一部分, 不换算的结果在高密屏上是值被截短一截。
+	iconW, gap := Space(dpFieldIconW), Space(searchIconGap)
+	w = tw + 2*Space(fieldPadX) + iconW + gap
+	if minW := Space(dpFieldMinW); w < minW {
+		w = minW
 	}
-	h = selectRowH
+	h = Space(fieldRowH)
 	return w, h
 }
 
@@ -555,6 +592,7 @@ func paintDatepicker(img *image.RGBA, n *GuiNode, disabled bool) {
 	StrokeRect(img, b, tint(edge, disabled))
 
 	size := n.FontSize()
+	iconW, gap := Space(dpFieldIconW), Space(searchIconGap)
 	text, ok := n.dateText()
 	textColor := colorText
 	if !ok {
@@ -562,19 +600,19 @@ func paintDatepicker(img *image.RGBA, n *GuiNode, disabled bool) {
 	}
 	if text != "" {
 		_, th := MeasureText(text, size)
-		maxW := b.W - 2*fieldPadX - dpFieldIconW - searchIconGap
+		maxW := b.W - 2*Space(fieldPadX) - iconW - gap
 		if maxW < 0 {
 			maxW = 0
 		}
-		DrawText(img, img.Bounds(), text, b.X+fieldPadX, b.Y+(b.H-th)/2, size,
+		DrawText(img, img.Bounds(), text, b.X+Space(fieldPadX), b.Y+(b.H-th)/2, size,
 			tint(textColor, disabled), maxW)
 	}
 	if fn := builtinIcons["calendar"]; fn != nil {
 		fn(img, Rect{
-			X: b.X + b.W - fieldPadX - dpFieldIconW,
-			Y: b.Y + (b.H-dpFieldIconW)/2,
-			W: dpFieldIconW, H: dpFieldIconW,
-		}, dpFieldIconW, tint(colorInputEdge, disabled))
+			X: b.X + b.W - Space(fieldPadX) - iconW,
+			Y: b.Y + (b.H-iconW)/2,
+			W: iconW, H: iconW,
+		}, iconW, tint(colorInputEdge, disabled))
 	}
 }
 
@@ -590,24 +628,25 @@ func paintDatepickerPopup(img *image.RGBA, n *GuiNode, disabled bool) {
 	cursor := dp.dateCursor()
 	size := dp.FontSize()
 	disabled = disabled || dp.disabledInChain()
+	m := dateMetricsOf()
 
 	// 月份头: 左右翻月图标 + 居中标题。
 	paintNavArrow(img, l.prev, false, disabled)
 	paintNavArrow(img, l.next, true, disabled)
 	title := fmt.Sprintf("%d年%d月", cursor.Y, cursor.M)
 	tw, th := MeasureText(title, size)
-	if tw > l.popup.W-2*dpNavW {
-		tw = l.popup.W - 2*dpNavW
+	if avail := l.popup.W - 2*m.navW; avail > 0 && tw > avail {
+		tw = avail
 	}
 	DrawText(img, img.Bounds(), title,
-		l.popup.X+(l.popup.W-tw)/2, l.headY+(dpHeadH-th)/2, size,
+		l.popup.X+(l.popup.W-tw)/2, l.headY+(m.headH-th)/2, size,
 		tint(colorText, disabled), tw)
 
 	// 星期行: 七列均分, 每格居中。
 	for i := 0; i < 7; i++ {
 		w, h := MeasureText(dpWeekdayNames[i], size)
-		x := l.popup.X + dpPopupPad + i*dpCellW + (dpCellW-w)/2
-		DrawText(img, img.Bounds(), dpWeekdayNames[i], x, l.weekY+(dpWeekH-h)/2, size,
+		x := l.popup.X + m.pad + i*m.cellW + (m.cellW-w)/2
+		DrawText(img, img.Bounds(), dpWeekdayNames[i], x, l.weekY+(m.weekH-h)/2, size,
 			tint(colorPlaceholder, disabled), w)
 	}
 
@@ -623,9 +662,9 @@ func paintDatepickerPopup(img *image.RGBA, n *GuiNode, disabled bool) {
 				continue // 月外的空格: 不画 (留白比画灰色上月日期更干净)
 			}
 			cell := Rect{
-				X: l.popup.X + dpPopupPad + col*dpCellW,
-				Y: l.gridY + row*dpCellH,
-				W: dpCellW, H: dpCellH,
+				X: l.popup.X + m.pad + col*m.cellW,
+				Y: l.gridY + row*m.cellH,
+				W: m.cellW, H: m.cellH,
 			}
 			d := dateParts{Y: cursor.Y, M: cursor.M, D: day}
 			allowed := dp.dateAllowed(d)
@@ -666,7 +705,7 @@ func paintDatepickerPopup(img *image.RGBA, n *GuiNode, disabled bool) {
 	}
 	rw, rh := MeasureText(readout, size)
 	rx := l.popup.X + (l.popup.W-rw)/2
-	ry := l.popup.Y + l.popup.H - dpPopupPad - dpReadoutH + (dpReadoutH-rh)/2
+	ry := l.popup.Y + l.popup.H - m.pad - m.readoutH + (m.readoutH-rh)/2
 	DrawText(img, img.Bounds(), readout, rx, ry, size, tint(readoutColor, disabled), rw)
 }
 
@@ -692,6 +731,11 @@ func paintNavArrow(img *image.RGBA, box Rect, next bool, disabled bool) {
 //	0 = 这次按下不在弹层里 (调用方继续走通用流程)
 //	1 = 已经在弹层里处理掉了 (翻月 / 选中某日 / 点在月外空格上)
 //
+// TODO(Prism): 触摸模式命中区 —— 日历格约 32×28, 低于 TouchMin。但整块网格
+// 是**无缝密铺**的 ((x-gridX)/dpCellW 落到哪一格就是哪一格), 所以这里缺的
+// 不是命中区而是"格子该更大" —— 那是日历单元格两档尺寸的事, 归组件视觉规范
+// 而不是命中层, 见 docs/prism-design-system.md §组件规范。
+//
 // 用"有没有处理掉"而不是"选中了哪一天"当返回值: 点在月外空格上也是"这次
 // 按下属于日历", 不该让事件继续往下钻 (否则会落到字段上把弹层又收起一次)。
 func (n *GuiNode) dateHitAt(x, y int) int {
@@ -711,8 +755,11 @@ func (n *GuiNode) dateHitAt(x, y int) int {
 		a.dateShiftMonth(n, 1)
 		return 1
 	}
-	col := (x - l.popup.X - dpPopupPad) / dpCellW
-	row := (y - l.gridY) / dpCellH
+	// 与 dateLayoutOf / 绘制共用同一套度量 —— 这里是第三个使用点, 漏换算的
+	// 症状是"点与看来对准的那格不是同一格"。
+	m := dateMetricsOf()
+	col := (x - l.popup.X - m.pad) / m.cellW
+	row := (y - l.gridY) / m.cellH
 	if col < 0 || col >= 7 || row < 0 || row >= l.rows {
 		return 1
 	}

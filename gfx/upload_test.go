@@ -342,8 +342,9 @@ func TestUploadMouseClickActivates(t *testing.T) {
 
 func TestUploadIntrinsicAndDashedBorder(t *testing.T) {
 	_, up, _, _ := mkUploadTree(t, nil, nil)
-	if up.Box.H != selectRowH {
-		t.Fatalf("字段行高 = %d, want %d", up.Box.H, selectRowH)
+	// Prism S3: upload 是"字段类"控件, 行高跟 fieldRowH (36) 走, 不是下拉项行高。
+	if up.Box.H != fieldRowH {
+		t.Fatalf("字段行高 = %d, want %d", up.Box.H, fieldRowH)
 	}
 	if up.Box.W < upFieldMinW {
 		t.Fatalf("字段宽度 %d 小于最小值 %d", up.Box.W, upFieldMinW)

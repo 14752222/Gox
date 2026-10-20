@@ -8,6 +8,10 @@
 组件各自的键盘语义散在 `gfx/select.go` / `gfx/datepicker.go` / `gfx/colorpicker.go` /
 `gfx/input.go` / `gfx/tabs.go` 等处，但**分派点只有一个**（见 §3.4）。
 
+> 配套文档：token 取值、组件规格、密度与断点见 `docs/prism-design-system.md`；
+> 本文只写"无障碍承诺本身"（谁是可达的、达标的判据是什么、例外为什么存在）。
+> 两处都提到的东西以本文为准，取值以设计系统文档的**代码导出表**为准。
+
 ---
 
 ## 1. 范围：做什么、不做什么
@@ -90,8 +94,30 @@ T10 只把"谁能拿焦点、怎么用键盘换焦点"从"只有鼠标能改"扩
 
 ### 2.5 焦点框
 
-`drawFocusRing` 给焦点节点画 2px 虚线框（`colorFocusRing`），内缩 1px 以免盖住控件
-自己的边框。以下情况**不画**，每条都有具体理由：
+### 2.5 焦点框（Prism S3 改版）
+
+Prism 之前的焦点反馈是"盒内缩 1px 画一圈 1px 虚线"，S3 换成了 **画在控件盒外侧的
+实线环**（`gfx/decor.go` 的 `strokeFocusRing`）：
+
+| 参数 | 值 | 说明 |
+| --- | --- | --- |
+| 线宽 `focusRingW` | 2px | 实线（不再是虚线） |
+| 间隙 `focusRingGap` | 2px | 环与控件之间留出的**底色**，环画在这圈之外 |
+| 圆角 | 跟随控件 | 取控件的 `radius`（未写时按标签缺省），再同步加上 `gap+w`，保证内外环平行 |
+| 颜色 | `focusRing` | 见 §9 的对比度承诺（亮 4.81:1 / 暗 9.42:1 vs 页底，阈值 3.0） |
+
+改版的三条理由：
+
+1. **虚线在深色/有纹理的底上分辨不出**，实线在任何底上都读得出来；
+2. **原来压在控件自己的边框上**，看不出"焦点在谁身上"；现在是"环 ⊆ 间隙 ⊆ 控件"
+   三层同心，环不会被误读成控件的一条边；
+3. **圆角跟随**：v1 的虚线框是直角，圆角按钮配直角焦点框是这批控件最难看的一处。
+   现在面 / 边 / 焦点环共用同一个 `radius`（`nodeRadiusPx` + `resolveRadiusPx`）。
+
+代价写在 `invalidateFocusRing` 里：环画在盒**外** 4px，而脏区计算只按节点的框算，
+不额外标脏就会在局部重绘下留下一个擦不掉的方框。
+
+以下情况**不画**，每条都有具体理由：
 
 | 情况 | 为什么 |
 | --- | --- |
@@ -363,3 +389,302 @@ import { focusOrder, focusNode, focusNext, focusPrev, roles } from "gx/a11y";
 
 这也是把这一层放在内核而不是各组件里的原因：**规则只有一份**，宿主与脚本读到的
 是同一个答案。
+
+---
+
+## 9. 色彩对比度（Prism S2）
+
+> 一句话：**prism-light / prism-dark 两套预设的每一条文字与控件边界配对，都
+> 在 CI 里被 WCAG 2.1 AA 的比值断言住**。不达标就换色，不放宽阈值。
+
+本节是 S2 的落地记录。计算在 `gfx/contrast.go`（零依赖，只用标准库），断言在
+`gfx/contrast_test.go`（CI 的 `contrast` 作业），色板在 `gfx/theme_prism.go`。
+
+### 9.1 无障碍承诺
+
+| 对象 | 阈值 | 出处 |
+| --- | --- | --- |
+| 正文文字（<18pt / <14pt 加粗） | **≥4.5:1** | WCAG 2.1 · 1.4.3 Contrast (Minimum) · AA |
+| 大号文字（≥18pt，或 ≥14pt 加粗） | ≥3:1 | 同上 |
+| 控件边界 / 图标 / 图形对象 | **≥3:1** | WCAG 2.1 · 1.4.11 Non-text Contrast · AA |
+
+两条"不承诺"，写在这里免得被当成 bug：
+
+- **装饰性分隔线不承诺可达标**。`borderDecorative` 在白底上是 1.19:1，这是
+  刻意的：装饰线够深就会把页面切成一堆框，反而压过内容。这正是 `Theme` 要把
+  `BorderControl`（受 1.4.11 约束）与 `BorderDecorative`（豁免）拆成两个 token
+  的原因 —— 用同一个值的结果必然是两头不讨好。
+- **禁用态文字不承诺 4.5:1**。WCAG 1.4.3 明确豁免 inactive 控件；Prism 仍把
+  `textDisabled` 保持在"能看清字形"的水平（亮色 2.6:1）。
+
+### 9.2 怎么跑、怎么加配对
+
+```bash
+go test ./gfx/ -run 'TestContrast' -count=1 -v   # CI 跑的就是这一条
+```
+
+- 加一条配对：在 `gfx/contrast_test.go` 的 `contrastPairs()` 里加一项，Prism
+  两套预设与 v1 两套会**自动跟着跑**（共用一张表是为了让"漏配"在结构上不可能
+  发生 —— 亮色配 12 条暗色只配 9 条，那 3 条就永远没人管）。
+- 带 alpha 的配对（选区、遮罩、tooltip 底）写在 `TestContrastAlphaAwarePairs`
+  里，必须先用 `Composite` / `ContrastOn` 合成再比。
+- 公式对不对由 `TestContrastSelfCalibration` 兜：纯黑 vs 纯白 ≈21.0、
+  `#777777` vs `#FFFFFF` ≈4.48（WCAG 官方参考值，容差 0.05）。这条红了，说明
+  是**公式**错了，不是色板错了。
+
+### 9.3 prism-light 实测表
+
+33 条主配对 + 4 条带 alpha 配对，全部达标。色值：`text` `#0F172A`、
+`surfaceBase` `#F4F7FB`、`fieldFace`/`popupFace`/`btnFace` `#FFFFFF`。
+
+| 配对 | 实测 | 阈值 | 判定 |
+| --- | --- | --- | --- |
+| `text ∩ surfaceBase` | 16.61:1 | 4.5:1 | PASS |
+| `text ∩ surfaceSunken` | 14.48:1 | 4.5:1 | PASS |
+| `text ∩ surfaceRaised` | 17.21:1 | 4.5:1 | PASS |
+| `text ∩ surfaceOverlay` | 17.85:1 | 4.5:1 | PASS |
+| `text ∩ surfaceInset` | 15.30:1 | 4.5:1 | PASS |
+| `text ∩ fieldFace` | 17.85:1 | 4.5:1 | PASS |
+| `text ∩ popupFace` | 17.85:1 | 4.5:1 | PASS |
+| `text ∩ menuBarFace` | 15.30:1 | 4.5:1 | PASS |
+| `text ∩ btnFace` | 17.85:1 | 4.5:1 | PASS |
+| `textSecondary ∩ surfaceBase` | 9.64:1 | 4.5:1 | PASS |
+| `textMuted ∩ surfaceBase` | 6.85:1 | 4.5:1 | PASS |
+| `textMuted ∩ surfaceInset` | 6.31:1 | 4.5:1 | PASS |
+| `textMuted ∩ menuBarFace` | 6.31:1 | 4.5:1 | PASS |
+| `placeholder ∩ fieldFace` | 5.05:1 | 4.5:1 | PASS |
+| `placeholder ∩ surfaceBase` | 4.70:1 | 4.5:1 | PASS |
+| `accentText ∩ accent` | 5.36:1 | 4.5:1 | PASS |
+| `textInverse ∩ info` | 5.17:1 | 4.5:1 | PASS |
+| `textInverse ∩ success` | 5.02:1 | 4.5:1 | PASS |
+| `textInverse ∩ warning` | 5.02:1 | 4.5:1 | PASS |
+| `textInverse ∩ danger` | 6.47:1 | 4.5:1 | PASS |
+| `accentText ∩ info` | 5.17:1 | 4.5:1 | PASS |
+| `accentText ∩ success` | 5.02:1 | 4.5:1 | PASS |
+| `accentText ∩ danger` | 6.47:1 | 4.5:1 | PASS |
+| `borderControl ∩ fieldFace` | 3.56:1 | 3.0:1 | PASS |
+| `borderControl ∩ surfaceBase` | 3.32:1 | 3.0:1 | PASS |
+| `borderControl ∩ btnFace` | 3.56:1 | 3.0:1 | PASS |
+| `btnEdge ∩ btnFace` | 3.56:1 | 3.0:1 | PASS |
+| `focusRing ∩ surfaceBase` | 4.81:1 | 3.0:1 | PASS |
+| `focusRing ∩ fieldFace` | 5.17:1 | 3.0:1 | PASS |
+| `infoText ∩ infoSubtle` | 5.49:1 | 4.5:1 | PASS |
+| `successText ∩ successSubtle` | 5.88:1 | 4.5:1 | PASS |
+| `warningText ∩ warningSubtle` | 6.37:1 | 4.5:1 | PASS |
+| `dangerText ∩ dangerSubtle` | 6.80:1 | 4.5:1 | PASS |
+| `tooltipText ∩ tooltipFace`（合成后 `#1B2335`） | 15.00:1 | 4.5:1 | PASS |
+| `selection ∩ fieldFace`（合成后） | 1.46:1 | 1.3:1 | PASS |
+| `text ∩ (selection→fieldFace)`（合成后 `#A4DFEE`） | 12.21:1 | 4.5:1 | PASS |
+| `scrim` 压暗页面 | 下降 83% | ≥50% | PASS |
+
+明度阶梯（相对亮度，相邻两级差 ≥3%）：
+
+| 级别 | 色值 | 相对亮度 | 与上一级差 |
+| --- | --- | --- | --- |
+| `surfaceSunken` | `#E2E8F0` | 0.8017 | — |
+| `surfaceInset` | `#E9EEF4` | 0.8500 | 5.7% |
+| `surfaceBase` | `#F4F7FB` | 0.9272 | 8.3% |
+| `surfaceRaised` | `#F9FBFD` | 0.9623 | 3.6% |
+| `surfaceOverlay` | `#FFFFFF` | 1.0000 | 3.8% |
+
+subtle 底与 `surfaceBase` 的相对亮度差：`infoSubtle` 12.6%、`successSubtle`
+11.9%、`warningSubtle` 3.7%、`dangerSubtle` 12.7%、`accentSubtle` 4.2%。
+
+### 9.4 prism-dark 实测表
+
+色值：`text` `#E6EDF5`、`surfaceBase` `#131C2E`、`accent` `#22D3EE`、
+`accentText` `#042A33`。
+
+| 配对 | 实测 | 阈值 | 判定 |
+| --- | --- | --- | --- |
+| `text ∩ surfaceBase` | 14.43:1 | 4.5:1 | PASS |
+| `text ∩ surfaceSunken` | 16.04:1 | 4.5:1 | PASS |
+| `text ∩ surfaceRaised` | 12.88:1 | 4.5:1 | PASS |
+| `text ∩ surfaceOverlay` | 11.55:1 | 4.5:1 | PASS |
+| `text ∩ surfaceInset` | 15.32:1 | 4.5:1 | PASS |
+| `text ∩ fieldFace` | 15.32:1 | 4.5:1 | PASS |
+| `text ∩ popupFace` | 11.55:1 | 4.5:1 | PASS |
+| `text ∩ menuBarFace` | 13.67:1 | 4.5:1 | PASS |
+| `text ∩ btnFace` | 12.88:1 | 4.5:1 | PASS |
+| `textSecondary ∩ surfaceBase` | 9.45:1 | 4.5:1 | PASS |
+| `textMuted ∩ surfaceBase` | 6.64:1 | 4.5:1 | PASS |
+| `textMuted ∩ surfaceInset` | 7.05:1 | 4.5:1 | PASS |
+| `textMuted ∩ menuBarFace` | 6.29:1 | 4.5:1 | PASS |
+| `placeholder ∩ fieldFace` | 4.96:1 | 4.5:1 | PASS |
+| `placeholder ∩ surfaceBase` | 4.67:1 | 4.5:1 | PASS |
+| `accentText ∩ accent` | 8.40:1 | 4.5:1 | PASS |
+| `textInverse ∩ info` | 5.97:1 | 4.5:1 | PASS |
+| `textInverse ∩ success` | 8.71:1 | 4.5:1 | PASS |
+| `textInverse ∩ warning` | 9.09:1 | 4.5:1 | PASS |
+| `textInverse ∩ danger` | 5.48:1 | 4.5:1 | PASS |
+| `accentText ∩ info` | 5.97:1 | 4.5:1 | PASS |
+| `accentText ∩ success` | 8.71:1 | 4.5:1 | PASS |
+| `accentText ∩ danger` | 5.48:1 | 4.5:1 | PASS |
+| `borderControl ∩ fieldFace` | 3.80:1 | 3.0:1 | PASS |
+| `borderControl ∩ surfaceBase` | 3.58:1 | 3.0:1 | PASS |
+| `borderControl ∩ btnFace` | 3.19:1 | 3.0:1 | PASS |
+| `btnEdge ∩ btnFace` | 3.19:1 | 3.0:1 | PASS |
+| `focusRing ∩ surfaceBase` | 9.42:1 | 3.0:1 | PASS |
+| `focusRing ∩ fieldFace` | 10.01:1 | 3.0:1 | PASS |
+| `infoText ∩ infoSubtle` | 8.69:1 | 4.5:1 | PASS |
+| `successText ∩ successSubtle` | 10.87:1 | 4.5:1 | PASS |
+| `warningText ∩ warningSubtle` | 10.80:1 | 4.5:1 | PASS |
+| `dangerText ∩ dangerSubtle` | 8.48:1 | 4.5:1 | PASS |
+| `tooltipText ∩ tooltipFace`（合成后 `#0C1322`） | 16.94:1 | 4.5:1 | PASS |
+| `selection ∩ fieldFace`（合成后） | 1.98:1 | 1.3:1 | PASS |
+| `text ∩ (selection→fieldFace)`（合成后 `#0E4E66`） | 7.74:1 | 4.5:1 | PASS |
+| `scrim` 压暗页面 | 下降 66% | ≥50% | PASS |
+
+明度阶梯（暗色的阶梯方向相反：越"浮起来"越亮）：
+
+| 级别 | 色值 | 相对亮度 | 与上一级差 |
+| --- | --- | --- | --- |
+| `surfaceSunken` | `#0A111C` | 0.0055 | — |
+| `surfaceInset` | `#0E1626` | 0.0081 | 31.9% |
+| `surfaceBase` | `#131C2E` | 0.0117 | 30.8% |
+| `surfaceRaised` | `#1C2637` | 0.0191 | 38.9% |
+| `surfaceOverlay` | `#232E42` | 0.0270 | 29.4% |
+
+subtle 底与 `surfaceBase` 的相对亮度差：`infoSubtle` 31.3%、`successSubtle`
+37.9%、`warningSubtle` 33.1%、`dangerSubtle` 23.5%、`accentSubtle` 67.4%。
+
+最紧的三条（留给下一轮调色的人先读这三行）：
+
+1. `borderControl ∩ btnFace` **3.19:1**（阈值 3.0，余量 0.19）—— 暗色按钮底
+   `#1C2637` 已经比页底亮一档，边界再想提对比只能提亮描边，而再亮就"发光"了；
+2. `placeholder ∩ surfaceBase` 亮色 **4.70:1** / 暗色 **4.67:1**（余量 0.20 /
+   0.17）—— placeholder 再深就不像 placeholder 了；
+3. `textInverse ∩ success` 亮色 **5.02:1**（余量 0.52）—— 绿色是三原色里人眼
+   最敏感的一个，白字压不住时只能把绿压深，而压到 `#15803D` 已经偏"墨绿"。
+
+### 9.5 v1 light / dark 的已知不达标清单（**不修**）
+
+同一张配对表跑在存量预设上的结果，由 `TestContrastLegacyPresetsAreDocumented`
+打印（只收集、不失败）：
+
+| 预设 | 配对 | 实测 | 阈值 |
+| --- | --- | --- | --- |
+| light | `textMuted ∩ surfaceBase`（`#777777` / `#FFFFFF`） | 4.48:1 | 4.5:1 |
+| light | `textMuted ∩ surfaceInset`（`#777777` / `#F3F3F3`） | 4.04:1 | 4.5:1 |
+| light | `textMuted ∩ menuBarFace`（`#777777` / `#F3F3F3`） | 4.04:1 | 4.5:1 |
+| light | `placeholder ∩ fieldFace`（`#999999` / `#FFFFFF`） | 2.85:1 | 4.5:1 |
+| light | `placeholder ∩ surfaceBase`（`#999999` / `#FFFFFF`） | 2.85:1 | 4.5:1 |
+| light | `accentText ∩ accent`（`#FFFFFF` / `#27AE60`） | 2.87:1 | 4.5:1 |
+| light | `textInverse ∩ info`（`#FFFFFF` / `#2F80ED`） | 3.87:1 | 4.5:1 |
+| light | `textInverse ∩ success`（`#FFFFFF` / `#27AE60`） | 2.87:1 | 4.5:1 |
+| light | `textInverse ∩ warning`（`#FFFFFF` / `#E8890C`） | 2.62:1 | 4.5:1 |
+| light | `accentText ∩ info` | 3.87:1 | 4.5:1 |
+| light | `accentText ∩ success` | 2.87:1 | 4.5:1 |
+| light | `borderControl ∩ fieldFace`（`#999999` / `#FFFFFF`） | 2.85:1 | 3.0:1 |
+| light | `borderControl ∩ surfaceBase` | 2.85:1 | 3.0:1 |
+| light | `borderControl ∩ btnFace`（`#999999` / `#E8E8E8`） | 2.33:1 | 3.0:1 |
+| light | `btnEdge ∩ btnFace`（`#999999` / `#E8E8E8`） | 2.33:1 | 3.0:1 |
+| dark | `placeholder ∩ fieldFace`（`#777777` / `#1E1E1E`） | 3.72:1 | 4.5:1 |
+| dark | `placeholder ∩ surfaceBase` | 3.72:1 | 4.5:1 |
+| dark | `accentText ∩ accent`（`#FFFFFF` / `#2FBF6B`） | 2.39:1 | 4.5:1 |
+| dark | `textInverse ∩ info`（`#FFFFFF` / `#4A9DF0`） | 2.85:1 | 4.5:1 |
+| dark | `textInverse ∩ success`（`#FFFFFF` / `#2FBF6B`） | 2.39:1 | 4.5:1 |
+| dark | `textInverse ∩ warning`（`#FFFFFF` / `#F0A030`） | 2.15:1 | 4.5:1 |
+| dark | `textInverse ∩ danger`（`#FFFFFF` / `#E05545`） | 3.78:1 | 4.5:1 |
+| dark | `accentText ∩ info` | 2.85:1 | 4.5:1 |
+| dark | `accentText ∩ success` | 2.39:1 | 4.5:1 |
+| dark | `accentText ∩ danger` | 3.78:1 | 4.5:1 |
+| dark | `borderControl ∩ fieldFace`（`#555555` / `#1E1E1E`） | 2.24:1 | 3.0:1 |
+| dark | `borderControl ∩ surfaceBase` | 2.24:1 | 3.0:1 |
+| dark | `borderControl ∩ btnFace`（`#555555` / `#2D2D2D`） | 1.85:1 | 3.0:1 |
+| dark | `btnEdge ∩ btnFace`（`#555555` / `#2D2D2D`） | 1.85:1 | 3.0:1 |
+
+**为什么不修**：`light` / `dark` 的这 33 个色值不是"色板"，是**存量契约** ——
+它们被 `gfx/testdata/theme-v1.json` 逐 key 冻结，被已经上线的应用当成默认外观。
+改一个色值等于给所有存量应用发一次它们没有请求过的视觉更新，而对比度的收益
+只对"愿意迁移的人"成立。要达标就迁到 Prism：
+
+```js
+setTheme("prism-dark");   // 或在 gox.json 里写 "theme": "prism-dark"
+```
+
+### 9.6 关键色值与取舍记录
+
+| token | prism-light | prism-dark | 说明 |
+| --- | --- | --- | --- |
+| `accent` | `#0E7490` | `#22D3EE` | 冷青蓝。暗色必须提亮，否则在暗底上发闷 |
+| `accentText` | `#FFFFFF` | `#042A33` | **本轮最关键的取舍**：暗色实底配深字（8.40:1） |
+| `placeholder` | `#5E7089` | `#78879F` | 亮色比初稿 `#64748B` 压深一档，见下 |
+| `borderControl` | `#7A899D` | `#64748B` | 暗色比初稿 `#556579` 提亮一档，见下 |
+| `infoSubtle` / `infoText` | `#DBEAFE` / `#1D4ED8` | `#10243C` / `#93C5FD` | |
+| `successSubtle` / `successText` | `#BBF7D0` / `#166534` | `#122A1E` / `#86EFAC` | |
+| `warningSubtle` / `warningText` | `#FEF3C7` / `#92400E` | `#2E2208` / `#FCD34D` | |
+| `dangerSubtle` / `dangerText` | `#FEE2E2` / `#991B1B` | `#3A1614` / `#FCA5A5` | |
+
+四条与 Epic 初稿不一致的地方（**以实测为准**，每一条都是为了过阈值而改色，
+不是放宽阈值）：
+
+1. **暗色 `accentText` 取深字 `#042A33`**（初稿思路是"高亮 accent 配深字"，实测
+   8.40:1）。代价：Prism 暗色里"强调按钮上的字"是深色的，与亮色相反 —— 任何
+   写死"强调按钮放白字"的组件都必须读 `accentText`，不能读 `textInverse`。
+2. **亮色 `placeholder` 从 `#64748B` 压深到 `#5E7089`**。`#64748B` 在纯白上是
+   4.76:1，但 prism-light 的 `surfaceBase` 是 `#F4F7FB`（不是纯白），在其上只有
+   **4.43:1** —— 差 0.07 也是不达标。压深后白底 5.05:1、页底 4.70:1。
+3. **暗色 `borderControl`/`inputEdge`/`btnEdge` 从 `#556579` 提到 `#64748B`**。
+   `#556579` 在暗页底上只有 **2.86:1**、在按钮底上 2.55:1，都过不了 1.4.11。
+4. **亮色 `successSubtle` 从 `#DCFCE7` 压深到 `#BBF7D0`**。`#DCFCE7` 与页底只差
+   2.3% 相对亮度，"这块是成功提示"在并置时根本看不出来；压深后差 11.9%，同族
+   文字在其上仍有 5.88:1。
+
+两条"差点就不达标"的边界，记下来给下一轮：
+
+- 亮色 `warning` 实底 `#B45309` 配白字是 **5.02:1**，刚过 4.5。所以
+  `accentText ∩ {info, success, danger}` 这条断言**故意不含 warning** —— 含上
+  它，就会逼着人把 warning 压成难看的深棕。warning 实底上的前景由
+  `textInverse ∩ warning` 单独覆盖。
+- 暗色 `scrim`（55% 黑）压在 `surfaceBase` 上的**对比度只有 1.14:1** —— 这是
+  物理（暗底上再压黑，比值必然贴着 1），不是缺陷。所以遮罩的验收口径是"页面
+  相对亮度下降 ≥50%"（实测亮色降 83%、暗色降 66%），不是对比度比值。
+
+最后一条：**61 个 token 里没有 `accentHover` 字段**（S1 冻结的字段集，加字段要
+同时改 `Theme` struct / `themeLight` / `themeDark` / `themeTokens` / `setToken` /
+`syncThemeVars` 与 `raster.go` 的投影变量）。强调色填充控件的 hover/按压档以
+常量形式留在 `gfx/theme_prism.go`（亮 `#0B5F77`、暗 `#67E8F9`），将来组件层接
+入时直接用，别再各拍一个值。
+
+---
+
+## 10. 动效与触摸目标（Prism S8 增补）
+
+前九节是键盘与色彩。Prism 另外两项无障碍承诺不在键盘范畴里，单列在这里，完整
+口径见 `docs/prism-design-system.md` §2.4 / §2.5 / §4.3。
+
+### 10.1 减少动效（reduced motion）
+
+所有动画时长**只能**经过 `MotionDuration()` 这一个入口（`gfx/tokens.go`）：用户要求
+减少动效时它返回 `0`，调用点因此"不起表、不挂心跳、直接落终值"，不需要各自 `if`。
+所以**看不见动画**不等于动画坏了 —— 那就是正确答案。
+
+取值优先级（`PrefersReducedMotion`）：显式 `SetReducedMotion(*bool)` > 环境变量
+`GOX_REDUCED_MOTION` > `gox.json` 的 `ui.reducedMotion` > 平台探测（当前恒定
+`false`）。这条链的保守缺省是"别自作主张降级"，与触摸模式的保守缺省相反 —— 因为
+动效降级是"少给效果"（少了不会坏），而触摸放大是"多给面积"（多了会抢走相邻控件的
+点击），前者可以激进、后者必须在桌面上默认关。
+
+### 10.2 触摸目标
+
+`TouchMin = 44`（**物理像素**，不随密度换算 —— 3x 屏上换算会得到 132px 的荒谬
+命中区），出处是 WCAG 2.1 · 2.5.5 Target Size (AAA) 与 Apple HIG / Material 的共同
+下限。
+
+Prism 的做法是**扩命中区而不是扩视觉尺寸**：桌面端的紧凑度（S3 定的字段行高
+36dp、集合行高 32dp）不能为了 44px 的触摸目标推翻，所以触摸模式下由 `gfx/touchmode.go`
+在**命中测试**（`gfx/hittest.go` 的 `touchHitBox`）阶段把小控件的可点区域向四周
+撑到 44，绘制完全不动。这样：
+
+- 桌面 1x 的像素断言、画廊截图、行高一律不变；
+- 只有"自己带 `onClick`"的节点参与扩张，纯展示节点不会抢走相邻控件的点击；
+- 行类节点（`list-item` / `table-row` / `tree-row` / `menu-item`）只向**垂直**方向
+  撑，横向撑会让相邻行的空白变成死区、也会盖住行内的滚动条。
+
+开关方式（`gfx/touchmode.go`）：`SetTouchMode(*bool)` > 环境变量 `GOX_TOUCH_MODE`
+> 平台猜测（`GOOS` 为 android / ios / harmony 才默认开）。桌面默认关。
+
+**没覆盖的两处**（2026-10，记录在 `gfx/datepicker.go` / `gfx/colorpicker.go` 的
+`TODO(Prism): 触摸模式命中区`）：日历格与色板格是**无缝铺满**的网格，单格外扩会让
+相邻矩形重叠并选错 —— 它们需要的是"更大的格子"（布局改动），不是"更多的命中余量"。

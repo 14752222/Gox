@@ -2,6 +2,7 @@ package gfx
 
 import (
 	"image"
+	"image/color"
 	"time"
 
 	"github.com/14752222/Gox/object"
@@ -38,14 +39,25 @@ import (
 // 不引入并发路径。
 
 const (
-	tipGap       = 6   // 弹层与触发盒的间距
-	tipPadX      = 10  // 弹层水平内边距
-	tipPadY      = 5   // 弹层垂直内边距
-	tipMaxW      = 260 // 弹层最大宽度 (超宽文本被 DrawText 截断)
-	tipWinMargin = 4   // 弹层距窗口边缘的最小留白 (clamp 用)
-	tipDelay     = 500 // 缺省显示延迟 (毫秒)
-	tipFlipGap   = 8   // 翻转时用的间距 (与 tipGap 同值, 命名独立便于调)
+	tipGap       = 6      // 弹层与触发盒的间距 (**设计像素**, 用点见 Space())
+	tipPadX      = Space3 // 弹层水平内边距 (Prism S6: 10→6, 提示是紧凑浮层)
+	tipPadY      = Space2 // 弹层垂直内边距 (5→4)
+	tipMaxW      = 260    // 弹层最大宽度 (**设计像素**; 超宽文本被 DrawText 截断)
+	tipWinMargin = 4      // 弹层距窗口边缘的最小留白 (clamp 用, 设计像素)
+	tipDelay     = 500    // 缺省显示延迟 (毫秒)
+	tipFlipGap   = 8      // 翻转时用的间距 (与 tipGap 同值, 命名独立便于调; 设计像素)
 )
+
+// tipFontSize 是提示文字的字号: 比正文小一档 (tooltip 是辅助信息, 不该与
+// 正文同级)。布局 (tooltipPopupSize) 与绘制 (paintTooltipPopup) 必须走同一个
+// 入口, 否则量出来的盒子与画出来的字错位。
+func tipFontSize(host *GuiNode) int {
+	s := host.FontSize()
+	if s > 12 {
+		return s - 2
+	}
+	return s
+}
 
 // ===== props =====
 
@@ -225,87 +237,100 @@ func positionTooltipPopup(host, popup *GuiNode) {
 		b = trig.Box
 	}
 	x, y := b.X, b.Y
+	// Prism S8: 三个间距都是设计像素, 取值时先统一换成物理像素 ——
+	// 否则 2x 屏上弹层紧贴触发盒边缘 (尺寸随密度翻倍, 间距还是 6px)。
+	gap, flip, margin := Space(tipGap), Space(tipFlipGap), Space(tipWinMargin)
 	switch host.tipPlacement() {
 	case "top":
-		x, y = b.X+b.W/2-tw/2, b.Y-tipGap-th
+		x, y = b.X+b.W/2-tw/2, b.Y-gap-th
 	case "left":
-		x, y = b.X-tipGap-tw, b.Y+b.H/2-th/2
+		x, y = b.X-gap-tw, b.Y+b.H/2-th/2
 	case "right":
-		x, y = b.X+b.W+tipGap, b.Y+b.H/2-th/2
+		x, y = b.X+b.W+gap, b.Y+b.H/2-th/2
 	default: // bottom
-		x, y = b.X+b.W/2-tw/2, b.Y+b.H+tipGap
+		x, y = b.X+b.W/2-tw/2, b.Y+b.H+gap
 	}
 	// 越界翻转: 缺省方位在窗口边缘放不下时翻到对侧 (clamp 到窗口内是兜底,
 	// 翻转才是主要手段 —— clamp 会让提示盖住触发元素本身)。
 	switch host.tipPlacement() {
 	case "top":
-		if y < win.Y+tipWinMargin {
-			y = b.Y + b.H + tipFlipGap
+		if y < win.Y+margin {
+			y = b.Y + b.H + flip
 		}
 	case "bottom":
-		if y+th > win.Y+win.H-tipWinMargin {
-			y = b.Y - tipFlipGap - th
+		if y+th > win.Y+win.H-margin {
+			y = b.Y - flip - th
 		}
 	case "right":
-		if x+tw > win.X+win.W-tipWinMargin {
-			x = b.X - tipFlipGap - tw
+		if x+tw > win.X+win.W-margin {
+			x = b.X - flip - tw
 		}
 	case "left":
-		if x < win.X+tipWinMargin {
-			x = b.X + b.W + tipFlipGap
+		if x < win.X+margin {
+			x = b.X + b.W + flip
 		}
 	}
 	// clamp 进窗口: 先上界后下界 —— 弹层比窗口还宽/高时退化成贴左/上边缘,
 	// 至少保证可见 (弹层 400 宽塞进 160 窗口时, 两把 clamp 顺序反了会把
 	// 提示整个推出窗外)。
-	if max := win.X + win.W - tw - tipWinMargin; x > max {
+	if max := win.X + win.W - tw - margin; x > max {
 		x = max
 	}
-	if min := win.X + tipWinMargin; x < min {
+	if min := win.X + margin; x < min {
 		x = min
 	}
-	if max := win.Y + win.H - th - tipWinMargin; y > max {
+	if max := win.Y + win.H - th - margin; y > max {
 		y = max
 	}
-	if min := win.Y + tipWinMargin; y < min {
+	if min := win.Y + margin; y < min {
 		y = min
 	}
 	popup.Box = Rect{X: x, Y: y, W: tw, H: th}
 }
 
 // tooltipPopupSize 计算弹层尺寸: 文本测量 + 内边距, 宽度封顶 tipMaxW。
-// 字号跟随触发元素 (弹层挂在 host 下, FontSize 沿 Parent 链继承;
-// 想改字号直接在 <tooltip> 上写 font={12})。
+// 字号比触发元素小一档 (tipFontSize); 想改字号直接在 <tooltip> 上写 font={12}。
 func tooltipPopupSize(host *GuiNode) (int, int) {
-	tw, th := MeasureText(host.tipText(), host.FontSize())
-	tw += 2 * tipPadX
-	th += 2 * tipPadY
-	if tw > tipMaxW {
-		tw = tipMaxW
+	tw, th := MeasureText(host.tipText(), tipFontSize(host))
+	tw += 2 * Space(tipPadX)
+	th += 2 * Space(tipPadY)
+	if tw > Space(tipMaxW) {
+		tw = Space(tipMaxW)
 	}
-	if tw < 2*tipPadX {
-		tw = 2 * tipPadX
+	if tw < 2*Space(tipPadX) {
+		tw = 2 * Space(tipPadX)
 	}
 	return tw, th
 }
 
 // ===== 绘制 =====
 
-// paintTooltipPopup 画提示弹层: 深色底 + 白字 (主流 tooltip 外观), 单行
-// 居中, 超宽由 DrawText 按 maxW 截断。内容是数据 (text prop) 而不是元素树,
-// 所以文字在这里直接画, 不物化 #text 子节点 (与 toast 画 message 同理)。
+// paintTooltipPopup 画提示弹层 (Prism S6): 深色反色底 (r8 圆角 + 轻投影) +
+// 反色字, 单行居中, 超宽由 DrawText 按 maxW 截断。内容是数据 (text prop)
+// 而不是元素树, 所以文字在这里直接画, 不物化 #text 子节点 (与 toast 同理)。
+//
+// 投影是偏移轮廓 + 两轮盒式模糊 (decor.go paintShadow) —— 软光栅没有高斯,
+// 小 blur 轻量近似足够表达"浮在所有东西之上"。
 func paintTooltipPopup(img *image.RGBA, n *GuiNode, disabled bool) {
 	b := n.Box
 	if b.W <= 0 || b.H <= 0 || n.owner == nil {
 		return
 	}
-	FillRect(img, b, tint(colorTooltipFace, disabled))
+	rad := Radius(RadiusMD)
+	if !disabled {
+		paintShadow(img, b, rad, shadowSpec{x: 0, y: 1, blur: 4, c: color.RGBA{A: 36}})
+	}
+	fillRoundRect(img, b, rad, tint(colorTooltipFace, disabled))
 	msg := n.owner.tipText()
 	if msg == "" {
 		return
 	}
-	size := n.FontSize()
+	size := tipFontSize(n.owner)
 	_, th := MeasureText(msg, size)
-	DrawText(img, img.Bounds(), msg, b.X+tipPadX, b.Y+(b.H-th)/2, size,
-		tint(colorTooltipText, disabled), b.W-2*tipPadX)
+	// Prism S8: 绘制侧的左右留白必须与测量侧同口径 —— 测量加了 2*Space(tipPadX),
+	// 这里也必须是 Space(tipPadX)。只改一侧的后果是 2x 屏上文字贴着弹层左缘、
+	// 右侧却空出 12px (症状很像"文本没居中")。
+	padX := Space(tipPadX)
+	DrawText(img, img.Bounds(), msg, b.X+padX, b.Y+(b.H-th)/2, size,
+		tint(colorTooltipText, disabled), b.W-2*padX)
 }

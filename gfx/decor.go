@@ -40,11 +40,16 @@ type gradPaint struct {
 
 // backgroundPaint 解析 background prop: 纯色 (原语义) 或线性渐变。
 // 返回 (纯色, 渐变, 是否有面): solid 与 grad 互斥。
+//
+// button 无显式值时回落 colorSurfaceRaised (Prism S3): v1 的 colorBtnFace 是
+// 灰底 (#e8e8e8) + 深灰边的 Win95 配方, 凹陷感来自"面比窗口底色更深" —— 在
+// 有卡片/分层的界面里, 每个按钮都像被按下去过。新配方是"抬起的面" (浅面 +
+// 发丝边), 层次交给边框与悬停/按压反馈承担。
 func (n *GuiNode) backgroundPaint() (solid color.RGBA, grad *gradPaint, ok bool) {
 	s, ok := n.PropStr("background")
 	if !ok {
 		if n.Tag == "button" {
-			return colorBtnFace, nil, true
+			return colorSurfaceRaised, nil, true
 		}
 		return color.RGBA{}, nil, false
 	}
@@ -55,7 +60,7 @@ func (n *GuiNode) backgroundPaint() (solid color.RGBA, grad *gradPaint, ok bool)
 		return c, nil, true
 	}
 	if n.Tag == "button" {
-		return colorBtnFace, nil, true
+		return colorSurfaceRaised, nil, true
 	}
 	return color.RGBA{}, nil, false
 }
@@ -275,6 +280,109 @@ func strokeRoundRectW(img *image.RGBA, r Rect, rad, w int, c color.RGBA) {
 	}
 }
 
+// ===== 焦点环 (Prism S3) =====
+//
+// v1 的焦点反馈是"盒内缩 1px 画一圈 1px 虚线" (render.go 的 drawFocusRing)。
+// 两个问题: 虚线在深色/有纹理的底上分辨不出; 框压在控件自己的边框上, 看不出
+// "焦点在谁身上"。Prism 换成 **2px 实线 + 与控件之间留 2px 底色间隙**: 间隙让
+// 环与控件分离 (不会被误读成控件的一条边), 实线在任何底上都读得出来。
+const (
+	focusRingW   = 2 // 环的线宽
+	focusRingGap = 2 // 环与控件之间的底色间隙
+)
+
+// nodeRadiusPx 读节点的 radius prop (设计像素) 并换算成物理像素; 未写时
+// 回落 def 档位。
+//
+// 为什么要有它: v1 里 radius 只被 paintBoxDecor 读过一处, 于是 input /
+// checkbox / switch / slider 全是直角, 而**焦点环完全不跟随圆角** —— 圆角按钮
+// 配直角焦点框是这批控件最难看的一处。所有"要随控件圆角"的绘制点都走这里,
+// 才能保证同一个节点上的面 / 边 / 焦点环用的是同一个半径。
+//
+// radius 写负数沿用 tokens.go 的 RadiusFull 语义 (胶囊哨兵), 由 resolveRadiusPx
+// 在拿到盒子尺寸后落成具体像素。
+func nodeRadiusPx(n *GuiNode, def RadiusToken) int {
+	if v, ok := n.PropNum("radius"); ok {
+		if v < 0 {
+			return -1
+		}
+		return dpToPx(v)
+	}
+	return Radius(def)
+}
+
+// resolveRadiusPx 把"可能是胶囊哨兵 (-1)"的圆角按盒子尺寸落成具体像素。
+func resolveRadiusPx(r Rect, rad int) int {
+	if rad < 0 {
+		return min(r.W, r.H) / 2
+	}
+	return rad
+}
+
+// defaultRadiusFor 是各内置标签的圆角缺省档位 (radius prop 未写时)。
+//
+// 只对 Prism 这一批控件给非零缺省: 通用盒子 (rect / column …) 的默认外观
+// 是直角, 给它们偷偷加圆角会改掉既有截图与像素断言的语义。
+func defaultRadiusFor(tag string) RadiusToken {
+	switch tag {
+	case "button", "input", "search", "textarea", "select", "select-popup":
+		return RadiusMD
+	case "checkbox":
+		return RadiusXS
+	case "switch", "radio":
+		// 开关轨道是胶囊、单选是圆: 两者都由"短边的一半"给出, 只能靠哨兵表达
+		return RadiusFull
+	}
+	return RadiusNone
+}
+
+// focusRingRect 是焦点环实际落笔的那个外扩矩形 (环带本身占它的外 focusRingW 像素)。
+func focusRingRect(box Rect) Rect {
+	pad := focusRingGap + focusRingW
+	return Rect{X: box.X - pad, Y: box.Y - pad, W: box.W + 2*pad, H: box.H + 2*pad}
+}
+
+// strokeFocusRing 画 Prism 焦点环: 控件盒外让出 focusRingGap 的底色间隙后,
+// 一条 focusRingW 宽的实线圆角环。
+//
+// 圆角要**同步加大** pad: 同心圆角环在视觉上才平行, 直接用控件的圆角会让
+// 外环的拐角显得比控件更尖。
+func strokeFocusRing(img *image.RGBA, box Rect, radius int, c color.RGBA) {
+	r := focusRingRect(box)
+	if r.W <= 0 || r.H <= 0 {
+		return
+	}
+	rad := resolveRadiusPx(box, radius) + focusRingGap + focusRingW
+	if rad > 0 {
+		strokeRoundRectW(img, r, rad, focusRingW, c)
+		return
+	}
+	strokeRectW(img, r, focusRingW, c)
+}
+
+// mixColor 按 t∈[0,1] 在两个颜色间线性插值 (alpha 一并插值)。
+//
+// 软光栅没有合成图层也没有变换矩阵, "过渡中的颜色"只能这样算: 它是
+// Prism S4 里勾选填充 / switch 轨道位移之外唯一能表达"渐变到目标色"的手段。
+func mixColor(a, b color.RGBA, t float64) color.RGBA {
+	if t <= 0 {
+		return a
+	}
+	if t >= 1 {
+		return b
+	}
+	m := func(x, y uint8) uint8 { return uint8(int(x) + int(int(y)-int(x))*int(t*256)/256) }
+	return color.RGBA{R: m(a.R, b.R), G: m(a.G, b.G), B: m(a.B, b.B), A: m(a.A, b.A)}
+}
+
+// isLightFace 报告这个面色是不是"亮到提亮无从下手" (通道已接近上限)。
+//
+// button 的底从 #e8e8e8 改成白/浅面之后, brighten(+12) 在 255 上是恒等操作 ——
+// 悬停会完全没有反馈。这类面改用"染一档浅色"来表达同样的"浮起来"。
+func isLightFace(c color.RGBA) bool {
+	return int(c.R)+int(c.G)+int(c.B) >= 720 // 平均每通道 ≥240
+}
+
 // strokeRectW 直角描边 (任意宽度, 四条实心矩形)。
 func strokeRectW(img *image.RGBA, r Rect, w int, c color.RGBA) {
 	if w <= 0 {
@@ -483,11 +591,32 @@ func boxBlurAlpha(mask []uint8, w, h, b int) {
 	}
 }
 
+// disabledOpacity 是 button 禁用态的"淡出"系数 (Prism S3)。
+//
+// 规范写的是 opacity .45 + colorTextDisabled。软光栅没有全局 opacity, 而
+// 45% alpha 的纯色合成到面上**就是**线性混色, 所以这里按 0.45 把禁用色混进
+// 面与边 —— 数值等价, 不需要新的绘制通路。
+const disabledOpacity = 0.45
+
+// disabledLook 是绘制侧的禁用态出口: button 走 Prism 的 45% 混色, 其余保持
+// v1 的 dim (通用盒子的禁用观感被既有像素断言锁着, 不在 S3 的改版范围内)。
+func (n *GuiNode) disabledLook(c color.RGBA, disabled bool) color.RGBA {
+	if n.Tag == "button" {
+		if !disabled {
+			return c
+		}
+		return mixColor(c, colorTextDisabled, disabledOpacity)
+	}
+	return tint(c, disabled)
+}
+
 // paintBoxDecor 是通用盒子分支的统一装饰出口 (shadow → background → border)。
 func paintBoxDecor(img *image.RGBA, n *GuiNode, disabled bool) {
-	// 逻辑值 → 设备像素 (density.go)
-	rad, _ := n.PropNum("radius")
-	radius := dpToPx(rad)
+	// 逻辑值 → 设备像素 (density.go)。缺省档位按标签给 (Prism S3: button r8),
+	// 于是"没写 radius 的按钮"与"写了 radius={8}"长得一样 —— 缺省不该是
+	// 第二套外观。
+	radius := nodeRadiusPx(n, defaultRadiusFor(n.Tag))
+	radius = resolveRadiusPx(n.Box, radius)
 	if radius < 0 {
 		radius = 0
 	}
@@ -501,14 +630,14 @@ func paintBoxDecor(img *image.RGBA, n *GuiNode, disabled bool) {
 		case grad != nil:
 			fillRoundGradient(img, n.Box, 0, tintGrad(grad, disabled))
 		case radius > 0:
-			fillRoundRect(img, n.Box, radius, tint(n.interactiveFace(solid), disabled))
+			fillRoundRect(img, n.Box, radius, n.disabledLook(n.interactiveFace(solid), disabled))
 		default:
 			// 快路径: 与原实现逐字节等价 (既有像素断言的回归保障)
-			FillRect(img, n.Box, tint(n.interactiveFace(solid), disabled))
+			FillRect(img, n.Box, n.disabledLook(n.interactiveFace(solid), disabled))
 		}
 	}
 	if bd, ok := n.borderFor(); ok {
-		bd = tint(bd, disabled)
+		bd = n.disabledLook(bd, disabled)
 		// 逻辑值 → 设备像素 (density.go)
 		w, _ := n.PropNum("borderWidth")
 		bw := dpToPx(w)

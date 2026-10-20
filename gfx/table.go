@@ -29,11 +29,15 @@ import (
 //   - 与 select 同一套"数据进、节点树出"的思路: columns/rows 是数据, 展开成
 //     table-header / table-row / table-cell 三个内部标签的节点树 (脚本写不到,
 //     但仍登记进 knownTags 以免内部构造被当成未知标签)。
-//   - 行高固定 28 (与 select/input 同一套字段常量), 保证跨组件对齐;
-//     表头底色略深 + 底边分隔线, 数据行斑马纹由 `zebra` 开关控制。
-//   - 列宽: 显式 width 优先; 缺省时按该列文本测量宽度取最大, 各列等分剩余
-//     空间 (把 table 的可用宽度按内容比例分配)。text-align 用 align (left/
-//     right/center), 只影响单元格内文字对齐。
+//   - 行高固定 tableRowH = 32 (Prism S5): 比字段行高 36 矮一档 —— 表格是
+//     "密集阅读"的场景, 与字段同高会让一屏能看的行数明显变少; 而 28 又太
+//     挤 (中文一行 17px 字面 + 上下各 7px 呼吸)。表头底色 + 底边分隔线,
+//     数据行斑马纹/悬停/选中底色由 tabular 开关与运行时状态控制。
+//   - 列宽: 显式 width 优先; 缺省时按**表头与该列所有单元格**里最宽的文本
+//     测量取最大 (见 tableColumnWidths), 各列按内容比例分剩余空间。只按表头
+//     量是 S4 的 bug: 列宽被表头定死, 单元格被 DrawText 的 maxWidth 硬截断,
+//     截图里 "button" 显示成 "butto"。text-align 用 align (left/right/
+//     center), 只影响单元格内文字对齐。
 //   - `borderless` 关掉单元格竖线与横线 (表头底边保留, 否则表头与数据糊在
 //     一起); `headerBackground` 覆盖表头底色。
 //
@@ -42,10 +46,25 @@ import (
 // 窗口化区间即可 —— 本文件的行高常量与"行按 y 等距排布"约定就是为它留的。
 
 const (
-	tableRowH     = 28 // 行高 (与 selectRowH 同值, 便于和字段控件对齐)
-	tableCellPadX = 10 // 单元格水平内边距
-	tableBorderW  = 1  // 网格线宽
+	// tableRowH 是行高 (**设计像素**, Prism S5: 28 → 32; 取值处经 Space()
+	// 换算 —— S8 之前它是裸物理像素, 于是 2x 屏上行还是 32px 而行里的字
+	// 已经被 dpToPx 放大到 32px, 上下留白归零、中文被裁)。
+	// 比字段行高 36 矮一档: 表格是
+	// 密集阅读场景, 见文件头。**刻意小于 TouchMin (44)** —— 桌面端的鼠标
+	// 行不必满足触控下限; 触控场景下表格本身应换成卡片式布局 (不是把行
+	// 撑到 44), 那不在本组件的范围里。
+	tableRowH = 32
+	// tableBorderW 是网格线宽 (发丝线, 不随 density 放大)
+	tableBorderW = 1
+	// tableRowBarW 是数据行左侧的选中指示条宽度 (Prism S5, 设计像素)。
+	tableRowBarW = 3
 )
+
+// tableCellPadX 是单元格水平内边距 (物理像素)。
+//
+// 写成函数而不是常量: Space() 要按 displayScale 换算, 2x/3x 屏上留白
+// 跟着放大, 否则文字会贴着格线。取值 Space5 = 12 (S3 给字段定的同一档)。
+func tableCellPadX() int { return Space(Space5) }
 
 // tableColumn 是一列的解析结果 (键名 / 表头文字 / 宽度 / 对齐)。
 type tableColumn struct {
@@ -53,6 +72,7 @@ type tableColumn struct {
 	label string // 表头显示文字
 	width int    // 显式列宽; 0 = 按内容算
 	align string // left / right / center, 缺省 left
+	index int    // 在 cols 切片里的位置 (取单元格文本用, 与 key 无关)
 }
 
 // tableColumns 读取 columns prop: 字符串数组或 {key,label,width,align} 数组。
@@ -71,7 +91,7 @@ func (n *GuiNode) tableColumns() []tableColumn {
 		switch x := e.(type) {
 		case *object.String:
 			// 字符串列: 表头即文字, 取值键用下标 (行是数组时按位置取)
-			out = append(out, tableColumn{key: strconv.Itoa(i), label: string(x.Value)})
+			out = append(out, tableColumn{key: strconv.Itoa(i), label: string(x.Value), index: len(out)})
 		case *object.Object:
 			col := tableColumn{key: strconv.Itoa(i)}
 			if s, ok := objStringField(x, "key"); ok {
@@ -88,6 +108,7 @@ func (n *GuiNode) tableColumns() []tableColumn {
 			if s, ok := objStringField(x, "align"); ok {
 				col.align = s
 			}
+			col.index = len(out)
 			out = append(out, col)
 		}
 	}
@@ -214,17 +235,19 @@ func layoutTable(n *GuiNode) {
 	}
 	widths := tableColumnWidths(n, cols, area.W)
 
+	// Prism S8: 行的高宽都经 Space() 换算 (见上方常量的说明)。
+	rowH := Space(tableRowH)
 	y := area.Y
 	// 表头行 (总在流内第一个)
 	if h := tableHeaderNode(n); h != nil {
-		h.Box = Rect{X: area.X, Y: y, W: area.W, H: tableRowH}
+		h.Box = Rect{X: area.X, Y: y, W: area.W, H: rowH}
 		layoutTableRowCells(h, widths, area.X)
-		y += tableRowH
+		y += rowH
 	}
 	for _, r := range tableRowNodes(n) {
-		r.Box = Rect{X: area.X, Y: y, W: area.W, H: tableRowH}
+		r.Box = Rect{X: area.X, Y: y, W: area.W, H: rowH}
 		layoutTableRowCells(r, widths, area.X)
-		y += tableRowH
+		y += rowH
 	}
 	placeAbsoluteIn(n, area)
 }
@@ -238,23 +261,31 @@ func tableIntrinsic(n *GuiNode) (int, int) {
 	if len(cols) == 0 {
 		return 0, 0
 	}
+	pad := tableCellPadX()
+	textNeeds := tableColumnNeeds(n, cols)
 	w := 0
-	for _, col := range cols {
+	for i, col := range cols {
 		if col.width > 0 {
 			w += col.width
 			continue
 		}
-		lw, _ := MeasureText(col.label, n.FontSize())
-		w += lw + 2*tableCellPadX
+		w += textNeeds[i] + 2*pad
 	}
 	rows := len(tableRowNodes(n)) + 1 // +1 是表头 (有列定义就必有表头)
-	return w, rows * tableRowH
+	return w, rows * Space(tableRowH)
 }
 
 // tableColumnWidths 分配列宽: 显式 width 先占, 剩下的宽度按各列"内容需要
-// 的宽度"比例分。内容需求 = 表头文本与各格文本里最宽的那个 + 两侧内边距。
-// 总宽不够时按比例压缩 (不溢出容器)。
+// 的宽度"比例分。内容需求 = 表头与**该列所有单元格**文本里最宽的那个 +
+// 两侧内边距。总宽不够时按比例压缩 (不溢出容器), 单元格再按 DrawText 的
+// maxWidth 硬截断兜底。
+//
+// 为什么要把单元格也量进来: S4 只量表头, 列宽于是被表头文字定死; 表头是
+// 中文两字、数据却是 "button" 这类长词时, 单元格被截成 "butto" (截图
+// testdata/shots/table.js 里的既定 bug)。列宽是所有行共用的, 它的需求
+// 必须由**最宽的那一格**决定, 而不是表头单独说了算。
 func tableColumnWidths(n *GuiNode, cols []tableColumn, total int) []int {
+	pad := tableCellPadX()
 	need := make([]int, len(cols))
 	fixed := make([]int, len(cols))
 	fixedSum := 0
@@ -264,8 +295,8 @@ func tableColumnWidths(n *GuiNode, cols []tableColumn, total int) []int {
 			fixedSum += col.width
 			continue
 		}
-		w, _ := MeasureText(col.label, n.FontSize())
-		need[i] = w + 2*tableCellPadX
+		textNeeds := tableColumnNeeds(n, cols)
+		need[i] = textNeeds[i] + 2*pad
 	}
 	rest := total - fixedSum
 	if rest < 0 {
@@ -286,6 +317,37 @@ func tableColumnWidths(n *GuiNode, cols []tableColumn, total int) []int {
 		} else {
 			// 全是空列: 均分
 			out[i] = rest / len(cols)
+		}
+	}
+	return out
+}
+
+// tableColumnNeeds 返回各列"文字需要多宽": 表头与该列所有数据格文本里最宽
+// 的那个 (不含内边距)。数据来自 rows prop 而不是已构造的单元格节点 ——
+// 布局时节点树可能还没建 (intrinsicSize 早于 layoutNode 运行), 而 rows
+// 是数据源头, 两边读到的一定是同一份。
+//
+// 一次算出**全部列**: 调用方 (intrinsicSize 与列宽分配) 各来一遍, 若按列
+// 单独算, 每列都要把所有行的单元格文本重新抽一遍 —— 列数平方级的重复劳动。
+//
+// 列下标取 tableColumn.index (构造期写死): 列定义里可能有非法元素被跳过,
+// 用切片下标会和数据行的位置对不上。
+func tableColumnNeeds(n *GuiNode, cols []tableColumn) []int {
+	size := n.FontSize()
+	out := make([]int, len(cols))
+	for i, col := range cols {
+		w, _ := MeasureText(col.label, size)
+		out[i] = w
+	}
+	for _, row := range n.tableRows() {
+		texts := n.tableCells(row, cols)
+		for i, col := range cols {
+			if col.index < 0 || col.index >= len(texts) {
+				continue
+			}
+			if cw, _ := MeasureText(texts[col.index], size); cw > out[i] {
+				out[i] = cw
+			}
 		}
 	}
 	return out
@@ -314,41 +376,63 @@ func layoutTableRowCells(row *GuiNode, widths []int, x0 int) {
 // ===== 绘制 =====
 
 // paintTableHeader / paintTableRow / paintTableCell 画表格三件套。
-// 网格线用浅灰与 separator 观感统一; 斑马纹用极浅灰底, 比纯白更易读但不抢文字。
+//
+// Prism S5 的三层底色, 优先级从高到低:
+//  1. 选中行 → colorStateSelected, 再叠一条左侧 tableRowBarW 宽的强调色指示条
+//     (软光栅没有透明度, "选中"只能靠整行铺色 + 一个强信号条来表达);
+//  2. 悬停行 → colorStateRowHover (只给数据行; 表头是标题, 高亮它没有意义);
+//  3. 斑马纹 → colorSurfaceSunken (面层级差一档, 比裸 #fafafa 更能跟主题走)。
+//
+// 网格线/斑马纹/行底线一律用 colorBorderDecorative: 它是"装饰性"边界,
+// 与控件边线 (colorBorderControl) 是两档对比度, 不能混用。
 func paintTableHeader(img *image.RGBA, n *GuiNode, disabled bool) {
 	b := n.Box
 	if b.W <= 0 || b.H <= 0 {
 		return
 	}
-	face := n.fieldFace(colorTableHeaderFace)
+	face := n.fieldFace(colorSurfaceInset)
 	FillRect(img, b, tint(face, disabled))
 	// 表头底边: 表格的视觉锚线, borderless 也保留
 	FillRect(img, Rect{X: b.X, Y: b.Y + b.H - tableBorderW, W: b.W, H: tableBorderW},
-		tint(colorTableEdge, disabled))
+		tableEdgeColor(disabled))
 }
+
+// tableEdgeColor 是表格网格线的颜色 (装饰性边界 token, 随主题走)。
+func tableEdgeColor(disabled bool) color.RGBA { return tint(colorBorderDecorative, disabled) }
 
 func paintTableRow(img *image.RGBA, n *GuiNode, disabled bool) {
 	b := n.Box
 	if b.W <= 0 || b.H <= 0 {
 		return
 	}
-	// 斑马纹: 由 Go 侧写入的 _zebra prop 决定 (奇数数据行着色)
-	if v, ok := n.PropBool("_zebra"); ok && v {
-		FillRect(img, b, tint(colorTableZebra, disabled))
-	}
-	// 悬停高亮只给数据行 (表头是标题, 高亮它没有意义)
-	if n.hovered && !n.tblHeader {
-		FillRect(img, b, tint(colorTableRowHover, disabled))
+	selected := n.tableRowSelected()
+	switch {
+	case selected:
+		FillRect(img, b, tint(colorStateSelected, disabled))
+		// 左指示条: 整行高的竖条, 与选中底同层 (先铺底再压条)
+		// Prism S8: 指示条也是参与排版的尺寸, 跟着 Space() 走。
+		FillRect(img, Rect{X: b.X, Y: b.Y, W: Space(tableRowBarW), H: b.H},
+			tint(colorAccent, disabled))
+	case n.hovered && !n.tblHeader:
+		FillRect(img, b, tint(colorStateRowHover, disabled))
+	case n.tableRowZebra():
+		// 斑马纹: 由 Go 侧写入的 _zebra prop 决定 (奇数数据行着色)。
+		// 排在悬停之后 = 悬停时斑马纹让位, 不叠出第三种颜色。
+		FillRect(img, b, tint(colorSurfaceSunken, disabled))
 	}
 	// 行底线 (borderless 时跳过)
 	if !n.tableBorderless() {
 		FillRect(img, Rect{X: b.X, Y: b.Y + b.H - tableBorderW, W: b.W, H: tableBorderW},
-			tint(colorTableEdge, disabled))
+			tableEdgeColor(disabled))
 	}
 }
 
 // paintTableCell 画单元格: 只画竖分隔线 + 文字 (底色由行负责)。文字来自
 // cellText 节点字段 (数据而非元素树, 与 menu-item 画 menuLabel 同理)。
+//
+// 文字左右都夹在单元格内: 旧实现给 DrawText 的 maxWidth 是 b.W-pad, 起点
+// 却已经在 b.X+pad, 右对齐时同一格文字会超出右边界 pad 像素。这里统一
+// 算内容区 (两侧各让 pad) 与可用宽度。
 func paintTableCell(img *image.RGBA, n *GuiNode, disabled bool) {
 	b := n.Box
 	if b.W <= 0 || b.H <= 0 {
@@ -356,28 +440,39 @@ func paintTableCell(img *image.RGBA, n *GuiNode, disabled bool) {
 	}
 	if !n.tableBorderless() {
 		FillRect(img, Rect{X: b.X + b.W - tableBorderW, Y: b.Y, W: tableBorderW, H: b.H},
-			tint(colorTableEdge, disabled))
+			tableEdgeColor(disabled))
 	}
 	text := n.cellText
 	if text == "" {
 		return
 	}
+	pad := tableCellPadX()
+	contentW := b.W - 2*pad
+	if contentW <= 0 {
+		// 窄到放不下留白: 退回"整格可用", 让文字至少能露出来
+		pad, contentW = 0, b.W
+	}
 	size := n.FontSize()
 	tw, th := MeasureText(text, size)
-	// 对齐: 只在单元格内容区内移动起点, 不改变单元格本身的分栏地位
-	x := b.X + tableCellPadX
+	// 对齐: 只在单元格内容区内移动起点, 不改变单元格本身的分栏地位。
+	// 表头走 secondary 档、数据行走正文色 —— 表头是"标题"而不是数据。
+	ink := n.textColor()
+	if n.tblHeader {
+		// 表头是"标题"而不是数据: 降一档到 secondary。脚本显式给 color
+		// 仍以脚本为准 (textColor 已沿祖先链读过)。
+		if _, ok := n.PropStr("color"); !ok && !hasAncestorColor(n) {
+			ink = colorTextSecondary
+		}
+	}
+	x := b.X + pad
 	switch n.cellAlign {
 	case "right":
-		x = b.X + b.W - tableCellPadX - tw
+		x = b.X + pad + contentW - tw
 	case "center":
-		x = b.X + (b.W-tw)/2
-	}
-	// 右对齐/居中时文字可能顶到左边界外 (内容比可用宽度长), 夹回来
-	if min := b.X + 1; x < min {
-		x = min
+		x = b.X + pad + (contentW-tw)/2
 	}
 	DrawText(img, img.Bounds(), text, x, b.Y+(b.H-th)/2, size,
-		tint(n.textColor(), disabled), b.W-tableCellPadX)
+		tint(ink, disabled), contentW)
 }
 
 // ===== props / 运行时读取 =====
@@ -467,6 +562,11 @@ func buildTable(n *GuiNode) {
 			r.Props["_zebra"] = &object.Boolean{Value: true}
 		}
 		texts := n.tableCells(row, cols)
+		// 受控选中行: <table rowSelected={下标}> 在构造期拷到对应行 (行
+		// 是 Go 侧构造的, 脚本没有机会直接写它的 prop)。
+		if sel, ok := n.PropNum("rowSelected"); ok && int(sel) == ri {
+			r.Props["selected"] = &object.Boolean{Value: true}
+		}
 		alignCellsWithText(r, cols, texts, n)
 		attachRowClick(r, n, ri, row)
 		n.Children = append(n.Children, r)
@@ -538,10 +638,39 @@ func ensureTableBuilt(n *GuiNode) {
 	buildTable(n)
 }
 
-// 表格配色 (浅灰网格 + 极浅斑马纹, 与整体灰白风格一致)。
-var (
-	colorTableHeaderFace = color.RGBA{R: 0xF3, G: 0xF3, B: 0xF3, A: 255} // 表头底
-	colorTableZebra      = color.RGBA{R: 0xFA, G: 0xFA, B: 0xFA, A: 255} // 斑马纹行底
-	colorTableEdge       = color.RGBA{R: 0xD8, G: 0xD8, B: 0xD8, A: 255} // 网格线
-	colorTableRowHover   = color.RGBA{R: 0xEE, G: 0xF3, B: 0xFA, A: 255} // 行悬停底
-)
+// tableRowSelected 报告这一数据行是否是选中行。
+//
+// 选中态走受控 prop `selected` (与 list-item 同款): "选中哪一行"是业务
+// 状态。内部行不对脚本直接开放, 所以脚本写在宿主上
+// (<table rowSelected={i}>), 构造期拷到对应行 —— 每帧重建时跟着数据走,
+// 不会"脚本改了选中行、画面还停在旧行"。表头永远不是选中行。
+func (n *GuiNode) tableRowSelected() bool {
+	if n.tblHeader {
+		return false
+	}
+	v, ok := n.PropBool("selected")
+	return ok && v
+}
+
+// tableRowZebra 报告这一数据行是否该铺斑马纹底色。
+//
+// 斑马纹由构造期写的 _zebra prop 决定 (奇数数据行, 仅当 <table zebra>);
+// 读的是本节点的 prop 而不是 owner 链 —— 否则每一行都会读到 <table> 上的
+// 同名开关, "奇数行着色"退化成"整表着色"。
+func (n *GuiNode) tableRowZebra() bool {
+	if n.tblHeader {
+		return false
+	}
+	v, ok := n.PropBool("_zebra")
+	return ok && v
+}
+
+// hasAncestorColor 报告节点是否有祖先显式写了 color (CSS 式继承)。
+func hasAncestorColor(n *GuiNode) bool {
+	for p := n.Parent; p != nil; p = p.Parent {
+		if _, ok := p.PropStr("color"); ok {
+			return true
+		}
+	}
+	return false
+}

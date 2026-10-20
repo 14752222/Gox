@@ -96,8 +96,9 @@ func TestDatepickerFieldShowsValueOrPlaceholder(t *testing.T) {
 		t.Fatalf("缺省 placeholder = %q, want 请选择日期", got)
 	}
 	// 与 select/input 同一套字段常量: 表单里三者才会齐平
-	if filled.Box.H != selectRowH {
-		t.Fatalf("字段行高 = %d, want %d", filled.Box.H, selectRowH)
+	// Prism S3: 字段行高 28 → 36 (与 select / input / button 齐平)
+	if filled.Box.H != fieldRowH {
+		t.Fatalf("字段行高 = %d, want %d", filled.Box.H, fieldRowH)
 	}
 	if filled.Box.W < dpFieldMinW {
 		t.Fatalf("字段宽度 %d 小于最小值 %d", filled.Box.W, dpFieldMinW)

@@ -17,7 +17,7 @@ import (
 //	</tabs>
 //
 // 结构约定:
-//   - tabs 是纵向两段容器: 顶部标签条 (title 文本 + 激活下划线, 自绘) +
+//   - tabs 是纵向两段容器: 顶部标签条 (title 文本 + 2px 激活指示条, 自绘) +
 //     内容区 (**激活页**的子树, 由通用机制布局绘制)。
 //   - tab 是一页: title prop 是标签条文字, 子节点按 column 语义竖排
 //     (直接塞多个元素也竖排, 不必再包一层 column)。
@@ -38,11 +38,23 @@ import (
 // (each 生成 tab) 未支持 —— pages 只认直接子节点里的 <tab>。
 
 const (
-	tabStripPadY = 5  // 标签条上下内边距 (文字到条缘)
-	tabItemPadX  = 12 // 单个标签的左右内边距
-	tabGap       = 4  // 标签之间的间距
-	tabUnderline = 2  // 激活下划线厚度
+	// tabStripPadY 是标签条上下内边距 (设计像素, Space5 的一半档: 6)。
+	// 条高 = 行高 + 2×6; Prism S5 之前是 5, 32px 的集合行让条跟着放开一档。
+	tabStripPadY = Space3
+	// tabItemPadX 是单个标签的左右内边距 (设计像素, Space5 = 12)。
+	tabItemPadX = Space5
+	// tabGap 是标签之间的间距 (设计像素, Space1 = 2): S5 起标签之间改用
+	// 一条 1px 的发丝分隔线, 间距收到 2 才不会让分隔线飘在两大块空白中间。
+	tabGap = Space1
+	// tabUnderline 是激活指示条厚度 (2px, 不随 density 放大 —— 它是一条
+	// 实色标记线, 放大后比相邻的 1px 分隔线粗得不像同一套)。
+	tabUnderline = 2
 )
+
+// tabItemPadXResolved / tabStripPadYResolved 是上面两个 token 换算后的
+// 物理像素 (drawText 与布局都用它, 保证两边口径一致)。
+func tabItemPadXResolved() int  { return Space(tabItemPadX) }
+func tabStripPadYResolved() int { return Space(tabStripPadY) }
 
 // ===== props 与状态读取 =====
 
@@ -108,9 +120,13 @@ func (n *GuiNode) tabIsShown() bool {
 }
 
 // tabStripAt 返回 (x,y) 命中的标签下标; 不在条上返回 -1。
+//
+// Prism S8: 命中走 touchHitContains —— 触摸模式下把标签补到 TouchMin 高。
+// 标签条是组件自绘区 (页子树之外), 不进 HitTest 的节点遍历, 所以这是它唯一
+// 能拿到触觉命中区的地方 (命中矩形本身不变, 见 touchmode.go 的理由)。
 func (n *GuiNode) tabStripAt(x, y int) int {
 	for i, r := range n.tabStrip {
-		if r.Contains(x, y) {
+		if touchHitContains(r, x, y) {
 			return i
 		}
 	}
@@ -154,7 +170,7 @@ func (a *app) tabsSwitch(tb *GuiNode, idx int) {
 
 // tabStripHeight 返回标签条高度 (跟随 tabs 的字号, 沿父链继承)。
 func (n *GuiNode) tabStripHeight() int {
-	return lineHeight(n.FontSize()) + 2*tabStripPadY
+	return lineHeight(n.FontSize()) + 2*tabStripPadYResolved()
 }
 
 // layoutTabs 布局选项卡: 先按 title 测量摆标签条 (几何记进 tabStrip,
@@ -175,7 +191,7 @@ func layoutTabs(n *GuiNode) {
 	}
 	for i, pg := range pages {
 		tw, _ := MeasureText(pg.tabTitle(i), fontSize)
-		w := tw + 2*tabItemPadX
+		w := tw + 2*tabItemPadXResolved()
 		n.tabStrip = append(n.tabStrip, Rect{X: x, Y: area.Y, W: w, H: n.tabStripHeight()})
 		x += w + tabGap
 		pg.optIndex = i
@@ -201,7 +217,7 @@ func (n *GuiNode) tabsStripSize() (w, h int) {
 	fontSize := n.FontSize()
 	for i, pg := range n.tabsPages() {
 		tw, _ := MeasureText(pg.tabTitle(i), fontSize)
-		w += tw + 2*tabItemPadX + tabGap
+		w += tw + 2*tabItemPadXResolved() + tabGap
 	}
 	if w > 0 {
 		w -= tabGap
@@ -211,31 +227,51 @@ func (n *GuiNode) tabsStripSize() (w, h int) {
 
 // ===== 绘制 =====
 
-// paintTabs 画标签条: 激活项文字用 accent 色并压 2px 下划线, 非激活用
-// placeholder 灰。内容区的页子树由 drawNode 的常规递归绘制 (非激活页在
-// case "tab" 里被跳过)。条底部压一条 1px 分隔线, 让标签条和内容区有视觉分界。
+// paintTabs 画标签条 (Prism S5)。
+//
+// 层次:
+//   - 未选中: colorTextSecondary 文字 + 1px 底分隔线 (colorBorderDecorative);
+//   - 选中:   colorText 文字 + 底部 2px colorAccent 指示条;
+//   - 键盘焦点: 选中的那一页**永远**是激活页 (←/→ 切换即切页, 见 a11y.go
+//     的 a11yTabsArrow), 所以指示条天然跟着焦点走。焦点环本身由
+//     drawFocusRing 在这个节点盒外侧画 (双 ring), 这里不重复画。
+//
+// 文字用 secondary 而不是 placeholder: placeholder 是"这里还没有内容"
+// 的灰, 而 tab 的未选中态是"另一个可选项", 两者对比度差一档 (placeholder
+// 对白的对比度约 2.8:1, 达不到正文 4.5:1)。
 func paintTabs(img *image.RGBA, n *GuiNode, disabled bool) {
 	pages := n.tabsPages()
 	active := n.tabsActiveIndex()
+	padX := tabItemPadXResolved()
+	size := n.FontSize()
 	for i, r := range n.tabStrip {
 		if i >= len(pages) {
 			break
 		}
 		title := pages[i].tabTitle(i)
-		size := n.FontSize()
-		tw, th := MeasureText(title, size)
-		color := colorPlaceholder
+		_, th := MeasureText(title, size)
+		ink := colorTextSecondary
 		if i == active {
-			color = colorAccent
+			ink = colorText
 		}
-		DrawText(img, img.Bounds(), title, r.X+tabItemPadX, r.Y+(r.H-th)/2, size,
-			tint(color, disabled), r.W-2*tabItemPadX)
+		DrawText(img, img.Bounds(), title, r.X+padX, r.Y+(r.H-th)/2, size,
+			tint(ink, disabled), r.W-2*padX)
+		// 标签之间的发丝分隔线 (S5): 画在两个标签之间那条 2px 间隙的右半边,
+		// 高度扣掉上下 8px 的呼吸 —— 通顶的竖线会把标签条切成一个个格子,
+		// 像工具栏而不是页签。
+		if i < len(n.tabStrip)-1 && i < len(pages)-1 {
+			gapX := r.X + r.W + tabGap - 1
+			inset := Space(Space4)
+			FillRect(img, Rect{X: gapX, Y: r.Y + inset, W: 1, H: max(r.H-2*inset, 1)},
+				tint(colorBorderDecorative, disabled))
+		}
 		if i == active && !disabled {
-			FillRect(img, Rect{X: r.X + tabItemPadX, Y: r.Y + r.H - tabUnderline, W: tw, H: tabUnderline}, colorAccent)
+			FillRect(img, Rect{X: r.X, Y: r.Y + r.H - tabUnderline, W: r.W, H: tabUnderline}, colorAccent)
 		}
 	}
 	// 条底分隔线: 只画到内容区宽度 (不是整盒 —— 右侧留白不属于条)
 	if area := inner(n); area.H > n.tabStripHeight() {
-		FillRect(img, Rect{X: area.X, Y: area.Y + n.tabStripHeight(), W: area.W, H: 1}, colorTrack)
+		FillRect(img, Rect{X: area.X, Y: area.Y + n.tabStripHeight(), W: area.W, H: 1},
+			tint(colorBorderDecorative, disabled))
 	}
 }

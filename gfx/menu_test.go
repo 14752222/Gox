@@ -1027,8 +1027,9 @@ func TestMenuPopupDrawnAboveSiblings(t *testing.T) {
 
 	img := renderTree(root, 400, 300)
 	popup := file.menuPopup.Box
-	// 弹层内部不该是红色 (被弹层盖住了)
-	inside := Rect{X: popup.X + 2, Y: popup.Y + 2, W: popup.W - 4, H: popup.H - 4}
+	// 弹层内部不该是红色 (被弹层盖住了)。取样区避开四角: Prism S6 起弹层
+	// 是 r12 圆角, 圆角弧带本来就不属于"弹层内部" (那里透出下层是设计)。
+	inside := Rect{X: popup.X + 2, Y: popup.Y + popup.H/2 - 2, W: popup.W - 4, H: 4}
 	red := countColor(img, inside, namedColors["red"])
 	if red != 0 {
 		t.Fatalf("弹层未盖住下方内容 (%d 个红像素透出)", red)
