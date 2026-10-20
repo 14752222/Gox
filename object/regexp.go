@@ -3,6 +3,7 @@ package object
 import (
 	"fmt"
 	"regexp"
+	"strings"
 	"sync"
 )
 
@@ -279,7 +280,7 @@ func NewRegExp(pattern, flags string) (*RegExp, error) {
 	}
 
 	// 转换 JS 正则到 Go 正则
-	goPattern := jsToGoRegex(pattern, r.IgnoreCase, r.Multiline, r.DotAll)
+	goPattern := jsToGoRegex(pattern, r.IgnoreCase, r.Multiline, r.DotAll, r.Unicode)
 	re, err := regexp.Compile(goPattern)
 	if err != nil {
 		return nil, fmt.Errorf("SyntaxError: Invalid regular expression: %s", pattern)
@@ -289,10 +290,11 @@ func NewRegExp(pattern, flags string) (*RegExp, error) {
 }
 
 // jsToGoRegex 将 JS 正则模式转换为 Go 正则模式 (简化)。
-func jsToGoRegex(pattern string, ignoreCase, multiline, dotAll bool) string {
+func jsToGoRegex(pattern string, ignoreCase, multiline, dotAll, unicode bool) string {
 	// Go 的 regexp 使用 RE2 语法，大部分与 JS 兼容
 	// 主要差异: JS 的 \d, \w, \s 等在 Go 中需要使用 (?i) 等标志
-	result := pattern
+	// \uXXXX / \u{...} 是 JS 有而 RE2 没有的 —— 先翻译成 \x{...}
+	result := translateUnicodeEscapes(pattern, unicode)
 
 	// 添加标志前缀
 	prefix := ""
@@ -311,6 +313,114 @@ func jsToGoRegex(pattern string, ignoreCase, multiline, dotAll bool) string {
 	}
 
 	return result
+}
+
+// translateUnicodeEscapes 把 JS 正则的 \uXXXX 与 \u{HexDigits} 转义翻译成
+// RE2 的 \x{HexDigits} (字符类内外都成立, [\u4e00-\u9fa5] 判 CJK 靠它)。
+//
+// 规则 (与 Node v22 逐条对齐):
+//   - \uXXXX (4 位十六进制) → \x{XXXX}。两种模式都合法、语义相同;
+//   - \u{X...} (1..6 位十六进制) 且带 u 标志 → \x{X...};
+//   - \u{X...} **不带** u 标志 → 去掉反斜杠留字面 u (Annex B 的
+//     IdentityEscape), 后面的 {...} 原样保留 —— Node 里 /\u{2}/ 真的匹配
+//     "uu" (u + 量词), /\u{1F600}/ 匹配字面 "u{1F600}", RE2 对这两种
+//     {...} 的解释恰好一致;
+//   - 畸形 \u (后面既不是 4 位 hex 也不是 {hex}): 无 u 标志按 IdentityEscape
+//     译成字面 u (Node 里 new RegExp("\\uz") 合法); 带 u 标志原样保留,
+//     交给 regexp.Compile 报错 —— 与 JS 的 SyntaxError 一致;
+//   - \\u... (转义的反斜杠后跟字面 u) 原样保留 —— 那是"反斜杠+u"两个
+//     字符, 不是 unicode 转义。
+//
+// 已知局限: 非 u 标志下的代理对 (\uD83D\uDE00) 会被译成两个孤立的
+// \x{d83d}\x{de00}, 匹配不了真实 UTF-8 文本里的 astral 字符 —— RE2 按
+// 码点匹配, 没有码单元语义。需要 astral 匹配时写 \u{1F600} 形态。
+func translateUnicodeEscapes(pattern string, unicode bool) string {
+	// 没出现 \u 候选就别拷贝整串 (绝大多数模式不含它)
+	hasCandidate := false
+	for i := 0; i+1 < len(pattern); i++ {
+		if pattern[i] == '\\' && pattern[i+1] == 'u' {
+			hasCandidate = true
+			break
+		}
+	}
+	if !hasCandidate {
+		return pattern
+	}
+
+	var b strings.Builder
+	b.Grow(len(pattern))
+	for i := 0; i < len(pattern); {
+		c := pattern[i]
+		if c != '\\' || i+1 >= len(pattern) {
+			b.WriteByte(c)
+			i++
+			continue
+		}
+		next := pattern[i+1]
+		// \\ : 转义的反斜杠, 其后的字符不参与转义解释
+		if next == '\\' {
+			b.WriteString(`\\`)
+			i += 2
+			continue
+		}
+		if next != 'u' {
+			b.WriteByte(c)
+			i++
+			continue
+		}
+		// \uXXXX → \x{XXXX} (两种标志下语义一致)
+		if i+6 <= len(pattern) && isHexRun(pattern[i+2:i+6]) {
+			b.WriteString(`\x{`)
+			b.WriteString(pattern[i+2 : i+6])
+			b.WriteByte('}')
+			i += 6
+			continue
+		}
+		// \u{HexDigits}
+		if i+2 < len(pattern) && pattern[i+2] == '{' {
+			if end := strings.IndexByte(pattern[i+3:], '}'); end >= 0 {
+				hex := pattern[i+3 : i+3+end]
+				if len(hex) >= 1 && len(hex) <= 6 && isHexRun(hex) {
+					if unicode {
+						b.WriteString(`\x{`)
+						b.WriteString(hex)
+						b.WriteByte('}')
+						i += 3 + end + 1
+						continue
+					}
+					// 无 u 标志: IdentityEscape —— 字面 u, {...} 原样保留
+					b.WriteByte('u')
+					i += 2
+					continue
+				}
+			}
+		}
+		// 畸形 \u
+		if unicode {
+			// 带 u 标志时 JS 是 SyntaxError, 原样留给 RE2 报错
+			b.WriteByte(c)
+			i++
+			continue
+		}
+		// 无 u 标志: IdentityEscape → 字面 u
+		b.WriteByte('u')
+		i += 2
+	}
+	return b.String()
+}
+
+// isHexRun 报告 s 是否全为十六进制数字且非空。
+func isHexRun(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
+			return false
+		}
+	}
+	return true
 }
 
 var RegExpProto Value

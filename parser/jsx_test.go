@@ -36,21 +36,34 @@ func TestJSXDesugarBasic(t *testing.T) {
 		`x = h("text", {font: 20}, "hi");`)
 }
 
-// TestJSXDesugarSelfClose 自闭合与无属性 (props 传 null)。
+// TestJSXDesugarSelfClose 自闭合与无属性 (props 传 {}, 不再传 null)。
 func TestJSXDesugarSelfClose(t *testing.T) {
 	assertDesugar(t,
 		`x = <rect width={8} />;`,
 		`x = h("rect", {width: 8});`)
 	assertDesugar(t,
 		`x = <br />;`,
-		`x = h("br", null);`)
+		`x = h("br", {});`)
 }
 
 // TestJSXDesugarComponent 大写标签 → 组件标识符调用。
 func TestJSXDesugarComponent(t *testing.T) {
+	// 有子节点: props.children (恒为数组) 与额外实参两条路都拿得到
 	assertDesugar(t,
 		`x = <Counter step={2}>hi</Counter>;`,
-		`x = Counter({step: 2}, "hi");`)
+		`x = Counter({step: 2, children: ["hi"]}, "hi");`)
+	// 无属性无子节点: props 是 {} 而不是 null —— 组件函数体里
+	// props.title 不再抛 "Cannot read properties of null"
+	assertDesugar(t,
+		`x = <Card>内容</Card>;`,
+		`x = Card({children: ["内容"]}, "内容");`)
+	assertDesugar(t,
+		`x = <Card />;`,
+		`x = Card({});`)
+	// 多子节点: children 恒为数组 (单子节点不退化成裸值)
+	assertDesugar(t,
+		`x = <List><a/><b/></List>;`,
+		`x = List({children: [h("a", {}), h("b", {})]}, h("a", {}), h("b", {}));`)
 }
 
 // TestJSXDesugarFunctionChild 函数子节点原样传递 (响应式 computed 约定)。
@@ -71,7 +84,7 @@ func TestJSXDesugarEventAndUpdater(t *testing.T) {
 func TestJSXDesugarNested(t *testing.T) {
 	assertDesugar(t,
 		"x =\n  <column gap={8}>\n    <text font={20}>a</text>\n    <row>b</row>\n  </column>;",
-		`x = h("column", {gap: 8}, h("text", {font: 20}, "a"), h("row", null, "b"));`)
+		`x = h("column", {gap: 8}, h("text", {font: 20}, "a"), h("row", {}, "b"));`)
 }
 
 // TestJSXDesugarWhitespace 子文本空白规整 (Babel/Solid 语义):
@@ -79,14 +92,14 @@ func TestJSXDesugarNested(t *testing.T) {
 func TestJSXDesugarWhitespace(t *testing.T) {
 	assertDesugar(t,
 		"x = <p>\n  hello\n  world\n</p>;",
-		`x = h("p", null, "hello world");`)
+		`x = h("p", {}, "hello world");`)
 	assertDesugar(t,
 		"x =\n  <button>\n    加一\n  </button>;",
-		`x = h("button", null, "加一");`)
+		`x = h("button", {}, "加一");`)
 	// 文本与表达式混排
 	assertDesugar(t,
 		"x = <p>Total: {n} items</p>;",
-		`x = h("p", null, "Total:", n, "items");`)
+		`x = h("p", {}, "Total:", n, "items");`)
 }
 
 // TestJSXDesugarReactiveChild 插值子节点的响应式包装 (Solid 语义):
@@ -95,31 +108,31 @@ func TestJSXDesugarReactiveChild(t *testing.T) {
 	// 一般表达式: 包
 	assertDesugar(t,
 		`x = <text>count:{ count()}</text>;`,
-		`x = h("text", null, "count:", () => count());`)
+		`x = h("text", {}, "count:", () => count());`)
 	// 裸标识符: 不包 (each 渲染函数子节点 `{Row}` 的约定形态, 原样传递)
 	assertDesugar(t,
 		`x = <scroll>{rows}</scroll>;`,
-		`x = h("scroll", null, rows);`)
+		`x = h("scroll", {}, rows);`)
 	// 成员表达式: 包 (props.children 这类要跟着 props 变)
 	assertDesugar(t,
 		`x = <scroll>{rows()}</scroll>;`,
-		`x = h("scroll", null, () => rows());`)
+		`x = h("scroll", {}, () => rows());`)
 	// 条件渲染: 包
 	assertDesugar(t,
 		`x = <col>{cond() && <a/>}</col>;`,
-		`x = h("col", null, () => (cond() && h("a", null)));`)
+		`x = h("col", {}, () => (cond() && h("a", {})));`)
 	// 模板字面量含插值: 包 (它不是常量)
 	assertDesugar(t,
 		"x = <text>{`n=${n()}`}</text>;",
-		"x = h(\"text\", null, () => `n=${n()}`);")
+		"x = h(\"text\", {}, () => `n=${n()}`);")
 	// 字符串/数字字面量: 不包 (常量, 省一个空转 effect)
 	assertDesugar(t,
 		`x = <text>{"hi"}{42}</text>;`,
-		`x = h("text", null, "hi", 42);`)
+		`x = h("text", {}, "hi", 42);`)
 	// 显式函数子节点: 不包 (函数子节点约定)
 	assertDesugar(t,
 		"x = <text>{() => `c: ${count()}`}</text>;",
-		"x = h(\"text\", null, () => `c: ${count()}`);")
+		"x = h(\"text\", {}, () => `c: ${count()}`);")
 }
 
 // TestJSXDesugarAttrForms 裸属性 → true; 含 - 的属性名; 字符串属性值。
@@ -137,19 +150,19 @@ func TestJSXInExpressionPositions(t *testing.T) {
 	// return
 	assertDesugar(t,
 		"function f() { return <a>x</a>; }",
-		`function f() { return h("a", null, "x"); }`)
+		`function f() { return h("a", {}, "x"); }`)
 	// 括号内
 	assertDesugar(t,
 		"x = (<a>x</a>);",
-		`x = (h("a", null, "x"));`)
+		`x = (h("a", {}, "x"));`)
 	// 数组元素
 	assertDesugar(t,
 		"x = [<a/>, <b/>];",
-		`x = [h("a", null), h("b", null)];`)
+		`x = [h("a", {}), h("b", {})];`)
 	// 条件与嵌套插值内的 JSX
 	assertDesugar(t,
 		"x = <ul>{items.map(i => <li>{i}</li>)}</ul>;",
-		`x = h("ul", null, () => items.map(i => h("li", null, i)));`)
+		`x = h("ul", {}, () => items.map(i => h("li", {}, i)));`)
 	// 比较表达式里 `<` 不受影响
 	assertDesugar(t,
 		"x = a < b;",

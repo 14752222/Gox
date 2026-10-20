@@ -27,7 +27,9 @@ import (
 //     (ReferenceError: h is not defined), 而是照常出窗口。本文件已绑定 h
 //     (import / let / const / function ...) 时一个字节都不动: 自定义工厂优先。
 //   - 属性名含 - 或 : 时用字符串键 (data-id), 否则用标识符键。
-//   - 无属性时第二个参数传 null。
+//   - 无属性时第二个参数传 {} (组件函数体读 props.xxx 不再撞 null;
+//     显式空插值 attr={} 仍传 null)。组件调用且有子节点时 props 额外
+//     带 children 数组 (见 buildJSXCall 的注释)。
 //   - 子节点按出现顺序作为 h 的后续参数。插值表达式 `{expr}` 降级成
 //     `() => expr` (响应式 computed 约定, 由渲染侧包 effect 订阅), 所以
 //     `<text>count:{ count()}</text>` 是活的; 常量字面量、**显式**函数子节点
@@ -178,16 +180,36 @@ elementDone:
 //
 //	小写元素:  h("tag", props, ...children)
 //	组件标签:  Comp(props, ...children)   (大写开头, 作用域内标识符)
+//
+// props 的两条纪律:
+//   - 无属性时传 {} 而不是 null —— 此前 <Card>x</Card> 降级成 Card(null, "x"),
+//     组件函数体里 props.title 直接抛 "Cannot read properties of null",
+//     每个组件都得先写 props = props || {} 兜底。现在天生是对象。
+//     (显式空插值 attr={} 仍传 null, 那是用户自己写下的 null。)
+//   - 组件调用 (大写标签) 且有子节点时, props 额外挂一个 children 键
+//     (**恒为数组**): props.children 与额外实参两条路都拿得到子节点,
+//     老代码的 children(arguments) 约定不受影响。0 个子节点时连键都
+//     不写 —— 内核按"键是否存在"判断语义, 没值的键一个都不能出现。
+//     元素 (小写标签) 不挂: h 的 props 就是节点属性, 子节点已经走
+//     额外实参, 挂进去反而变成一个叫 children 的属性。
 func buildJSXCall(ltTok, nameTok lexer.Token, props []*ast.Property, children []ast.Expression) ast.Expression {
-	var propsArg ast.Expression
-	if len(props) == 0 {
-		propsArg = &ast.NullLiteral{Token: nullToken(ltTok)}
-	} else {
-		propsArg = &ast.ObjectLiteral{Token: ltTok, Properties: props}
+	ident, isComponent := jsxTagArg(nameTok).(*ast.Identifier)
+
+	if isComponent && len(children) > 0 {
+		elems := make([]ast.Expression, len(children))
+		copy(elems, children)
+		props = append(props, &ast.Property{
+			Token: ltTok,
+			Key:   &ast.Identifier{Token: ltTok, Value: "children"},
+			Value: &ast.ArrayLiteral{Token: ltTok, Elements: elems},
+			Kind:  ast.PROP_INIT,
+		})
 	}
+
+	propsArg := ast.Expression(&ast.ObjectLiteral{Token: ltTok, Properties: props})
 	args := append([]ast.Expression{propsArg}, children...)
 
-	if ident, ok := jsxTagArg(nameTok).(*ast.Identifier); ok {
+	if isComponent {
 		return &ast.CallExpression{Token: ltTok, Function: ident, Arguments: args}
 	}
 	return &ast.CallExpression{

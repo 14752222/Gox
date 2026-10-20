@@ -148,11 +148,13 @@ func clonePropsExcept(props *object.Object, except map[string]struct{}) *object.
 }
 
 // copyProp 把 src 上的某个键原样搬到 dst (缺失时什么都不做)。
+// 值为 undefined 的键同样不搬 —— 视同没给 (见 model.go propIsDefined:
+// 条件拼 props 写出 key: undefined 时, 不该把 UNDEFINED 递给 each)。
 func copyProp(src, dst *object.Object, name string) {
 	if src == nil {
 		return
 	}
-	if desc, ok := src.Properties[name]; ok {
+	if desc, ok := src.Properties[name]; ok && propIsDefined(desc.Value) {
 		modelSetProp(dst, name, desc.Value)
 	}
 }
