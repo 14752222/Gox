@@ -49,7 +49,7 @@ const [count, setCount] = createSignal(0)
 render(
   <window title="Counter" width={400} height={300}>
     <column gap={8} padding={16}>
-      <text font={20}>{() => `count: ${count()}`}</text>
+      <text font={20}>计数：{ count()}</text>
       <button onClick={() => setCount(c => c + 1)}>加一</button>
     </column>
   </window>
@@ -746,31 +746,31 @@ h("column", null,
 )
 ```
 
-> **⚠️ 最容易踩、且唯一不出声的一条：文本子节点写成快照。**
-> JSX 在 parser 层就降级成一次普通调用，子节点是 `h()` 的**实参** ——
-> ``<text>count: {count()}</text>`` 等价于 `h("text", null, "count: ", count())`，
-> `count()` 在进入 `h()` 之前就求值完了；`h()` 收到的只是一个数字，于是它建成一个**静态**
-> `#text` 节点，此后再没有东西回头看那个 signal（实测：信号变了，那个文本节点的指针与内容都不动）。
-> 正解是传闭包 ``{() => `count: ${count()}`}`` —— `h()` 走"响应式子节点"分支（slot 占位 + effect），
-> 变化时**只改那个文本节点的内容**，不拆树、不碰兄弟节点。
+> **✅ 2026-10-20 起，文本子节点的快照陷阱已在解析期修复**（Solid 的 JSX 语义）：
+> `{expr}` 形态的插值子节点会被自动包成 `() => expr` —— ``<text>count: {count()}</text>``
+> 等价于 `h("text", null, "count: ", () => count())`，走"响应式子节点"分支（slot 占位 +
+> effect），变化时**只改那个文本节点的内容**，不拆树、不碰兄弟节点。`{items()}`（列表）、
+> `{cond() && <a/>}`（条件）同理。
 >
-> **这条路径运行期没有警告，是刻意的**：属性那边能出声，是因为那些 prop 有"必须是取值函数"的契约
-> （`value` / `each` / `show`），收到标量就能判定为漏了括号；而**文本子节点天生收标量**
-> （`<text>你好</text>` 本身就是字符串子节点），运行期分不出"静态文本"和"快照" ——
-> ``<text>{n}</text>`` 里的 `n` 是普通变量时完全合法。
+> 三类**不包**（包了就是错的）：
+>   - 常量字面量（`{"hi"}` / `{42}`）：本来就是定值，直挂静态 `#text`；
+>   - **显式**函数子节点（`{() => …}`）：函数子节点是既有约定，照旧原样传递；
+>   - **裸标识符**（`{sig}` / `{Row}`）：与函数子节点约定同形（each 的渲染函数就是
+>     这么传的），原样传递 —— 传的是取值函数时照样响应式（callable 分支兜住），
+>     传的是普通数组变量时是静态的，要响应式写调用形态 `{rows()}`。
 >
-> 但"运行期判不出"不等于"工具兜不了" —— **源码里看得出那是一次调用**，所以静态分析
-> 抓得住。用 `gox lint`：
+> 仍要当心的边界：**手写 `h()` 调用**没有这层解析期包装，子节点传 `count()` 依旧是
+> 建树时求值一次的静态快照（这是 `gox lint` 的 `snapshot-child` 规则现在抓的形态）；
+> **属性**也仍是快照语义（`value={x()}` 要写 `value={() => x()}`）。
+> 静态检查用：
 >
 > ```bash
 > gox lint apps            # 扫整个 apps/（CI 里也跑这一条）
 > gox lint src/app.js      # 或只扫一个文件
 > ```
 >
-> 它会把子节点位置的 `{sig()}` 报成 `snapshot-child`（顺带抓子节点区的 `//`、
-> `each` 无 `key`、`lib/` 引 `gox`，四条规则全部出自 apps/README.md）。
-> 嵌套元素（`<column><text>{n()}</text></column>`）与组件调用（`<Toolbar/>`）不会误报 ——
-> 它们在降级后的 AST 上同样长得像"一个调用"，是这条规则最容易踩的坑。
+> （顺带抓子节点区的 `//`、`each` 无 `key`、`lib/` 引 `gox`，四条规则全部出自 apps/README.md。
+> 嵌套元素（`<column><text>{n()}</text></column>`）与组件调用（`<Toolbar/>`）不会误报。）
 >
 > 另有一类**运行期抓得到**的：若子节点是 `obs()` / `computed()` 返回的**对象本身**
 > （`{bad}` 而不是 `{bad.value}`），界面上会渲染出 `Rx<…>` 这种乱码且永不更新 ——
@@ -938,10 +938,10 @@ GUI 里推荐这样写 —— 不要指望 try/catch 兜住渲染过程：
 
 ```js
 // ✅ 读 .error 渲染错误态，链路照常跑
-{() => total.error ? "数量不合法" : `合计 ${total.value}`}
+{total.error ? "数量不合法" : `合计 ${total.value}`}
 
 // ❌ 直接读 .value：一旦算错就是一次未捕获异常
-{() => `合计 ${total.value}`}
+{`合计 ${total.value}`}
 ```
 
 `console.log(computed)` / 字符串拼接走的是诊断路径，不会因为处在错误态而抛，
@@ -1494,7 +1494,7 @@ import { devSnapshot } from "gx/dev";
 | 折叠屏折起来但没变双栏 | 姿态**没人上报** ⇒ 恒为平展。Windows / X11 没有姿态查询 API，框架的立场是"提供通道不猜姿态" | 宿主侧调 `reportPosture({posture:"half-open"})`；排查第一步用 `posture(win)` 确认读到的确实是 `"half-open"`（见 [gui-router.md](gui-router.md) §9.2 / §9.4） |
 | `hinge()` 的宽度读出来是 0，回填后折痕像丢了 | `hinge()` / `regions()` 的**输出**用 `width`/`height`，而 `reportPosture` 的**入参**只读 `w`/`h` ⇒ 回填时静默读成 0（折痕宽度只影响双栏比例，所以什么错都不报） | 两种拼法现在都认（2026-09-22 起，短名优先）：`reportPosture({ hinge: hinge() })` 可以直接回填 |
 | 响应式 prop / 条件 / 列表只有第一帧是对的 | prop 收到的是**取值函数**，写成快照（`disabled={count() === 0}`、`each={rows()}`）之后就再也不同步 | 一律传函数：`disabled={() => count() === 0}` / `each={rows}` / `show={cond}`。内核会对非法形态打去重警告（见 §8.1） |
-| **文本停在第一帧，信号变了它不动** | **子节点**同样在调用当场求值：``<text>count: {count()}</text>`` 里的 `count()` 在 `h()` 之前就求值完，`h()` 建出来的是一个静态文本节点 | 写成函数子节点：``<text>{() => `count: ${count()}`}</text>``。**这条没有警告、也不可能有** —— 文本子节点天生收标量，运行期分不出"静态文本"和"快照"（§8.1），只能靠纪律 |
+| **文本停在第一帧，信号变了它不动** | **属性**写成了快照（`value={x()}`），或 2026-10-20 前的老引擎上子节点也是快照 | 属性一律传函数：`value={() => x()}`；子节点现在 `{count()}` 已自动响应式。手写 `h()` 时子节点仍要传 `() => …`（§8.1） |
 | **折叠 / 转屏后界面不更新，也不报错不警告** | 订阅型读数写在**三元 / 短路**里被"吃掉"：effect 只追踪实际读到的信号，首帧没走到的分支里那次调用没发生 ⇒ 依赖集为空、永不重跑（§8.1） | **先无条件取一次订阅型读数再分支**：`const r = useReservedRegions()(); if (!hasFold()) return "未检测到折痕"; …`。哪些读数带订阅见 §9 的"订阅型 vs 纯读数"分族 |
 | **`<video>` 只有封面/播放三角，没有画面** | 两种可能：① 本后端**没有平台视频层**（`nativeVideoHost`）—— Windows / macOS 目前都没接；② 格式**超出 softmedia 的边界**（h264 / hevc / vp9 / mp4 一律不解）。两者都不是 bug：内核不解码、也不假装在播 | 先问再选路：`canIUse("video")` 为 `false` 就跳系统播放器（`gx/media` 的 `preview()`）。Linux 默认构建挂了 softmedia，GIF / MJPEG 是真能播的（见 [media_demo.js](../testdata/media_demo.js)）；现象上 stderr 会有一条告警，且该节点收到一次 `onError({code:"unsupported"})`（决策与后端接入见 [video-decision.md](video-decision.md) / [media-decision.md](media-decision.md)） |
 | **`<audio>` 有占位条但没声音** | 占位条 = 后端没实现 `nativeAudioHost`；有 softmedia 却没声 = PulseAudio 不可用，走了 **null sink**（不放声，但播放时钟与 `onTimeUpdate` 全部照真）。也可能是格式不是 WAV | 先 `canIUse("audio")`；Linux 上确认 `libpulse.so.0` 与 Pulse 服务在。`-tags gpu` 轨下音频恒为 null sink（第三方 fakecgo 冲突，见 [media-decision.md](media-decision.md) §5.1） |

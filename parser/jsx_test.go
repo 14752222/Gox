@@ -89,6 +89,39 @@ func TestJSXDesugarWhitespace(t *testing.T) {
 		`x = h("p", null, "Total:", n, "items");`)
 }
 
+// TestJSXDesugarReactiveChild 插值子节点的响应式包装 (Solid 语义):
+// `{expr}` → `() => expr`; 字面量与显式函数不包。
+func TestJSXDesugarReactiveChild(t *testing.T) {
+	// 一般表达式: 包
+	assertDesugar(t,
+		`x = <text>count:{ count()}</text>;`,
+		`x = h("text", null, "count:", () => count());`)
+	// 裸标识符: 不包 (each 渲染函数子节点 `{Row}` 的约定形态, 原样传递)
+	assertDesugar(t,
+		`x = <scroll>{rows}</scroll>;`,
+		`x = h("scroll", null, rows);`)
+	// 成员表达式: 包 (props.children 这类要跟着 props 变)
+	assertDesugar(t,
+		`x = <scroll>{rows()}</scroll>;`,
+		`x = h("scroll", null, () => rows());`)
+	// 条件渲染: 包
+	assertDesugar(t,
+		`x = <col>{cond() && <a/>}</col>;`,
+		`x = h("col", null, () => (cond() && h("a", null)));`)
+	// 模板字面量含插值: 包 (它不是常量)
+	assertDesugar(t,
+		"x = <text>{`n=${n()}`}</text>;",
+		"x = h(\"text\", null, () => `n=${n()}`);")
+	// 字符串/数字字面量: 不包 (常量, 省一个空转 effect)
+	assertDesugar(t,
+		`x = <text>{"hi"}{42}</text>;`,
+		`x = h("text", null, "hi", 42);`)
+	// 显式函数子节点: 不包 (函数子节点约定)
+	assertDesugar(t,
+		"x = <text>{() => `c: ${count()}`}</text>;",
+		"x = h(\"text\", null, () => `c: ${count()}`);")
+}
+
 // TestJSXDesugarAttrForms 裸属性 → true; 含 - 的属性名; 字符串属性值。
 func TestJSXDesugarAttrForms(t *testing.T) {
 	assertDesugar(t,
@@ -116,7 +149,7 @@ func TestJSXInExpressionPositions(t *testing.T) {
 	// 条件与嵌套插值内的 JSX
 	assertDesugar(t,
 		"x = <ul>{items.map(i => <li>{i}</li>)}</ul>;",
-		`x = h("ul", null, items.map(i => h("li", null, i)));`)
+		`x = h("ul", null, () => items.map(i => h("li", null, i)));`)
 	// 比较表达式里 `<` 不受影响
 	assertDesugar(t,
 		"x = a < b;",

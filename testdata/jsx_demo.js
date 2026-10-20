@@ -7,12 +7,12 @@ function h(tag, props, ...children) { return { tag, props, children }; }
 
 const [count, setCount] = createSignal(0);
 
-// 子节点必须传函数: 写成 {count()} 会在 h() 调用前就求值完, 之后信号再变也不更新 ——
-// 而且这条路径没有警告(见 docs/gui-guide.md §8.1)。
+// 插值子节点自动响应式: {count()} 在解析期被包成 () => count(), signal 变了文本跟着变,
+// 不必再手写 {() => ...} (显式函数子节点也仍然支持)。
 // 注意注释要写在 JSX **外面或者说用 {/* */}**: 子节点区的 `//` 不是注释, 会被当成文本。
 const ui =
   <column gap={8}>
-    <text font={20}>{() => `count: ${count()}`}</text>
+    <text font={20}>计数：{ count()}</text>
     <button onClick={() => setCount(c => c + 1)}>加一</button>
   </column>;
 

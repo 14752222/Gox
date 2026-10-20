@@ -1416,6 +1416,32 @@ func layoutStack(n *GuiNode, horizontal bool) {
 //     start/center/end 则不拉伸、按轴摆放;
 //   - flexGrow/flexShrink/justifyContent 不参与 (没有主轴分配)。
 
+// flowChildren 返回参与常规流的子节点, 并**递归展开透明容器** (slot / view)。
+//
+// 列表渲染 (`{items}` / `{() => items.map(...)}`) 的整组子节点挂在一个 slot
+// 占位里; 栈容器 (column/row) 走 slot 自己的堆叠语义没问题, 但 grid 这类
+// "按直系子节点分格"的布局必须看穿 slot —— 否则六张卡片挤进一格, 列距为 0。
+func flowChildren(n *GuiNode) []*GuiNode {
+	var out []*GuiNode
+	var walk func(c *GuiNode)
+	walk = func(c *GuiNode) {
+		if !c.isFlowChild() {
+			return // 绝对定位 / 弹层: 不参与常规流
+		}
+		if c.isPassthrough() {
+			for _, g := range c.Children {
+				walk(g)
+			}
+			return
+		}
+		out = append(out, c)
+	}
+	for _, c := range n.Children {
+		walk(c)
+	}
+	return out
+}
+
 // gridColumns 读取列数 (缺省 1, 钳 [1,32] —— 列数再多也是脚本拼错了)。
 func (n *GuiNode) gridColumns() int {
 	v, _ := n.PropNum("columns")
@@ -1438,10 +1464,7 @@ func gridContentSize(n *GuiNode) (w, h int) {
 	colW := make([]int, cols)
 	var rowH []int
 	idx := 0
-	for _, c := range n.Children {
-		if !c.isFlowChild() {
-			continue
-		}
+	for _, c := range flowChildren(n) {
 		cw, ch := c.intrinsicSize()
 		if col := idx % cols; cw > colW[col] {
 			colW[col] = cw
@@ -1478,11 +1501,9 @@ func layoutGrid(n *GuiNode) {
 		w, h   int  // 解析后的显式/固有尺寸
 		ew, eh bool // 该轴有显式尺寸 (数字或百分比)
 	}
-	cells := make([]cell, 0, len(n.Children))
-	for _, c := range n.Children {
-		if !c.isFlowChild() {
-			continue
-		}
+	kids := flowChildren(n)
+	cells := make([]cell, 0, len(kids))
+	for _, c := range kids {
 		cw, ch := c.intrinsicSize()
 		e := cell{child: c, w: cw, h: ch}
 		if p, ok := c.percentProp("width"); ok {

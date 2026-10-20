@@ -240,7 +240,7 @@ const Timer = (p) => {
   const id = setInterval(() => setTick(tick() + 1), 1000);
   onCleanup(() => clearInterval(id));      // 本代子树被替换/销毁时执行
   onMount(() => console.log("Timer mounted"));
-  return <text font={14}>{() => `t=${tick()}`}</text>;
+  return <text font={14}>t={ tick()}</text>;
 };
 
 render(<window title="t" width={200} height={100}>
@@ -372,10 +372,9 @@ signal 本身就是取值函数，所以不用再包一层箭头；`key="id"` �
    是合法的**静态**列表（渲染一次）。写错现在**会出声**：非法形态（`each` 收到
    字符串/对象、`show` 收到字符串、尤其是 `show={open()}` 这种忘了括号的静态布尔、
    `key` 收到数字、`stable` 传函数）各打一条去重警告 —— 降级行为不变，只是不再
-   静默；警告进 stderr 与 `gx/dev` 的缓冲（§7）。**同一条纪律也管子节点，但子节点没有
-   警告**：`count: {count()}` 是快照（在 `h()` 之前就求值完了，此后信号再变它不动），
-   要写 ``{() => `count: ${count()}`}`` —— 文本子节点天生收标量，运行期分不出"静态文本"
-   与"快照"（理由见 gui-guide §8.1）。
+   静默；警告进 stderr 与 `gx/dev` 的缓冲（§7）。**子节点例外**：2026-10-20 起 JSX 的
+   `{count()}` 在解析期自动包成响应式子节点（Solid 语义），`<text>count: {count()}</text>`
+   是活的，不必手写函数；只有手写 `h()` 调用时子节点快照才仍是静默的（见 gui-guide §8.1）。
 2. **复用按「key + 引用同一性 + 下标」判定**。同 key、同行引用、同下标 ⇒ 原样
    复用（节点指针不变，行内状态保留）；只就地重渲染真正变了的行；旧 key 消失
    则 dispose（onCleanup 执行）。`rows()` 每次 map 出新对象 ⇒ 每行都被判为变了

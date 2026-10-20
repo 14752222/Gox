@@ -666,7 +666,12 @@ func uncalledReactiveKind(v object.Value) string {
 func warnUncalledReactive(parent *GuiNode, kind string) {
 	// 索引取"即将挂上去的位置": 响应式子节点换代时会反复走 wireChild,
 	// 不去重会在长列表里刷出成百上千条同内容警告。
-	idx := len(parent.Children)
+	warnUncalledReactiveAt(parent, len(parent.Children), kind)
+}
+
+// warnUncalledReactiveAt 是带显式挂载位置的发起点: wireReactiveChild 的
+// getter 返回值判定走这里 (slot 早已挂上, len(Children) 会偏一位)。
+func warnUncalledReactiveAt(parent *GuiNode, idx int, kind string) {
 	key := parent.Tag + "#" + strconv.Itoa(idx) + "|" + kind
 
 	warnSeenReactiveMu.Lock()
@@ -717,6 +722,7 @@ func resetReactiveWarns() {
 func (n *GuiNode) wireReactiveChild(getter object.Value) {
 	slot := &GuiNode{Tag: "slot", Props: map[string]object.Value{}}
 	slot.Parent = n
+	slotIdx := len(n.Children) // 告警定位用: 与 wireChild 的"即将挂上去的位置"同口径
 	n.Children = append(n.Children, slot)
 
 	var (
@@ -728,6 +734,15 @@ func (n *GuiNode) wireReactiveChild(getter object.Value) {
 		// 登记到 sc, 归属"这一代"子树。见 object/wiring.go。
 		sc := object.PushWiringScope()
 		v := object.CallFunction(getter, nil)
+		// `{sig}` (漏了括号) 经 JSX 降级后变成 `() => sig`, 走到这里 getter
+		// 返回的是信号对象本身 —— 它不会被订阅, 界面照旧不动。原来的诊断挂在
+		// wireChild 的 default 分支上, 那时 `{sig}` 是直接传进来的标量; 现在
+		// 包了一层箭头, 判定必须跟到这里来 (见 uncalledReactiveKind 的注释)。
+		if DevMode() {
+			if kind := uncalledReactiveKind(v); kind != "" {
+				warnUncalledReactiveAt(n, slotIdx, kind)
+			}
+		}
 		if node, ok := v.(*GuiNode); ok && node == mounted {
 			// 同一元素对象: 组件体没有重跑 (vnode 在闭包外创建), 本次没有
 			// 新登记 —— 出栈即丢弃, 语义正确。
@@ -823,6 +838,14 @@ func mountValue(slot *GuiNode, v object.Value) {
 	case *object.Number:
 		slot.appendTextNode(object.ToString(x))
 	default:
+		if object.IsCallable(v) {
+			// 函数结果: 再包一层响应式子节点 (Solid insert 的语义 —— 值是
+			// 函数就调用它挂载其结果)。典型来源: JSX 的 `{fn}` 降级成
+			// `() => fn` 后, getter 返回的就是 fn 本身; 不在这里展开的话
+			// 它会被 ToString 成 "[Function: …]" 文本。
+			slot.wireReactiveChild(v)
+			return
+		}
 		slot.appendTextNode(object.ToString(v))
 	}
 }

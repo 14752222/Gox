@@ -532,9 +532,11 @@ func TestCounterDemoClick(t *testing.T) {
 	root := activeApp.root
 	appMu.Unlock()
 
-	label := findFirst(root, "#text")
-	if label == nil || label.Text != "count: 0" {
-		t.Fatalf("初始文本 = %v, want count: 0", label)
+	// 混排插值语法 (<text>count: { count()}</text>): 文本元素的
+	// TextContent 拼接静态段 + slot 里的动态段 (见 TextContent)。
+	label := findFirst(root, "text")
+	if label == nil || label.TextContent() != "计数：0" {
+		t.Fatalf("初始文本 = %v, want 计数：0", label.TextContent())
 	}
 	btn := findFirst(root, "button")
 	fake.push(Event{Kind: EventMouseUp, X: btn.Box.X + 2, Y: btn.Box.Y + btn.Box.H/2})
@@ -542,8 +544,8 @@ func TestCounterDemoClick(t *testing.T) {
 	if err := v.RunTimersWithPump(Pump); err != nil {
 		t.Fatalf("RunTimersWithPump: %v", err)
 	}
-	if label.Text != "count: 1" {
-		t.Fatalf("点击后文本 = %q, want \"count: 1\"", label.Text)
+	if label.TextContent() != "计数：1" {
+		t.Fatalf("点击后文本 = %q, want \"计数：1\"", label.TextContent())
 	}
 }
 

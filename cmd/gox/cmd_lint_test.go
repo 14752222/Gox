@@ -77,6 +77,7 @@ export default function App() {
 			<text>{count()}</text>
 			<text>{count}</text>
 			<text>{() => name()}</text>
+			{h("text", null, count())}
 		</column>
 	);
 }
@@ -84,14 +85,15 @@ export default function App() {
 	found := lintRun(t, map[string]string{"src/app.js": src}, "snapshot-child")
 
 	if len(found) != 1 {
-		t.Fatalf("命中数 = %d, want 1 (只有 {count()} 该报; 实际 = %v)", len(found), found)
+		t.Fatalf("命中数 = %d, want 1 (只有手写 h() 的快照该报; JSX 的 {count()} "+
+			"解析期已自动包成响应式子节点, 不再报; 实际 = %v)", len(found), found)
 	}
 	if !lintHas(found, "snapshot-child", "count()") {
 		t.Fatalf("没抓到快照子节点 (实际 = %v)", found)
 	}
-	// 行号必须指向写错的那一行
-	if found[0].line != 9 {
-		t.Fatalf("行号 = %d, want 9 (应指向 <text>{count()}</text>)", found[0].line)
+	// 行号必须指向写错的那一行: 手写 h() 在第 12 行 (JSX 形式占第 9 行, 不再报)
+	if found[0].line != 12 {
+		t.Fatalf("行号 = %d, want 12 (应指向 h(\"text\", null, count()))", found[0].line)
 	}
 }
 
@@ -223,7 +225,7 @@ const [count] = createSignal(0);
 export default function App(props: Props) {
 	return (
 		<column>
-			<text>{count()}</text>
+			{h("text", null, count())}
 		</column>
 	);
 }
@@ -232,7 +234,7 @@ export default function App(props: Props) {
 	if len(found) != 1 {
 		t.Fatalf("命中数 = %d, want 1 (实际 = %v)", len(found), found)
 	}
-	// 原文里 <text>{count()}</text> 在第 12 行
+	// 原文里 h("text", null, count()) 在第 12 行
 	if found[0].line != 12 {
 		t.Fatalf("行号 = %d, want 12 —— .tsx 的行号必须映射回原文, 否则报的位置是错的",
 			found[0].line)

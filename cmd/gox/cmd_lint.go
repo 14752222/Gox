@@ -125,8 +125,9 @@ func runLint(args []string) {
 §写应用时必须守的几条）。规则全部来自那份清单，lint 只是执行者。
 
 规则:
-  snapshot-child    JSX 子节点写成快照: {sig()} 在传入前就求值完了, 之后信号
-                    变了界面也不动。写成 {() => sig()} 或 {sig} 才订阅更新。
+  snapshot-child    手写 h() 的子节点写成快照: sig() 在传入前就求值完了, 之后信号
+                    变了界面也不动。写成 () => sig(), 或改用 JSX —— JSX 的
+                    {sig()} 解析期会自动包成响应式子节点。
   slash-comment     JSX 子节点区的 // 不是注释, 而是会被渲染出来的文本子节点。
                     注释要写 {/* … */} 或挪到 JSX 外面。
   each-no-key       列表用 each 时没给 key: 列表更新只能整组重建, keyed 复用
@@ -449,9 +450,10 @@ func lintCheckFile(f *lintFile, root string, only, skip map[string]bool) ([]lint
 				// JSX 元素里，外层 h( 的 token 往往在上几行，报它等于让人从
 				// "<column>" 开始猜。
 				emit("snapshot-child", fmt.Sprintf(
-					"子节点 %s 是**调用**, 它的值在进入 h() 之前就求值完了, 之后信号"+
-						"变了界面也不动。要订阅更新请写 {%s} —— 或 {() => %s}",
-					name, strings.TrimSuffix(name, "()"), name),
+					"手写 h() 的子节点 %s 是**调用**, 它的值在进入 h() 之前就求值完了, 之后信号"+
+						"变了界面也不动。写成 () => %s, 或改用 JSX —— JSX 的 {%s} 解析期会"+
+						"自动包成响应式子节点",
+					name, name, name),
 					c.Token.Line, c.Token.Column)
 			case *ast.StringLiteral:
 				// 规则 2：子节点区的 // 不是注释

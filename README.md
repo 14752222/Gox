@@ -365,7 +365,7 @@ const [count, setCount] = createSignal(0)
 render(
   <window title="Counter" width={400} height={300}>
     <column gap={8} padding={16}>
-      <text font={20}>{() => `count: ${count()}`}</text>
+      <text font={20}>计数：{ count()}</text>
       <button onClick={() => setCount(c => c + 1)}>加一</button>
     </column>
   </window>

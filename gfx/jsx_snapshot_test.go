@@ -18,16 +18,16 @@ import (
 //     乱码般的静态文本, 之后永不刷新 —— **对象还在, 运行期判得出**, 本文件的
 //     三个测试钉的就是这一类。
 //
-//   - `createSignal()` (gx/solid): getter 本身就是**函数**, 所以 `{sig}` 是对的
-//     (会被当函数子节点订阅), 写错的是 `{sig()}` —— 它求值成普通字符串,
-//     与手写 "init" 在类型上**完全无法区分**, 运行期**判不出来**。这一类只能
-//     靠 gox lint 的静态分析 (cmd/gox/cmd_lint.go 的 snapshot-child 规则)。
+//   - `createSignal()` (gx/solid): getter 本身就是**函数**, `{sig}` 与 `{sig()}`
+//     都对 —— 2026-10-20 起 JSX 的插值子节点在解析期自动包成 `() => expr`
+//     (parser/jsx.go 的 jsxReactiveChild), 渲染侧统一走 wireReactiveChild 订阅。
+//     手写 `h()` 时漏包仍是静默快照, 那一类靠 gox lint 的 snapshot-child 抓。
 //
 // 实测 (改 signal 之后):
 //
-//	{n}      → "A" → "Z"   更新 (getter 是函数, 走 wireReactiveChild)
-//	{n()}    → "A" → "A"   静默失败 (求值为静态字符串)
-//	{() => n()} → "A" → "Z"  更新
+//	{n}      → "A" → "Z"   更新 (getter 是函数, 函数结果再包一层订阅)
+//	{n()}    → "A" → "Z"   更新 (解析期自动包成 () => n())
+//	{() => n()} → "A" → "Z"  更新 (显式函数子节点, 原样传递)
 //
 // ## 断言为什么这样写
 //

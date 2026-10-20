@@ -28,8 +28,10 @@ import (
 //     (import / let / const / function ...) 时一个字节都不动: 自定义工厂优先。
 //   - 属性名含 - 或 : 时用字符串键 (data-id), 否则用标识符键。
 //   - 无属性时第二个参数传 null。
-//   - 子节点按出现顺序作为 h 的后续参数; 函数子节点原样传递不求值
-//     (响应式 computed 约定, 由渲染侧解释)。
+//   - 子节点按出现顺序作为 h 的后续参数。插值表达式 `{expr}` 降级成
+//     `() => expr` (响应式 computed 约定, 由渲染侧包 effect 订阅), 所以
+//     `<text>count:{ count()}</text>` 是活的; 常量字面量、**显式**函数子节点
+//     `{() => ...}` 与裸标识符 `{sig}` 原样传递 (见 jsxReactiveChild)。
 //   - 子文本空白按 Babel/Solid 规则规整: 逐行首尾去空白, 纯空白行删除,
 //     保留行以单个空格连接。
 
@@ -121,6 +123,7 @@ func (p *Parser) parseJSXElement() ast.Expression {
 				}
 				p.nextToken()
 			case p.curTokenIs(lexer.LBRACE):
+				braceTok := p.curToken()
 				p.nextToken() // 进入子节点插值表达式
 				if !p.curTokenIs(lexer.RBRACE) {
 					expr := p.parseExpression(LOWEST)
@@ -134,7 +137,7 @@ func (p *Parser) parseJSXElement() ast.Expression {
 						return nil
 					}
 					p.nextToken() // cur = '}'
-					children = append(children, expr)
+					children = append(children, jsxReactiveChild(braceTok, expr))
 				}
 				// {} 空插值 → 跳过 (Babel 语义: 无子节点)
 				p.nextToken()
@@ -192,6 +195,51 @@ func buildJSXCall(ltTok, nameTok lexer.Token, props []*ast.Property, children []
 		Function:  &ast.Identifier{Token: ltTok, Value: "h"},
 		Arguments: append([]ast.Expression{jsxTagArg(nameTok)}, args...),
 	}
+}
+
+// jsxReactiveChild 把子节点插值表达式**包成箭头函数**, 除非它本来就该是
+// 静态值或函数。
+//
+// 这是 Solid 的 JSX 语义: `{count()}` 与 `{() => count()}` 等价。差别只在
+// 求值时机 —— 不包的话, 表达式在 h() 被调用之前就求值完了, 渲染侧收到的是
+// 一个标量 (数字/字符串), 只能建成静态文本节点; 之后 signal 怎么变界面都不动,
+// 而且不报错不警告 (文本节点天生收标量)。包一层之后它变成函数子节点, 由渲染
+// 侧包 effect 订阅, 于是 `<text>count:{ count()}</text>` 才是活的。
+//
+// 不包的三类 (包了就是错的):
+//   - 字面量常量: `{"hi"}` / `{42}` 本身就是常量, 包一层只多一个空转的 effect。
+//     (模板字面量不算 —— “ {`hi ${name}`} “ 含插值, 照样要包);
+//   - 箭头/函数表达式: `{() => ...}` 是用户**显式**写下的函数子节点约定, 再包
+//     一层就成了"返回函数的函数", 渲染侧只能把它 ToString 成一段文本;
+//   - 裸标识符: `{Row}` / `{sig}` 与函数子节点/取值函数约定同形 —— each 的
+//     渲染函数子节点就是这么传的, 包一层会让 For 引擎拿到"返回函数的函数"
+//     (每行渲染出 [Function: ...])。裸标识符原样传递后, 函数值的响应式由
+//     wireChild / mountValue 的 callable 分支兜住; 普通数组变量仍是静态的,
+//     要响应式写调用形态 `{rows()}`。
+//
+// 位置信息用 `{` 令牌: 降级出来的箭头在源码里没有对应的 "=>", 报错行号落在
+// 插值起点最接近用户看到的代码。
+func jsxReactiveChild(braceTok lexer.Token, expr ast.Expression) ast.Expression {
+	if expr == nil || isStaticJSXChild(expr) {
+		return expr
+	}
+	return &ast.ArrowFunctionExpression{
+		Token: lexer.Token{Type: lexer.ARROW, Literal: "=>", Line: braceTok.Line, Column: braceTok.Column},
+		Body:  expr,
+	}
+}
+
+// isStaticJSXChild 报告这个子节点表达式是否**不需要**包响应式箭头。
+// 判据是"它是不是一个已经定了的值 / 已经是函数子节点约定"。
+func isStaticJSXChild(expr ast.Expression) bool {
+	switch expr.(type) {
+	case *ast.ArrowFunctionExpression, *ast.FunctionExpression, *ast.Identifier:
+		return true // 显式函数子节点 / 裸标识符 (见 jsxReactiveChild 注释)
+	case *ast.StringLiteral, *ast.IntegerLiteral, *ast.FloatLiteral,
+		*ast.BigIntLiteral, *ast.BooleanLiteral, *ast.NullLiteral:
+		return true // 字面量常量
+	}
+	return false
 }
 
 // nullToken 造一个 Literal 为 "null" 的令牌 (NullLiteral.String 需要)。
