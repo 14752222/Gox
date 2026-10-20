@@ -21,6 +21,26 @@ func mkTextNode(s string) *GuiNode {
 	return &GuiNode{Tag: "#text", Text: s}
 }
 
+// channelDist 是两色的逐通道最大差 (Chebyshev 距离)。给"这个像素更靠近
+// 两个候选色里的哪一个"做归属判定用 —— 比欧氏距离便宜, 且对"底色 vs 文字
+// 色"这种通道同向拉开的配对足够区分。
+func channelDist(a, b color.RGBA) int {
+	d := func(x, y uint8) int {
+		if x > y {
+			return int(x) - int(y)
+		}
+		return int(y) - int(x)
+	}
+	m := d(a.R, b.R)
+	if v := d(a.G, b.G); v > m {
+		m = v
+	}
+	if v := d(a.B, b.B); v > m {
+		m = v
+	}
+	return m
+}
+
 // newTestHandler 造一个记录调用的 Go 侧处理器。
 func newTestHandler(name string, fn func()) object.Value {
 	return object.NewBuiltin(name, func(args ...object.Value) object.Value {
@@ -343,20 +363,23 @@ func TestTagVariantIsTonal(t *testing.T) {
 		}
 		// 扫整个盒内而不是中心 ±12px: 中文标签的字形宽度随平台字体变
 		// (macOS PingFang 比 Linux 的宽), 中心采样窗在 macOS 上抓不到文字。
+		// 盒内找"站在文字色一边"的像素。不能找精确 ink: macOS 上小字号汉字
+		// 的笔画全是灰度平滑的混合色 (实测最深 {59 140 94}, 纯 ink 一个都没有),
+		// 而 Linux 的渲染能给出 α=1 的主干像素。用逐通道距离判定色相归属 —
+		// 更接近 ink 而非 face 即证明同族文字色真的落了地。
 		inner := Rect{X: tg.Box.X + 2, Y: tg.Box.Y + 2, W: tg.Box.W - 4, H: tg.Box.H - 4}
-		if countColor(img, inner, tc.ink) == 0 {
-			// 诊断: 盒内到底渲染成了什么颜色 (跨平台字体差异排障用)
-			seen := map[color.RGBA]int{}
-			for y := inner.Y; y < inner.Y+inner.H; y++ {
-				for x := inner.X; x < inner.X+inner.W; x++ {
-					seen[img.RGBAAt(x, y)]++
+		inkSide := 0
+		for y := inner.Y; y < inner.Y+inner.H; y++ {
+			for x := inner.X; x < inner.X+inner.W; x++ {
+				c := img.RGBAAt(x, y)
+				if channelDist(c, tc.ink) < channelDist(c, tc.face) {
+					inkSide++
 				}
 			}
-			t.Logf("variant=%s 盒 %v 内颜色分布:", tc.variant, tg.Box)
-			for c, n := range seen {
-				t.Logf("  %v × %d", c, n)
-			}
-			t.Fatalf("variant=%s 的 tag 内未落同族文字色 %v", tc.variant, tc.ink)
+		}
+		if inkSide == 0 {
+			t.Fatalf("variant=%s 的 tag 内没有偏向文字色 %v 的像素 (底 %v)",
+				tc.variant, tc.ink, tc.face)
 		}
 	}
 }
