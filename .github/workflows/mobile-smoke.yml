@@ -307,3 +307,161 @@ jobs:
           done
           [ "$status" = 0 ] || exit 1
           echo "::notice::全部平台子包内容与 sha256 核对通过"
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Android 折叠态切换回归（看板单 rSm7zW / S4 / N4）
+  #
+  # 边界先写死：**真切换折叠态需要能模拟铰链的 AVD**（pixel_fold 类 profile，
+  # API 34+）。普通手机模拟器上 `cmd device_state print-states` 只报一个态，
+  # 切了也没反应 —— 所以 job 第一步就先 print-states 断言折叠态存在，
+  # 拿不到就直接红，而不是静默当「已验证折叠」。
+  # 这是「模拟器能跑」到「每次提交都不退步」的关键一跳：每次 push 都在折叠
+  # 屏上把 CLOSED → HALF_FOLDED → OPENED 切一遍，截屏存档（artifacts），
+  # 红即阻断（分支保护标 required 即可）。
+  # ─────────────────────────────────────────────────────────────────────────
+  android-fold-emulator:
+    name: Android 折叠态切换回归（pixel_fold 模拟器）
+    needs: [android]
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+
+      # android-emulator-runner 的脚本跑在 JDK 上，与 android job 同版本
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: 下载冒烟 APK（android job 的产物）
+        uses: actions/download-artifact@v4
+        with:
+          name: gox-android-debug-apk
+          path: /tmp/apk
+
+      # KVM 是 emulator-runner 的硬性前置：没有硬件加速模拟器起不来
+      - name: 启用 KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: 折叠态矩阵（CLOSED/HALF_FOLDED/OPENED 切换 + 截图）
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          arch: x86_64
+          profile: pixel_fold
+          disable-animations: true
+          script: |
+            set -euo pipefail
+
+            # 1) 折叠态必须在场 —— 拿不到就是 profile 不对（见 job 头注释）
+            adb shell cmd device_state print-states | tee /tmp/states.txt
+            grep -qiE 'HALF_FOLDED|CLOSED|OPENED' /tmp/states.txt \
+              || { echo "::error::pixel_fold 模拟器没报折叠态（print-states 如上）—— AVD profile 或 API 级别变了"; exit 1; }
+
+            # 2) 装 APK 并拉起（包名与壳工程一致：com.gox.demo）
+            adb install -r /tmp/apk/*.apk
+            adb shell am start -W -n com.gox.demo/.MainActivity || \
+              adb shell monkey -p com.gox.demo -c android.intent.category.LAUNCHER 1
+            sleep 3
+
+            # 3) 逐个折叠态切换并截图 —— 顺序即折叠屏生命周期的真机时序
+            #    （先 onConfigurationChanged 后 foldStatusChange，见
+            #    gfx/lifecycle_fold_test.go 的注释与 mobile-device-accept.sh §4）
+            mkdir -p /tmp/fold-shots
+            for s in CLOSED HALF_FOLDED OPENED HALF_FOLDED OPENED; do
+              adb shell "cmd device_state state $s" || true
+              sleep 2
+              adb exec-out screencap -p > "/tmp/fold-shots/state-${s}-$(date +%s).png"
+            done
+
+            # 4) 证据：切换期间不能有崩溃 / ANR
+            adb shell "logcat -d -v time | grep -iE 'FATAL EXCEPTION|ANR in|has died' | head -40; echo [scan done]" \
+              | tee /tmp/fold-logcat.txt
+            if grep -qiE 'FATAL EXCEPTION|ANR in' /tmp/fold-logcat.txt; then
+              echo "::error::折叠态切换期间出现未捕获异常/ANR（原文在 artifacts 的 fold-logcat.txt）"
+              exit 1
+            fi
+
+      - name: 归档折叠态截图与日志
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-fold-shots
+          path: |
+            /tmp/fold-shots/*.png
+            /tmp/states.txt
+            /tmp/fold-logcat.txt
+          if-no-files-found: ignore
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # iOS 模拟器机型矩阵（看板单 rSm7zW / S4 / N4）
+  #
+  # 边界先写死：**iOS 模拟器没有折叠屏**。GoxDisplayFold.swift 依赖的
+  # UIView.reservedRegions 是 iOS 27.1+ 的折叠屏 API，模拟器上只报 flat ——
+  # 这是已知边界，不是 bug。所以本矩阵验的是**机型/方向 → 断点与布局**，
+  # 不是折叠；折叠语义的真机证据在 android-fold-emulator（pixel_fold 是
+  # 真能切铰链的）与 scripts/mobile-device-accept.sh §4。
+  # ─────────────────────────────────────────────────────────────────────────
+  ios-device-matrix:
+    name: iOS 机型矩阵（${{ matrix.device }}；flat-only 边界）
+    needs: [ios]
+    runs-on: macos-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # 三个代表尺寸档：6.1" 标准 / 6.9" Pro Max / iPad（breakpoint 三档都能压到）
+        device: ["iPhone 16", "iPhone 16 Pro Max", "iPad Pro 11-inch (M4)"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 下载冒烟 .app（ios job 的产物）
+        uses: actions/download-artifact@v4
+        with:
+          name: gox-ios-simulator-app
+          path: /tmp/iosapp
+
+      - name: simctl 机型回归（create → boot → install → launch → screenshot）
+        env:
+          DEVICE_NAME: ${{ matrix.device }}
+        run: |
+          set -euo pipefail
+
+          cd /tmp/iosapp
+          unzip -qo gox-smoke-ios-sim.zip -d appdir
+          APP=$(find appdir -name "*.app" -maxdepth 2 | head -1)
+          test -n "$APP" || { echo "::error::zip 里没找到 .app"; exit 1; }
+          # bundle id 不猜：从 Info.plist 读（XcodeGen 拼的 com.gox.Gox 若改名，
+          # 这里跟着走，不用改两处）
+          BID=$(plutil -extract CFBundleIdentifier raw "$APP/Info.plist")
+          echo "==> bundle id: $BID"
+
+          UDID=$(xcrun simctl create "gox-matrix-${GITHUB_RUN_ID}-${DEVICE_NAME// /-}" "$DEVICE_NAME" 2>&1)
+          trap 'xcrun simctl shutdown "$UDID" 2>/dev/null || true; xcrun simctl delete "$UDID" 2>/dev/null || true' EXIT
+          xcrun simctl boot "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+
+          xcrun simctl install "$UDID" "$APP"
+          # launch 成功会输出 "com.x.y: <pid>"；没有 pid 就是起不来
+          OUT=$(xcrun simctl launch "$UDID" "$BID" 2>&1)
+          echo "$OUT"
+          printf '%s' "$OUT" | grep -qE '[0-9]+$' || { echo "::error::launch 没回 pid：$OUT"; exit 1; }
+          sleep 4
+
+          mkdir -p /tmp/ios-shots
+          xcrun simctl io "$UDID" screenshot "/tmp/ios-shots/${DEVICE_NAME// /-}-portrait.png"
+          # 方向翻转一档：验断点随方向重算（matrix 的核心证据之一）
+          xcrun simctl ui "$UDID" orientation landscape 2>/dev/null || true
+          sleep 2
+          xcrun simctl io "$UDID" screenshot "/tmp/ios-shots/${DEVICE_NAME// /-}-landscape.png" || true
+
+      - name: 归档机型截图
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-matrix-${{ matrix.device }}
+          path: /tmp/ios-shots/*.png
+          if-no-files-found: ignore

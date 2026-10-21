@@ -319,3 +319,42 @@ jobs:
         run: |
           go build -o dist/ci-gox${{ runner.os == 'Windows' && '.exe' || '' }} ./cmd/gox
           ./dist/ci-gox${{ runner.os == 'Windows' && '.exe' || '' }} version
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # 折叠屏形态矩阵回归（看板单 rSm7zW / S4 / N4）
+  #
+  # build-test 的 go test ./... 其实**已经覆盖**了下面这些用例；这个 job 存在的
+  # 理由是把「形态矩阵」钉成一条**独立 check**：形态回归红的时候，check 名直接
+  # 告诉你是折叠屏的事（而不是淹没在全量测试的几十页日志里），并且分支保护
+  # 可以单独把它标 required（「失败即阻断合并」是仓库设置，代码里写不了，
+  # 这个 job 的 job key 就是要挂进 required 的名字）。
+  #
+  # 覆盖的矩阵（全部走 fake surface，不需要真设备）：
+  #   · TestFoldableDemoDeviceMatrix        折叠屏 demo 四档形态回放
+  #   · TestFoldLifecycleEventOrder20Rounds 折叠 × 前后台 20 轮事件顺序
+  #   · TestBackPressUnhandledSemantics     返回键三分支语义
+  #   · TestReadmeAdaptiveListDemoColumns   README 首屏示例 4 档宽度断言
+  #   · TestPermission*                     权限三端口径矩阵
+  # 真机侧的「adb 折叠态切换 + simctl 机型矩阵」在 mobile-smoke.yml
+  # （android-fold-emulator / ios-device-matrix 两个 job）——那边才能动设备。
+  # ─────────────────────────────────────────────────────────────────────────
+  foldable-matrix:
+    name: 折叠屏形态矩阵回归 (S4/N4)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: 形态矩阵 / 生命周期 / 自适应示例 / 权限矩阵
+        run: |
+          set -euo pipefail
+          sudo apt-get update -q
+          # fonts-noto-cjk 是必需的（与 build-test 同一条理由：demo 里是中文，
+          # 缺字体会让文本走缺字形占位，断言可能失真）。
+          sudo apt-get install -yq xvfb fonts-dejavu-core fonts-noto-cjk
+          xvfb-run -a -s "-screen 0 1280x800x24" go test ./gfx/ -count=1 -v \
+            -run 'TestFoldableDemoDeviceMatrix|TestFoldLifecycleEventOrder20Rounds|TestBackPressUnhandledSemantics|TestReadmeAdaptiveListDemoColumns|TestPermission'

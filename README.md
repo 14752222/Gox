@@ -422,6 +422,19 @@ Android 壳（Kotlin）与 iOS 壳（Swift）的六个模块基本齐备：Andro
 逐方法（模块 × 平台）状态表、壳构建说明与首帧自检清单见 [`app/NATIVE-HOST.md`](app/NATIVE-HOST.md)；
 三种形态的完整演示：[`testdata/native_demo.js`](testdata/native_demo.js)。
 
+**三端验证范围（CI 矩阵口径，看板单 rSm7zW / S4）** —— 能力矩阵按下面的**实际验证面**写，不夸：
+
+| 平台 | 构建冒烟（每次 push） | 设备回归 | 折叠语义 |
+|---|---|---|---|
+| **Android** | `mobile-smoke.yml` 的 android job：libgox.so → assembleDebug APK | `android-fold-emulator` job：**pixel_fold 模拟器**（API 34+，真能切铰链）上跑 CLOSED → HALF_FOLDED → OPENED 矩阵 + 截屏存档；真机侧 `scripts/mobile-device-accept.sh --rounds 20`（§4 生命周期循环） | ✅ 模拟器已覆盖折叠态切换（`cmd device_state`） |
+| **iOS** | `mobile-smoke.yml` 的 ios job：xcodebuild 模拟器包 | `ios-device-matrix` job：iPhone 16 / 16 Pro Max / iPad 三机型 × 竖横屏，simctl 截屏存档 | ⚠️ **模拟器没有折叠屏**：`reservedRegions`（iOS 27.1+）在模拟器只报 flat，是已知边界；真机验收待做 |
+| **鸿蒙** | 交叉编译 + 宿主契约测试 + assembleHap 构建通过 | — | ❌ 模拟器验收待做（**HAP 签名是硬阻塞**：要在 DevEco GUI 里配华为账号，命令行替不了）；不写「已支持鸿蒙」 |
+
+> 「CI 里挂形态矩阵、失败即阻断合并」在桌面侧由 `ci.yml` 的 `foldable-matrix` job 承担
+> （fake surface 回放 4 档形态 + 20 轮生命周期 + README 示例四档宽度 + 权限三端口径）；
+> 设备侧由 mobile-smoke 的上述两个 job 承担。把哪个 job 标 required 是仓库的分支保护设置，
+> 代码里写不了 —— job key 就是上面那几个名字。
+
 ### GUI 桌面应用
 
 `gx/gfx` + `gx/solid` 提供 JSX 声明式 UI 与信号驱动的响应式更新，渲染器为纯 Go 软件光栅化
