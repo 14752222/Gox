@@ -757,6 +757,7 @@ ci(release): 打包闸改回 tar 校验，不再解析 npm 的输出
 | [docs/js-runtime-api-tutorial.md](docs/js-runtime-api-tutorial.md) | 运行时 API 教程：函数类型、回调桥、内存管理、新增 API 的完整流程 |
 | [docs/gui-patterns.md](docs/gui-patterns.md) | 用户态模式手册（路由、状态、主题等惯用法） |
 | [docs/gui-model-binding.md](docs/gui-model-binding.md) | `model` 双向绑定：接口设计、语义表、与 Vue 的对照、反例 |
+| [docs/foldable-adaptation.md](docs/foldable-adaptation.md) | **折叠屏适配教程**：纯读数短路订阅的坑、姿态不驱动布局、折痕避让单位换算、Tabletop 组合写法、三端验证范围 |
 | [docs/npm-release.md](docs/npm-release.md) | `@goxjs/goxjs` 发版手册：版本号策略、构建步骤、OIDC 配置要求、验收口径 |
 | [docs/desktop-distribution.md](docs/desktop-distribution.md) | 桌面应用分发：图标、签名、各平台打包格式 |
 | [官网](https://14752222.github.io/Gox/) | 安装、运行脚本、写 GUI 应用与打包的在线教程 |
