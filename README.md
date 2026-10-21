@@ -13,6 +13,8 @@
 
 📖 **[官网与使用教程](https://14752222.github.io/Gox/)** ｜ **[GUI 开发指南](docs/gui-guide.md)** ｜ **[npm 包](https://www.npmjs.com/package/@goxjs/goxjs)**
 
+> English version: [README.en.md](README.en.md)。两份 README 同步维护，描述同一个构建。
+
 ## 目录
 
 - [项目简介](#项目简介)
