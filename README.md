@@ -16,6 +16,7 @@
 ## 目录
 
 - [项目简介](#项目简介)
+- [首屏示例：单双栏自适应列表页](#首屏示例单双栏自适应列表页)
 - [功能特性](#功能特性)
 - [快速开始](#快速开始)
 - [使用方法](#使用方法)
@@ -47,6 +48,96 @@ flex 布局 + JSX + 信号驱动更新，win32 / X11 / cocoa 窗口后端）、�
 - **确定性单线程** —— VM 单线程执行，网络 I/O 在 goroutine 中完成后投递回主线程，回调无需加锁。
 
 **适用场景**：用 JS 写跨平台桌面小工具；把 JS 作为配置与插件层嵌入 Go 应用；学习编译器与虚拟机实现。
+
+## 首屏示例：单双栏自适应列表页
+
+窗口宽度 **< 600dp 时单栏**，拖宽到 **≥ 600dp 自动变双栏**（左侧列表 + 右侧详情）。
+拖拽窗口边缘即触发，不用监听 resize，也不用轮询尺寸。完整可跑文件：
+[`testdata/adaptive_list_demo.js`](testdata/adaptive_list_demo.js)（`gox testdata/adaptive_list_demo.js`）。
+
+```js
+import { h, render } from "gx/gfx";
+import { createSignal } from "gx/solid";
+import { useBreakpoint, matchBreakpoint } from "gx/viewport";
+import { Switch, Match } from "gx/view";
+
+const bp = useBreakpoint();                 // () => "sm" | "md" | "lg" | "xl"（订阅型）
+const [selected, setSelected] = createSignal(0);
+
+const ITEMS = [
+  { id: "a", title: "编译管线", desc: "词法 → 语法 → 字节码 → 栈式 VM，109 个操作码。" },
+  { id: "b", title: "软件光栅化 GUI", desc: "flex 布局 + JSX + 信号驱动，三后端。" },
+  { id: "c", title: "脚本打包器", desc: "把 .js 打成单个可执行文件。" },
+];
+
+// 布局分支由断点名声明（一张 sm/md/lg/xl 的表），
+// 而不是把同一个宽度判断散落在 N 处 if 里 —— 加一档只改表，不改判断。
+const layout = () => {
+  bp();   // ← 无条件读一次 = 订阅登记。删掉这行，整页不再自适应（无警告）
+  return matchBreakpoint({
+    sm: { cols: 1, side: false },   // <600dp  单栏
+    md: { cols: 2, side: true },    // >=600dp 双栏
+    lg: { cols: 2, side: true },
+    xl: { cols: 2, side: true },
+  });
+};
+
+const List = () => (
+  <column gap={6}>
+    <view each={ITEMS} key="id">
+      {(it, i) => (
+        <row gap={6} padding={8} radius={6}
+             background={selected() === i ? "#dce8ff" : "#f2f5fa"}
+             onClick={() => setSelected(i)}>
+          <text font={13} color="#334">{it.title}</text>
+        </row>
+      )}
+    </view>
+  </column>
+);
+
+const Detail = () => (
+  <column gap={6} padding={12} radius={8} background="#ffffff">
+    <text font={14} color="#223">{ITEMS[selected()].title}</text>
+    <text font={12} color="#667">{ITEMS[selected()].desc}</text>
+  </column>
+);
+
+render(
+  <window title="自适应列表页" width={520} height={420}>
+    <column gap={10} padding={14}>
+      <text font={15}>{() => `breakpoint = ${bp()}   →   ${layout().side ? "双栏" : "单栏"}`}</text>
+      <Switch>
+        <Match when={() => layout().side}>
+          <row gap={10}>
+            <column width={210} gap={6}><List /></column>
+            <column flex={1}><Detail /></column>
+          </row>
+        </Match>
+        <Match when={() => true}>
+          <column gap={8}>
+            <List />
+            <Detail />
+          </column>
+        </Match>
+      </Switch>
+    </column>
+  </window>
+);
+```
+
+**两个最容易踩的坑**（示例注释里同样写明）：
+
+1. **纯读数会短路掉订阅** —— `breakpoint()` / `posture()` / `hasFold()` 是纯读数、**不订阅**；只有
+   `useBreakpoint()` 这类两段式返回的取值函数才订阅。把纯读数写在三元的第一操作数或 `&&` 左侧，
+   被短路的那支一次都没读 ⇒ 零依赖 ⇒ 之后宽度变了这一支永不重跑，**没有任何警告**。
+   `gfx/adaptive_list_test.go` 把这条钉成了断言：纯读数快照拖宽后仍停在首帧的值。
+2. **坐标单位是两套** —— `reservedRegions()` 的 x/y/width/height 是**设备像素**（折痕、挖孔），
+   `safeAreaStyle()` 与脚本显式写的尺寸属性是 **dp**（内核每帧乘 `Display.Scale`）。
+   折痕避让时不要把前者直接喂给布局属性，先除 `pixelRatio`。
+
+> 措辞要说准：`<Switch>` / `<Match>` 本身就是条件表达，所以对外不说「无需任何 if 判断」；
+> 准确的收益是**布局分支由断点名声明**，而不是散落在 N 处 if 里。
 
 ## 功能特性
 
