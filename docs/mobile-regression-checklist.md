@@ -83,6 +83,16 @@
 - [ ] 切后台再回前台，画面恢复、事件继续响应（onAppStateChange）
 - [ ] 切后台期间来电话/通知横幅，回前台无渲染残留
 - [ ] 低内存警告（onMemoryWarning）不崩溃
+- [ ] **折叠 × 生命周期 20 轮循环**（看板单 rVs62S）：连续 N 轮
+      「折叠 → 切后台 → 回前台 → 展开」，无崩溃 / 无 ANR / 无白屏、
+      内存不持续上涨。自动化部分不用手点：
+      · 真机：`bash scripts/mobile-device-accept.sh --rounds 20`
+        （§4 落 `bench-results/device-accept-*.json`：logcat 的 FATAL/ANR 计数 +
+        循环前后 PSS 差值；`cmd device_state` 不可用时该脚本会**如实标
+        unavailable** 并提示人工开合 + 录屏，不会写成"已验证折叠"）
+      · 桌面：`go test ./gfx/ -run TestFoldLifecycle -v`（fake 后端回放 20 轮并
+        逐轮断言事件顺序：viewport → display → save → display → viewport →
+        round:N → app:background → app:active）
 
 ### 3.6 分享与媒体
 - [ ] share 拉起系统分享面板（gx/app share）

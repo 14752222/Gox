@@ -99,6 +99,20 @@ ABI / Android 版本 / 采集时间戳 / 每项原始命令与输出），终端
   对比开发机 bench 的 `rss_kb` 时口径不同（见 §4）。
 - 采样窗口内脚本持续注入滑动制造负载；**静置不动测出来的帧率没有意义**。
 
+### 3.4 折叠屏生命周期循环（脚本新增的 §4，看板单 rVs62S）
+
+桌面侧的同题回放是 `go test ./gfx/ -run TestFoldLifecycle -v`（逐轮断言事件
+顺序）；真机侧 `scripts/mobile-device-accept.sh --rounds 20` 会在 §4 采下面
+三项，落在 JSON 的 `sections.4_lifecycle`：
+
+| 项 | 来源 | 口径与判读 |
+|---|---|---|
+| 轮数 / 折叠是否脚本驱动 | `lifecycle_rounds` | 默认 20 轮（`--rounds` 改）；`fold_scripted=false` 说明这台机器没有可用的 `cmd device_state`，**只能人工开合** |
+| 崩溃 / ANR / 进程死亡 | `lifecycle_crash` | 循环期间 logcat 里 `FATAL EXCEPTION` / `ANR in` / `has died` 的计数，全 0 才算过；非 0 时脚本额外以退出码 1 收尾 |
+| 循环前后 PSS 差值 | `lifecycle_mem_delta`（`lifecycle_mem_after.delta_kb`） | kB；**涨一次不算泄漏**（GC 时机、缓存预热都会涨），连跑两三轮都涨才记账 |
+
+折叠机缺位时这一节整节豁免，桌面回放照跑（§3.9 同口径）。
+
 ---
 
 ## 4. 与开发机 bench 的对比口径
@@ -132,11 +146,11 @@ ABI / Android 版本 / 采集时间戳 / 每项原始命令与输出），终端
 ## 5. 回填流程
 
 1. 插上设备（**一次只插一台**），确认 `adb devices` 显示 `<serial>\tdevice`。
-2. `bash scripts/mobile-device-accept.sh --package <appId>` —— §1~§3 一次取完。
+2. `bash scripts/mobile-device-accept.sh --package <appId> --rounds 20` —— §1~§4 一次取完。
 3. 看终端摘要；有「本次未完成项」就按提示手工补采，并在本文对应格子里标
    **（手工补采）** 与原因。
 4. JSON 存档随仓库提交（命名 `bench-results/device-accept-<日期>-<机型>.json`），
-   把本文 §1~§3 的表按机型列填好，**写清机型/系统版本/采集日期**。
+   把本文 §1~§4 的表按机型列填好，**写清机型/系统版本/采集日期**。
 5. 首轮采完后再定 §4 的回归阈值 —— 没有基线就定阈值等于拍脑袋。
 
 > 脚本退出码：0 = 全采到；1 = 有未完成项（JSON 仍落盘，缺项 `null`）；

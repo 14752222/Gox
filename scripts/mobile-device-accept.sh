@@ -3,8 +3,9 @@
 #
 # 为什么要有这个脚本：mobile-regression-checklist.md 里的真机项过去靠人记步骤，
 # 一次插设备常常只验一半 —— 验到一半发现 density 没采，只能拔了重插。本脚本把
-# §1（屏幕与密度）/ §2（触摸与多指手势）/ §3（帧率·内存·冷启动）需要的真机数据
-# 在**一次插设备内**全部取完，落一份 JSON 存档，再打印人读摘要。
+# §1（屏幕与密度）/ §2（触摸与多指手势）/ §3（帧率·内存·冷启动）/
+# §4（折叠屏生命周期循环：N 轮「折叠→后台→前台→展开」，看板单 rVs62S）需要的
+# 真机数据在**一次插设备内**全部取完，落一份 JSON 存档，再打印人读摘要。
 #
 # 指标口径、单位与空基线表见 docs/mobile-perf-baseline.md。与 docs/performance.md
 # 的分工：那边是**开发机**的解释器算力 / GC 毛刺基准，这边是**真机**上的
@@ -15,6 +16,7 @@
 #   bash scripts/mobile-device-accept.sh --device <serial>     # 多台在线时指定
 #   bash scripts/mobile-device-accept.sh --package com.x.app   # 指定被测包（§3 需要）
 #   bash scripts/mobile-device-accept.sh --activity .MainActivity
+#   bash scripts/mobile-device-accept.sh --rounds 20           # §4 生命周期循环轮数（默认 20）
 #   bash scripts/mobile-device-accept.sh --dry-run             # 无设备也能跑：只打印命令清单，退出 0
 #
 # 退出码：
@@ -41,6 +43,7 @@ PKG=${PKG:-}
 ACT=${ACT:-}
 OUT_DIR="$ROOT/bench-results"
 SAMPLE_SEC=${SAMPLE_SEC:-5}   # §3 帧率采样窗口（秒）：窗口内持续注入滑动再读 gfxinfo
+ROUNDS=${ROUNDS:-20}          # §4 生命周期循环轮数（看板单 rVs62S 的验收口径就是 20 轮）
 MAX_OUT_LINES=60              # 单条原始输出最多存多少行（防 JSON 被 dumpsys 撑爆）
 
 while [ $# -gt 0 ]; do
@@ -51,8 +54,9 @@ while [ $# -gt 0 ]; do
     --activity)  ACT=$2; shift 2 ;;
     --out)       OUT_DIR=$2; shift 2 ;;
     --sample-sec) SAMPLE_SEC=$2; shift 2 ;;
+    --rounds)    ROUNDS=$2; shift 2 ;;
     -h|--help) sed -n '1,40p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
-    *) echo "error: 未知参数 $1（可用: --dry-run --device --package --activity --out --sample-sec）" >&2; exit 2 ;;
+    *) echo "error: 未知参数 $1（可用: --dry-run --device --package --activity --out --sample-sec --rounds）" >&2; exit 2 ;;
   esac
 done
 
@@ -427,6 +431,127 @@ else
   fi
 fi
 
+# ── §4 折叠屏生命周期循环 ───────────────────────────────────────────────────
+# 桌面侧同一件事由 gfx/lifecycle_fold_test.go 做（fake 后端 + 事件顺序断言，
+# 20 轮）；真机侧这里只做**驱动 + 取证**：N 轮「折叠 → 切后台 → 回前台 → 展开」，
+# 然后看三件事 ——
+#   a) logcat 里有没有未捕获异常 / ANR（"无白屏无崩溃"的真机证据）；
+#   b) 循环前后 PSS 有没有持续上涨（泄漏嫌疑，涨一次不算，要复现）；
+#   c) 每轮回前台的 am start -W 有没有异常慢（首帧被折叠重建拖慢的信号）。
+#
+# 折叠态能不能**脚本驱动**取决于设备：Android 12L+ 有 `cmd device_state`，但它
+# 要 signature|privileged 权限，用户版机器上基本都吃权限错误。驱动不了就如实
+# 标 unavailable + 进「未完成项」，提示人工开合 + 录屏 —— 绝不写"已验证折叠"。
+PSS_BEFORE=""; PSS_AFTER=""; LIFECYCLE_BAD=0
+
+echo "==> §4 折叠屏生命周期循环（$ROUNDS 轮）"
+skip4() { # skip4 <id> <命令> <为什么>
+  record 4 "$1" skipped "$(adbcmd "$2")" "" null "$3"
+  mark_incomplete "$1"
+  printf '  [skip]   %s（%s）\n' "$1" "$3"
+}
+
+if [ -z "$PKG" ]; then
+  skip4 lifecycle_rounds "input keyevent KEYCODE_HOME / am start -W -n <pkg>/<activity>" "未提供被测包（--package 或 gox.json 的 appId）"
+  skip4 lifecycle_crash "logcat -d | grep -iE 'FATAL EXCEPTION|ANR in'" "同上"
+  skip4 lifecycle_mem_delta "dumpsys meminfo <pkg>（循环前后各一次）" "同上"
+else
+  # 循环前的内存基线：泄漏看的是**差值**，绝对值随设备与前台进程数漂移很大。
+  if probe 4 lifecycle_mem_before "dumpsys meminfo $PKG"; then
+    PSS_BEFORE=$(printf '%s\n' "$PROBE_OUT" | grep -E '^[[:space:]]*TOTAL' | head -1 | grep -oE '[0-9]+' | head -1)
+    if [ -n "$PSS_BEFORE" ]; then
+      record_ok 4 lifecycle_mem_before "$(adbcmd "dumpsys meminfo $PKG")" "$PROBE_OUT" \
+        "{\"pss_kb\": $PSS_BEFORE, \"unit\": \"kB\", \"when\": \"before\"}" "循环前 PSS 基线"
+    else
+      record 4 lifecycle_mem_before unavailable "$(adbcmd "dumpsys meminfo $PKG")" "$PROBE_OUT" null \
+        "meminfo 里没解析出 TOTAL 行（包没在跑？）"
+      mark_incomplete lifecycle_mem_before
+    fi
+  fi
+
+  # 折叠态：先看设备认哪些态，能认才去切。
+  FOLD_STATES=""
+  if probe 4 fold_states "cmd device_state print-states"; then
+    FOLD_STATES=$PROBE_OUT
+    record_ok 4 fold_states "$(adbcmd "cmd device_state print-states")" "$PROBE_OUT" \
+      "\"见原始输出\"" "设备声明的可切换态；没有 HALF_FOLDED/CLOSED/OPENED 说明这台不是折叠机或系统裁剪了"
+  fi
+  FOLD_OK=0
+  if printf '%s' "$FOLD_STATES" | grep -qiE 'HALF_FOLDED|CLOSED|OPENED'; then
+    if act 4 fold_toggle "cmd device_state state HALF_FOLDED" "切到半折（折叠屏主场景）"; then
+      FOLD_OK=1
+    fi
+  else
+    record 4 fold_toggle unavailable "$(adbcmd "cmd device_state print-states / cmd device_state state HALF_FOLDED")" "$FOLD_STATES" null \
+      "这台设备没有可用的 cmd device_state（脚本驱动不了折叠）：需人工开合 + 录屏，并在 baseline 文档注明「人工开合」"
+    mark_incomplete fold_toggle
+  fi
+
+  # 清掉历史日志，让循环期间的异常是**这次**的（不清会把上周的崩溃算进来）。
+  act 4 logcat_clear "logcat -c" "清空 logcat，避免旧日志混入循环取证"
+
+  # 循环本体：折叠 → 后台(HOME) → 前台(am start -W) → 展开。
+  # 每轮 4 条 adb，20 轮约 80 次调用（真机实测 30~60s），中间不可拔线。
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  [dry-run] 以下 4 条命令循环 %s 轮：\n' "$ROUNDS"
+    for c in "cmd device_state state CLOSED|HALF_FOLDED（脚本可控折叠时）" "input keyevent KEYCODE_HOME" "am start -W -n ${ACT:-<pkg>/.MainActivity}" "cmd device_state state OPENED（脚本可控时）"; do
+      printf '      adb shell %s\n' "$c"
+    done
+  else
+    n=1
+    while [ "$n" -le "$ROUNDS" ]; do
+      [ "$FOLD_OK" = 1 ] && adbrun shell "cmd device_state state CLOSED" >/dev/null 2>&1
+      adbrun shell "input keyevent KEYCODE_HOME" >/dev/null 2>&1
+      adbrun shell "am start -W -n $ACT" >/dev/null 2>&1
+      [ "$FOLD_OK" = 1 ] && adbrun shell "cmd device_state state OPENED" >/dev/null 2>&1
+      n=$(( n + 1 ))
+    done
+  fi
+  record 4 lifecycle_rounds "$( [ "$DRY_RUN" = 1 ] && echo dry-run || echo ok )" \
+    "$(adbcmd "input keyevent KEYCODE_HOME; am start -W -n ${ACT:-<pkg>/.MainActivity}")" "" \
+    "{\"rounds\": $ROUNDS, \"fold_scripted\": $( [ "$FOLD_OK" = 1 ] && echo true || echo false ), \"steps_per_round\": 4}" \
+    "每轮：折叠 → HOME(后台) → am start -W(前台) → 展开；折叠是否脚本驱动见 fold_toggle"
+  [ "$DRY_RUN" = 1 ] || printf '  ✓ 已跑完 %s 轮\n' "$ROUNDS"
+
+  # 异常取证：grep 无匹配时输出为空会被 probe 判成「未采到」，所以末尾补一行
+  # 哨兵 —— 空结果 = 没有崩溃，这是**好消息**，别当成采集失败。
+  if probe 4 lifecycle_crash "logcat -d -v time | grep -iE 'FATAL EXCEPTION|ANR in|has died' | head -40; echo [scan done]"; then
+    FATAL_N=$(printf '%s\n' "$PROBE_OUT" | grep -ci 'FATAL EXCEPTION' || true)
+    ANR_N=$(printf '%s\n' "$PROBE_OUT" | grep -ciE 'ANR in' || true)
+    DIED_N=$(printf '%s\n' "$PROBE_OUT" | grep -ci 'has died' || true)
+    record_ok 4 lifecycle_crash "$(adbcmd "logcat -d -v time | grep -iE 'FATAL EXCEPTION|ANR in|has died' | head -40")" "$PROBE_OUT" \
+      "{\"fatal\": $FATAL_N, \"anr\": $ANR_N, \"died\": $DIED_N, \"rounds\": $ROUNDS}" \
+      "循环期间的未捕获异常 / ANR / 进程死亡计数；全 0 = 本轮循环没崩（哨兵行 [scan done] 不算异常）"
+    if [ "${FATAL_N:-0}" -gt 0 ] || [ "${ANR_N:-0}" -gt 0 ]; then
+      LIFECYCLE_BAD=1
+    fi
+  fi
+
+  # 循环后内存：与基线比差值。涨了只是**嫌疑**（GC 时机、缓存预热都会涨），
+  # 要连跑两三次都涨才叫泄漏 —— 所以这里只报数，不下结论。
+  if probe 4 lifecycle_mem_after "dumpsys meminfo $PKG"; then
+    PSS_AFTER=$(printf '%s\n' "$PROBE_OUT" | grep -E '^[[:space:]]*TOTAL' | head -1 | grep -oE '[0-9]+' | head -1)
+    if [ -n "$PSS_AFTER" ]; then
+      DELTA="null"
+      [ -n "$PSS_BEFORE" ] && DELTA=$(( PSS_AFTER - PSS_BEFORE ))
+      record_ok 4 lifecycle_mem_after "$(adbcmd "dumpsys meminfo $PKG")" "$PROBE_OUT" \
+        "{\"pss_kb\": $PSS_AFTER, \"unit\": \"kB\", \"when\": \"after\", \"delta_kb\": $DELTA}" \
+        "循环后 PSS；delta_kb > 0 只是嫌疑，需复现（GC 时机/缓存预热都会涨）"
+    else
+      record 4 lifecycle_mem_after unavailable "$(adbcmd "dumpsys meminfo $PKG")" "$PROBE_OUT" null \
+        "循环后没解析出 TOTAL 行：进程可能已经在循环里被杀（那本身就是结论，见 lifecycle_crash）"
+      mark_incomplete lifecycle_mem_after
+    fi
+  fi
+
+  # Gox 自身的日志（tag=Gox）：真机上"引擎有没有真的收到折叠/前后台"只能看它。
+  if probe 4 gox_log "logcat -d -s Gox:I -v time | tail -30"; then
+    GOX_LINES=$(printf '%s\n' "$PROBE_OUT" | grep -c . || true)
+    record_ok 4 gox_log "$(adbcmd "logcat -d -s Gox:I -v time | tail -30")" "$PROBE_OUT" \
+      "{\"lines\": $GOX_LINES, \"tail\": 30}" "引擎侧日志（tag Gox，见 gfx/android/android.go Logf）"
+  fi
+fi
+
 # ── 落盘 JSON ───────────────────────────────────────────────────────────────
 # render_section <sec> <json key> <是否补逗号>
 render_section() {
@@ -485,12 +610,14 @@ mkdir -p "$OUT_DIR"
   printf '  "target": {\n'
   printf '    "package": "%s",\n' "$(printf '%s' "$PKG" | json_str)"
   printf '    "activity": "%s",\n' "$(printf '%s' "$ACT" | json_str)"
-  printf '    "sample_sec": %s\n' "$SAMPLE_SEC"
+  printf '    "sample_sec": %s,\n' "$SAMPLE_SEC"
+  printf '    "lifecycle_rounds": %s\n' "$ROUNDS"
   printf '  },\n'
   printf '  "sections": {\n'
   render_section 1 '"1_display_density"' 1
   render_section 2 '"2_touch_gesture"' 1
-  render_section 3 '"3_perf"' 0
+  render_section 3 '"3_perf"' 1
+  render_section 4 '"4_lifecycle"' 0
   printf '  },\n'
   printf '  "incomplete": ['
   if [ ${#INCOMPLETE[@]} -gt 0 ]; then
@@ -536,10 +663,28 @@ printf '  §3 帧率   %s fps（帧 %s / 掉帧 %s / p95 %s ms）\n' \
   "$(show "$(num_of gfxinfo_stats janky_frames)" '?')" \
   "$(show "$(num_of gfxinfo_stats p95_ms)" '?')"
 printf '  §3 内存   %s kB（PSS）\n' "$(show "$(num_of meminfo pss_kb)" 待采集)"
+printf '  §4 生命周期 %s 轮   崩溃 %s / ANR %s / 进程死 %s   折叠驱动: %s\n' \
+  "$(show "$(num_of lifecycle_rounds rounds)" "$ROUNDS")" \
+  "$(show "$(num_of lifecycle_crash fatal)" '未采')" \
+  "$(show "$(num_of lifecycle_crash anr)" '未采')" \
+  "$(show "$(num_of lifecycle_crash died)" '未采')" \
+  "$(case "$(val_of fold_toggle)" in *exit_code=0*) echo 脚本 ;; unavailable*) echo 需人工开合 ;; *) echo 未采 ;; esac)"
+printf '  §4 内存   %s → %s kB（Δ %s）\n' \
+  "$(show "$(num_of lifecycle_mem_before pss_kb)" '?')" \
+  "$(show "$(num_of lifecycle_mem_after pss_kb)" '?')" \
+  "$(show "$(num_of lifecycle_mem_after delta_kb)" '?')"
 echo "─────────────────────────────────────────────────────────────"
 
 if [ -n "$ABI_WARN" ]; then
   echo "⚠️  $ABI_WARN"
+fi
+
+# 循环期间真崩了：这是**结论**，不是"没采到"，单独报出来并以退出码 1 收尾。
+if [ "${LIFECYCLE_BAD:-0}" = 1 ]; then
+  echo
+  echo "⚠️  §4 循环期间出现未捕获异常 / ANR：先修这个再谈基线数字"
+  echo "    现场在 JSON 的 sections.4_lifecycle.items[id=lifecycle_crash].output（logcat 原文）"
+  echo "    桌面侧先复现：go test ./gfx/ -run TestFoldLifecycle -v"
 fi
 
 if [ ${#INCOMPLETE[@]} -gt 0 ]; then
@@ -553,5 +698,9 @@ if [ ${#INCOMPLETE[@]} -gt 0 ]; then
   exit 1
 fi
 
-echo "采集完成：§1~§3 全部取到。把数字回填 docs/mobile-perf-baseline.md 的空表（写清机型/系统/日期）。"
+if [ "${LIFECYCLE_BAD:-0}" = 1 ]; then
+  exit 1
+fi
+
+echo "采集完成：§1~§4 全部取到。把数字回填 docs/mobile-perf-baseline.md 的空表（写清机型/系统/日期）。"
 exit 0

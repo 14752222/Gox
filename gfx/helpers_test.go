@@ -227,6 +227,12 @@ func (f *fakeSurface) SetTitle(title string) {
 	f.mu.Unlock()
 }
 
+// ResizeClient 改尺寸。除了投 EventResize, 还同步调 NotifyViewportChanged ——
+// 真后端 (x11/cocoa/win32) 在 ConfigureNotify / WM_SIZE / windowDidResize 里
+// 都会 gfx.Post(NotifyViewportChanged) (尺寸类与断点都取窗口宽度); fake 已经
+// 在 GUI 线程 (泵回调) 上, 直接同步调, 否则 useBreakpoint/useViewport 订阅
+// 在 fake 下永远不通电, 测试会误报「viewport 事件丢了」。泵外调用时 hook 桥
+// 无 currentVM 会静默 no-op, 与 ReportBackPress 同一行为, 不用额外保护。
 func (f *fakeSurface) ResizeClient(w, h int) {
 	if w <= 0 || h <= 0 {
 		return
@@ -235,6 +241,7 @@ func (f *fakeSurface) ResizeClient(w, h int) {
 	f.w, f.h = w, h
 	f.mu.Unlock()
 	f.push(Event{Kind: EventResize, W: w, H: h})
+	NotifyViewportChanged()
 }
 
 // ShowMessage 转发给注入的假原生框 (未注入时返回错误 = "后端不支持")。
