@@ -136,6 +136,16 @@ function toggleCamera() {
   reportPermission("camera", cameraDenied() ? "denied" : "granted");
 }
 
+// describePermissionState: 权限状态的显示词 (spec 见 docs/mobile-adaptation.md §12)。
+// unknown 是"问不到"(本平台不提供), 不是"未授权" —— 两者对用户含义完全不同。
+const describePermissionState = (s) => ({
+  "granted": "已授权",
+  "denied": "已拒绝（可再次申请）",
+  "not-determined": "尚未申请",
+  "restricted": "受系统策略限制",
+  "limited": "部分授权",
+}[s] || "未知（本平台不提供）");
+
 // ===== 组件 =====
 
 // 折痕避让: 只处理竖直 division（横向折痕走上下分栏，见 App）
@@ -183,7 +193,7 @@ const Item = (props) => (
 const CameraPanel = () => (
   <column background={cameraDenied() ? "#fff2f0" : "#eef1fb"} padding={12} gap={6} radius={6}>
     <text font={13} color={cameraDenied() ? "#a33" : "#223"}>
-      {() => (cameraDenied() ? "相机权限被拒绝" : "相机可用")}
+      {() => "相机权限: " + describePermissionState(permissionState("camera"))}
     </text>
     <text font={11} color="#667">
       {() => (cameraDenied()

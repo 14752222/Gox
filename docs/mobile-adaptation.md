@@ -244,3 +244,37 @@ Scale=1（恒等，桌面渲染零漂移）/ Scale=2（翻倍）/ 跨屏（拖�
 2. 显式写了尺寸的元素与用缺省值的元素**没有出现明显的比例失衡**（§11.3
    第一条的已知后果，判断要不要提前收编内置度量）；
 3. 折叠屏展开/合起、旋转后同一套尺寸不跳变。
+
+## 12. 权限三端口径（rqF3oj spec，写死）
+
+权限链路见 `gfx/native_permission.go`（状态词表 + 本节口径的可执行断言
+`gfx/permission_matrix_test.go`）。三端在**个别 kind** 上拿不到完整六态，
+分歧不抹平、也不放大：
+
+| 平台 | kind | 宿主必须上报的口径 |
+|---|---|---|
+| Android | （全部） | `not-determined` **不会出现**：系统无法区分"还没问过"与"拒过一次"（`shouldShowRequestPermissionRationale` 两种情况都可能为 false），统一报 `denied`。**demo 不得依赖两者区别。** |
+| iOS | notification | 同步状态拿不到（`UNAuthorizationStatus` 要异步请求才给）→ `permission.get` 里按 `unknown` 上报。 |
+| 鸿蒙 | gallery | 走系统选择器（`photoAccessHelper` Picker）免权限 → 恒 `granted`。 |
+| 鸿蒙 | storage | 无等价运行时权限 → 恒 `unknown`。 |
+
+应用层显示约定：`unknown` 是"**问不到**"而不是"未授权"——两者对用户含义
+完全不同。demo 层用 `describePermissionState(state)` 渲染（实现见
+`gfx/permission_matrix_test.go` 的脚本段与 `testdata/foldable_demo.js`）：
+
+```
+granted        已授权
+denied         已拒绝（可再次申请）
+not-determined 尚未申请
+restricted     受系统策略限制
+limited        部分授权
+unknown        未知（本平台不提供）   ← 不是"未授权"
+```
+
+一致性硬约束（`gfx/hosttest` 的 `checkCanIUseConsistency` 已覆盖声明侧，
+`TestPermissionUnsupportedConsistency` 覆盖消费侧）：
+
+> `canIUse(x) === false` ⟺ 动作型调用 reject 且 `errCode === "unsupported"`。
+
+注意探测用**方法名**（`canIUse("permission.request")`）：`canIUse("permission")`
+对内置模块恒 true——模块存在不等于宿主实现了申请弹窗。

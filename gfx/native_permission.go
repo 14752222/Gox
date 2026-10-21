@@ -25,6 +25,36 @@ package gfx
 // `limited` 是 iOS 相册的常态, 把它当成 `denied` 会让应用错误地退化成"没有照片
 // 权"从而不显示任何图片; 当成 `granted` 又会在读全量照片时失败。所以它必须
 // 有独立取值, 应用侧自行决定怎么处理。
+//
+// ## 三端语义对齐 spec (rqF3oj 写死, demo 不得依赖被抹平的差异)
+//
+// 三端在**个别 kind** 上拿不到完整六态。分歧不抹平、也不放大, 按下表对齐;
+// 宿主实现必须按本表上报, demo/文档按本表解释读数:
+//
+//	平台        kind          宿主必须上报的口径
+//	---------   -----------   ----------------------------------------------
+//	Android     (全部)        not-determined **不会出现**: 系统无法区分
+//	                          "还没问过"与"拒过一次" (两种情况下
+//	                          shouldShowRequestPermissionRationale 都可能为
+//	                          false), 统一报 denied。demo 不得依赖两者区别。
+//	iOS         notification  同步状态拿不到 (UNAuthorizationStatus 要异步
+//	                          请求才给) → permission.get 里按 unknown 上报。
+//	鸿蒙        gallery       走系统选择器 (photoAccessHelper Picker) 免权限
+//	                          → 恒 granted。
+//	鸿蒙        storage       无等价运行时权限 → 恒 unknown。
+//
+// 应用层的显示约定: unknown 是"**问不到**"而不是"未授权" —— 两者对用户含义
+// 完全不同。demo 层用 describePermissionState(state) 渲染:
+//
+//	granted        "已授权"
+//	denied         "已拒绝（可再次申请）"
+//	not-determined "尚未申请"
+//	restricted     "受系统策略限制"
+//	limited        "部分授权"
+//	unknown        "未知（本平台不提供）"   ← 不是"未授权"!
+//
+// 一致性硬约束 (hosttest.checkCanIUseConsistency 已覆盖, mock 必须继续满足):
+// canIUse(x) === false ⟺ 动作型调用 reject 且 errCode === "unsupported"。
 
 import (
 	"strings"
