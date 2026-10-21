@@ -318,9 +318,27 @@ func (s *surface) ShowRegions(img *image.RGBA, rects []image.Rectangle) {
 		if r.Empty() {
 			continue
 		}
-		xproto.PutImage(s.conn, xproto.ImageFormatZPixmap, xproto.Drawable(s.win),
-			s.gc, uint16(r.Dx()), uint16(r.Dy()), int16(r.Min.X), int16(r.Min.Y),
-			0, 24, RGBAToXZPixmap(img, r))
+		// PutImage 的请求长度字段是 16 位 (4 字节单位, 上限 256KB 总长)。
+		// 一个 >256KB 的区域 (500x300 RGBA 就有 600KB) 单次发送会被 X
+		// 服务器回 BadLength 并**掐断整条连接** —— 症状是窗口打开一两秒后
+		// 静默消失、进程正常退出、stderr 全空 (S0 折叠屏 demo 在桌面首绘
+		// 即崩的根因)。所以按行带切分, 每片数据远小于上限。
+		const maxPutImageBytes = 128 * 1024 // 每请求图像数据上限 (含安全余量)
+		stride := r.Dx() * 4
+		rowsPerReq := maxPutImageBytes / stride
+		if rowsPerReq < 1 {
+			rowsPerReq = 1 // 单行就超限的极端窄高区域: 至少按行发
+		}
+		for y := r.Min.Y; y < r.Max.Y; y += rowsPerReq {
+			y2 := y + rowsPerReq
+			if y2 > r.Max.Y {
+				y2 = r.Max.Y
+			}
+			band := image.Rect(r.Min.X, y, r.Max.X, y2)
+			xproto.PutImage(s.conn, xproto.ImageFormatZPixmap, xproto.Drawable(s.win),
+				s.gc, uint16(band.Dx()), uint16(band.Dy()), int16(band.Min.X), int16(band.Min.Y),
+				0, 24, RGBAToXZPixmap(img, band))
+		}
 	}
 	s.conn.Sync() // 确保请求已送达 (xgb 无独立 flush 入口)
 }
@@ -405,15 +423,24 @@ func (s *surface) markClosed() {
 }
 
 // translate 把 X 事件翻译为 gfx.Event; 返回 false 表示应关闭。
+//
+// 注意事件类型全是**值**而不是指针: jezek/xgb 的 xproto.*EventNew 返回的是
+// 值类型 (return v, 不是 &v), 写成 `case *xproto.ButtonPressEvent` 时 type
+// switch 永远不匹配 —— 编译期完全合法, 运行期表现为"这段分支是死代码",
+// 窗口画出来了却对鼠标/键盘毫无反应, 没有任何报错。这正是 X11 后端在桌面
+// 上"能看不能点"的根因, 改动时不要给这些 case 加 `*`。
 func (s *surface) translate(ev xgb.Event) bool {
+	if p, ok := ev.(*xproto.ButtonPressEvent); ok && p != nil {
+		ev = *p // 指针传入也归一成值, 兼容调用方不小心取址
+	}
 	switch e := ev.(type) {
-	case *xproto.ClientMessageEvent:
+	case xproto.ClientMessageEvent:
 		// WM_DELETE_WINDOW → 关闭
 		if e.Type == s.wmProtocols && len(e.Data.Data32) > 0 &&
 			xproto.Atom(e.Data.Data32[0]) == s.wmDelete {
 			s.trySend(gfx.Event{Kind: gfx.EventClose})
 		}
-	case *xproto.ButtonPressEvent:
+	case xproto.ButtonPressEvent:
 		// 滚轮的 Shift 状态在事件 state 位域里 (与键盘事件同一套解析),
 		// Scroll 容器据此做 Shift+滚轮横向滚动 (rSkhXA)。
 		_, wheelShift, _ := xModifiers(e.State)
@@ -425,28 +452,28 @@ func (s *surface) translate(ev xgb.Event) bool {
 		case 5: // 滚轮下
 			s.trySend(gfx.Event{Kind: gfx.EventMouseWheel, X: int(e.EventX), Y: int(e.EventY), DeltaY: -wheelDelta, Shift: wheelShift})
 		}
-	case *xproto.ButtonReleaseEvent:
+	case xproto.ButtonReleaseEvent:
 		switch e.Detail {
 		case 1:
 			s.trySend(gfx.Event{Kind: gfx.EventMouseUp, X: int(e.EventX), Y: int(e.EventY)})
 		case 3: // 右键
 			s.trySend(gfx.Event{Kind: gfx.EventMouseRightUp, X: int(e.EventX), Y: int(e.EventY)})
 		}
-	case *xproto.MotionNotifyEvent:
+	case xproto.MotionNotifyEvent:
 		s.trySend(gfx.Event{Kind: gfx.EventMouseMove, X: int(e.EventX), Y: int(e.EventY)})
-	case *xproto.LeaveNotifyEvent:
+	case xproto.LeaveNotifyEvent:
 		s.trySend(gfx.Event{Kind: gfx.EventMouseLeave})
-	case *xproto.KeyPressEvent:
+	case xproto.KeyPressEvent:
 		if name, ok := s.keyNames[e.Detail]; ok {
 			ctrl, shift, alt := xModifiers(e.State)
 			s.trySend(gfx.Event{Kind: gfx.EventKeyDown, Key: name, Ctrl: ctrl, Shift: shift, Alt: alt})
 		}
-	case *xproto.KeyReleaseEvent:
+	case xproto.KeyReleaseEvent:
 		if name, ok := s.keyNames[e.Detail]; ok {
 			ctrl, shift, alt := xModifiers(e.State)
 			s.trySend(gfx.Event{Kind: gfx.EventKeyUp, Key: name, Ctrl: ctrl, Shift: shift, Alt: alt})
 		}
-	case *xproto.ConfigureNotifyEvent:
+	case xproto.ConfigureNotifyEvent:
 		s.mu.Lock()
 		resized := int(e.Width) != s.w || int(e.Height) != s.h
 		moved := int(e.X) != s.x || int(e.Y) != s.y

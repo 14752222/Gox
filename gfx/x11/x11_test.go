@@ -9,6 +9,8 @@ import (
 	"testing"
 
 	"github.com/14752222/Gox/gfx"
+	"github.com/jezek/xgb"
+	"github.com/jezek/xgb/xproto"
 )
 
 // TestRGBAToXZPixelFormat 验证 RGBA→X ZPixmap 的 BGRA 字节布局与裁剪区域读取。
@@ -142,5 +144,39 @@ func TestHasPrimaryDisplay(t *testing.T) {
 	}
 	if !hasPrimaryDisplay([]gfx.Display{{ID: "a"}, {ID: "b", Primary: true}}) {
 		t.Fatalf("有 Primary 标记应报有主屏")
+	}
+}
+
+// TestXProtoEventsAreValues 锁住"xproto 事件是值类型"这个前提。
+//
+// 回归背景: translate 曾把全部 case 写成 `*xproto.ButtonPressEvent` 这类
+// 指针形态, 而 jezek/xgb 的 *EventNew 返回的是值 —— type switch 全不匹配,
+// 于是窗口能画出来但鼠标/键盘输入全部静默丢弃, 且编译/测试**全绿**
+// (当时没有任何测试碰 translate, 因为直构 surface 需要活连接)。
+// 这个测试不需要 X 服务器: 它只断言事件构造函数的返回类型形态, 一旦上游
+// 改成返回指针, 这里立刻红, 提醒同步改 translate。
+func TestXProtoEventsAreValues(t *testing.T) {
+	// 32 字节足以让各 EventNew 解析完头部字段 (它们按需读固定偏移)。
+	buf := make([]byte, 64)
+	evs := map[string]xgb.Event{
+		"ButtonPress":     xproto.ButtonPressEventNew(buf),
+		"ButtonRelease":   xproto.ButtonReleaseEventNew(buf),
+		"MotionNotify":    xproto.MotionNotifyEventNew(buf),
+		"LeaveNotify":     xproto.LeaveNotifyEventNew(buf),
+		"KeyPress":        xproto.KeyPressEventNew(buf),
+		"KeyRelease":      xproto.KeyReleaseEventNew(buf),
+		"ConfigureNotify": xproto.ConfigureNotifyEventNew(buf),
+		"ClientMessage":   xproto.ClientMessageEventNew(buf),
+	}
+	for name, ev := range evs {
+		switch ev.(type) {
+		case xproto.ButtonPressEvent, xproto.ButtonReleaseEvent,
+			xproto.MotionNotifyEvent, xproto.LeaveNotifyEvent,
+			xproto.KeyPressEvent, xproto.KeyReleaseEvent,
+			xproto.ConfigureNotifyEvent, xproto.ClientMessageEvent:
+			// 值类型: 与 translate 的 case 一致
+		default:
+			t.Fatalf("%s 事件是 %T, translate 只识别值类型 —— 上游改成指针了?", name, ev)
+		}
 	}
 }
