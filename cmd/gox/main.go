@@ -28,7 +28,7 @@ import (
 // version 是 `gox version` 报的版本号。**与 npm/package.json 的 version 手工保持一致**
 // （发版时两处一起改，见 docs/npm-release.md 的同步清单）—— 仓库里没有版本注入机制，
 // 刻意不引入第二个真相来源以外的复杂度。
-const version = "0.14.0"
+const version = "0.14.1"
 
 func main() {
 	// 开发模式诊断: 由 CLI 边界读环境变量并显式传给 gfx (为什么不让 gfx 自己
