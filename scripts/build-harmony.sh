@@ -148,31 +148,40 @@ esac
 command -v go >/dev/null 2>&1 || { echo "error: go not found in PATH" >&2; exit 1; }
 
 # ---- 生成 CC wrapper ----
-# 官方 wrapper 是 sh 脚本，Windows 上不可用；这里在仓库内落一个等价的 .cmd
-# （内容 = 官方那几行参数 + `%*`）。CC 必须是绝对路径且 go.exe 能看到，
-# 所以先转成 Windows 形式再写进去。
+#
+# 为什么不能直接把 SDK 里的 clang 交给 go：它是 `#!/bin/sh` 脚本（Android NDK
+# 的 `.cmd` 同理），Windows 上既不给 `.cmd` 后缀、也不在 `PATHEXT` 里，go 起不来
+# —— 症状是 `exec: "...": executable file not found`。所以在仓库内落一个等价的
+# wrapper（内容 = 官方那几行参数）。
+#
+# **两种形态，按宿主分**（2026-10-22 补 Linux 分支）：
+#
+#   Windows（有 cygpath）→ `.cmd`：go.exe 是 Windows 原生程序，只认 .cmd，
+#     且内容必须 CRLF + 纯 ASCII、路径转 Windows 形式（`H:/…`）。
+#   Linux / macOS        → `.sh` + chmod +x。
+#
+# **以前这里无条件生成 .cmd**，于是在 Linux 上 go 拿到的是一段 `@echo off` 文本
+# —— 既没有 shebang 也不是可执行脚本，直接执行失败（脚本事实上只支持 Windows）。
+# 下面这个分支就是修它。
+#
+# 另：写文件用 MSYS 路径、交给 go 的路径用 Windows 形式，是**两件事** —— 重定向
+# 目标写 Windows 形式会被当成相对路径落到奇怪的地方。
 mkdir -p .workbuddy/tmp
-CC_CMD="$ROOT/.workbuddy/tmp/cc-ohos-$ABI.cmd"
 
-SDK_NATIVE=$SDK
 CLANG_FOR_CC=$CLANG
 SYSROOT_FOR_CC=$SYSROOT
 if command -v cygpath >/dev/null 2>&1; then
-  SDK_NATIVE=$(cygpath -m "$SDK")
   CLANG_FOR_CC=$(cygpath -m "$CLANG")
   SYSROOT_FOR_CC=$(cygpath -m "$SYSROOT")
-  CC_CMD=$(cygpath -m "$CC_CMD")
-fi
-
-# 注意：Windows 下写 .cmd 必须用 CRLF 且纯 ASCII。路径含空格 ⇒ 全部加引号。
-printf '@echo off\r\n"%s" -target %s --sysroot="%s" -D__MUSL__ %%*\r\n' \
-  "$CLANG_FOR_CC" "$TRIPLE" "$SYSROOT_FOR_CC" > "$CC_CMD"
-
-# wrapper 是给 go.exe（Windows 原生）看的，路径形式以 Windows 为准；
-# 但接下来 shell 还要读它做自检，转回 MSYS 形式。
-CC_CMD_MSYS=$CC_CMD
-if command -v cygpath >/dev/null 2>&1; then
-  CC_CMD_MSYS=$(cygpath -u "$CC_CMD")
+  CC_CMD="$(cygpath -m "$ROOT")/.workbuddy/tmp/cc-ohos-$ABI.cmd"
+  # 路径含空格（“DevEco Studio”）是常态 ⇒ 全部加引号。
+  printf '@echo off\r\n"%s" -target %s --sysroot="%s" -D__MUSL__ %%*\r\n' \
+    "$CLANG_FOR_CC" "$TRIPLE" "$SYSROOT_FOR_CC" > "$(cygpath -u "$CC_CMD")"
+else
+  CC_CMD="$ROOT/.workbuddy/tmp/cc-ohos-$ABI.sh"
+  printf '#!/bin/sh\nexec "%s" -target %s --sysroot="%s" -D__MUSL__ "$@"\n' \
+    "$CLANG" "$TRIPLE" "$SYSROOT" > "$CC_CMD"
+  chmod +x "$CC_CMD"
 fi
 
 mkdir -p "$OUT"
