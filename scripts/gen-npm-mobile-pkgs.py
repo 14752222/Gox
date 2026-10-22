@@ -69,7 +69,7 @@ def render_package_json(meta, version):
         "name": meta["name"],
         "version": version,
         "description": meta["description"],
-        "license": "Apache-2.0",
+        "license": "MIT",
         "repository": {
             "type": "git",
             "url": "git+https://github.com/14752222/Gox.git",
