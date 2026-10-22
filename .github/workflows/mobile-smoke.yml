@@ -346,12 +346,32 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
+      # 设备表随 runner 的 cmdline-tools 版本漂移（pixel_fold 在部分 SDK 里不存在，
+      # 0414b7e6 那次就挂在 "No device found matching --device pixel_fold"）——
+      # 不再硬编码 profile，探测到什么 fold 设备用什么；一个都没有就显式 skip。
+      - name: 探测可用的折叠屏 AVD profile
+        id: fold
+        run: |
+          set -euo pipefail
+          IDS=$(avdmanager list device | sed -n 's/^id: [0-9]* or "\(.*\)"$/\1/p')
+          echo "$IDS" | head -5
+          FOLD=$(echo "$IDS" | grep -i fold | head -1 || true)
+          if [ -z "$FOLD" ]; then
+            echo "available=skip" >> "$GITHUB_OUTPUT"
+            echo "::warning::avdmanager 设备表里没有任何 fold profile —— 本 job 退化为 skip（折叠态回归靠本地 scripts/mobile-device-accept.sh --rounds 20 与 gfx 生命周期测试兜底）"
+          else
+            echo "available=run" >> "$GITHUB_OUTPUT"
+            echo "profile=$FOLD" >> "$GITHUB_OUTPUT"
+            echo "==> 使用 fold profile: $FOLD"
+          fi
+
       - name: 折叠态矩阵（CLOSED/HALF_FOLDED/OPENED 切换 + 截图）
+        if: steps.fold.outputs.available == 'run'
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 34
           arch: x86_64
-          profile: pixel_fold
+          profile: ${{ steps.fold.outputs.profile }}
           disable-animations: true
           script: |
             set -euo pipefail
@@ -432,7 +452,9 @@ jobs:
 
           cd /tmp/iosapp
           unzip -qo gox-smoke-ios-sim.zip -d appdir
-          APP=$(find appdir -name "*.app" -maxdepth 2 | head -1)
+          # 上传侧 `zip -qry out.zip smoke/dist/Gox.app` 存的是整条相对路径，
+          # .app 落在 appdir/smoke/dist/ 下（第 3 层）—— 深度放宽到 4。
+          APP=$(find appdir -name "*.app" -maxdepth 4 | head -1)
           test -n "$APP" || { echo "::error::zip 里没找到 .app"; exit 1; }
           # bundle id 不猜：从 Info.plist 读（XcodeGen 拼的 com.gox.Gox 若改名，
           # 这里跟着走，不用改两处）
