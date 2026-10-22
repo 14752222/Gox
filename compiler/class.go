@@ -776,27 +776,24 @@ func (c *Compiler) compileClassMethodToObject(m *ast.ClassMethod, superName stri
 	if err != nil {
 		return err
 	}
+	// 计算键方法 (含 getter/setter) 一律走 *_DYN 变体: 弹 fn 与 key、留 obj,
+	// 不需要为写入"消耗副本"而 DUP —— 那是旧 SET_INDEX 路径 (弹三元组) 的
+	// 包袱。类方法在此顺带拿到正确的不可枚举描述符。
 	midx := c.constants.AddConstant(meta)
-	if m.ComputedKey != nil && !m.IsGetter && !m.IsSetter {
-		// 动态键普通方法: SET_INDEX 弹 [obj, key, val] 三元组,
-		// 先 DUP obj 让写入消耗副本 (getter/setter 走 DYN 弹2保留 obj, 不需要)。
-		c.emitter.EmitNoOperand(bytecode.OP_DUP)
-	}
 	c.emitter.Emit(bytecode.OP_FUNCTION, midx)
 	if m.ComputedKey != nil {
-		// 动态键: 栈 [obj(, obj), fn] → key → [obj, (obj,) fn, key] → DYN 访问器/SET_INDEX
+		// 动态键: 栈 [obj(, obj), fn] → key → [obj, (obj,) fn, key]
+		// → *_DYN 弹 fn 与 key、留 obj (键在栈顶, 与 SET_*_DYN 同序)。
 		if err := c.compileExpression(m.ComputedKey); err != nil {
 			return err
 		}
 		switch {
 		case m.IsGetter:
-			c.emitter.EmitNoOperand(bytecode.OP_SET_GETTER_DYN)
+			c.emitter.EmitNoOperand(bytecode.OP_SET_GETTER_DYN_NE)
 		case m.IsSetter:
-			c.emitter.EmitNoOperand(bytecode.OP_SET_SETTER_DYN)
+			c.emitter.EmitNoOperand(bytecode.OP_SET_SETTER_DYN_NE)
 		default:
-			c.emitter.EmitNoOperand(bytecode.OP_SWAP) // [obj, fn, key] → [obj, key, fn] 对齐 SET_INDEX 栈序
-			c.emitter.EmitNoOperand(bytecode.OP_SET_INDEX)
-			c.emitter.EmitNoOperand(bytecode.OP_POP)
+			c.emitter.EmitNoOperand(bytecode.OP_SET_METHOD_DYN)
 		}
 		return nil
 	}
@@ -805,12 +802,15 @@ func (c *Compiler) compileClassMethodToObject(m *ast.ClassMethod, superName stri
 		propKey = c.privateKey(m.Name)
 	}
 	keyIdx := c.constants.AddConstant(object.NewString(propKey))
+	// 类方法/访问器: 描述符 enumerable:false (SET_METHOD / SET_*_NE), 与对象
+	// 字面量方法 (SET_PROP, enumerable:true) 相对 —— 规范 MakeMethod 用
+	// DefineProperty 而非赋值。
 	if m.IsGetter {
-		c.emitter.Emit(bytecode.OP_SET_GETTER, keyIdx)
+		c.emitter.Emit(bytecode.OP_SET_GETTER_NE, keyIdx)
 	} else if m.IsSetter {
-		c.emitter.Emit(bytecode.OP_SET_SETTER, keyIdx)
+		c.emitter.Emit(bytecode.OP_SET_SETTER_NE, keyIdx)
 	} else {
-		c.emitter.Emit(bytecode.OP_SET_PROP, keyIdx)
+		c.emitter.Emit(bytecode.OP_SET_METHOD, keyIdx)
 	}
 	return nil
 }

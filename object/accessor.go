@@ -73,6 +73,35 @@ func (o *Object) DefineSymbolAccessor(sym *Symbol, getter, setter Value) {
 	}
 }
 
+// DefineSymbolAccessorNonEnumerable 以 Symbol 为键定义**不可枚举**访问器 ——
+// 类计算键访问器 (`class C { get [Symbol.x](){} }`) 的语义, 与
+// DefineSymbolAccessor (对象字面量语义, enumerable: true) 相对。
+// 规范 MakeMethod 走 DefineProperty, 类成员一律 enumerable: false。
+func (o *Object) DefineSymbolAccessorNonEnumerable(sym *Symbol, getter, setter Value) {
+	if o.SymbolProperties == nil {
+		o.SymbolProperties = make(map[uint64]PropertyDescriptor)
+	}
+	if existing, ok := o.SymbolProperties[sym.ID]; ok {
+		if acc, isAcc := existing.Value.(*Accessor); isAcc {
+			if getter != nil {
+				acc.Getter = getter
+			}
+			if setter != nil {
+				acc.Setter = setter
+			}
+			return
+		}
+	} else {
+		o.SymbolKeyList = append(o.SymbolKeyList, sym)
+	}
+	o.SymbolProperties[sym.ID] = PropertyDescriptor{
+		Value:        NewAccessor(getter, setter),
+		Writable:     false,
+		Enumerable:   false,
+		Configurable: true,
+	}
+}
+
 // DefineBuiltinAccessor 在内建原型/命名空间上定义 getter/setter 属性。
 // 描述符为 {enumerable: false, configurable: true} (规范内建访问器形态),
 // 与 DefineAccessor (对象字面量语义, enumerable: true) 相对。

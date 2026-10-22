@@ -678,7 +678,17 @@ func (p *Parser) parseStatementBody() ast.Statement {
 		// `let` 按标识符表达式语句处理 (ASI 补分号), `{}` 是后续独立语句, 交还
 		// 语句循环按块/对象字面量重新分发。
 		// (test262 for-await-of/let-block-with-newline.js: for await (...) let \n {})
-		if p.peekTokenIs(lexer.LBRACE) && p.peekToken().Line != p.curToken().Line {
+		// 同理 `let` 后换行再跟标识符 / `[` / `{`: 声明要求绑定与 let 同行,
+		// 换行后 let 只能是**标识符**引用 (ASI 补分号), 后续行是独立语句。
+		// 规范 ExpressionStatement 的 lookahead 限制是 `let [` / `let {`,
+		// 但那只在**同行**生效 —— 换行后 `let` 连声明的候选都不是
+		// (test262 *-let-identifier-with-newline.js: `if (false) let // ASI
+		// \n x = 1;`, 形态只有 noStrict 才合法, strict 下 let 是保留字)。
+		if p.peekToken().Line != p.curToken().Line &&
+			// 注意不含 `[`: `let [` 是 ExpressionStatement 的 lookahead 禁止
+			// 形态, **与换行无关** —— `if (false) let\n[a] = 0;` 仍是早错
+			// (test262 *-let-array-with-newline.js 全部要求 parse 报错)。
+			(p.peekTokenIs(lexer.LBRACE) || p.peekTokenIs(lexer.IDENTIFIER)) {
 			return &ast.ExpressionStatement{
 				Token:      p.curToken(),
 				Expression: &ast.Identifier{Token: p.curToken(), Value: "let"},
@@ -738,8 +748,8 @@ func (p *Parser) parseStatementBody() ast.Statement {
 	case lexer.SWITCH:
 		return p.parseSwitchStatement()
 	case lexer.IMPORT:
-		if p.peekTokenIs(lexer.LPAREN) {
-			// 动态 import(): import("./mod.js") 作为表达式
+		if p.peekTokenIs(lexer.LPAREN) || p.isSourcePhaseImportAhead() {
+			// 动态 import() / import.source(): 作为表达式语句解析
 			return p.parseExpressionStatement()
 		}
 		// import 声明只在模块顶层合法 (spec: ModuleItem)。块/函数体内的
@@ -2193,6 +2203,25 @@ func (p *Parser) parseBody() *ast.BlockStatement {
 	stmt := p.parseStatement()
 	if !isNilStmt(stmt) {
 		block.Statements = append(block.Statements, stmt)
+		// if/while/for/do/label 的**单语句体**不是 StatementList ⇒ 词法声明
+		// 在此非法 (规范 14.6/14.7…: Statement 产生式不含 Declaration):
+		// `if (true) const x = null;` / `while (0) let y;` 都是早错。
+		// 此前不拦, 这类源码被当成合法声明执行 (test262 language/statements/
+		// if|while|for|do|label 的 *-decl-pos / const-let 簇)。
+		switch s := stmt.(type) {
+		case *ast.LetStatement:
+			p.addError("SyntaxError: lexical declaration cannot appear in a single-statement context")
+		case *ast.ConstStatement:
+			p.addError("SyntaxError: lexical declaration cannot appear in a single-statement context")
+		case *ast.ClassDeclaration:
+			p.addError("SyntaxError: class declaration cannot appear in a single-statement context")
+		case *ast.FunctionDeclaration:
+			// 函数声明: 仅严格模式下非法 (Annex B 的 sloppy 扩展允许它)。
+			if p.strict {
+				p.addError("SyntaxError: function declaration cannot appear in a single-statement context in strict mode")
+			}
+			_ = s
+		}
 	}
 	// 单语句后不自动消费分号外的 token (由调用方处理)
 	return block
@@ -3105,7 +3134,11 @@ func (p *Parser) parseNewExpression() ast.Expression {
 	// 在语法上就不成立 (spec: NewExpression), 必须 parse 期 SyntaxError, 不能
 	// 编成 `new <promise>` 推到运行期抛 TypeError。见 test262
 	// dynamic-import/syntax/invalid/*-no-new-call-expression{,-prop-access}.js。
-	if p.curTokenIs(lexer.IMPORT) && p.peekTokenIs(lexer.LPAREN) {
+	if p.curTokenIs(lexer.IMPORT) && (p.peekTokenIs(lexer.LPAREN) || p.isSourcePhaseImportAhead()) {
+		// `new import.source(...)` 同 `new import(...)`: ImportCall 是
+		// CallExpression 不是 MemberExpression, 不能作 new 的被调者。
+		// 见 test262 dynamic-import/syntax/invalid/
+		// *-import-source-no-new-call-expression{,-prop-access}.js。
 		p.addError("SyntaxError: import call is not a constructor (cannot be preceded by 'new')")
 	}
 	// 元属性 new.target: `new` 后紧跟 `.target`。token 之间的空白/换行/注释
@@ -4460,10 +4493,36 @@ func (p *Parser) parseSwitchStatement() *ast.SwitchStatement {
 	return stmt
 }
 
+// isSourcePhaseImportAhead 报告 curToken 起的形态是否为 `import.source(`。
+// 语句层必须先问它: `import` 在 ModuleItem 位置优先按 import 声明解析, 而
+// import.source(...) 是**表达式** —— 不问就走声明路径, 于是报
+// "import declarations may only appear at the top level of a module"
+// (test262 的 dynamic-import 簇里 49 条就是这么死的)。
+func (p *Parser) isSourcePhaseImportAhead() bool {
+	return p.peekTokenIs(lexer.DOT) && p.peek2TokenIs(lexer.IDENTIFIER) &&
+		p.peekTokenAt(2).Literal == "source" && p.peek3TokenIs(lexer.LPAREN)
+}
+
 // parseDynamicImport 解析动态 import() 表达式。
 // import("./mod.js") 返回 Promise。
 func (p *Parser) parseDynamicImport() ast.Expression {
 	di := &ast.DynamicImportExpression{Token: p.curToken()}
+	// import.source(spec): ES2025 source phase import。语法上它是
+	// ImportCall 的第二种形态 —— `import` `.` `source` `(` — 与成员表达式
+	// `import.foo` 不同, `source` 之后必须紧跟 `(`。
+	if p.isSourcePhaseImportAhead() {
+		p.nextToken() // .
+		p.nextToken() // source
+		p.nextToken() // (
+		p.nextToken() // 表达式首 token (与 import() 分支的 expectPeek+nextToken 同位置)
+		di.IsSourcePhase = true
+		di.Source = p.parseExpression(LOWEST)
+		if !p.expectPeek(lexer.RPAREN) {
+			p.addError("expected ')' after import.source specifier")
+			return nil
+		}
+		return di
+	}
 	if !p.expectPeek(lexer.LPAREN) {
 		p.addError("expected '(' after import")
 		return nil

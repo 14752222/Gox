@@ -1244,6 +1244,103 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				}
 				continue
 			}
+		// class 方法定义 (规范 MakeMethod: DefineProperty, enumerable: false)。
+		// 栈序与 OP_SET_PROP/SET_GETTER/SET_SETTER 一致, 只换描述符的
+		// [[Enumerable]]。见 bytecode/opcode.go 里 OP_SET_METHOD 的说明。
+		case bytecode.OP_SET_METHOD, bytecode.OP_SET_GETTER_NE, bytecode.OP_SET_SETTER_NE:
+			val := vm.stack.Pop()
+			obj := vm.stack.Peek() // 保留对象在栈上
+			propNameVal := frame.Constants.Get(operand)
+			propName := ""
+			if s, ok := propNameVal.(*object.String); ok {
+				propName = s.Value
+			}
+			if obj == object.NullSingleton || obj == object.UndefinedSingleton {
+				if err := vm.throwNamedError("TypeError",
+					"Cannot set properties of %s (setting '%s')", obj.Inspect(), propName); err != nil {
+					return err
+				}
+				continue
+			}
+			switch o := obj.(type) {
+			case *object.Object:
+				switch op {
+				case bytecode.OP_SET_METHOD:
+					o.DefineOwn(propName, object.PropertyDescriptor{
+						Value: val, Writable: true, Enumerable: false, Configurable: true,
+					})
+				case bytecode.OP_SET_GETTER_NE:
+					o.DefineBuiltinAccessor(propName, val, nil)
+				default:
+					o.DefineBuiltinAccessor(propName, nil, val)
+				}
+			case *object.Closure:
+				switch op {
+				case bytecode.OP_SET_METHOD:
+					o.DefineOwn(propName, object.PropertyDescriptor{
+						Value: val, Writable: true, Enumerable: false, Configurable: true,
+					})
+				default:
+					vm.defineClosureAccessor(obj, propName, val, op == bytecode.OP_SET_GETTER_NE)
+				}
+			default:
+				vm.defineClosureAccessor(obj, propName, val, op == bytecode.OP_SET_GETTER_NE)
+			}
+			// setter 可能经回调桥执行用户代码并抛出异常: 立即消费
+			if err := vm.checkCallbackErr(); err != nil {
+				if terr := vm.rethrowBridgeError(err); terr != nil {
+					return terr
+				}
+				continue
+			}
+		// 计算键版: 栈 [obj, fn, key] —— 键在栈顶, 弹两留一。
+		case bytecode.OP_SET_METHOD_DYN, bytecode.OP_SET_GETTER_DYN_NE, bytecode.OP_SET_SETTER_DYN_NE:
+			key := vm.stack.Pop()
+			val := vm.stack.Pop()
+			obj := vm.stack.Peek() // 保留对象在栈上
+			switch o := obj.(type) {
+			case *object.Object:
+				if sym, isSym := key.(*object.Symbol); isSym {
+					if op == bytecode.OP_SET_METHOD_DYN {
+						o.DefineOwnSymbolProperty(sym, object.PropertyDescriptor{
+							Value: val, Writable: true, Enumerable: false, Configurable: true,
+						})
+					} else if op == bytecode.OP_SET_GETTER_DYN_NE {
+						o.DefineSymbolAccessorNonEnumerable(sym, val, nil)
+					} else {
+						o.DefineSymbolAccessorNonEnumerable(sym, nil, val)
+					}
+					continue
+				}
+				propName := toJSString(key)
+				switch op {
+				case bytecode.OP_SET_METHOD_DYN:
+					o.DefineOwn(propName, object.PropertyDescriptor{
+						Value: val, Writable: true, Enumerable: false, Configurable: true,
+					})
+				case bytecode.OP_SET_GETTER_DYN_NE:
+					o.DefineBuiltinAccessor(propName, val, nil)
+				default:
+					o.DefineBuiltinAccessor(propName, nil, val)
+				}
+			case *object.Closure:
+				propName := toJSString(key)
+				if op == bytecode.OP_SET_METHOD_DYN {
+					o.DefineOwn(propName, object.PropertyDescriptor{
+						Value: val, Writable: true, Enumerable: false, Configurable: true,
+					})
+				} else {
+					vm.defineClosureAccessor(obj, propName, val, op == bytecode.OP_SET_GETTER_DYN_NE)
+				}
+			default:
+				vm.defineClosureAccessor(obj, toJSString(key), val, op == bytecode.OP_SET_GETTER_DYN_NE)
+			}
+			if err := vm.checkCallbackErr(); err != nil {
+				if terr := vm.rethrowBridgeError(err); terr != nil {
+					return terr
+				}
+				continue
+			}
 		case bytecode.OP_SET_GETTER, bytecode.OP_SET_SETTER:
 			// 栈: [obj, fn]; 设置 getter/setter 属性
 			fn := vm.stack.Pop()
@@ -1369,6 +1466,18 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			}
 			p := object.NewPromise()
 			p.Resolve(modExports.buildNamespace(nil))
+			vm.stack.Push(p)
+		case bytecode.OP_IMPORT_SOURCE:
+			// import.source(spec): 规范 16.2.1.7.2 —— SourceTextModuleRecord 的
+			// GetModuleSource 恒抛 SyntaxError (source phase import 对文本模块
+			// 不可用)。specifier 的 ToString 副作用照常发生, 之后 Promise 以
+			// SyntaxError reject —— 用例形如
+			// `import.source(obj).catch(e => assert.sameValue(e.name,'SyntaxError'))`。
+			specVal := vm.stack.Pop()
+			_ = toJSString(specVal)
+			p := object.NewPromise()
+			p.Reject(object.NewErrorWithName("SyntaxError",
+				"source phase imports are not supported for source text modules"))
 			vm.stack.Push(p)
 		case bytecode.OP_GET_INDEX:
 			index := vm.stack.Pop()
