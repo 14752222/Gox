@@ -189,7 +189,9 @@ jobs:
   #      逐产物 sha256 与 manifest.json 一致 —— 子包才是移动端的发布面。
   #
   # 只验 android（本 runner 能编）：ios 要 macos 专属作业（见 release.yml 的
-  # mobile-ios），harmony 要 DevEco SDK（托管 runner 没有）—— 各自在别处覆盖/说明。
+  # mobile-ios），harmony 要 DevEco SDK（托管 runner 装不了，华为镜像只有设备
+  # L2 SDK）。鸿蒙那端退而求其次的覆盖在 **ci.yml 的 harmony-typecheck**（用真
+  # node_api.h 做编译期类型检查，跑在 PR 上）—— 真机构建/打包仍只能本地做。
   # ─────────────────────────────────────────────────────────────────────────────
   npm-package:
     name: npm 包内容核对（主包无 mobile/ + 子包含产物）
