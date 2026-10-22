@@ -353,8 +353,14 @@ jobs:
         id: fold
         run: |
           set -euo pipefail
+          # avdmanager 不在默认 PATH（emulator-runner 内部自己拼路径），这里补上
+          export PATH="${ANDROID_HOME:-/usr/local/lib/android/sdk}/cmdline-tools/latest/bin:$PATH"
+          if ! command -v avdmanager >/dev/null 2>&1; then
+            echo "available=skip" >> "$GITHUB_OUTPUT"
+            echo "::warning::avdmanager 不在 PATH（cmdline-tools 布局变了？）—— 本 job 退化为 skip（折叠态回归靠本地 scripts/mobile-device-accept.sh --rounds 20 与 gfx 生命周期测试兜底）"
+            exit 0
+          fi
           IDS=$(avdmanager list device | sed -n 's/^id: [0-9]* or "\(.*\)"$/\1/p')
-          echo "$IDS" | head -5
           FOLD=$(echo "$IDS" | grep -i fold | head -1 || true)
           if [ -z "$FOLD" ]; then
             echo "available=skip" >> "$GITHUB_OUTPUT"
@@ -433,8 +439,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # 三个代表尺寸档：6.1" 标准 / 6.9" Pro Max / iPad（breakpoint 三档都能压到）
-        device: ["iPhone 16", "iPhone 16 Pro Max", "iPad Pro 11-inch (M4)"]
+        # 三个代表尺寸档：6.1" 标准 / 6.9" Pro Max / iPad（breakpoint 三档都能压到）。
+        # 注意值是**匹配模式**不是具体机型 —— runner 的 Xcode 设备表随版本漂移
+        # （Xcode 26 / iOS 26.5 起设备表里已无 "iPhone 16"，硬编码会挂在
+        # "Invalid device or device pair"），步骤里用 devicetypes 探测解析出
+        # 当前 runner 上真实存在的机型名。
+        device: ["iphone", "iphone pro max", "ipad pro"]
     steps:
       - uses: actions/checkout@v4
 
@@ -446,9 +456,20 @@ jobs:
 
       - name: simctl 机型回归（create → boot → install → launch → screenshot）
         env:
-          DEVICE_NAME: ${{ matrix.device }}
+          DEVICE_PATTERN: ${{ matrix.device }}
         run: |
           set -euo pipefail
+
+          # 按模式解析当前 runner 上实际存在的机型（取最新一代；排除 SE）。
+          DEVICE_NAME=$(xcrun simctl list devicetypes -j | python3 -c "
+          import json, sys
+          want = '$DEVICE_PATTERN'.lower()
+          names = [dt['name'] for dt in json.load(sys.stdin)['devicetypes']]
+          hit = [n for n in names if want in n.lower() and 'SE' not in n]
+          print(hit[-1] if hit else '')
+          ")
+          test -n "$DEVICE_NAME" || { echo "::error::devicetypes 里匹配不到 '$DEVICE_PATTERN'（可用列表见 xcrun simctl list devicetypes）"; exit 1; }
+          echo "==> 解析到机型: $DEVICE_NAME"
 
           cd /tmp/iosapp
           unzip -qo gox-smoke-ios-sim.zip -d appdir
@@ -461,7 +482,8 @@ jobs:
           BID=$(plutil -extract CFBundleIdentifier raw "$APP/Info.plist")
           echo "==> bundle id: $BID"
 
-          UDID=$(xcrun simctl create "gox-matrix-${GITHUB_RUN_ID}-${DEVICE_NAME// /-}" "$DEVICE_NAME" 2>&1)
+          # create 的 stdout 只回 UDID；stderr 的 runtime 提示别掺进变量
+          UDID=$(xcrun simctl create "gox-matrix-${GITHUB_RUN_ID}-${DEVICE_NAME// /-}" "$DEVICE_NAME")
           trap 'xcrun simctl shutdown "$UDID" 2>/dev/null || true; xcrun simctl delete "$UDID" 2>/dev/null || true' EXIT
           xcrun simctl boot "$UDID"
           xcrun simctl bootstatus "$UDID" -b
