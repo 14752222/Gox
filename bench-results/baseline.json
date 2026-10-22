@@ -1,52 +1,52 @@
 {
   "说明": "性能基准基线 —— 由 python3 scripts/check-bench.py --update-baseline 生成。改了引擎热路径且确认是有意的性能变化后重建它；平时 CI 只比对、不自动刷新（自动刷新等于把退化藏起来）。",
   "生成方式": "python3 scripts/check-bench.py --update-baseline",
-  "源结果": "bench-results/bench-20261009-131018.json",
-  "生成时间": "2026-10-09T13:10:18.116813+00:00",
+  "源结果": "bench-results/bench-20261022-084002.json",
+  "生成时间": "2026-10-22T08:40:02.696429+00:00",
   "host": {
-    "platform": "Linux-6.6.117-45.11.4.tl4.x86_64-x86_64-with-glibc2.39",
+    "platform": "Linux-6.17.0-1022-azure-x86_64-with-glibc2.39",
     "machine": "x86_64",
-    "cpu": "Intel(R) Xeon(R) 6981E-C",
-    "cores": 32,
-    "python": "3.11.1"
+    "cpu": "AMD EPYC 7763 64-Core Processor",
+    "cores": 4,
+    "python": "3.12.3"
   },
   "runs_per_metric": 3,
   "指标": {
     "gox": {
-      "startup_ms": 8,
-      "fib28_ms": 788,
-      "timers10k_ms": 192,
-      "rss_kb": 13364
+      "startup_ms": 4,
+      "fib28_ms": 631,
+      "timers10k_ms": 168,
+      "rss_kb": 25016
     },
     "node": {
-      "startup_ms": 35,
-      "fib28_ms": 47,
-      "timers10k_ms": 152,
-      "rss_kb": 46488
+      "startup_ms": 25,
+      "fib28_ms": 34,
+      "timers10k_ms": 139,
+      "rss_kb": 42260
     },
     "goja": {
-      "startup_ms": 6,
-      "fib28_ms": 250,
-      "timers10k_ms": 128,
-      "rss_kb": 7632
+      "startup_ms": 3,
+      "fib28_ms": 200,
+      "timers10k_ms": 116,
+      "rss_kb": 10316
     }
   },
   "比值": {
     "startup_ms": {
       "ref": "node",
-      "value": 0.22857142857142856
+      "value": 0.16
     },
     "fib28_ms": {
       "ref": "node",
-      "value": 16.76595744680851
+      "value": 18.558823529411764
     },
     "timers10k_ms": {
       "ref": "node",
-      "value": 1.263157894736842
+      "value": 1.20863309352518
     },
     "rss_kb": {
       "ref": "node",
-      "value": 0.28747203579418346
+      "value": 0.5919545669663985
     }
   }
 }
