@@ -672,7 +672,10 @@ func TestAnimateRawCallsOnUpdate(t *testing.T) {
 		globalThis.samples = [];
 		globalThis.finished = false;
 		globalThis.run = () => {
-			animate(0, 100, 48, function (v) { globalThis.samples.push(v); },
+			// 时长必须显著大于一帧(pumpFrames 每轮等 20ms): 慢 runner 上
+			// 帧粒度会变粗, 48ms 的动画可能只回调一次 onUpdate 就收工
+			// (macOS runner 实测挂过 "只被调了 1 次")。240ms 保证多帧。
+			animate(0, 100, 240, function (v) { globalThis.samples.push(v); },
 				function () { globalThis.finished = true; });
 		};
 		render(h("column", null, h("text", null, "anim")),
