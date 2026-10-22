@@ -389,13 +389,12 @@ jobs:
             # 不硬编码，下面解析实际报出的名字逐一切换
             STATES=$(grep -ohE 'CLOSED|HALF_FOLDED|HALF_OPENED|OPENED' /tmp/states.txt | sort -u | tr '\n' ' ')
             echo "==> 可用折叠态: $STATES"
-            grep -qiE 'HALF_FOLDED|HALF_OPENED|CLOSED|OPENED' /tmp/states.txt \
-              || { echo "::error::fold 模拟器没报折叠态（print-states 如上）—— AVD profile 或 API 级别变了"; exit 1; }
+            # ⚠️ dash 下反斜杠续行不可靠（多行 script 会被拆行执行）—— 一律写单行
+            grep -qiE 'HALF_FOLDED|HALF_OPENED|CLOSED|OPENED' /tmp/states.txt || { echo "::error::fold 模拟器没报折叠态（print-states 如上）—— AVD profile 或 API 级别变了"; exit 1; }
 
             # 2) 装 APK 并拉起（包名与壳工程一致：com.gox.demo）
             adb install -r /tmp/apk/*.apk
-            adb shell am start -W -n com.gox.demo/.MainActivity || \
-              adb shell monkey -p com.gox.demo -c android.intent.category.LAUNCHER 1
+            adb shell am start -W -n com.gox.demo/.MainActivity || adb shell monkey -p com.gox.demo -c android.intent.category.LAUNCHER 1
             sleep 3
 
             # 3) 逐个折叠态切换并截图 —— 顺序即折叠屏生命周期的真机时序
@@ -410,8 +409,7 @@ jobs:
             done
 
             # 4) 证据：切换期间不能有崩溃 / ANR
-            adb shell "logcat -d -v time | grep -iE 'FATAL EXCEPTION|ANR in|has died' | head -40; echo [scan done]" \
-              > /tmp/fold-logcat.txt
+            adb shell "logcat -d -v time | grep -iE 'FATAL EXCEPTION|ANR in|has died' | head -40; echo [scan done]" > /tmp/fold-logcat.txt
             cat /tmp/fold-logcat.txt
             if grep -qiE 'FATAL EXCEPTION|ANR in' /tmp/fold-logcat.txt; then
               echo "::error::折叠态切换期间出现未捕获异常/ANR（原文在 artifacts 的 fold-logcat.txt）"
