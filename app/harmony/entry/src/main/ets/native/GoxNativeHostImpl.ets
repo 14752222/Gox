@@ -163,8 +163,12 @@ export class GoxNativeHostImpl implements NativeHost {
       Methods.LOCATION_UNWATCH,
       'insets',
       'displayFold',
-      'battery',
-      'network',
+      // ⚠️ battery / network **不在此列**, 别加回来: 内核从不 Call 它们 (数据是
+      // 宿主主动 Report 进来的), 声明了只能让 canIUse('battery') 说 true, 而那个
+      // true 对应不到任何一次 Call。Android / iOS 与桌面宿主同样不声明这两项
+      // (见 gfx/win32/host_test.go 的完整推理), 三端口径必须一致。
+      //
+      // 这条由 gfx/hostbridge 的契约测试钉住: 加回来会让 CI 变红。
       'appstate',
       'memory',
     ];

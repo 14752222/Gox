@@ -114,10 +114,16 @@ interface GoxNativeHost {
             "location.get",
             "location.watch",
             "location.unwatch",
-            // 纯上报型 (只有 Report, 没有 Call):
+            // 纯上报型 (只有 Report, 没有 Call)。
+            //
+            // ⚠️ battery / network **不在此列**, 别加回来: 内核从不 Call 它们
+            // (数据是宿主主动 Report 进来的), 声明了只能让 canIUse("battery") 说
+            // true, 而那个 true 对应不到任何一次 Call —— "能不能用"与"怎么用"就
+            // 对不上了。桌面宿主同样不声明这两项 (见 gfx/win32/host_test.go 的
+            // 完整推理), 三端口径必须一致。
+            //
+            // 这条由 gfx/hostbridge 的契约测试钉住: 加回来会让 CI 变红。
             "insets",
-            "battery",
-            "network",
             "appstate",
             "memory",
         )
