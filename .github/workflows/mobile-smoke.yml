@@ -380,12 +380,17 @@ jobs:
           profile: ${{ steps.fold.outputs.profile }}
           disable-animations: true
           script: |
-            set -euo pipefail
+            # ⚠️ emulator-runner 用 /bin/sh(dash) 执行本脚本 —— 不能写 pipefail
+            set -eu
 
             # 1) 折叠态必须在场 —— 拿不到就是 profile 不对（见 job 头注释）
             adb shell cmd device_state print-states | tee /tmp/states.txt
-            grep -qiE 'HALF_FOLDED|CLOSED|OPENED' /tmp/states.txt \
-              || { echo "::error::pixel_fold 模拟器没报折叠态（print-states 如上）—— AVD profile 或 API 级别变了"; exit 1; }
+            # 态名随 API 级别漂移（34 报 HALF_OPENED，更早是 HALF_FOLDED）——
+            # 不硬编码，下面解析实际报出的名字逐一切换
+            STATES=$(grep -ohE 'CLOSED|HALF_FOLDED|HALF_OPENED|OPENED' /tmp/states.txt | sort -u | tr '\n' ' ')
+            echo "==> 可用折叠态: $STATES"
+            grep -qiE 'HALF_FOLDED|HALF_OPENED|CLOSED|OPENED' /tmp/states.txt \
+              || { echo "::error::fold 模拟器没报折叠态（print-states 如上）—— AVD profile 或 API 级别变了"; exit 1; }
 
             # 2) 装 APK 并拉起（包名与壳工程一致：com.gox.demo）
             adb install -r /tmp/apk/*.apk
@@ -397,7 +402,8 @@ jobs:
             #    （先 onConfigurationChanged 后 foldStatusChange，见
             #    gfx/lifecycle_fold_test.go 的注释与 mobile-device-accept.sh §4）
             mkdir -p /tmp/fold-shots
-            for s in CLOSED HALF_FOLDED OPENED HALF_FOLDED OPENED; do
+            for s in CLOSED HALF_FOLDED HALF_OPENED OPENED; do
+              case " $STATES " in *" $s "*) ;; *) continue ;; esac
               adb shell "cmd device_state state $s" || true
               sleep 2
               adb exec-out screencap -p > "/tmp/fold-shots/state-${s}-$(date +%s).png"
@@ -405,7 +411,8 @@ jobs:
 
             # 4) 证据：切换期间不能有崩溃 / ANR
             adb shell "logcat -d -v time | grep -iE 'FATAL EXCEPTION|ANR in|has died' | head -40; echo [scan done]" \
-              | tee /tmp/fold-logcat.txt
+              > /tmp/fold-logcat.txt
+            cat /tmp/fold-logcat.txt
             if grep -qiE 'FATAL EXCEPTION|ANR in' /tmp/fold-logcat.txt; then
               echo "::error::折叠态切换期间出现未捕获异常/ANR（原文在 artifacts 的 fold-logcat.txt）"
               exit 1
@@ -460,13 +467,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          # 按模式解析当前 runner 上实际存在的机型（取最新一代；排除 SE）。
+          # 按模式解析当前 runner 上实际存在的机型（devicetypes 列表从新到旧排，
+          # 取第一个即最新一代；排除 SE）。
           DEVICE_NAME=$(xcrun simctl list devicetypes -j | python3 -c "
           import json, sys
           want = '$DEVICE_PATTERN'.lower()
           names = [dt['name'] for dt in json.load(sys.stdin)['devicetypes']]
           hit = [n for n in names if want in n.lower() and 'SE' not in n]
-          print(hit[-1] if hit else '')
+          print(hit[0] if hit else '')
           ")
           test -n "$DEVICE_NAME" || { echo "::error::devicetypes 里匹配不到 '$DEVICE_PATTERN'（可用列表见 xcrun simctl list devicetypes）"; exit 1; }
           echo "==> 解析到机型: $DEVICE_NAME"
