@@ -181,11 +181,12 @@ func viewPropsArg(args []object.Value) *object.Object {
 }
 
 // viewProp 读一个属性 (缺失返回 nil, 调用方按 "没传" 处理)。
+// 值为 undefined 的键同样按 "没传" 算 (见 gfx/model.go propIsDefined)。
 func viewProp(props *object.Object, name string) object.Value {
 	if props == nil {
 		return nil
 	}
-	if desc, ok := props.Properties[name]; ok {
+	if desc, ok := props.Properties[name]; ok && propIsDefined(desc.Value) {
 		return desc.Value
 	}
 	return nil

@@ -79,10 +79,25 @@ import (
 // modelProp 读 JS 属性对象里的一个键 (直接取 .Value, 与 gfx/view.go 的 viewProp
 // 同一口径)。缺失返回 nil。
 func modelProp(props *object.Object, name string) object.Value {
-	if desc, ok := props.Properties[name]; ok {
+	if desc, ok := props.Properties[name]; ok && propIsDefined(desc.Value) {
 		return desc.Value
 	}
 	return nil
+}
+
+// propIsDefined 报告一个 prop 值是否"算数"。
+//
+// 背景: JSX / 组件库常条件拼 props, 写出 {model: sig, value: undefined} 这种
+// "键在值无"的形态 —— 内核若按"键是否存在"判断, 会误报"同时给了 model 与
+// value, 以 model 为准"; each 的 key 收到 UNDEFINED 告警是同族坑。
+// 这里统一收口: **值为 undefined 的键视同没给**。
+//
+// 注意只认真正的 undefined (*Undefined): 元素句柄 (*GuiNode) 的 JS typeof
+// 也是 "undefined" (TypeOf 的 default 分支), 但它是 opaque 句柄、Type() 是
+// GUI_NODE —— 绝不能被误判成"没给"而丢掉 (label={<text>..</text>} 这类
+// 值为元素节点的 prop 靠这条存活)。null 是真实值, 不在豁免之列。
+func propIsDefined(v object.Value) bool {
+	return v != nil && v.Type() != object.UNDEFINED_OBJ
 }
 
 // modelSetProp 覆盖/补一个属性, 显式 Writable=true: 这些键后面还有别的层要读
@@ -93,8 +108,8 @@ func modelSetProp(props *object.Object, name string, v object.Value) {
 
 // modelHasProp 报告脚本自己有没有写这个键 (用于"两个值来源"的冲突警告)。
 func modelHasProp(props *object.Object, name string) bool {
-	_, ok := props.Properties[name]
-	return ok
+	// 经 modelProp: 值为 undefined 的键按不存在算 (见 propIsDefined 的注释)。
+	return modelProp(props, name) != nil
 }
 
 // ===== 绑定的解析 =====
