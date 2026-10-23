@@ -215,5 +215,13 @@ jobs:
             echo "合规率无变化，跳过提交"
           else
             git commit -m "chore(test262): 更新合规率徽章数据与基线（$(date -u +%F)）"
-            git push
+            # language / built-ins 两个 matrix job 都会提交回 main —— 后提交的一方
+            # 直接 push 会被拒（"fetch first" 竞态，2026-10-23 那次就是）。先 rebase
+            # 再推，带重试兜底；rebase 撞车时两 job 写的是不同文件，必然干净合并。
+            ok=0
+            for i in 1 2 3 4 5; do
+              if git pull --rebase origin main && git push; then ok=1; break; fi
+              sleep 20
+            done
+            [ "$ok" = 1 ] || { echo "::error::徽章提交推送重试 5 次仍失败（main 竞态未消）"; exit 1; }
           fi
