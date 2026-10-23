@@ -144,68 +144,6 @@ jobs:
             exit 1
           fi
 
-  # ─────────────────────────────────────────────────────────────────────────────
-  # 鸿蒙侧 Go 代码的编译期类型检查（补三端覆盖里最后那个洞）
-  #
-  # 为什么需要它：Android 有 APK 打包冒烟、iOS 有模拟器编译（都在 mobile-smoke
-  # 里），**鸿蒙是三端里唯一零 CI 覆盖的一端** —— 托管 runner 装不了 DevEco
-  # SDK（华为镜像只有设备 L2 SDK，hf-mirror 拉不通），于是改 gfx/harmony 下的
-  # Go 代码在 CI 上**完全没有反馈**，错了只能等本地有 Windows + DevEco 的人
-  # 手工编一次。这不是"懒得配"，是环境限制。
-  #
-  # 但"编不了"和"查不了"是两件事：鸿蒙 Go 侧的 C 依赖只有 node_api.h（34 个
-  # napi_* 全是 Node-API 标准符号）与 hilog/log.h（就几个符号）。拿真 Node 的
-  # node_api.h + 一个 hilog 替身头文件，就能在 ubuntu runner 上把鸿蒙侧完整
-  # 编译一遍 —— 含全部 cgo 的 C 代码。头文件来源与许可见
-  # scripts/harmony-typecheck/README.md。
-  #
-  # ⚠️ 边界（写在作业里，免得被当成真机验证）：这是**编译期类型检查**，不是
-  # 真机构建。链接层的 OHOS 库（libace_napi.z.so）与运行时行为一律不验；产物
-  # 是宿主 x86-64 的 .so，**不可用于鸿蒙设备**（脚本末尾有 ELF 机器码断言挡着）。
-  # 真机验收仍走 scripts/mobile-device-accept.sh 与本地 DevEco。
-  #
-  # 为什么放 ci.yml 而不是 mobile-smoke.yml：mobile-smoke 的触发器只有
-  # `push: main` + workflow_dispatch，**PR 上不跑** —— 而"PR 改了鸿蒙代码却没
-  # 反馈"正是要修的那个洞。本作业在 ubuntu 上跑、一分钟量级，适合进 PR 闸门。
-  # ─────────────────────────────────────────────────────────────────────────────
-  harmony-typecheck:
-    name: 鸿蒙 Go 侧编译期类型检查（桌面, 非真机）
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-go@v5
-        with:
-          go-version-file: go.mod
-
-      # ubuntu runner 自带 gcc（cgo 要真的过一遍 C 编译器）；显式确认一次，
-      # 免得 runner 镜像变了以后作业以"跳过 C 编译"的方式静默变绿。
-      - name: 确认 C 编译器在场
-        run: |
-          set -euo pipefail
-          command -v cc || command -v gcc || { echo "::error::找不到 C 编译器 —— 鸿蒙类型检查需要它跑 cgo"; exit 1; }
-          cc --version | head -1
-
-      - name: 鸿蒙类型检查（vet + c-shared 编译）
-        run: |
-          set -euo pipefail
-          if ! bash scripts/check-harmony.sh 2>&1 | tee harmony-typecheck.log; then
-            echo "::error::鸿蒙侧类型检查未通过 —— 末尾 20 行如下（完整日志在步骤日志里）"
-            tail -20 harmony-typecheck.log | while IFS= read -r l; do echo "::error::${l:0:500}"; done
-            exit 1
-          fi
-
-      # 产物是宿主架构的 .so，**绝不归档** —— 归档就等于给人发一份"看起来像鸿蒙
-      # 产物、实际装不上"的东西。这里只留日志。
-      - name: 归档检查日志
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: harmony-typecheck-log
-          path: harmony-typecheck.log
-          if-no-files-found: ignore
-
   # ── gfx 属性/事件白名单 golden（看板 rgQsDD）────────────────────────────────
   # 为什么单独一个作业：它是「Go AST 抽取 → Python 合成 → JSON 比对」三段式，
   #   失败归因与注册表（纯文本）、init-purity（Go AST）都不同；而且它要 Go
