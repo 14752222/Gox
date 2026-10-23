@@ -122,18 +122,16 @@ static jint gox_h_ex(JNIEnv *env) {
 import "C"
 
 import (
-	"encoding/json"
+	"errors"
 	"fmt"
-	"math"
 	"runtime"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 	"unsafe"
 
 	"github.com/14752222/Gox/gfx"
 	gfxandroid "github.com/14752222/Gox/gfx/android"
+	"github.com/14752222/Gox/gfx/hostbridge"
 	"github.com/14752222/Gox/gfx/mobile"
 	"github.com/14752222/Gox/object"
 	"github.com/14752222/Gox/vm"
@@ -481,7 +479,7 @@ func bindNativeHost(host unsafe.Pointer) {
 	nativeHostObj, nativeHostCapM, nativeHostCallM = obj, capM, callM
 	nativeHostMu.Unlock()
 
-	gfx.SetNativeHost(&jniNativeHost{})
+	gfx.SetNativeHost(nativeHost)
 }
 
 // nativeHostRefs 取绑定好的宿主引用与方法 id (无绑定 → nil)。
@@ -491,101 +489,61 @@ func nativeHostRefs() (unsafe.Pointer, C.jmethodID, C.jmethodID) {
 	return nativeHostObj, nativeHostCapM, nativeHostCallM
 }
 
-// jniNativeHost 是 gfx.NativeHost 的 Android 实现: 把内核的 Call 翻译成一次
-// JNI 调用。协议见文件头。
-type jniNativeHost struct{}
-
-// Capabilities 报告 Kotlin 宿主声明的方法名/能力名 (逗号分隔字符串 → 切片)。
-func (h *jniNativeHost) Capabilities() []string {
-	out := []string{}
-	obj, capM, _ := nativeHostRefs()
-	if obj == nil || capM == nil {
-		return out
-	}
-	e, done, err := jniEnv()
-	if err != nil {
-		return out
-	}
-	defer done()
-	res := C.gox_h_call0(e, C.jobject(obj), capM)
-	if C.gox_h_ex(e) != 0 || unsafe.Pointer(res) == nil {
-		return out
-	}
-	s := goString(e, C.jstring(res))
-	for _, p := range strings.Split(s, ",") {
-		if p = strings.TrimSpace(p); p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
-// pendingMarker 是 Kotlin 侧"稍后回填"的哨兵 (协议见文件头)。
-const pendingMarker = "__pending__"
-
-// Call 执行一个原生方法: 参数序列化成 JSON 传给 Kotlin, 回包按协议三态解析。
+// nativeHost 是 gfx.NativeHost 的 Android 实现。
 //
-// 同步路径 (device.info / permission.get …) 会阻塞脚本线程直到 Kotlin 返回 ——
-// 这正是内核要求的: 这几个方法只有同步返回值才会被 deviceHostOverlay /
-// jsGetBrightness / jsOpenSystemSettings / refreshPermissionsFromHost 采用
-// (native_device.go:212, native_permission.go:181 都是直接读 res.Result)。
-// Kotlin 侧的同步实现都是纯内存/系统读, 不会卡住。
-func (h *jniNativeHost) Call(method string, args object.Value) gfx.NativeCallResult {
-	obj, _, callM := nativeHostRefs()
-	if obj == nil || callM == nil {
-		return gfx.NativeFailure(gfx.ErrUnsupported,
-			"Android 宿主未注册 nativeCall (GoxNativeHost 缺失?), 方法 %s 不可用", method)
-	}
-	e, done, err := jniEnv()
-	if err != nil {
-		return gfx.NativeFailure(gfx.ErrPlatform, "NativeHost JNI 通道不可用: %v", err)
-	}
-	defer done()
+// **协议层不在本文件**: 回包三态解析 (pending / 错误信封 / 结果)、能力串切分、
+// JSON 窄转换全在平台无关的 gfx/hostbridge 里 —— 三端共用同一份, 而且能被
+// gfx/hosttest 的契约套件在开发机上直接跑到 (见 gfx/hostbridge/contract_test.go:
+// 它从 Kotlin 源码解析真实能力清单后跑全套断言)。这里只剩跨语言那一跳。
+var nativeHost = hostbridge.New(
+	// caps: 调 Kotlin 的 nativeCapabilities(), 取逗号分隔的能力串。
+	func() (string, error) {
+		obj, capM, _ := nativeHostRefs()
+		if obj == nil || capM == nil {
+			return "", errors.New("宿主未绑定 nativeCapabilities")
+		}
+		e, done, err := jniEnv()
+		if err != nil {
+			return "", err
+		}
+		defer done()
+		res := C.gox_h_call0(e, C.jobject(obj), capM)
+		if C.gox_h_ex(e) != 0 || unsafe.Pointer(res) == nil {
+			return "", errors.New("nativeCapabilities 抛了异常或返回空")
+		}
+		return goString(e, C.jstring(res)), nil
+	},
+	// call: 调 Kotlin 的 nativeCall(method, argsJson), 取原始回包字符串。
+	//
+	// 同步路径 (device.info / permission.get …) 会阻塞脚本线程直到 Kotlin 返回 ——
+	// 这正是内核要求的: 这几个方法只有同步返回值才会被 deviceHostOverlay /
+	// jsGetBrightness / jsOpenSystemSettings / refreshPermissionsFromHost 采用
+	// (native_device.go:212, native_permission.go:181 都是直接读 res.Result)。
+	// Kotlin 侧的同步实现都是纯内存/系统读, 不会卡住。
+	func(method, argsJSON string) (string, error) {
+		obj, _, callM := nativeHostRefs()
+		if obj == nil || callM == nil {
+			return "", errors.New("宿主未绑定 nativeCall")
+		}
+		e, done, err := jniEnv()
+		if err != nil {
+			return "", err
+		}
+		defer done()
 
-	cm := C.CString(method)
-	defer C.free(unsafe.Pointer(cm))
-	aj := C.CString(objToJSON(args))
-	defer C.free(unsafe.Pointer(aj))
+		cm := C.CString(method)
+		defer C.free(unsafe.Pointer(cm))
+		aj := C.CString(argsJSON)
+		defer C.free(unsafe.Pointer(aj))
 
-	res := C.gox_h_call2(e, C.jobject(obj), callM, C.gox_h_utf(e, cm), C.gox_h_utf(e, aj))
-	if C.gox_h_ex(e) != 0 || unsafe.Pointer(res) == nil {
-		return gfx.NativeFailure(gfx.ErrPlatform,
-			"nativeCall(%s) 抛了异常或返回空", method)
-	}
-	return parseHostReply(goString(e, C.jstring(res)))
-}
-
-// parseHostReply 按 Kotlin 侧回包协议三态解析 (文件头: pending / 错误信封 / 结果)。
-func parseHostReply(s string) gfx.NativeCallResult {
-	s = strings.TrimSpace(s)
-	if s == pendingMarker {
-		return gfx.NativePending()
-	}
-	var envelope struct {
-		ErrCode string `json:"__errCode"`
-		ErrMsg  string `json:"__errMsg"`
-	}
-	if err := json.Unmarshal([]byte(s), &envelope); err == nil && envelope.ErrCode != "" {
-		return gfx.NativeFailure(sanitizeErrCode(envelope.ErrCode), "%s", envelope.ErrMsg)
-	}
-	v, err := jsonToObj(s)
-	if err != nil {
-		return gfx.NativeFailure(gfx.ErrPlatform, "宿主返回了无法解析的 JSON: %v", err)
-	}
-	return gfx.NativeResult(v)
-}
-
-// sanitizeErrCode 把宿主给的错误码夹回 8 个统一错误码 —— 错误码是跨平台契约,
-// 多出来的词一律归 platform-error, 不让平台私造词汇穿透到脚本侧。
-func sanitizeErrCode(code string) string {
-	switch code {
-	case gfx.ErrUnsupported, gfx.ErrPermissionDenied, gfx.ErrCancelled,
-		gfx.ErrTimeout, gfx.ErrBusy, gfx.ErrUnavailable,
-		gfx.ErrPlatform, gfx.ErrInvalidArg:
-		return code
-	}
-	return gfx.ErrPlatform
-}
+		res := C.gox_h_call2(e, C.jobject(obj), callM, C.gox_h_utf(e, cm), C.gox_h_utf(e, aj))
+		if C.gox_h_ex(e) != 0 || unsafe.Pointer(res) == nil {
+			return "", errors.New("nativeCall 抛了异常或返回空")
+		}
+		return goString(e, C.jstring(res)), nil
+	},
+	"Android 宿主未注册 nativeCall (GoxNativeHost 缺失?), 方法 %s 不可用",
+)
 
 // ── Kotlin → Go 的回填与上报导出 ──
 //
@@ -607,11 +565,11 @@ func Java_com_gox_GoxRuntime_nativeResolveNative(e *C.JNIEnv, clazz C.jclass,
 	gfx.Post(func() {
 		var nativeErr *gfx.NativeError
 		if codeStr != "" {
-			nativeErr = &gfx.NativeError{Code: sanitizeErrCode(codeStr), Msg: msgStr}
+			nativeErr = &gfx.NativeError{Code: hostbridge.SanitizeErrCode(codeStr), Msg: msgStr}
 		}
 		var v object.Value
 		if nativeErr == nil && resStr != "" {
-			parsed, err := jsonToObj(resStr)
+			parsed, err := hostbridge.JSONToObj(resStr)
 			if err != nil {
 				nativeErr = &gfx.NativeError{Code: gfx.ErrPlatform,
 					Msg: fmt.Sprintf("回填 JSON 解析失败: %v", err)}
@@ -749,149 +707,9 @@ func Java_com_gox_GoxRuntime_nativeSetDisplayFold(e *C.JNIEnv, clazz C.jclass, d
 	}
 }
 
-// ── JSON ↔ object.Value (args 下行 / 结果回填上行共用的窄转换) ──
-
-// objToJSON 把内核给的参数对象序列化成 JSON 文本 (给 Kotlin org.json 解析)。
-// 函数/闭包等不可序列化的值跳过或写成 null。
-func objToJSON(v object.Value) string {
-	var b strings.Builder
-	writeJSON(&b, v)
-	return b.String()
-}
-
-func writeJSON(b *strings.Builder, v object.Value) {
-	switch x := v.(type) {
-	case nil, *object.Null, *object.Undefined:
-		b.WriteString("null")
-	case *object.Boolean:
-		if x.Value {
-			b.WriteString("true")
-		} else {
-			b.WriteString("false")
-		}
-	case *object.Number:
-		b.WriteString(numToJSON(x.Value))
-	case *object.String:
-		b.WriteString(quoteJSON(x.Value))
-	case *object.Array:
-		b.WriteByte('[')
-		for i, el := range x.Elements {
-			if i > 0 {
-				b.WriteByte(',')
-			}
-			writeJSON(b, el)
-		}
-		b.WriteByte(']')
-	case *object.Object:
-		b.WriteByte('{')
-		first := true
-		for _, k := range x.Keys() {
-			pv, ok := x.GetProperty(k)
-			if !ok {
-				continue
-			}
-			switch pv.(type) {
-			case *object.Undefined, *object.Closure, *object.BuiltinFunction, *object.CompiledFunction:
-				continue // undefined 与函数不进 JSON (与 JSON.stringify 语义一致)
-			}
-			if !first {
-				b.WriteByte(',')
-			}
-			first = false
-			b.WriteString(quoteJSON(k))
-			b.WriteByte(':')
-			writeJSON(b, pv)
-		}
-		b.WriteByte('}')
-	default:
-		b.WriteString("null")
-	}
-}
-
-// numToJSON 数字输出: NaN/Inf → null; 整数值不带小数点; 其余 'g' 紧凑格式。
-func numToJSON(f float64) string {
-	if math.IsNaN(f) || math.IsInf(f, 0) {
-		return "null"
-	}
-	if f == math.Trunc(f) && math.Abs(f) < 1e15 {
-		return strconv.FormatInt(int64(f), 10)
-	}
-	return strconv.FormatFloat(f, 'g', -1, 64)
-}
-
-// quoteJSON 带引号字符串 (控制字符与引号/反斜杠转义; 非 BMP 字符原样输出 UTF-8,
-// JSON 允许)。
-func quoteJSON(s string) string {
-	var b strings.Builder
-	b.WriteByte('"')
-	for _, r := range s {
-		switch r {
-		case '"':
-			b.WriteString("\\\"")
-		case '\\':
-			b.WriteString("\\\\")
-		case '\n':
-			b.WriteString("\\n")
-		case '\r':
-			b.WriteString("\\r")
-		case '\t':
-			b.WriteString("\\t")
-		default:
-			if r < 0x20 {
-				b.WriteString(fmt.Sprintf("\\u%04x", r))
-			} else {
-				b.WriteRune(r)
-			}
-		}
-	}
-	b.WriteByte('"')
-	return b.String()
-}
-
-// jsonToObj 把宿主回包的 JSON 解析成 object.Value (UseNumber 保数字精度)。
-func jsonToObj(s string) (object.Value, error) {
-	dec := json.NewDecoder(strings.NewReader(s))
-	dec.UseNumber()
-	var raw interface{}
-	if err := dec.Decode(&raw); err != nil {
-		return nil, err
-	}
-	return rawToValue(raw), nil
-}
-
-func rawToValue(raw interface{}) object.Value {
-	switch x := raw.(type) {
-	case nil:
-		return object.NullSingleton
-	case bool:
-		return object.NewBoolean(x)
-	case string:
-		return object.NewString(x)
-	case json.Number:
-		f, err := x.Float64()
-		if err != nil {
-			return object.NullSingleton
-		}
-		return object.NewNumber(f)
-	case []interface{}:
-		arr := make([]object.Value, 0, len(x))
-		for _, el := range x {
-			arr = append(arr, rawToValue(el))
-		}
-		return object.NewArray(arr)
-	case map[string]interface{}:
-		o := object.NewObject()
-		for k, v := range x {
-			o.SetProperty(k, rawToValue(v))
-		}
-		return o
-	}
-	return object.NullSingleton
-}
-
 // goJSONObj 把导出函数收到的 jstring 解析成 *object.Object (失败返回 nil)。
 func goJSONObj(e *C.JNIEnv, s C.jstring) *object.Object {
-	v, err := jsonToObj(goString(e, s))
+	v, err := hostbridge.JSONToObj(goString(e, s))
 	if err != nil {
 		return nil
 	}

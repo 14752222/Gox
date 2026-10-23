@@ -63,13 +63,23 @@ final class GoxNativeHost: NSObject {
     private static let capabilityList: [String] = [
         "device.info", "device.vibrate", "device.brightness",
         "device.keepScreenOn", "device.openSettings",
-        "app.share", "app.exit", "app.orientation",
+        // app.exit **不在此列**: iOS 不允许应用自杀, dispatch 里那条分支是显式
+        // 降级 (返回 unsupported, 只为给出可读的错误信息)。声明它会让
+        // canIUse("app.exit") 说 true 而调用必失败 —— 不声明才是诚实的。
+        "app.share", "app.orientation",
         "permission.get", "permission.request",
         "camera.takePhoto", "gallery.pick", "gallery.pickVideo",
         "media.save", "media.preview",
         "location.get", "location.watch", "location.unwatch",
-        // 纯上报型 (只有 Report, 没有 Call):
-        "insets", "battery", "network", "appstate", "memory",
+        // 纯上报型 (只有 Report, 没有 Call)。
+        //
+        // ⚠️ battery / network **不在此列**, 别加回来: 内核从不 Call 它们 (数据
+        // 是宿主主动 Report 进来的), 声明了只能让 canIUse("battery") 说 true, 而
+        // 那个 true 对应不到任何一次 Call。桌面宿主同样不声明这两项
+        // (gfx/win32/host_test.go), 三端口径必须一致。
+        //
+        // 这条由 gfx/hostbridge 的契约测试钉住: 加回来会让 CI 变红。
+        "insets", "appstate", "memory",
     ]
 
     // MARK: - C 回调 (无捕获 @convention(c), 与 flush/finished 同一模式)

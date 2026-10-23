@@ -67,16 +67,14 @@ static const char *gox_h_call_native(void *ctx, void *fn, const char *m, const c
 import "C"
 
 import (
-	"encoding/json"
+	"errors"
 	"fmt"
-	"math"
 	"runtime"
-	"strconv"
-	"strings"
 	"sync"
 	"unsafe"
 
 	"github.com/14752222/Gox/gfx"
+	"github.com/14752222/Gox/gfx/hostbridge"
 	gfxios "github.com/14752222/Gox/gfx/ios"
 	"github.com/14752222/Gox/gfx/mobile"
 	"github.com/14752222/Gox/object"
@@ -318,102 +316,63 @@ func gox_set_native_host(capCtx, capFn, callCtx, callFn unsafe.Pointer) int32 {
 	nhCapCtx, nhCapFn = capCtx, capFn
 	nhCallCtx, nhCallFn = callCtx, callFn
 	nhMu.Unlock()
-	gfx.SetNativeHost(&cfnNativeHost{})
+	gfx.SetNativeHost(nativeHost)
 	return 0
 }
 
-// cfnNativeHost 是 gfx.NativeHost 的 iOS 实现: 把内核的 Call 翻译成一次对
-// Swift C 函数指针的调用。
-type cfnNativeHost struct{}
-
-// Capabilities 报告 Swift 宿主声明的方法名/能力名 (逗号分隔字符串 → 切片)。
-// Swift 返回的字符串是 strdup 分配的, 这里负责 free。
-func (h *cfnNativeHost) Capabilities() []string {
-	out := []string{}
-	nhMu.Lock()
-	ctx, fn := nhCapCtx, nhCapFn
-	nhMu.Unlock()
-	if fn == nil {
-		return out
-	}
-	cs := C.gox_h_call_cap(ctx, fn)
-	if cs == nil {
-		return out
-	}
-	s := C.GoString(cs)
-	C.free(unsafe.Pointer(cs))
-	for _, p := range strings.Split(s, ",") {
-		if p = strings.TrimSpace(p); p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
-// pendingMarker 是 Swift 侧"稍后回填"的哨兵 (协议见文件头)。
-const pendingMarker = "__pending__"
-
-// Call 执行一个原生方法: 参数序列化成 JSON 传给 Swift, 回包按协议三态解析。
+// nativeHost 是 gfx.NativeHost 的 iOS 实现。
 //
-// 同步路径 (device.info / permission.get …) 会阻塞脚本线程直到 Swift 返回 ——
-// 内核的 deviceHostOverlay / jsGetBrightness / jsOpenSystemSettings /
-// refreshPermissionsFromHost 只认同步返回值 (gfx/native_device.go:212 等)。
-// Swift 侧的同步实现凡是碰 UIKit 的 (亮度/设置页) 都用 DispatchQueue.main.sync
-// 完成 —— 主线程从不同步等待 Go 线程 (gox_tick 只叫醒泵就返回), 不会死锁。
-func (h *cfnNativeHost) Call(method string, args object.Value) gfx.NativeCallResult {
-	nhMu.Lock()
-	ctx, fn := nhCallCtx, nhCallFn
-	nhMu.Unlock()
-	if fn == nil {
-		return gfx.NativeFailure(gfx.ErrUnsupported,
-			"iOS 宿主未注册 nativeCall, 方法 %s 不可用", method)
-	}
+// **协议层不在本文件**: 回包三态解析 (pending / 错误信封 / 结果)、能力串切分、
+// JSON 窄转换全在平台无关的 gfx/hostbridge 里 —— 三端共用同一份, 而且能被
+// gfx/hosttest 的契约套件在开发机上直接跑到 (见 gfx/hostbridge/contract_test.go:
+// 它从 Swift 源码解析真实能力清单后跑全套断言)。这里只剩跨语言那一跳。
+var nativeHost = hostbridge.New(
+	// caps: 调 Swift 的 capabilities 回调。返回的字符串是 strdup 分配的, 这里 free。
+	func() (string, error) {
+		nhMu.Lock()
+		ctx, fn := nhCapCtx, nhCapFn
+		nhMu.Unlock()
+		if fn == nil {
+			return "", errors.New("capabilities 回调未注册")
+		}
+		cs := C.gox_h_call_cap(ctx, fn)
+		if cs == nil {
+			return "", errors.New("capabilities 回调返回空")
+		}
+		s := C.GoString(cs)
+		C.free(unsafe.Pointer(cs))
+		return s, nil
+	},
+	// call: 调 Swift 的 nativeCall(method, argsJson), 取原始回包字符串。
+	//
+	// 同步路径 (device.info / permission.get …) 会阻塞脚本线程直到 Swift 返回 ——
+	// 内核的 deviceHostOverlay / jsGetBrightness / jsOpenSystemSettings /
+	// refreshPermissionsFromHost 只认同步返回值 (gfx/native_device.go:212 等)。
+	// Swift 侧的同步实现凡是碰 UIKit 的 (亮度/设置页) 都用 DispatchQueue.main.sync
+	// 完成 —— 主线程从不同步等待 Go 线程 (gox_tick 只叫醒泵就返回), 不会死锁。
+	func(method, argsJSON string) (string, error) {
+		nhMu.Lock()
+		ctx, fn := nhCallCtx, nhCallFn
+		nhMu.Unlock()
+		if fn == nil {
+			return "", errors.New("nativeCall 回调未注册")
+		}
 
-	cm := C.CString(method)
-	defer C.free(unsafe.Pointer(cm))
-	aj := C.CString(objToJSON(args))
-	defer C.free(unsafe.Pointer(aj))
+		cm := C.CString(method)
+		defer C.free(unsafe.Pointer(cm))
+		aj := C.CString(argsJSON)
+		defer C.free(unsafe.Pointer(aj))
 
-	res := C.gox_h_call_native(ctx, fn, cm, aj)
-	if res == nil {
-		return gfx.NativeFailure(gfx.ErrPlatform, "goxCall(%s) 返回空", method)
-	}
-	s := C.GoString(res)
-	C.free(unsafe.Pointer(res))
-	return parseHostReply(s)
-}
-
-// parseHostReply 按 Swift 侧回包协议三态解析 (文件头: pending / 错误信封 / 结果)。
-func parseHostReply(s string) gfx.NativeCallResult {
-	s = strings.TrimSpace(s)
-	if s == pendingMarker {
-		return gfx.NativePending()
-	}
-	var envelope struct {
-		ErrCode string `json:"__errCode"`
-		ErrMsg  string `json:"__errMsg"`
-	}
-	if err := json.Unmarshal([]byte(s), &envelope); err == nil && envelope.ErrCode != "" {
-		return gfx.NativeFailure(sanitizeErrCode(envelope.ErrCode), "%s", envelope.ErrMsg)
-	}
-	v, err := jsonToObj(s)
-	if err != nil {
-		return gfx.NativeFailure(gfx.ErrPlatform, "宿主返回了无法解析的 JSON: %v", err)
-	}
-	return gfx.NativeResult(v)
-}
-
-// sanitizeErrCode 把宿主给的错误码夹回 8 个统一错误码 —— 错误码是跨平台契约,
-// 多出来的词一律归 platform-error, 不让平台私造词汇穿透到脚本侧。
-func sanitizeErrCode(code string) string {
-	switch code {
-	case gfx.ErrUnsupported, gfx.ErrPermissionDenied, gfx.ErrCancelled,
-		gfx.ErrTimeout, gfx.ErrBusy, gfx.ErrUnavailable,
-		gfx.ErrPlatform, gfx.ErrInvalidArg:
-		return code
-	}
-	return gfx.ErrPlatform
-}
+		res := C.gox_h_call_native(ctx, fn, cm, aj)
+		if res == nil {
+			return "", errors.New("goxCall 返回空")
+		}
+		s := C.GoString(res)
+		C.free(unsafe.Pointer(res))
+		return s, nil
+	},
+	"iOS 宿主未注册 nativeCall, 方法 %s 不可用",
+)
 
 // ── Swift → Go 的回填与上报导出 ──
 //
@@ -435,11 +394,11 @@ func gox_resolve_native(id, result, errCode, errMsg *C.char) {
 	gfx.Post(func() {
 		var nativeErr *gfx.NativeError
 		if codeStr != "" {
-			nativeErr = &gfx.NativeError{Code: sanitizeErrCode(codeStr), Msg: msgStr}
+			nativeErr = &gfx.NativeError{Code: hostbridge.SanitizeErrCode(codeStr), Msg: msgStr}
 		}
 		var v object.Value
 		if nativeErr == nil && resStr != "" {
-			parsed, err := jsonToObj(resStr)
+			parsed, err := hostbridge.JSONToObj(resStr)
 			if err != nil {
 				nativeErr = &gfx.NativeError{Code: gfx.ErrPlatform,
 					Msg: fmt.Sprintf("回填 JSON 解析失败: %v", err)}
@@ -577,150 +536,12 @@ func cStr(s *C.char) string {
 
 // cJSONObj 把导出函数收到的 C 字符串解析成 *object.Object (失败返回 nil)。
 func cJSONObj(s *C.char) *object.Object {
-	v, err := jsonToObj(cStr(s))
+	v, err := hostbridge.JSONToObj(cStr(s))
 	if err != nil {
 		return nil
 	}
 	o, _ := v.(*object.Object)
 	return o
-}
-
-// objToJSON 把内核给的参数对象序列化成 JSON 文本 (给 Swift JSONSerialization
-// 解析)。函数/闭包等不可序列化的值跳过或写成 null。
-func objToJSON(v object.Value) string {
-	var b strings.Builder
-	writeJSON(&b, v)
-	return b.String()
-}
-
-func writeJSON(b *strings.Builder, v object.Value) {
-	switch x := v.(type) {
-	case nil, *object.Null, *object.Undefined:
-		b.WriteString("null")
-	case *object.Boolean:
-		if x.Value {
-			b.WriteString("true")
-		} else {
-			b.WriteString("false")
-		}
-	case *object.Number:
-		b.WriteString(numToJSON(x.Value))
-	case *object.String:
-		b.WriteString(quoteJSON(x.Value))
-	case *object.Array:
-		b.WriteByte('[')
-		for i, el := range x.Elements {
-			if i > 0 {
-				b.WriteByte(',')
-			}
-			writeJSON(b, el)
-		}
-		b.WriteByte(']')
-	case *object.Object:
-		b.WriteByte('{')
-		first := true
-		for _, k := range x.Keys() {
-			pv, ok := x.GetProperty(k)
-			if !ok {
-				continue
-			}
-			switch pv.(type) {
-			case *object.Undefined, *object.Closure, *object.BuiltinFunction, *object.CompiledFunction:
-				continue // undefined 与函数不进 JSON (与 JSON.stringify 语义一致)
-			}
-			if !first {
-				b.WriteByte(',')
-			}
-			first = false
-			b.WriteString(quoteJSON(k))
-			b.WriteByte(':')
-			writeJSON(b, pv)
-		}
-		b.WriteByte('}')
-	default:
-		b.WriteString("null")
-	}
-}
-
-// numToJSON 数字输出: NaN/Inf → null; 整数值不带小数点; 其余 'g' 紧凑格式。
-func numToJSON(f float64) string {
-	if math.IsNaN(f) || math.IsInf(f, 0) {
-		return "null"
-	}
-	if f == math.Trunc(f) && math.Abs(f) < 1e15 {
-		return strconv.FormatInt(int64(f), 10)
-	}
-	return strconv.FormatFloat(f, 'g', -1, 64)
-}
-
-// quoteJSON 带引号字符串 (控制字符与引号/反斜杠转义; 非 BMP 字符原样输出 UTF-8,
-// JSON 允许)。
-func quoteJSON(s string) string {
-	var b strings.Builder
-	b.WriteByte('"')
-	for _, r := range s {
-		switch r {
-		case '"':
-			b.WriteString("\\\"")
-		case '\\':
-			b.WriteString("\\\\")
-		case '\n':
-			b.WriteString("\\n")
-		case '\r':
-			b.WriteString("\\r")
-		case '\t':
-			b.WriteString("\\t")
-		default:
-			if r < 0x20 {
-				b.WriteString(fmt.Sprintf("\\u%04x", r))
-			} else {
-				b.WriteRune(r)
-			}
-		}
-	}
-	b.WriteByte('"')
-	return b.String()
-}
-
-// jsonToObj 把宿主回包的 JSON 解析成 object.Value (UseNumber 保数字精度)。
-func jsonToObj(s string) (object.Value, error) {
-	dec := json.NewDecoder(strings.NewReader(s))
-	dec.UseNumber()
-	var raw interface{}
-	if err := dec.Decode(&raw); err != nil {
-		return nil, err
-	}
-	return rawToValue(raw), nil
-}
-
-func rawToValue(raw interface{}) object.Value {
-	switch x := raw.(type) {
-	case nil:
-		return object.NullSingleton
-	case bool:
-		return object.NewBoolean(x)
-	case string:
-		return object.NewString(x)
-	case json.Number:
-		f, err := x.Float64()
-		if err != nil {
-			return object.NullSingleton
-		}
-		return object.NewNumber(f)
-	case []interface{}:
-		arr := make([]object.Value, 0, len(x))
-		for _, el := range x {
-			arr = append(arr, rawToValue(el))
-		}
-		return object.NewArray(arr)
-	case map[string]interface{}:
-		o := object.NewObject()
-		for k, v := range x {
-			o.SetProperty(k, rawToValue(v))
-		}
-		return o
-	}
-	return object.NullSingleton
 }
 
 // jsonStr / jsonNum / jsonBool 是上报 JSON 的字段读取助手 (缺字段用缺省值)。
