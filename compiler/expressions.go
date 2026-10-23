@@ -2073,6 +2073,13 @@ func (c *Compiler) compileDynamicImport(node *ast.DynamicImportExpression) error
 	if err := c.compileExpression(node.Source); err != nil {
 		return err
 	}
+	if node.IsSourcePhase {
+		// import.source(spec): 规范 16.2.1.7.2 —— SourceTextModuleRecord 的
+		// GetModuleSource 恒抛 SyntaxError, 所以这里不加载模块, 只把 specifier
+		// 求值 (ToString 副作用仍要发生) 后 reject 一个 SyntaxError。
+		c.emitter.EmitNoOperand(bytecode.OP_IMPORT_SOURCE)
+		return nil
+	}
 	c.emitter.EmitNoOperand(bytecode.OP_DYNAMIC_IMPORT)
 	return nil
 }

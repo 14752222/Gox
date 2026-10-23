@@ -733,10 +733,18 @@ func (tt *TaggedTemplateExpression) expressionNode() {}
 type DynamicImportExpression struct {
 	Token  lexer.Token // import 关键字
 	Source Expression  // 模块路径表达式
+	// IsSourcePhase 标记 `import.source(spec)` —— ES2025 的 source phase
+	// import (16.2.1.7)。求值差异见 vm OP_IMPORT_SOURCE: 它不加载模块命名空间,
+	// 而是走 SourceTextModuleRecord 的 GetModuleSource, 对文本模块恒抛
+	// SyntaxError (规范 16.2.1.7.2 第 1 步)。
+	IsSourcePhase bool
 }
 
 func (di *DynamicImportExpression) TokenLiteral() string { return di.Token.Literal }
 func (di *DynamicImportExpression) String() string {
+	if di.IsSourcePhase {
+		return "import.source(" + di.Source.String() + ")"
+	}
 	return "import(" + di.Source.String() + ")"
 }
 func (di *DynamicImportExpression) expressionNode() {}

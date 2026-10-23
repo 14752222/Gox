@@ -399,14 +399,21 @@ func (l *Lexer) nextToken() Token {
 		return l.readTemplateLiteral(line, col)
 
 	case '#':
-		// #name 私有名: # 后必须紧跟标识符起始字符。
+		// #name 私有名: # 后必须紧跟标识符起始字符 —— 或 \uXXXX / \u{XXXX} 转义
+		// 形态 (规范 PrivateIdentifier :: # IdentifierName, 而 IdentifierName
+		// 的任意字符都可写成转义)。test262 的 *-privatename-identifier* 用例簇
+		// 正是拿 #\u006F / #\u2118 / #ZW_\u200D_J 这类形态点名这一条; 转义形态
+		// 与字面形态必须切出**同一个** PRIVATE_NAME (字面量已解码), 否则
+		// `#o` 声明、`this.#\u006F` 访问会判成两个不同的私有名。
 		// 字面 # (无标识符跟随) 仍走 ILLEGAL —— Gox 无 shebang/私有名以外的 # 用法。
 		// 注意: 标识符路径必须提前 return —— readIdentifier 停在下一个字符上,
 		// 落到底部公共 readChar() 会多吞一个字符 (实测把 #m( 的 ( 吞掉)。
 		l.readChar()
-		if isIdentifierStart(l.ch) {
+		if isIdentifierStart(l.ch) || (l.ch == '\\' && l.peekChar() == 'u') {
 			ident := l.readIdentifier()
-			return Token{Type: PRIVATE_NAME, Literal: "#" + ident, Line: line, Column: col}
+			if ident != "" {
+				return Token{Type: PRIVATE_NAME, Literal: "#" + ident, Line: line, Column: col}
+			}
 		}
 		tok = Token{Type: ILLEGAL, Literal: "#", Line: line, Column: col}
 
@@ -557,7 +564,12 @@ func (l *Lexer) readIdentifierWithEscapes() (name string, escaped bool, bad bool
 				return sb.String(), escaped, true
 			}
 			if first {
-				if !isIdentifierStart(r) && !isIdentifierPart(r) {
+				// 起始位只允许 ID_Start (isIdentifierStart 已排除 ZWNJ/ZWJ,
+				// 它们在规范里只是 IdentifierPart): `var \u200C;`、
+				// `class C { #\u200D_ZWJ; }` 都是早错。此处**不能**像以前那样
+				// 放宽成 "Start 或 Part 任一成立" —— 那样零宽字符开头的名字
+				// 会被放过, 上面两簇 negative 用例全灭。
+				if !isIdentifierStart(r) {
 					return sb.String(), escaped, true
 				}
 			} else if !isIdentifierPart(r) {
@@ -644,6 +656,10 @@ func (l *Lexer) lexIdentifierToken(line, col int) Token {
 func (l *Lexer) readNumber(leadingDot bool, line, col int) Token {
 	var sb strings.Builder
 	isFloat := leadingDot
+	// rawStart: 数字字面量在源码里的起始偏移 —— 收尾时用它取出**带分隔符**
+	// 的原始文本做 NumericLiteralSeparator 位置校验 (有效数字被 sb 剥掉了
+	// '_', 只看 sb 无法判断 1__0 / 0x_1 / 10._1 这类非法形态)。
+	rawStart := l.position
 
 	if leadingDot {
 		sb.WriteByte('.')
@@ -665,7 +681,7 @@ func (l *Lexer) readNumber(leadingDot bool, line, col int) Token {
 			sb.WriteRune(l.ch)
 			l.readChar()
 		}
-		return l.finishNumber(sb.String(), false, line, col)
+		return l.finishNumber(sb.String(), false, l.input[rawStart:l.position], line, col)
 	} else if l.ch == '0' && (l.peekChar() == 'b' || l.peekChar() == 'B') {
 		// 二进制: 0b1010
 		sb.WriteRune(l.ch)
@@ -680,7 +696,7 @@ func (l *Lexer) readNumber(leadingDot bool, line, col int) Token {
 			sb.WriteRune(l.ch)
 			l.readChar()
 		}
-		return l.finishNumber(sb.String(), false, line, col)
+		return l.finishNumber(sb.String(), false, l.input[rawStart:l.position], line, col)
 	} else if l.ch == '0' && (l.peekChar() == 'o' || l.peekChar() == 'O') {
 		// 八进制: 0o755
 		sb.WriteRune(l.ch)
@@ -695,17 +711,32 @@ func (l *Lexer) readNumber(leadingDot bool, line, col int) Token {
 			sb.WriteRune(l.ch)
 			l.readChar()
 		}
-		return l.finishNumber(sb.String(), false, line, col)
+		return l.finishNumber(sb.String(), false, l.input[rawStart:l.position], line, col)
 	}
 
 	// 十进制整数部分 (支持下划线分隔符 1_000)
-	for isDigit(l.ch) || l.ch == '_' {
-		if l.ch == '_' {
-			l.readChar()
-			continue
-		}
+	if !leadingDot && l.ch == '0' && (isDigit(l.peekChar()) || l.peekChar() == '_') {
+		// LegacyOctalLikeDecimalIntegerLiteral (`00` / `01` / `0123`) 与
+		// 单个 `0` 都**不允许**数字分隔符: `0_0` / `01_0` / `00_0` 里的 `_`
+		// 属于后面的标识符 (`_0` 是合法标识符名), 而数字字面量后紧跟
+		// IdentifierStart 是早错 ⇒ 停在数字上, 由 finishNumber 判非法。
+		// 此前这里把 `_` 当分隔符一并吃掉, 于是 `00_0` 被读成合法的 000
+		// (test262 language/literals/numeric 与 bigint 两簇共 10+ 条)。
 		sb.WriteRune(l.ch)
 		l.readChar()
+		for isDigit(l.ch) {
+			sb.WriteRune(l.ch)
+			l.readChar()
+		}
+	} else {
+		for isDigit(l.ch) || l.ch == '_' {
+			if l.ch == '_' {
+				l.readChar()
+				continue
+			}
+			sb.WriteRune(l.ch)
+			l.readChar()
+		}
 	}
 
 	// 小数部分
@@ -742,7 +773,7 @@ func (l *Lexer) readNumber(leadingDot bool, line, col int) Token {
 		}
 	}
 
-	return l.finishNumber(sb.String(), isFloat, line, col)
+	return l.finishNumber(sb.String(), isFloat, l.input[rawStart:l.position], line, col)
 }
 
 // finishNumber 收尾数字字面量，处理 BigInt 的 "n" 后缀。
@@ -750,8 +781,18 @@ func (l *Lexer) readNumber(leadingDot bool, line, col int) Token {
 // BigInt 字面量的语法约束在此拒绝:
 //   - 不允许小数点与指数部分 (1.5n / 1e3n 均为 SyntaxError)
 //   - "n" 之后不允许紧跟标识符字符 (1nx 不是 "1n" 后跟 x，而是非法词素)
-func (l *Lexer) finishNumber(literal string, isFloat bool, line, col int) Token {
+func (l *Lexer) finishNumber(literal string, isFloat bool, raw string, line, col int) Token {
 	if l.ch != 'n' {
+		// 数字字面量后紧跟 IdentifierStart 是早错: `3in []` (规范 11.8.3
+		// NumericLiteral 不得紧跟 IdentifierStart)。此前不检查, `3in` 被切成
+		// 3 与 in ⇒ 解析成 `3 in []` 这个**合法**表达式, 用例反而跑起来
+		// (test262 numeric-followed-by-ident.js)。
+		if isIdentifierStart(l.ch) {
+			return Token{Type: ILLEGAL, Literal: "identifier starts immediately after numeric literal", Line: line, Column: col}
+		}
+		if reason := invalidNumericSeparator(raw); reason != "" {
+			return Token{Type: ILLEGAL, Literal: reason, Line: line, Column: col}
+		}
 		tokType := INT_LITERAL
 		if isFloat {
 			tokType = FLOAT_LITERAL
@@ -761,11 +802,68 @@ func (l *Lexer) finishNumber(literal string, isFloat bool, line, col int) Token 
 	if isFloat {
 		return Token{Type: ILLEGAL, Literal: "BigInt literal cannot contain a decimal point or exponent", Line: line, Column: col}
 	}
+	// BigIntLiteral 不允许 LegacyOctalIntegerLiteral / NonOctalDecimal 形态:
+	// `00n` / `01n` / `08n` / `012348n` 全部是早错 (规范 11.8.3.1:
+	// BigIntLiteral :: 0 | DecimalDigits ... , 不含前导 0 后跟数字)。
+	if len(raw) > 1 && raw[0] == '0' && raw[1] >= '0' && raw[1] <= '9' {
+		return Token{Type: ILLEGAL, Literal: "invalid BigInt literal (leading zero)", Line: line, Column: col}
+	}
 	l.readChar() // 消费 'n'
 	if isIdentifierStart(l.ch) || isDigit(l.ch) {
 		return Token{Type: ILLEGAL, Literal: "invalid BigInt literal", Line: line, Column: col}
 	}
+	if reason := invalidNumericSeparator(raw); reason != "" {
+		return Token{Type: ILLEGAL, Literal: reason, Line: line, Column: col}
+	}
 	return Token{Type: BIGINT_LITERAL, Literal: literal, Line: line, Column: col}
+}
+
+// invalidNumericSeparator 校验数字字面量**原始文本**里 `_` 的位置。
+// 返回 "" 表示合法, 否则返回给 parser 的错误原因。
+//
+// 规范 (11.8.3 NumericLiteralSeparator): `_` 不得出现在 ——
+//   - 开头 / 结尾 (1_ / _1)
+//   - 连续两个 (1__0)
+//   - 进制前缀之后 (0x_1 / 0b_1 / 0o_1)
+//   - 小数点前后 (10._1 / .0_1)
+//   - 指数符 e/E 前后 (10.0_e1 / 1e_1)
+//
+// 只看"剥掉分隔符的数字"无法判断这些形态 —— 所以必须看原始文本。
+func invalidNumericSeparator(raw string) string {
+	if !strings.ContainsRune(raw, '_') {
+		return ""
+	}
+	for i := 0; i < len(raw); i++ {
+		if raw[i] != '_' {
+			continue
+		}
+		if i == 0 || i == len(raw)-1 {
+			return "numeric separator not allowed at start or end of numeric literal"
+		}
+		prev, next := raw[i-1], raw[i+1]
+		if prev == '_' || next == '_' {
+			return "numeric separator not allowed adjacent to another separator"
+		}
+		// 进制前缀 0x/0b/0o 之后紧跟分隔符 (i == 2 即 `0x_`)
+		if i == 2 && (raw[1] == 'x' || raw[1] == 'X' || raw[1] == 'b' || raw[1] == 'B' || raw[1] == 'o' || raw[1] == 'O') {
+			return "numeric separator not allowed after radix prefix"
+		}
+		if prev == '.' || next == '.' {
+			return "numeric separator not allowed adjacent to decimal point"
+		}
+		// 指数符 e/E 前后。仅十进制: 十六进制字面量里的 E/D/F 本身就是
+		// 数字 (`0xE_E` 合法), 套这条规则会把它误杀。
+		if !hasRadixPrefix(raw) && (prev == 'e' || prev == 'E' || next == 'e' || next == 'E') {
+			return "numeric separator not allowed adjacent to exponent"
+		}
+	}
+	return ""
+}
+
+// hasRadixPrefix 报告 raw 是否为 0x/0b/0o (含大写) 进制字面量。
+func hasRadixPrefix(raw string) bool {
+	return len(raw) > 1 && raw[0] == '0' &&
+		(raw[1] == 'x' || raw[1] == 'X' || raw[1] == 'b' || raw[1] == 'B' || raw[1] == 'o' || raw[1] == 'O')
 }
 
 // readString 读取一个用引号包围的字符串字面量。
@@ -1002,14 +1100,61 @@ func isIdentifierStart(ch rune) bool {
 	if ch == 0x2E2F { // VERTICAL TILDE: Lm 但属 Pattern_Syntax, 非 ID_Start/ID_Continue
 		return false
 	}
-	return unicode.IsLetter(ch) || ch == '_' || ch == '$'
+	if unicode.IsLetter(ch) || ch == '_' || ch == '$' {
+		return true
+	}
+	// Nl (Letter number): 罗马数字 U+2160.. 等 —— ID_Start 含它, 但 Go 的
+	// IsLetter 不含 (Go 的 unicode.IsLetter 只覆盖 L*)。
+	if unicode.Is(unicode.Nl, ch) {
+		return true
+	}
+	// Other_ID_Start (UCD PropList): 不在任何 ID_Start 类别里却被规范列入的
+	// 四个码点。test262 的 privatename-identifier 用例簇拿 U+2118 (℘, SCRIPT
+	// CAPITAL P) 点名这一条 —— 它是 Sm 符号却可作标识符起始。
+	switch ch {
+	case 0x2118, 0x212E, 0x309B, 0x309C:
+		return true
+	}
+	return false
 }
 
+// isIdentifierPart 判定 ID_Continue —— 它是 ID_Start 的超集 (规范 11.6.2:
+// IdentifierPart :: UnicodeIDContinue | $ | ZWNJ | ZWJ, 而 ID_Continue ⊇
+// ID_Start), 所以这里**复用** isIdentifierStart 再补超出的部分。两份独立判据
+// 曾经在这里出过事: Other_ID_Start 的 U+2118 加进了 Start 却没进 Part, 于是
+// `#\u2118` 的起始位过了、后续判定又把它打回 bad —— 整簇用例跟着翻绿又翻红。
 func isIdentifierPart(ch rune) bool {
+	if isIdentifierStart(ch) {
+		return true
+	}
 	if ch == 0x2E2F {
 		return false
 	}
-	return unicode.IsLetter(ch) || unicode.IsDigit(ch) || ch == '_' || ch == '$'
+	if unicode.IsDigit(ch) {
+		return true
+	}
+	// ZWNJ (U+200C) / ZWJ (U+200D): 规范 (11.6.2) 的 IdentifierPart 显式含两者
+	// —— 它们是规范在 UnicodeIDContinue 之外额外补的, 所以不能靠 unicode.IsLetter
+	// 判定。test262 的 *-ZWNJ.js / *-ZWJ.js (私有名与 identifiers 两处) 点名这条。
+	// 只加在 Part 不加在 Start: 以零宽字符开头的名字仍应非法
+	// (start-zwnj-escaped.js / grammar-privatename-identifier-invalid-zwj-error.js)。
+	if ch == 0x200C || ch == 0x200D {
+		return true
+	}
+	// Mn/Mc (组合记号) 与 Pc (连接标点, 如 U+2040 ⁀): ID_Continue 含它们,
+	// Go 的 IsLetter/IsDigit 都不覆盖。
+	if unicode.Is(categoryMnMcPc, ch) {
+		return true
+	}
+	// Other_ID_Continue (UCD PropList): U+00B7 ·, U+0387, U+1369..U+1371
+	// (埃塞俄比亚数字后的标点), U+19DA (泰文数字)。
+	return ch == 0x00B7 || ch == 0x0387 || (ch >= 0x1369 && ch <= 0x1371) || ch == 0x19DA
+}
+
+// categoryMnMcPc 是 ID_Continue 额外含的三个 Unicode 类别: 组合记号与连接标点。
+var categoryMnMcPc = &unicode.RangeTable{
+	R16: append(append(append([]unicode.Range16{}, unicode.Mn.R16...), unicode.Mc.R16...), unicode.Pc.R16...),
+	R32: append(append(append([]unicode.Range32{}, unicode.Mn.R32...), unicode.Mc.R32...), unicode.Pc.R32...),
 }
 
 func hexToRune(hex string) (rune, error) {

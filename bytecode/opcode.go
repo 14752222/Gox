@@ -218,6 +218,36 @@ const (
 	OP_TEMPLATE_PART  Opcode = 0x81 // 添加一个部分到模板
 	OP_TEMPLATE_END   Opcode = 0x82 // 完成模板拼接，结果入栈
 
+	// OP_SET_METHOD / OP_SET_GETTER_NE / OP_SET_SETTER_NE: class 方法定义专用。
+	// 栈序与 operand 语义同 SET_PROP / SET_GETTER / SET_SETTER (栈 [obj, fn],
+	// operand = 属性名常量索引), 唯一差别是描述符的 [[Enumerable]] 为 false。
+	//
+	// 规范 (15.4.5 ClassDefinitionEvaluation / MakeMethod) 用的是
+	// DefinePropertyOrThrow 而不是 Set: 类原型方法与访问器必须**不可枚举**,
+	// for-in / Object.keys / JSON.stringify 都看不到它们。此前复用 SET_PROP
+	// (赋值语义, enumerable: true) 令 Object.getOwnPropertyDescriptor 报
+	// enumerable: true —— test262 的 *-non-enumerable / descriptor 用例簇
+	// (language/statements/class 与 expressions/class 共 700+ 条) 全灭。
+	// 不复用 SET_PROP 加标志位而新开 opcode: 栈序一致 ⇒ VM 侧只多一个 case,
+	// 且反汇编 (tools/bcdump) 上 "类方法" 与 "普通赋值" 一眼可分。
+	OP_SET_METHOD    Opcode = 0x83 // 类方法: 定义不可枚举数据属性 (可写/可配置)
+	OP_SET_GETTER_NE Opcode = 0x84 // 类 getter: 定义不可枚举访问器属性
+	OP_SET_SETTER_NE Opcode = 0x85 // 类 setter: 定义不可枚举访问器属性
+
+	// 计算键 (ComputedPropertyName) 版本的上面三个: 栈 [obj, fn, key] (键在
+	// 栈顶, 与 SET_GETTER_DYN/SET_SETTER_DYN 同序), 弹 fn 与 key、留 obj。
+	// 键可以是 Symbol —— 落 Symbol 键空间, 且同为非可枚举。
+	OP_SET_METHOD_DYN    Opcode = 0x86
+	OP_SET_GETTER_DYN_NE Opcode = 0x87
+	OP_SET_SETTER_DYN_NE Opcode = 0x88
+
+	// OP_IMPORT_SOURCE: `import.source(spec)` (ES2025 source phase import)。
+	// 栈: [spec] → [Promise]。规范 16.2.1.7.2 GetModuleSource: 对文本模块
+	// (SourceTextModuleRecord) 恒抛 SyntaxError —— 故此处不加载模块, 只求值
+	// specifier (ToString 的副作用必须发生, 用例会数它被调用几次) 再把
+	// Promise reject 成 SyntaxError。与 OP_DYNAMIC_IMPORT 同栈序, 不同语义。
+	OP_IMPORT_SOURCE Opcode = 0x89
+
 	// OP_AWAIT 是 async generator 体内的 await 挂起点。
 	// 帧语义与 OP_YIELD 完全相同 (暂停帧, 恢复时压入传入值), 唯一区别是
 	// VM 会把 Generator.LastYieldIsAwait 置真, 让异步生成器驱动知道这是
@@ -473,6 +503,11 @@ var opcodeNames = map[Opcode]string{
 	OP_YIELD:           "YIELD",
 	OP_TEMPLATE_START:  "TEMPLATE_START", OP_TEMPLATE_PART: "TEMPLATE_PART",
 	OP_TEMPLATE_END: "TEMPLATE_END",
+	OP_SET_METHOD:    "SET_METHOD",
+	OP_SET_GETTER_NE: "SET_GETTER_NE", OP_SET_SETTER_NE: "SET_SETTER_NE",
+	OP_SET_METHOD_DYN: "SET_METHOD_DYN",
+	OP_SET_GETTER_DYN_NE: "SET_GETTER_DYN_NE", OP_SET_SETTER_DYN_NE: "SET_SETTER_DYN_NE",
+	OP_IMPORT_SOURCE:     "IMPORT_SOURCE",
 	OP_AWAIT:        "AWAIT",
 	OP_DESTRUCTURE:  "DESTRUCTURE", OP_SPREAD: "SPREAD",
 	OP_PACK_ARRAY: "PACK_ARRAY", OP_PACK_OBJECT: "PACK_OBJECT",

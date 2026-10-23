@@ -329,6 +329,18 @@ func EvalModuleFileVMWithGlobals(path string, globals *runtime.Environment) (*VM
 	}
 	vm.mainUnit.isModule = true
 	vm.SetStmtPositions(c.StmtPositions())
+	// 含顶层 await 的模块必须由生成器驱动挂起/恢复 (RunCompiledAsync), 不能
+	// 同步跑完 —— 否则模块体里的 OP_YIELD/OP_AWAIT 撞在非生成器帧上, 报
+	// "TypeError: yield outside generator"。**入口模块**此前恰恰漏了这一步:
+	// runModuleBody 只对被 import 的模块做了 HasTopLevelAwait 分流, 入口走
+	// EvalModuleFileVMWithGlobals 直接 RunCompiled ⇒ test262 的
+	// language/module-code/top-level-await 全簇 (229 条) 报那个 TypeError。
+	if c.HasTopLevelAwait() {
+		if err := vm.RunCompiledAsync(c); err != nil {
+			return nil, vm.uncaughtError(err)
+		}
+		return vm, nil
+	}
 	if err := vm.RunCompiled(c); err != nil {
 		// 与 script 入口 (EvalFileVM / EvalVM) 一致走 uncaughtError: 未捕获的
 		// **抛出值**按 ToString 语义渲染 (用户对象调其自定义 toString, 保住
