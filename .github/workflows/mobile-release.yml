@@ -411,7 +411,7 @@ jobs:
           # 关键文件必须在：项目生成源 + 壳源码
           unzip -l "$OUT" | grep -q "app/ios/project.yml" || { echo "::error::zip 里没有 app/ios/project.yml（XcodeGen 的生成源），壳工程不完整"; exit 1; }
           unzip -l "$OUT" | grep -q "Gox.xcodeproj" || { echo "::error::zip 里没有 Gox.xcodeproj（用户拿到后还得自己装 XcodeGen）"; exit 1; }
-          echo "::notice::iOS 壳工程 zip = $OUT（$(wc -c < "$OUT") 字节）"
+          echo "::notice::iOS 壳工程 zip = ${OUT} ($(wc -c < "$OUT") bytes)"
           echo "built=true" >> "$GITHUB_OUTPUT"
 
       - name: 归档 iOS 壳工程 zip
