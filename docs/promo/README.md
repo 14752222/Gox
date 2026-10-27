@@ -16,8 +16,9 @@
    与 `bench-results/bench-20261002-024818.json`（Apple M2），对照系含
    `bench/goja`（纯解释器）与 node/V8（JIT）。
 2. **test262 合规率下的取舍哲学** —— 用 `docs/test262-baseline.json`
-   （language **78.48%**，18620/23726）与 `docs/test262-baseline-builtins.json`
-   （built-ins **35.69%**，8503/23823）的**最新真实值**，失败面聚类取自
+   （language **97.0%**，徽章 `docs/test262-compliance.json`）与
+   `docs/test262-baseline-builtins.json`（built-ins **62.1%**，14804/23823）的
+   **最新真实值**，失败面聚类取自
    `docs/test262-builtins-clusters.md`；核心论点是"v1 明确不做的清单比合规率数字更有价值"。
 3. **自研 GUI 的分层纪律** —— `Surface` 五个方法的窄接口 + 可选能力走可选接口
    （`windowController` / `windowManager` / `cursorHost` / `windowMover` /

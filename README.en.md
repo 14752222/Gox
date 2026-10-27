@@ -1,8 +1,8 @@
 # Gox
 
-> A JavaScript runtime implemented from scratch in Go: lexing → parsing → bytecode compilation →
-> stack-based VM execution. Single binary, zero cgo, zero external runtime dependencies,
-> with a built-in software-rasterized GUI and a script packager.
+> A JavaScript runtime written from scratch in Go: lexing → parsing → bytecode compilation →
+> stack-based VM execution. Single binary, zero cgo, zero external runtime dependencies —
+> with a built-in software-rasterised GUI and a script packager.
 
 [![Go](https://img.shields.io/badge/Go-1.26.2%2B-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
@@ -12,61 +12,184 @@
 [![test262 language](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2F14752222%2FGox%2Fmain%2Fdocs%2Ftest262-compliance.json)](docs/test262-t04-report.md)
 [![test262 built-ins](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2F14752222%2FGox%2Fmain%2Fdocs%2Ftest262-compliance-builtins.json)](docs/test262-builtins-clusters.md)
 
-📖 **[Website & tutorial](https://14752222.github.io/Gox/)** ｜ **[GUI guide](docs/gui-guide.md) (Chinese)** ｜ **[npm package](https://www.npmjs.com/package/@goxjs/goxjs)**
+📖 **[Website & tutorials](https://14752222.github.io/Gox/)** ｜ **[GUI guide](docs/gui-guide.md)** ｜ **[npm package](https://www.npmjs.com/package/@goxjs/goxjs)**
 
-> 简体中文版：[README.md](README.md)。This file is the English translation; both are kept in sync
-> and describe the same build.
+> 中文版：[README.md](README.md)。Both READMEs are maintained in sync and describe the same build.
 
-## Table of contents
+---
+
+## Contents
 
 - [Overview](#overview)
-- [First-screen example: adaptive single / two-pane list](#first-screen-example-adaptive-single--two-pane-list)
-- [Features](#features)
-- [Getting started](#getting-started)
-- [Usage](#usage)
-- [Configuration](#configuration)
+- [Project status](#project-status)
+- [Quick start](#quick-start)
+- [Hero example: adaptive one/two-column list](#hero-example-adaptive-onetwo-column-list)
+- [Capability map](#capability-map)
+- [Language and built-ins](#language-and-built-ins)
+- [GUI desktop apps](#gui-desktop-apps)
+- [Host capability modules](#host-capability-modules)
+- [Packaging and toolchain](#packaging-and-toolchain)
 - [Architecture](#architecture)
-- [Development & testing](#development--testing)
+- [Performance](#performance)
+- [Documentation map](#documentation-map)
+- [Development and testing](#development-and-testing)
 - [Release process](#release-process)
 - [Contributing](#contributing)
-- [Documentation](#documentation)
 - [License](#license)
+
+---
 
 ## Overview
 
-Gox is a JavaScript (ES6+ subset) runtime written in **pure Go**. The whole compilation pipeline —
-lexing, parsing, bytecode generation, stack VM — is implemented from scratch: no V8, no QuickJS,
-no cgo.
+Gox is a JavaScript (ES6+ subset) runtime implemented in **pure Go**. The entire compile
+pipeline — lexing, parsing, bytecode generation and the stack-based VM — is built from scratch.
+It does not depend on V8, QuickJS or any other existing engine, and it does not use cgo.
 
-On top of that, Gox fills the layer scripting languages usually lack: a **home-grown desktop GUI
-renderer** (pure-Go software rasterization, flex layout + JSX + signal-driven updates, win32 / X11 /
-cocoa window backends), a set of host capability modules (files, HTTP, clipboard, native dialogs,
-persistent storage), and a toolchain that **packs a script into a standalone executable**.
+On top of that, Gox adds the layer scripting languages usually lack: a **self-written desktop GUI
+rendering layer** (pure-Go software rasterisation, flex layout + JSX + signal-driven updates, with
+win32 / X11 / cocoa window backends), a set of host capability modules (files, HTTP, clipboard,
+native dialogs, persistent storage), and a toolchain that **packages a script into a standalone
+executable**.
 
-Its positioning is "small but complete": one `go build` yields one executable; you can embed JS as a
-scripting layer inside a Go program, or just write a small GUI tool with it and ship it.
+The positioning is "small but complete": one `go build` yields one executable. You can embed JS as
+a scripting layer inside a Go program, or write small GUI tools with it and ship them.
 
-**Design choices**
+### Design choices
 
-- **Single-binary distribution** — statically compiled, no dynamic library dependencies;
-  cross-platform means switching `GOOS`/`GOARCH`, no target toolchain needed.
-- **Zero cgo** — backends talk to the system API directly (syscall on Windows, X protocol on Linux);
-  the trade-off is that `-race` is unavailable.
-- **GUI is not a bolt-on** — rendering, layout, hit testing and dirty-rectangle repainting all live
-  inside the runtime; the script side sees only JSX and signals.
-- **Deterministic single thread** — the VM runs single-threaded; network I/O completes in goroutines
-  and is posted back to the main thread, so callbacks need no locking.
+| Choice | How | Cost |
+|---|---|---|
+| **Single-binary distribution** | Static build, no shared-library deps; cross-platform is just `GOOS`/`GOARCH`, no target toolchain needed | Larger binaries |
+| **Zero cgo** | Backends talk to system APIs directly (syscall on Windows, the X protocol on Linux, cocoa/purego on macOS) | `-race` detection unavailable |
+| **GUI is not bolted on** | Rendering, layout, hit testing and dirty-rectangle redraws all live inside the runtime; scripts see only JSX and signals | Rendering power bounded by software rasterisation |
+| **Deterministic single thread** | Single-threaded VM; network I/O completes on goroutines and is dispatched back to the main thread, so callbacks need no locking | No true parallel execution |
+| **Missing capabilities say so** | Host capabilities expose `canIUse()` plus 8 unified error codes — no fake data, no pretending to play | Surfaces problems earlier than a "best effort" approach would |
 
-**Good fit for**: small cross-platform desktop tools in JS; embedding JS as the config / plugin layer
-of a Go application; learning how a compiler and a VM are built.
+### What Gox is not for
 
-## First-screen example: adaptive single / two-pane list
+Stating the boundary up front saves you the round trip:
 
-**Single pane below 600dp**, and it **switches to two panes at ≥ 600dp** (list on the left, detail on
-the right) as you drag the window wider. Dragging the window edge is all it takes — no resize
-listener, no polling of the size. Full runnable file:
-[`testdata/adaptive_list_demo.js`](testdata/adaptive_list_demo.js)
-(`gox testdata/adaptive_list_demo.js`).
+- **Not a Node.js replacement for web backends** — no CommonJS (`require`) and most of the npm ecosystem won't run; see the [compatibility matrix](docs/compat-matrix.md).
+- **Not for CPU-bound computation** — a pure interpreter with no JIT; `fib28` is ~3× slower than goja and an order of magnitude slower than V8. See [Performance](#performance).
+- **Not for production systems needing full ES conformance** — test262 `built-ins` compliance is 62%, with `Temporal` / `RegExp` and others still missing whole blocks.
+- **Not a "write once, run anywhere" fantasy for GUI** — three-platform form factors (foldables, safe areas, permissions) differ for real and need per-platform adaptation.
+
+**Good fits**: small cross-platform desktop tools in JS; JS as a config/plugin layer inside Go apps;
+learning how compilers and virtual machines are built.
+
+---
+
+## Project status
+
+Gox is in **active 0.x development** — public APIs may see breaking changes between minor
+versions (under 0.x, minor *is* the breaking position).
+
+### test262 compliance
+
+The official ECMAScript conformance suite is run on a weekly CI schedule, which writes the badges
+back automatically (`docs/test262-*.json`):
+
+| Suite | Compliance | Scope |
+|---|---|---|
+| `language` | **97.0%** | Language semantics (statements / expressions / modules / functions / classes …) |
+| `built-ins` | **62.1%** | Built-in objects (`Array` / `String` / `Temporal` / `TypedArray` …), 14804 / 23823 |
+
+> The two suites have **different denominators and completely different composition**, so each
+> guards its own lower-bound baseline. `intl402` (needs i18n) is not implemented and is outside the
+> runner's suite list. Compliance is a **trend signal, not an acceptance gate** — the failure
+> surface is clustered into 502 clusters of "directory family × failure mode", and work is
+> scheduled per cluster. See the [website · Performance and compliance](https://14752222.github.io/Gox/guide/performance)
+> for the full methodology.
+
+### Platform support matrix
+
+| Platform | Runtime | GUI window backend | CI coverage |
+|---|---|---|---|
+| Windows x64 | ✅ | win32 (pure syscall) | `ci.yml` build + test |
+| Linux x64 / arm64 | ✅ | X11 (pure protocol) | `ci.yml` build + test |
+| macOS x64 / arm64 | ✅ | cocoa (purego) | `ci.yml` build + test |
+| Android arm64 | ✅ prebuilt library | Shell project (Kotlin host) | `mobile-smoke.yml` + foldable emulator regression |
+| iOS arm64 | ✅ prebuilt library | Shell project (Swift host) | `mobile-smoke.yml`, three simulator models; **on-device verification pending** |
+| HarmonyOS arm64 | ⚠️ cross-compiles | Shell project (ArkTS); the six capability modules are still stubs | Build passes; **HAP signing is a hard blocker**, emulator verification pending |
+
+### Known gaps
+
+- Rich text (inline mixed styling) is not yet wrapped; virtualised long lists landed as `<scroll vlist>`
+- Parts of the native-capability layer that need real hardware (camera / location / photo library / permissions) honestly report `unsupported` on desktop
+- CommonJS / `require` is explicitly out of scope; only a handful of npm packages such as `uuid` partially work
+- Itemised in [docs/gui-guide.md](docs/gui-guide.md) and the website's [Limitations](https://14752222.github.io/Gox/components/limits)
+
+---
+
+## Quick start
+
+### Requirements
+
+| Scenario | Requirement |
+|---|---|
+| Build from source | Go 1.26.2 or newer (zero cgo, no C toolchain) |
+| Just run scripts | Nothing — the npm package ships prebuilt binaries; Node.js ≥ 14 only |
+| GUI apps | Windows (win32), Linux (X11) or macOS (cocoa) |
+
+### Three ways to install
+
+```bash
+# 1) npm — easiest; prebuilt binaries for five platforms ship with the package
+npm i -g @goxjs/goxjs    # gives you the `goxjs` command
+npx goxjs app.js         # or run it without installing
+
+# 2) Build from source — needs a Go toolchain
+git clone https://github.com/14752222/Gox.git
+cd Gox
+go build ./cmd/gox       # produces the executable (gox.exe on Windows)
+
+# 3) go install — straight into GOBIN (requires a published tag)
+go install github.com/14752222/Gox/cmd/gox@latest
+```
+
+> `npm/` · `website/` · `gox-logo-concepts/` are three **separate repositories**
+> ([gox-npm](https://github.com/14752222/gox-npm) · [gox-website](https://github.com/14752222/gox-website) ·
+> [gox-logo-concepts](https://github.com/14752222/gox-logo-concepts)). Since 2026-10-12 they are no longer
+> git submodules, so cloning the main repo does not need `--recurse-submodules`. CI checks out `npm/` and
+> `website/` automatically; to run `scripts/check-registries.py` locally, first
+> `git clone https://github.com/14752222/gox-npm npm` (otherwise `npm/package.json` is missing).
+
+### Interactive REPL
+
+```bash
+./gox                # Unix; gox.exe on Windows
+```
+
+```
+Gox REPL (ES6 subset)
+Type :exit to quit, :help for help
+
+> let x = 10
+> let y = 20
+> x + y
+  30
+> [1, 2, 3].map(v => v * 2)
+  [2, 4, 6]
+```
+
+REPL commands: `:help` for help, `:clear` to reset the environment, `:exit` to quit.
+
+### Running a script
+
+```bash
+./gox example.js    # the npm-installed goxjs command works the same way
+```
+
+After the script finishes, the value of the last top-level expression is echoed (`undefined`
+excepted), and the process waits for all timers and async callbacks before exiting.
+
+---
+
+## Hero example: adaptive one/two-column list
+
+Below **600dp window width** it is a single column; drag it wider to **≥ 600dp** and it becomes two
+columns (list on the left, detail on the right). Dragging the window edge triggers it — no resize
+listener, no size polling. Full runnable file:
+[`testdata/adaptive_list_demo.js`](testdata/adaptive_list_demo.js) (`gox testdata/adaptive_list_demo.js`).
 
 ```js
 import { h, render } from "gx/gfx";
@@ -78,19 +201,19 @@ const bp = useBreakpoint();                 // () => "sm" | "md" | "lg" | "xl" (
 const [selected, setSelected] = createSignal(0);
 
 const ITEMS = [
-  { id: "a", title: "Pipeline", desc: "lexer -> parser -> bytecode -> stack VM, 109 opcodes." },
-  { id: "b", title: "Software-rasterized GUI", desc: "flex layout + JSX + signals, three backends." },
-  { id: "c", title: "Script packager", desc: "one .js in, one standalone executable out." },
+  { id: "a", title: "Compile pipeline", desc: "Lexer → parser → bytecode → stack VM, 160 opcodes." },
+  { id: "b", title: "Software-rasterised GUI", desc: "flex layout + JSX + signals, three backends." },
+  { id: "c", title: "Script packager", desc: "Turn .js into a single executable." },
 ];
 
-// Layout branches are declared by breakpoint name (one sm/md/lg/xl table),
-// instead of the same width check scattered across N ifs — adding a tier
-// means editing the table, not the conditions.
+// Layout branches are declared by breakpoint name (a sm/md/lg/xl table) instead of
+// scattering the same width check across N if statements — add a tier, edit only the table.
 const layout = () => {
-  bp();   // <- read unconditionally = subscribe. Remove this line and the page
-  return matchBreakpoint({                 //    stops adapting, silently.
-    sm: { cols: 1, side: false },   // <600dp   single pane
-    md: { cols: 2, side: true },    // >=600dp two panes
+  bp();   // ← read unconditionally = subscription registration. Delete this line and the
+          //   page stops adapting (with no warning)
+  return matchBreakpoint({
+    sm: { cols: 1, side: false },   // <600dp  single column
+    md: { cols: 2, side: true },    // >=600dp two columns
     lg: { cols: 2, side: true },
     xl: { cols: 2, side: true },
   });
@@ -120,7 +243,7 @@ const Detail = () => (
 render(
   <window title="Adaptive list" width={520} height={420}>
     <column gap={10} padding={14}>
-      <text font={15}>{() => `breakpoint = ${bp()}   →   ${layout().side ? "two panes" : "single pane"}`}</text>
+      <text font={15}>{() => `breakpoint = ${bp()}   →   ${layout().side ? "two columns" : "one column"}`}</text>
       <Switch>
         <Match when={() => layout().side}>
           <row gap={10}>
@@ -140,155 +263,42 @@ render(
 );
 ```
 
-**Two traps worth knowing up front** (also called out in the demo's comments):
+**The two easiest pitfalls** (also called out in the demo's own comments):
 
-1. **Plain reads short-circuit the subscription** — `breakpoint()` / `posture()` / `hasFold()` are
-   plain reads: they give you **the value right now without subscribing**. Only the getter functions
-   returned by `useBreakpoint()`-style two-stage APIs subscribe. Put a plain read in the first operand
-   of a ternary (or on the left of `&&`) and the short-circuited branch is **never read at all**
-   ⇒ zero dependencies ⇒ it never re-runs when the width changes, **with no warning whatsoever**.
-   `gfx/adaptive_list_test.go` pins this down as an assertion: a plain-read snapshot still holds its
-   first-frame value after you widen the window.
-2. **Two coordinate systems** — `reservedRegions()` returns x/y/width/height in **device pixels**
-   (hinge, punch-hole cutout), while `safeAreaStyle()` output and the sizes you write literally in
-   scripts are **dp** (the kernel multiplies by `Display.Scale` every frame). Don't feed the former
-   straight into layout props — divide by `deviceInfo().pixelRatio` first.
+1. **Pure reads short-circuit the subscription** — `breakpoint()` / `posture()` / `hasFold()` are pure
+   reads that do **not** subscribe; only two-stage accessors like `useBreakpoint()` subscribe. Put a
+   pure read in the first operand of a ternary or on the left of `&&`, and the short-circuited branch
+   is never read ⇒ zero dependencies ⇒ it never re-runs when the width changes, **with no warning**.
+   `gfx/adaptive_list_test.go` pins this as an assertion: a pure-read snapshot stays at its first-frame
+   value after widening.
+2. **Two coordinate systems** — `reservedRegions()` reports x/y/width/height in **device pixels**
+   (hinge, punch-hole cutouts), while `safeAreaStyle()` and explicitly written size attributes are in
+   **dp** (the kernel multiplies by `Display.Scale` every frame). Don't feed the former straight into
+   layout attributes when avoiding the hinge — divide by `pixelRatio` first.
 
-> Wording matters: `<Switch>` / `<Match>` *are* a conditional expression, so we don't claim
-> "no ifs anywhere". The real gain is that **layout branches are declared by breakpoint name**,
-> rather than the same width check scattered across N ifs.
+---
 
-## Features
+## Capability map
 
-- **Complete compilation pipeline** — home-grown lexer / parser / compiler / bytecode VM, 109
-  opcodes, fixed-length 3-byte instruction encoding (`[opcode 1B][operand 2B big-endian]`),
-  decoding is a direct operand fetch
-- **ES6+ language subset** — `let`/`const`/`var`, functions and arrows, closures, `class`,
-  `async`/`await`, destructuring, rest/default params, spread, template strings, `for...of`,
-  `try`/`catch`/`throw`, optional chaining `?.`, nullish coalescing `??`, ES modules
-  `import`/`export`, and **JSX** (lowered at compile time into `h(tag, props, ...children)` calls)
-- **Rich built-ins** — `Array` / `String` / `Number` / `Object` / `Boolean` / `Math` / `JSON` /
-  `Map` / `Set` / `WeakMap` / `WeakSet` / `Symbol` / `BigInt` / `RegExp` / `Proxy` / `Reflect` /
-  `Iterator` / `Promise` / `ArrayBuffer` / `DataView` (TypedArray family) / `WeakRef` /
-  `FinalizationRegistry` / the full error type family / `Temporal` (the modern date-time API —
-  this runtime has no `Date`)
-- **Host capability modules** — injected as global objects: `fs` (Node-style, sync + async),
-  `path`, `http` (client `get`/`request` + server `createServer`), `fetch`, `process`, `stats`
-- **Home-grown GUI renderer** — the `gx/gfx` module: flex-style layout (`column`/`row`/`grid`,
-  percentage sizes, min-max clamping, `flexShrink`, wrapping), rounded corners / linear gradients /
-  shadows, hit testing, dirty-rectangle partial repaint; win32 (pure syscall), X11 and macOS
-  (cocoa, purego) window backends. See the **[GUI guide](docs/gui-guide.md)** (Chinese)
-- **Media components (`<video>` / `<audio>`)** — the kernel only defines the **host contract**
-  (`nativeVideoHost` / `nativeAudioHost`): mountable, event-capable, with `playing` / `muted` /
-  `loop` / `volume` / `fit` fully controlled; when a backend lacks the capability it **says so**
-  (cover placeholder + one `onError({code:"unsupported"})` + `canIUse("video"/"audio")` answering
-  `false` honestly) — it never pretends to be playing. The default Linux build wires up the
-  `gfx/softmedia` software backend and **really plays**: GIF (incl. disposal compositing) and MJPEG
-  video, WAV audio (PCM 8/16/24/32-bit + IEEE float), audio output via PulseAudio `purego` dlopen
-  (zero cgo), degrading to a null sink when there is no sound card (clock and events stay real).
-  h264 / aac / mp3 are left to the platform media layer; boundaries in
-  [media-decision.md](docs/media-decision.md)
-- **Native-feeling interactive components** — form controls (`input`/`textarea`/`select`/`slider`/
-  `checkbox`/`radio`/`switch`), overlays (`dialog`/`drawer`/`toast`), tabs (keep-alive page
-  semantics + controlled/uncontrolled modes), scroll containers, self-drawn canvas, and a
-  **self-drawn menu bar and context menu** (dropdowns / submenus / shortcuts / disabled items —
-  no system menu API involved)
-- **Feedback & data components** — `alert` / `tag` / `badge` / `avatar` / `empty` / `icon`
-  (15 built-in pixel icons) / `spinner` / `skeleton` / `pagination` (fully controlled); loading
-  states share a single animation heartbeat, so idle costs nothing. Example:
-  [`testdata/feedback_demo.js`](testdata/feedback_demo.js)
-- **Native capability layer** — six modules sharing one host contract (`NativeHost`): `gx/device`
-  (device info / battery / network / vibration / screen brightness), `gx/app` (foreground-background /
-  back key / share), `gx/geo` (location, incl. continuous watching), `gx/media` (capture / pick image /
-  pick video / save), `gx/permission` (query and request), `gx/viewport` (safe area / soft keyboard
-  height / split-screen and multi-window forms). On desktop the win32 host implements them directly;
-  a mobile native shell only has to implement the same contract to plug in; **missing capabilities are
-  reported as missing** (`canIUse` + 8 unified error codes) — never as fake data
-- **Event loop** — `setTimeout` / `setInterval` / `requestIdleCallback`, plus strict-timer variants
-  with controllable precision (`setStrictTimeout` and friends); in GUI mode the event loop plugs
-  into the window message pump
-- **Reactive programming** — Dart-GetX-style `obs` / `computed` / `ever` / `once`, plus SolidJS-style
-  `gx/solid` signals (`createSignal` / `createEffect` / `createMemo` / `createResource` / `onMount` /
-  `onCleanup`); declarative UI uses **element-level directives**: `model` two-way binding, `each` lists
-  (keyed reuse), `show` conditional keep-alive visibility, and `Switch` + `Match` from `gx/view`
-  for multi-branch
-- **npm distribution** — [`@goxjs/goxjs`](https://www.npmjs.com/package/@goxjs/goxjs) bundles
-  prebuilt binaries for five platforms (macOS x64/arm64, Linux x64/arm64, Windows x64);
-  `npm i -g @goxjs/goxjs` gives you the `goxjs` command
-- **Toolchain** — an interactive REPL, the jsbuild packager (JS → standalone executable, GUI apps and
-  pure-Go cross-compilation), and `gx/dev` runtime snapshots (frame stats / cache hits / recent
-  warnings, usable as a debug panel)
+| Area | Contents | Docs |
+|---|---|---|
+| **Language runtime** | 160 opcodes, fixed 3-byte instructions; ES6+ language subset; full built-in object family | [Language and built-ins](#language-and-built-ins) |
+| **GUI rendering layer** | 63 built-in elements, flex layout, JSX, dirty-rectangle partial redraw, win32 / X11 / cocoa backends | [docs/gui-guide.md](docs/gui-guide.md) |
+| **Host capabilities** | Globals `fs` / `path` / `http` / `fetch` / `process` / `stats` / `crypto` / `hash`; 23 `gx/*` built-in modules | [Host capability modules](#host-capability-modules) |
+| **Mobile and form factors** | Android / iOS / HarmonyOS shell projects plus foldable and safe-area semantics in `gx/screen` | [docs/foldable-adaptation.md](docs/foldable-adaptation.md) |
+| **Toolchain** | REPL, `gox create` scaffolding, `gox dev` hot reload, `gox cert` / `gox build` / `gox sync` / `gox icon`, jsbuild packaging | [Packaging and toolchain](#packaging-and-toolchain) |
 
-## Getting started
+---
 
-### Requirements
+## Language and built-ins
 
-| Scenario | Requirement |
-|---|---|
-| Build from source | Go 1.26.2 or newer (zero cgo, no C toolchain needed) |
-| Just run scripts | Nothing — the npm package ships prebuilt binaries per platform; Node.js ≥ 14 only |
-| GUI apps | Windows (win32), Linux (X11) or macOS (cocoa) |
+### Syntax subset
 
-### Build from source
-
-> `npm/` · `website/` · `gox-logo-concepts/` are three **separate repositories**
-> ([gox-npm](https://github.com/14752222/gox-npm) · [gox-website](https://github.com/14752222/gox-website) ·
-> [gox-logo-concepts](https://github.com/14752222/gox-logo-concepts)); since 2026-10-12 they are no
-> longer git submodules, so cloning the main repo needs no `--recurse-submodules`. CI checks out
-> `npm/` and `website/` automatically; if you want to run `scripts/check-registries.py` locally, first
-> `git clone https://github.com/14752222/gox-npm npm` (otherwise `npm/package.json` is missing).
-
-```bash
-git clone https://github.com/14752222/Gox.git
-cd Gox
-go build ./cmd/gox   # produces the executable; gox.exe on Windows
-```
-
-> `go install github.com/14752222/Gox/cmd/gox@latest` also works (requires a published tag).
-
-### Install via npm
-
-```bash
-npm i -g @goxjs/goxjs    # installs the goxjs command
-npx goxjs app.js         # or run it without installing
-```
-
-### Interactive REPL
-
-```bash
-./gox                # Unix; gox.exe on Windows
-```
-
-```
-Gox REPL (ES6 subset)
-Type :exit to quit, :help for help
-
-> let x = 10
-> let y = 20
-> x + y
-  30
-> [1, 2, 3].map(v => v * 2)
-  [2, 4, 6]
-```
-
-REPL commands: `:help` for help, `:clear` to reset the environment, `:exit` to quit.
-
-### Running scripts
-
-```bash
-./gox example.js    # same usage for the goxjs command from npm
-```
-
-When a script finishes, the value of the last top-level expression is echoed (unless it is
-`undefined`), and the process waits for timers and async callbacks to drain before exiting.
-
-## Usage
-
-### Language examples
-
-Every example below has actually been executed.
-
-**Basics:**
+`let`/`const`/`var`, functions and arrow functions, closures, `class` (including private fields
+`#name`), `async`/`await`, destructuring assignment, rest/default parameters, spread, template
+literals, `for...of`, `for...in`, `try`/`catch`/`throw`, optional chaining `?.`, nullish coalescing
+`??`, ES modules `import`/`export`, and **JSX syntax** (lowered at compile time into
+`h(tag, props, ...children)` calls).
 
 ```js
 let x = 10
@@ -304,8 +314,6 @@ console.log(`Hello, ${name}!`)                                     // Hello, Gox
 let [a, b] = [1, 2]                                                // destructuring
 console.log(a + b)                                                 // 3
 ```
-
-**class and async:**
 
 ```js
 class Point {
@@ -323,12 +331,11 @@ main()
 
 ```
 5
-Promise { <pending> }     <- top-level echo: the return value of main()
-timer done                <- after the timer fires, await resumes
+Promise { <pending> }     ← top-level echo: the return value of main()
+timer done                ← after the timer fires, await resumes
 ```
 
-> Syntax note: async functions can be written as `async function` or async arrows `async () => {}`;
-> top-level `await` is not supported.
+> Syntax note: `async function` and async arrows `async () => {}` both work; top-level `await` does not.
 
 **ES modules** — `lib.js`:
 
@@ -350,31 +357,134 @@ console.log(double(PI))
 tick
 ```
 
-**Reactivity (GetX style):**
+### Built-in objects
+
+`Array` / `String` / `Number` / `Object` / `Boolean` / `Math` / `JSON` /
+`Map` / `Set` / `WeakMap` / `WeakSet` / `Symbol` / `BigInt` / `RegExp` / `Proxy` / `Reflect` /
+`Iterator` / `Promise` / `ArrayBuffer` / `DataView` (the TypedArray family) / `WeakRef` /
+`FinalizationRegistry` / the full error type family / `Temporal` (the modern date-time API —
+this runtime has no `Date`).
+
+### Reactive programming
+
+GetX-style (Dart) `obs` / `computed` / `ever` / `once`:
 
 ```js
 let count = obs(0)
-ever(count, v => console.log("count =", v))   // fires once immediately with the current value
+ever(count, v => console.log("count =", v))   // fires immediately with the current value
 count.value = 1
 count.value = 2
-count.value = 2   // value unchanged: no notification
+count.value = 2   // unchanged, no notification
 ```
 
 ```
 count = 0
 count = 1
 count = 2
-2                  <- top-level echo: the value of the last assignment expression
+2                  ← top-level echo: the value of the last assignment expression
 ```
 
-### Host capability modules
+Plus SolidJS-style `gx/solid` signals (`createSignal` / `createEffect` / `createMemo` /
+`createResource` / `onMount` / `onCleanup`).
 
-`fs` / `path` / `http` / `fetch` / `process` / `stats` / `crypto` / `hash` are injected as **global
-objects** — use them directly, no `import`:
+---
+
+## GUI desktop apps
+
+`gx/gfx` + `gx/solid` provide declarative JSX UI with signal-driven reactive updates; the renderer
+is pure-Go software rasterisation (no cgo, no shared-library dependencies).
+
+### Start a project with the scaffolder
+
+```bash
+gox create my-app                          # also goxjs create / npx @goxjs/goxjs create
+gox create my-app --ts                     # TypeScript/TSX: .tsx runs directly, no node build
+cd my-app && npm install && npm run dev
+```
+
+This generates `package.json`, entry `src/main.js`, root component `src/app.js`, shared state
+`src/store.js`, design tokens `src/theme.js` and three sample components under `src/components/`
+(counter / todo list / multi-state), demonstrating signals, element-level directives (`each` /
+`show`), `model` two-way binding and `Switch` / `Match`. `--ts` generates the TypeScript variant:
+entry becomes `src/main.tsx`, with `tsconfig.json` and `src/gox.d.ts` (IDE type hints). Types are
+stripped automatically at load time (embedded esbuild transform, JSX preserved) — there is no
+node-side build step; type checking is left to the IDE and runtime cost is zero.
+
+The templates are **real files** under [`scaffold/template/`](scaffold/template/), embedded into the
+binary with `go:embed` (change a template and you must rebuild; `scaffold/scaffold_test.go` keeps the
+generated JS/TS passing transform + lexer → parser → compiler, and `gfx/scaffold_project_test.go`
+actually mounts it and clicks through it).
+
+### Minimal hand-written version
 
 ```js
-const text = fs.readFileSync("a.txt")          // sync: throws a JS exception on failure
-const data = await fs.readFile("a.txt")        // async: returns a Promise when no callback is given
+import { h, render, createSignal } from "gox"        // aggregate entry: union of all gx/* exports
+// equivalent split form: import { h, render } from "gx/gfx"; import { createSignal } from "gx/solid"
+
+const [count, setCount] = createSignal(0)
+
+render(
+  <window title="Counter" width={400} height={300}>
+    <column gap={8} padding={16}>
+      <text font={20}>Count: { count()}</text>
+      <button onClick={() => setCount(c => c + 1)}>Add one</button>
+    </column>
+  </window>
+)
+```
+
+```bash
+./gox counter.js          # run it directly; a 400x300 window opens
+```
+
+Click the button → the signal updates → dependent attributes/text nodes are marked dirty → dirty
+rectangles are merged so only the affected region is redrawn. `render()` returns a window handle and
+can be called multiple times to open several windows (each with its own element tree and focus; the
+process exits only when all are closed).
+
+### GUI capability list
+
+- **63 built-in elements** — layout (`column` / `row` / `grid` / `scroll` / `view`), form
+  (`input` / `textarea` / `select` / `slider` / `checkbox` / `radio` / `switch`), data display
+  (`table` / `tree` / `list-item` / `tabs` / `pagination`), feedback (`alert` / `tag` / `badge` /
+  `avatar` / `empty` / `icon` / `spinner` / `skeleton` / `progress` / `tooltip`), overlays
+  (`dialog` / `drawer` / `toast`), media (`<video>` / `<audio>`), a custom-draw canvas, and
+  self-drawn menu bars and context menus
+- **Declarative UI as element-level directives** — `model` two-way binding, `each` lists (keyed
+  reuse), `show` conditional keep-alive visibility, and `Switch` + `Match` from `gx/view` for
+  multi-branch
+- **Routing and screens** — `gx/router` (route table / parameter matching / three-level guards /
+  lazy loading / history stack / multi-window scope / foldable two-column) and `gx/screen`
+  (multi-monitor / per-window display info)
+- **Media tags that actually play** — the kernel only defines the host contract
+  (`nativeVideoHost` / `nativeAudioHost`): it can mount, receive events, and `playing` / `muted` /
+  `loop` / `volume` / `fit` are fully controlled, and **when the backend lacks the capability it says
+  so** (placeholder poster + a single `onError({code:"unsupported"})` + `canIUse("video"/"audio")`
+  answering `false` honestly). Default Linux builds mount `gfx/softmedia`: GIF (with disposal
+  compositing) and MJPEG video, WAV audio (PCM 8/16/24/32-bit + IEEE float) output through
+  PulseAudio via `purego` dlopen (zero cgo). h264 / aac / mp3 are left to platform media layers —
+  see [docs/media-decision.md](docs/media-decision.md)
+
+Full reference — event model, built-in element attribute tables, flex layout and decorative drawing,
+controlled components and IME, transitions, native dialogs / clipboard / persistent storage / menu
+bars, multi-window semantics and platform differences — lives in
+**[docs/gui-guide.md](docs/gui-guide.md)**; runnable samples live in [`testdata/`](testdata/)
+(`counter_demo.js`, `form_demo.js`, `multiwindow_demo.js`, `menu_demo.js`, `view_demo.js`,
+`router_demo.js`, `router_window_demo.js` and 108 more).
+
+Routing and screen adaptation have a dedicated manual: **[docs/gui-router.md](docs/gui-router.md)**.
+
+---
+
+## Host capability modules
+
+### Globals (no import needed)
+
+`fs` / `path` / `http` / `fetch` / `process` / `stats` / `crypto` / `hash`:
+
+```js
+const text = fs.readFileSync("a.txt")          // sync: throws a JS error on failure
+const data = await fs.readFile("a.txt")        // async: returns a Promise without a callback
 fs.mkdirSync("a/b", { recursive: true })
 
 const server = http.createServer(function (req, res) {
@@ -387,60 +497,51 @@ const res = await fetch("https://example.com")
 console.log(res.status, await res.text())
 ```
 
-Async I/O follows a **cross-goroutine I/O + post back to the single-threaded VM** model: network
-reads/writes never touch VM state, and results come back through a zero-delay timer into the event
-loop, so callbacks need no locking.
+The async I/O model is **cross-goroutine I/O dispatched back onto the single-threaded VM**: network
+reads and writes never touch VM state, and results return to the event loop through a zero-delay
+timer, so callbacks need no locking when they touch the VM.
 
-A complete HTTP example (server on port 0, routing/query params/JSON body, 404-405-500 handling,
-callback-style `http.get`·`http.request` vs. Promise-style `fetch`, async responses and
-`server.close`): [`testdata/http_demo.js`](testdata/http_demo.js) — run it with
-`gox testdata/http_demo.js`.
+A complete HTTP sample (server on port 0, routing/query params/JSON body/404-405-500 statuses,
+callback-style `http.get` · `http.request` vs Promise-style `fetch`, async responses and
+`server.close` teardown): [`testdata/http_demo.js`](testdata/http_demo.js) —
+`gox testdata/http_demo.js` runs it.
 
-### Digests and randomness: `crypto` / `hash`
-
-`crypto` and `hash` are a global object / function (same shape as in browsers, no `import`), backed by
-the Go standard library `crypto/*` — zero cgo. The same implementations are also registered as the
-built-in module `gx/crypto` if you prefer `import`:
+**Digests and randomness** — `crypto` and `hash` sit on the Go standard library's `crypto/*`, zero cgo:
 
 ```js
-hash("gox");                                 // sync -> lowercase hex (SHA-256 by default)
-hash("gox", "SHA-512");                      // algorithm names are case/hyphen insensitive
-hash(new Uint8Array([103, 111, 120]));       // accepts string / ArrayBuffer / TypedArray / byte array
-hash([103, 111, 120]);                       // the return shape of fs.readBytesSync works too
-
-const ab = await crypto.subtle.digest("SHA-256", "gox");   // Promise -> ArrayBuffer (32 bytes)
+hash("gox");                                 // sync → lowercase hex (SHA-256 by default)
+hash("gox", "SHA-512");                      // algorithm name is case/hyphen insensitive
+const ab = await crypto.subtle.digest("SHA-256", "gox");   // Promise → ArrayBuffer (32 bytes)
 crypto.randomUUID();                                       // RFC 4122 v4
 crypto.getRandomValues(new Uint8Array(16));                // fills in place, 64KB cap
 ```
 
-Scope and boundaries:
-
-| Item | Notes |
+| Item | Note |
 |---|---|
-| Algorithms | `hash()` supports MD5 / SHA-1 / SHA-256 / SHA-512; `crypto.subtle.digest()` accepts **only SHA-1 / SHA-256 / SHA-512** (WebCrypto has no MD5 — code copied from the web should not silently pass here) |
-| Argument order | `hash(data, algo)` but `crypto.subtle.digest(algo, data)` — the former is Gox sugar, the latter matches browsers |
-| String encoding | UTF-8 (same as `TextEncoder.encode`) |
-| Out of scope | Encryption / decryption / signing / KDF — those need a product decision on key management |
-| Errors | Unsupported algorithms or arguments always raise `TypeError` (`digest` rejects the Promise); there is no silent fallback to another algorithm |
+| Algorithms | `hash()` supports MD5 / SHA-1 / SHA-256 / SHA-512; `crypto.subtle.digest()` **only takes SHA-1 / SHA-256 / SHA-512** |
+| Argument order | `hash(data, algo)` but `crypto.subtle.digest(algo, data)` |
+| Not included | Encryption / signing / KDF |
+| Errors | Unsupported algorithms or arguments always raise `TypeError` — never a silent fallback |
 
-Full demo: [`testdata/crypto_demo.js`](testdata/crypto_demo.js) — `gox testdata/crypto_demo.js`.
+### `gx/*` built-in modules (import required)
 
-### Native capability modules `gx/*`
+**23 modules** in the registry: `gox` (aggregate entry), `gx/solid`, `gx/gfx`, `gx/view`,
+`gx/router`, `gx/screen`, `gx/viewport`, `gx/dialog`, `gx/storage`, `gx/update`, `gx/crypto`,
+`gx/theme`, `gx/dev`, `gx/a11y`, `gx/device`, `gx/app`, `gx/geo`, `gx/media`, `gx/permission`, plus
+`fs` / `http` / `path` / `process`, which are also importable from the global side.
 
-`gx/device` / `gx/app` / `gx/geo` / `gx/media` / `gx/permission` / `gx/viewport` need `import`
-(they are not globals). Three call shapes to keep apart when writing code:
+The six native-capability modules share one host contract (`NativeHost`). Three call shapes need to
+be told apart when writing code:
 
 ```js
-import { deviceInfo, battery, isOnline, canIUse } from "gx/device";   // pull-style + reported-style
+import { deviceInfo, battery, isOnline, canIUse } from "gx/device";   // pull-type + report-type
 import { getLocation, watchLocation } from "gx/geo";
-import { takePhoto } from "gx/media";                                  // action-style
+import { takePhoto } from "gx/media";                                  // action-type
 
 const info = deviceInfo();                    // available synchronously
 console.log(info.platform, info.model, battery().level + "%", isOnline());
-// battery()/isOnline() read a snapshot; useBattery() returns a getter that
-// refreshes automatically when the host reports new values
 
-if (canIUse("camera")) {                      // check the capability up front, don't rely on catch
+if (canIUse("camera")) {                      // probe capability up front, don't rely on catch
   const photo = await takePhoto({ count: 1 });      // rejects on failure, with errCode
 }
 
@@ -453,211 +554,74 @@ try {
 ```
 
 The desktop backend implements whatever it can (battery / network / brightness / keep-screen-on /
-open system settings), and reports `unsupported` honestly for the rest. **Mobile reuses the very same
-`NativeHost` contract — no kernel changes needed**: the Android shell (Kotlin) and iOS shell (Swift)
-have all six modules essentially complete — Android is verified on the emulator (display / touch /
-IME / safe area / foldables), the iOS shell project and build scripts (including TestFlight packaging)
-are in place with **on-device verification still to do**; the HarmonyOS shell (ArkTS) currently wires
-only two pure reporting channels (safe area and fold reporting), the six capability modules are stubs.
-Semantics, the 8 error codes and per-module export tables are in
-[GUI guide §9.6](docs/gui-guide.md#96-原生能力层) (Chinese); the per-method (module × platform) status
-table, shell build notes and first-frame self-check list are in
-[`app/NATIVE-HOST.md`](app/NATIVE-HOST.md); a full demo of all three shapes:
+opening system settings) and honestly reports `unsupported` for the rest. **Mobile implements the same
+`NativeHost` contract without touching the kernel** — the Android (Kotlin) and iOS (Swift) shells have
+essentially all six modules: Android is verified on an emulator (first paint / touch / IME / safe
+area / foldables), while the iOS shell project and build scripts (including TestFlight packaging) are
+complete but **on-device verification is pending**; the HarmonyOS (ArkTS) shell currently wires only
+the two pure-report channels (safe area and fold state) and the six capability modules are still
+stubs. For the per-method (module × platform) status table, shell build notes and first-frame
+self-check list, see [`app/NATIVE-HOST.md`](app/NATIVE-HOST.md); a demo of all three shapes:
 [`testdata/native_demo.js`](testdata/native_demo.js).
 
-**Per-platform verification scope (CI matrix wording)** — the capability matrix states only what is
-actually verified, nothing more:
+**Three-platform verification scope (CI matrix) — the capability matrix states what was actually verified, nothing more**:
 
-| Platform | Build smoke (every push) | Device regression | Foldable semantics |
+| Platform | Build smoke (every push) | Device regression | Fold semantics |
 |---|---|---|---|
-| **Android** | `android` job in `mobile-smoke.yml`: libgox.so → assembleDebug APK | `android-fold-emulator` job: on a **pixel_fold emulator** (API 34+, the only AVD that really moves the hinge) it runs the CLOSED → HALF_FOLDED → OPENED matrix and archives screenshots; on a real device, `scripts/mobile-device-accept.sh --rounds 20` (§4 lifecycle loop) | ✅ Fold-state switching covered by the emulator (`cmd device_state`) |
-| **iOS** | `ios` job in `mobile-smoke.yml`: xcodebuild simulator build | `ios-device-matrix` job: iPhone 16 / 16 Pro Max / iPad × portrait+landscape, simctl screenshots archived | ⚠️ **No foldables in the simulator**: `reservedRegions` (iOS 27.1+) reports flat only — a known boundary, not a bug; on-device verification still to do |
-| **HarmonyOS** | Cross-compilation + contract tests + assembleHap build pass | — | ❌ Emulator verification still to do (**HAP signing is a hard blocker**: it must be configured with a Huawei account in the DevEco GUI; the CLI can't substitute). We do not claim "HarmonyOS supported". |
+| **Android** | `mobile-smoke.yml` android job: libgox.so → assembleDebug APK | `android-fold-emulator` job: on a **pixel_fold emulator** (API 34+, real hinge switching) runs CLOSED → HALF_FOLDED → OPENED matrix + screenshot archiving; on-device `scripts/mobile-device-accept.sh --rounds 20` | ✅ fold-state switching covered by the emulator |
+| **iOS** | `mobile-smoke.yml` ios job: xcodebuild simulator build | `ios-device-matrix` job: iPhone 16 / 16 Pro Max / iPad × portrait/landscape, simctl screenshots archived | ⚠️ no foldable simulator: `reservedRegions` (iOS 27.1+) only reports flat; on-device verification pending |
+| **HarmonyOS** | Cross-compile + host-contract tests + assembleHap build | — | ❌ emulator verification pending (**HAP signing is a hard blocker**); we do not claim "HarmonyOS supported" |
 
-> "Run the form-factor matrix in CI and block merges on failure" is handled on the desktop side by the
-> `foldable-matrix` job in `ci.yml` (fake-surface replay of 4 device forms + 20 lifecycle rounds +
-> the four widths of this README's example + the three-platform permission matrix); the device side is
-> covered by the two mobile-smoke jobs above. Which job is marked required is a branch-protection
-> setting of the repository — code can't do it; the job keys are the names given above.
+---
 
-### GUI desktop apps
+## Packaging and toolchain
 
-`gx/gfx` + `gx/solid` provide declarative JSX UI with signal-driven updates, rendered by a pure-Go
-software rasterizer (no cgo, no dynamic library dependencies).
+### jsbuild: script → standalone executable
 
-Scaffold a new project — what comes out runs out of the box, and the layout is exactly the
-scaffold's default output:
-
-```bash
-gox create my-app                          # same as goxjs create / npx @goxjs/goxjs create
-gox create my-app --ts                      # TypeScript/TSX flavor: .tsx runs directly, no node build
-cd my-app && npm install && npm run dev
-```
-
-It generates `package.json`, the entry `src/main.js`, the root component `src/app.js`, shared state
-`src/store.js`, design tokens `src/theme.js`, and three example components under `src/components/`
-(counter / todo list / multi-state), demonstrating signals, element-level directives (`each` / `show`),
-`model` two-way binding and `Switch` / `Match`. `--ts` generates the TypeScript flavor: the entry
-becomes `src/main.tsx`, with `tsconfig.json` and `src/gox.d.ts` (IDE type hints); types are stripped
-automatically at load time (embedded esbuild transform, JSX preserved as-is) — there is no node-side
-build step, type checking is left to the IDE, and there is zero runtime cost.
-The templates are **real files** under [`scaffold/template/`](scaffold/template/), embedded into the
-binary with `go:embed` (template edits need a rebuild; `scaffold/scaffold_test.go` guarantees the
-generated JS/TS still passes transform + lexer → parser → compiler, and
-`gfx/scaffold_project_test.go` really mounts it and clicks through it).
-
-The smallest hand-written version:
-
-```js
-import { h, render, createSignal } from "gox"        // aggregate entry: union of all gx/* exports
-// equivalent split form: import { h, render } from "gx/gfx"; import { createSignal } from "gx/solid"
-
-const [count, setCount] = createSignal(0)
-
-render(
-  <window title="Counter" width={400} height={300}>
-    <column gap={8} padding={16}>
-      <text font={20}>count: { count()}</text>
-      <button onClick={() => setCount(c => c + 1)}>+1</button>
-    </column>
-  </window>
-)
-```
-
-```bash
-./gox counter.js          # run it directly: a 400x300 window pops up
-```
-
-Clicking the button → the signal updates → the props/text nodes depending on it are marked dirty →
-dirty rectangles are merged and only the affected region is repainted. `render()` returns a window
-handle and can be called several times for several windows (each with its own element tree and focus;
-the process exits when all are closed).
-
-Full reference — event model, built-in element property tables, flex layout and decoration drawing,
-controlled components and IME, transition animations, element-level directives (`model` / `each` /
-`show`) and `gx/view` multi-branch, **routing (`gx/router`: route table / parameter matching /
-three-level guards / lazy loading / history stack / multi-window scope / foldable two-pane) and
-screen info (`gx/screen`)**, native dialogs / clipboard / persistent storage / menu bar, multi-window
-semantics and platform differences — see **[docs/gui-guide.md](docs/gui-guide.md)** (Chinese), and
-runnable examples under [`testdata/`](testdata/) (`counter_demo.js`, `form_demo.js`,
-`multiwindow_demo.js`, `menu_demo.js`, `view_demo.js`, `router_demo.js`, `router_window_demo.js`,
-35+ in total).
-
-Routing and screen adaptation have a dedicated manual: **[docs/gui-router.md](docs/gui-router.md)**.
-
-### Packaging into a standalone executable
-
-`jsbuild` (`packager/`) embeds the entry script and its relative `import`s into a generated Go
-project and compiles it into a single-file executable with the full runtime inside:
+`jsbuild` (`packager/`) embeds the entry script and its relatively-imported modules into a generated
+Go project and compiles it into a single self-contained executable:
 
 ```bash
 go run ./packager app.js -o app.exe                    # CLI app
 go run ./packager counter.js --gui -o counter.exe      # GUI app
-go run ./packager app.js --gui --target linux/amd64    # pure-Go cross-compilation, no target toolchain
-```
-
-```
-Usage: jsbuild <input.js> [options]
-
-Options:
-  -o, --out <path>     output file path (default: <input file name>.exe)
-      --name <name>    app name (used in error messages; defaults to the input file name)
-      --windowed       windowed mode: no console window (Windows only)
-      --gui            GUI app: window message-pump event loop (for use with gx/gfx render)
-      --target <os>/<arch>  cross-compilation target (windows|linux|darwin / amd64|arm64|386)
-      --icon <path>    app icon (.png 1024 source or ready-made .ico/.icns):
-                       Windows embeds icon+version resource (.syso), darwin produces an .app bundle
-      --version <v>    version number (x.y.z; written into Windows version resource and .app Info.plist)
-  -v, --verbose        show build progress
+go run ./packager app.js --gui --target linux/amd64    # pure-Go cross-compile, no target toolchain
 ```
 
 Per-platform distribution notes (Windows icons and signing, Linux packaging formats, macOS `.app`
 bundles) are in [docs/desktop-distribution.md](docs/desktop-distribution.md).
 
-> **Command-line arguments**: packaged binaries keep the same convention as `gox <file> <args>` —
-> `process.argv` is always `[executable, script path, ...user args]`, so user args **always start at
-> index 2** (the packaged binary has no host "script path" argument, so the runtime fills in the
-> extracted entry path as a placeholder). Either way, `process.argv[2]` is the first user argument,
-> both when running the source and when running the packaged build — which is what desktop tools
-> expect for "drag a file onto the exe" or "launch with arguments".
+> **Command-line arguments**: packaged output and `gox <file> <args>` share one convention —
+> `process.argv` is always `[executable, script path, ...user args]`, so user arguments **always start
+> at index 2**. The same script can therefore use `process.argv[2]` for the first user argument whether
+> run from source or packaged.
 
-### Multi-platform configuration (gox.json / permissions / icons)
+### Multi-platform config (gox.json / permissions / icons / certificates)
 
-A project created by `gox create` ships with `gox.json` (app name, appId, version, permissions,
-per-platform sub-config) plus a full Android / iOS / desktop resource skeleton and a default icon:
+`gox create` generates a project with `gox.json` (app name, appId, version, permissions, per-platform
+sub-config) plus complete Android / iOS / desktop resource skeletons and default icons:
 
-- `gox sync` — idempotently injects the `permissions` from gox.json into AndroidManifest and the iOS
-  Info.plist (always including the two baseline permissions `INTERNET` + `ACCESS_NETWORK_STATE`;
-  undeclared logical permissions are not written);
-- `gox icon` — generates Android mipmaps, the iOS AppIconSet, Windows `.ico`, macOS `.icns` and
-  favicon from the single source `assets/icon.png` (1024×1024);
-- `gox cert` — one-shot platform signing certificate generation (a convenience, pure Go, no
-  JDK/openssl): `android` (PKCS12 keystore, picked up by gradle automatically), `windows`
-  (self-signed code-signing .pfx), `harmony` (ECC P-256 debug .p12+.cer), `ios` (key pair + CSR, then
-  `gox cert ios --cer x.cer` to compose the .p12). Output lands in `certs/` (gitignored); if you
-  already have official certificates, configure them in the `cert` section of gox.json instead;
-- `gox build windows|macos|android|ios` — unified build entry (sync → icon → platform packaging);
-  `gox build android --release` produces a signed release package (certificate: gox.json `cert`
-  section > `certs/` metadata > auto-generated debug certificate).
+| Command | Purpose |
+|---|---|
+| `gox sync` | Idempotently injects `permissions` from gox.json into AndroidManifest and iOS Info.plist |
+| `gox icon` | Generates Android mipmaps, iOS AppIconSet, Windows `.ico`, macOS `.icns` and favicon from a single `assets/icon.png` (1024×1024) |
+| `gox cert` | One-step platform signing certificates (pure Go, no JDK/openssl): `android` / `windows` / `harmony` / `ios` |
+| `gox build <android\|ios\|windows\|macos>` | Unified build entry (sync → icon → platform packaging); `--release` for signed release builds |
 
-Field reference, permission list and icon spec: [docs/platform-config.md](docs/platform-config.md).
+Field reference, permission lists and icon specs: [docs/platform-config.md](docs/platform-config.md).
+The script runtime permission model (`--allow-fs-write` etc., least privilege by default):
+[docs/permissions.md](docs/permissions.md).
 
-The script runtime permission model (`--allow-fs-write` etc., least privilege by default) is in
-[docs/permissions.md](docs/permissions.md); measured compatibility with popular npm libraries is in
-[docs/compat-matrix.md](docs/compat-matrix.md).
-
-## Configuration
-
-The runtime itself takes no config file: behaviour is driven entirely by **command-line arguments**, a
-handful of **environment variables** and **in-script APIs**. Project-level settings (app name, appId,
-version, permissions, icon) live in the `gox.json` generated by `gox create` — see
-[Multi-platform configuration](#multi-platform-configuration-goxjson--permissions--icons).
-
-### Command-line arguments
-
-| Command | Argument | Description |
-|---|---|---|
-| `Gox` / `goxjs` | *(none)* | Start the interactive REPL |
-| `Gox` / `goxjs` | `create <dir>` | Generate a GUI project from the default template (`--ts` for the TypeScript/TSX variant); aliases `new` / `init` |
-| `Gox` / `goxjs` | `sync [dir]` | Idempotently inject the gox.json permission declarations into the Android / iOS manifests |
-| `Gox` / `goxjs` | `icon [dir]` | Generate every platform's icon from a single 1024px source image |
-| `Gox` / `goxjs` | `build <android\|ios\|windows\|macos>` | Unified build entry point (sync → icon → platform packaging) |
-| `Gox` / `goxjs` | `<script.js>` | Run a script file; errors go to stderr and exit with a non-zero code |
-| `Gox` / `goxjs` | `help` / `version` | Show usage / version |
-| `go run ./packager` | see [Packaging](#packaging-into-a-standalone-executable) | jsbuild packager argument table |
-
-`create` options: `--name <name>` (overrides the project name; defaults to the directory name), `-f` /
-`--force` (only needed when the target directory already exists and is non-empty; overwriting is
-refused by default). An argument is only treated as a subcommand when it **does not look like a
-script path** (judged by extension and path separators), so `gox help.js` and `gox src/create.js`
-still run as scripts.
-
-Built-in REPL commands: `:help`, `:clear` (resets the global environment), `:exit` / `:quit`.
-
-### Environment variables
-
-| Variable | Effect | Default |
-|---|---|---|
-| `GOX_STORAGE_DIR` | Overrides the `gx/storage` data root; handy for tests and multi-instance isolation | empty (system config dir) |
-| `GOOS` / `GOARCH` / `CGO_ENABLED` | Cross-compilation only, at build time (see `scripts/build-npm.sh`) | host platform |
-
-### App-level settings
-
-| Setting | How | Notes |
-|---|---|---|
-| App name / data dir | `setAppName("MyApp")` (`gx/storage`) | Data lands in `os.UserConfigDir()/Gox/<app name>` — `%AppData%` on Windows, `~/.config` on Linux, `~/Library/Application Support` on macOS; when unset it is derived from the script file name |
-| Window title & size | JSX `<window title width height>` or `render(tree, {title, width, height})` | Defaults to `Gox` 400×300 |
-| Fonts | Auto-detected per platform | Linux lazily scans system font dirs (`/usr/share/fonts`, `~/.local/share/fonts`, …) with CJK preferred, capped at 2000 entries |
-| Theme / colors | Element attributes (`background` / `border` / `color`) | Named colors plus `#rgb` / `#rgba` / `#rrggbb` / `#rrggbbaa` / `rgb()` / `rgba()` |
-
-### npm package information
+### npm package info
 
 | Item | Value |
 |---|---|
 | Package / command | `@goxjs/goxjs` → `goxjs` |
-| Platforms shipped | macOS x64 / arm64, Linux x64 / arm64, Windows x64 |
-| Node version | `>=14` (only used to distribute the binary; no runtime dependency on Node) |
-| Version source of truth | the `version` field of [`npm/package.json`](npm/package.json) |
+| Platforms included | macOS x64 / arm64, Linux x64 / arm64, Windows x64 |
+| Node version | `>=14` (only used to distribute the binary; runtime does not depend on Node) |
+| Version source of truth | `version` in [gox-npm's `package.json`](https://github.com/14752222/gox-npm/blob/main/package.json) |
+| Mobile sub-packages | `@goxjs/goxjs-mobile-<platform>-<abi>` (4 of them, installed on demand, not in the main package's dependencies) |
+
+---
 
 ## Architecture
 
@@ -665,111 +629,158 @@ Built-in REPL commands: `:help`, `:clear` (resets the global environment), `:exi
 
 ```
  .js source
-    │  lexer        tokenization
+    │  lexer        tokenisation
     ▼
  Token stream
-    │  parser       syntax analysis
+    │  parser       parsing (incl. JSX lowering)
     ▼
  AST (ast/)
     │  compiler     symbol table resolution + bytecode generation (constant pool)
     ▼
- Bytecode (bytecode/)   fixed-width 3 bytes: [opcode 1B][operand 2B big-endian]
-    │  vm            stack-frame execution + timer event loop + module loading
+ Bytecode (bytecode/)   fixed 3 bytes: [opcode 1B][operand 2B big-endian], 160 opcodes
+    │  vm           stack call-frame execution + timer event loop + module loading
     ▼
  Result
 ```
 
 ### Key design decisions
 
-- **Explicit memory management, no GC** — object lifetimes are managed explicitly by the runtime, with
-  dedicated handling for reference cycles.
-- **Single-threaded VM + cross-goroutine scheduling** — network callbacks such as `http.createServer`
-  are captured in goroutines and dispatched back onto the single VM thread, so no locking is needed.
-  Pending tasks keep the event loop alive; the process may only exit once the count reaches zero.
-- **Fixed-width instruction encoding** — no variable-length decode state machine, operands are read
-  directly; the constant pool carries large object references.
-- **Optional capabilities behind optional interfaces** — GUI backends are abstracted through
-  `Surface` + `WindowFactory`, so swapping a backend needs no script changes; platform-only
-  capabilities (IME, clipboard, native dialogs) are probed per backend and degrade silently instead
-  of raising errors.
+- **Fixed-length instruction encoding** — no variable-length decoding state machine; operands are
+  read directly, and the constant pool carries large object references.
+- **Single-threaded VM + cross-goroutine scheduling** — network callbacks such as
+  `http.createServer` are captured on goroutines and scheduled back onto the VM thread, so no locks
+  are needed. Pending tasks keep the event loop alive; the process may exit only when the count hits zero.
+- **Optional capabilities go through optional interfaces** — GUI backends are abstracted via
+  `Surface` + `WindowFactory`, so swapping backends needs zero script changes; platform-unique
+  capabilities (IME, clipboard, native dialogs, video / audio) are probed per backend and **degrade
+  honestly** instead of erroring when absent.
+- **Fixed shards keep compliance reproducible** — the test262 runner pins the shard count at 128 and
+  **decouples it from `-jobs`**: the engine has package-level mutable state, so if the shard count
+  tracked concurrency, each test's "same-process neighbours" would change and the pass count would
+  flip with `-jobs`.
 
-### Repository layout
+### Directory layout
 
 | Directory | Responsibility |
 |---|---|
-| `lexer/` | Lexer (including JSX tokenization) |
-| `parser/` | Parser producing the AST (including JSX desugaring) |
+| `lexer/` | Tokeniser (incl. JSX lexical support) |
+| `parser/` | Parser producing the AST (incl. JSX lowering) |
 | `ast/` | AST node definitions |
-| `compiler/` | AST → bytecode compiler (symbol table included) |
+| `compiler/` | AST → bytecode compiler (incl. symbol table) |
 | `bytecode/` | Opcode and bytecode format definitions |
 | `vm/` | Stack-based bytecode VM (call frames, module loading, timer scheduling) |
-| `object/` | Runtime object system (Number / Array / Map / Promise / Observable…) |
+| `object/` | Runtime object system (Number / Array / Map / Promise / Observable …) |
 | `runtime/` | Global Environment |
-| `stdlib/` | Standard library and host API implementation (including `gx/solid` reactive signals) |
-| `gfx/` | Home-grown GUI rendering layer (software rasterization, layout, hit testing, win32 / X11 / cocoa backends) |
+| `stdlib/` | Standard library and host API implementations (incl. `gx/solid` reactive signals) |
+| `gfx/` | Self-written GUI rendering layer (software rasterisation, layout, hit testing, win32 / X11 / cocoa backends) |
 | `packager/` | jsbuild packager (GUI apps, cross-compilation) |
-| `scaffold/` | `gox create` project scaffolding: `template/` holds **real files** (`go:embed`-ed into the binary; `ts/` is the `--ts` TSX overlay), `scaffold.go` does placeholder substitution and directory validation |
-| `tools/` | Dev tools and code generation (the five former root-level dirs icongen / certgen / tstransform / update / perf were consolidated here on 2026-10-12): `tstransform/` (TS/TSX → JS transpiling into the runtime, embeds the esbuild Go API, called when `vm` loads `.ts`/`.tsx`), `icongen/` (all-platform icon generation), `certgen/` (signing certificates), `update/` (self-update), `perf/` (frame-rate / GC benchmarks), `bcdump`/`initpurity`/`propdump`/`rssmon` (diagnostics) |
-| `test/` | Test support: `bench/` profiling benchmarks (fib, function calls, object ops, number parsing) |
-| `testdata/` | Directly runnable example scripts (language features, host APIs, GUI examples) |
-| `docs/` | **Public documentation** (GUI guide, runtime API tutorial, distribution and release manuals) — process ledgers are maintained outside the repo by the maintainer and are not published with it |
-| `npm/` | **Separate repo** [gox-npm](https://github.com/14752222/gox-npm) (auto-checked-out during CI builds): the **definition** of the `@goxjs/goxjs` npm package (`package.json` / `bin/gox.js` / package README); binaries are compiled on the fly by the release pipeline and never committed |
-| `scripts/` | Build and check scripts: `build-npm.sh` cross-compiles all five platform binaries; `check-registries.py` verifies registry consistency (built-in components in four places / gx modules in three / version numbers / npm manifest), with `check-registries-selftest.py` as a negative self-test (`check-site.py` only accepted top-level `*.html` and became obsolete after the website moved to VitePress on 2026-09-25 — dead links are now caught by `vitepress build`); `check-imports.py` verifies that imports in docs and examples match the built-in module export tables (compile-error level + file-module silent-undefined level) |
-| `.github/workflows/` | CI: `ci.yml` regular gate (registry consistency + `go build`/`vet`/`test`); `release.yml` release pipeline (push main / tag / Release → npm); `pages.yml` website publishing |
-| `website/` | **Separate repo** [gox-website](https://github.com/14752222/gox-website) (auto-checked-out during CI builds): website source, published to GitHub Pages by `pages.yml` on a daily schedule or manual trigger |
-| `gox-logo-concepts/` | **Separate repo** [gox-logo-concepts](https://github.com/14752222/gox-logo-concepts): logo drafts and website asset generation scripts (`make_assets.py`) |
+| `scaffold/` | `gox create` project scaffolding: `template/` holds **real files** (`go:embed`ed into the binary) |
+| `tools/` | Dev tools: `tstransform/` (TS/TSX → JS), `icongen/` (icons), `certgen/` (certificates), `update/` (self-update), `perf/` (benchmarks) |
+| `test/` | Testing: `bench/` profiling benchmarks |
+| `testdata/` | Directly runnable sample scripts (108 of them) |
+| `app/` | Mobile shell projects and the `NATIVE-HOST.md` contract doc |
+| `docs/` | Public-facing documentation |
+| `scripts/` | Build and check scripts: `build-npm.sh`, `check-registries.py`, `check-imports.py`, `test262-cluster.py` and more |
+| `.github/workflows/` | CI: `ci.yml` general gate, `release.yml` releases, `pages.yml` website, `test262.yml` compliance, `mobile-smoke.yml` three-platform matrix |
 
-## Development & testing
+---
+
+## Performance
+
+> Figures come from public benchmarks run on CI runners (`bench-results/`, AMD EPYC 7763) and the
+> website's own measurements (Apple M2). **Including the one we miss** — methodology and thresholds
+> are fully published.
+
+| Metric | gox | goja (pure interpreter reference) | node / V8 (JIT reference) |
+|---|---:|---:|---:|
+| Startup | 4 ms | 3 ms | 25 ms |
+| `fib28` pure compute | 631 ms | 200 ms | 34 ms |
+| 10k timers | 168 ms | 116 ms | 139 ms |
+| Resident RSS | 25 MB | 10 MB | 42 MB |
+
+**Verdict**: startup and memory are on par with comparable interpreters; pure compute throughput is
+**not on par with goja** (`fib28` ~3× slower), the direct cost of a pure interpreter with no JIT, and
+not an optimisation target. **UI is free of GC pauses** (stressed-run aggregate p95 frame interval
+5.95ms ≤ 16.7ms; single GC pause max 1.382ms ≤ 5ms).
+
+The virtualised long list (`<scroll vlist>`) is decoupled from row count: first frame for 100k rows is
+89ms vs 2187ms for a full render (~24×), and scroll frames stay at 0.11–0.17ms vs 999ms for a full render.
+
+Full figures, how to run them and the pass/fail thresholds:
+[website · Performance and compliance](https://14752222.github.io/Gox/guide/performance).
+
+---
+
+## Documentation map
+
+| Document | Contents |
+|---|---|
+| [docs/tutorial.md](docs/tutorial.md) | **Hands-on tutorial**: API calls and parameters, importing built-in modules, `gox create`, route definition and registration |
+| [docs/gui-guide.md](docs/gui-guide.md) | GUI guide: element/event reference, layout, animation, host capabilities, sample index |
+| [docs/gui-router.md](docs/gui-router.md) | Routing and screen adaptation manual |
+| [docs/gui-patterns.md](docs/gui-patterns.md) | Userland patterns manual (routing, state, theming idioms) |
+| [docs/gui-model-binding.md](docs/gui-model-binding.md) | `model` two-way binding: interface design, semantics table, comparison with Vue, counter-examples |
+| [docs/foldable-adaptation.md](docs/foldable-adaptation.md) | Foldable adaptation tutorial: the pure-read short-circuit pitfall, hinge-avoidance unit conversion, three-platform verification scope |
+| [docs/platform-config.md](docs/platform-config.md) | Multi-platform config: gox.json fields, permission list, icon specs, `gox build` targets |
+| [docs/desktop-distribution.md](docs/desktop-distribution.md) | Desktop distribution: icons, signing, per-platform packaging |
+| [docs/js-runtime-api-tutorial.md](docs/js-runtime-api-tutorial.md) | Runtime API tutorial: function types, callback bridge, memory management, how to add an API |
+| [docs/permissions.md](docs/permissions.md) | Script runtime permission model |
+| [docs/compat-matrix.md](docs/compat-matrix.md) | Measured compatibility with popular npm packages |
+| [docs/npm-release.md](docs/npm-release.md) | `@goxjs/goxjs` release manual |
+| [Website](https://14752222.github.io/Gox/) | Online tutorials for installing, running scripts, writing GUI apps and packaging (bilingual) |
+
+---
+
+## Development and testing
 
 ```bash
-go test ./...          # run all tests (bytecode / compiler / lexer / object / parser / runtime / vm)
-go run ./test/bench    # produce cpu.prof
+go test ./...          # run all tests (308 test files / 2419 test functions)
+go run ./test/bench    # generate cpu.prof
 ```
 
-> Because there is zero cgo, `go test -race` does not work here (Go requires cgo for it).
+> Because there is no cgo, `go test -race` is unavailable in this project (Go requires cgo for it).
 
-To work on the internals (adding standard library APIs, understanding the callback bridge and memory
-management), read [docs/js-runtime-api-tutorial.md](docs/js-runtime-api-tutorial.md) (Chinese).
+To go deeper (adding standard-library APIs, understanding the callback bridge and memory
+management), read [docs/js-runtime-api-tutorial.md](docs/js-runtime-api-tutorial.md).
+
+---
 
 ## Release process
 
 `@goxjs/goxjs` is published automatically by GitHub Actions
-([.github/workflows/release.yml](.github/workflows/release.yml)) using npm Trusted Publishing (OIDC),
-so no secret or token is stored in the repo:
+([.github/workflows/release.yml](.github/workflows/release.yml)), authenticating with npm Trusted
+Publishing (OIDC) — no secret or token lives in the repo:
 
 ```bash
-# 1. Bump the version — npm/package.json's version is the single source of truth; npm/ is a separate
-#    repo (the local copy is its working tree):
+# 1. Bump the version — npm/package.json's `version` is the single source of truth,
+#    and npm/ is a separate repository:
 $EDITOR npm/package.json
-git -C npm commit -am "chore(release): 0.2.1" && git -C npm push
-# 2. Tag and push in the main repo — the tag must match the version on gox-npm's default branch
-#    (the decide gate cross-checks it)
-git tag v0.2.1 && git push origin v0.2.1
-# 3. CI does the rest: cross-compile the five platform binaries → smoke test → package verification
-#    → npm publish --provenance, then tags v0.2.1 and creates a Release
+git -C npm commit -am "chore(release): 0.15.0" && git -C npm push
+# 2. Tag the main repo and push — the tag must match gox-npm's default-branch version
+git tag v0.15.0 && git push Gox v0.15.0
+# 3. CI does the rest: cross-compile five platforms → package verification → OIDC publish
+#    → create the tag and the Release automatically
 ```
 
-- **Triggers**: pushes to `main`, `v*` tag pushes, published Releases, and manual
-  `workflow_dispatch` (with an optional `dry_run` that builds and packages but does not upload)
-- **Idempotent**: CI queries the registry first and skips with a notice when the version already
-  exists — repeated pushes and re-runs of old workflow runs never go red and never double-publish
-- **Versioning**: ordinary commits do not trigger a real publish, only versions missing from the
-  registry are published; the tag must match `package.json` or the run fails outright
-- **Manual publish** (emergency only, needs OTP):
-  `bash scripts/build-npm.sh && cd npm && npm publish --access public`
-- **Troubleshooting**: an OIDC failure and a misconfigured Trusted Publisher return the same
-  misleading 404 — check the four fields on the npm side first (see the comment block at the top of
-  the workflow); every run logs the npm version, whether `NODE_AUTH_TOKEN` is empty, and whether the
-  OIDC endpoint is reachable
+- **Triggers**: push to `main`, pushing a `v*` tag, publishing a Release, and manual
+  `workflow_dispatch`
+- **Idempotent**: CI checks the registry first and skips with a notice if the version already exists —
+  repeated pushes never double-publish
+- **Versioning**: ordinary commits never trigger a real publish; `const version` in
+  `cmd/gox/main.go` and `npm/package.json` must stay in sync
+  ([`scripts/check-registries.py`](scripts/check-registries.py) enforces it)
+- **Full manual**: [docs/npm-release.md](docs/npm-release.md)
+
+---
 
 ## Contributing
 
-Issues and pull requests are welcome — the full participation guide, local gates, and this repo's
-"change one place, sync several" discipline live in **[CONTRIBUTING.md](CONTRIBUTING.md)**; the code
-of conduct is in [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Good starting points are issues labelled
-`good first issue`.
+Issues and pull requests are welcome — the full participation guide, local gates and this repo's
+particular "change one place, sync several" discipline are in **[CONTRIBUTING.md](CONTRIBUTING.md)**;
+the code of conduct is in [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). First-time contributors can start
+with issues labelled `good first issue`.
 
-**Development environment**: Go 1.26.2+, zero cgo (no C toolchain required). Before committing:
+**Dev environment**: Go 1.26.2+, zero cgo (no C toolchain). Before submitting:
 
 ```bash
 gofmt -l .             # should print nothing
@@ -777,17 +788,17 @@ go build ./...
 go vet ./...
 go test ./...
 python3 scripts/check-registries.py   # registry consistency (same gate as CI)
-python3 scripts/check-imports.py      # imports in docs/examples match export tables (same gate as CI)
+python3 scripts/check-imports.py      # doc/sample imports vs export table (same gate as CI)
 ```
 
-**Commit style**: follow the existing Conventional Commits style in the repo, with the scope set to
-the affected module or topic, description in Chinese:
+**Commit style**: follow the repo's existing Conventional Commits style, with a scope naming the
+affected module or topic:
 
 ```
-feat(gfx): 新增 <slider> 的键盘调节支持
-fix(vm): 修正 SET_INDEX 对非对象类型静默丢弃的问题
-docs(gui-guide): 补充多窗口事件泵的轮询语义
-ci(release): 打包闸改回 tar 校验，不再解析 npm 的输出
+feat(gfx): add keyboard adjustment support to <slider>
+fix(vm): stop SET_INDEX from silently dropping non-object types
+docs(gui-guide): document the multi-window event pump polling semantics
+ci(release): switch the packaging gate back to tar verification
 ```
 
 **Adding a built-in GUI component requires syncing four places** (missing one fails silently, with no
@@ -795,47 +806,22 @@ compile error):
 
 | Place | Purpose |
 |---|---|
-| `knownTags` in `gfx/node.go` | Register the tag name, otherwise `h()` prints an "unknown tag" warning |
-| `intrinsicSize` in `gfx/layout.go` | Declare the intrinsic size |
-| The layout dispatch in `gfx/layout.go` | Declare how children participate in layout |
-| `drawNode` in `gfx/raster.go` | Implement drawing; tags intercepted by a `case` must draw their own background / border |
+| `knownTags` in `gfx/node.go` | Registers the tag name; otherwise `h()` prints an "unknown tag" warning |
+| `intrinsicSize` in `gfx/layout.go` | Declares the intrinsic size |
+| layout dispatch in `gfx/layout.go` | Declares how children participate in layout |
+| `drawNode` in `gfx/raster.go` | Implements drawing; tags intercepted by a `case` must draw their own background / border |
 
 **Other conventions**:
 
-- Event callbacks are always dispatched through `callHandler`; window-related operations resolve the
-  owning window from a node via `appOfNode(n)` (multi-window aware)
-- `gx/*` JSX attributes and children are evaluated **once at call time** — reactivity requires passing
-  a **function** (`value: () => sig()`, and children as ``{() => sig()}`` instead of `{sig()}`);
-  passing a value only takes a snapshot — and **children written as a snapshot fail totally
-  silently** (attribute misuse warns, children do not), see [docs/gui-guide.md](docs/gui-guide.md)
-  §8.1
-- When adding standard library APIs, update
-  [docs/js-runtime-api-tutorial.md](docs/js-runtime-api-tutorial.md) as well; open and unimplemented
-  items are tracked by the maintainer in an out-of-repo process ledger (not published with the repo,
-  contributors need not update it)
-- Changes touching GUI components should also update [docs/gui-guide.md](docs/gui-guide.md) and the
-  website component reference (the implementation ledger is maintained outside the repo by the
-  maintainer)
-- Put example scripts in `testdata/` and make sure they run directly
+- Event callbacks are always dispatched through `callHandler`; window-related operations go from the
+  node through `appOfNode(n)` to get the owning window (multi-window safe)
+- JSX attributes and children of `gx/*` are evaluated once at call time — reactivity requires passing
+  a **function** (`value: () => sig()`; children as ``{() => sig()}`` not `{sig()}`). Passing a value
+  is just a snapshot — and **snapshot children fail completely silently** (misused attributes warn,
+  children do not). See [docs/gui-guide.md](docs/gui-guide.md) §8.1
+- Put sample scripts in `testdata/` and make sure they run directly
 
-## Documentation
-
-> The table below only lists documents under `docs/` that are **final and published**. Work-in-progress
-> material such as technical proposals, development plans and status ledgers is maintained outside the
-> repo and never pushed to the remote.
-
-| Document | Contents |
-|---|---|
-| [docs/tutorial.md](docs/tutorial.md) | **Hands-on tutorial**: API calls and parameters, importing built-in modules, creating a project with `gox create`, route definition and registration (with runnable example scripts) |
-| [docs/gui-guide.md](docs/gui-guide.md) | GUI guide: element / event reference, layout, animation, host capabilities, example index |
-| [docs/platform-config.md](docs/platform-config.md) | Multi-platform configuration: gox.json fields, permission table, icon spec, `gox build` targets and on-device acceptance steps |
-| [docs/js-runtime-api-tutorial.md](docs/js-runtime-api-tutorial.md) | Runtime API tutorial: function types, callback bridge, memory management, the full flow of adding an API |
-| [docs/gui-patterns.md](docs/gui-patterns.md) | User-land pattern manual (routing, state, theming idioms) |
-| [docs/gui-model-binding.md](docs/gui-model-binding.md) | `model` two-way binding: interface design, semantics table, comparison with Vue, counter-examples |
-| [docs/foldable-adaptation.md](docs/foldable-adaptation.md) | **Foldable adaptation tutorial**: the pure-reader short-circuit subscription trap, why posture must not drive layout, hinge-avoidance unit conversion, Tabletop composition, three-platform verification scope |
-| [docs/npm-release.md](docs/npm-release.md) | `@goxjs/goxjs` release manual: versioning policy, build steps, OIDC requirements, acceptance criteria |
-| [docs/desktop-distribution.md](docs/desktop-distribution.md) | Desktop app distribution: icons, signing, per-platform package formats |
-| [Website](https://14752222.github.io/Gox/) | Online tutorials for installing, running scripts, writing GUI apps and packaging |
+---
 
 ## License
 

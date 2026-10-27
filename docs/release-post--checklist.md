@@ -12,14 +12,14 @@
 ## 1. 三平台口径对照表（每发一版填一行）
 
 > 填写原则：**版本号、平台矩阵、合规率三个数字在三处必须逐字符一致**；任何一处先改，
-> 另外两处当天跟上。当前最新版：**v0.11.0**（npm `@goxjs/goxjs@0.11.0`）。
+> 另外两处当天跟上。当前最新版：**v0.15.0**（npm `@goxjs/goxjs@0.15.0`）。
 
 | 口径项 | GitHub Releases 说明 | npm 包页（@goxjs/goxjs） | 官网 |
 |---|---|---|---|
-| 当前版本号 | `v0.11.0`（tag 与 `npm/package.json` version 必须相等，见发版手册 §6「标签与版本号不一致」条） | 包版本 `0.11.0`（`npm view @goxjs/goxjs@latest version` 复核） | 首页/下载页展示的最新版本号 |
+| 当前版本号 | `v0.15.0`（tag 与 `npm/package.json` version 必须相等，见发版手册 §6「标签与版本号不一致」条） | 包版本 `0.15.0`（`npm view @goxjs/goxjs@latest version` 复核） | 首页/下载页展示的最新版本号 |
 | 平台支持矩阵 | Release assets 列表（5 个平台二进制，见 §2） | `npm pack` 产物内的 `binaries/<os>-<arch>/gox[.exe]` 同 5 平台 | 下载页平台勾选列表 |
 | 五平台明细 | darwin-x64 / darwin-arm64 / linux-x64 / linux-arm64 / windows-x64 | 同上（`npm/bin/gox.js` 按 `osName + '-' + process.arch` 选二进制） | 同上；**不提供** linux-armv7、windows-arm64 等，别列 |
-| 已知缺口（test262） | 70.8% language 合规率（16809/23726，2026-10-06 批次四口径；新版本以当批 A/B 回填） | README「已知限制」小节同数字 | 同左 |
+| 已知缺口（test262） | language **97.0%**（徽章 `docs/test262-compliance.json`）/ built-ins **62.1%**（14804/23823，徽章 `docs/test262-compliance-builtins.json`）；新版本以当批 A/B 回填 | README「项目状态」小节同数字（中英双份） | 同左 |
 | 已知缺口（语义） | ① class `extends` 仅支持标识符（heritage 箭头/裸计算字段未做，`rO13zU`）；② `await using` 异步释放整体 33.7%（主缺口）；③ module 用例未走真模块入口（`rNR2Zk`，runner 侧）；④ 平台空白见 roadmap §二（Windows/macOS/Linux 桌面之外，Android/iOS 尚在补） | 同左 | 同左 |
 | 安装方式 | 文档链 `npm install -g @goxjs/goxjs` | 包页 install 段 | 快速开始 |
 | **移动端产物渠道** | 成品 APK / iOS 壳工程 zip 挂在本 Release（`mobile-release.yml`）；**harmony HAP 当前恒缺**（无 DevEco/签名）。子包 `@goxjs/goxjs-mobile-*` 见下 | 平台子包 `@goxjs/goxjs-mobile-<platform>-<abi>`（与主包同号；**不在主包依赖里**，按需 `npm i`） | 下载页需写清：**移动端不是下一个 exe，是「库 + 壳工程」**（见 `docs/mobile-distribution-decision.md` §5.1） |
