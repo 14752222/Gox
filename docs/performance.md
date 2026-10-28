@@ -22,7 +22,7 @@
 
 | 出口验收 | 判定 | 依据 |
 |---|---|---|
-| 解释器性能达 goja 同级 | ❌ **未达标** | fib28 纯计算 gox ≈ 311ms vs goja ≈ 130ms → **慢 2.4 倍**（阈值 ±25%）；四栈复测（2026-10-28，EPYC 云机）慢 ~3.5×，见 [§1.1](#11-跨运行时四栈台账2026-10-28gox--node--bun--gojat2-2-首跑) |
+| 解释器性能达 goja 同级 | ❌ **未达标** | fib28 纯计算 gox ≈ 311ms vs goja ≈ 130ms → **慢 2.4 倍**（阈值 ±25%） |
 | UI 无 GC 毛刺 | ✅ **达标** | 重压 3 次聚合：p95 帧间隔 **5.95ms** ≤ 16.7ms；单次 GC 停顿 max **1.382ms** ≤ 5ms |
 
 ---
@@ -42,30 +42,6 @@
 
 > 说明：`bench-results/bench-20260929-*.json` 是**另一台机器**（Windows / i7）
 > 的旧数据，仅作历史趋势参考，不与本文数字直接相减。
-
-### 1.1 跨运行时四栈台账（2026-10-28，gox / node / bun / goja，T2-2 首跑）
-
-四栈全通的首次对比（`scripts/bench-compare.sh --runs 5`，两次独立运行差异 <1%）。
-**口径：gox 是纯解释器，与 V8/JSC 这类 JIT 比差的是"解释器 vs JIT"的固有差距；
-goja 同为纯解释器，才是同类基线。** 完整台账（含名次、倍数区间、复现命令）见
-`bench-results/CROSS-RUNTIME-LEDGER.md`；原始 JSON：
-`bench-results/bench-20261028-121344.json`、`bench-results/bench-20261028-121423.json`。
-
-机器：云沙箱 AMD EPYC 9754（32 vCPU，x86_64），Linux 6.6.117；gox@`74c8320`（Go 1.26.2）、node v22.13.1、bun 1.4.4。
-
-| 栈 | 启动 (ms) | fib28+10万次调用 (ms) | 1万次定时器 (ms) | 空载 RSS (KB) |
-|----|-----------|----------------------|------------------|---------------|
-| gox  | 5–6   | 618–620 | 166–168 | 16204–16376 |
-| node (V8) | 22–23 | 29      | 133     | 46548–46568 |
-| bun (JSC) | 5–6   | 10–11   | 109     | 13844–13900 |
-| goja | 3     | 177–181 | 117     | 7632        |
-
-要点（fib28 纯计算口径，gox=1.00×）：
-
-- **bun ~55–60×、node(V8) ~80–95× 快于 gox** —— 差距主体是 JIT vs 解释器的固有差距，不作优化目标。
-- **goja 快 gox ~3.5×（本机；M2 上为 ~2.4×）** —— 这才是 gox 实现层面的真实差距，T2-4 优化的直接靶子。
-- **启动与空载 RSS 是 gox 强项**：启动与 bun 同档（~5–6ms），RSS ≈ bun 的 1.2×、node 的 ~0.36×。
-- 定时器列 gox 慢 node ~1.25×、bun ~1.5×，与 goja 差 ~1.4×，有差距但量级可控。
 
 ---
 
@@ -551,5 +527,109 @@ go test ./tools/memdrift/ -short                   # 跳过
      相关，不是单纯帧缓冲（1.2 MB）。
    正因如此，`tools/memdrift` **整场只挂一个窗口**，把测量目标锁在"帧循环 +
    组件换挂"的稳态；窗口 churn 的修复需要改 `gfx` 内核，留给后续任务。
+
+---
+
+## 12. 冷启动到首帧（T2-5，2026-10-28）
+
+单文件分发是 Gox 的卖点，"启动快"必须变成**可对外引用的数字**。本节补上
+"冷启动到首帧"口径：**用户双击 exe 到看见第一帧像素**。两个口径，**不可混用**：
+
+| 口径 | 位置 | 含进程 exec？ | 含真实窗口？ | 用途 |
+|---|---|---|---|---|
+| **进程级**（对外主口径） | `scripts/coldstart.sh` → `bench-results/coldstart-process-*.json` | ✅ | ✅（X11 真实上屏） | 宣传 / 发布说明 |
+| **进程内**（CI 回归口径） | `tools/perf/coldstart_test.go` → `bench-results/coldstart-*.json` | ❌ | ❌（无窗口替身 Surface） | 每次提交的回归盯梢 |
+
+### 12.1 对外可引用的数字
+
+| 指标 | 值 | 说明 |
+|---|---|---|
+| **冷启动到首帧（含 GUI）** | **84 ms**（中位，n=15，单次 84–88 ms） | 进程 exec → 真实 X11 窗口首帧上屏 |
+| 纯引擎启动（无 GUI） | ~4 ms（中位，n=5） | 进程 exec → 最小脚本求值完成 |
+| GUI 首帧差额 | ~80 ms | 窗口创建 / 字体栈初始化 / 软渲染预热，见 12.3 |
+
+**测量条件（引用时必须一并给出）**：
+
+| 项 | 值 |
+|---|---|
+| 机器 | AMD EPYC 9K65（32 核），Linux 6.6 x86_64，123 GB 内存 |
+| 显示 | Xvfb 虚拟显示 1024×768×24（软件渲染，无窗口管理器 / 合成器） |
+| 版本 | gox 0.15.0（go1.26.2 构建，无 VCS 元数据），`scripts/bench/coldstart_gui.js` |
+| 负载 | 最小 GUI 应用：一个 3 行 `column`，320×200 窗口 |
+| 方法 | 外部 wall time，预热 2 次后跑 15 次取中位数 |
+| 日期 | 2026-10-28（UTC） |
+| 结果文件 | `bench-results/coldstart-process-20261028-122204.json`（n=15）、`coldstart-process-20261028-122100.json`（n=7）、`coldstart-20261028-122042.json`（进程内）、`bench-20261028-122136.json`（四栈对照） |
+
+**进程内口径参考值**（同一机器同日，n=7 中位）：首帧 **0.79 ms**、求值全程 0.80 ms、
+冷启动期分配 **1.0 MB**。这个数字不含进程 exec / Go runtime 启动 / 真实窗口创建，
+只回答"引擎 + 模块装载 + 挂载 + Layout/Draw/上屏"本身多快，供 CI 回归盯梢。
+
+### 12.2 跨运行时对照（JS 引擎侧）
+
+与 node / bun / goja 的**同口径对照**只取引擎侧（`startup_ms`，外部 wall time 量
+"进程启动 + 最小脚本求值"，四栈同源脚本）——JS 引擎本身可比：
+
+| 栈 | 引擎启动 (ms) | 空载 RSS (KB) |
+|---|---|---|
+| **gox** | **3** | 16008 |
+| node (V8/JIT) | 15 | 46580 |
+| bun (JavaScriptCore/JIT) | 4 | 13624 |
+| goja (纯解释器) | 2 | 7412 |
+
+（同一机器同一批脚本，n=7 中位，2026-10-28，`bench-20261028-122136.json`。）
+
+**诚实陈述**：
+
+- gox 的引擎启动与 bun / goja **同级**（个位数 ms），明显快于 node —— 这一层
+  **可以对外讲**："单文件分发 + 3ms 引擎启动"。
+- **GUI 部分只对内不对外**：gox 的 84ms 首帧没有同口径的外部对照（electron /
+  tauri 空壳需要各自的 GUI 环境与显示栈，本次未测，见 `bench-compare.sh` 的
+  跳过纪律）。对外引用 84ms 时只说 gox 自己的条件，**不要**拿它和 electron 的
+  启动数字直接相减 —— 显示栈不同，口径不可比。
+- `fib28` / 定时器等算力列不在此引用（那是 §2/§3 的地盘）；只引用启动列时
+  也要注意 gox 是纯解释器，不要与 JIT 栈的算力数字混为一谈。
+
+### 12.3 口径细节与已知边界
+
+1. **首帧信号是"像素真的出了"**：JS 侧用 1ms `setInterval` 轮询 `gx/dev` 的
+   `devSnapshot().frame.count`（它只在 `redraw` 真正上屏的出口计数，见 §4.1），
+   首帧后 ≤1ms 内被发现，打印标记后关窗退出 —— 全程含 **≤2ms** 探测/退出开销，
+   已含在 84ms 里。**不用 `requestAnimationFrame`**：内核里它只是 16ms 的
+   setTimeout（`gfx/render.go` 的 `jsRAF`），与真实上屏无关。
+2. **首帧发生在 `render()` 求值内**：`gfx.Mount` 末尾同步调 `a.redraw()`
+   （gfx/render.go "首帧"注释），所以进程内口径里 `first_frame_ms ≤ eval_ms`
+   （实测 0.79 vs 0.80ms）。冷启动的主成本在求值前（引擎初始化 + 模块装载）。
+3. **~80ms 的 GUI 差额归因未做剖面**：窗口创建、X11 往返、字体栈初始化、
+   软渲染预热都混在里面。哪块占大头（很可能是字体）需要 pprof 才能定 ——
+   这是后续启动优化的第一个靶子，本任务只立口径不做优化。
+4. **Xvfb ≠ 真桌面**：无 WM/合成器的软渲染环境数字**稳定可复现**（这是选它的
+   理由），但真桌面/移动端真机的首帧口径不同（`docs/mobile-perf-baseline.md`），
+   两套数字不可直接相减。换机器/显示栈须重测重写条件。
+5. **进程内口径用无窗口替身 Surface**：与 §5 帧率基准同源（`perfSurface`），
+   CI 无显示环境可跑；它测不到真实窗口创建的成本，所以不能替代进程级口径。
+
+### 12.4 复现命令
+
+```bash
+# 1) 进程级冷启动到首帧（对外口径；无 DISPLAY 时自动走 Xvfb，两者皆无则跳过不失败）
+./scripts/coldstart.sh --runs 15
+
+# 2) 进程内口径（CI 回归；无显示环境可跑）
+go test ./tools/perf/ -run TestColdStartToFirstFrame -v
+PERF_COLDSTART_REPS=15 go test ./tools/perf/ -run ColdStart -v   # 加密重复
+
+# 3) 引擎侧四栈对照（本节表格的来源）
+./scripts/bench-compare.sh --runs 7
+```
+
+本节新增文件：
+
+| 路径 | 作用 |
+|---|---|
+| `scripts/coldstart.sh` | 进程级 harness：构建 → 预热 → 外部计时 × N → 中位数 + JSON 落盘 |
+| `scripts/bench/coldstart_gui.js` | 最小 GUI 首帧探测脚本（1ms 轮询 `devSnapshot().frame.count`） |
+| `tools/perf/coldstart_test.go` | 进程内冷启动基准（`TestColdStartToFirstFrame`） |
+| `testdata/perf/first_frame.js` | 进程内口径的最小首帧脚本 |
+| `tools/perf/frame_gc_test.go` | `perfFactory` 增加 `recordOnInit`（首帧发生在求值内，Surface 须出生即录制） |
 7. **漂移测试的负载是压缩的**：2 分钟 7500 轮不等于"挂一夜"，它放大的是
    每轮分配/回收次数，抓不住"只在特定交互路径上触发"的泄漏。

@@ -1,0 +1,35 @@
+{
+  "generated_at": "2026-10-28T12:22:04.417520+00:00",
+  "benchmark": "coldstart-process",
+  "runs": 15,
+  "first_frame_ms_median": 84,
+  "first_frame_ms_all": [
+    85,
+    82,
+    81,
+    83,
+    85,
+    84,
+    84,
+    86,
+    89,
+    83,
+    86,
+    86,
+    84,
+    81,
+    85
+  ],
+  "rss_kb": 102212,
+  "method": "外部 wall time (进程 exec → 脚本打印 FIRST_FRAME, 含 ≤2ms 探测/退出开销), 跑 15 次取中位数, 预热 2 次不计入; 首帧信号 = JS 侧 1ms 轮询 gx/dev 的 devSnapshot().frame.count (只在真实上屏出口计数)",
+  "scope": "进程级冷启动到首帧: 含进程 exec/动态链接/Go runtime 启动/解释器初始化/脚本求值(含模块装载)/真实窗口创建/首次 Layout+Draw+上屏",
+  "host": {
+    "platform": "Linux-6.6.117-45.14.1.tl4.x86_64-x86_64-with-glibc2.39",
+    "machine": "x86_64",
+    "cpu": "AMD EPYC 9K65 192-Core Processor",
+    "cores": 32,
+    "display": ":0",
+    "go": "go version go1.26.2 linux/amd64"
+  },
+  "note": "对外可引用的'单文件分发冷启动到首帧'口径; 与 tools/perf 的进程内口径 (coldstart-*.json) 不可混用"
+}
