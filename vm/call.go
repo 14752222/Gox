@@ -358,7 +358,7 @@ func (vm *VM) callClosure(closure *object.Closure, args []object.Value) error {
 	if fn.Constants != nil && !sameConstantSlice(vm.constants, fn.Constants) {
 		constants = &bytecode.ConstantPool{Constants: fn.Constants}
 	}
-	frame := NewFrame(fn.Instructions, constants, fn.NumLocals)
+	frame := vm.acquireFrame(fn.Instructions, constants, fn.NumLocals)
 	frame.Closure = closure
 	// 本帧生效的 this: 箭头取词法捕获, 非箭头按 sloppy 归一 (裸调用 → globalThis)。
 	frame.This = vm.resolveFrameThis(closure)

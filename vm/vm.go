@@ -161,6 +161,14 @@ type VM struct {
 	dbgOp     bytecode.Opcode // 最近取出的 opcode
 	dbgPC     int             // 该指令的起始 PC (取指前)
 	dbgFrames int             // 当前帧数
+
+	// frameFree 是弹出帧的复用池 (T2-4 热点优化)。
+	// Frame 结构体本身不被任何长生命周期对象持有 (生成器只保存 Locals 切片
+	// 与 PC/指令等状态, 不保存 *Frame), 弹出后可整体回收复用。池上限天然
+	// 受 MaxFrames 约束, 不会无界增长。Locals 切片**不**进池: 逃逸闭包以
+	// frame.Locals 为 binding cell 持有其底层数组 (见 createClosure), 复用
+	// 会让后续调用改写旧闭包可见的绑定。
+	frameFree []*Frame
 }
 
 // New 创建虚拟机。
