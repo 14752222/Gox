@@ -322,6 +322,22 @@ func (vm *VM) trackClosure(closure *object.Closure) {
 // callClosure 调用闭包函数。
 // 创建新帧，复制捕获的局部变量，放置参数。
 
+// sameConstantSlice 判断 pool 包装的常量切片与 slice 是否为同一底层数组。
+// 空切片与空切片视为相同 (两种包装的 Get 行为一致: 越界返回 undefined)。
+func sameConstantSlice(pool *bytecode.ConstantPool, slice []object.Value) bool {
+	if pool == nil {
+		return false
+	}
+	pc := pool.Constants
+	if len(pc) != len(slice) {
+		return false
+	}
+	if len(slice) == 0 {
+		return true
+	}
+	return &pc[0] == &slice[0]
+}
+
 func (vm *VM) callClosure(closure *object.Closure, args []object.Value) error {
 	fn := closure.Fn
 	if fn == nil {
@@ -335,8 +351,11 @@ func (vm *VM) callClosure(closure *object.Closure, args []object.Value) error {
 	}
 
 	// 创建新帧: 使用闭包自带的常量池 (跨模块时不同于 vm.constants)
+	// T2-4 热点优化: 同模块调用 (fn.Constants 与 vm.constants 底层数组同一)
+	// 直接复用 VM 的常量池包装, 免去每次调用一次 &ConstantPool{} 堆分配
+	// (fib28 剖面: 每次调用 1 个, 占全部分配的 ~16%)。
 	constants := vm.constants
-	if fn.Constants != nil {
+	if fn.Constants != nil && !sameConstantSlice(vm.constants, fn.Constants) {
 		constants = &bytecode.ConstantPool{Constants: fn.Constants}
 	}
 	frame := NewFrame(fn.Instructions, constants, fn.NumLocals)
