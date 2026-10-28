@@ -68,9 +68,14 @@ MIN_ABS = {
     "rss_kb": 2048,
 }
 
-# 参与比值判据的对照栈：node 是 CI 镜像里必有的，且与 gox 跑同源脚本。
+# 参与比值判据的对照栈（[T2-3]）。node 是 CI 镜像里必有的，且与 gox 跑同源
+# 脚本；bun（JavaScriptCore）由 bench.yml 的 setup-bun 装进 runner，与 node
+# 完全同口径 —— 引入它的意义：V8(JIT) 与 JSC 两个引擎对照系互为备份，某天
+# node 换版本或口径漂移时，bun 仍能钉住 gox 的相对位置。判定规则：**每个有
+# 数据的对照栈都判**（基线里记了谁、本次结果里又有谁，谁就参与）。
 # goja 需要联网拉依赖（bench/goja 独立 module），有则更好、无则不强求。
-REFERENCE_STACKS = ["node", "goja"]
+# 缺栈不红：某栈本次没跑出来 → 只记录，不影响判定（node 必在，兜底成立）。
+REFERENCE_STACKS = ["node", "bun", "goja"]
 
 
 def die(msg):
@@ -109,18 +114,25 @@ def host_fingerprint(doc):
 
 
 def ratios(cur_map):
-    """算 gox 相对各对照栈的比值；返回 {指标: (对照栈, 比值)}。"""
+    """算 gox 相对**每个**可用对照栈的比值；返回 {指标: [(对照栈, 比值), ...]}。
+
+    [T2-3] 之前只取第一个命中的对照栈；bun 引入后一个结果里可能有多个引擎
+    对照，全都记下来，判红时逐个比（哪个对照系发现退化，就在错误信息里点
+    哪个的名）。
+    """
     gox = cur_map.get("gox", {})
     out = {}
     for metric in METRICS:
         g = gox.get(metric)
         if not g:
             continue
+        refs = []
         for ref in REFERENCE_STACKS:
             r = cur_map.get(ref, {}).get(metric)
             if r:
-                out[metric] = (ref, g / float(r))
-                break
+                refs.append((ref, g / float(r)))
+        if refs:
+            out[metric] = refs
     return out
 
 
@@ -137,15 +149,32 @@ def build_baseline(doc):
         "host": doc.get("host", {}),
         "runs_per_metric": doc.get("runs_per_metric"),
         "指标": {k: v for k, v in cur.items()},
-        "比值": {m: {"ref": ref, "value": v} for m, (ref, v) in ratios(cur).items()},
+        # 新格式：{指标: {对照栈: 比值}}，bun 加入后一个指标可对应多个对照栈。
+        # 旧格式（{指标: {"ref": ..., "value": ...}}）在 compare() 里仍兼容。
+        "比值": {m: {ref: v for ref, v in refs} for m, refs in ratios(cur).items()},
     }
+
+
+def base_ratios_of(base_ratio):
+    """把基线的 比值 字段统一成 {指标: {对照栈: 比值}}。
+
+    兼容两种格式：旧版（bun 引入前）是 {指标: {"ref": str, "value": float}}，
+    新版是 {指标: {对照栈: 比值}}。旧基线不重建也能继续用。
+    """
+    out = {}
+    for metric, v in (base_ratio or {}).items():
+        if isinstance(v, dict) and "ref" in v and "value" in v:
+            out[metric] = {v["ref"]: v["value"]}
+        elif isinstance(v, dict):
+            out[metric] = dict(v)
+    return out
 
 
 def compare(base, doc, github=False):
     """返回 (回归列表, 记录列表, 表行)。"""
     cur = as_map(doc)
     base_map = base.get("指标", {})
-    base_ratio = base.get("比值", {})
+    base_ratio = base_ratios_of(base.get("比值", {}))
     cur_ratio = ratios(cur)
 
     same_host = host_fingerprint(base) == host_fingerprint(doc)
@@ -158,19 +187,30 @@ def compare(base, doc, github=False):
             notes.append("gox 缺指标 %s（本次结果里没有它），跳过" % metric)
             continue
 
-        # ① 比值判据（跨平台，主力）
+        # ① 比值判据（跨平台，主力）——对**每个**基线里有、本次又有的对照栈判
         if metric in cur_ratio and metric in base_ratio:
-            ref, cr = cur_ratio[metric]
-            br = base_ratio[metric].get("value")
-            if br:
+            base_refs = base_ratio[metric]
+            cur_refs = dict(cur_ratio[metric])
+            judged = False
+            for ref in REFERENCE_STACKS:
+                cr = cur_refs.get(ref)
+                br = base_refs.get(ref)
+                if not cr or not br:
+                    continue
+                judged = True
                 r = cr / float(br)
                 rows.append(("gox/%s %s" % (ref, metric), br, cr, r))
                 if r > MAX_RATIO[metric]:
                     regressions.append(
                         "%s 的 gox/%s 比值从 %.3f 涨到 %.3f（×%.2f，阈值 %.2f）—— "
-                        "引擎相对变慢了，通常是热路径的每次调用成本上升"
-                        % (metric, ref, br, cr, r, MAX_RATIO[metric]))
+                        "引擎相对 %s 变慢了，通常是热路径的每次调用成本上升"
+                        % (metric, ref, br, cr, r, MAX_RATIO[metric], ref))
+            if judged:
                 continue
+            # 比值字段两边都有，但对照栈对不上（如基线只记了 node、本次只跑了
+            # bun）：显式说明为什么没判，不留黑箱。
+            notes.append("%s：基线对照栈 %s 与本次 %s 无交集，比值判据本轮不判，只记录"
+                         % (metric, sorted(base_refs), [r for r, _ in cur_ratio[metric]]))
 
         # ② 绝对值判据（仅同机型）
         if not b:
@@ -214,8 +254,9 @@ def main_check(path, github, update):
             f.write("\n")
         print("已写入基线 %s" % os.path.relpath(BASELINE, ROOT))
         print("  host：%s" % (doc.get("host", {}).get("cpu", "?") or "?")[:60])
-        for metric, (ref, v) in ratios(as_map(doc)).items():
-            print("  gox/%s %s = %.3f" % (ref, metric, v))
+        for metric, refs in sorted(ratios(as_map(doc)).items()):
+            for ref, v in refs:
+                print("  gox/%s %s = %.3f" % (ref, metric, v))
         return 0
 
     if not os.path.isfile(BASELINE):
@@ -250,34 +291,52 @@ def main_check(path, github, update):
 def self_test():
     """负向自测：**一个从没失败过的闸门等于黑盒**。
 
-    这里用合成数据钉住三件事：
+    这里用合成数据钉住五件事：
       1. gox 相对 node 慢 1.5×  ⇒ 必须红，且点名是哪个指标；
-      2. 正常波动（1.05×）      ⇒ 必须绿（防"判据过宽/过窄"两个方向）；
-      3. 涨幅超比值但低于最小增量 ⇒ 必须绿（噪声过滤真的生效）。
+      2. gox 相对 bun 慢（且本次结果里没有 node）⇒ 必须红，点名 bun ——
+         [T2-3] bun 成为正式对照系后，node 缺席不能让判据跟着失效；
+      3. 内存涨 1.4×            ⇒ 必须红；
+      4. 正常波动（1.05×）      ⇒ 必须绿（防"判据过宽/过窄"两个方向）；
+      5. 涨幅超比值但低于最小增量 ⇒ 必须绿（噪声过滤真的生效）。
     """
-    def doc(gox, node):
+    def doc(gox, node, bun=None):
+        results = [
+            {"stack": "gox", "startup_ms": gox[0], "fib28_ms": gox[1],
+             "timers10k_ms": gox[2], "rss_kb": gox[3]},
+        ]
+        if node is not None:
+            results.append({"stack": "node", "startup_ms": node[0],
+                            "fib28_ms": node[1], "timers10k_ms": node[2],
+                            "rss_kb": node[3]})
+        if bun is not None:
+            results.append({"stack": "bun", "startup_ms": bun[0],
+                            "fib28_ms": bun[1], "timers10k_ms": bun[2],
+                            "rss_kb": bun[3]})
         return {"generated_at": "selftest", "runs_per_metric": 1,
                 "host": {"platform": "selftest", "machine": "selftest",
                          "cpu": "selftest", "cores": 1},
-                "results": [
-                    {"stack": "gox", "startup_ms": gox[0], "fib28_ms": gox[1],
-                     "timers10k_ms": gox[2], "rss_kb": gox[3]},
-                    {"stack": "node", "startup_ms": node[0], "fib28_ms": node[1],
-                     "timers10k_ms": node[2], "rss_kb": node[3]},
-                ]}
+                "results": results}
 
-    base_doc = doc([30, 100, 200, 20000], [30, 50, 40, 30000])
+    # 基线含 node 与 bun 两个对照栈（新版基线格式：每个对照栈各记一份比值）。
+    base_doc = doc([30, 100, 200, 20000], [30, 50, 40, 30000], [30, 60, 50, 35000])
     base = build_baseline(base_doc)
 
     cases = [
         ("算力退化 1.5× 必须红",
-         doc([30, 150, 200, 20000], [30, 50, 40, 30000]), base, True, "fib28_ms"),
+         doc([30, 150, 200, 20000], [30, 50, 40, 30000], [30, 60, 50, 35000]),
+         base, True, "fib28_ms"),
+        ("node 缺席时 gox/bun 退化必须红（bun 单独也能触发闸门）",
+         doc([30, 150, 200, 20000], None, [30, 60, 50, 35000]),
+         base, True, "gox/bun"),
         ("内存涨 1.4× 必须红",
-         doc([30, 100, 200, 28000], [30, 50, 40, 30000]), base, True, "rss_kb"),
+         doc([30, 100, 200, 28000], [30, 50, 40, 30000], [30, 60, 50, 35000]),
+         base, True, "rss_kb"),
         ("正常波动必须绿",
-         doc([31, 104, 205, 20100], [30, 50, 40, 30000]), base, False, ""),
+         doc([31, 104, 205, 20100], [30, 50, 40, 30000], [30, 60, 50, 35000]),
+         base, False, ""),
         ("涨幅低于最小增量必须绿（噪声）",
-         doc([35, 100, 200, 20000], [60, 100, 80, 60000]), base, False, ""),
+         doc([35, 100, 200, 20000], [60, 100, 80, 60000], [70, 120, 100, 70000]),
+         base, False, ""),
     ]
     ok = True
     for name, d, b, want_red, want_kw in cases:

@@ -12,9 +12,40 @@
 #   「不制造噪声」之间的平衡。
 #
 # 判什么（scripts/check-bench.py 文件头有完整说明）：
-#   主力判 **gox/node 的比值**（同源脚本，机器差异被约掉，跨平台可比）；
+#   主力判 **gox 相对对照引擎的比值**（node = V8/JIT、bun = JavaScriptCore、
+#   goja = 纯解释器；同源脚本 scripts/bench/*.js，机器差异被约掉，跨平台可比）。
+#   bun 栈 [T2-3] 引入：bench.yml 装 bun（下方步骤），bench-compare.sh 自动探测；
+#   **runner 无 bun 时不红** —— harness 对缺栈自动跳过，check-bench.py 只对
+#   「基线有、本次也有」的对照栈判比值，node 必在，兜底永远成立。
 #   绝对值只在同一机型下才判，不一致时降级为「只记录」。所以换 runner 机型不会
 #   把这条刷红 —— 一个永远红的闸门比没有闸门更糟。
+#
+# ── 变慢多少算红（阈值显式化，[T2-3]）────────────────────────────────────────
+#   阈值的唯一权威定义在 scripts/check-bench.py 顶部 MAX_RATIO / MIN_ABS，
+#   此处是给读 workflow 的人看的镜像；两边不一致时以脚本为准，并应同步修正本表。
+#   口径：现值 / 基线（比值判据则是「现比值 / 基线比值」）超过 MAX_RATIO 即红；
+#         同时要求绝对增量 > MIN_ABS，低于最小增量的按噪声放行（只记录）。
+#
+#   指标           阈值(×)   最小增量    为什么是这个数
+#   fib28_ms       1.20      20 ms      纯算力，对引擎热路径改动最敏感、机器噪声
+#                                        占比小 → 收得最紧
+#   timers10k_ms   1.25      20 ms      走调度器，受系统定时器精度/负载影响略大
+#                                        → 比 fib28 稍松
+#   startup_ms     1.50      10 ms      绝对值只有几十 ms，runner 噪声占比最大
+#                                        → 主要看趋势，不靠它单点判红
+#   rss_kb         1.15      2 MB       内存回归不像时间有调度噪声，且一旦出现
+#                                        通常持续存在 → 卡最紧
+#
+#   阈值来源：以上分档是按「每类指标的噪声底噪 + 真退化的量级」定的（见
+#   check-bench.py 顶部注释），不是随手拍的数字；负向自测（--self-test）把它们
+#   钉在 CI 里，判据被改宽/改窄都会红。
+#
+#   ⚠ 待用户确认（[T2-3] 遗留拍板项）：曾提议统一成「相对基线变慢 15% 即红」。
+#     与当前分档的差异：fib28/timers 比 15% 宽（放行 20%/25%，因为这两项对真实
+#     退化最敏感、误报代价低），rss 恰为 15%，startup 远宽于 15%（噪声决定，
+#     统一 15% 会让 startup 噪声性红）。**当前按分档执行**；若拍板改统一 15%，
+#     只需把 MAX_RATIO 三项改为 1.15 并同步调整 --self-test 样本。
+# ─────────────────────────────────────────────────────────────────────────────
 #
 # 失败时怎么查：脚本把「哪个指标 × 多少、基线值、现值、比值」写进 ::error:: 注解
 #   （未登录读不到 job 日志，注解是唯一的归因入口），逐次结果 JSON 存 artifact。
@@ -37,7 +68,7 @@ concurrency:
 
 jobs:
   perf-gate:
-    name: 性能基准闸门（gox / node / goja + UI 帧率）
+    name: 性能基准闸门（gox / node / bun / goja + UI 帧率）
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -47,9 +78,22 @@ jobs:
         with:
           go-version-file: go.mod
 
+      # bun 对照栈 [T2-3]：bench-compare.sh 自动探测 PATH 里的 bun，与 node 完全
+      # 同口径（同源 scripts/bench/*.js，RSS 同走 GNU time VmHWM）。
+      # continue-on-error：**无 bun 不红** 是硬要求 —— bun 只是对照系之一，装不上
+      # 时 harness 打印「bun: 未安装，跳过」继续跑其余栈，check-bench.py 对缺栈
+      # 只记录不判红。装上了，下次重建基线后 gox/bun 比值判据自动生效。
+      - name: 安装 bun 对照栈（装不上不红，harness 自动跳过）
+        continue-on-error: true
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
       # 闸门自检必须放在**跑基准之前**：万一判据失效（永远输出 ok），先知道，
       # 而不是白跑五分钟之后得到一条假绿。
-      - name: 闸门自检（负向样本必须真的红）
+      # [T2-3] 自检含 bun 样本：gox/bun 退化必须红、node 缺席时 bun 单独也要能
+      # 触发闸门 —— 见 check-bench.py self_test()。
+      - name: 闸门自检（负向样本必须真的红，含 bun 栈样本）
         run: |
           set -euo pipefail
           if ! python3 scripts/check-bench.py --self-test; then
