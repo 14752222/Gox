@@ -228,3 +228,155 @@ python3 scripts/check-compliance.py --current /tmp/builtins.json \
    flake**，非本单引入；`parser` / `compiler` / `bytecode` / `object` 包与 vm 的
    定向子集（New/Spread/Construct/Call/Method/Class/Super）全绿。CI 上要留意它
    是否与本单改动混在一起报错。
+
+---
+
+# 假阳性清扫：缺失 API 误抛骗过 assert.throws 的类例清单（T1-4 / rm1Dow）
+
+**结论先说**：built-ins 23823 例里，有 **128 条 PASS 是"遮羞布"** —— 用例靠
+assert.throws 期待一个 TypeError，而引擎因**缺失 API**（期望的方法/访问器解析成
+undefined，进而在 undefined 上调用或读属性）恰好抛出同类型错误，断言被"骗过"，
+用例的规范语义从未被真正检验。它们散在 **13 个簇**里，每簇都能用一个已实测确认
+缺失的 API 名字钉住。补齐任何一簇的实现时，这批用例将从"判无效应区"进入"真检验
+区"——那时出现的 FAIL 是**遮羞布被揭，不是回归**，台账按 §五的规则标注。
+
+## 一、探针方法（可复现）
+
+runner 新增 `-probe` 模式（`cmd/gox/cmd_test262.go`，随本节同批提交）：在 harness
+之后注入 assert.throws / assert.throwsAsync 包装器，把每次"骗过断言"的真实错误
+（constructor 名 + message）记入 `globalThis.__fp_hits`，仅在 PASS 且 `-probe` 时
+写入结果的 `fp_hits` 字段。包装器保持原断言语义（断言失败照常抛 Test262Error），
+**探针只观察，不改判**。
+
+分片模型与常规跑批完全一致（128 固定分片、片内同序），因此可与基线逐用例对账：
+
+- 用例集一致（探针首轮曾把独立工具崩溃残留的 16 个 `.gox-fp-*` 临时文件误收集，
+  已清理并把 runner 的临时文件前缀判据之外残留说明保留在此存照）；
+- **PASS→FAIL 翻转 0 条**（探针无干扰）；
+- FAIL→PASS 3 条：单例隔离复跑 2 过 1 败，判定为既有的"同进程邻居敏感" flake
+  （见上文 rnm4C5 段 §七.5 的同类现象），非探针引入。
+
+## 二、总量数字
+
+| 指标 | 数字 |
+|------|------|
+| 套件 / 引擎身份 | `built-ins` @ 源码快照 `7c9150a3`（与 `cdb2a4fb` 引擎代码零差异，后者仅 bench 归档）；本机编译，`vcs_revision` 空以 commit 说明为准 |
+| 基线通过 / 失败 | 14803 / 8829（**62.14%**）；探针跑批 14806（+3 flake） |
+| assert.throws 通道捕获到真实抛错的 PASS 用例 | 3753 例 / 50382 次 hit |
+| 其中"undefined 信号"（期望的 API 解析成 undefined/null） | 222 例 / 669 hit |
+| 归入确证缺失 API 的簇（**Tier A**） | **128 例 / 13 簇** |
+| 未归簇（复核后绝大多数为真通过：测试故意传非函数） | 94 例 |
+
+判据分层：
+
+- **Tier A（确证假阳性，128 例）**：PASS + 捕获错误为 `undefined|null is not a
+  function/constructor` 或 `Cannot read properties of undefined|null (reading 'X')`
+  + 源码引用该 API + gox 内 `typeof` 实测确认缺失。四条判据全满足才入列。
+- **Tier B（机制性偏差、可观察一致）**：抛错机制与规范不符但异常类型恰好一致
+  （典型：`iterator.next.call(map)` 在"内部槽校验"与"next 不存在"下都抛
+  TypeError）。补实现后大概率保持 PASS，但同样从未检验真实语义，量大（数百例）
+  不逐条列。
+- **真通过（噪声，约 94 例）**：测试故意传非函数（`arr.every()`、`comparefn=null`
+  等，集中在 `Array/prototype` 的 es5conform 老用例），引擎抛错理由与规范一致，
+  不属假阳性。
+
+## 三、Tier A 簇清单（13 簇，128 例）
+
+每簇给出：缺失面（gox 内 `typeof` / `getOwnPropertyDescriptor` 实测）、遮蔽用例数
+（TierA，assert.throws 通道）、**敞口**（当前 PASS 且源码引用该 API 的全部用例 ——
+补实现后全部进入真检验区）、代表用例。
+
+| # | 簇 | 缺失面（gox 实测） | TierA | 敞口 |
+|---|-----|--------------------|------:|-----:|
+| C1 | Map/Set/WeakMap upsert | `Map/Set/WeakMap.prototype.getOrInsert·getOrInsertComputed` 全 undefined | 23 | 23 |
+| C2 | Iterator helpers 二批 | `Iterator.prototype.{chunks,windows,indexed,toAsync}`、`Iterator.zipKeyed` undefined（take/drop/map/filter/flatMap/reduce/toArray/some/every/find/zip/from 已实现） | 11 | 17 |
+| C3 | DataView.prototype 本体 | `DataView.prototype === undefined` —— 全部 `DataView.prototype.*` 都是"reading X on undefined" | 10 | 119 |
+| C4 | %GeneratorPrototype% 三方法 | `%GeneratorPrototype%.{next,return,throw}` undefined —— 方法以**实例魔法属性**存在（`object/generator.go` GetProperty 按 receiver 分发），原型上没有；`AsyncGeneratorPrototype` 三方法齐全 | 6 | 27 |
+| C5 | Uint8Array base64/hex 残缺 | `setFromHex/setFromBase64/setFromHexInto/setFromBase64Into/toHex/fromHex` undefined（`fromBase64/toBase64` 已实现） | 6 | 12 |
+| C6 | ArrayBuffer transfer 族 | `transfer/transferToFixedLength/sliceToImmutable` undefined | 3 | 3 |
+| C7 | %TypedArray% 抽象静态 | `TypedArray.from/of` undefined | 8 | 8 |
+| C8 | Map/Set.prototype size 访问器 | `getOwnPropertyDescriptor(Map.prototype,'size') === undefined` | 1 | 1 |
+| C9 | %ThrowTypeError% 毒丸 | `Function.prototype` 的 `caller/arguments` 访问器缺失：strict 函数读 caller 返回 undefined 而非抛 TypeError（53 例全在 `built-ins/Function/15.3.5.4_2-*gs`，用例里 `gNonStrict.caller.throwTypeError` 靠 undefined 读属性抛 TypeError 过关） | 53 | 83 |
+| C10 | RegExp.prototype[Symbol.matchAll] | undefined（`[Symbol.replace]` 已实现） | 3 | 13 |
+| C11 | SharedArrayBuffer.prototype | `grow/byteLength` 缺失（SAB 构造器在，方法走 ArrayBuffer 的 receiver 校验） | 1 | 29 |
+| C12 | Map/Set IteratorPrototype next | `map[Symbol.iterator]().next === undefined`（for-of/spread 走 VM 原生快路径未暴露，**用户层迭代协议已断**） | 2 | 2 |
+| C13 | Date.prototype set 族 | `setFullYear/setMonth/setDate/setHours/setSeconds` undefined（get 族与 setTime/toISOString 在） | 1 | 3 |
+| | **合计** | | **128** | **325** |
+
+代表用例（每簇一例）：
+
+- C1 `built-ins/WeakMap/prototype/getOrInsert/does-not-have-weakmapdata-internal-slot-array.js`
+  —— `WeakMap.prototype.getOrInsert.call([], {}, 1)`：期望内部槽校验 TypeError，
+  实际 "reading 'call' on undefined"。
+- C2 `built-ins/Iterator/prototype/chunks/chunkSize-not-a-number.js` ——
+  `iterator.chunks()`：实际 "undefined is not a function"。
+- C3 `built-ins/DataView/prototype/buffer/invoked-as-accessor.js` ——
+  `DataView.prototype.buffer`：实际 "reading 'buffer' on undefined"。
+- C4 `built-ins/GeneratorPrototype/return/this-val-not-generator.js` ——
+  `GeneratorPrototype.return.call({})`：期望 GeneratorValidate TypeError，实际
+  "reading 'call' on undefined"。
+- C5 `built-ins/Uint8Array/prototype/setFromHex/detached-buffer.js`。
+- C6 `built-ins/ArrayBuffer/prototype/transfer/this-is-sharedarraybuffer.js`。
+- C7 `built-ins/TypedArray/from/invoked-as-func.js` —— `var from = TypedArray.from;
+  from([])`：实际 "undefined is not a function"。
+- C9 `built-ins/Function/15.3.5.4_2-2gs.js`（族内 53 例同机理）。
+- C10 `built-ins/RegExp/prototype/Symbol.matchAll/species-constructor-is-not-object-throws.js`。
+- C12 `built-ins/MapIteratorPrototype/next/does-not-have-mapiterator-internal-slots-map.js`。
+
+排期含义：**C9（53 例）与 C3（敞口 119）是仅有的两个两位数组**，其余都是小簇。
+C1/C2/C4/C5/C7 与既有的簇单（Iterator helpers、Generator 原型化、TypedArray 收尾）
+同源，可并入各自的主修复单，不需要单开；C12 的用户层迭代协议断裂值得单独立单
+（它不是 test262 假阳性问题，是功能缺陷）。
+
+## 四、与任务书已知簇的口径对照
+
+任务书记载"Generator.return 族 71 例、RegExp 原型族 8 例"（T1-2 时代、35.69%
+基线的静态估计）。本轮在 62.14% 基线上实测：
+
+- **Generator 族**：病根未变（%GeneratorPrototype% 三方法仍整体缺失），但该族
+  大部分用例当前**直接 FAIL**，不再冒充 PASS；仍 PASS 的 21 条引用里，6 条走假
+  阳性通道（C4），其余是 `AsyncGeneratorPrototype`（三方法已实现）的真通过。
+- **RegExp 原型族**：本轮确证为 `RegExp.prototype[Symbol.matchAll]` 缺失
+  （C10，TierA 3 例 / 敞口 13）；旧估 8 例的其余部分已被此间的修复吸收或转为
+  直接 FAIL。
+
+**两簇的"病根"都还在，但"遮羞布"规模已随基线推进收敛到上表数字，以本轮探针
+实测为准。**
+
+## 五、遮羞布期台账规则（补簇时的动作模板）
+
+每补一簇，在该簇的落地评论里写三行：
+
+1. **前数字**：本表该簇 TierA / 敞口 + 全量 built-ins 合规率；
+2. **后数字**：同口径全量 A/B（逐用例三项 diff 全 0 才算零回归），其中本簇敞口
+   内的用例逐条标注 PASS 保持 / FAIL；
+3. **归因**：敞口内新出现的 FAIL 一律标"**遮羞布被揭**"（用例首次真正执行规范
+   语义），不计入回归；**敞口外**的 FAIL 才是回归，必须回修。
+
+## 六、复现命令
+
+```bash
+# 1) 常规基线
+gox test262 -root <test262> -suite built-ins -jobs 16 -json /tmp/base.json -quiet
+
+# 2) 探针跑批（分片模型与常规完全一致，结果可逐用例对账）
+gox test262 -root <test262> -suite built-ins -jobs 16 -probe -json /tmp/probe.json -quiet
+
+# 3) 归簇：对 probe.json 里 pass=true 且带 fp_hits 的用例，取
+#    ^undefined|null is not a (function|constructor)$ 或
+#    ^Cannot read properties of (undefined|null) \(reading '([^']+)'\)$ 的 hit，
+#    再按用例源码引用 §三 表中的 API 名归簇。
+```
+
+## 七、遗留与假设
+
+1. 探针只覆盖 `assert.throws` / `assert.throwsAsync` 通道。negative frontmatter
+   （`negative: {phase: runtime, type: TypeError}`）是同机理的另一条通道，本轮未
+   扫——负面用例总量小，后续可在 `judgePhase` 里用同一缺失关键词判据扩展。
+2. "undefined 信号"判据抓不到"API 存在但内部第 N 层调用链缺件"的深层遮蔽（如
+   C10 的 species 路径、`Error.prototype()` 的消息渲染偏差）——它们归入 Tier B，
+   未计入 128。
+3. 敞口统计基于源码文本引用（可能含注释误引），供排期参考；补簇时的逐用例 A/B
+   才是验收口径。
+4. `-probe` 的注入只发生在 PASS 且 `-probe` 时写 `fp_hits`；常规跑批（不带
+   `-probe`）零影响。

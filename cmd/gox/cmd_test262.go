@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/14752222/Gox/object"
+	goruntime "github.com/14752222/Gox/runtime"
 	"github.com/14752222/Gox/stdlib"
 	"github.com/14752222/Gox/vm"
 )
@@ -90,6 +91,13 @@ type test262Case struct {
 // 再扫盘，故分片数不带来收集成本。
 const test262ShardCount = 128
 
+// fpHit 是探针模式下捕获的一条"骗过 assert.throws 的真实错误"（T1-4）。
+type fpHit struct {
+	Exp string `json:"exp"` // 断言期望的错误构造器名
+	Got string `json:"got"` // 实际抛出的错误构造器名
+	Msg string `json:"msg"` // 实际错误 message
+}
+
 // test262Result 是单个用例的判定结果。
 type test262Result struct {
 	RelPath string  `json:"path"`
@@ -97,7 +105,14 @@ type test262Result struct {
 	Phase   string  `json:"phase"` // pass / compile / runtime / timeout / harness / crashed
 	Err     string  `json:"error,omitempty"`
 	Seconds float64 `json:"seconds"`
+	// FPHits 仅在 -probe 模式且用例 PASS 时填充: assert.throws /
+	// assert.throwsAsync 捕获到的真实错误。缺失 API 误抛的 TypeError
+	// 会以正确的类型骗过断言 —— 靠 message 里的缺失关键词识别假阳性。
+	FPHits []fpHit `json:"fp_hits,omitempty"`
 }
+
+// test262ProbeOn 是 -probe 的进程级开关（runTest262 里 set 一次, 其后只读）。
+var test262ProbeOn = false
 
 // parseFrontmatter 抽出 /*--- ... ---*/ 元数据块（raw 之外每个用例都有）。
 // 手写解析不引 YAML 库: test262 只用到扁平 key + 一层嵌套（negative/includes/
@@ -344,6 +359,11 @@ func buildScript(c *test262Case, harnessRoot string) (string, error) {
 	if hasFlag(c, "async") {
 		b.WriteString(test262AsyncShim)
 	}
+	if test262ProbeOn {
+		// 探针注入点: harness 之后、async shim 与用例源码之前 (T1-4)。
+		b.WriteString(test262ProbeJS)
+		b.WriteString("\n")
+	}
 	b.WriteString(c.Source)
 	if hasFlag(c, "async") {
 		// 文件末尾留一个哨兵表达式: EvalFileVM 的 LastPopped() 取到它,
@@ -361,6 +381,57 @@ function $DONE(err) {
   if (err) { globalThis.__test262_err = String(err && err.message || err); }
   globalThis.__test262_done = true;
 }
+`
+
+// test262ProbeJS 是 -probe 模式注入的断言包装器（T1-4 假阳性清扫）。
+//
+// 包装 assert.throws / assert.throwsAsync, 把每次"骗过断言"的真实错误
+// (constructor 名 + message) 记入 globalThis.__fp_hits —— 包装保持原断言
+// 语义: 断言失败照常抛 Test262Error, 用例判定不变。探针只观察, 不改判。
+const test262ProbeJS = `
+;(function () {
+  if (typeof assert === 'undefined' || !assert || !assert.throws) { return; }
+  globalThis.__fp_hits = [];
+  var __origThrows = assert.throws;
+  var __mark = function (cap, e) {
+    cap.done = true;
+    if (e !== null && typeof e === 'object' && e.constructor && e.constructor.name) {
+      cap.name = e.constructor.name;
+    } else {
+      cap.name = Object.prototype.toString.call(e);
+    }
+    try { cap.msg = (e && e.message !== undefined) ? String(e.message) : String(e); } catch (_) { cap.msg = ''; }
+  };
+  assert.throws = function (expectedErrorConstructor, func, message) {
+    if (typeof func !== 'function') { return __origThrows.apply(this, arguments); }
+    var cap = { done: false, name: '', msg: '' };
+    var wrapped = function () {
+      try { return func.apply(this, arguments); }
+      catch (e) { __mark(cap, e); throw e; }
+    };
+    var args = [expectedErrorConstructor, wrapped];
+    if (arguments.length > 2) { args.push(message); }
+    __origThrows.apply(this, args);
+    if (cap.done) { globalThis.__fp_hits.push({ exp: String(expectedErrorConstructor && expectedErrorConstructor.name), got: cap.name, msg: cap.msg }); }
+  };
+  if (assert.throwsAsync) {
+    var __origAsync = assert.throwsAsync;
+    assert.throwsAsync = function (expectedErrorConstructor, func, message) {
+      if (typeof func !== 'function') { return __origAsync.apply(this, arguments); }
+      var cap = { done: false, name: '', msg: '' };
+      var wrapped = function () {
+        var res;
+        try { res = func.apply(this, arguments); }
+        catch (e) { __mark(cap, e); throw e; }
+        if (res !== null && typeof res === 'object' && typeof res.then === 'function') {
+          res = res.then(function (v) { return v; }, function (e) { __mark(cap, e); throw e; });
+        }
+        return res;
+      };
+      return __origAsync.call(this, expectedErrorConstructor, wrapped, message);
+    };
+  }
+})();
 `
 
 // judgePhase 判定一个非 async 用例是否满足 frontmatter 期望。
@@ -470,6 +541,10 @@ func runCase(root string, c *test262Case, timeout time.Duration) test262Result {
 		if hasFlag(c, "async") {
 			b.WriteString(test262AsyncShim)
 		}
+		if test262ProbeOn {
+			b.WriteString(test262ProbeJS)
+			b.WriteString("\n")
+		}
 		modulePreamble = b.String()
 		// 临时文件只放用例源码: import 相对路径仍以用例所在目录为基准。
 		script = c.Source
@@ -504,6 +579,7 @@ func runCase(root string, c *test262Case, timeout time.Duration) test262Result {
 		harnessErr bool
 		hasVM      bool
 		vmRef      *vm.VM
+		globals    *goruntime.Environment // -probe 读 __fp_hits 用（module 用例取 harness 的全局环境）
 	}
 	doneCh := make(chan outcome, 1)
 	go func() {
@@ -524,14 +600,19 @@ func runCase(root string, c *test262Case, timeout time.Duration) test262Result {
 			// 故在此显式补上宿主全局, 使 module 用例里的 $DETACHBUFFER 可用。
 			stdlib.SetupTest262Globals(hvm.Globals())
 			engine, err = vm.EvalModuleFileVMWithGlobals(tmpPath, hvm.Globals())
-		} else {
-			engine, err = vm.EvalFileVMT262(tmpPath)
+			if err != nil {
+				doneCh <- outcome{err: err}
+				return
+			}
+			doneCh <- outcome{vmRef: engine, hasVM: true, globals: hvm.Globals()}
+			return
 		}
+		engine, err = vm.EvalFileVMT262(tmpPath)
 		if err != nil {
 			doneCh <- outcome{err: err}
 			return
 		}
-		doneCh <- outcome{vmRef: engine, hasVM: true}
+		doneCh <- outcome{vmRef: engine, hasVM: true, globals: engine.Globals()}
 	}()
 
 	var oc outcome
@@ -575,13 +656,56 @@ func runCase(root string, c *test262Case, timeout time.Duration) test262Result {
 		// 如实标注 phase, 不冒充 pass。
 		res.Phase = "pass"
 		res.Pass = true
+		if test262ProbeOn && oc.globals != nil {
+			res.FPHits = readFPHits(oc.globals)
+		}
 		return res
 	}
 	ok, phase, msg := judgePhase(c, oc.err)
 	res.Pass = ok
 	res.Phase = phase
 	res.Err = msg
+	if ok && test262ProbeOn && oc.globals != nil {
+		res.FPHits = readFPHits(oc.globals)
+	}
 	return res
+}
+
+// readFPHits 从全局环境取探针收集的 __fp_hits（-probe 模式, T1-4）。
+func readFPHits(env *goruntime.Environment) []fpHit {
+	v, ok := env.Get("__fp_hits")
+	if !ok || v == nil {
+		return nil
+	}
+	arr, isArr := v.(*object.Array)
+	if !isArr {
+		return nil
+	}
+	var out []fpHit
+	for _, el := range arr.Elements {
+		obj, isObj := el.(*object.Object)
+		if !isObj {
+			continue
+		}
+		var h fpHit
+		if s, ok := obj.GetProperty("exp"); ok {
+			if str, isStr := s.(*object.String); isStr {
+				h.Exp = str.Value
+			}
+		}
+		if s, ok := obj.GetProperty("got"); ok {
+			if str, isStr := s.(*object.String); isStr {
+				h.Got = str.Value
+			}
+		}
+		if s, ok := obj.GetProperty("msg"); ok {
+			if str, isStr := s.(*object.String); isStr {
+				h.Msg = str.Value
+			}
+		}
+		out = append(out, h)
+	}
+	return out
 }
 
 // ── 主命令 ───────────────────────────────────────────────────────────────────
@@ -627,10 +751,12 @@ func runTest262(args []string) {
 	casefile := fs.String("casefile", "", "内部参数: 分片清单文件（每行一个用例 JSON, 含源码）")
 	jsonlOut := fs.String("jsonl", "", "内部参数: 分片子进程逐用例 JSONL 落点 (崩溃也保住已完成用例)")
 	one := fs.String("one", "", "内部参数: 只跑单个用例 (孤儿重派, 进程级隔离)")
+	probe := fs.Bool("probe", false, "假阳性探针: 包装 assert.throws 捕获骗过断言的真实错误 (T1-4)")
 	if err := fs.Parse(args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
+	test262ProbeOn = *probe
 
 	root := *rootFlag
 	if root == "" {
