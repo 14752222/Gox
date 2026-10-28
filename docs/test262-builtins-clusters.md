@@ -370,9 +370,10 @@ gox test262 -root <test262> -suite built-ins -jobs 16 -probe -json /tmp/probe.js
 
 ## 七、遗留与假设
 
-1. 探针只覆盖 `assert.throws` / `assert.throwsAsync` 通道。negative frontmatter
-   （`negative: {phase: runtime, type: TypeError}`）是同机理的另一条通道，本轮未
-   扫——负面用例总量小，后续可在 `judgePhase` 里用同一缺失关键词判据扩展。
+1. 探针覆盖 `assert.throws` / `assert.throwsAsync` 通道，并已扩展 negative
+   frontmatter 通道（`-probe` 时 negative=runtime 且通过的用例会把顶层错误合成
+   为 fp_hit）。实测 built-ins 的 192 条 negative 用例**全部是 parse/early，没有
+   runtime 负面用例**——该通道在 built-ins 为空（对 language 套件才有意义）。
 2. "undefined 信号"判据抓不到"API 存在但内部第 N 层调用链缺件"的深层遮蔽（如
    C10 的 species 路径、`Error.prototype()` 的消息渲染偏差）——它们归入 Tier B，
    未计入 128。
