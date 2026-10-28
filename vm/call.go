@@ -63,6 +63,11 @@ func (vm *VM) constructValue(fn object.Value, args []object.Value) (object.Value
 			return nil, err
 		}
 		ctorFrame := vm.frames[startIdx]
+		// T2-4 帧池化: 本帧指针被持有到 runFrom 之后 (super() 换掉的 this
+		// 只体现在该帧上), 打 pin 防止弹栈后入池被复用改写。
+		if ctorFrame != nil {
+			ctorFrame.pinned = true
+		}
 		if err := vm.runFrom(startIdx); err != nil {
 			vm.pendingNewTarget, vm.hasPendingNewTarget = prevNT, prevHas
 			vm.unwindFramesTo(startIdx)

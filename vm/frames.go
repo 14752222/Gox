@@ -67,6 +67,11 @@ func (vm *VM) popFrame() *Frame {
 	// 帧回收 (T2-4 热点优化): Frame 结构体出栈后无任何长生命周期持有者,
 	// 清空引用字段后入池复用。Locals 置 nil 释放底层数组 (可能被逃逸闭包
 	// 持有为 binding cell, 绝不能随帧复用)。
+	// pinned 帧 (构造调用方在弹栈后还要读 This, 见 Frame.pinned) 不入池。
+	if f.pinned {
+		f.pinned = false
+		return f
+	}
 	f.Instructions = nil
 	f.Locals = nil
 	f.Closure = nil

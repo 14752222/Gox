@@ -92,6 +92,12 @@ type Frame struct {	Instructions    bytecode.Instructions
 	// 首次 next() 时运行。规范要求形参绑定在调用时同步完成。
 	PendingGen *object.Generator
 	StopPC     int
+
+	// pinned 标记本帧被运行期之外的代码持有指针且会在弹栈后继续读字段
+	// (T2-4 帧池化): 目前是构造调用方 (Construct / OP_NEW) —— 它在
+	// runFrom 结束后才读 ctorFrame.This (派生类 super() 换掉的 this 只
+	// 体现在该帧上)。pinned 帧弹栈时不入复用池, 交给 GC, 保住旧语义。
+	pinned bool
 }
 
 // NewFrame 创建新的调用帧。
