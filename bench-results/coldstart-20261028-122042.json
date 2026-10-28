@@ -1,0 +1,78 @@
+{
+  "generated_at": "2026-10-28T12:20:42Z",
+  "benchmark": "perf/ColdStartToFirstFrame",
+  "command": "go test ./tools/perf/ -run TestColdStartToFirstFrame -v",
+  "runs": 7,
+  "platform": {
+    "cpu": "AMD EPYC 9K65 192-Core Processor",
+    "cpus": 32,
+    "go": "go1.26.2",
+    "gogc": 100,
+    "os": "linux/amd64"
+  },
+  "scenario": {
+    "gogc": 100,
+    "runtime_tag": "gox 本仓库构建 (版本号见 cmd/gox/main.go 的 version 常量; 跨版本对比时以 gox version 输出为准)",
+    "script": "testdata/perf/first_frame.js",
+    "surface": "perfSurface (无窗口替身, 无合成器干扰)",
+    "window": "320x200"
+  },
+  "phases_ms": {
+    "eval_ms": 0.796,
+    "first_frame_ms": 0.785,
+    "post_frame_eval_ms": 0.01,
+    "total_alloc_mb": 1.017
+  },
+  "all_runs": [
+    {
+      "eval_ms": 1.033,
+      "first_frame_ms": 1.019,
+      "post_frame_eval_ms": 0.013,
+      "total_alloc_mb": 1.017
+    },
+    {
+      "eval_ms": 0.865,
+      "first_frame_ms": 0.856,
+      "post_frame_eval_ms": 0.009,
+      "total_alloc_mb": 1.017
+    },
+    {
+      "eval_ms": 0.909,
+      "first_frame_ms": 0.9,
+      "post_frame_eval_ms": 0.009,
+      "total_alloc_mb": 1.017
+    },
+    {
+      "eval_ms": 0.698,
+      "first_frame_ms": 0.688,
+      "post_frame_eval_ms": 0.01,
+      "total_alloc_mb": 1.017
+    },
+    {
+      "eval_ms": 0.704,
+      "first_frame_ms": 0.694,
+      "post_frame_eval_ms": 0.01,
+      "total_alloc_mb": 1.017
+    },
+    {
+      "eval_ms": 0.796,
+      "first_frame_ms": 0.785,
+      "post_frame_eval_ms": 0.01,
+      "total_alloc_mb": 1.017
+    },
+    {
+      "eval_ms": 0.738,
+      "first_frame_ms": 0.73,
+      "post_frame_eval_ms": 0.008,
+      "total_alloc_mb": 1.017
+    }
+  ],
+  "metric_defs": {
+    "phases_ms.eval_ms": "t0 → vm.EvalVM 返回: 解释器初始化 + 脚本解析/编译/求值 (含 ES 模块 gx/gfx、gx/dev 等装载) + 窗口创建挂载 + 首帧",
+    "phases_ms.first_frame_ms": "主口径: EvalVM 起点前的 t0 → 首次 Surface.ShowRegions (上屏)。含解释器初始化+脚本求值(含模块装载)+窗口挂载+首次 Layout/Draw/上屏。首帧发生在 render() 求值内 (Mount 末尾同步 redraw), 因此 first_frame_ms ≤ eval_ms。不含进程 exec 与 Go runtime 启动 (那是进程级口径, scripts/coldstart.sh)",
+    "phases_ms.post_frame_eval_ms": "首次上屏 → EvalVM 返回 (首帧后求值里的剩余工作, 应接近 0; 明显大于 0 说明首帧路径变了)",
+    "phases_ms.total_alloc_mb": "冷启动期间 (t0→首次上屏) 的累计分配 (TotalAlloc 差分, 中位)",
+    "runs": "重复次数; 各分段取跨运行中位数 (预热 1 次不计入)"
+  },
+  "note": "进程内口径, 不含进程 exec/动态链接/Go runtime 启动; 真窗口进程级数字见 scripts/coldstart.sh 的 coldstart-process-*.json"
+}

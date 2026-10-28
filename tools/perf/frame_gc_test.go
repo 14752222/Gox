@@ -96,10 +96,17 @@ func (s *perfSurface) timestamps() []time.Time {
 type perfFactory struct {
 	mu sync.Mutex
 	s  *perfSurface
+	// recordOnInit: 新建的 perfSurface 是否**出生即录制**上屏时间戳。
+	// 冷启动基准 (coldstart_test.go) 需要: 首帧发生在 render() 求值期间
+	// (Mount → a.redraw()), 那时测试代码还没机会拿到 Surface 手动开录制。
+	recordOnInit bool
 }
 
 func (f *perfFactory) Create(cfg gfx.WindowConfig) (gfx.Surface, error) {
 	s := newPerfSurface(cfg.Width, cfg.Height)
+	if f.recordOnInit {
+		s.setRecording(true)
+	}
 	f.mu.Lock()
 	f.s = s
 	f.mu.Unlock()
@@ -405,18 +412,18 @@ func runScenario(t *testing.T, sc scenario) report {
 		Shows:   len(ts),
 		Verdict: verdict,
 		MetricDefs: map[string]string{
-			"frame_interval_ms":                          "相邻两次 Surface.ShowRegions(上屏) 的时间差; 含 JS 更新+响应式 effect+Layout+脏区 Draw+GC 停顿, 是掉帧的用户侧代理量",
-			"frame_interval_ms.p95":                      "判定用尾部口径: 95% 的帧在 60fps 预算内; 比 p99/max 稳健 (后两者被 OS 调度主导)",
-			"frame_interval_ms.p99":                      "尾部 1% 帧间隔; 报告用, 非独占运行时受 OS 调度波动大, 不参与判定",
-			"frame_interval_ms.max":                      "观测到的最大帧间隔; 参考值, 会被 OS 调度抖动主导, 不参与判定 (见 verdict.frame_tail_note)",
-			"frame_interval_ms.over_16_7ms_ratio":        "帧间隔超过 60fps 单帧预算 (16.7ms) 的帧占比",
-			"gc.num_gc":                                  "测量窗口内新增的 GC 次数 (debug.GCStats.NumGC 差分; 多次运行取和)",
-			"gc.pause_*":                                 "测量窗口内新增的逐次 STW 停顿的分布 (非平均值; 多次运行取各分位中位, max 取最坏)",
-			"alloc.avg_mb_per_s":                         "窗口内 TotalAlloc 差分 / 窗口墙钟秒数 (多次运行取中位)",
-			"alloc.peak_mb_per_s":                        "2ms 采样下, 任意 1s 滑动窗口内 TotalAlloc 差分的最大速率 (多次运行取中位)",
-			"alloc.heap_peak_kb":                         "采样期间 HeapAlloc 的峰值 (多次运行取最坏)",
-			"verdict.no_gc_stutter":                      "p95≤16.7ms 且 最大 GC 停顿≤5ms 时判为'无 GC 毛刺' (阈值理由见 docs/performance.md §5.3)",
-			"runs":                                       "本报告聚合的重复运行次数; 各分位取跨运行中位, max/heap 峰值取最坏",
+			"frame_interval_ms":                   "相邻两次 Surface.ShowRegions(上屏) 的时间差; 含 JS 更新+响应式 effect+Layout+脏区 Draw+GC 停顿, 是掉帧的用户侧代理量",
+			"frame_interval_ms.p95":               "判定用尾部口径: 95% 的帧在 60fps 预算内; 比 p99/max 稳健 (后两者被 OS 调度主导)",
+			"frame_interval_ms.p99":               "尾部 1% 帧间隔; 报告用, 非独占运行时受 OS 调度波动大, 不参与判定",
+			"frame_interval_ms.max":               "观测到的最大帧间隔; 参考值, 会被 OS 调度抖动主导, 不参与判定 (见 verdict.frame_tail_note)",
+			"frame_interval_ms.over_16_7ms_ratio": "帧间隔超过 60fps 单帧预算 (16.7ms) 的帧占比",
+			"gc.num_gc":                           "测量窗口内新增的 GC 次数 (debug.GCStats.NumGC 差分; 多次运行取和)",
+			"gc.pause_*":                          "测量窗口内新增的逐次 STW 停顿的分布 (非平均值; 多次运行取各分位中位, max 取最坏)",
+			"alloc.avg_mb_per_s":                  "窗口内 TotalAlloc 差分 / 窗口墙钟秒数 (多次运行取中位)",
+			"alloc.peak_mb_per_s":                 "2ms 采样下, 任意 1s 滑动窗口内 TotalAlloc 差分的最大速率 (多次运行取中位)",
+			"alloc.heap_peak_kb":                  "采样期间 HeapAlloc 的峰值 (多次运行取最坏)",
+			"verdict.no_gc_stutter":               "p95≤16.7ms 且 最大 GC 停顿≤5ms 时判为'无 GC 毛刺' (阈值理由见 docs/performance.md §5.3)",
+			"runs":                                "本报告聚合的重复运行次数; 各分位取跨运行中位, max/heap 峰值取最坏",
 		},
 	}
 	return rep
@@ -461,15 +468,16 @@ func peakAlloc(samples []memSample) (float64, float64) {
 // makeVerdict 由帧间隔分布与 GC 停顿分布给出"无 GC 毛刺"判定。
 //
 // 口径 (为什么用 p95 + GC 停顿判, 不用 p99/max):
-//   在**无独占**的桌面机上, 帧间隔的尾部 (p99/p99.9/max) 由 OS 调度抖动
-//   主导。同日多次实测同一份重压负载: p99 跨运行在 6.7~36.8ms、max 在
-//   109~367ms 间摆动, 而同期 GC 停顿 max 始终 <2.6ms。也就是说
-//   p99/max 反映的是"进程被抢了 CPU", 不是"GC 毛刺"。
-//   因此判定取两个稳健量:
-//     1) p95 帧间隔 ≤ 16.7ms  (95% 的帧在 60fps 单帧预算内; 跨运行实测
-//        p95 稳定在 4~9ms, 比 p99 稳得多);
-//     2) 单次 GC 停顿 max ≤ 5ms (直接量 GC 本身, 与调度噪声无关)。
-//   p99 / p99.9 / max 与"超 16.7ms 帧占比"仍完整报告, 供人工判断。
+//
+//	在**无独占**的桌面机上, 帧间隔的尾部 (p99/p99.9/max) 由 OS 调度抖动
+//	主导。同日多次实测同一份重压负载: p99 跨运行在 6.7~36.8ms、max 在
+//	109~367ms 间摆动, 而同期 GC 停顿 max 始终 <2.6ms。也就是说
+//	p99/max 反映的是"进程被抢了 CPU", 不是"GC 毛刺"。
+//	因此判定取两个稳健量:
+//	  1) p95 帧间隔 ≤ 16.7ms  (95% 的帧在 60fps 单帧预算内; 跨运行实测
+//	     p95 稳定在 4~9ms, 比 p99 稳得多);
+//	  2) 单次 GC 停顿 max ≤ 5ms (直接量 GC 本身, 与调度噪声无关)。
+//	p99 / p99.9 / max 与"超 16.7ms 帧占比"仍完整报告, 供人工判断。
 func makeVerdict(frames intervalStats, gc gcOut) verdictOut {
 	const (
 		p95BudgetMs   = 16.7
@@ -529,7 +537,7 @@ func aggregateReports(runs []report) report {
 		PauseP99Ms:     round3(medianFloat(collectGC(runs, func(g gcOut) float64 { return g.PauseP99Ms }))),
 		PauseMaxMs:     round3(maxFloat(collectGC(runs, func(g gcOut) float64 { return g.PauseMaxMs }))),
 		PauseSampleCap: base.GC.PauseSampleCap,
-		Note: "逐次停顿取自动测量窗口内新增的 GC; 多次运行取各分位中位、max 取最坏 (见 aggregateReports)",
+		Note:           "逐次停顿取自动测量窗口内新增的 GC; 多次运行取各分位中位、max 取最坏 (见 aggregateReports)",
 	}
 	sampleSum := 0
 	for _, r := range runs {
@@ -721,10 +729,10 @@ func loadScript(t *testing.T, rows, updates int) string {
 
 func platformInfo() map[string]any {
 	info := map[string]any{
-		"os":     runtime.GOOS + "/" + runtime.GOARCH,
-		"cpus":   runtime.NumCPU(),
-		"go":     runtime.Version(),
-		"gogc":   gogcPercent(),
+		"os":   runtime.GOOS + "/" + runtime.GOARCH,
+		"cpus": runtime.NumCPU(),
+		"go":   runtime.Version(),
+		"gogc": gogcPercent(),
 	}
 	if m := extCmd("sysctl", "-n", "machdep.cpu.brand_string"); m != "" {
 		info["cpu"] = m
