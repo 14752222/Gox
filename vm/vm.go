@@ -175,6 +175,17 @@ type VM struct {
 	// 仅 *object.Closure 非生成器分支直接使用 (callClosure 同步拷贝消费,
 	// 不保留切片); 内建/生成器/代理分支各自拷贝后才使用。
 	callArgsScratch []object.Value
+
+	// 全局读取内联缓存 (T2-4 热点优化): OP_LOAD_GLOBAL 以「常量池索引」
+	// 直映射到缓存槽, 键是常量池里的 *object.String 指针 (同一调用点的
+	// 名字字符串对象恒定)。globalICVersion 是全局环境绑定版本快照, 与
+	// runtime.Environment.Version() 不一致即整体作废 (绑定值变更必经
+	// Environment 的写方法, 全部带版本自增)。全局访问器 (Accessor) 的
+	// 缓存值同样安全: 绑定值被替换时版本已变, getter 每次访问仍照常执行。
+	globalICVersion uint64
+	globalICKey     [256]*object.String
+	globalICVal     [256]object.Value
+	globalICFound   [256]bool
 }
 
 // New 创建虚拟机。

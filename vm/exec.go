@@ -300,7 +300,28 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 		case bytecode.OP_LOAD_GLOBAL:
 			name := frame.Constants.Get(operand)
 			if s, ok := name.(*object.String); ok {
-				val, found := vm.globals.Get(s.Value)
+				// T2-4 热点优化: 全局读取内联缓存。键 = 常量池里的名字
+				// 字符串对象 (同一调用点恒定), 槽 = operand 直映射; 绑定
+				// 版本不符时整体作废重填。fib28 剖面: 全局查找
+				// (Environment.Get + map hash) 占 CPU ~15%, 每次递归调用
+				// 都要按名字哈希查全全局表。
+				var val object.Value
+				var found bool
+				idx := int(operand) & (len(vm.globalICKey) - 1)
+				if vm.globalICVersion == vm.globals.Version() && vm.globalICKey[idx] == s {
+					val, found = vm.globalICVal[idx], vm.globalICFound[idx]
+				} else {
+					if vm.globalICVersion != vm.globals.Version() {
+						vm.globalICVersion = vm.globals.Version()
+						for i := range vm.globalICKey {
+							vm.globalICKey[i] = nil
+						}
+					}
+					val, found = vm.globals.Get(s.Value)
+					vm.globalICKey[idx] = s
+					vm.globalICVal[idx] = val
+					vm.globalICFound[idx] = found
+				}
 				if !found {
 					if err := vm.throwNamedError("ReferenceError", "%s is not defined", s.Value); err != nil {
 						return err
