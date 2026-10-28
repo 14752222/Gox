@@ -370,6 +370,7 @@ func (c *Compiler) compileStaticInitFn(className, superName string, statics []*a
 	meta.BaseSlot = baseSlot
 	meta.CapturePrefixLen = computeCapturePrefixLen(fnIns, baseSlot, c.constants)
 	meta.ArgumentsSlot = argumentsSlot
+	meta.SkipArguments = !argumentsObserved(fnIns, argumentsSlot)
 	meta.IsStrict = true
 	meta.Positions = toSrcPosList(fnSrcPositions)
 	return meta, nil
@@ -751,6 +752,7 @@ func (c *Compiler) compileClassConstructor(fields []*ast.ClassField, ctor *ast.C
 	meta.BaseSlot = baseSlot
 	meta.CapturePrefixLen = computeCapturePrefixLen(fnIns, baseSlot, c.constants)
 	meta.ArgumentsSlot = argumentsSlot
+	meta.SkipArguments = !argumentsObserved(fnIns, argumentsSlot)
 	meta.IsStrict = c.strict
 	meta.Positions = toSrcPosList(fnSrcPositions)
 	return meta, nil

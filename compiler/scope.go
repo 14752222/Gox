@@ -1030,3 +1030,24 @@ func (c *Compiler) declareOnce(name string, isConst, isFnDecl bool) (*Symbol, er
 // compileMemberRef 编译成员引用的两个部分，栈上留下 [obj, key]。
 // obj 与 key 各自只求值一次 —— 复合/逻辑赋值需要重复用到这个引用，
 // 但绝不能重复求值 `obj[f()] += v` 里的 f。
+
+// argumentsObserved 扫描函数体指令流, 判断 arguments 槽位是否被读取 (T2-4)。
+//
+// 编译器为每个函数 (含箭头) 分配独立的 __arguments__ 槽位, 槽位号在函数
+// 作用域内唯一, 唯一的读取指令是 OP_LOAD <argumentsSlot> (标识符引用、
+// typeof、展开、解构都汇到这里)。内层函数的 `arguments` 解析到**它自己**
+// 的槽位 (见 compileFunctionSelf 的注释: 简化为所有函数都有独立 arguments),
+// 不会经捕获读外层槽位; 直接 eval 的代码不经 currentArgumentsSlot 编译,
+// 也读不到本槽位。因此只扫本函数指令流即可, 无需保守全保留。
+func argumentsObserved(ins bytecode.Instructions, argumentsSlot int) bool {
+	if argumentsSlot < 0 {
+		return false
+	}
+	for off := 0; off+bytecode.InstructionSize <= len(ins); off += bytecode.InstructionSize {
+		op, operand := bytecode.ReadInstruction(ins, off)
+		if op == bytecode.OP_LOAD && int(operand) == argumentsSlot {
+			return true
+		}
+	}
+	return false
+}

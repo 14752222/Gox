@@ -206,6 +206,11 @@ type FunctionMetadata struct {
 	// 0 表示未计算 (老码路径), 回退 BaseSlot。
 	CapturePrefixLen int
 	ArgumentsSlot    int             // arguments 对象槽位 (-1 表示未使用/箭头函数)
+	// SkipArguments 标记本函数体从未引用 arguments 槽位 (T2-4 热点优化):
+	// 编译期扫描指令流 (无 OP_LOAD 命中槽位、无内层闭包、无直接 eval 标记)
+	// 得出, VM 据此跳过调用时的 arguments 对象物化 (省 2 次堆分配/调用)。
+	// 零值 false = 保守保留现有行为。
+	SkipArguments bool
 	SelfSlot         int             // 命名函数表达式的自引用槽位 (-1 表示无)
 	// Positions 是函数体语句的源码位置表 (offset 升序, 可为 nil)。
 	// 运行时错误渲染源码帧用 (T05)。

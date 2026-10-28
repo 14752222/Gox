@@ -443,7 +443,9 @@ func (vm *VM) callClosure(closure *object.Closure, args []object.Value) error {
 	}
 
 	// 创建 arguments 对象 (类数组, 含全部实参)。放在参数放置之后, 避免被参数覆盖。
-	if fn.ArgumentsSlot >= 0 && fn.ArgumentsSlot < len(frame.Locals) {
+	// T2-4 热点优化: 函数体从未引用 arguments (编译期扫描 SkipArguments) 时
+	// 跳过物化 —— 免去 argsCopy 切片 + arguments 数组两次堆分配/调用。
+	if !fn.SkipArguments && fn.ArgumentsSlot >= 0 && fn.ArgumentsSlot < len(frame.Locals) {
 		argsCopy := make([]object.Value, len(args))
 		copy(argsCopy, args)
 		frame.Locals[fn.ArgumentsSlot] = object.NewArray(argsCopy)
