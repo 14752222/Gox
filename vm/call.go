@@ -214,7 +214,12 @@ func (vm *VM) callFunction(fn object.Value, this object.Value, args []object.Val
 
 func (vm *VM) createClosure(meta *bytecode.FunctionMetadata, frame *Frame) *object.Closure {
 	// 保存当前帧的常量池引用
-	fn := metaToCompiledFunction(meta, frame.Constants.Constants)
+	// T2-4 热点优化: 同一 FunctionMetadata 的 CompiledFunction 按 VM 缓存
+	// 复用。timers10k 剖面: 每次闭包创建都走 metaToCompiledFunction 新建
+	// CompiledFunction + Parameters 切片 + Positions 拷贝 (3 个堆对象/闭包,
+	// 1 万次 setTimeout ≈ 3 万次分配)。CompiledFunction 创建后只读
+	// (JS 可见状态挂在 Closure 上), 复用安全; 缓存按 VM 隔离, 无跨 VM 竞态。
+	fn := vm.compiledFunctionFor(meta, frame.Constants.Constants)
 
 	// 捕获外层局部变量: 共享当前帧的 Locals 数组本身，而不是拷一份快照。
 	//

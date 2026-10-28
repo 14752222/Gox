@@ -186,6 +186,25 @@ type VM struct {
 	globalICKey     [256]*object.String
 	globalICVal     [256]object.Value
 	globalICFound   [256]bool
+
+	// fnCache 是 FunctionMetadata → CompiledFunction 的按 VM 复用缓存
+	// (T2-4 热点优化)。同一编译单元里每次执行到 OP_CLOSURE 都会新建一个
+	// 闭包, 但其 fn 部分 (指令/常量/位置表/参数元数据) 只取决于 metadata,
+	// 创建后只读 —— 缓存后闭包创建路径省 3 次堆分配/次。
+	fnCache map[*bytecode.FunctionMetadata]*object.CompiledFunction
+}
+
+// compiledFunctionFor 返回 meta 对应的 (按 VM 缓存的) CompiledFunction。
+func (vm *VM) compiledFunctionFor(meta *bytecode.FunctionMetadata, consts []object.Value) *object.CompiledFunction {
+	if fn, ok := vm.fnCache[meta]; ok {
+		return fn
+	}
+	fn := metaToCompiledFunction(meta, consts)
+	if vm.fnCache == nil {
+		vm.fnCache = make(map[*bytecode.FunctionMetadata]*object.CompiledFunction)
+	}
+	vm.fnCache[meta] = fn
+	return fn
 }
 
 // New 创建虚拟机。
