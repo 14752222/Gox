@@ -588,14 +588,23 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			// 仅当被调确为全局 %eval% 内建时才置受限标志 (其余情况丢弃)。
 			vm.consumeEvalMark(fn)
 			// 收集参数 (栈上是 arg1, arg2, ..., argN, 逆序弹出)
-			args := make([]object.Value, numArgs)
+			// T2-4 热点优化: 参数装进 VM 级复用缓冲。只有 *object.Closure
+			// (非生成器) 分支直接使用该缓冲 —— callClosure 会同步把参数
+			// 拷进 frame.Locals / rest 数组 / arguments 副本, 不保留切片;
+			// 内建与生成器分支各自拷贝一份 (它们可能长期持有 args)。
+			if cap(vm.callArgsScratch) < numArgs {
+				vm.callArgsScratch = make([]object.Value, numArgs)
+			}
+			args := vm.callArgsScratch[:numArgs]
 			for i := numArgs - 1; i >= 0; i-- {
 				args[i] = vm.stack.Pop()
 			}
 
 			switch callee := fn.(type) {
 			case *object.BuiltinFunction:
-				result := callee.Fn(args...)
+				builtinArgs := make([]object.Value, numArgs)
+				copy(builtinArgs, args)
+				result := callee.Fn(builtinArgs...)
 				if result == nil {
 					result = object.UndefinedSingleton
 				}
@@ -624,7 +633,9 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				// (Node 实测: `var v = Object.prototype.valueOf; v()` 抛
 				// TypeError, 而 `v.call(globalThis)` 正常返回)。照 sloppy
 				// 归一会让 ToObject 成功, 于是该抛的 TypeError 不抛。
-				result := callee.Fn(object.UndefinedSingleton, args...)
+				builtinArgs := make([]object.Value, numArgs)
+				copy(builtinArgs, args)
+				result := callee.Fn(object.UndefinedSingleton, builtinArgs...)
 				if result == nil {
 					result = object.UndefinedSingleton
 				}
@@ -645,7 +656,11 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				// generator 函数调用: 不执行函数体, 返回 Generator 对象。
 				// 有形参前导段 (默认值/解构) 时, 先建立前导帧 —— 由主循环
 				// 同步执行前导段后冻结为 Generator (规范: 形参绑定在调用时完成)。
+				// 生成器会长期持有 args (gen.Args), 必须拷出复用缓冲。
 				if callee.Fn != nil && callee.Fn.IsGenerator {
+					genArgs := make([]object.Value, numArgs)
+					copy(genArgs, args)
+					args = genArgs
 					if genHasPrologue(callee.Fn) {
 						if err := vm.setupGenPrologueFrame(callee, args); err != nil {
 							if terr := vm.throwJSError(err); terr != nil {
@@ -667,7 +682,10 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 
 			case *object.Proxy:
 				// 代理: 转发到 apply trap (this 为 undefined)
-				result, err := vm.proxyApply(callee, object.UndefinedSingleton, args)
+				// trap 回调可长期持有 args, 拷出复用缓冲。
+				proxyArgs := make([]object.Value, numArgs)
+				copy(proxyArgs, args)
+				result, err := vm.proxyApply(callee, object.UndefinedSingleton, proxyArgs)
 				if err != nil {
 					if terr := vm.rethrowBridgeError(err); terr != nil {
 						return terr

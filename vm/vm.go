@@ -169,6 +169,12 @@ type VM struct {
 	// frame.Locals 为 binding cell 持有其底层数组 (见 createClosure), 复用
 	// 会让后续调用改写旧闭包可见的绑定。
 	frameFree []*Frame
+
+	// callArgsScratch 是 OP_CALL 的参数装填复用缓冲 (T2-4 热点优化)。
+	// 每次调用 make 一次 args 切片是 fib28 剖面里 ~1.19M 次/run 的分配源。
+	// 仅 *object.Closure 非生成器分支直接使用 (callClosure 同步拷贝消费,
+	// 不保留切片); 内建/生成器/代理分支各自拷贝后才使用。
+	callArgsScratch []object.Value
 }
 
 // New 创建虚拟机。
