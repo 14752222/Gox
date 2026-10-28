@@ -370,4 +370,162 @@ ls -l bench-results/               # bench-*.json (算力) / perf-*.json (帧率
 | `bench-results/bench-20261002-024818.json` | 算力基线（gox/node/goja，runs=5） |
 | `bench-results/perf-probe-20261002-025423.json` | 轻量帧率/GC 探针结果 |
 | `bench-results/perf-stress-20261002-025455.json` | 重压帧率/GC 结果（3 次聚合） |
+| `cmd/gox/pprof.go` | `GOX_PPROF` / `GOX_MEMPROFILE` 剖面入口（§11） |
+| `tools/memdrift/` | 长时 RSS 漂移闸门 `TestRSSDrift`（§11） |
+| `testdata/memdrift/churn.js` | 漂移负载：窗口挂到底 + 整批组件换挂 |
+| `scripts/rss-curve.sh` | 增加 `--max-rss` / `--max-slope` 闸门与机器可读摘要 |
+| `bench-results/memdrift-20261028-012358.json` | 漂移基线（7500 轮） |
 | `docs/performance.md` | 本文 |
+
+---
+
+## 11. 内存剖面与 RSS 闸门（T3-3）
+
+§5 解决的是「帧有没有卡」，本节解决「挂久了内存会不会爬」。Gox 的渲染层是
+无 GC 设计（帧缓冲 / 对象池手工复用），泄漏不表现为崩溃，只表现为 RSS 单调
+上行——没有剖面和闸门，这种问题只能等用户投诉。
+
+### 11.1 怎么开 pprof（常驻进程）
+
+入口在 `cmd/gox/pprof.go`，由 `main()` 里的 `defer initPprof()()` 安装。
+**默认关闭**：没设环境变量时只有两次 `Getenv`，不起 goroutine、不监听、不建
+文件。两个变量各管一段：
+
+```bash
+# 1) 活着的进程：起 net/http/pprof（推荐只绑回环地址）
+GOX_PPROF=127.0.0.1:6060 ./gox apps/notes/src/main.js
+#    分配剖面（按分配字节数，找"谁在造垃圾"）
+curl -s -o heap.pb.gz 'http://127.0.0.1:6060/debug/pprof/heap?alloc_space=1'
+#    活对象（按当前占用，找"谁没释放"）
+curl -s -o inuse.pb.gz 'http://127.0.0.1:6060/debug/pprof/heap'
+#    火焰图 / 排行
+go tool pprof -top -alloc_space ./gox heap.pb.gz
+go tool pprof -top -inuse_space ./gox inuse.pb.gz
+
+# 2) 抓退出那一刻：正常返回 或 SIGINT/SIGTERM 时 dump 一份堆剖面
+GOX_MEMPROFILE=/tmp/heap.pb.gz ./gox apps/notes/src/main.js
+#    Ctrl-C 后进程以 130 退出，文件已写好；-alloc_space 看分配，默认看 inuse
+go tool pprof -alloc_space ./gox /tmp/heap.pb.gz
+```
+
+- 为什么用环境变量而不是 flag：`gox <入口.js>` 后面所有非 `--allow-*` 参数都
+  会被当成脚本路径（`main.go` 的分发规则），加全局 flag 会污染脚本参数解析；
+  而 `gox dev` 的热重启子进程只继承环境变量（`GOX_DEV` 同款通道）。
+- 为什么 dump 要接管信号：仓库没有退出钩子，`os.Exit`（脚本报错 /
+  `process.exit`）会跳过 `defer`；信号处理器覆盖了「人手动结束常驻进程」这条
+  最常见的路径。
+- 非回环地址会在 stderr 打一行警告：堆内容可能含业务数据，别随手绑 `0.0.0.0`。
+
+### 11.2 怎么跑 RSS 闸门
+
+在既有曲线采集上扩展，不另起一套：`tools/rssmon` 仍按进程树采 VmRSS 落 CSV，
+`scripts/rss-curve.sh` 读完 CSV 再判定。
+
+```bash
+# 只采曲线（nightly 用这条，永远绿）
+DURATION=120 INTERVAL=2 bash scripts/rss-curve.sh
+
+# 带闸门（任一越界退出码 1；参数/环境错误退出码 2）
+bash scripts/rss-curve.sh --max-rss 196608 --max-slope 512
+# 等价的环境变量写法（CI 里更顺手）
+RSS_MAX_KB=196608 RSS_MAX_SLOPE_KB_PER_MIN=512 bash scripts/rss-curve.sh
+```
+
+判定口径：
+
+- **峰值**取全段 `max(rss_kb)`，包含 `gox dev` 的 watcher 父进程与子进程合计。
+- **斜率**只回归**稳态段**（默认跳过前 30% 的样本）：启动期是一次性线性爬升
+  （加载 JS、建窗口、解码图标/字体），算进去会得到一条假斜率。样本 < 10 个时
+  不跳过（点太少，跳过更不稳）。
+- 机器可读摘要：一组 `RSS_*` 键值行 + 一行 `RSS_SUMMARY {…}` JSON，例如：
+
+```
+RSS_PEAK_KB=141284
+RSS_SLOPE_KB_PER_MIN=0.0
+RSS_VERDICT=pass
+RSS_SUMMARY {"csv":"bench-results/rss-notes-20261028T011459Z.csv","samples":60,
+  "first_kb":4692,"last_kb":141284,"peak_kb":141284,"slope_kb_per_min":0.0,
+  "max_rss_kb":196608,"max_slope_kb_per_min":512,"rss_ok":true,"slope_ok":true,"pass":true}
+```
+
+> 阈值为空 = 该侧不判（`null` 写进 JSON，不用 0 冒充"设过 0"）。
+> 为什么闸门不默认打开：绝对 RSS 随机型/镜像/字体栈漂移，nightly 硬判会制造
+> 噪声性红（同 `rss-curve.yml` 头部的理由）。
+
+### 11.3 长时漂移测试
+
+`tools/memdrift`（Linux；`-short` 跳过）：
+
+```bash
+go test ./tools/memdrift/ -v                       # 默认 7500 轮，约 2 分钟
+MEMDRIFT_ITERS=500 go test ./tools/memdrift/ -v    # 缩短自查
+go test ./tools/memdrift/ -short                   # 跳过
+```
+
+一轮 = 三件事，缺一件就漏掉一个泄漏面：
+
+1. **求值**：新建一个 VM 执行一段小脚本（解析 / 编译 / 全局对象 / 200 个对象）；
+2. **组件挂载**：`__churn()` 整批换掉列表数据，key 全变 → 旧行卸载、新行挂载；
+3. **渲染**：`__tick()` 改行内 signal → 真实 Layout + 脏区 Draw + 上屏，每轮 6 帧。
+
+判定前的纪律：
+
+- 每 K 轮先 `runtime.GC()` 再采样。泄漏的定义是"GC 之后还活着的对象"，
+  不 GC 只能测到"这一轮分配了多少"（那由 TotalAlloc 单独报）。
+- 前 30% 只预热。字体/字形缓存、对象池、Go 堆首次增长都在这里一次性发生。
+- 同时看两个信号：`HeapAlloc`（Go 堆活对象）与 `VmRSS`（进程实际占用）。
+  后者能抓住"堆没涨但内存没还给 OS"——无 GC 设计最容易出这种。
+
+**本次实测**（`bench-results/memdrift-20261028-012358.json`，本机 Linux，
+640×480，200 行换批 + 6 帧/轮）：
+
+| 指标 | 值 |
+|---|---|
+| 轮次 / 耗时 | 7500 轮 / 113.5s（15.0ms/轮，共 45000 帧） |
+| 分配速率 | 261.5 MB/s |
+| 稳态 HeapAlloc | 25144 → 25147 kB（**Δ +3 kB**，+2.0 kB/min；同日另一轮 +9 kB） |
+| 稳态 VmRSS | 78016 → 78336 kB（**Δ +320 kB**，+318.3 kB/min；同日另一轮 +1524 kB） |
+| 判定 | heap 3 ≤ 2048、rss 320 ≤ 16384 → **pass** |
+
+> RSS 的 ±1 MB 摆动来自 Go 堆向 OS 归还页的节奏（采样序列在 77–80 MB 之间
+> 来回），2 分钟窗口内回归出的斜率会随首尾点漂到几百 kB/min；因此闸门用
+> **增量**判定，斜率只作报告（与 `--max-slope` 同单位，便于横向对照）。
+
+### 11.4 阈值依据
+
+| 指标 | 实测基线 | 闸门 | 余量 | 为什么这么定 |
+|---|---|---|---|---|
+| `rss-curve` 峰值 | 141284 kB（138.0 MB） | 196608 kB（192 MB） | ×1.39 | 覆盖字体栈/驱动差异；再高就说明常驻足迹确实涨了 |
+| `rss-curve` 稳态斜率 | 0.0 kB/min | 512 kB/min | — | 8 小时挂机累计 ≤ 240 MB；能拦住"每帧漏一点"，又不被单次抖动触发 |
+| 漂移 HeapAlloc | Δ +3~9 kB | Δ 2048 kB | ≥×227 | GC 后活对象很稳，卡紧才抓得住缓慢泄漏 |
+| 漂移 VmRSS | Δ +320~1524 kB | Δ 16384 kB | ≥×10.7 | 留给堆高水位与归还节奏的摆动（跨机差异大） |
+
+阈值 = **本次实测基线 + 余量**，不是拍脑袋的整数。机器/负载变了就重测重定，
+不要直接把这两组数字抄到别的机器上。
+
+### 11.5 已知盲区
+
+1. **只覆盖 Go 堆**：`pprof` 看不到 gfx 手工池（帧缓冲、字形掩码）之外的
+   cgo / GPU 显存；RSS 曲线能看到总量，但定位不到那里。
+2. **`pprof` 抓不到硬退出**：`process.exit()`（内部是 `os.Exit`）与 `SIGKILL`
+   不会触发 dump；只有正常返回、`SIGINT`、`SIGTERM` 会。需要必抓时用
+   `GOX_PPROF` 活着抓。
+3. **堆剖面是采样的**：默认每 512 KB 采一次，单个小对象泄漏可能一次 dump
+   看不出来；要抓小泄漏就多跑一会儿、比较两次 dump 的差值。
+4. **RSS 口径是 Linux `/proc`**：`rssmon` 与漂移测试都依赖它；macOS/Windows
+   只有 §2 的外部 `time` 口径。`rssmon` 采的是**进程树**，`gox dev` 的父进程
+   与子进程会合在一起，不能拿来拆"谁占了多少"。
+5. **曲线含启动段**：`rss-curve.sh` 的峰值是全段峰值，包含启动期；闸门斜率
+   已排除前 30%，但峰值没有——想只看稳态就自己裁 CSV。
+6. **窗口反复开关存在已知泄漏（未定位根因，本任务范围外）**：临时探针实测
+   （Linux，640×480，同进程内循环"新建 VM → 挂窗 → 关窗"）：
+   - 平台关窗（`EventClose`，即用户点关闭 / 泵收到关闭事件）：40 轮后
+     `windowHandles` 仍有 40 条（`gfx/render.go` 的 `a.close()` 只调
+     `unregisterApp`，摘句柄只在 `Window.Close()` 里做），每轮额外留存一个句柄；
+   - 脚本显式 `__root.close()`（句柄表为 0）：最小脚本仍约 **537 kB/轮**，
+     200 行树约 **2.1 MB/轮** —— 说明还有一条未定位的保留路径，且与树大小
+     相关，不是单纯帧缓冲（1.2 MB）。
+   正因如此，`tools/memdrift` **整场只挂一个窗口**，把测量目标锁在"帧循环 +
+   组件换挂"的稳态；窗口 churn 的修复需要改 `gfx` 内核，留给后续任务。
+7. **漂移测试的负载是压缩的**：2 分钟 7500 轮不等于"挂一夜"，它放大的是
+   每轮分配/回收次数，抓不住"只在特定交互路径上触发"的泄漏。

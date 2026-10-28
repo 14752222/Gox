@@ -31,6 +31,11 @@ import (
 const version = "0.15.0"
 
 func main() {
+	// 剖面入口: 默认关闭, 只在 GOX_PPROF / GOX_MEMPROFILE 设了才付成本
+	// (见 cmd/gox/pprof.go)。defer 只覆盖"正常返回"这条路径, os.Exit 与
+	// 信号路径由 pprof.go 里的信号处理器兜底。
+	defer initPprof()()
+
 	// 开发模式诊断: 由 CLI 边界读环境变量并显式传给 gfx (为什么不让 gfx 自己
 	// 读, 见 gfx/devmode.go 的说明 —— 库不该因为"被链接进某个进程"就改变行为)。
 	initDevMode()
@@ -201,6 +206,10 @@ func printUsage(w io.Writer) {
   GOX_DEV=1                    打开开发模式诊断: gfx 会对"写错了但不报错"的陷阱
                                发警告（第一类是 JSX 子节点位置写了响应式对象本身,
                                界面会停在初始值且一声不响）。gox dev 自动打开。
+  GOX_PPROF=127.0.0.1:6060     打开 /debug/pprof 剖面服务（分配剖面见
+                               /debug/pprof/heap?alloc_space=1）；默认关闭。
+  GOX_MEMPROFILE=/tmp/heap.pb.gz  退出（或 SIGINT/SIGTERM）时 dump 堆剖面；
+                               用 go tool pprof -alloc_space 打开。
 
 create 选项:
   --name <名字>                指定项目名（缺省取目录名）

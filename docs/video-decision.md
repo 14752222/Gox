@@ -22,21 +22,55 @@
 | **选**一段视频（从相册/文件里挑） | `gx/media.chooseVideo()` | ✅ 已实现（`gfx/native_media.go`） |
 | **存**一段视频（写回相册/文件） | `gx/media.save()` | ✅ 已实现 |
 | 用**系统播放器**打开（跳出去播） | `gx/media.preview()` | ✅ 已实现（系统预览） |
-| **应用内内联播放**（`<video src>` 在窗口里播） | `<video>` + `nativeVideoHost` | ✅ **契约已实现**（S8）；**解码不在内核**，交给平台视频层 |
+| **应用内内联播放**（`<video src>` 在窗口里播） | `<video>` + `nativeVideoHost` | ✅ **契约已实现**（S8）；Linux 上 `gfx/softmedia` 是首个宿主（只解 GIF / MJPEG，见 `media-decision.md`）；h264 等仍交给平台视频层 |
 
 也就是说，"视频"缺的从来不是"标签"，而是**解码器**——内核里没有、也不会有。
 
 ## 2. 为什么内核里没有解码器
 
-### 2.1 软件光栅化器撑不起逐帧解码
+### 2.1 绘制仍是 CPU 软件光栅化，GPU 只接管上屏一跳
 
-Gox 的 GUI 是**纯 Go 软件光栅化**（`gfx/raster.go` 往 `*image.RGBA` 上画像素），三平台
-共用一套绘制代码，没有 GPU、没有平台视频纹理。内联播放意味着：
+Gox 的 GUI **绘制**是**纯 Go 软件光栅化**（`gfx/raster.go` 往 `*image.RGBA` 上画像素），
+三平台共用一套绘制代码，绘制本身不经过 GPU。仓库里确实有 GPU 呈现后端
+（`gfx/gpu`，opt-in），但它替换的只是**上屏那一跳**：
+
+```
+app.redraw(): Layout → CPU 光栅化 → surface.ShowRegions(a.img, rects)
+                                      ├─ 默认：平台 blit（XPutImage / StretchDIBits / CALayer.contents）
+                                      └─ -tags gpu：帧缓冲上传纹理 + 全屏 quad
+```
+
+`ShowRegions` 拿到的还是 CPU 已经画好的整帧像素；GPU 侧只做「按脏矩形子纹理上传 +
+scissor 重绘一个全屏四边形」（`gfx/gpu/backend_wgpu.go:318`；着色器
+`gfx/gpu/shaders_wgpu.go:24` 的 `presentWGSL` 只有一次 `textureSample`，语义等价 blit）。
+**没有逐节点的 GPU 绘制，没有 YUV 采样，也没有平台视频纹理导入** —— `gfx/gpu` 既不
+实现 `nativeVideoHost`，也没有 `ExternalTexture` 这类外部纹理导入通道。
+
+构建与降级（`gfx/gpu/doc.go` 的三轨设计）：
+
+| 文件 | 构建标签 | 现状 |
+| --- | --- | --- |
+| `gfx/gpu/backend_nogpu.go` | `!gpu && !gpu_cgo` | 默认轨空壳：`Available()` 恒 `false`、`New` 返回 `ErrNotBuilt`，不 import 任何 GPU 库 |
+| `gfx/gpu/backend_wgpu.go` | `gpu` | 纯 Go wgpu 上屏合成；拿不到硬件适配器时退到软件适配器（`BackendKind()=="software"`） |
+| `gfx/gpu/backend_cgo.go` | `gpu_cgo` | cgo 轨骨架：`Available()` 恒 `false`、`New` 返回 `ErrNotBuilt` |
+| `gfx/gpu/present_bench_test.go` | `gpu && linux` | 4K 上屏基准 5 组（AppCPU / Total / 脏矩形 / UploadOnly），与 `gfx/present_bench_test.go` 的 CPU 口径对照 |
+| `cmd/gox/gpu_present_init.go` | `gpu` | 只在硬件适配器上安装呈现包装器；软件适配器默认不包装（`GOX_GPU=software` 强制） |
+
+降级是静默的：没开 tag、设备建不起来、或只拿到软件适配器，宿主就不装包装器，窗口
+继续走平台后端的 CPU blit。可复核：默认构建下
+`go list -deps ./cmd/gox | grep gfx/gpu` 无输出。
+
+所以内联播放的瓶颈不是「有没有 GPU 上屏」，而是**解码结果怎么进这块帧缓冲**：
 
 1. **解码**：mp4/h264 需要第三方解码库（cgo 或纯 Go 实现）。纯 Go 的 h264 解码器性能
-   不足以实时，cgo 则打破了"三平台零依赖、纯 Go 交叉编译"的整个发行链路。
-2. **YUV → RGB 转换 + 缩放**：每帧都要做，纯 CPU 做 720p 全屏会直接把一帧的预算
-   （16ms）吃光，与"局部重绘/脏矩形"的性能模型冲突。
+   不足以实时；cgo 则打破了默认构建「零 cgo、单机交叉编译出全部平台产物」的发行链路
+   （`gfx/gpu/doc.go` 写明 cgo 轨要把发版矩阵从 1 台 Linux 改成 3 台 runner）。
+2. **YUV → RGB 转换 + 缩放**：现有包装链只接受 `*image.RGBA` —— 软媒体先把解出的帧
+   写进帧缓冲，GPU 再按脏区上传上屏（`docs/media-decision.md` §3）。也就是说即使开着
+   `-tags gpu`，色彩转换与缩放仍在 CPU 上，且视频区域**每帧整块变化**，与
+   「局部重绘 / 脏矩形」的模型正相反。要在 GPU 上做零拷贝，得给 `gfx/gpu` 加平台
+   视频纹理导入（另一套接口），当前实现里没有。本仓未对逐帧 YUV 做过基准，
+   这条是结构性判断，不是实测数字。
 3. **音视频同步**：要么带回放时钟，要么静音——前者是播放器工程，后者用户不接受。
 
 这三条与"标签"无关，只与"谁来解码"有关。所以内核可以给标签、给事件、给受控语义，
@@ -58,6 +92,7 @@ Gox 的 GUI 是**纯 Go 软件光栅化**（`gfx/raster.go` 往 `*image.RGBA` �
 ### 3.1 内核不做的事（长期有效）
 
 - **不做解码 / 色彩转换 / 音视频同步**：`gfx/` 里没有也不会有这个循环（理由见 §2.1）。
+  GPU 呈现轨（`-tags gpu`）也不提供这些能力 —— 它只把 CPU 画好的帧搬上屏。
 - **不内置播放器 UI**：`controls` 只是"请平台自带控件，有就画、没有就忽略"。需要自定义
   控件的业务本来就该自己拿平台播放器（`nativeVideoHost` 给的就是"一块能用的表面"）。
 - **不假装能播**：没有任何平台视频层时，`canIUse("video")` 为 `false`，

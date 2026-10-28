@@ -17,6 +17,9 @@
 #   gox   本仓库构建 (核心基线, 必有)
 #   node  Node.js 同脚本基线 (Electron 主进程 = Node 运行时, 口径同构;
 #         注意这不是 Electron 完整 GUI 空壳的数据)
+#   bun   Bun 运行时 (JavaScriptCore 引擎) —— 与 node 同口径: 同源
+#         scripts/bench/*.js, 直接 `bun run <file>`, RSS 同样取 GNU time
+#         的 VmHWM。未安装时打印"bun: 未安装，跳过"继续跑其余栈, 绝不退出。
 #   goja  纯解释器对照系 (bench/goja 独立 module) —— gox 是解释器, 与 V8 比
 #         差的是"解释器 vs JIT"的固有差距; goja 同为纯解释器, 才是同类基线。
 #         首次需要联网拉依赖: cd bench/goja && go mod download; 构建失败自动跳过。
@@ -44,7 +47,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --runs) RUNS="$2"; shift 2 ;;
     --out)  OUT="$2"; shift 2 ;;
-    -h|--help) "$GREP" '^#' "$0" | sed 's/^# \{0,1\}//' | head -40; exit 0 ;;
+    -h|--help) "$GREP" '^#' "$0" | sed 's/^# \{0,1\}//' | head -60; exit 0 ;;
     *) echo "未知参数 $1 (见 --help)"; exit 1 ;;
   esac
 done
@@ -112,6 +115,10 @@ measure() {
 # -------- 汇总栈 --------
 
 ROWS=""
+# 跳过的栈单独记账, 出表时显式列出 —— 缺一行不能让读者误判成"没测"或"是 0"。
+SKIPPED=""
+mark_skip() { SKIPPED="${SKIPPED:+$SKIPPED,}$1"; }
+
 echo "[harness] 构建本仓库 gox ..." >&2
 GOX_BIN="$OUT/gox-bench"
 (cd "$ROOT" && go build -o "$GOX_BIN" ./cmd/gox) >&2
@@ -124,6 +131,19 @@ if command -v node >/dev/null; then
   ROWS="$ROWS$(measure node node)"$'\n'
 else
   echo "[harness] 无 node, 跳过" >&2
+  mark_skip node
+fi
+
+# bun: 与 node 完全同口径 —— 同源 scripts/bench/*.js, 同一个 GNU time VmHWM
+# 量 RSS, 只是 `bun run <file>` 起进程。measure 的 runner 前缀是可变参数,
+# 传 "bun run" 后它自己拼文件名, 因此不用另写 bun 专用 runner。
+# 未安装必须打印提示并继续: 没 bun 是本机常态, 不能让整个 harness 失败。
+if command -v bun >/dev/null; then
+  echo "[harness] 测量 bun ($(bun --version 2>/dev/null || echo '?')) ..." >&2
+  ROWS="$ROWS$(measure bun bun run)"$'\n'
+else
+  echo "[harness] bun: 未安装，跳过" >&2
+  mark_skip bun
 fi
 
 # goja: 纯解释器对照系 (独立 module)。构建失败 (如离线且依赖未下载) 自动跳过,
@@ -144,6 +164,7 @@ if [[ -n "$GOJA_BIN" ]]; then
   ROWS="$ROWS$(measure goja "$GOJA_BIN")"$'\n'
 else
   echo "[harness] 无 goja runner, 跳过" >&2
+  mark_skip goja
 fi
 
 if [[ -n "${ELECTRON_BIN:-}" ]]; then
@@ -151,6 +172,7 @@ if [[ -n "${ELECTRON_BIN:-}" ]]; then
   ROWS="$ROWS$(measure electron "$ELECTRON_BIN" "$BENCH_DIR/electron")"$'\n'
 else
   echo "[harness] 未设 ELECTRON_BIN, 跳过 electron (GUI 空壳口径见 scripts/bench/tauri/README.md)" >&2
+  mark_skip electron
 fi
 
 # -------- 出表 + JSON --------
@@ -195,7 +217,7 @@ doc = {
     "method": "每项外部 wall time 跑 $RUNS 次取中位数; RSS = 进程常驻峰值 (GNU time VmHWM / BSD time maxrss); 脚本本体零依赖",
     "host": host,
     "stacks": [r["stack"] for r in rows],
-    "note": "gox/node/goja 三列同源脚本; goja 是纯解释器对照系 (与 gox 同类), node 是 V8(JIT) 对照; node 列是 Electron 主进程同构口径, 非完整 GUI 空壳",
+    "note": "gox/node/bun/goja 各列同源脚本; goja 是纯解释器对照系 (与 gox 同类), node 是 V8(JIT)、bun 是 JavaScriptCore 对照; node 列是 Electron 主进程同构口径, 非完整 GUI 空壳; 未安装的栈不出现在 results 里 (stdout 会注明跳过)",
     "results": rows,
 }
 json.dump(doc, open(sys.argv[1], "w"), ensure_ascii=False, indent=2)
@@ -203,13 +225,42 @@ print(json.dumps(doc, ensure_ascii=False, indent=2))
 PYEOF
 
 echo
-echo "| 栈 | 启动 (ms) | fib28+10万次调用 (ms) | 1万次定时器 (ms) | 空载 RSS (KB) |"
-echo "|----|-----------|----------------------|------------------|---------------|"
-python3 -c "
-import json
-doc = json.load(open('$JSON'))
-for r in doc['results']:
-    print('| %s | %d | %d | %d | %d |' % (r['stack'], r['startup_ms'], r['fib28_ms'], r['timers10k_ms'], r['rss_kb']))
-"
-echo
+# 表格由 JSON 反推渲染: 列宽按实际内容算 (CJK 按 2 列宽), 这样栈名长短、
+# 数字位数变化都不会把竖线顶歪; 缺的栈 / 缺的 RSS 用脚注说明而不是留空。
+python3 - "$JSON" "${SKIPPED:-}" <<'PYEOF'
+import json, sys
+
+doc = json.load(open(sys.argv[1]))
+skipped = [s for s in sys.argv[2].split(",") if s]
+
+HEAD = ["栈", "启动 (ms)", "fib28+10万次调用 (ms)", "1万次定时器 (ms)", "空载 RSS (KB)"]
+rows = []
+for r in doc["results"]:
+    # rss_kb == 0 只可能是 run_rss_kb 没找到 time(1), 不是真占了 0KB, 显示成 —。
+    rss = "—" if r["rss_kb"] <= 0 else str(r["rss_kb"])
+    rows.append([r["stack"], str(r["startup_ms"]), str(r["fib28_ms"]),
+                 str(r["timers10k_ms"]), rss])
+
+
+def dw(s):
+    """终端显示宽度: CJK/全角按 2 列算, 其余 1 列。"""
+    return sum(2 if ord(ch) >= 0x2E80 else 1 for ch in s)
+
+
+def pad(s, n):
+    return s + " " * (n - dw(s))
+
+
+widths = [max([dw(HEAD[i])] + [dw(row[i]) for row in rows]) for i in range(len(HEAD))]
+print("| " + " | ".join(pad(h, widths[i]) for i, h in enumerate(HEAD)) + " |")
+print("|" + "|".join("-" * (w + 2) for w in widths) + "|")
+for row in rows:
+    print("| " + " | ".join(pad(c, widths[i]) for i, c in enumerate(row)) + " |")
+
+if skipped:
+    print()
+    print("未参与本次对比（跳过）: " + ", ".join(skipped))
+if any(r["rss_kb"] <= 0 for r in doc["results"]):
+    print("注: RSS 为 — 表示本机没有 GNU/BSD time, 该栈内存峰值未测。")
+PYEOF
 echo "结果已存档: $JSON (历史全部在 $OUT/ 下, 建议随仓库提交)"

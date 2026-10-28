@@ -1,0 +1,129 @@
+{
+  "generated_at": "2026-10-28T02:53:24+00:00",
+  "commit": "a2e8935",
+  "go": "go1.27.3",
+  "goos": "linux",
+  "goarch": "amd64",
+  "host": {
+    "cpu": "x86_64",
+    "cores": 32
+  },
+  "benchtime": "10x",
+  "scene": {
+    "window": "1600x900",
+    "list_rows": 200,
+    "screens": "假 Surface, 每窗口一块屏"
+  },
+  "command": "go test ./gfx -run '^$' -bench 'MultiScreen|CrossScreenEvent|VlistScroll' -benchtime 10x",
+  "results": [
+    {
+      "bench": "BenchmarkMultiScreenSameFrame/screens=1-32",
+      "iterations": 10,
+      "ns_per_op": 4884619.0,
+      "extra": "4884619 ns/frame\t         1.000 screens"
+    },
+    {
+      "bench": "BenchmarkMultiScreenSameFrame/screens=2-32",
+      "iterations": 10,
+      "ns_per_op": 10162505.0,
+      "extra": "5081252 ns/frame\t         2.000 screens"
+    },
+    {
+      "bench": "BenchmarkMultiScreenSameFrame/screens=3-32",
+      "iterations": 10,
+      "ns_per_op": 14309392.0,
+      "extra": "4769797 ns/frame\t         3.000 screens"
+    },
+    {
+      "bench": "BenchmarkMultiScreenSameFrame/screens=4-32",
+      "iterations": 10,
+      "ns_per_op": 18942664.0,
+      "extra": "4735666 ns/frame\t         4.000 screens"
+    },
+    {
+      "bench": "BenchmarkMultiScreenOneDirty/screens=1-32",
+      "iterations": 10,
+      "ns_per_op": 4975756.0,
+      "extra": "1.000 screens"
+    },
+    {
+      "bench": "BenchmarkMultiScreenOneDirty/screens=2-32",
+      "iterations": 10,
+      "ns_per_op": 9633062.0,
+      "extra": "2.000 screens"
+    },
+    {
+      "bench": "BenchmarkMultiScreenOneDirty/screens=4-32",
+      "iterations": 10,
+      "ns_per_op": 19979042.0,
+      "extra": "4.000 screens"
+    },
+    {
+      "bench": "BenchmarkCrossScreenEvent/screens=1-32",
+      "iterations": 10,
+      "ns_per_op": 1786313.0,
+      "extra": "1.000 screens"
+    },
+    {
+      "bench": "BenchmarkCrossScreenEvent/screens=2-32",
+      "iterations": 10,
+      "ns_per_op": 2415158.0,
+      "extra": "2.000 screens"
+    },
+    {
+      "bench": "BenchmarkCrossScreenEvent/screens=4-32",
+      "iterations": 10,
+      "ns_per_op": 2039820.0,
+      "extra": "4.000 screens"
+    },
+    {
+      "bench": "BenchmarkVlistScrollScreen/rows=1000-32",
+      "iterations": 10,
+      "ns_per_op": 27721.0,
+      "extra": "13.00 rows-materialized"
+    },
+    {
+      "bench": "BenchmarkVlistScrollScreen/rows=10000-32",
+      "iterations": 10,
+      "ns_per_op": 52368.0,
+      "extra": "13.00 rows-materialized"
+    },
+    {
+      "bench": "BenchmarkVlistScroll/full/1000-32",
+      "iterations": 10,
+      "ns_per_op": 10961888.0,
+      "extra": ""
+    },
+    {
+      "bench": "BenchmarkVlistScroll/vlist/1000-32",
+      "iterations": 10,
+      "ns_per_op": 238583.0,
+      "extra": ""
+    },
+    {
+      "bench": "BenchmarkVlistScroll/full/10000-32",
+      "iterations": 10,
+      "ns_per_op": 152156094.0,
+      "extra": ""
+    },
+    {
+      "bench": "BenchmarkVlistScroll/vlist/10000-32",
+      "iterations": 10,
+      "ns_per_op": 133081.0,
+      "extra": ""
+    },
+    {
+      "bench": "BenchmarkVlistScroll/full/100000-32",
+      "iterations": 10,
+      "ns_per_op": 1900268276.0,
+      "extra": ""
+    },
+    {
+      "bench": "BenchmarkVlistScroll/vlist/100000-32",
+      "iterations": 10,
+      "ns_per_op": 77385.0,
+      "extra": ""
+    }
+  ],
+  "note": "绝对值随机器; 只信同机趋势。跨屏点击/滚轮两条口径未纳入, 见 docs/multiscreen-bench.md 已知盲区"
+}

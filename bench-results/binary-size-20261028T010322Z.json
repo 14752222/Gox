@@ -1,0 +1,38 @@
+{
+  "generated_at": "2026-10-28T01:03:39Z",
+  "runs": 25,
+  "warmup_runs": 3,
+  "method": "外部 wall time（bash EPOCHREALTIME, 微秒）; 交替采样 A/B; stdout 丢弃; 中位数 + 最小/最大; 预热 3 次（page cache 热）",
+  "toolchain": {
+    "go": "go1.27.3",
+    "goos": "linux",
+    "goarch": "amd64",
+    "commit": "a2e8935",
+    "commit_subject": "baseline: main @ 2a0e146 (snapshot via API)"
+  },
+  "host": {
+    "uname": "Linux 6.6.117-45.11.3.tl4.x86_64 x86_64",
+    "cpu": "AMD EPYC 9K65 192-Core Processor",
+    "cores": 32
+  },
+  "target": "linux/amd64",
+  "minimal_script_bytes": 90,
+  "big_script_bytes": 1059080,
+  "sizes_bytes": {
+    "gox_bare_default": { "raw": 28267288, "gzip": 14974180 },
+    "gox_bare_s_w": { "raw": 20358536, "gzip": 8324704 },
+    "single_file": { "raw": 15913223, "gzip": 6487637, "linkage": "dynamically linked" },
+    "single_file_static": { "raw": 15863968, "gzip": 6466562, "linkage": "statically linked" },
+    "single_file_1mib_script": { "raw": 16974087, "gzip": 6493212 }
+  },
+  "startup_us": {
+    "single_file": { "median": 4078, "min": 3559, "max": 4452 },
+    "gox_bare_s_w": { "median": 4215, "min": 3780, "max": 5084 },
+    "single_file_1mib_script": { "median": 8344, "min": 7759, "max": 15799 }
+  },
+  "delta_us": {
+    "single_vs_bare": -137,
+    "per_1mib_script": 4266
+  },
+  "skipped": []
+}

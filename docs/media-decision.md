@@ -58,12 +58,16 @@ softmedia 经 `gfx.SetPresentWrapper` 挂上（`cmd/gox/softmedia_init.go`，
 `//go:build linux`）。包装器链按注册顺序叠加，**先注册的包在里层**：
 
 ```
-平台 Surface → GPU 合成（-tags gpu） → 软媒体视频帧合成
+平台 Surface → GPU 上屏合成（-tags gpu，且适配器为硬件） → 软媒体视频帧合成
 ```
 
 软媒体把视频帧写进 `*image.RGBA`，GPU 再把这张图上屏 —— 顺序必须如此（反了软媒体
 就只能在 GPU 的纹理上写字，那需要另一套接口）。`gpu_present_init.go` 的文件名序在
 `softmedia_init.go` 之前，天然就是这个顺序；两个文件头都写了这条约定。
+
+这一层 GPU 只搬像素：输入是 CPU 光栅化好的 `*image.RGBA`，输出是全屏 quad + 脏区
+scissor，不做逐节点绘制、解码或 YUV 转换（`gfx/gpu/backend_wgpu.go:318`，
+`docs/video-decision.md` §2.1）。默认构建没有这一层。
 
 包装器（`mediaSurface`）只做三件事：
 
