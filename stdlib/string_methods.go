@@ -71,33 +71,132 @@ func thisStringValue(this object.Value, proto *object.Object) (*object.String, b
 	return nil, false
 }
 
+// thisStringCoerced 实现 RequireObjectCoercible(this) + ToString(this) 的组合，
+// 供 String.prototype 的**泛型**方法使用：split / trim / slice / indexOf /
+// replace / padStart / ... 的规范入口都是 ToString(RequireObjectCoercible(this))
+// —— this 是数字、布尔、String 包装对象甚至带自定义 toString 的普通对象时
+// 都要做强制转换，只有 null/undefined 必须抛 TypeError。
+//
+// 注意与 thisStringValue（ThisStringValue，不转换）是**两个不同的操作**，
+// 混用会直接丢用例（见 concat 的注释）。toString / valueOf / toLocaleString
+// 仍走 thisStringValue —— 规范对它们要求的就是 ThisStringValue。
+//
+// 参数 proto 传 String.prototype 本身：thisStringValue 需要它识别
+// "this 是 String.prototype" 的特殊情况（[[StringData]] 为空串）。
+func thisStringCoerced(this object.Value, proto *object.Object, method string) (*object.String, object.Value) {
+	if !requireObjectCoercible(this) {
+		return nil, thisTypeError("String", method, this)
+	}
+	if s, ok := thisStringValue(this, proto); ok {
+		return s, nil
+	}
+	return toPrimitiveToString(this)
+}
+
+// toPrimitiveToString 实现规范的 ToString（对象走 ToPrimitive(string 提示)），
+// 返回 (字符串, nil) 或 (nil, 应抛的错误)。
+//
+// 引擎尚无通用 ToPrimitive 协议：object.ToString 对"toString 返回对象"
+// **静默**回退 "[object Object]"（test262 replace/S15.5.4.11_A1_T15 一族
+// 要求 TypeError），也不走 valueOf / @@toPrimitive。这里在转换点按规范补齐：
+//
+//  1. Symbol → TypeError（ToString(Symbol) 规范即抛，test262
+//     *-as-symbol / exception-symbol 一族盯着它）；
+//  2. 普通对象 → @@toPrimitive(hint="string") 优先，其次 toString()，
+//     再 valueOf()；结果必须是**原始值**，否则 TypeError
+//     （OrdinaryToPrimitive 的对象结果 = 抛 TypeError，不是静默字符串化）；
+//  3. 其余（Array/Date/RegExp/原始值）→ object.ToString 的既有语义。
+func toPrimitiveToString(v object.Value) (*object.String, object.Value) {
+	u := object.UnwrapPrimitive(v)
+	if _, ok := u.(*object.Symbol); ok {
+		return nil, object.NewTypeError("Cannot convert a Symbol value to a string")
+	}
+	if obj, ok := u.(*object.Object); ok {
+		tv, errv := ordinaryToPrimitiveString(obj)
+		if errv != nil {
+			return nil, errv
+		}
+		u = tv
+	}
+	return object.NewString(object.ToString(u)), nil
+}
+
+// ordinaryToPrimitiveString 实现 ToPrimitive(O, string) 的完整顺序：
+// @@toPrimitive 优先（结果必须是原始值），否则 OrdinaryToPrimitive 的
+// toString → valueOf 两步。对象结果一律 TypeError。
+func ordinaryToPrimitiveString(obj *object.Object) (object.Value, object.Value) {
+	sym := object.GetGlobalSymbol("Symbol.toPrimitive")
+	if m, ok := obj.GetSymbolProperty(sym); ok && object.IsCallable(m) {
+		r := object.CallFunction(m, obj, object.NewString("string"))
+		// 回调抛错必须**立即**原样传播。回调桥出错时返回 UndefinedSingleton
+		// 而非 nil —— 不检查的话用户异常被吞、转换错误地拿到 "undefined"
+		// 继续往下跑（repeat/return-abrupt-from-this 实测因此 panic 且
+		// 污染同进程后续用例）。
+		if thr := callbackThrown(); thr != nil {
+			return nil, thr
+		}
+		if r == nil || isObjectValue(r) {
+			return nil, object.NewTypeError("Cannot convert object to primitive value")
+		}
+		return r, nil
+	}
+	for _, name := range []string{"toString", "valueOf"} {
+		if m, ok := obj.GetProperty(name); ok && object.IsCallable(m) {
+			r := object.CallFunction(m, obj)
+			if thr := callbackThrown(); thr != nil {
+				return nil, thr
+			}
+			// 结果必须是原始值。注意不能用 isObjectValue（array_methods 里
+			// 那个只认 *object.Object/Array/Date）—— RegExp/Function/Map 等
+			// 在 Gox 里是独立 Go 类型但**都是对象**，返回它们同样要抛
+			// TypeError（S15.5.4.11_A1_T15: toString 返回 /77/ 正则）。
+			if r != nil && isPrimitiveValue(r) {
+				return r, nil
+			}
+		}
+	}
+	return nil, object.NewTypeError("Cannot convert object to primitive value")
+}
+
+// isPrimitiveValue 报告值是否为规范意义的原始值（六大类型）。
+// Gox 把 RegExp/Function/Date/Array 等建成独立 Go 类型，"不是 *object.Object"
+// 不等于"是原始值"—— 必须白名单判断。
+func isPrimitiveValue(v object.Value) bool {
+	switch v.(type) {
+	case *object.String, *object.Number, *object.Boolean,
+		*object.BigInt, *object.Symbol, *object.Null, *object.Undefined:
+		return true
+	}
+	return false
+}
+
 // setupStringProto 创建 String.prototype 对象。
 func setupStringProto() *object.Object {
 	p := object.NewObject()
 
 	// toUpperCase()
 	p.SetBuiltinProperty("toUpperCase", object.NewBuiltinMethod("toUpperCase", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := this.(*object.String)
-		if !ok {
-			return thisTypeError("String", "toUpperCase", this)
+		s, errv := thisStringCoerced(this, p, "toUpperCase")
+		if errv != nil {
+			return errv
 		}
 		return object.NewString(strings.ToUpper(s.Value))
 	}))
 
 	// toLowerCase()
 	p.SetBuiltinProperty("toLowerCase", object.NewBuiltinMethod("toLowerCase", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := this.(*object.String)
-		if !ok {
-			return thisTypeError("String", "toLowerCase", this)
+		s, errv := thisStringCoerced(this, p, "toLowerCase")
+		if errv != nil {
+			return errv
 		}
 		return object.NewString(strings.ToLower(s.Value))
 	}))
 
 	// charAt(index): 按 UTF-16 码元索引，越界返回空串
 	p.SetBuiltinProperty("charAt", object.NewBuiltinMethod("charAt", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := this.(*object.String)
-		if !ok {
-			return thisTypeError("String", "charAt", this)
+		s, errv := thisStringCoerced(this, p, "charAt")
+		if errv != nil {
+			return errv
 		}
 		idx := 0
 		if len(args) > 0 {
@@ -112,9 +211,9 @@ func setupStringProto() *object.Object {
 
 	// charCodeAt(index): 按 UTF-16 码元索引，越界返回 NaN
 	p.SetBuiltinProperty("charCodeAt", object.NewBuiltinMethod("charCodeAt", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := this.(*object.String)
-		if !ok {
-			return thisTypeError("String", "charCodeAt", this)
+		s, errv := thisStringCoerced(this, p, "charCodeAt")
+		if errv != nil {
+			return errv
 		}
 		idx := 0
 		if len(args) > 0 {
@@ -130,9 +229,9 @@ func setupStringProto() *object.Object {
 
 	// codePointAt(index): 返回完整的 Unicode 码点 (代理对会合并)
 	p.SetBuiltinProperty("codePointAt", object.NewBuiltinMethod("codePointAt", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := this.(*object.String)
-		if !ok {
-			return thisTypeError("String", "codePointAt", this)
+		s, errv := thisStringCoerced(this, p, "codePointAt")
+		if errv != nil {
+			return errv
 		}
 		idx := 0
 		if len(args) > 0 {
@@ -155,9 +254,9 @@ func setupStringProto() *object.Object {
 
 	// split(separator, limit)
 	p.SetBuiltinProperty("split", object.NewBuiltinMethod("split", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := this.(*object.String)
-		if !ok {
-			return thisTypeError("String", "split", this)
+		s, errv := thisStringCoerced(this, p, "split")
+		if errv != nil {
+			return errv
 		}
 		// 无分隔符: 返回整个字符串作为唯一元素
 		if len(args) < 1 || isUndefinedValue(args[0]) {
@@ -185,7 +284,14 @@ func setupStringProto() *object.Object {
 
 		sep, isStr := args[0].(*object.String)
 		if !isStr {
-			sep = object.NewString(toStr(args[0]))
+			// 规范: ToString(separator) 走 ToPrimitive(string) —— toString
+			// 返回对象时必须抛 TypeError, 不能静默字符串化
+			// (split/transferred-to-number-separator-override-tostring-returns-regexp)。
+			sv, errv := toPrimitiveToString(args[0])
+			if errv != nil {
+				return errv
+			}
+			sep = sv
 		}
 		// 空分隔符: 按 UTF-16 码元逐个拆分
 		if sep.Value == "" {
@@ -213,9 +319,9 @@ func setupStringProto() *object.Object {
 
 	// substring(start, end): 负数按 0 处理，start > end 时自动交换
 	p.SetBuiltinProperty("substring", object.NewBuiltinMethod("substring", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := this.(*object.String)
-		if !ok {
-			return thisTypeError("String", "substring", this)
+		s, errv := thisStringCoerced(this, p, "substring")
+		if errv != nil {
+			return errv
 		}
 		n := object.UTF16Len(s.Value)
 		start := 0
@@ -234,9 +340,9 @@ func setupStringProto() *object.Object {
 
 	// slice(start, end): 支持负索引 (从末尾倒数)
 	p.SetBuiltinProperty("slice", object.NewBuiltinMethod("slice", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := this.(*object.String)
-		if !ok {
-			return thisTypeError("String", "slice", this)
+		s, errv := thisStringCoerced(this, p, "slice")
+		if errv != nil {
+			return errv
 		}
 		n := object.UTF16Len(s.Value)
 		start := 0
@@ -255,9 +361,9 @@ func setupStringProto() *object.Object {
 
 	// indexOf(searchString, fromIndex): 返回码元索引，未找到返回 -1
 	p.SetBuiltinProperty("indexOf", object.NewBuiltinMethod("indexOf", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := this.(*object.String)
-		if !ok {
-			return thisTypeError("String", "indexOf", this)
+		s, errv := thisStringCoerced(this, p, "indexOf")
+		if errv != nil {
+			return errv
 		}
 		if len(args) < 1 {
 			return object.NewNumber(-1)
@@ -274,9 +380,9 @@ func setupStringProto() *object.Object {
 
 	// lastIndexOf(searchString, fromIndex): 从后向前查找
 	p.SetBuiltinProperty("lastIndexOf", object.NewBuiltinMethod("lastIndexOf", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := this.(*object.String)
-		if !ok {
-			return thisTypeError("String", "lastIndexOf", this)
+		s, errv := thisStringCoerced(this, p, "lastIndexOf")
+		if errv != nil {
+			return errv
 		}
 		if len(args) < 1 {
 			return object.NewNumber(-1)
@@ -300,9 +406,9 @@ func setupStringProto() *object.Object {
 
 	// includes(searchString, fromIndex)
 	p.SetBuiltinProperty("includes", object.NewBuiltinMethod("includes", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := this.(*object.String)
-		if !ok {
-			return thisTypeError("String", "includes", this)
+		s, errv := thisStringCoerced(this, p, "includes")
+		if errv != nil {
+			return errv
 		}
 		if len(args) < 1 {
 			return object.NewBoolean(false)
@@ -317,9 +423,9 @@ func setupStringProto() *object.Object {
 
 	// startsWith(searchString, position)
 	p.SetBuiltinProperty("startsWith", object.NewBuiltinMethod("startsWith", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := this.(*object.String)
-		if !ok {
-			return thisTypeError("String", "startsWith", this)
+		s, errv := thisStringCoerced(this, p, "startsWith")
+		if errv != nil {
+			return errv
 		}
 		if len(args) < 1 {
 			return object.NewBoolean(false)
@@ -335,9 +441,9 @@ func setupStringProto() *object.Object {
 
 	// endsWith(searchString, endPosition)
 	p.SetBuiltinProperty("endsWith", object.NewBuiltinMethod("endsWith", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := this.(*object.String)
-		if !ok {
-			return thisTypeError("String", "endsWith", this)
+		s, errv := thisStringCoerced(this, p, "endsWith")
+		if errv != nil {
+			return errv
 		}
 		if len(args) < 1 {
 			return object.NewBoolean(false)
@@ -353,18 +459,18 @@ func setupStringProto() *object.Object {
 
 	// trim()
 	p.SetBuiltinProperty("trim", object.NewBuiltinMethod("trim", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := this.(*object.String)
-		if !ok {
-			return thisTypeError("String", "trim", this)
+		s, errv := thisStringCoerced(this, p, "trim")
+		if errv != nil {
+			return errv
 		}
 		return object.NewString(strings.Trim(s.Value, jsWhitespace))
 	}))
 
 	// trimStart() / trimLeft()
 	trimStartFn := object.NewBuiltinMethod("trimStart", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := this.(*object.String)
-		if !ok {
-			return thisTypeError("String", "trimStart", this)
+		s, errv := thisStringCoerced(this, p, "trimStart")
+		if errv != nil {
+			return errv
 		}
 		return object.NewString(strings.TrimLeft(s.Value, jsWhitespace))
 	})
@@ -375,9 +481,9 @@ func setupStringProto() *object.Object {
 	// 运行时不引入 ICU 依赖，NFC/NFD/NFKC/NFKD 统一近似为原样返回
 	// (对已归一化的源文本行为正确)。
 	p.SetBuiltinProperty("normalize", object.NewBuiltinMethod("normalize", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := this.(*object.String)
-		if !ok {
-			return thisTypeError("String", "normalize", this)
+		s, errv := thisStringCoerced(this, p, "normalize")
+		if errv != nil {
+			return errv
 		}
 		if len(args) > 0 && !isUndefinedValue(args[0]) {
 			form := toStr(args[0])
@@ -392,27 +498,27 @@ func setupStringProto() *object.Object {
 
 	// isWellFormed() (ES2024): 不含孤立代理项时为 true
 	p.SetBuiltinProperty("isWellFormed", object.NewBuiltinMethod("isWellFormed", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := this.(*object.String)
-		if !ok {
-			return thisTypeError("String", "isWellFormed", this)
+		s, errv := thisStringCoerced(this, p, "isWellFormed")
+		if errv != nil {
+			return errv
 		}
 		return object.NewBoolean(!object.HasLoneSurrogates(s.Value))
 	}))
 
 	// toWellFormed() (ES2024): 孤立代理项替换为 U+FFFD
 	p.SetBuiltinProperty("toWellFormed", object.NewBuiltinMethod("toWellFormed", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := this.(*object.String)
-		if !ok {
-			return thisTypeError("String", "toWellFormed", this)
+		s, errv := thisStringCoerced(this, p, "toWellFormed")
+		if errv != nil {
+			return errv
 		}
 		return object.NewString(object.ReplaceLoneSurrogates(s.Value))
 	}))
 
 	// trimEnd() / trimRight()
 	trimEndFn := object.NewBuiltinMethod("trimEnd", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := this.(*object.String)
-		if !ok {
-			return thisTypeError("String", "trimEnd", this)
+		s, errv := thisStringCoerced(this, p, "trimEnd")
+		if errv != nil {
+			return errv
 		}
 		return object.NewString(strings.TrimRight(s.Value, jsWhitespace))
 	})
@@ -421,16 +527,15 @@ func setupStringProto() *object.Object {
 
 	// replace(searchValue, replaceValue | replaceFn)
 	p.SetBuiltinProperty("replace", object.NewBuiltinMethod("replace", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := this.(*object.String)
-		if !ok {
-			return thisTypeError("String", "replace", this)
+		s, errv := thisStringCoerced(this, p, "replace")
+		if errv != nil {
+			return errv
 		}
 		if len(args) < 2 {
 			return s
 		}
 		// 处理 RegExp 搜索
 		if re, isRe := args[0].(*object.RegExp); isRe {
-			replacement := toStr(args[1])
 			if object.IsCallable(args[1]) {
 				fn := args[1]
 				if re.Global {
@@ -448,6 +553,13 @@ func setupStringProto() *object.Object {
 				r := object.CallFunction(fn, object.UndefinedSingleton, object.NewString(matchStr))
 				return object.NewString(s.Value[:loc[0]] + toStr(r) + s.Value[loc[1]:])
 			}
+			// 规范: ToString(replaceValue) 走 ToPrimitive(string), 返回对象
+			// (如 toString 返回函数) 必须抛 TypeError (S15.5.4.11_A1_T16)。
+			rpl, errv := toPrimitiveToString(args[1])
+			if errv != nil {
+				return errv
+			}
+			replacement := rpl.Value
 			// 字符串替换: 展开 $1/$2/$&/$$ 捕获组
 			if re.Global {
 				locs := re.Regexp.FindAllStringSubmatchIndex(s.Value, -1)
@@ -475,7 +587,13 @@ func setupStringProto() *object.Object {
 			return object.NewString(s.Value[:loc[0]] + replacementStr + s.Value[loc[1]:])
 		}
 
-		search := toStr(args[0])
+		// 规范: ToString(searchValue) 走 ToPrimitive(string) —— toString 返回
+		// 对象时必须抛 TypeError, 不能静默字符串化 (S15.5.4.11_A1_T15/T16)。
+		sv, errv := toPrimitiveToString(args[0])
+		if errv != nil {
+			return errv
+		}
+		search := sv.Value
 		// 函数回调: replace("pattern", (match) => replacement)
 		if object.IsCallable(args[1]) {
 			fn := args[1]
@@ -493,9 +611,18 @@ func setupStringProto() *object.Object {
 
 	// replaceAll(searchValue, replaceValue | replaceFn)
 	p.SetBuiltinProperty("replaceAll", object.NewBuiltinMethod("replaceAll", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := this.(*object.String)
-		if !ok {
-			return thisTypeError("String", "replaceAll", this)
+		// 规范（2021 修订）: searchValue 的 IsRegExp/flags 检查先于 ToString(this)
+		// —— 本用例的 this 是 toString 即抛毒的对象, flags 检查必须先发生
+		// (test262 replaceAll/searchValue-flags-no-g-throws)。
+		if len(args) > 0 {
+			if re, isRe := args[0].(*object.RegExp); isRe && !re.Global {
+				return object.NewErrorWithName("TypeError",
+					"String.prototype.replaceAll called with a non-global RegExp argument")
+			}
+		}
+		s, errv := thisStringCoerced(this, p, "replaceAll")
+		if errv != nil {
+			return errv
 		}
 		if len(args) < 2 {
 			return s
@@ -547,9 +674,9 @@ func setupStringProto() *object.Object {
 
 	// repeat(count): 负数抛 RangeError，Infinity 亦为非法长度
 	p.SetBuiltinProperty("repeat", object.NewBuiltinMethod("repeat", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := this.(*object.String)
-		if !ok {
-			return thisTypeError("String", "repeat", this)
+		s, errv := thisStringCoerced(this, p, "repeat")
+		if errv != nil {
+			return errv
 		}
 		c := float64(0)
 		if len(args) > 0 {
@@ -561,7 +688,11 @@ func setupStringProto() *object.Object {
 		if math.IsNaN(c) {
 			c = 0
 		}
-		count := int(toInt(args[0]))
+		// count 省略 = 0; 旧代码直接 args[0], "".repeat() 无参会 panic
+		count := 0
+		if len(args) > 0 {
+			count = int(toInt(args[0]))
+		}
 		if count < 0 {
 			return object.NewErrorWithName("RangeError", "Invalid count value: must be non-negative")
 		}
@@ -573,9 +704,9 @@ func setupStringProto() *object.Object {
 
 	// padStart(targetLength, padString)
 	p.SetBuiltinProperty("padStart", object.NewBuiltinMethod("padStart", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := this.(*object.String)
-		if !ok {
-			return thisTypeError("String", "padStart", this)
+		s, errv := thisStringCoerced(this, p, "padStart")
+		if errv != nil {
+			return errv
 		}
 		targetLen := 0
 		if len(args) > 0 {
@@ -602,9 +733,9 @@ func setupStringProto() *object.Object {
 
 	// padEnd(targetLength, padString)
 	p.SetBuiltinProperty("padEnd", object.NewBuiltinMethod("padEnd", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := this.(*object.String)
-		if !ok {
-			return thisTypeError("String", "padEnd", this)
+		s, errv := thisStringCoerced(this, p, "padEnd")
+		if errv != nil {
+			return errv
 		}
 		targetLen := 0
 		if len(args) > 0 {
@@ -697,9 +828,9 @@ func setupStringProto() *object.Object {
 
 	// at(index): 支持负索引 (-1 表示最后一个码元)
 	p.SetBuiltinProperty("at", object.NewBuiltinMethod("at", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := this.(*object.String)
-		if !ok {
-			return thisTypeError("String", "at", this)
+		s, errv := thisStringCoerced(this, p, "at")
+		if errv != nil {
+			return errv
 		}
 		idx := int64(0)
 		if len(args) > 0 {
@@ -721,9 +852,9 @@ func setupStringProto() *object.Object {
 
 	// match(regexp): 匹配正则表达式，无匹配返回 null
 	p.SetBuiltinProperty("match", object.NewBuiltinMethod("match", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := this.(*object.String)
-		if !ok {
-			return thisTypeError("String", "match", this)
+		s, errv := thisStringCoerced(this, p, "match")
+		if errv != nil {
+			return errv
 		}
 		if len(args) == 0 {
 			return object.NullSingleton
@@ -761,9 +892,9 @@ func setupStringProto() *object.Object {
 
 	// matchAll(regexp): 返回所有匹配（规范为迭代器，这里简化为数组）
 	p.SetBuiltinProperty("matchAll", object.NewBuiltinMethod("matchAll", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := this.(*object.String)
-		if !ok {
-			return thisTypeError("String", "matchAll", this)
+		s, errv := thisStringCoerced(this, p, "matchAll")
+		if errv != nil {
+			return errv
 		}
 		if len(args) == 0 {
 			return object.NewArray([]object.Value{})
@@ -798,9 +929,9 @@ func setupStringProto() *object.Object {
 
 	// search(regexp): 返回第一个匹配的码元索引，未找到返回 -1
 	p.SetBuiltinProperty("search", object.NewBuiltinMethod("search", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := this.(*object.String)
-		if !ok {
-			return thisTypeError("String", "search", this)
+		s, errv := thisStringCoerced(this, p, "search")
+		if errv != nil {
+			return errv
 		}
 		if len(args) == 0 {
 			return object.NewNumber(-1)

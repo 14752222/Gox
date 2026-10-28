@@ -13,7 +13,7 @@ func setupNumberProto() *object.Object {
 
 	// toFixed(digits): 返回固定小数位数的字符串表示
 	p.SetBuiltinProperty("toFixed", object.NewBuiltinMethod("toFixed", func(this object.Value, args ...object.Value) object.Value {
-		num, ok := this.(*object.Number)
+		num, ok := object.UnwrapPrimitive(this).(*object.Number)
 		if !ok {
 			return thisTypeError("Number", "toFixed", this)
 		}
@@ -38,7 +38,7 @@ func setupNumberProto() *object.Object {
 
 	// toPrecision(precision): 返回指定精度的字符串表示
 	p.SetBuiltinProperty("toPrecision", object.NewBuiltinMethod("toPrecision", func(this object.Value, args ...object.Value) object.Value {
-		num, ok := this.(*object.Number)
+		num, ok := object.UnwrapPrimitive(this).(*object.Number)
 		if !ok {
 			return thisTypeError("Number", "toPrecision", this)
 		}
@@ -63,7 +63,7 @@ func setupNumberProto() *object.Object {
 
 	// toString(radix): 将数字转换为指定进制的字符串
 	p.SetBuiltinProperty("toString", object.NewBuiltinMethod("toString", func(this object.Value, args ...object.Value) object.Value {
-		num, ok := this.(*object.Number)
+		num, ok := object.UnwrapPrimitive(this).(*object.Number)
 		if !ok {
 			return thisTypeError("Number", "toString", this)
 		}
@@ -121,7 +121,7 @@ func setupNumberProto() *object.Object {
 	// toLocaleString(): 本运行时无 Intl, 规范 21.1.3.4 的回退即
 	// ToString(thisNumber) —— 但 this 必须是 Number (校验同 toString)。
 	p.SetBuiltinProperty("toLocaleString", object.NewBuiltinMethod("toLocaleString", func(this object.Value, args ...object.Value) object.Value {
-		num, ok := this.(*object.Number)
+		num, ok := object.UnwrapPrimitive(this).(*object.Number)
 		if !ok {
 			return thisTypeError("Number", "toLocaleString", this)
 		}
@@ -130,7 +130,7 @@ func setupNumberProto() *object.Object {
 
 	// toExponential(fractionDigits): 返回指数表示法字符串
 	p.SetBuiltinProperty("toExponential", object.NewBuiltinMethod("toExponential", func(this object.Value, args ...object.Value) object.Value {
-		num, ok := this.(*object.Number)
+		num, ok := object.UnwrapPrimitive(this).(*object.Number)
 		if !ok {
 			return thisTypeError("Number", "toExponential", this)
 		}

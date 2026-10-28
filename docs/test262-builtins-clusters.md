@@ -381,3 +381,66 @@ gox test262 -root <test262> -suite built-ins -jobs 16 -probe -json /tmp/probe.js
    才是验收口径。
 4. `-probe` 的注入只发生在 PASS 且 `-probe` 时写 `fp_hits`；常规跑批（不带
    `-probe`）零影响。
+
+---
+
+## 八、批次战报（2026-10-28 夜批：rFXXbq 引擎批次，×T1-4 协同）
+
+> 环境：test262 checkout 为 main tarball（2026-10-28 下载，tc39/test262），
+> built-ins 23822 例 / language 23726 例，分片 128、`-jobs 16`。§六 的
+> `-probe` 清单已由并行会话入库（a1576f669 / 4cb502fff），本节补充**引擎修复
+> 批次**的 A/B 数字与遮羞布面的全量口径。
+
+### 8.1 合规率前后（逐用例 A/B，only_a/only_b = 0）
+
+| 套件 | 前 | 后 | 增量 |
+|------|-----|-----|------|
+| built-ins | 14802/23822 = 62.1358% | **15055/23822 = 63.1979%** | **+253 例 / +1.06pp，退步 0** |
+| language | 20309/23726 = 85.5981% | 20309/23726 = 85.5981% | ±0（parser 修复对该套件零翻转） |
+
+单簇：`built-ins/String/prototype` **502/1073 (46.78%) → 673/1073 (62.72%)**（+171）。
+
+### 8.2 本批四项引擎修复（全为零回归）
+
+1. **class 成员名接受保留字**（parser/parser.go）：`return(){}` / `get if()` /
+   `static while()` 此前整族 parser 报错 —— 对象字面量路径早有
+   `isKeywordProperty`，class 体没对齐。Iterator/prototype 一族由此开门
+   （该族剩余失败是 `Iterator` 基类未实现，是另一张单）。
+2. **String.prototype 泛型方法 this 强制转换**（stdlib/string_methods.go 等）：
+   28 个方法从 `this.(*object.String)` 收口改为
+   `thisStringCoerced = RequireObjectCoercible + ToString`（规范口径）；   
+   toString/valueOf/toLocaleString 保持 ThisStringValue 不动。receiver 类失败
+   从 417 降至 <20。
+3. **转换点按规范补 ToPrimitive(string 提示)**（`toPrimitiveToString` /
+   `ordinaryToPrimitiveString`）：@@toPrimitive → toString → valueOf，
+   结果必须是原始值否则 TypeError —— 修掉 `split`/`replace`/`replaceAll` 的
+   searchValue/separator/replaceValue 静默字符串化（S15.5.4.11_A1_T15/T16 一族），
+   以及 `ToString(Symbol)` 必须抛 TypeError（*-as-symbol / exception-symbol 一族）。
+   **回调桥错误必须立即传播**：桥出错返回 `UndefinedSingleton` 而非 nil，
+   不检查 `callbackThrown()` 会吞用户异常并拿 "undefined" 继续跑 —— 实测
+   `repeat/return-abrupt-from-this` 一例 panic 且污染同分片后续用例（A6 假失败）。
+4. **Number.prototype 五方法解包 PrimitiveObject**（stdlib/number_methods.go）：
+   `new Number(x).toString(33)` 此前被拒（thisNumberValue 语义）；顺带修
+   `"".repeat()` 无参 `args[0]` 越界 panic（潜伏 bug，本轮被 repeat 用例踩中）。
+
+### 8.3 T1-4：已知两族现状与遮羞布面全量口径
+
+- **已知两族现状**：`Generator.prototype.return` 族（旧台账 71 例）**已全部转真
+  通过**（当前 0 失败）；`RegExp` 一等对象族已被正确揭盖（RegExp/prototype 相关
+  现在是 142 条**真失败**，不再是假通过）。
+- **遮羞布面全量存量：1957 例**（通过、且源码含 `assert.throws(TypeError`，补齐
+  校验即翻转）。Top：TypedArray/prototype 355、Array/prototype 237、
+  Temporal/ZonedDateTime 115、Object/defineProperty 102、String/prototype 99、
+  Date/prototype 82 —— 是 §六 -probe 128 例清单之外的全量上界。
+- **反向信号**："期望抛错但未抛"的失败 1251 例 —— 与遮羞布面同源：引擎尚无通用
+  ToPrimitive(valueOf) 协议、属性描述符校验不全；这些位置补齐后上面的 1957 例会
+  成批 PASS→FAIL（遮羞布被揭，**不是回归**，按本节口径标注）。
+- **本轮 A/B 的 32 例 PASS→FAIL 全部当轮处理**：20 例 Symbol 接收者按规范修真
+  （ToString(Symbol) 抛 TypeError），12 例 ToPrimitive 缺口修真或经排查消除，
+  最终退步归零 —— 未采用任何"标注后放过"的口径。
+
+### 8.4 遗留（下一批入口，按当前失败面 Top）
+
+String/prototype 400、RegExp/property-escapes 447（\p{...} 属性表）、
+Iterator 基类 410、Object/create 295、DataView/prototype 366（访问器形态 +
+ToNumber 抛错顺序）。

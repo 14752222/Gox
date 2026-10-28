@@ -81,9 +81,10 @@ func setupSymbolIteratorMembers(env *runtime.Environment) {
 	if p, ok := ctorProtoOf(env, "String"); ok {
 		object.SetWellKnownSymbolMethod(p, sym,
 			object.NewBuiltinMethod("[Symbol.iterator]", func(this object.Value, args ...object.Value) object.Value {
-				s, ok := this.(*object.String)
-				if !ok {
-					return thisTypeError("String", "[Symbol.iterator]", this)
+				proto, _ := p.(*object.Object)
+				s, errv := thisStringCoerced(this, proto, "[Symbol.iterator]")
+				if errv != nil {
+					return errv
 				}
 				return object.NewStringCodePointIterator(s)
 			}))

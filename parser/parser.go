@@ -4807,6 +4807,7 @@ func (p *Parser) parseClassMember() *ast.ClassMethod {
 	if p.curTokenIs(lexer.IDENTIFIER) && !p.curToken().IdentHasEscape &&
 		(p.curToken().Literal == "get" || p.curToken().Literal == "set") &&
 		((p.peekTokenIs(lexer.IDENTIFIER) && p.peek2TokenIs(lexer.LPAREN)) ||
+			(isKeywordProperty(p.peekToken().Type) && p.peek2TokenIs(lexer.LPAREN)) ||
 			p.peekTokenIs(lexer.LBRACKET)) {
 		isGet := p.curToken().Literal == "get"
 		if isGet {
@@ -4880,8 +4881,13 @@ func (p *Parser) parseClassMember() *ast.ClassMethod {
 	// 成员名允许 IDENTIFIER 以及 `async` / `await` (二者在 sloppy 下可作
 	// IdentifierName; 之前只认 IDENTIFIER, 于是 `async async(){}` /
 	// `async(){}` 都在此被拒 —— r81aQt)。
+	// 成员名是 IdentifierName, 还允许一切保留字 (test262
+	// Iterator/prototype 一族大量出现 `return(){}` 方法 —— 保留字在
+	// PropertyName 位置合法, class 体此前只认 IDENTIFIER 导致整族
+	// parser 报错; 对象字面量路径早有 isKeywordProperty, 这里对齐)。
 	if member.ComputedKey != nil || p.curTokenIs(lexer.IDENTIFIER) ||
-		p.curTokenIs(lexer.ASYNC) || p.curTokenIs(lexer.AWAIT) {
+		p.curTokenIs(lexer.ASYNC) || p.curTokenIs(lexer.AWAIT) ||
+		isKeywordProperty(p.curToken().Type) {
 		if member.ComputedKey == nil {
 			member.Name = p.curToken().Literal
 			p.nextToken()
