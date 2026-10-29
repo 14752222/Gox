@@ -198,6 +198,30 @@ func regExpBuiltinExec(re *object.RegExp, input string) object.Value {
 	arr.SetProperty("index", object.NewNumber(float64(loc[0]+lastIndex)))
 	arr.SetProperty("input", object.NewString(input))
 
+	// d (hasIndices): 附带 indices 匹配位置数组 —— 0 号为整匹配, i 号为第 i
+	// 个捕获组的 [start, end] (未参与的组为 undefined); 元素相对整个 input
+	// 取绝对偏移 (与 result.index 同口径)。
+	if re.HasIndices {
+		indices := make([]object.Value, 0, len(loc)/2)
+		pair := func(s, e int) object.Value {
+			return object.NewArray([]object.Value{
+				object.NewNumber(float64(s + lastIndex)),
+				object.NewNumber(float64(e + lastIndex)),
+			})
+		}
+		indices = append(indices, pair(loc[0], loc[1]))
+		for i := 1; i < len(loc)/2; i++ {
+			if loc[i*2] >= 0 {
+				indices = append(indices, pair(loc[i*2], loc[i*2+1]))
+			} else {
+				indices = append(indices, object.UndefinedSingleton)
+			}
+		}
+		indicesArr := object.NewArray(indices)
+		indicesArr.SetProperty("groups", object.UndefinedSingleton)
+		arr.SetProperty("indices", indicesArr)
+	}
+
 	if re.Global || re.Sticky {
 		if !re.SetLastIndexStrict(loc[1] + lastIndex) {
 			return lastIndexTypeError()

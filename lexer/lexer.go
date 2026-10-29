@@ -534,7 +534,10 @@ func (l *Lexer) scanRegexLiteral(line, col int) Token {
 // isRegexFlag 判断字符是否为有效的正则标志。
 func isRegexFlag(ch rune) bool {
 	switch ch {
-	case 'g', 'i', 'm', 's', 'u', 'y':
+	// 注意: 暂不收录 'v' (unicodeSets)。引擎尚不支持 v 模式类集合语法,
+	// 若词法层放行 /…/v 字面量, 本应解析期报错的负测试会推迟到运行期报错,
+	// 导致 built-ins/RegExp/prototype/unicodeSets 批量回归。
+	case 'd', 'g', 'i', 'm', 's', 'u', 'y':
 		return true
 	}
 	return false

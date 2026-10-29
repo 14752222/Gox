@@ -1253,6 +1253,56 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 					Value: ctor, Writable: true, Enumerable: false, Configurable: true,
 				})
 			}
+		// 对象字面量数据属性定义 (CreateDataProperty): 自有、enumerable/
+		// writable/configurable 全 true。不走原型链, 因此键名 "__proto__"
+		// (shorthand 或方法形式) 不会误触发 Object.prototype.__proto__ 访问器。
+		case bytecode.OP_DEF_PROP:
+			val := vm.stack.Pop()
+			obj := vm.stack.Peek()
+			propName := ""
+			if s, ok := frame.Constants.Get(operand).(*object.String); ok {
+				propName = s.Value
+			}
+			if o, ok := obj.(*object.Object); ok {
+				o.DefineOwnProperty(propName, object.PropertyDescriptor{
+					Value: val, Writable: true, Enumerable: true, Configurable: true,
+				})
+			} else if proxy, pok := obj.(*object.Proxy); pok {
+				if err := vm.proxySet(proxy, propName, val, obj); err != nil {
+					if terr := vm.rethrowBridgeError(err); terr != nil {
+						return terr
+					}
+					continue
+				}
+			}
+		case bytecode.OP_DEF_PROP_DYN:
+			val := vm.stack.Pop()
+			key := vm.stack.Pop()
+			obj := vm.stack.Peek()
+			if o, ok := obj.(*object.Object); ok {
+				if sym, sok := key.(*object.Symbol); sok {
+					if o.SymbolProperties == nil {
+						o.SymbolProperties = make(map[uint64]object.PropertyDescriptor)
+					}
+					if _, exists := o.SymbolProperties[sym.ID]; !exists {
+						o.SymbolKeyList = append(o.SymbolKeyList, sym)
+					}
+					o.SymbolProperties[sym.ID] = object.DataProperty(val)
+				} else {
+					name := toJSString(key)
+					o.DefineOwnProperty(name, object.PropertyDescriptor{
+						Value: val, Writable: true, Enumerable: true, Configurable: true,
+					})
+				}
+			} else if proxy, pok := obj.(*object.Proxy); pok {
+				pname := toJSString(key)
+				if err := vm.proxySet(proxy, pname, val, obj); err != nil {
+					if terr := vm.rethrowBridgeError(err); terr != nil {
+						return terr
+					}
+					continue
+				}
+			}
 		case bytecode.OP_SET_PROP:
 			val := vm.stack.Pop()
 			obj := vm.stack.Peek() // 保留对象在栈上

@@ -1926,8 +1926,9 @@ func (c *Compiler) compileObjectLiteral(node *ast.ObjectLiteral) error {
 			} // [obj, obj, val, key]
 			// SWAP → [obj, obj, key, val]
 			c.emitter.EmitNoOperand(bytecode.OP_SWAP)
-			// SET_INDEX → pops val, key, obj; pushes val → [obj, val]
-			c.emitter.EmitNoOperand(bytecode.OP_SET_INDEX)
+			// DEF_PROP_DYN → pops val, key, obj (CreateDataProperty 自有属性,
+			// 见 opcode.go OP_DEF_PROP_DYN 说明); pushes val → [obj, val]
+			c.emitter.EmitNoOperand(bytecode.OP_DEF_PROP_DYN)
 			// POP val → [obj]
 			c.emitter.EmitNoOperand(bytecode.OP_POP)
 		} else if prop.Kind == ast.PROP_GETTER || prop.Kind == ast.PROP_SETTER {
@@ -1993,9 +1994,17 @@ func (c *Compiler) compileObjectLiteral(node *ast.ObjectLiteral) error {
 			if err != nil {
 				return err
 			} // [obj, val]
-			// 设置属性
+			// 设置属性: 数据属性按 CreateDataProperty 语义定义为自有属性,
+			// 不能走 OP_SET_PROP (OrdinarySet) —— 否则键名 "__proto__" 会沿
+			// 原型链命中 Object.prototype.__proto__ 访问器。B.3.1 规定只有
+			// `__proto__ : AssignmentExpression` 字面形式才触发原型设值,
+			// shorthand / 方法 / 其他数据属性一律是普通自有属性。
 			idx := c.constants.AddConstant(object.NewString(keyName))
-			c.emitter.Emit(bytecode.OP_SET_PROP, idx) // [obj]
+			if protoSetter {
+				c.emitter.Emit(bytecode.OP_SET_PROP, idx) // [obj]
+			} else {
+				c.emitter.Emit(bytecode.OP_DEF_PROP, idx) // [obj]
+			}
 		}
 	}
 	return nil

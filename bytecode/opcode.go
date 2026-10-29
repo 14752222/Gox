@@ -446,6 +446,18 @@ const (
 	// "Cannot convert a BigInt value to a number"。
 	OP_INC Opcode = 0xF7
 	OP_DEC Opcode = 0xF8
+
+	// OP_DEF_PROP / OP_DEF_PROP_DYN: 对象字面量数据属性定义 (CreateDataProperty
+	// 语义, enumerable/writable/configurable 全 true)。区别于 OP_SET_PROP 的
+	// OrdinarySet: 后者会沿原型链命中 Object.prototype.__proto__ 访问器, 导致
+	// { ['__proto__']: v } 与 { __proto__, } (shorthand) 错误地改写对象原型
+	// 而非建立自有属性 (B.3.1: 仅 __proto__ : AssignmentExpression 字面形式
+	// 才触发原型设值)。
+	//
+	// OP_DEF_PROP 栈: [obj, val] → [obj], 键名取常量池 operand。
+	// OP_DEF_PROP_DYN 栈: [obj, key, val] → [obj], 键为运行期值 (计算键)。
+	OP_DEF_PROP     Opcode = 0xF9
+	OP_DEF_PROP_DYN Opcode = 0xFA
 )
 
 // InstructionSize 是每条指令的字节长度 (固定 3 字节)。
@@ -493,6 +505,7 @@ var opcodeNames = map[Opcode]string{
 	OP_NEW_TARGET_MARK:    "NEW_TARGET_MARK",
 	OP_NEW_ARRAY: "NEW_ARRAY", OP_NEW_OBJECT: "NEW_OBJECT",
 	OP_GET_PROP: "GET_PROP", OP_SET_PROP: "SET_PROP",
+	OP_DEF_PROP: "DEF_PROP", OP_DEF_PROP_DYN: "DEF_PROP_DYN",
 	OP_GET_INDEX: "GET_INDEX", OP_SET_INDEX: "SET_INDEX",
 	OP_ARRAY_PUSH: "ARRAY_PUSH", OP_ARRAY_SPREAD: "ARRAY_SPREAD", OP_ARRAY_SLICE: "ARRAY_SLICE",
 	OP_OBJECT_SPREAD: "OBJECT_SPREAD",

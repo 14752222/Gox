@@ -27,6 +27,7 @@ type RegExp struct {
 	DotAll     bool           // s 标志
 	Sticky     bool           // y 标志 (粘性匹配)
 	Unicode    bool           // u 标志
+	HasIndices bool           // d 标志 (匹配位置索引)
 	mu         sync.Mutex
 	LastIndex  int // 上次匹配位置 (g/y 标志使用)
 
@@ -93,6 +94,8 @@ func (r *RegExp) GetProperty(name string) (Value, bool) {
 		return NewBoolean(r.Sticky), true
 	case "unicode":
 		return NewBoolean(r.Unicode), true
+	case "hasIndices":
+		return NewBoolean(r.HasIndices), true
 	case "lastIndex":
 		// 事实来源始终是 LastIndex 字段 (描述符只承载可写性等元数据),
 		// 二者在 DefineOwn / SetProperty 处保持同步。
@@ -278,6 +281,9 @@ func NewRegExp(pattern, flags string) (*RegExp, error) {
 		case 'u':
 			// u (unicode): 按 Unicode 码点处理模式
 			r.Unicode = true
+		case 'd':
+			// d (hasIndices): exec 结果附带 indices 匹配位置
+			r.HasIndices = true
 		}
 	}
 

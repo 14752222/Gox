@@ -36,10 +36,14 @@ func setupObjectPrototype(o *object.BuiltinFunction) {
 		}
 		if len(args) > 0 {
 			if obj, ok := this.(*object.Object); ok {
-				if _, isNull := args[0].(*object.Null); isNull {
-					obj.Proto = nil
-				} else if object.IsObjectValue(args[0]) {
-					obj.Proto = args[0]
+				// OrdinarySetPrototypeOf: 不可扩展对象的 [[Prototype]] 不可变更,
+				// 静默失败 (非严格赋值不抛错, 严格模式 TypeError 由后续批次补齐)。
+				if obj.Extensible {
+					if _, isNull := args[0].(*object.Null); isNull {
+						obj.Proto = nil
+					} else if object.IsObjectValue(args[0]) {
+						obj.Proto = args[0]
+					}
 				}
 			}
 		}
