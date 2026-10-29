@@ -125,9 +125,27 @@ update_file() { # $1=repo $2=path $3=branch $4=ver $5=commit_msg
 main() {
   local latest new_tag new_ver msg payload commit_sha
   latest=$(latest_tag || true)
-  new_tag=$(next_tag "${latest:-v0.0.0}")
+  # 护栏一：拿不到最新 tag（网络超时 / ls-remote 失败）绝不能从 v0.0.0 起算，
+  # 否则会误发 v0.0.1 —— 必须直接中止，重跑即可。
+  if [ -z "${latest}" ]; then
+    echo "::error::无法从远端解析最新 v*.*.* 标签（git ls-remote 超时或失败）。拒绝发版，请排查网络后重跑。" >&2
+    exit 1
+  fi
+  new_tag=$(next_tag "${latest}")
   new_ver="${new_tag#v}"
   echo "::notice::发版版本：${new_ver}（补丁位自增）" >&2
+
+  # 护栏二：新版本号必须 ≥ main.go 里声明的当前版本，否则说明 tag 解析出了问题
+  # （比如远端 tag 列表不全），把版本号往回写会造成回退事故 —— 中止。
+  local cur_ver
+  cur_ver=$(git ls-remote "$ORIGIN_URL" "refs/heads/${RELEASE_BRANCH}" >/dev/null 2>&1 \
+    && api "$API/repos/${REPO}/contents/cmd/gox/main.go?ref=${RELEASE_BRANCH}" \
+        -H "Accept: application/vnd.github.raw" \
+    | grep -m1 -oP 'const version = "\K[0-9]+\.[0-9]+\.[0-9]+' || true)
+  if [ -n "$cur_ver" ] && [ "$(printf '%s\n%s\n' "$new_ver" "$cur_ver" | sort -V | head -1)" != "$cur_ver" ]; then
+    echo "::error::新版本 ${new_ver} 低于 main.go 当前版本 ${cur_ver} —— tag 解析异常，拒绝发版。" >&2
+    exit 1
+  fi
 
   # ── ② 本仓 main.go ──
   msg="chore(release): 自动发版 v${new_ver}${NOTE:+ — ${NOTE}}"
