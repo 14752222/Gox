@@ -107,12 +107,14 @@ func dateFromSingle(v object.Value) object.Value {
 
 // dateFromComponents 处理 new Date(y, m, d, h, mi, s, ms) 的多参形态。
 // 缺位按 0 (日期为 1) 补齐;越界分量由 dateUTC 统一 Time Clip。
+// 必须返回 *object.Date (而非 Number) —— 否则 new Date(y,m,...) 经 OP_NEW
+// 的包装规则得到 PrimitiveObject, 实例上所有 Date 方法全部失效。
 func dateFromComponents(args []object.Value) object.Value {
 	nums := make([]float64, 0, 7)
 	for _, a := range args {
 		nums = append(nums, toFloat(a))
 	}
-	return object.NewNumber(dateUTCFromNums(nums, false))
+	return object.NewDate(object.TimeClip(dateUTCFromNums(nums, false)))
 }
 
 // dateUTC 实现 Date.UTC(...): 与多参构造器同一组装逻辑, 但按 UTC 解释。
@@ -297,6 +299,10 @@ func setupDateProto() *object.Object {
 	}))
 
 	// ===== Setter =====
+	// Setter 全族 (rFXXbq: 此前只有 setTime, 其余 setXxx 整体缺失)。
+	// 规范语义: 分量分解 (本地或 UTC) → 替换指定分量 → MakeTime/MakeDay 重组
+	// → TimeClip 收口。任一分量 NaN ⇒ [[Date]] 置为 invalid (NaN)。
+	// setFullYear 族不做 0..99 → 1900+y 映射 (仅 setYear / 构造器做)。
 	p.SetBuiltinProperty("setTime", object.NewBuiltinMethod("setTime", func(this object.Value, args ...object.Value) object.Value {
 		d, ok := this.(*object.Date)
 		if !ok {
@@ -309,6 +315,8 @@ func setupDateProto() *object.Object {
 		*d = *object.NewDate(object.TimeClip(t))
 		return object.NewNumber(d.TimeValue())
 	}))
+
+	installDateSetters(p)
 
 	// ===== @@toPrimitive =====
 	// 有了它, `date1 - date2` / `date + ""` / Date 参与比较算术才会走规范路径
@@ -396,4 +404,99 @@ func setupPerformance(env *runtime.Environment) {
 	setNamespaceProto(p)
 
 	env.Declare("performance", p, false)
+}
+
+// ===== Date.prototype Setter 全族 =====
+
+// datePartsOf 把 time value 分解为 [year, month, day, hour, min, sec, milli]
+// 七分量 (utc=true 按 UTC, 否则按宿主本地时区)。
+func datePartsOf(ms float64, utc bool) [7]float64 {
+	t := time.UnixMilli(int64(ms))
+	if utc {
+		t = t.UTC()
+	} else {
+		t = t.Local()
+	}
+	return [7]float64{
+		float64(t.Year()), float64(int(t.Month()) - 1), float64(t.Day()),
+		float64(t.Hour()), float64(t.Minute()), float64(t.Second()),
+		float64(t.Nanosecond() / int(time.Millisecond)),
+	}
+}
+
+// dateSetArg 把 ToNumber(args[i]) 写入 parts[idx] (越界参数忽略, 与规范
+// 可选参数缺省语义一致 —— 缺省即"保留原分量")。
+func dateSetArg(parts *[7]float64, idx int, args []object.Value, i int) {
+	if i < len(args) {
+		parts[idx] = toFloat(args[i])
+	}
+}
+
+// datePartsNaN 检查任一分量是否 NaN (规范: MakeTime/MakeDay 传播 NaN)。
+func datePartsNaN(parts *[7]float64) bool {
+	for _, x := range parts {
+		if math.IsNaN(x) {
+			return true
+		}
+	}
+	return false
+}
+
+// installDateSetters 注册 Date.prototype 的 setXxx 方法族。
+// fieldSet 按规范把实参写入分量槽: 前缀可选项依次替换相邻分量。
+func installDateSetters(p *object.Object) {
+	type setterSpec struct {
+		name string
+		utc  bool
+		// set 把实参写进七分量槽 (槽序: y m d h mi s ms)。
+		set func(parts *[7]float64, args []object.Value)
+	}
+	specs := []setterSpec{
+		{"setMilliseconds", false, func(p *[7]float64, a []object.Value) { dateSetArg(p, 6, a, 0) }},
+		{"setUTCMilliseconds", true, func(p *[7]float64, a []object.Value) { dateSetArg(p, 6, a, 0) }},
+		{"setSeconds", false, func(p *[7]float64, a []object.Value) { dateSetArg(p, 5, a, 0); dateSetArg(p, 6, a, 1) }},
+		{"setUTCSeconds", true, func(p *[7]float64, a []object.Value) { dateSetArg(p, 5, a, 0); dateSetArg(p, 6, a, 1) }},
+		{"setMinutes", false, func(p *[7]float64, a []object.Value) { dateSetArg(p, 4, a, 0); dateSetArg(p, 5, a, 1); dateSetArg(p, 6, a, 2) }},
+		{"setUTCMinutes", true, func(p *[7]float64, a []object.Value) { dateSetArg(p, 4, a, 0); dateSetArg(p, 5, a, 1); dateSetArg(p, 6, a, 2) }},
+		{"setHours", false, func(p *[7]float64, a []object.Value) { dateSetArg(p, 3, a, 0); dateSetArg(p, 4, a, 1); dateSetArg(p, 5, a, 2); dateSetArg(p, 6, a, 3) }},
+		{"setUTCHours", true, func(p *[7]float64, a []object.Value) { dateSetArg(p, 3, a, 0); dateSetArg(p, 4, a, 1); dateSetArg(p, 5, a, 2); dateSetArg(p, 6, a, 3) }},
+		{"setDate", false, func(p *[7]float64, a []object.Value) { dateSetArg(p, 2, a, 0) }},
+		{"setUTCDate", true, func(p *[7]float64, a []object.Value) { dateSetArg(p, 2, a, 0) }},
+		{"setMonth", false, func(p *[7]float64, a []object.Value) { dateSetArg(p, 1, a, 0); dateSetArg(p, 2, a, 1) }},
+		{"setUTCMonth", true, func(p *[7]float64, a []object.Value) { dateSetArg(p, 1, a, 0); dateSetArg(p, 2, a, 1) }},
+		// setFullYear 族: 无 0..99 映射 (规范 MakeYear 直取整值)。
+		{"setFullYear", false, func(p *[7]float64, a []object.Value) { dateSetArg(p, 0, a, 0); dateSetArg(p, 1, a, 1); dateSetArg(p, 2, a, 2) }},
+		{"setUTCFullYear", true, func(p *[7]float64, a []object.Value) { dateSetArg(p, 0, a, 0); dateSetArg(p, 1, a, 1); dateSetArg(p, 2, a, 2) }},
+		// setYear (Annex B): 0..99 → 1900+y; NaN → invalid date。
+		{"setYear", false, func(p *[7]float64, a []object.Value) {
+			dateSetArg(p, 0, a, 0)
+			y := p[0]
+			if y >= 0 && y <= 99 {
+				p[0] = y + 1900
+			}
+		}},
+	}
+	for _, sp := range specs {
+		sp := sp
+		p.SetBuiltinProperty(sp.name, object.NewBuiltinMethod(sp.name, func(this object.Value, args ...object.Value) object.Value {
+			d, ok := this.(*object.Date)
+			if !ok {
+				return object.NewErrorWithName("TypeError", "Date.prototype."+sp.name+" requires that 'this' be a Date")
+			}
+			tv := d.TimeValue()
+			if math.IsNaN(tv) {
+				return object.NewNumber(math.NaN())
+			}
+			parts := datePartsOf(tv, sp.utc)
+			sp.set(&parts, args)
+			if datePartsNaN(&parts) {
+				*d = *object.NewDate(math.NaN())
+				return object.NewNumber(math.NaN())
+			}
+			ms := object.BuildTimeValue(int(parts[0]), int(parts[1]), int(parts[2]),
+				int(parts[3]), int(parts[4]), int(parts[5]), int(parts[6]), sp.utc)
+			*d = *object.NewDate(object.TimeClip(ms))
+			return object.NewNumber(d.TimeValue())
+		}))
+	}
 }
