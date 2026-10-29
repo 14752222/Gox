@@ -208,7 +208,8 @@ func TestCompileObjectLiteral(t *testing.T) {
 	c := compile(t, `let obj = { name: "Alice", age: 30 };`)
 	ins := c.Bytes()
 
-	// 应包含 OP_NEW_OBJECT 和 OP_SET_PROP
+	// 应包含 OP_NEW_OBJECT 和 OP_DEF_PROP (对象字面量数据属性走
+	// CreateDataProperty 自有属性语义, 见 opcode.go OP_DEF_PROP 说明)
 	hasNewObject := false
 	hasSetProp := false
 	for pc := 0; pc < len(ins); pc += bytecode.InstructionSize {
@@ -216,7 +217,7 @@ func TestCompileObjectLiteral(t *testing.T) {
 		if op == bytecode.OP_NEW_OBJECT {
 			hasNewObject = true
 		}
-		if op == bytecode.OP_SET_PROP {
+		if op == bytecode.OP_DEF_PROP {
 			hasSetProp = true
 		}
 	}
@@ -224,7 +225,7 @@ func TestCompileObjectLiteral(t *testing.T) {
 		t.Fatal("expected OP_NEW_OBJECT")
 	}
 	if !hasSetProp {
-		t.Fatal("expected OP_SET_PROP")
+		t.Fatal("expected OP_DEF_PROP")
 	}
 }
 
