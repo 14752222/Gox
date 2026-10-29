@@ -136,6 +136,9 @@ func arrayLengthDescriptorFor(a *Array) PropertyDescriptor {
 func (a *Array) OwnKeys() []string {
 	keys := make([]string, 0, len(a.Elements)+len(a.PropDescs)+1)
 	for i := range a.Elements {
+		if a.Elements[i] == nil {
+			continue // 洞不是自有属性 (delete / 稀疏字面量)
+		}
 		keys = append(keys, Itoa(i))
 	}
 	keys = append(keys, "length")
@@ -159,6 +162,9 @@ func (a *Array) OwnKeys() []string {
 func (a *Array) EnumerableOwnKeys() []string {
 	keys := make([]string, 0, len(a.Elements))
 	for i := range a.Elements {
+		if a.Elements[i] == nil {
+			continue // 洞不是自有属性 (delete / 稀疏字面量)
+		}
 		ks := Itoa(i)
 		if d, ok := a.PropDescs[ks]; ok && !d.Enumerable {
 			continue
@@ -190,7 +196,9 @@ func (a *Array) HasOwn(name string) bool {
 		return true
 	}
 	if idx, err := Atoi(name); err == nil && idx >= 0 {
-		return idx < len(a.Elements)
+		// 洞 (delete / length 截断留下的 nil) 不是自有属性 (isConfigurable
+		// 等 delete-探测依赖这一点)。
+		return idx < len(a.Elements) && a.Elements[idx] != nil
 	}
 	return false
 }
@@ -211,7 +219,8 @@ func (a *Array) OwnDescriptor(name string) (PropertyDescriptor, bool) {
 	if idx, err := Atoi(name); err == nil && idx >= 0 && idx < len(a.Elements) {
 		v := a.Elements[idx]
 		if v == nil {
-			v = UndefinedSingleton
+			// 洞: delete / 截断留下的空位不是自有属性
+			return PropertyDescriptor{}, false
 		}
 		return DataProperty(v), true
 	}
