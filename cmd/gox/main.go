@@ -15,5 +15,5 @@
     "git": "https://api.github.com/repos/14752222/Gox/git/blobs/59a2670aeafdb37a5fe267c0ec3f7fe3d2784330",
     "html": "https://github.com/14752222/Gox/blob/main/cmd/gox/main.go"
   },
-  "version": "0.0.1"
+  "version": "0.15.1"
 }
