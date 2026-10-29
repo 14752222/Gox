@@ -130,7 +130,9 @@ if path.endswith("package.json"):
     if "encoding" in data or "content" in data:
         sys.exit(f"{path} 取到的是 contents API 元数据 JSON，不是文件内容 —— 禁止写入")
     data["version"] = ver
-    print(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
+    # sys.stdout.write 而非 print：print 会再补一个 \n，叠加本行自带的 "\n"
+    # 会写出双尾换行，gen --check 逐字节比对同样即红（2026-10-29 v0.15.5 实测）
+    sys.stdout.write(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
 else:
     out, n = re.subn(r"(const version = \")[^\"]+(\")", r"\g<1>" + ver + r"\g<2>", raw, count=1)
     if n != 1:
@@ -144,12 +146,9 @@ update_file() { # $1=repo $2=path $3=branch $4=ver $5=commit_msg
   local meta sha content payload
   meta=$(api "$API/repos/${repo}/contents/${path}?ref=${branch}")
   sha=$(printf '%s' "$meta" | jq -r '.sha')
-  # ⚠️ 内容必须经 base64 中转：$( ) 命令替换会吞掉结尾换行符，导致写回的
-  # package.json 少一个 \n，gen-npm-mobile-pkgs.py --check 逐字节比对即红
-  # （2026-10-29 v0.15.4 发版闸门实测）。base64 -w0 输出无换行，不受影响。
-  content_b64=$(fetch_raw "$repo" "$path" "$branch" | bump_content "$ver" "$path" | base64 -w0)
+  content=$(fetch_raw "$repo" "$path" "$branch" | bump_content "$ver" "$path")
   payload=$(jq -n --arg m "$msg" --arg s "$sha" \
-    --arg c "$content_b64" --arg b "$branch" \
+    --arg c "$(printf '%s' "$content" | base64 -w0)" --arg b "$branch" \
     '{message:$m, content:$c, sha:$s, branch:$b}')
   api -X PUT "$API/repos/${repo}/contents/${path}" -d "$payload" >/dev/null
   echo "::notice::已更新 ${repo}/${path} → ${ver}" >&2
@@ -184,9 +183,8 @@ main() {
   main_sha=$(api "$API/repos/${REPO}/contents/cmd/gox/main.go?ref=${RELEASE_BRANCH}" | jq -r '.sha')
   main_content=$(fetch_raw "$REPO" "cmd/gox/main.go" "${RELEASE_BRANCH}" \
     | bump_content "$new_ver" "cmd/gox/main.go")
-  main_content_b64=$(printf '%s' "$main_content" | base64 -w0)
   payload=$(jq -n --arg m "$msg" --arg s "$main_sha" \
-    --arg c "$main_content_b64" --arg b "$RELEASE_BRANCH" \
+    --arg c "$(printf '%s' "$main_content" | base64 -w0)" --arg b "$RELEASE_BRANCH" \
     '{message:$m, content:$c, sha:$s, branch:$b}')
   commit_sha=$(api -X PUT "$API/repos/${REPO}/contents/cmd/gox/main.go" -d "$payload" | jq -r '.commit.sha')
   echo "::notice::main.go → ${new_ver}，commit ${commit_sha}" >&2
