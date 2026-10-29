@@ -104,7 +104,11 @@ func IsObjectLike(v Value) bool {
 		TEMPORAL_INSTANT_OBJ, TEMPORAL_PLAIN_DATETIME_OBJ, TEMPORAL_PLAIN_DATE_OBJ,
 		TEMPORAL_PLAIN_TIME_OBJ, TEMPORAL_PLAIN_YM_OBJ, TEMPORAL_PLAIN_MD_OBJ,
 		TEMPORAL_ZONED_DATETIME_OBJ, TEMPORAL_DURATION_OBJ, TEMPORAL_TIMEZONE_OBJ,
-		TEMPORAL_CALENDAR_OBJ:
+		TEMPORAL_CALENDAR_OBJ,
+		GENERATOR_OBJ, ASYNC_GENERATOR_OBJ, GLOBAL_OBJ:
+		// 注: WEAKREF_OBJ 刻意不在此列 —— WeakRef 实例无 Proto 字段, 加入后
+		// Reflect.construct(newTarget≠WeakRef) 的结果回传路径会把无原型的
+		// 内建实例当规范对象返回, 破坏 prototype-from-newtarget 族用例。
 		return true
 	}
 	return false
