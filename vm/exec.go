@@ -1481,7 +1481,16 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 		case bytecode.OP_DYNAMIC_IMPORT:
 			// 动态 import(): 弹出模块路径, 加载模块, 包装为 resolved Promise
 			specVal := vm.stack.Pop()
-			spec := toJSString(specVal)
+			spec, thrown := dynamicImportSpecifierString(specVal)
+			if thrown != nil {
+				// ToString(specifier) abrupt → 以抛出原值 reject
+				// (规范 5~6 步 IfAbruptRejectPromise, dynamic-import/catch
+				// 的 specifier-tostring-abrupt 族)。
+				p := object.NewPromise()
+				p.Reject(thrown)
+				vm.stack.Push(p)
+				continue
+			}
 			modExports, err := vm.loadModule(spec)
 			if err != nil {
 				// 加载失败: reject Promise。模块**语法错误** (解析/编译失败)
@@ -1520,6 +1529,12 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			// SyntaxError reject —— 用例形如
 			// `import.source(obj).catch(e => assert.sameValue(e.name,'SyntaxError'))`。
 			specVal := vm.stack.Pop()
+			if _, thrown := dynamicImportSpecifierString(specVal); thrown != nil {
+				p := object.NewPromise()
+				p.Reject(thrown)
+				vm.stack.Push(p)
+				continue
+			}
 			_ = toJSString(specVal)
 			p := object.NewPromise()
 			p.Reject(object.NewErrorWithName("SyntaxError",

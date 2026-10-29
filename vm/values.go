@@ -800,6 +800,40 @@ func toJSString(v object.Value) string {
 	return object.ToString(v)
 }
 
+// dynamicImportSpecifierString 对动态 import 的 specifier 做 ToString,
+// 并把 toString/valueOf 的 abrupt 传播出来 (返回原始抛出值)。
+// 规范 sec-importmoduleoperation 5~6 步: specifierString = ToString(specifier),
+// IfAbruptRejectPromise —— 普通 object.ToString 会吞掉用户 toString 抛的
+// 异常, 这里手工走 ToPrimitive(hint string) 拿到抛出原值
+// (dynamic-import/catch 的 specifier-tostring-abrupt-rejects 族)。
+func dynamicImportSpecifierString(v object.Value) (string, object.Value) {
+	if o, ok := v.(*object.Object); ok && o.Type() == object.OBJECT_OBJ {
+		for _, name := range []string{"toString", "valueOf"} {
+			m, ok := o.GetProperty(name)
+			if !ok || !object.IsCallable(m) {
+				continue
+			}
+			r := object.CallFunction(m, v)
+			if cbErr := object.TakeCallbackError(); cbErr != nil {
+				tv := object.TakeCallbackErrorValue()
+				if tv == nil {
+					tv = object.NewErrorWithName("Error", cbErr.Error())
+				}
+				return "", tv
+			}
+			if r == nil {
+				continue
+			}
+			r = object.UnwrapPrimitive(r)
+			if s, ok := r.(*object.String); ok {
+				return s.Value, nil
+			}
+			// 返回对象: 按规范换下一个方法
+		}
+	}
+	return object.ToString(v), nil
+}
+
 // toPropertyKey 实现规范 ToPropertyKey 的「求值一次」语义, 供 OP_TO_PROPERTY_KEY 使用。
 //
 // 已经是原语的键原样返回: 原语到属性键的转换是纯函数、重复调用不可观测,
