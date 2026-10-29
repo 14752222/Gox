@@ -149,3 +149,29 @@ func findAccessorInChain(start Value, name string) *Accessor {
 	}
 	return nil
 }
+
+// DefineNonEnumerableAccessor 在对象上定义**不可枚举**的 getter/setter 属性。
+// 规范内建原型上的访问器 (RegExp.prototype.source、Map.prototype.size、
+// Object.prototype.__proto__ 等) 均为 {Enumerable: false, Configurable: true}。
+func (o *Object) DefineNonEnumerableAccessor(name string, getter, setter Value) {
+	if o.Properties == nil {
+		o.Properties = make(map[string]PropertyDescriptor)
+	}
+	if existing, ok := o.Properties[name]; ok {
+		if acc, isAcc := existing.Value.(*Accessor); isAcc {
+			if getter != nil {
+				acc.Getter = getter
+			}
+			if setter != nil {
+				acc.Setter = setter
+			}
+			return
+		}
+	}
+	o.Properties[name] = PropertyDescriptor{
+		Value:        NewAccessor(getter, setter),
+		Writable:     false,
+		Enumerable:   false,
+		Configurable: true,
+	}
+}

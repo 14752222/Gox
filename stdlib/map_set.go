@@ -299,6 +299,15 @@ func setupMapProto() *object.Object {
 		return object.NewArray(entries)
 	}))
 
+	// size: 规范是访问器 getter (非数据属性)。
+	p.DefineNonEnumerableAccessor("size", object.NewBuiltinMethod("get size", func(this object.Value, args ...object.Value) object.Value {
+		m, ok := this.(*object.Map)
+		if !ok {
+			return object.NewErrorWithName("TypeError", "Method Map.prototype.size called on incompatible receiver")
+		}
+		return object.NewInt(int64(len(m.Entries)))
+	}), nil)
+
 	return p
 }
 
@@ -396,6 +405,15 @@ func setupSetProto() *object.Object {
 		copy(vals, s.Values)
 		return object.NewArray(vals)
 	}))
+
+	// size: 规范是访问器 getter (非数据属性)。
+	p.DefineNonEnumerableAccessor("size", object.NewBuiltinMethod("get size", func(this object.Value, args ...object.Value) object.Value {
+		s, ok := this.(*object.Set)
+		if !ok {
+			return object.NewErrorWithName("TypeError", "Method Set.prototype.size called on incompatible receiver")
+		}
+		return object.NewInt(int64(len(s.Values)))
+	}), nil)
 
 	return p
 }

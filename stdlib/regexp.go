@@ -486,6 +486,25 @@ func setupRegExpProto() *object.Object {
 		return object.NewArray(result)
 	}))
 
+	// ===== 访问器属性族 (source/global/flags/...) =====
+	// 规范: 这些是 %RegExp.prototype% 上的 **getter 访问器** (非数据属性),
+	// Object.getOwnPropertyDescriptor(RegExp.prototype, "source").get 必须是
+	// 函数; 对不兼容 receiver 抛 TypeError。值仍由 *RegExp.GetProperty 提供。
+	for _, prop := range []string{"source", "flags", "global", "ignoreCase",
+		"multiline", "dotAll", "sticky", "unicode", "unicodeSets", "hasIndices"} {
+		prop := prop
+		p.DefineNonEnumerableAccessor(prop, object.NewBuiltinMethod("get "+prop, func(this object.Value, args ...object.Value) object.Value {
+			re, errVal := regExpThis(this)
+			if errVal != nil {
+				return errVal
+			}
+			if v, ok := re.GetProperty(prop); ok && v != nil {
+				return v
+			}
+			return object.UndefinedSingleton
+		}), nil)
+	}
+
 	return p
 }
 

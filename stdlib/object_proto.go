@@ -19,6 +19,33 @@ func setupObjectPrototype(o *object.BuiltinFunction) {
 	// constructor: 反向引用 (与 Array/String 的 proto 结构保持一致)
 	proto.SetBuiltinProperty("constructor", o)
 
+	// __proto__ 访问器 (规范 B.2.2.2): getter = ProtoOf(ToObject(this)),
+	// setter = SetPrototypeOf (非对象参数静默忽略, 返回 undefined)。
+	// undefined/null this 在 getter/setter 里均抛 TypeError (ToObject)。
+	proto.DefineNonEnumerableAccessor("__proto__", object.NewBuiltinMethod("get __proto__", func(this object.Value, args ...object.Value) object.Value {
+		if err := protoAccessThisCheck(this); err != nil {
+			return err
+		}
+		if p := object.ProtoOf(this); p != nil {
+			return p
+		}
+		return object.NullSingleton
+	}), object.NewBuiltinMethod("set __proto__", func(this object.Value, args ...object.Value) object.Value {
+		if err := protoAccessThisCheck(this); err != nil {
+			return err
+		}
+		if len(args) > 0 {
+			if obj, ok := this.(*object.Object); ok {
+				if _, isNull := args[0].(*object.Null); isNull {
+					obj.Proto = nil
+				} else if object.IsObjectValue(args[0]) {
+					obj.Proto = args[0]
+				}
+			}
+		}
+		return object.UndefinedSingleton
+	}))
+
 	// toString(): 输出 "[object Tag]"。
 	// 它接收任意 this —— 通过 .call/.apply 反射时可以作用于任何值，
 	// 因此实现必须对所有内置类型有标签，而不能假设 this 是 *object.Object。
@@ -494,4 +521,14 @@ func numberKeyString(f float64) string {
 		return "-Infinity"
 	}
 	return object.ToString(object.NewNumber(f))
+}
+
+// protoAccessThisCheck __proto__ getter/setter 的 ToObject 前置:
+// undefined/null 抛 TypeError, 其余原始值经包装对象 (无实例属性)。
+func protoAccessThisCheck(this object.Value) object.Value {
+	switch this.(type) {
+	case *object.Undefined, *object.Null:
+		return object.NewTypeError("Object.prototype.__proto__ called on null or undefined")
+	}
+	return nil
 }

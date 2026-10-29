@@ -1,6 +1,9 @@
 package object
 
-import "math"
+import (
+	"math"
+	"strings"
+)
 
 // Iterator.prototype 上的 ES2025/ES2026 helper 方法的规范语义收口
 // (rFXXbq built-ins 洼地批次)。
@@ -74,6 +77,17 @@ func CloseIterator(iter Value) Value {
 // 返回 (value, done, errVal): errVal 非 nil 时调用方必须把迭代置为
 // 异常完成 (eager helper 直接向上传播并关闭底层; lazy helper 记入
 // PendingErr)。
+
+// isNextProtocolViolation 判定 errVal 是否为 "next() 返回非对象" 的迭代协议
+// 违规 —— 规范: 该 TypeError 直接抛出, **不** IteratorClose
+// (does-not-close-on-iterator-protocol-violation 族)。
+func isNextProtocolViolation(ev Value) bool {
+	if e, ok := ev.(*Error); ok {
+		return e.Name == "TypeError" && strings.Contains(e.Message, "next() must return an object")
+	}
+	return false
+}
+
 type iteratorDriver struct {
 	recv   Value
 	nextFn Value
@@ -184,7 +198,12 @@ func IteratorHelperMethod(name string) *BuiltinMethod {
 					}
 					v, done, err := d.step()
 					if err != nil {
-						it.PendingErr = closeOuter(err)
+						// 协议违规 (next 返回非对象): 直接抛出, 不关闭底层
+						if isNextProtocolViolation(err) {
+							it.PendingErr = err
+						} else {
+							it.PendingErr = closeOuter(err)
+						}
 						return UndefinedSingleton, true
 					}
 					if done {
@@ -528,7 +547,9 @@ func IteratorHelperMethod(name string) *BuiltinMethod {
 			for {
 				v, done, err := d.step()
 				if err != nil {
-					CloseIterator(this)
+					if !isNextProtocolViolation(err) {
+						CloseIterator(this)
+					}
 					return err
 				}
 				if done {
@@ -590,7 +611,7 @@ func iteratorCollectList(this Value, api string, closeOnErr bool) ([]Value, Valu
 	for {
 		v, done, err := d.step()
 		if err != nil {
-			if closeOnErr {
+			if closeOnErr && !isNextProtocolViolation(err) {
 				CloseIterator(this)
 			}
 			return nil, err
