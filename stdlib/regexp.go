@@ -198,6 +198,48 @@ func regExpBuiltinExec(re *object.RegExp, input string) object.Value {
 	arr.SetProperty("index", object.NewNumber(float64(loc[0]+lastIndex)))
 	arr.SetProperty("input", object.NewString(input))
 
+	// 命名捕获组 (GetGroupsObject): .groups 上每个具名组一个属性 ——
+	// 参与的组为匹配到的字符串, 未参与的组为 undefined (规范
+	// RegExpBuiltinExec 步骤 20-23)。Go RE2 自 1.22 起原生接受 (?<name>…)
+	// 语法, SubexpNames() 与 loc 的组序号 1:1 对齐 (下标 0 为整匹配)。
+	names := re.Regexp.SubexpNames()
+	hasNamed := false
+	for _, n := range names {
+		if n != "" {
+			hasNamed = true
+			break
+		}
+	}
+	var groupsObj *object.Object
+	var indicesGroupsObj *object.Object
+	if hasNamed {
+		groupsObj = object.NewObject()
+		if re.HasIndices {
+			indicesGroupsObj = object.NewObject()
+		}
+		for i := 1; i < len(names) && i < len(loc)/2; i++ {
+			if names[i] == "" {
+				continue
+			}
+			var val object.Value
+			var idxVal object.Value = object.UndefinedSingleton
+			if loc[i*2] >= 0 {
+				val = object.NewString(searchStr[loc[i*2]:loc[i*2+1]])
+				idxVal = object.NewArray([]object.Value{
+					object.NewNumber(float64(loc[i*2] + lastIndex)),
+					object.NewNumber(float64(loc[i*2+1] + lastIndex)),
+				})
+			} else {
+				val = object.UndefinedSingleton
+			}
+			groupsObj.SetProperty(names[i], val)
+			if indicesGroupsObj != nil {
+				indicesGroupsObj.SetProperty(names[i], idxVal)
+			}
+		}
+		arr.SetProperty("groups", groupsObj)
+	}
+
 	// d (hasIndices): 附带 indices 匹配位置数组 —— 0 号为整匹配, i 号为第 i
 	// 个捕获组的 [start, end] (未参与的组为 undefined); 元素相对整个 input
 	// 取绝对偏移 (与 result.index 同口径)。
@@ -218,7 +260,12 @@ func regExpBuiltinExec(re *object.RegExp, input string) object.Value {
 			}
 		}
 		indicesArr := object.NewArray(indices)
-		indicesArr.SetProperty("groups", object.UndefinedSingleton)
+		indicesArr.SetProperty("groups", func() object.Value {
+			if indicesGroupsObj != nil {
+				return indicesGroupsObj
+			}
+			return object.UndefinedSingleton
+		}())
 		arr.SetProperty("indices", indicesArr)
 	}
 
@@ -480,7 +527,7 @@ func setupRegExpProto() *object.Object {
 				end = len(input)
 			}
 			result.WriteString(input[lastEnd:start])
-			result.WriteString(expandReplacement(replaceStr, matchStr, submatchGroupsOfResult(res)))
+			result.WriteString(expandReplacement(replaceStr, matchStr, submatchGroupsOfResult(res), namedGroupsOfResult(res)))
 			lastEnd = end
 		}
 		result.WriteString(input[lastEnd:])
@@ -549,6 +596,30 @@ func submatchGroupsOfResult(res object.Value) []string {
 	return groups
 }
 
+// namedGroupsOfResult 从 exec 结果的 .groups 自有属性收集 命名 → 匹配串
+// 映射, 供 $<name> 替换展开。无命名组 / 用户覆写 exec 返回异常结果时返回 nil。
+func namedGroupsOfResult(res object.Value) map[string]string {
+	arr, isArr := res.(*object.Array)
+	if !isArr {
+		return nil
+	}
+	gv, ok := arr.GetProperty("groups")
+	if !ok {
+		return nil
+	}
+	gobj, ok := gv.(*object.Object)
+	if !ok {
+		return nil
+	}
+	named := make(map[string]string)
+	for _, k := range gobj.Keys() {
+		if v, ok := gobj.GetProperty(k); ok {
+			named[k] = toStr(v)
+		}
+	}
+	return named
+}
+
 // toRegExpArg 将参数转换为 *object.RegExp。
 //
 // 已经是 RegExp 的直接复用；否则把字符串当作 pattern 用 defaultFlags 编译。
@@ -564,9 +635,10 @@ func toRegExpArg(v object.Value, defaultFlags string) (*object.RegExp, object.Va
 	return re, nil
 }
 
-// expandReplacement 展开 $1, $2, $&, $$, $`, $' 等替换模式。
-// groups 是捕获组的字符串切片 (不含整个匹配)。
-func expandReplacement(replacement, match string, groups []string) string {
+// expandReplacement 展开 $1, $2, $&, $$, $`, $', $<name> 等替换模式。
+// groups 是捕获组的字符串切片 (不含整个匹配); named 是命名捕获组
+// 名 → 匹配串映射 (nil 表示模式无命名组, 此时 $<...> 按字面量保留)。
+func expandReplacement(replacement, match string, groups []string, named map[string]string) string {
 	var result strings.Builder
 	for i := 0; i < len(replacement); i++ {
 		c := replacement[i]
@@ -578,6 +650,21 @@ func expandReplacement(replacement, match string, groups []string) string {
 		switch {
 		case next == '$':
 			result.WriteByte('$')
+			i++
+		case next == '<':
+			// $<name> 命名捕获组引用 (GetSubstitution): 模式无命名组或
+			// 名字不存在时按字面量保留 —— 与规范"非法引用"的宽容处理一致
+			// (真正该抛 SyntaxError 的非法模式在编译期已被拒绝)。
+			end := strings.IndexByte(replacement[i+2:], '>')
+			if end >= 0 && named != nil {
+				name := replacement[i+2 : i+2+end]
+				if v, ok := named[name]; ok {
+					result.WriteString(v)
+					i = i + 2 + end
+					continue
+				}
+			}
+			result.WriteString("$<")
 			i++
 		case next == '&':
 			result.WriteString(match)

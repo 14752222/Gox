@@ -572,7 +572,7 @@ func setupStringProto() *object.Object {
 					sb.WriteString(s.Value[lastEnd:loc[0]])
 					matchStr := s.Value[loc[0]:loc[1]]
 					sb.WriteString(expandReplacement(replacement, matchStr,
-						submatchGroups(s.Value, loc)))
+						submatchGroups(s.Value, loc), namedGroupsOfSubexp(re.Regexp.SubexpNames(), s.Value, loc)))
 					lastEnd = loc[1]
 				}
 				sb.WriteString(s.Value[lastEnd:])
@@ -583,7 +583,7 @@ func setupStringProto() *object.Object {
 				return s
 			}
 			replacementStr := expandReplacement(replacement,
-				s.Value[loc[0]:loc[1]], submatchGroups(s.Value, loc))
+				s.Value[loc[0]:loc[1]], submatchGroups(s.Value, loc), namedGroupsOfSubexp(re.Regexp.SubexpNames(), s.Value, loc))
 			return object.NewString(s.Value[:loc[0]] + replacementStr + s.Value[loc[1]:])
 		}
 
@@ -643,7 +643,7 @@ func setupStringProto() *object.Object {
 				return object.NewString(result)
 			}
 			result := re.Regexp.ReplaceAllStringFunc(s.Value, func(match string) string {
-				return expandReplacement(replacement, match, []string{})
+				return expandReplacement(replacement, match, []string{}, nil)
 			})
 			return object.NewString(result)
 		}
@@ -887,6 +887,29 @@ func setupStringProto() *object.Object {
 		arr := object.NewArray(result)
 		arr.SetProperty("index", object.NewNumber(float64(loc[0])))
 		arr.SetProperty("input", object.NewString(s.Value))
+		// 命名捕获组 .groups (参与的组为匹配串, 未参与的组为 undefined)
+		names := re.Regexp.SubexpNames()
+		hasNamed := false
+		for _, n := range names {
+			if n != "" {
+				hasNamed = true
+				break
+			}
+		}
+		if hasNamed {
+			gobj := object.NewObject()
+			for i := 1; i < len(names) && i < len(loc)/2; i++ {
+				if names[i] == "" {
+					continue
+				}
+				if loc[i*2] >= 0 {
+					gobj.SetProperty(names[i], object.NewString(s.Value[loc[i*2]:loc[i*2+1]]))
+				} else {
+					gobj.SetProperty(names[i], object.UndefinedSingleton)
+				}
+			}
+			arr.SetProperty("groups", gobj)
+		}
 		return arr
 	}))
 
@@ -922,6 +945,29 @@ func setupStringProto() *object.Object {
 			arr := object.NewArray(matchArr)
 			arr.SetProperty("index", object.NewNumber(float64(loc[0])))
 			arr.SetProperty("input", object.NewString(s.Value))
+			// 命名捕获组 .groups
+			subNames := re.Regexp.SubexpNames()
+			hasNamed2 := false
+			for _, n := range subNames {
+				if n != "" {
+					hasNamed2 = true
+					break
+				}
+			}
+			if hasNamed2 {
+				gobj := object.NewObject()
+				for i := 1; i < len(subNames) && i < len(loc)/2; i++ {
+					if subNames[i] == "" {
+						continue
+					}
+					if loc[i*2] >= 0 {
+						gobj.SetProperty(subNames[i], object.NewString(s.Value[loc[i*2]:loc[i*2+1]]))
+					} else {
+						gobj.SetProperty(subNames[i], object.UndefinedSingleton)
+					}
+				}
+				arr.SetProperty("groups", gobj)
+			}
 			result[i] = arr
 		}
 		return object.NewArray(result)
@@ -963,6 +1009,34 @@ func submatchGroups(s string, loc []int) []string {
 		}
 	}
 	return groups
+}
+
+// namedGroupsOfSubexp 结合 SubexpNames 与 FindStringSubmatchIndex 结果
+// 提取命名捕获组映射 (供 $<name> 展开)。无命名组时返回 nil —— 此时
+// $<...> 按字面量保留。
+func namedGroupsOfSubexp(names []string, s string, loc []int) map[string]string {
+	has := false
+	for _, n := range names {
+		if n != "" {
+			has = true
+			break
+		}
+	}
+	if !has {
+		return nil
+	}
+	m := make(map[string]string)
+	for i := 1; i < len(names) && i < len(loc)/2; i++ {
+		if names[i] == "" {
+			continue
+		}
+		if loc[i*2] >= 0 {
+			m[names[i]] = s[loc[i*2]:loc[i*2+1]]
+		} else {
+			m[names[i]] = ""
+		}
+	}
+	return m
 }
 
 // clampStringIndex 把字符串的索引参数规范化到 [0, n]。
