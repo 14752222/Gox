@@ -1071,6 +1071,100 @@ func runSharded(cases []test262Case, parentArgs []string, jobs, maxFail int, wan
 		}
 	}
 	elapsed = time.Since(start) // 孤儿重派耗时也计入总耗时
+
+	// 超时重派 (与孤儿重派同机制, 单用例进程隔离):
+	// 用例级 in-process 超时后, 被遗弃的 VM goroutine 仍会持续消耗 CPU
+	// (无法从外部终止), 在多核受限 (cgroup CPU 配额) + 高并发下会造成
+	// 级联假超时, 污染测量。对 phase==timeout 的用例在隔离进程里重跑
+	// 一次, 以重跑结果为准。
+	if toSet := func() map[string]bool {
+		m := map[string]bool{}
+		for _, r := range results {
+			if r.Phase == "timeout" {
+				m[r.RelPath] = true
+			}
+		}
+		return m
+	}(); len(toSet) > 0 {
+		caseByRel := map[string]test262Case{}
+		for i := 0; i < shardTotal; i++ {
+			for _, c := range shardCases[i] {
+				caseByRel[c.RelPath] = c
+			}
+		}
+		fmt.Printf("超时重派: %d 个用例疑似负载抖动假超时, 进程隔离重跑\n", len(toSet))
+		var mu sync.Mutex
+		// 低并发重跑: 重派子进程限 GOMAXPROCS=2 且并发 4 —— 若继承
+		// 默认 GOMAXPROCS (=NumCPU) × 高并发, 在 cgroup CPU 配额受限的
+		// 环境里 GC 线程互相踩踏, 会把单跑 0.6s 的用例再次逼到 3s 超时。
+		sem := make(chan struct{}, 4)
+		retryEnv := os.Environ()
+		retryEnv = append(retryEnv, "GOX_TEST262_SHARD_CHILD=1", "GOMAXPROCS=2")
+		var wg sync.WaitGroup
+		var retried []test262Result
+		for rel := range toSet {
+			c, ok := caseByRel[rel]
+			if !ok {
+				continue
+			}
+			wg.Add(1)
+			sem <- struct{}{}
+			go func(tc test262Case) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				f, err := os.CreateTemp("", "gox-test262-retry-*.jsonl")
+				if err != nil {
+					return
+				}
+				f.Close()
+				args := append([]string(nil), baseArgs...)
+				args = append(args, "-one", tc.RelPath, "-jsonl", f.Name())
+				cmd := exec.Command(exe, args...)
+				cmd.Env = retryEnv
+				cmd.Stdout = nil
+				cmd.Stderr = nil
+				if err := cmd.Run(); err != nil && os.Getenv("GOX_TEST262_DEBUG") != "" {
+					fmt.Fprintf(os.Stderr, "[debug] 超时重派 %s 失败: %v\n", tc.RelPath, err)
+				}
+				lines := readJSONL(f.Name())
+				if os.Getenv("GOX_TEST262_DEBUG") != "" {
+					for _, l := range lines {
+						fmt.Fprintf(os.Stderr, "[debug] 超时重派 %s 产出 %d 行: %s phase=%s pass=%v rel=%s\n",
+							tc.RelPath, len(lines), "", l.Phase, l.Pass, l.RelPath)
+					}
+					if len(lines) == 0 {
+						fmt.Fprintf(os.Stderr, "[debug] 超时重派 %s 产出 0 行\n", tc.RelPath)
+					}
+				}
+				os.Remove(f.Name())
+				mu.Lock()
+				retried = append(retried, lines...)
+				mu.Unlock()
+			}(c)
+		}
+		wg.Wait()
+		retriedSeen := map[string]bool{}
+		for _, r := range retried {
+			retriedSeen[r.RelPath] = true
+		}
+		var final []test262Result
+		for _, r := range results {
+			if toSet[r.RelPath] {
+				continue
+			}
+			final = append(final, r)
+		}
+		// 重跑仍未产出的: 保留原超时结果, 如实呈现
+		for rel := range toSet {
+			if !retriedSeen[rel] {
+				final = append(final, test262Result{RelPath: rel, Phase: "timeout",
+					Err: "超时重派仍未产出 (隔离进程亦超时)"})
+			}
+		}
+		results = append(final, retried...)
+		elapsed = time.Since(start)
+	}
+
 	if len(results) == 0 {
 		fmt.Fprintf(os.Stderr, "gox test262: 所有分片均未产出结果 —— 子进程参数或执行链路有 bug\n")
 		os.Exit(1)
