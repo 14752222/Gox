@@ -449,13 +449,28 @@ func setupObjectGlobal() *object.BuiltinFunction {
 			return describeProperty(desc)
 		}
 		// 规范: ToObject(O) —— undefined/null 抛 TypeError (ES5 15.2.3.3-1-1/2
-		// 亦然); 其余原始值经包装对象查找自有属性 (本运行时包装对象无实例
-		// 属性, 返回 undefined; rFXXbq: 全量 202 例 gOPD(<原始值>) 用例)。
+		// 亦然); 其余原始值经包装对象查找自有属性。String 包装的索引字符与
+		// length 是真实的自有属性 (不可写/可枚举/不可配置), 必须描述出来
+		// 而非一律 undefined。
 		if _, isUndef := args[0].(*object.Undefined); isUndef {
 			return object.NewTypeError("Object.getOwnPropertyDescriptor called on non-object")
 		}
 		if _, isNull := args[0].(*object.Null); isNull {
 			return object.NewTypeError("Object.getOwnPropertyDescriptor called on non-object")
+		}
+		// BigInt 不包装: Gox 的 BigInt 包装对象缺 [[BigIntData]] 内部槽语义,
+		// 包装会改变 Object.prototype.toString 等标签判定 (实测回归), 且
+		// BigInt 包装对象没有自有属性, 直接返回 undefined 即为正确结果。
+		if _, isBig := args[0].(*object.BigInt); isBig {
+			return object.UndefinedSingleton
+		}
+		wrapped := toObjectValue(args[0])
+		if store, ok := wrapped.(object.OwnPropertyStore); ok {
+			desc, exists := store.OwnDescriptor(toStr(args[1]))
+			if !exists {
+				return object.UndefinedSingleton
+			}
+			return describeProperty(desc)
 		}
 		return object.UndefinedSingleton
 	}))

@@ -67,8 +67,10 @@ func (w *PrimitiveObject) SetProperty(name string, val Value) {
 	w.Object.SetProperty(name, val)
 }
 
-// OwnDescriptor 让 String 包装的 length 与索引字符暴露为**不可写、不可枚举、
-// 不可配置**的自有属性 (规范 10.4.3.1 / 22.1.5)。
+// OwnDescriptor 让 String 包装的 length 与索引字符按规范 10.4.3.1 暴露:
+// length 为 {writable:false, enumerable:false, configurable:false};
+// 索引字符为 {writable:false, enumerable:true, configurable:false}
+// (注意索引字符**可枚举** —— for-in / Object.keys 语义依赖这一点)。
 //
 // 不补这一步, 嵌入的 *Object 只知道 Properties 里的用户键:
 // Object.getOwnPropertyDescriptor(Object('ab'), "length") 返回 undefined,
@@ -77,15 +79,12 @@ func (w *PrimitiveObject) SetProperty(name string, val Value) {
 // 失效 (throws-with-string-receiver 族)。
 func (w *PrimitiveObject) OwnDescriptor(name string) (PropertyDescriptor, bool) {
 	if s, ok := w.Primitive.(*String); ok {
-		ro := func(v Value) PropertyDescriptor {
-			return PropertyDescriptor{Value: v, Writable: false, Enumerable: false, Configurable: false}
-		}
 		if name == "length" {
-			return ro(NewInt(int64(UTF16Len(s.Value)))), true
+			return PropertyDescriptor{Value: NewInt(int64(UTF16Len(s.Value))), Writable: false, Enumerable: false, Configurable: false}, true
 		}
 		if idx, err := strconv.Atoi(name); err == nil && idx >= 0 {
 			if ch, ok := CharAtUTF16(s.Value, idx); ok {
-				return ro(NewString(ch)), true
+				return PropertyDescriptor{Value: NewString(ch), Writable: false, Enumerable: true, Configurable: false}, true
 			}
 		}
 	}
