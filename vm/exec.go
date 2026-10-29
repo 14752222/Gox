@@ -300,7 +300,28 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 		case bytecode.OP_LOAD_GLOBAL:
 			name := frame.Constants.Get(operand)
 			if s, ok := name.(*object.String); ok {
-				val, found := vm.globals.Get(s.Value)
+				// T2-4 热点优化: 全局读取内联缓存。键 = 常量池里的名字
+				// 字符串对象 (同一调用点恒定), 槽 = operand 直映射; 绑定
+				// 版本不符时整体作废重填。fib28 剖面: 全局查找
+				// (Environment.Get + map hash) 占 CPU ~15%, 每次递归调用
+				// 都要按名字哈希查全全局表。
+				var val object.Value
+				var found bool
+				idx := int(operand) & (len(vm.globalICKey) - 1)
+				if vm.globalICVersion == vm.globals.Version() && vm.globalICKey[idx] == s {
+					val, found = vm.globalICVal[idx], vm.globalICFound[idx]
+				} else {
+					if vm.globalICVersion != vm.globals.Version() {
+						vm.globalICVersion = vm.globals.Version()
+						for i := range vm.globalICKey {
+							vm.globalICKey[i] = nil
+						}
+					}
+					val, found = vm.globals.Get(s.Value)
+					vm.globalICKey[idx] = s
+					vm.globalICVal[idx] = val
+					vm.globalICFound[idx] = found
+				}
 				if !found {
 					if err := vm.throwNamedError("ReferenceError", "%s is not defined", s.Value); err != nil {
 						return err
@@ -588,14 +609,23 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			// 仅当被调确为全局 %eval% 内建时才置受限标志 (其余情况丢弃)。
 			vm.consumeEvalMark(fn)
 			// 收集参数 (栈上是 arg1, arg2, ..., argN, 逆序弹出)
-			args := make([]object.Value, numArgs)
+			// T2-4 热点优化: 参数装进 VM 级复用缓冲。只有 *object.Closure
+			// (非生成器) 分支直接使用该缓冲 —— callClosure 会同步把参数
+			// 拷进 frame.Locals / rest 数组 / arguments 副本, 不保留切片;
+			// 内建与生成器分支各自拷贝一份 (它们可能长期持有 args)。
+			if cap(vm.callArgsScratch) < numArgs {
+				vm.callArgsScratch = make([]object.Value, numArgs)
+			}
+			args := vm.callArgsScratch[:numArgs]
 			for i := numArgs - 1; i >= 0; i-- {
 				args[i] = vm.stack.Pop()
 			}
 
 			switch callee := fn.(type) {
 			case *object.BuiltinFunction:
-				result := callee.Fn(args...)
+				builtinArgs := make([]object.Value, numArgs)
+				copy(builtinArgs, args)
+				result := callee.Fn(builtinArgs...)
 				if result == nil {
 					result = object.UndefinedSingleton
 				}
@@ -624,7 +654,9 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				// (Node 实测: `var v = Object.prototype.valueOf; v()` 抛
 				// TypeError, 而 `v.call(globalThis)` 正常返回)。照 sloppy
 				// 归一会让 ToObject 成功, 于是该抛的 TypeError 不抛。
-				result := callee.Fn(object.UndefinedSingleton, args...)
+				builtinArgs := make([]object.Value, numArgs)
+				copy(builtinArgs, args)
+				result := callee.Fn(object.UndefinedSingleton, builtinArgs...)
 				if result == nil {
 					result = object.UndefinedSingleton
 				}
@@ -645,7 +677,11 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				// generator 函数调用: 不执行函数体, 返回 Generator 对象。
 				// 有形参前导段 (默认值/解构) 时, 先建立前导帧 —— 由主循环
 				// 同步执行前导段后冻结为 Generator (规范: 形参绑定在调用时完成)。
+				// 生成器会长期持有 args (gen.Args), 必须拷出复用缓冲。
 				if callee.Fn != nil && callee.Fn.IsGenerator {
+					genArgs := make([]object.Value, numArgs)
+					copy(genArgs, args)
+					args = genArgs
 					if genHasPrologue(callee.Fn) {
 						if err := vm.setupGenPrologueFrame(callee, args); err != nil {
 							if terr := vm.throwJSError(err); terr != nil {
@@ -667,7 +703,10 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 
 			case *object.Proxy:
 				// 代理: 转发到 apply trap (this 为 undefined)
-				result, err := vm.proxyApply(callee, object.UndefinedSingleton, args)
+				// trap 回调可长期持有 args, 拷出复用缓冲。
+				proxyArgs := make([]object.Value, numArgs)
+				copy(proxyArgs, args)
+				result, err := vm.proxyApply(callee, object.UndefinedSingleton, proxyArgs)
 				if err != nil {
 					if terr := vm.rethrowBridgeError(err); terr != nil {
 						return terr
@@ -1012,6 +1051,11 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				// 构造器 super() 换掉的 this 只体现在该帧上 (隐式返回 undefined
 				// 时 OP_NEW 需据此取 exotic 实例, 而非普通对象占位)。
 				ctorFrame := vm.frames[startIdx]
+				// T2-4 帧池化: 本帧指针被持有到 runFrom 之后 (同 Construct),
+				// 打 pin 防止弹栈后入池被复用改写。
+				if ctorFrame != nil {
+					ctorFrame.pinned = true
+				}
 				if err := vm.runFrom(startIdx); err != nil {
 					vm.unwindFramesTo(startIdx)
 					if terr := vm.rethrowBridgeError(err); terr != nil {

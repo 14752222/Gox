@@ -174,6 +174,7 @@ func (vm *VM) genThrow(gen *object.Generator, throwVal object.Value) (object.Val
 	}
 	genFrame := vm.rebuildGenFrame(gen, false)
 	genFrameIdx := vm.frameIdx
+	genStackBase := genFrame.StackBase
 
 	// 仅当 generator 帧自身挂有 try 处理器时才查找处理器:
 	// tryStack 中残留的更深/更浅帧条目属于无关执行上下文，
@@ -192,7 +193,7 @@ func (vm *VM) genThrow(gen *object.Generator, throwVal object.Value) (object.Val
 		// 取值 ⇒ async 调用返回函数体的值而不是 Promise (rZn4IS)。
 		// 注意顺序: 先取 frame/索引再 handleThrow, 因为 handleThrow
 		// 可能已经把 vm.frameIdx 降到更低。
-		vm.unwindGenFrame(genFrame, genFrameIdx)
+		vm.unwindGenFrame(genStackBase, genFrameIdx)
 		return object.UndefinedSingleton, true, &ThrowError{Value: throwVal}
 	}
 
@@ -231,9 +232,10 @@ func (vm *VM) genReturn(gen *object.Generator, returnVal object.Value) (object.V
 	}
 	genFrame := vm.rebuildGenFrame(gen, false)
 	genFrameIdx := vm.frameIdx
+	genStackBase := genFrame.StackBase
 	if !vm.handleReturn(returnVal) {
 		gen.Done = true
-		vm.unwindGenFrame(genFrame, genFrameIdx)
+		vm.unwindGenFrame(genStackBase, genFrameIdx)
 		return returnVal, true, nil
 	}
 	return vm.runSuspendedGen(gen)
@@ -314,17 +316,20 @@ func (vm *VM) rebuildGenFrame(gen *object.Generator, reuseLocals bool) *Frame {
 
 func (vm *VM) runSuspendedGen(gen *object.Generator) (object.Value, bool, error) {
 	genFrameIdx := vm.frameIdx
-	frame := vm.currentFrame()
+	frameStackBase := vm.currentFrame().StackBase
 	prevGen := vm.currentGenerator
 	vm.currentGenerator = gen
 	err := vm.runFrom(genFrameIdx)
 	vm.currentGenerator = prevGen
-	return vm.finishGenRun(gen, frame, genFrameIdx, err)
+	return vm.finishGenRun(gen, frameStackBase, genFrameIdx, err)
 }
 
 // finishGenRun 处理 generator 一次恢复运行的收尾。
+// frameStackBase 是 generator 帧入栈时的栈基 —— 必须在 runFrom 之前捕获:
+// 正常结束路径的 popFrame 已把帧回收进复用池, 此后再读 frame.StackBase
+// 读到的是清零后的值 (T2-4 帧池化)。
 
-func (vm *VM) finishGenRun(gen *object.Generator, frame *Frame, genFrameIdx int, err error) (object.Value, bool, error) {
+func (vm *VM) finishGenRun(gen *object.Generator, frameStackBase, genFrameIdx int, err error) (object.Value, bool, error) {
 	if err != nil {
 		if ysig, ok := err.(*YieldSignal); ok {
 			gen.Value = ysig.value
@@ -338,14 +343,14 @@ func (vm *VM) finishGenRun(gen *object.Generator, frame *Frame, genFrameIdx int,
 		// 调用方。帧泄漏会让 wrapper 帧被压住、OP_RETURN 在错误栈基上取值
 		// ⇒ async 调用返回 undefined 而不是 Promise (2026-10-02, rZn4IS)。
 		gen.Done = true
-		vm.unwindGenFrame(frame, genFrameIdx)
+		vm.unwindGenFrame(frameStackBase, genFrameIdx)
 		return object.UndefinedSingleton, true, err
 	}
 
 	// 正常结束: 弹出返回值
 	gen.Done = true
 	var result object.Value = object.UndefinedSingleton
-	if vm.stack.Len() > frame.StackBase {
+	if vm.stack.Len() > frameStackBase {
 		result = vm.stack.Pop()
 	}
 	gen.Value = result
@@ -355,18 +360,19 @@ func (vm *VM) finishGenRun(gen *object.Generator, frame *Frame, genFrameIdx int,
 // unwindGenFrame 回收因异常终止而仍留在帧栈上的 generator 帧。
 //
 // 只弹到 generator 自己那一帧为止 (含), 绝不动外层帧 —— 外层的 async
-// wrapper 还要继续执行 OP_RETURN。栈按该帧的 StackBase 截断, 与
-// OP_RETURN 的收尾语义一致。
+// wrapper 还要继续执行 OP_RETURN。栈按 generator 帧的 StackBase 截断,
+// 与 OP_RETURN 的收尾语义一致。stackBase 由调用方在弹帧前捕获 (T2-4
+// 帧池化后, 弹出的帧立即回收, 不可再读其字段)。
 
-func (vm *VM) unwindGenFrame(frame *Frame, genFrameIdx int) {
+func (vm *VM) unwindGenFrame(stackBase, genFrameIdx int) {
 	for vm.frameIdx > genFrameIdx {
 		vm.popFrame()
 	}
 	if vm.frameIdx == genFrameIdx {
 		vm.popFrame()
 	}
-	if vm.stack.Len() > frame.StackBase {
-		vm.stack.Truncate(frame.StackBase)
+	if vm.stack.Len() > stackBase {
+		vm.stack.Truncate(stackBase)
 	}
 }
 

@@ -42,7 +42,19 @@ type Binding struct {
 type Environment struct {
 	store map[string]Binding // 变量名 → 绑定
 	outer *Environment       // 外层作用域 (nil 表示全局作用域)
+
+	// version 随每次绑定变更自增 (T2-4 热点优化)。VM 的全局读取内联
+	// 缓存 (OP_LOAD_GLOBAL) 以它做失效判据: 缓存快照版本 != 当前版本
+	// 即整体作废。热路径只有 Get/读取, 不触碰 version。
+	version uint64
 }
+
+// Version 返回绑定变更版本号。
+func (e *Environment) Version() uint64 { return e.version }
+
+// bumpVersion 在任何写路径后自增版本。不导出: 失效判据只要求
+// "写入后版本单调变化"。
+func (e *Environment) bumpVersion() { e.version++ }
 
 // NewEnvironment 创建全局环境。
 func NewEnvironment() *Environment {
@@ -84,6 +96,7 @@ func (e *Environment) Set(name string, val object.Value) error {
 		}
 		binding.Value = val
 		e.store[name] = binding
+		e.bumpVersion()
 		return nil
 	}
 	if e.outer != nil {
@@ -102,6 +115,7 @@ func (e *Environment) Declare(name string, val object.Value, isConst bool) {
 		Value:   val,
 		IsConst: isConst,
 	}
+	e.bumpVersion()
 }
 
 // DeclareGlobal 执行顶层声明并写入全局环境，同时实现全局重声明检查:
@@ -148,6 +162,7 @@ func (e *Environment) DeclareGlobalVar(name string, val object.Value) error {
 		}
 	}
 	e.store[name] = Binding{Value: val, IsVar: true}
+	e.bumpVersion()
 	return nil
 }
 
@@ -156,6 +171,7 @@ func (e *Environment) DeclareGlobalVar(name string, val object.Value) error {
 // (可 delete)，与 var 的不可配置相对。
 func (e *Environment) DeclareImplicit(name string, val object.Value) {
 	e.store[name] = Binding{Value: val, IsImplicit: true}
+	e.bumpVersion()
 }
 
 // BindingNames 返回全局环境中全部绑定名 (字典序，保证确定性)。
@@ -202,6 +218,7 @@ func (e *Environment) SetGlobalBindingValue(name string, val object.Value, desc 
 	d := desc
 	b.Desc = &d
 	e.store[name] = b
+	e.bumpVersion()
 	return true
 }
 
@@ -216,6 +233,7 @@ func (e *Environment) DefineGlobalBinding(name string, desc object.PropertyDescr
 	b.Value = desc.Value
 	b.Desc = &d
 	e.store[name] = b
+	e.bumpVersion()
 	return nil
 }
 
@@ -235,6 +253,7 @@ func (e *Environment) DeleteGlobalBinding(name string) bool {
 		return false
 	}
 	delete(e.store, name)
+	e.bumpVersion()
 	return true
 }
 
@@ -308,4 +327,5 @@ func (e *Environment) CopyTo(target *Environment) {
 	for name, binding := range e.store {
 		target.store[name] = binding
 	}
+	target.bumpVersion()
 }

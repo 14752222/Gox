@@ -336,6 +336,7 @@ func (c *Compiler) compileFunctionSelf(name, selfName string, params []*ast.Para
 	meta.BaseSlot = baseSlot
 	meta.CapturePrefixLen = computeCapturePrefixLen(fnIns, baseSlot, c.constants)
 	meta.ArgumentsSlot = argumentsSlot
+	meta.SkipArguments = !argumentsObserved(fnIns, argumentsSlot)
 	meta.SelfSlot = selfSlot
 	meta.IsGenerator = isGenerator
 	meta.IsAsync = false
@@ -479,6 +480,7 @@ func (c *Compiler) compileAsyncFunctionSelf(name, selfName string, params []*ast
 	meta.BaseSlot = baseSlot
 	meta.CapturePrefixLen = computeCapturePrefixLen(wrapperIns, baseSlot, c.constants)
 	meta.ArgumentsSlot = argumentsSlot
+	meta.SkipArguments = !argumentsObserved(wrapperIns, argumentsSlot)
 	meta.IsAsync = true
 	meta.IsMethod = isMethod
 	meta.IsStrict = c.strict
@@ -602,6 +604,7 @@ func (c *Compiler) compileAsyncGeneratorSelf(name, selfName string, params []*as
 	meta.BaseSlot = baseSlot
 	meta.CapturePrefixLen = computeCapturePrefixLen(wrapperIns, baseSlot, c.constants)
 	meta.ArgumentsSlot = argumentsSlot
+	meta.SkipArguments = !argumentsObserved(wrapperIns, argumentsSlot)
 	meta.SelfSlot = selfSlot
 	meta.IsAsync = true
 	// wrapper 的 [[Prototype]] 是 %AsyncGeneratorFunction.prototype%，

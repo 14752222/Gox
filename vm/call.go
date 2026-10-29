@@ -63,6 +63,11 @@ func (vm *VM) constructValue(fn object.Value, args []object.Value) (object.Value
 			return nil, err
 		}
 		ctorFrame := vm.frames[startIdx]
+		// T2-4 帧池化: 本帧指针被持有到 runFrom 之后 (super() 换掉的 this
+		// 只体现在该帧上), 打 pin 防止弹栈后入池被复用改写。
+		if ctorFrame != nil {
+			ctorFrame.pinned = true
+		}
 		if err := vm.runFrom(startIdx); err != nil {
 			vm.pendingNewTarget, vm.hasPendingNewTarget = prevNT, prevHas
 			vm.unwindFramesTo(startIdx)
@@ -214,7 +219,12 @@ func (vm *VM) callFunction(fn object.Value, this object.Value, args []object.Val
 
 func (vm *VM) createClosure(meta *bytecode.FunctionMetadata, frame *Frame) *object.Closure {
 	// 保存当前帧的常量池引用
-	fn := metaToCompiledFunction(meta, frame.Constants.Constants)
+	// T2-4 热点优化: 同一 FunctionMetadata 的 CompiledFunction 按 VM 缓存
+	// 复用。timers10k 剖面: 每次闭包创建都走 metaToCompiledFunction 新建
+	// CompiledFunction + Parameters 切片 + Positions 拷贝 (3 个堆对象/闭包,
+	// 1 万次 setTimeout ≈ 3 万次分配)。CompiledFunction 创建后只读
+	// (JS 可见状态挂在 Closure 上), 复用安全; 缓存按 VM 隔离, 无跨 VM 竞态。
+	fn := vm.compiledFunctionFor(meta, frame.Constants.Constants)
 
 	// 捕获外层局部变量: 共享当前帧的 Locals 数组本身，而不是拷一份快照。
 	//
@@ -322,6 +332,22 @@ func (vm *VM) trackClosure(closure *object.Closure) {
 // callClosure 调用闭包函数。
 // 创建新帧，复制捕获的局部变量，放置参数。
 
+// sameConstantSlice 判断 pool 包装的常量切片与 slice 是否为同一底层数组。
+// 空切片与空切片视为相同 (两种包装的 Get 行为一致: 越界返回 undefined)。
+func sameConstantSlice(pool *bytecode.ConstantPool, slice []object.Value) bool {
+	if pool == nil {
+		return false
+	}
+	pc := pool.Constants
+	if len(pc) != len(slice) {
+		return false
+	}
+	if len(slice) == 0 {
+		return true
+	}
+	return &pc[0] == &slice[0]
+}
+
 func (vm *VM) callClosure(closure *object.Closure, args []object.Value) error {
 	fn := closure.Fn
 	if fn == nil {
@@ -335,11 +361,14 @@ func (vm *VM) callClosure(closure *object.Closure, args []object.Value) error {
 	}
 
 	// 创建新帧: 使用闭包自带的常量池 (跨模块时不同于 vm.constants)
+	// T2-4 热点优化: 同模块调用 (fn.Constants 与 vm.constants 底层数组同一)
+	// 直接复用 VM 的常量池包装, 免去每次调用一次 &ConstantPool{} 堆分配
+	// (fib28 剖面: 每次调用 1 个, 占全部分配的 ~16%)。
 	constants := vm.constants
-	if fn.Constants != nil {
+	if fn.Constants != nil && !sameConstantSlice(vm.constants, fn.Constants) {
 		constants = &bytecode.ConstantPool{Constants: fn.Constants}
 	}
-	frame := NewFrame(fn.Instructions, constants, fn.NumLocals)
+	frame := vm.acquireFrame(fn.Instructions, constants, fn.NumLocals)
 	frame.Closure = closure
 	// 本帧生效的 this: 箭头取词法捕获, 非箭头按 sloppy 归一 (裸调用 → globalThis)。
 	frame.This = vm.resolveFrameThis(closure)
@@ -424,7 +453,9 @@ func (vm *VM) callClosure(closure *object.Closure, args []object.Value) error {
 	}
 
 	// 创建 arguments 对象 (类数组, 含全部实参)。放在参数放置之后, 避免被参数覆盖。
-	if fn.ArgumentsSlot >= 0 && fn.ArgumentsSlot < len(frame.Locals) {
+	// T2-4 热点优化: 函数体从未引用 arguments (编译期扫描 SkipArguments) 时
+	// 跳过物化 —— 免去 argsCopy 切片 + arguments 数组两次堆分配/调用。
+	if !fn.SkipArguments && fn.ArgumentsSlot >= 0 && fn.ArgumentsSlot < len(frame.Locals) {
 		argsCopy := make([]object.Value, len(args))
 		copy(argsCopy, args)
 		frame.Locals[fn.ArgumentsSlot] = object.NewArray(argsCopy)

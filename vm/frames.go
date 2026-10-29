@@ -3,6 +3,7 @@ package vm
 import (
 	"os"
 
+	"github.com/14752222/Gox/bytecode"
 	"github.com/14752222/Gox/object"
 )
 
@@ -63,7 +64,50 @@ func (vm *VM) popFrame() *Frame {
 		}
 	}
 
+	// 帧回收 (T2-4 热点优化): Frame 结构体出栈后无任何长生命周期持有者,
+	// 清空引用字段后入池复用。Locals 置 nil 释放底层数组 (可能被逃逸闭包
+	// 持有为 binding cell, 绝不能随帧复用)。
+	// pinned 帧 (构造调用方在弹栈后还要读 This, 见 Frame.pinned) 不入池。
+	if f.pinned {
+		f.pinned = false
+		return f
+	}
+	f.Instructions = nil
+	f.Locals = nil
+	f.Closure = nil
+	f.This = nil
+	f.NewTarget = nil
+	f.Constants = nil
+	f.ModifiedSlots = nil
+	f.SharedCells = nil
+	f.CreatedClosures = f.CreatedClosures[:0]
+	f.Epoch = 0
+	f.SealMarks = f.SealMarks[:0]
+	f.StackBase = 0
+	f.PendingGen = nil
+	f.StopPC = 0
+	vm.frameFree = append(vm.frameFree, f)
+
 	return f
+}
+
+// acquireFrame 从复用池取帧 (无则新建)。仅重置 VM 调用时必然覆写的三个
+// 字段; 其余字段已由 recycle (popFrame) 清空, 新建帧零值天然满足。
+// 注意: Locals 每次都新分配 —— 逃逸闭包会把 frame.Locals 当 binding cell
+// 持有, 复用会串值; 且零值 nil 承载 TDZ 语义。
+func (vm *VM) acquireFrame(ins bytecode.Instructions, constants *bytecode.ConstantPool, numLocals int) *Frame {
+	var f *Frame
+	if n := len(vm.frameFree); n > 0 {
+		f = vm.frameFree[n-1]
+		vm.frameFree[n-1] = nil
+		vm.frameFree = vm.frameFree[:n-1]
+		f.Instructions = ins
+		f.PC = 0
+		f.Constants = constants
+		f.Locals = make([]object.Value, numLocals)
+		return f
+	}
+	return NewFrame(ins, constants, numLocals)
 }
 
 // Run 启动 VM 执行循环。

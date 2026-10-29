@@ -53,6 +53,10 @@ type CompiledFunction struct {
 	BaseSlot int
 	// ArgumentsSlot 是 arguments 对象的槽位 (-1 表示未使用)
 	ArgumentsSlot int
+	// SkipArguments 为真表示函数体从未读取 arguments 槽位 (编译期指令流
+	// 扫描得出, 见 compiler.argumentsObserved)。VM 调用时跳过 arguments
+	// 对象物化 (T2-4 热点优化: 省 2 次堆分配/调用)。
+	SkipArguments bool
 	// SelfSlot 是命名函数表达式的自引用槽位 (-1 表示无)。
 	// 函数被调用时 VM 把闭包自身写入该槽，函数体内通过名字
 	// 引用自身 (递归) 即读取此槽。

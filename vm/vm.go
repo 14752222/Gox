@@ -161,6 +161,50 @@ type VM struct {
 	dbgOp     bytecode.Opcode // 最近取出的 opcode
 	dbgPC     int             // 该指令的起始 PC (取指前)
 	dbgFrames int             // 当前帧数
+
+	// frameFree 是弹出帧的复用池 (T2-4 热点优化)。
+	// Frame 结构体本身不被任何长生命周期对象持有 (生成器只保存 Locals 切片
+	// 与 PC/指令等状态, 不保存 *Frame), 弹出后可整体回收复用。池上限天然
+	// 受 MaxFrames 约束, 不会无界增长。Locals 切片**不**进池: 逃逸闭包以
+	// frame.Locals 为 binding cell 持有其底层数组 (见 createClosure), 复用
+	// 会让后续调用改写旧闭包可见的绑定。
+	frameFree []*Frame
+
+	// callArgsScratch 是 OP_CALL 的参数装填复用缓冲 (T2-4 热点优化)。
+	// 每次调用 make 一次 args 切片是 fib28 剖面里 ~1.19M 次/run 的分配源。
+	// 仅 *object.Closure 非生成器分支直接使用 (callClosure 同步拷贝消费,
+	// 不保留切片); 内建/生成器/代理分支各自拷贝后才使用。
+	callArgsScratch []object.Value
+
+	// 全局读取内联缓存 (T2-4 热点优化): OP_LOAD_GLOBAL 以「常量池索引」
+	// 直映射到缓存槽, 键是常量池里的 *object.String 指针 (同一调用点的
+	// 名字字符串对象恒定)。globalICVersion 是全局环境绑定版本快照, 与
+	// runtime.Environment.Version() 不一致即整体作废 (绑定值变更必经
+	// Environment 的写方法, 全部带版本自增)。全局访问器 (Accessor) 的
+	// 缓存值同样安全: 绑定值被替换时版本已变, getter 每次访问仍照常执行。
+	globalICVersion uint64
+	globalICKey     [256]*object.String
+	globalICVal     [256]object.Value
+	globalICFound   [256]bool
+
+	// fnCache 是 FunctionMetadata → CompiledFunction 的按 VM 复用缓存
+	// (T2-4 热点优化)。同一编译单元里每次执行到 OP_CLOSURE 都会新建一个
+	// 闭包, 但其 fn 部分 (指令/常量/位置表/参数元数据) 只取决于 metadata,
+	// 创建后只读 —— 缓存后闭包创建路径省 3 次堆分配/次。
+	fnCache map[*bytecode.FunctionMetadata]*object.CompiledFunction
+}
+
+// compiledFunctionFor 返回 meta 对应的 (按 VM 缓存的) CompiledFunction。
+func (vm *VM) compiledFunctionFor(meta *bytecode.FunctionMetadata, consts []object.Value) *object.CompiledFunction {
+	if fn, ok := vm.fnCache[meta]; ok {
+		return fn
+	}
+	fn := metaToCompiledFunction(meta, consts)
+	if vm.fnCache == nil {
+		vm.fnCache = make(map[*bytecode.FunctionMetadata]*object.CompiledFunction)
+	}
+	vm.fnCache[meta] = fn
+	return fn
 }
 
 // New 创建虚拟机。
