@@ -738,14 +738,27 @@ type DynamicImportExpression struct {
 	// 而是走 SourceTextModuleRecord 的 GetModuleSource, 对文本模块恒抛
 	// SyntaxError (规范 16.2.1.7.2 第 1 步)。
 	IsSourcePhase bool
+	// Phase 记录 `import.<phase>(spec)` 的相位名 ("source"/"defer")。
+	// source 相位另有求值语义; defer 目前仅接受语法 (求值仍按普通动态
+	// import 处理, test262 的 defer 用例多为语法有效性用例)。
+	Phase string
+	// Attributes 是 import(spec, attrs) 的第二实参 (Import Attributes),
+	// 仅解析保存; Gox 的模块加载不做属性校验。
+	Attributes Expression
+	HasAttributes bool
 }
 
 func (di *DynamicImportExpression) TokenLiteral() string { return di.Token.Literal }
 func (di *DynamicImportExpression) String() string {
-	if di.IsSourcePhase {
-		return "import.source(" + di.Source.String() + ")"
+	s := "import"
+	if di.Phase != "" {
+		s += "." + di.Phase
 	}
-	return "import(" + di.Source.String() + ")"
+	s += "(" + di.Source.String()
+	if di.HasAttributes && di.Attributes != nil {
+		s += ", " + di.Attributes.String()
+	}
+	return s + ")"
 }
 func (di *DynamicImportExpression) expressionNode() {}
 

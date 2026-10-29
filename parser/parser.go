@@ -4493,32 +4493,59 @@ func (p *Parser) parseSwitchStatement() *ast.SwitchStatement {
 	return stmt
 }
 
-// isSourcePhaseImportAhead 报告 curToken 起的形态是否为 `import.source(`。
+// isSourcePhaseImportAhead 报告 curToken 起的形态是否为 `import.<phase>(`。
 // 语句层必须先问它: `import` 在 ModuleItem 位置优先按 import 声明解析, 而
-// import.source(...) 是**表达式** —— 不问就走声明路径, 于是报
-// "import declarations may only appear at the top level of a module"
-// (test262 的 dynamic-import 簇里 49 条就是这么死的)。
+// import.source(...)/import.defer(...) 是**表达式** —— 不问就走声明路径,
+// 于是报 "import declarations may only appear at the top level of a module"
+// (test262 的 dynamic-import 簇里 49+ 条就是这么死的)。
 func (p *Parser) isSourcePhaseImportAhead() bool {
-	return p.peekTokenIs(lexer.DOT) && p.peek2TokenIs(lexer.IDENTIFIER) &&
-		p.peekTokenAt(2).Literal == "source" && p.peek3TokenIs(lexer.LPAREN)
+	return p.peekTokenIs(lexer.DOT) && p.peek2TokenIs(lexer.IDENTIFIER) && p.peek3TokenIs(lexer.LPAREN)
 }
 
 // parseDynamicImport 解析动态 import() 表达式。
 // import("./mod.js") 返回 Promise。
 func (p *Parser) parseDynamicImport() ast.Expression {
 	di := &ast.DynamicImportExpression{Token: p.curToken()}
-	// import.source(spec): ES2025 source phase import。语法上它是
-	// ImportCall 的第二种形态 —— `import` `.` `source` `(` — 与成员表达式
-	// `import.foo` 不同, `source` 之后必须紧跟 `(`。
+	// import.<phase>(spec): source/defer 相位 (语法上是 ImportCall 的
+	// 第二/第三种形态 —— `import` `.` ident `(`; 与成员表达式 `import.foo`
+	// 不同, ident 之后必须紧跟 `(`)。source 相位有专属求值语义; defer
+	// 目前仅接受语法 (test262 的 defer 用例多为语法有效性用例)。
 	if p.isSourcePhaseImportAhead() {
+		phase := p.peekTokenAt(2).Literal
+		if phase != "source" && phase != "defer" {
+			// 未知相位: ImportCall 只定义 source/defer 两种 `import.<phase>(
+			// 形态, 其余 (import.UNKNOWN(...)) 必须 SyntaxError
+			// (dynamic-import/syntax/invalid/*-import-call-unknown 族)。
+			p.addError("unknown import phase: " + phase)
+			return nil
+		}
 		p.nextToken() // .
-		p.nextToken() // source
+		p.nextToken() // phase
 		p.nextToken() // (
 		p.nextToken() // 表达式首 token (与 import() 分支的 expectPeek+nextToken 同位置)
-		di.IsSourcePhase = true
+		di.Phase = phase
+		if phase == "source" {
+			di.IsSourcePhase = true
+		}
 		di.Source = p.parseExpression(LOWEST)
+		// 属性实参 + 尾逗号 (与下方 import() 同规则)
+		if p.peekTokenIs(lexer.COMMA) {
+			p.nextToken()
+			p.nextToken()
+			if !p.curTokenIs(lexer.RPAREN) {
+				di.HasAttributes = true
+				di.Attributes = p.parseExpression(LOWEST)
+			}
+			if p.curTokenIs(lexer.COMMA) {
+				p.nextToken()
+			}
+			if p.curTokenIs(lexer.RPAREN) {
+				p.nextToken()
+				return di
+			}
+		}
 		if !p.expectPeek(lexer.RPAREN) {
-			p.addError("expected ')' after import.source specifier")
+			p.addError("expected ')' after import specifier")
 			return nil
 		}
 		return di
@@ -4529,6 +4556,23 @@ func (p *Parser) parseDynamicImport() ast.Expression {
 	}
 	p.nextToken()
 	di.Source = p.parseExpression(LOWEST)
+	// import(spec, attrs [,]): ImportCall 的属性实参 (Import Attributes),
+	// 允许一个尾逗号。parseExpression 后 cur 停在 Source 末 token。
+	if p.peekTokenIs(lexer.COMMA) {
+		p.nextToken() // cur=COMMA
+		p.nextToken() // cur=attrs 首token 或 RPAREN (空段+尾逗号形态)
+		if !p.curTokenIs(lexer.RPAREN) {
+			di.HasAttributes = true
+			di.Attributes = p.parseExpression(LOWEST)
+		}
+		if p.curTokenIs(lexer.COMMA) {
+			p.nextToken() // 尾逗号 → cur=RPAREN
+		}
+		if p.curTokenIs(lexer.RPAREN) {
+			p.nextToken() // 消费 import 的 ')' (attrs 路径自行收口)
+			return di
+		}
+	}
 	if !p.expectPeek(lexer.RPAREN) {
 		p.addError("expected ')' after import specifier")
 		return nil
