@@ -1,0 +1,54 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# 自动发版触发器：小版本号（补丁位）自增，v0.15.0 → v0.15.1 → …
+#
+# 实际发版逻辑在 scripts/auto-release.sh（版本号解析、三处真相点同步、
+# 推 tag 全在那边）；本文件只负责两个入口：
+#   * workflow_dispatch   —— 手动 / 夜间任务 agent 通过 gh workflow run 触发
+#   * repository_dispatch —— 供外部自动化以 {"event_type":"auto-release"} 触发
+#
+# tag 推上去之后的事情由 release.yml 接管（交叉编译 → npm 发布 → GitHub Release），
+# 两条流水线共用 npm-release concurrency，天然串行、不会互相踩。
+#
+# 认证：gox-npm 是独立仓库，GITHUB_TOKEN 写不了它 —— 必须配 RELEASE_PAT secret
+#   （对本仓与 gox-npm 均有 contents:write 的 PAT）。未配置时本作业在第一步
+#   明确报错退出，绝不退化成"只改一半"的发布。
+# ─────────────────────────────────────────────────────────────────────────────
+name: auto-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      note:
+        description: 任务标识（写入 commit message，如 "T2-4 引擎热点第一批"）
+        type: string
+        default: ''
+  repository_dispatch:
+    types: [auto-release]
+
+permissions:
+  contents: write # 改 main.go + 推 tag（gox-npm 的写入走 RELEASE_PAT）
+
+concurrency:
+  group: npm-release
+  cancel-in-progress: false # 与 release.yml 同组排队，发版串行
+
+jobs:
+  release:
+    name: 补丁号自增并发起发版
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 自动发版（版本号自增 + 三处真相点同步 + 推 tag）
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_PAT }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          NOTE: ${{ inputs.note || github.event.client_payload.note || '' }}
+        run: |
+          set -euo pipefail
+          if [ -z "${GH_TOKEN}" ]; then
+            echo "::error::未配置 RELEASE_PAT secret（需对本仓与 gox-npm 均有 contents:write）——GITHUB_TOKEN 写不了 gox-npm 仓，无法完成版本号三处同步"
+            exit 1
+          fi
+          bash scripts/auto-release.sh --note "${NOTE}"
