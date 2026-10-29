@@ -91,20 +91,50 @@ next_tag() {
   done
 }
 
-# package.json / main.go 的版本号改写（stdin → stdout）
+# 取 raw 文件内容，带「元数据污染」防御 —— contents API 偶发无视 raw Accept 头、
+#   把 JSON 元数据（含 sha/encoding/content 键）整个当响应吐回来。2026-10-29 实测：
+#   这份 JSON 被 bump_content 的 JSON 分支改了 "version" 后写进 main.go，main 直接
+#   构建红、当晚 tag 的 release 构建失败。防御两层：识别出元数据就重试，3 次仍
+#   取不到 raw 就放弃写入 —— 宁可发版失败，也绝不把元数据写进源文件。
+fetch_raw() { # $1=repo $2=path $3=branch → stdout
+  local repo="$1" path="$2" branch="$3" try raw
+  for try in 1 2 3; do
+    raw=$(api "$API/repos/${repo}/contents/${path}?ref=${branch}" -H "Accept: application/vnd.github.raw") || true
+    if printf '%s' "$raw" | head -c 2000 | grep -q '"encoding"'; then
+      echo "::warning::${repo}/${path} 第 ${try} 次取到 JSON 元数据而非文件内容（API raw 头被忽略），重试" >&2
+      sleep 2
+      continue
+    fi
+    if [ -z "$raw" ]; then
+      echo "::warning::${repo}/${path} 第 ${try} 次取到空内容，重试" >&2
+      sleep 2
+      continue
+    fi
+    printf '%s' "$raw"
+    return 0
+  done
+  echo "::error::${repo}/${path} 连续 3 次取不到 raw 内容 —— 放弃写入，禁止把 JSON 元数据写进源文件" >&2
+  return 1
+}
+
+# package.json / main.go 的版本号改写（stdin → stdout）。
+#   按文件名分流，不做内容嗅探：内容以 { 开头不再等于 package.json ——
+#   元数据 JSON 也是 { 开头（这正是 2026-10-29 事故的成因）。
 bump_content() { # $1: 新版本(无v)  $2: 提示用途的路径名
   python3 -c '
 import sys, json, re
 ver, path = sys.argv[1], sys.argv[2]
 raw = sys.stdin.read()
-if raw.lstrip().startswith("{"):
+if path.endswith("package.json"):
     data = json.loads(raw)
+    if "encoding" in data or "content" in data:
+        sys.exit(f"{path} 取到的是 contents API 元数据 JSON，不是文件内容 —— 禁止写入")
     data["version"] = ver
     print(json.dumps(data, ensure_ascii=False, indent=2) + "\n")
 else:
     out, n = re.subn(r"(const version = \")[^\"]+(\")", r"\g<1>" + ver + r"\g<2>", raw, count=1)
     if n != 1:
-        sys.exit(f"{path} 里找不到 const version")
+        sys.exit(f"{path} 里找不到 const version —— 八成是取回了元数据/错误内容，禁止写入")
     sys.stdout.write(out)
 ' "$1" "$2"
 }
@@ -114,7 +144,7 @@ update_file() { # $1=repo $2=path $3=branch $4=ver $5=commit_msg
   local meta sha content payload
   meta=$(api "$API/repos/${repo}/contents/${path}?ref=${branch}")
   sha=$(printf '%s' "$meta" | jq -r '.sha')
-  content=$(api "$API/repos/${repo}/contents/${path}?ref=${branch}" -H "Accept: application/vnd.github.raw" | bump_content "$ver" "$path")
+  content=$(fetch_raw "$repo" "$path" "$branch" | bump_content "$ver" "$path")
   payload=$(jq -n --arg m "$msg" --arg s "$sha" \
     --arg c "$(printf '%s' "$content" | base64 -w0)" --arg b "$branch" \
     '{message:$m, content:$c, sha:$s, branch:$b}')
@@ -139,8 +169,7 @@ main() {
   # （比如远端 tag 列表不全），把版本号往回写会造成回退事故 —— 中止。
   local cur_ver
   cur_ver=$(git ls-remote "$ORIGIN_URL" "refs/heads/${RELEASE_BRANCH}" >/dev/null 2>&1 \
-    && api "$API/repos/${REPO}/contents/cmd/gox/main.go?ref=${RELEASE_BRANCH}" \
-        -H "Accept: application/vnd.github.raw" \
+    && fetch_raw "$REPO" "cmd/gox/main.go" "${RELEASE_BRANCH}" \
     | grep -m1 -oP 'const version = "\K[0-9]+\.[0-9]+\.[0-9]+' || true)
   if [ -n "$cur_ver" ] && [ "$(printf '%s\n%s\n' "$new_ver" "$cur_ver" | sort -V | head -1)" != "$cur_ver" ]; then
     echo "::error::新版本 ${new_ver} 低于 main.go 当前版本 ${cur_ver} —— tag 解析异常，拒绝发版。" >&2
@@ -150,7 +179,7 @@ main() {
   # ── ② 本仓 main.go ──
   msg="chore(release): 自动发版 v${new_ver}${NOTE:+ — ${NOTE}}"
   main_sha=$(api "$API/repos/${REPO}/contents/cmd/gox/main.go?ref=${RELEASE_BRANCH}" | jq -r '.sha')
-  main_content=$(api "$API/repos/${REPO}/contents/cmd/gox/main.go?ref=${RELEASE_BRANCH}" -H "Accept: application/vnd.github.raw" \
+  main_content=$(fetch_raw "$REPO" "cmd/gox/main.go" "${RELEASE_BRANCH}" \
     | bump_content "$new_ver" "cmd/gox/main.go")
   payload=$(jq -n --arg m "$msg" --arg s "$main_sha" \
     --arg c "$(printf '%s' "$main_content" | base64 -w0)" --arg b "$RELEASE_BRANCH" \
