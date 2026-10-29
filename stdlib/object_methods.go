@@ -1257,7 +1257,10 @@ func resDescBool(v object.Value, key string) bool {
 // describeProperty 把内部 PropertyDescriptor 转成 JS 描述符对象
 // (Object.getOwnPropertyDescriptor 的返回形态)。
 func describeProperty(desc object.PropertyDescriptor) object.Value {
-	result := object.NewObject()
+	// 必须是"普通对象" ([[Prototype]] = Object.prototype): test262 大量用例
+	// 在 gOPD 结果上调 hasOwnProperty/toString 等原型方法
+	// (NewObject 的 Proto 是 null, 会得到 "undefined is not a function")。
+	result := object.NewPlainObject()
 	result.SetProperty("configurable", object.NewBoolean(desc.Configurable))
 	result.SetProperty("enumerable", object.NewBoolean(desc.Enumerable))
 	if acc, isAcc := desc.Value.(*object.Accessor); isAcc {
