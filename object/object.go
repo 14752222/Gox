@@ -143,6 +143,12 @@ var (
 
 // TypeOf 返回 JavaScript typeof 操作符的字符串结果。
 func TypeOf(v Value) string {
+	// 原始值包装对象是对象: typeof new String("x") === "object" (规范 12.5.1)。
+	// PrimitiveObject.Type() 返回 STRING_OBJ 等是给 instanceof 匹配用的,
+	// typeof 必须单独判定。
+	if _, ok := v.(*PrimitiveObject); ok {
+		return "object"
+	}
 	switch v.Type() {
 	case NUMBER_OBJ:
 		return "number"

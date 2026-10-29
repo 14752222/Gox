@@ -1391,6 +1391,18 @@ func descriptorFromJS(descVal object.Value) (object.PropertyDescriptor, object.V
 // 共用 (普通对象 / 数组 / 函数类一视同仁 —— 各类型的描述符落点由
 // OwnPropertyStore.DefineOwn 负责)。
 func defineOneProperty(store object.OwnPropertyStore, key string, descVal object.Value) object.Value {
+	// 数组专属: "length" 走 ArraySetLength (规范 10.4.2.1); 越界索引要求
+	// 数组可扩展且 length 可写 (rFXXbq: defineProperty length/索引族)。
+	if arr, ok := store.(*object.Array); ok {
+		if key == "length" {
+			return defineArrayLengthDesc(arr, descVal)
+		}
+		if idx, err := strconv.Atoi(key); err == nil && idx >= 0 && idx >= len(arr.Elements) {
+			if !arr.IsExtensible() || arr.NonWritableLength {
+				return object.NewTypeError("Cannot define property %s: array length is non-writable or array is non-extensible", key)
+			}
+		}
+	}
 	if !object.IsObjectValue(descVal) {
 		// 规范: ToPropertyDescriptor 对非对象 (原始值) 抛 TypeError。
 		return object.NewTypeError("Property description must be an object")
@@ -1508,6 +1520,104 @@ func defineOneProperty(store object.OwnPropertyStore, key string, descVal object
 		nd.Configurable = toBool(v)
 	}
 	store.DefineOwn(key, nd)
+	return nil
+}
+
+// toUint32Float 实现 ToUint32 (供数组 length 校验)。
+func toUint32Float(f float64) float64 {
+	if math.IsNaN(f) {
+		return 0
+	}
+	if f <= -1e18 || f >= 1e18 {
+		// 超出精度/巨大值: 规范用 int32 位模式取模, 这里用 2^32 取模近似
+		// (对 2^53 内的整数值精确)。
+		m := math.Mod(math.Trunc(f), 4294967296)
+		if m < 0 {
+			m += 4294967296
+		}
+		return m
+	}
+	m := math.Mod(math.Trunc(f), 4294967296)
+	if m < 0 {
+		m += 4294967296
+	}
+	return m
+}
+
+// defineArrayLengthDesc 实现 ArraySetLength: Object.defineProperty(arr,
+// "length", desc) 的语义 (截断/增长/RangeError/不可写 length)。
+// get 为描述符字段读取器 (HasProperty+Get 语义)。
+func defineArrayLengthDesc(arr *object.Array, descVal object.Value) object.Value {
+	oldLen := len(arr.Elements)
+	newLen := oldLen
+	hasNewLen := false
+	// ToPropertyDescriptor/ArraySetLength: value 字段存在 (即使 undefined)
+	// 即触发长度变更; ToUint32(value) ≠ ToNumber(value) → RangeError。
+	if v, found := descVal.GetProperty("value"); found {
+		num, errVal := toNumberViaPrimitive(v)
+		if errVal != nil {
+			return errVal
+		}
+		u := toUint32Float(num)
+		if u != num {
+			return object.NewRangeError("Invalid array length")
+		}
+		newLen = int(u)
+		hasNewLen = true
+	}
+	// length 恒不可配置、不可枚举: 显式写 true → TypeError。
+	if v, found := descVal.GetProperty("enumerable"); found && toBool(v) {
+		return object.NewTypeError("Cannot redefine property: length")
+	}
+	if v, found := descVal.GetProperty("configurable"); found && toBool(v) {
+		return object.NewTypeError("Cannot redefine property: length")
+	}
+	// 访问器描述符: length 是不可配置的数据属性 → TypeError
+	if _, hasGet := descVal.GetProperty("get"); hasGet {
+		return object.NewTypeError("Cannot redefine property: length")
+	}
+	if _, hasSet := descVal.GetProperty("set"); hasSet {
+		return object.NewTypeError("Cannot redefine property: length")
+	}
+	newWritable := !arr.NonWritableLength
+	if v, found := descVal.GetProperty("writable"); found {
+		newWritable = toBool(v)
+	}
+	// 现存 length 不可写时, 新描述符也不得把它改回可写。
+	if v, found := descVal.GetProperty("writable"); found && toBool(v) && arr.NonWritableLength {
+		return object.NewTypeError("Cannot redefine property: length")
+	}
+	if !hasNewLen {
+		arr.NonWritableLength = !newWritable
+		return nil
+	}
+	if newLen >= oldLen {
+		// 增长: 现存 length 不可写时 newLen > oldLen 失败; 相等允许
+		// (规范 15.2.3.6-4-163)。
+		if arr.NonWritableLength && newLen > oldLen {
+			return object.NewTypeError("Cannot redefine property: length")
+		}
+		for len(arr.Elements) < newLen {
+			arr.Elements = append(arr.Elements, object.UndefinedSingleton)
+		}
+		arr.NonWritableLength = !newWritable
+		return nil
+	}
+	// 收缩: 现存 length 不可写 → TypeError (规范 15.2.3.6-4-164);
+	// 从高位向低位逐个 [[Delete]]; 遇到不可配置元素停在 j+1。
+	if arr.NonWritableLength {
+		return object.NewTypeError("Cannot redefine property: length")
+	}
+	limit := newLen
+	for j := oldLen - 1; j >= newLen; j-- {
+		if !arr.DeleteOwn(strconv.Itoa(j)) {
+			limit = j + 1
+			break
+		}
+	}
+	arr.TruncateTo(limit)
+	arr.DropDescsFrom(limit)
+	arr.NonWritableLength = !newWritable
 	return nil
 }
 

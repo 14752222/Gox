@@ -23,6 +23,24 @@ func toString(v Value, depth int) string {
 		return "..." // 递归超限，避免栈溢出
 	}
 	switch t := v.(type) {
+	case *PrimitiveObject:
+		// 包装对象: ToPrimitive(obj, hint string) —— 先 toString 后 valueOf
+		// (OrdinaryToPrimitive)。String.prototype.toString 返回 [[StringData]]，
+		// 因此 ToString(new String("Hello")) === "Hello" (也决定 ToPropertyKey:
+		// o[new String("k")] 与 Object.defineProperty(o, new String("k")) 的键)。
+		if m, ok := t.GetProperty("toString"); ok && IsCallable(m) {
+			r := CallFunction(m, t)
+			if r != nil {
+				return toString(UnwrapPrimitive(r), depth+1)
+			}
+		}
+		if m, ok := t.GetProperty("valueOf"); ok && IsCallable(m) {
+			r := CallFunction(m, t)
+			if r != nil {
+				return toString(UnwrapPrimitive(r), depth+1)
+			}
+		}
+		return "[object Object]"
 	case *BigInt:
 		// BigInt 的语言层字符串转换不带 "n" 后缀 (区别于 Inspect)。
 		return t.Value.String()

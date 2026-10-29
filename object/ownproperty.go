@@ -282,6 +282,18 @@ func (a *Array) DefineOwn(name string, desc PropertyDescriptor) bool {
 	return true
 }
 
+// truncateTo 将逻辑长度收缩到 n (截断 Elements 切片; 洞与描述符由调用方处理)。
+func (a *Array) truncateTo(n int) {
+	if n >= 0 && n <= len(a.Elements) {
+		a.Elements = a.Elements[:n]
+	}
+}
+
+// TruncateTo / DropDescsFrom: stdlib 的 ArraySetLength (defineProperty
+// "length") 需要的导出包装。
+func (a *Array) TruncateTo(n int) { a.truncateTo(n) }
+func (a *Array) DropDescsFrom(n int) { a.dropDescsFrom(n) }
+
 // dropDescsFrom 删除索引 >= from 的显式描述符 (length 截断时调用),
 // 保持"PropDescs 的索引键恒在 Elements 范围内"这一不变量。
 func (a *Array) dropDescsFrom(from int) {
