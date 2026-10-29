@@ -147,6 +147,12 @@ update_file() { # $1=repo $2=path $3=branch $4=ver $5=commit_msg
   meta=$(api "$API/repos/${repo}/contents/${path}?ref=${branch}")
   sha=$(printf '%s' "$meta" | jq -r '.sha')
   content=$(fetch_raw "$repo" "$path" "$branch" | bump_content "$ver" "$path")
+  # 命令替换 $( ) 会吞掉全部尾换行；gen-npm-mobile-pkgs.py 生成物带一个
+  # 尾换行，--check 逐字节比对，package.json 必须补回恰好一个（2026-10-29
+  # v0.15.7 release 闸门实测）。
+  case "$path" in
+    */package.json|package.json) content="${content}"$'\n' ;;
+  esac
   payload=$(jq -n --arg m "$msg" --arg s "$sha" \
     --arg c "$(printf '%s' "$content" | base64 -w0)" --arg b "$branch" \
     '{message:$m, content:$c, sha:$s, branch:$b}')
