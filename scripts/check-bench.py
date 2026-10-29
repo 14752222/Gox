@@ -14,7 +14,13 @@ vm / compiler 的热路径，这正是最容易"悄悄引入每帧/每次调用�
 
 1. **比值判据（主，跨平台）**：同一份结果里 `gox / node` 的比值。两个栈跑的是
    完全同源的脚本（scripts/bench/*.js），机器差异被约掉；gox 自己退化 ⇒ 比值
-   上升。这一条不挑机器，是闸门的主力。
+   上升。这一条对**时间指标**不挑机器，是闸门的主力。
+   **rss_kb 是例外（2026-10-29 实测教训）**：「机器差异被约掉」的前提在 RSS 上
+   不成立 —— JS 栈的 RSS 受 runner 内存规格 / node 构建 / 内核版本影响，跨机型
+   漂移可达 ±30%（当晚实测：goja RSS 10432→7304 KB，而 gox 自己的 RSS 反而降了
+   3.9%），远超 1.15 阈值带宽 —— 比值虚红纯属对照栈漂移，不是引擎退化。所以
+   rss 的比值只在 host 指纹与基线一致时判红，跨机型降级为「只记录」（与下面
+   绝对值判据的同机型保护对齐）。
 2. **绝对值判据（辅，仅限同机型）**：只有当 host 指纹（platform / machine /
    cpu / cores）与基线**完全一致**时才启用；不一致时该项降级为「只记录」，
    并在输出里写明原因 —— 不拿一个注定误报的判据去刷红。
@@ -187,10 +193,23 @@ def compare(base, doc, github=False):
             notes.append("gox 缺指标 %s（本次结果里没有它），跳过" % metric)
             continue
 
-        # ① 比值判据（跨平台，主力）——对**每个**基线里有、本次又有的对照栈判
+        # ① 比值判据（跨平台，主力）——对**每个**基线里有、本次又有的对照栈判。
+        #    rss_kb 例外：跨机型时只记录不判红（见文件头「rss_kb 是例外」）。
         if metric in cur_ratio and metric in base_ratio:
             base_refs = base_ratio[metric]
             cur_refs = dict(cur_ratio[metric])
+            if metric == "rss_kb" and not same_host:
+                for ref in REFERENCE_STACKS:
+                    cr = cur_refs.get(ref)
+                    br = base_refs.get(ref)
+                    if cr and br:
+                        rows.append(("gox/%s %s" % (ref, metric), br, cr,
+                                     cr / float(br)))
+                notes.append(
+                    "%s：host 与基线不一致（%s vs %s），对照栈 RSS 跨机型漂移大"
+                    "（实测可达 ±30%%），比值只记录不判红"
+                    % (metric, host_fingerprint(doc), host_fingerprint(base)))
+                continue
             judged = False
             for ref in REFERENCE_STACKS:
                 cr = cur_refs.get(ref)
@@ -201,10 +220,15 @@ def compare(base, doc, github=False):
                 r = cr / float(br)
                 rows.append(("gox/%s %s" % (ref, metric), br, cr, r))
                 if r > MAX_RATIO[metric]:
+                    if metric == "rss_kb":
+                        why = ("内存比升高 —— gox 涨内存或对照栈缩水，"
+                               "先看两栈各自的绝对值再归因")
+                    else:
+                        why = ("引擎相对 %s 变慢了，通常是热路径的每次调用成本上升"
+                               % ref)
                     regressions.append(
-                        "%s 的 gox/%s 比值从 %.3f 涨到 %.3f（×%.2f，阈值 %.2f）—— "
-                        "引擎相对 %s 变慢了，通常是热路径的每次调用成本上升"
-                        % (metric, ref, br, cr, r, MAX_RATIO[metric], ref))
+                        "%s 的 gox/%s 比值从 %.3f 涨到 %.3f（×%.2f，阈值 %.2f）—— %s"
+                        % (metric, ref, br, cr, r, MAX_RATIO[metric], why))
             if judged:
                 continue
             # 比值字段两边都有，但对照栈对不上（如基线只记了 node、本次只跑了
@@ -291,15 +315,18 @@ def main_check(path, github, update):
 def self_test():
     """负向自测：**一个从没失败过的闸门等于黑盒**。
 
-    这里用合成数据钉住五件事：
+    这里用合成数据钉住七件事：
       1. gox 相对 node 慢 1.5×  ⇒ 必须红，且点名是哪个指标；
       2. gox 相对 bun 慢（且本次结果里没有 node）⇒ 必须红，点名 bun ——
          [T2-3] bun 成为正式对照系后，node 缺席不能让判据跟着失效；
       3. 内存涨 1.4×            ⇒ 必须红；
       4. 正常波动（1.05×）      ⇒ 必须绿（防"判据过宽/过窄"两个方向）；
-      5. 涨幅超比值但低于最小增量 ⇒ 必须绿（噪声过滤真的生效）。
+      5. 涨幅超比值但低于最小增量 ⇒ 必须绿（噪声过滤真的生效）；
+      6. 跨 host 时 rss 比值虚涨 ⇒ 必须绿（对照栈内存跨机型漂移不判红，
+         2026-10-29 实测：goja RSS 在另一台 runner 上缩水 30% 把闸门打红）；
+      7. 跨 host 时时间指标退化 ⇒ 仍必须红（rss 例外不能外溢到时间指标）。
     """
-    def doc(gox, node, bun=None):
+    def doc(gox, node, bun=None, host="selftest"):
         results = [
             {"stack": "gox", "startup_ms": gox[0], "fib28_ms": gox[1],
              "timers10k_ms": gox[2], "rss_kb": gox[3]},
@@ -313,8 +340,8 @@ def self_test():
                             "fib28_ms": bun[1], "timers10k_ms": bun[2],
                             "rss_kb": bun[3]})
         return {"generated_at": "selftest", "runs_per_metric": 1,
-                "host": {"platform": "selftest", "machine": "selftest",
-                         "cpu": "selftest", "cores": 1},
+                "host": {"platform": host, "machine": host,
+                         "cpu": host, "cores": 1},
                 "results": results}
 
     # 基线含 node 与 bun 两个对照栈（新版基线格式：每个对照栈各记一份比值）。
@@ -337,6 +364,16 @@ def self_test():
         ("涨幅低于最小增量必须绿（噪声）",
          doc([35, 100, 200, 20000], [60, 100, 80, 60000], [70, 120, 100, 70000]),
          base, False, ""),
+        # 2026-10-29 实测案例的还原：gox RSS 反而降了，goja 在另一台 runner 上
+        # 缩水 30%，把 gox/goja 内存比从 2.27 顶到 3.11 —— 跨机型时必须只记录。
+        ("跨 host 时 rss 比值虚涨必须绿（对照栈内存跨机型漂移）",
+         doc([30, 100, 200, 18700], [30, 50, 40, 30000], [30, 60, 50, 35000],
+             host="otherrunner"),
+         base, False, ""),
+        ("跨 host 时时间指标退化仍必须红（rss 例外不外溢）",
+         doc([30, 150, 200, 20000], [30, 50, 40, 30000], [30, 60, 50, 35000],
+             host="otherrunner"),
+         base, True, "fib28_ms"),
     ]
     ok = True
     for name, d, b, want_red, want_kw in cases:
