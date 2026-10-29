@@ -204,8 +204,27 @@ rawfile 脚本端到端: `gfx/mobile/harmony_asset_test.go`)。
 | `go build ./...` (darwin) | ✅ 通过 |
 | iOS c-archive 交叉编译 (`GOOS=ios GOARCH=arm64 CGO_ENABLED=1`) | ✅ 通过 |
 | Swift typecheck + **xcodebuild 完整构建** (iphonesimulator, 含 libgox.a 链接) | ✅ BUILD SUCCEEDED |
-| Android libgox (cgo+jni.h) | ⬜ 未编译 (本机无 NDK); gofmt 语法检查通过 |
-| Kotlin 编译 | ⬜ 未编译 (本机无 gradle/Android SDK); 已按 framework-only API 逐项静态自查 |
+| Android libgox (cgo+jni.h) | ✅ 已从零重建 (2026-10-29, 见下节) |
+| Kotlin 编译 | ✅ 壳工程 `assembleDebug` 构建通过 (2026-10-29, 见下节) |
+
+## Android NDK 从零重建 (2026-10-29, roadmap P0-5 兑付)
+
+在有 NDK 的环境（Ubuntu 22.04 沙箱）从零搭起整条 Android 构建链并跑通 ——
+此前「本机无 NDK / 无 gradle」的两个 ⬜ 全部转 ✅：
+
+| 项 | 结果 |
+|---|---|
+| 工具链 | Android cmdline-tools + NDK **r28c (28.2.13676358)** + platform-35 + build-tools 34.0.0 + Gradle 8.9（AGP 8.6.1 / Kotlin 1.9.24，与 build.gradle.kts 声明的组合一致） |
+| `bash scripts/build-android.sh`（arm64-v8a） | ✅ 25MB, ELF 校验通过（AArch64 共享库） |
+| `bash scripts/build-android.sh --abi x86_64` | ✅ 27MB, ELF 校验通过（x86-64 共享库） |
+| JNI 导出符号 | ✅ `llvm-nm -D` 核对 20 个 `Java_com_gox_GoxRuntime_native*` 与 `gfx/android/libgox/*.go` 源码逐一对应 |
+| 壳工程 `gradle :app:assembleDebug` | ✅ BUILD SUCCESSFUL（36 tasks, 5m3s; 仅既有 deprecation 警告, 无错误） |
+| APK 产物 | ✅ app-debug.apk 53MB, `lib/{arm64-v8a,x86_64}/libgox.so` 双 ABI 齐备（aapt2 核对: com.gox.demo, minSdk 24 / targetSdk 35 / compileSdk 35） |
+| `go build ./...` + `go test ./gfx/mobile/` (linux) | ✅ 通过 |
+
+结论：发布给用户的 SDK 构建链**可被第三方环境从零重建**（P0-5 的核心质疑解除）；
+`dist/android/<abi>/libgox.so` → `jniLibs/` → APK 全链路在本机复现成功。
+剩余真机项（触摸/多指/density/帧率, §1~§3）不受影响, 仍等 arm64 真机。
 
 ## 鸿蒙验证情况 (2026-10-01)
 
