@@ -197,6 +197,11 @@ func SetupGlobals() *runtime.Environment {
 	// values / entries 方法对象。见 wellknown_symbols.go 的说明。
 	setupWellKnownSymbolMembers(env)
 
+	// ===== 内建函数/方法统一设置规范 length 值 =====
+	// 必须放在最后: 所有内建此刻均已注册, 限定名 (如 "Array.prototype.map")
+	// 才能全部解析成功。
+	applyBuiltinLengths(env)
+
 	return env
 }
 
