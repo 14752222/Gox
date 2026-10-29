@@ -28,7 +28,7 @@ import (
 // version 是 `gox version` 报的版本号。**与 npm/package.json 的 version 手工保持一致**
 // （发版时两处一起改，见 docs/npm-release.md 的同步清单）—— 仓库里没有版本注入机制，
 // 刻意不引入第二个真相来源以外的复杂度。
-const version = "0.15.2"
+const version = "0.15.3"
 
 func main() {
 	// 剖面入口: 默认关闭, 只在 GOX_PPROF / GOX_MEMPROFILE 设了才付成本
