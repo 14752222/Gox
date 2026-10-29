@@ -496,9 +496,67 @@ func (b *BuiltinFunction) MarkEnumerable(name string) {
 	}
 }
 
-// NewBuiltin 创建内建函数的便捷函数
+// nonConstructableBuiltins 是规范明确**不带** [[Construct]] 的内建函数名
+// (来源: test262 各 */not-a-constructor.js 用例 + species 用的 parseInt)。
+// 绝大多数原型方法已走 BuiltinMethod (天然不可构造); 这里收编以
+// NewBuiltin 形式注册的静态/命名空间/原型函数 (rFXXbq: 200 例 not-a-
+// constructor 族)。注意 Promise/Proxy 本身可构造, 不在名单。
+var nonConstructableBuiltins = map[string]bool{
+	"Symbol.iterator": true, "Symbol.matchAll": true, "Symbol.search": true,
+	"UTC": true, "abs": true, "acos": true, "acosh": true, "add": true,
+	"adopt": true, "all": true, "allKeyed": true, "allSettled": true,
+	"allSettledKeyed": true, "and": true, "any": true, "apply": true,
+	"asIntN": true, "asUintN": true, "asin": true, "asinh": true,
+	"assign": true, "atan": true, "atan2": true, "atanh": true,
+	"cbrt": true, "ceil": true, "clz32": true, "compare": true,
+	"compareExchange": true, "construct": true, "cos": true, "cosh": true,
+	"create": true, "decodeURI": true, "decodeURIComponent": true,
+	"defer": true, "defineProperties": true, "defineProperty": true,
+	"deleteProperty": true, "deref": true, "dispose": true,
+	"disposeAsync": true, "encodeURI": true, "encodeURIComponent": true,
+	"entries": true, "escape": true, "eval": true, "exchange": true,
+	"exp": true, "expm1": true, "f16round": true, "floor": true,
+	"for": true, "freeze": true, "from": true, "fromAsync": true,
+	"fromCharCode": true, "fromCodePoint": true, "fromEntries": true,
+	"fromEpochMilliseconds": true, "fromEpochNanoseconds": true,
+	"fround": true, "get": true, "getOrInsert": true,
+	"getOrInsertComputed": true, "getOwnPropertyDescriptor": true,
+	"getOwnPropertyDescriptors": true, "getOwnPropertyNames": true,
+	"getOwnPropertySymbols": true, "getPrototypeOf": true, "has": true,
+	"hasOwn": true, "hypot": true, "imul": true, "instant": true,
+	"is": true, "isArray": true, "isExtensible": true, "isFinite": true,
+	"isFrozen": true, "isInteger": true, "isLockFree": true, "isNaN": true,
+	"isRawJSON": true, "isSafeInteger": true, "isSealed": true,
+	"isView": true, "keyFor": true, "keys": true, "load": true,
+	"localeCompare": true, "log": true, "log10": true, "log1p": true,
+	"log2": true, "max": true, "min": true, "move": true, "next": true,
+	"notify": true, "now": true, "of": true, "or": true, "ownKeys": true,
+	"parse": true, "parseFloat": true, "parseInt": true, "pause": true,
+	"plainDateTimeISO": true, "pow": true, "preventExtensions": true,
+	"race": true, "random": true, "raw": true, "rawJSON": true,
+	"register": true, "reject": true, "resolve": true, "return": true,
+	"revocable": true, "round": true, "seal": true, "set": true,
+	"setDate": true, "setFullYear": true, "setHours": true,
+	"setMilliseconds": true, "setMinutes": true, "setMonth": true,
+	"setPrototypeOf": true, "setSeconds": true, "setUTCDate": true,
+	"setUTCFullYear": true, "setUTCHours": true, "setUTCMilliseconds": true,
+	"setUTCMinutes": true, "setUTCMonth": true, "setUTCSeconds": true,
+	"sign": true, "sin": true, "sinh": true, "slice": true,
+	"sliceToImmutable": true, "sqrt": true, "stack": true, "store": true,
+	"stringify": true, "sub": true, "sumPrecise": true, "tan": true,
+	"tanh": true, "throw": true, "timeZoneId": true,
+	"toLocaleLowerCase": true, "toLocaleUpperCase": true, "toString": true,
+	"transferToImmutable": true, "trunc": true, "try": true,
+	"unregister": true, "use": true, "values": true, "xor": true,
+	"zonedDateTimeISO": true,
+}
+
+// NewBuiltin 创建内建函数的便捷函数。
+// NotConstructable 按 nonConstructableBuiltins 名单判定
+// (rFXXbq: not-a-constructor 族, 200 例)。
 func NewBuiltin(name string, fn func(args ...Value) Value) *BuiltinFunction {
-	return &BuiltinFunction{Name: name, Fn: fn}
+	_, nonCtor := nonConstructableBuiltins[name]
+	return &BuiltinFunction{Name: name, Fn: fn, NotConstructable: nonCtor}
 }
 
 // SetFunctionLength 以内建语义设置函数对象的 length 自有属性:
