@@ -108,7 +108,10 @@ func setupWeakMapProto() *object.Object {
 	p := object.NewObject()
 	p.SetBuiltinProperty("get", object.NewBuiltinMethod("get", func(this object.Value, args ...object.Value) object.Value {
 		m, ok := this.(*object.Map)
-		if !ok || len(args) == 0 {
+		if !ok {
+			return thisTypeError("WeakMap", "get", this)
+		}
+		if len(args) == 0 {
 			return object.UndefinedSingleton
 		}
 		if val, found := m.Get(args[0]); found {
@@ -119,7 +122,7 @@ func setupWeakMapProto() *object.Object {
 	p.SetBuiltinProperty("set", object.NewBuiltinMethod("set", func(this object.Value, args ...object.Value) object.Value {
 		m, ok := this.(*object.Map)
 		if !ok {
-			return thisTypeError("WeakMap", "set", this)
+			return thisTypeError("Map", "set", this)
 		}
 		key := object.Value(object.UndefinedSingleton)
 		val := object.Value(object.UndefinedSingleton)
@@ -155,7 +158,7 @@ func setupWeakSetProto() *object.Object {
 	p.SetBuiltinProperty("add", object.NewBuiltinMethod("add", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.Set)
 		if !ok {
-			return thisTypeError("WeakSet", "add", this)
+			return thisTypeError("Set", "add", this)
 		}
 		if len(args) > 0 {
 			s.Add(args[0])
@@ -186,7 +189,7 @@ func setupMapProto() *object.Object {
 	p.SetBuiltinProperty("set", object.NewBuiltinMethod("set", func(this object.Value, args ...object.Value) object.Value {
 		m, ok := this.(*object.Map)
 		if !ok {
-			return this
+			return thisTypeError("Map", "set", this)
 		}
 		key := object.Value(object.UndefinedSingleton)
 		val := object.Value(object.UndefinedSingleton)
@@ -204,7 +207,7 @@ func setupMapProto() *object.Object {
 	p.SetBuiltinProperty("get", object.NewBuiltinMethod("get", func(this object.Value, args ...object.Value) object.Value {
 		m, ok := this.(*object.Map)
 		if !ok {
-			return object.UndefinedSingleton
+			return thisTypeError("Map", "get", this)
 		}
 		if len(args) == 0 {
 			return object.UndefinedSingleton
@@ -219,7 +222,7 @@ func setupMapProto() *object.Object {
 	p.SetBuiltinProperty("has", object.NewBuiltinMethod("has", func(this object.Value, args ...object.Value) object.Value {
 		m, ok := this.(*object.Map)
 		if !ok {
-			return object.NewBoolean(false)
+			return thisTypeError("Map", "has", this)
 		}
 		if len(args) == 0 {
 			return object.NewBoolean(false)
@@ -231,7 +234,7 @@ func setupMapProto() *object.Object {
 	p.SetBuiltinProperty("delete", object.NewBuiltinMethod("delete", func(this object.Value, args ...object.Value) object.Value {
 		m, ok := this.(*object.Map)
 		if !ok {
-			return object.NewBoolean(false)
+			return thisTypeError("Map", "delete", this)
 		}
 		if len(args) == 0 {
 			return object.NewBoolean(false)
@@ -241,16 +244,21 @@ func setupMapProto() *object.Object {
 
 	// clear(): 清空 Map
 	p.SetBuiltinProperty("clear", object.NewBuiltinMethod("clear", func(this object.Value, args ...object.Value) object.Value {
-		if m, ok := this.(*object.Map); ok {
-			m.Clear()
+		m, ok := this.(*object.Map)
+		if !ok {
+			return thisTypeError("Map", "clear", this)
 		}
+		m.Clear()
 		return object.UndefinedSingleton
 	}))
 
 	// forEach(callback): 遍历 Map
 	p.SetBuiltinProperty("forEach", object.NewBuiltinMethod("forEach", func(this object.Value, args ...object.Value) object.Value {
 		m, ok := this.(*object.Map)
-		if !ok || len(args) < 1 {
+		if !ok {
+			return thisTypeError("Map", "forEach", this)
+		}
+		if len(args) < 1 {
 			return object.UndefinedSingleton
 		}
 		callback := args[0]
@@ -264,7 +272,7 @@ func setupMapProto() *object.Object {
 	p.SetBuiltinProperty("keys", object.NewBuiltinMethod("keys", func(this object.Value, args ...object.Value) object.Value {
 		m, ok := this.(*object.Map)
 		if !ok {
-			return object.NewArray([]object.Value{})
+			return thisTypeError("Map", "keys", this)
 		}
 		keys := make([]object.Value, len(m.Entries))
 		for i, entry := range m.Entries {
@@ -277,7 +285,7 @@ func setupMapProto() *object.Object {
 	p.SetBuiltinProperty("values", object.NewBuiltinMethod("values", func(this object.Value, args ...object.Value) object.Value {
 		m, ok := this.(*object.Map)
 		if !ok {
-			return object.NewArray([]object.Value{})
+			return thisTypeError("Map", "values", this)
 		}
 		vals := make([]object.Value, len(m.Entries))
 		for i, entry := range m.Entries {
@@ -290,7 +298,7 @@ func setupMapProto() *object.Object {
 	p.SetBuiltinProperty("entries", object.NewBuiltinMethod("entries", func(this object.Value, args ...object.Value) object.Value {
 		m, ok := this.(*object.Map)
 		if !ok {
-			return object.NewArray([]object.Value{})
+			return thisTypeError("Map", "entries", this)
 		}
 		entries := make([]object.Value, len(m.Entries))
 		for i, entry := range m.Entries {
@@ -318,7 +326,7 @@ func setupSetProto() *object.Object {
 	p.SetBuiltinProperty("add", object.NewBuiltinMethod("add", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.Set)
 		if !ok {
-			return this
+			return thisTypeError("Set", "add", this)
 		}
 		if len(args) > 0 {
 			s.Add(args[0])
@@ -330,7 +338,7 @@ func setupSetProto() *object.Object {
 	p.SetBuiltinProperty("has", object.NewBuiltinMethod("has", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.Set)
 		if !ok {
-			return object.NewBoolean(false)
+			return thisTypeError("Set", "has", this)
 		}
 		if len(args) == 0 {
 			return object.NewBoolean(false)
@@ -342,7 +350,7 @@ func setupSetProto() *object.Object {
 	p.SetBuiltinProperty("delete", object.NewBuiltinMethod("delete", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.Set)
 		if !ok {
-			return object.NewBoolean(false)
+			return thisTypeError("Set", "delete", this)
 		}
 		if len(args) == 0 {
 			return object.NewBoolean(false)
@@ -352,16 +360,21 @@ func setupSetProto() *object.Object {
 
 	// clear(): 清空 Set
 	p.SetBuiltinProperty("clear", object.NewBuiltinMethod("clear", func(this object.Value, args ...object.Value) object.Value {
-		if s, ok := this.(*object.Set); ok {
-			s.Clear()
+		s, ok := this.(*object.Set)
+		if !ok {
+			return thisTypeError("Set", "clear", this)
 		}
+		s.Clear()
 		return object.UndefinedSingleton
 	}))
 
 	// forEach(callback): 遍历 Set
 	p.SetBuiltinProperty("forEach", object.NewBuiltinMethod("forEach", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.Set)
-		if !ok || len(args) < 1 {
+		if !ok {
+			return thisTypeError("Set", "forEach", this)
+		}
+		if len(args) < 1 {
 			return object.UndefinedSingleton
 		}
 		callback := args[0]
@@ -375,7 +388,7 @@ func setupSetProto() *object.Object {
 	p.SetBuiltinProperty("entries", object.NewBuiltinMethod("entries", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.Set)
 		if !ok {
-			return object.NewArray([]object.Value{})
+			return thisTypeError("Set", "entries", this)
 		}
 		entries := make([]object.Value, len(s.Values))
 		for i, val := range s.Values {
@@ -388,7 +401,7 @@ func setupSetProto() *object.Object {
 	p.SetBuiltinProperty("values", object.NewBuiltinMethod("values", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.Set)
 		if !ok {
-			return object.NewArray([]object.Value{})
+			return thisTypeError("Set", "values", this)
 		}
 		vals := make([]object.Value, len(s.Values))
 		copy(vals, s.Values)
@@ -399,7 +412,7 @@ func setupSetProto() *object.Object {
 	p.SetBuiltinProperty("keys", object.NewBuiltinMethod("keys", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.Set)
 		if !ok {
-			return object.NewArray([]object.Value{})
+			return thisTypeError("Set", "keys", this)
 		}
 		vals := make([]object.Value, len(s.Values))
 		copy(vals, s.Values)
