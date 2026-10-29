@@ -2067,48 +2067,33 @@ func (d *DataView) GetProperty(name string) (Value, bool) {
 		}
 		return d.Buffer, true
 	case "byteLength":
-		return NewInt(int64(d.Length)), true
+		if d.Buffer != nil && d.Buffer.Detach {
+			return NewInt(0), true // 分离后 viewSize = 0
+		}
+		if d.Length >= 0 {
+			return NewInt(int64(d.Length)), true
+		}
+		// length-tracking: 随 buffer 当前大小伸缩
+		n := len(d.Buffer.Data) - d.Offset
+		if n < 0 {
+			n = 0
+		}
+		return NewInt(int64(n)), true
 	case "byteOffset":
+		if d.Buffer != nil && d.Buffer.Detach {
+			return NewInt(0), true
+		}
 		return NewInt(int64(d.Offset)), true
 	}
-	// getUint8/getInt16/getFloat64/setXxx
+	// get*/set* 方法: 走规范语义收口 (dataview.go), 原型与实例共用同一
+	// BuiltinMethod —— 接收者内部槽校验 / ToIndex / ToNumber / 分离 /
+	// 越界一次到位。返回未绑定方法 (this 由调用形态决定): `dv.getFloat32`
+	// 解绑后再调用会正确 TypeError, 与规范一致。
 	if len(name) > 3 {
-		op, typ := name[:3], name[3:]
-		isGet := op == "get"
-		isSet := op == "set"
-		if isGet || isSet {
-			kind, ok := LookupTAKind(dataviewType(typ))
-			if ok {
-				return NewBuiltin(name, func(args ...Value) Value {
-					if d.Buffer == nil || d.Buffer.Detach {
-						return NewTypeError("DataView: buffer is detached")
-					}
-					if len(args) == 0 {
-						return NewTypeError("DataView.%s: offset is required", name)
-					}
-					off := d.Offset + int(toF64Value(args[0]))
-					w := kind.ElemSize
-					if off < 0 || off+w > d.Offset+d.Length {
-						return NewRangeError("DataView.%s: offset is out of bounds", name)
-					}
-					b := d.Buffer.Data[off : off+w]
-					truthy := func(v Value) bool {
-						return v != nil && v != FalseSingleton && v != UndefinedSingleton && v != NullSingleton && v.IsTruthy()
-					}
-					if isGet {
-						// get(key, littleEndian)
-						le := len(args) > 1 && truthy(args[1])
-						return NewNumber(readNum(b, kind, le))
-					}
-					// set(key, value, littleEndian)
-					if len(args) < 2 {
-						return NewTypeError("DataView.%s: value is required", name)
-					}
-					v := toF64Value(args[1])
-					le := len(args) > 2 && truthy(args[2])
-					writeNum(b, kind, v, le)
-					return UndefinedSingleton
-				}), true
+		op := name[:3]
+		if op == "get" || op == "set" {
+			if m := DataViewMethod(name); m != nil {
+				return m, true
 			}
 		}
 	}

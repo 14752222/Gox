@@ -1106,10 +1106,12 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				// 对普通内建 (Date/Map 等) 不置位, 避免影响其内部再调用。
 				if builtin.RequiresNew {
 					object.EnterConstructCall()
+					object.SetPendingConstructTarget(fn)
 				}
 				result := builtin.Fn(args...)
 				if builtin.RequiresNew {
 					object.LeaveConstructCall()
+					object.SetPendingConstructTarget(nil)
 				}
 				if result == nil {
 					result = newObj

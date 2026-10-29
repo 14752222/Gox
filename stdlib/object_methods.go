@@ -169,17 +169,43 @@ func setupObjectGlobal() *object.BuiltinFunction {
 
 	// Object.create(proto)
 	o.SetProperty("create", object.NewBuiltin("create", func(args ...object.Value) object.Value {
-		var proto object.Value = object.NullSingleton
-		if len(args) > 0 {
-			if _, isNull := args[0].(*object.Null); isNull {
-				proto = object.NullSingleton
-			} else if _, isUndef := args[0].(*object.Undefined); isUndef {
-				proto = object.NullSingleton
-			} else {
-				proto = args[0]
+		// 19.1.2.2 Object.create(O, P)
+		if len(args) == 0 {
+			return object.NewTypeError("Object.create: prototype argument is required")
+		}
+		var proto object.Value
+		if _, isNull := args[0].(*object.Null); isNull {
+			proto = object.NullSingleton
+		} else if !object.IsObjectValue(args[0]) {
+			// 规范: Type(O) 不是 Object 也不是 null → TypeError
+			// (rFXXbq: Object/create "undefined is not an object" 族)。
+			return object.NewTypeError("Object prototype may only be an Object or null: %s", toStr(args[0]))
+		} else {
+			proto = args[0]
+		}
+		obj := object.NewObjectWithProto(proto)
+		// properties 参数: ToObject(P) 后对每个自有可枚举键取描述符并
+		// CreateDataPropertyOrThrow (经 defineOneProperty, 与 defineProperties
+		// 同一收口)。P 为 undefined/null 时无属性; 原始值按空处理 (本运行时
+		// 无包装对象, 空描述符集与规范的可观测行为一致)。
+		if len(args) > 1 {
+			if _, isUndef := args[1].(*object.Undefined); !isUndef {
+				if _, isNull2 := args[1].(*object.Null); !isNull2 {
+					if props, ok := args[1].(*object.Object); ok {
+						for _, key := range props.EnumerableKeys() {
+							descVal, found := props.GetProperty(key)
+							if !found {
+								continue
+							}
+							if errVal := defineOneProperty(obj, key, descVal); errVal != nil {
+								return errVal
+							}
+						}
+					}
+				}
 			}
 		}
-		return object.NewObjectWithProto(proto)
+		return obj
 	}))
 
 	// Object.getPrototypeOf(obj)
@@ -372,6 +398,11 @@ func setupObjectGlobal() *object.BuiltinFunction {
 		if len(args) < 2 {
 			return object.UndefinedSingleton
 		}
+		// Proxy: [[GetOwnProperty]] 走 trap 分发 (9.5.5), 支持规范不变式
+		// 校验 (rFXXbq: Proxy/getOwnPropertyDescriptor 回归族)。
+		if pxy, ok := args[0].(*object.Proxy); ok {
+			return proxyGetOwnPropertyDescriptor(pxy, args[1])
+		}
 		// globalThis: 自有属性来自全局环境记录 (顶层 var/函数声明/隐式赋值/
 		// 内建全局); 顶层 let/const/class 只存在于词法环境，不是自有属性。
 		if g, ok := args[0].(*object.GlobalObject); ok {
@@ -398,7 +429,15 @@ func setupObjectGlobal() *object.BuiltinFunction {
 			if _, ok := args[0].(object.OwnPropertyStore); ok {
 				return object.UndefinedSingleton
 			}
-			return object.NewTypeError("Object.getOwnPropertyDescriptor called on non-object")
+			// undefined/null (含 Symbol 键) 仍按 ToObject 抛 TypeError。
+			if _, isUndef := args[0].(*object.Undefined); isUndef {
+				return object.NewTypeError("Object.getOwnPropertyDescriptor called on non-object")
+			}
+			if _, isNull := args[0].(*object.Null); isNull {
+				return object.NewTypeError("Object.getOwnPropertyDescriptor called on non-object")
+			}
+			// 规范 (ES2017+): 其它非对象返回 undefined, 不再抛 TypeError。
+			return object.UndefinedSingleton
 		}
 		// 字符串键: 统一走自有属性接口 —— 普通对象查 Properties, 数组查
 		// 索引/length/defineProperty 描述符, 函数查 name/length/prototype。
@@ -409,7 +448,16 @@ func setupObjectGlobal() *object.BuiltinFunction {
 			}
 			return describeProperty(desc)
 		}
-		return object.NewTypeError("Object.getOwnPropertyDescriptor called on non-object")
+		// 规范: ToObject(O) —— undefined/null 抛 TypeError (ES5 15.2.3.3-1-1/2
+		// 亦然); 其余原始值经包装对象查找自有属性 (本运行时包装对象无实例
+		// 属性, 返回 undefined; rFXXbq: 全量 202 例 gOPD(<原始值>) 用例)。
+		if _, isUndef := args[0].(*object.Undefined); isUndef {
+			return object.NewTypeError("Object.getOwnPropertyDescriptor called on non-object")
+		}
+		if _, isNull := args[0].(*object.Null); isNull {
+			return object.NewTypeError("Object.getOwnPropertyDescriptor called on non-object")
+		}
+		return object.UndefinedSingleton
 	}))
 
 	// Object.setPrototypeOf(obj, proto)
@@ -1121,6 +1169,89 @@ func newDynamicFunction(env *runtime.Environment, args []object.Value, kind dyna
 		Env:           env,
 		FuncPrototype: object.FuncPrototypeForCompiled(fn),
 	}
+}
+
+// proxyGetOwnPropertyDescriptor 实现 Proxy [[GetOwnProperty]] (9.5.5):
+// trap 分发 + 规范不变式校验。错误以 *Error 值返回 (builtin throw 语义)。
+func proxyGetOwnPropertyDescriptor(pxy *object.Proxy, prop object.Value) object.Value {
+	if pxy.IsRevoked {
+		return object.NewTypeError("Cannot perform 'getOwnPropertyDescriptor' on a proxy that has been revoked")
+	}
+	// GetMethod(handler, "getOwnPropertyDescriptor"): 属性存在但不可调用
+	// → TypeError (trap-is-not-callable)。
+	trapVal, found := pxy.Handler.GetProperty("getOwnPropertyDescriptor")
+	if ev := object.TakeCallbackErrorValue(); ev != object.UndefinedSingleton {
+		return ev
+	}
+	if found && trapVal != nil && !object.IsCallable(trapVal) {
+		return object.NewTypeError("'getOwnPropertyDescriptor' trap must be callable")
+	}
+	// target 描述符 (供不变式校验)。
+	var targetDesc *object.PropertyDescriptor
+	if store, ok := pxy.Target.(object.OwnPropertyStore); ok {
+		if d, exists := store.OwnDescriptor(toStr(prop)); exists {
+			td := d
+			targetDesc = &td
+		}
+	}
+	if !found || trapVal == nil {
+		// 无 trap → 转发 target 自有描述符。
+		if targetDesc != nil {
+			return describeProperty(*targetDesc)
+		}
+		return object.UndefinedSingleton
+	}
+	res := object.CallFunction(trapVal, pxy.Handler, pxy.Target, prop, pxy)
+	if ev := object.TakeCallbackErrorValue(); ev != object.UndefinedSingleton {
+		return ev
+	}
+	if res == nil || res == object.UndefinedSingleton {
+		// trap 结果 undefined: target 该属性不可配置或 target 不可扩展
+		// → TypeError。
+		if targetDesc != nil && !targetDesc.Configurable {
+			return object.NewTypeError("Proxy 'getOwnPropertyDescriptor': trap returned undefined for a non-configurable target property")
+		}
+		if _, isSym := prop.(*object.Symbol); !isSym && !object.IsExtensible(pxy.Target) {
+			if _, exists := pxyTargetOwnKeysContains(pxy, toStr(prop)); exists {
+				return object.NewTypeError("Proxy 'getOwnPropertyDescriptor': trap returned undefined for a property of a non-extensible target")
+			}
+		}
+		return object.UndefinedSingleton
+	}
+	if !object.IsObjectValue(res) {
+		return object.NewTypeError("Proxy 'getOwnPropertyDescriptor' trap must return an Object or undefined")
+	}
+	if !resDescBool(res, "configurable") {
+		if targetDesc == nil || targetDesc.Configurable {
+			return object.NewTypeError("Proxy 'getOwnPropertyDescriptor': trap reported non-configurable for a configurable (or absent) target property")
+		}
+	}
+	if targetDesc == nil && !object.IsExtensible(pxy.Target) {
+		return object.NewTypeError("Proxy 'getOwnPropertyDescriptor': trap reported a new property on a non-extensible target")
+	}
+	// 描述符字段直接透传 trap 结果 (value/get/set/enumerable/configurable)。
+	return res
+}
+
+// pxyTargetOwnKeysContains 判断 target 自有字符串键是否包含给定键。
+func pxyTargetOwnKeysContains(pxy *object.Proxy, key string) (struct{}, bool) {
+	if store, ok := pxy.Target.(object.OwnPropertyStore); ok {
+		for _, k := range store.OwnKeys() {
+			if k == key {
+				return struct{}{}, true
+			}
+		}
+	}
+	return struct{}{}, false
+}
+
+// resDescBool 读取 trap 结果对象上的布尔描述符字段 (缺失按 false)。
+func resDescBool(v object.Value, key string) bool {
+	val, found := v.GetProperty(key)
+	if !found || val == nil {
+		return false
+	}
+	return val.IsTruthy()
 }
 
 // describeProperty 把内部 PropertyDescriptor 转成 JS 描述符对象

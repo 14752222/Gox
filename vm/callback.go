@@ -166,7 +166,8 @@ func (vm *VM) invokeWithThis(fn, thisVal object.Value, args []object.Value) erro
 	// 派生类的 super(...) 是例外 (见下), 故先记录标记再决定是否清除。
 	superCall := vm.hasPendingNewTarget
 	if _, isClosure := fn.(*object.Closure); !isClosure {
-		if !(superCall && isTypedArrayConstructCtor(fn)) {
+		_, isBuiltin := fn.(*object.BuiltinFunction)
+		if !(superCall && (isTypedArrayConstructCtor(fn) || isBuiltin)) {
 			vm.hasPendingNewTarget = false
 			vm.pendingNewTarget = nil
 		}
@@ -180,10 +181,12 @@ func (vm *VM) invokeWithThis(fn, thisVal object.Value, args []object.Value) erro
 		// 构造调用窗口, 让派生类的 super() 不被误判为普通函数调用。
 		if superCall {
 			object.EnterConstructCall()
+			object.SetPendingConstructTarget(vm.pendingNewTarget)
 		}
 		result := callee.Fn(args...)
 		if superCall {
 			object.LeaveConstructCall()
+			object.SetPendingConstructTarget(nil)
 		}
 		if result == nil {
 			result = object.UndefinedSingleton
@@ -232,6 +235,21 @@ func (vm *VM) invokeWithThis(fn, thisVal object.Value, args []object.Value) erro
 						f.This = target
 					}
 					result = target
+				}
+			} else if o, isObj := result.(*object.Object); isObj {
+				// class D extends Iterator (及一切返回普通对象的内建基类):
+				// super() 走 [[Construct]], 返回的普通对象按
+				// GetPrototypeFromConstructor 应取派生类 prototype 为
+				// [[Prototype]], 并成为派生构造器帧的 this (new Iterator()
+				// 直接构造时原型已是 Iterator.prototype, 这里按 new.target
+				// 覆盖)。
+				if nt, ok := vm.pendingNewTarget.(*object.Closure); ok {
+					if pv, found := nt.GetProperty("prototype"); found && pv != nil {
+						o.Proto = pv
+					}
+				}
+				if f := vm.currentFrame(); f != nil {
+					f.This = o
 				}
 			}
 			vm.hasPendingNewTarget = false

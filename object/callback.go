@@ -48,6 +48,16 @@ func SetCallFunction(f CallFunc) {
 // SetCallbackError 由回调桥在 JS 代码抛出异常时调用。
 func SetCallbackError(err error) { defaultBridge.callbackError = err }
 
+// clearCallbackErrorSlots 成对清空两个错误槽。
+// callbackError 与 callbackErrorValue 在抛错时同时置位, 消费时也必须
+// 同时清除 —— 只清其一会让另一个槽残留陈旧错误, 泄漏到后续任意
+// TakeCallbackError* 判定 (rFXXbq: 同分片跨用例污染, 表现为
+// Iterator/from/supports-iterator 等用例判定随邻居翻转)。
+func clearCallbackErrorSlots() {
+	defaultBridge.callbackError = nil
+	defaultBridge.callbackErrorValue = nil
+}
+
 // TakeCallbackError 取出并清空最近一次 CallFunction 产生的异常。
 // 返回 nil 表示回调正常返回。
 func TakeCallbackError() error {
@@ -65,7 +75,6 @@ func CallFunction(fn Value, this Value, args ...Value) Value {
 	if defaultBridge.callFunction == nil {
 		return UndefinedSingleton
 	}
-	defaultBridge.callbackError = nil
 	return defaultBridge.callFunction(fn, this, args)
 }
 
@@ -83,7 +92,6 @@ func ConstructFunction(fn Value, args ...Value) Value {
 	if constructFunction == nil {
 		return UndefinedSingleton
 	}
-	defaultBridge.callbackError = nil
 	return constructFunction(fn, args)
 }
 

@@ -299,23 +299,81 @@ func setupTypedArrays(env *runtime.Environment) {
 	}
 
 	// ----- DataView -----
+	// 规范语义收口 (rFXXbq): 此前只有实例魔法属性、无真 prototype ——
+	// DataView.prototype === undefined, 反射访问全灭 (T1-4 C3 簇)。
+	// 现在装配真 prototype: 方法走 object.DataViewMethod 工厂 (接收者
+	// 内部槽校验 / ToIndex / ToNumber / 分离 / 越界 / resizable 追踪 /
+	// Float16 / BigInt 一次到位), 访问器 buffer/byteLength/byteOffset
+	// 与 Symbol.toStringTag getter 为内建访问器形态。
 	dvFn := object.NewBuiltin("DataView", func(args ...object.Value) object.Value {
+		// 25.3.2.1 DataView(buffer, byteOffset, byteLength)
 		if len(args) == 0 {
-			if ab, ok := args[0].(*object.ArrayBuffer); ok {
-				_ = ab
-			}
 			return object.NewTypeError("DataView: buffer is required")
 		}
 		ab, ok := args[0].(*object.ArrayBuffer)
 		if !ok {
 			return object.NewTypeError("DataView: first argument must be an ArrayBuffer")
 		}
-		off := 0
+		// 3. offset = ? ToIndex(byteOffset) —— 先于分离检查。
+		offset := 0
 		if len(args) > 1 {
-			off = int(toFloat(args[1]))
+			idx, errVal := object.ToIndexValue(args[1])
+			if errVal != nil {
+				return errVal
+			}
+			offset = int(idx)
 		}
-		return object.NewDataView(ab, off)
+		// 4. 分离检查 (ToIndex 之后)。
+		if ab.Detach {
+			return object.NewTypeError("DataView: buffer is detached")
+		}
+		// 6. offset 越界。
+		if offset > len(ab.Data) {
+			return object.NewRangeError("DataView: start offset %d is outside the bounds of the buffer", offset)
+		}
+		// 7. byteLength: undefined → length-tracking (resizable buffer 随
+		// resize 伸缩); 其余 ? ToIndex(byteLength) + 越界检查。
+		if len(args) > 2 && !isUndefinedValue(args[2]) {
+			ln, errVal := object.ToIndexValue(args[2])
+			if errVal != nil {
+				return errVal
+			}
+			if offset+int(ln) > len(ab.Data) {
+				return object.NewRangeError("DataView: byte length %d is outside the bounds of the buffer", ln)
+			}
+			return object.NewDataViewFull(ab, offset, int(ln))
+		}
+		return object.NewDataViewFull(ab, offset, -1)
 	})
+	dvProto := object.NewObject()
+	for _, name := range object.DataViewMethodNames() {
+		dvProto.SetBuiltinProperty(name, object.DataViewMethod(name))
+	}
+	// 访问器: buffer / byteLength / byteOffset (接收者校验后委托实例分派)。
+	dvAcc := func(prop string) object.Value {
+		return object.NewBuiltinMethod("get "+prop, func(this object.Value, args ...object.Value) object.Value {
+			dv, ok := this.(*object.DataView)
+			if !ok {
+				return object.NewTypeError("DataView.prototype.%s: receiver must be a DataView", prop)
+			}
+			v, _ := dv.GetProperty(prop)
+			return v
+		})
+	}
+	for _, prop := range []string{"buffer", "byteLength", "byteOffset"} {
+		dvProto.DefineBuiltinAccessor(prop, dvAcc(prop), nil)
+	}
+	// Symbol.toStringTag: DataView 实例返回 "DataView"。
+	dvProto.DefineSymbolAccessor(object.GetGlobalSymbol("Symbol.toStringTag"),
+		object.NewBuiltinMethod("get [Symbol.toStringTag]", func(this object.Value, args ...object.Value) object.Value {
+			if _, ok := this.(*object.DataView); ok {
+				return object.NewString("DataView")
+			}
+			return object.UndefinedSingleton
+		}), nil)
+	dvProto.SetBuiltinProperty("constructor", dvFn)
+	dvFn.SetProperty("prototype", dvProto)
+	object.SetDataViewProto(dvProto)
 	env.Declare("DataView", dvFn, false)
 }
 

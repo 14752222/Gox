@@ -136,8 +136,28 @@ func (g *Generator) GetProperty(name string) (Value, bool) {
 			},
 		}, true
 	}
+	if v, ok := generatorIteratorFallback(g, name); ok {
+		return v, ok
+	}
 	return nil, false
 }
+
+// generatorIteratorFallback: 生成器实例的属性查找不沿原型链遍历
+// (GetProperty 是类型魔法), 而规范里 %GeneratorPrototype% 的
+// [[Prototype]] 是 %Iterator.prototype% —— helper 方法 (map/filter/
+// take/...) 与 @@iterator 必须在此显式兜底, 生成器实例上才可用。
+func generatorIteratorFallback(g *Generator, name string) (Value, bool) {
+	if name == NewSymbol("Symbol.iterator").Inspect() {
+		return NewBuiltin("[Symbol.iterator]", func(args ...Value) Value {
+			return g
+		}), true
+	}
+	if m := IteratorHelperMethod(name); m != nil {
+		return m, true
+	}
+	return nil, false
+}
+
 func (g *Generator) SetProperty(name string, val Value) {}
 
 // GeneratorNextFunc 是驱动生成器前进的回调函数类型。

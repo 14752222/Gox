@@ -54,6 +54,9 @@ func ProtoOf(v Value) Value {
 	// Date 的原型同样放在类型注册表里 (见 object.SetDateProto)。
 	case *Date:
 		return t.GetProto()
+	// DataView 的原型在类型注册表里 (object.DataViewProto, 见 dataview.go)。
+	case *DataView:
+		return t.GetProto()
 	// RegExp 的原型同样在类型注册表里 (object.RegExpProto, 见 rEXjyz)。
 	case *RegExp:
 		return t.GetProto()

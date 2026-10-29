@@ -153,6 +153,16 @@ func SetupGlobals() *runtime.Environment {
 
 	// ===== ES2025 Iterator / WeakRef / FinalizationRegistry / globalThis =====
 	env.Declare("Iterator", setupIteratorGlobal(), false)
+	// 规范: %GeneratorPrototype%.[[Prototype]] = %Iterator.prototype%
+	// (Iterator helpers 在生成器实例上可达; 查找仍由 Generator.GetProperty
+	// 的 registry 兜底, 这里补齐原型链供 instanceof/反射口径一致)。
+	if gp := object.GetGeneratorPrototype(); gp != nil {
+		if o, ok := gp.(*object.Object); ok {
+			if p := object.GetIteratorProto(); p != nil {
+				o.Proto = p
+			}
+		}
+	}
 	setupWeakRefGlobals(env)
 	setupGlobalThis(env)
 

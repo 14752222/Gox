@@ -16,6 +16,17 @@ type JSIterator struct {
 	NextFn func() (Value, bool)
 	// closed 标记 return() 已被调用 (提前终止)。
 	closed bool
+	// ReturnHook 非 nil 时, return() 魔法方法在关闭自身前调用它 ——
+	// helper 派生迭代器借此把 return() 转发给底层迭代器
+	// (return-is-forwarded-to-underlying-iterator 族)。exhausted 置真后
+	// 不再转发 (return-is-not-forwarded-after-exhaustion)。
+	ReturnHook func()
+	// exhausted 标记底层迭代器已走完 (此后 return() 不再转发)。
+	exhausted bool
+	// PendingErr 非 nil 时, 下一次 next() 返回它 (由 OP_CALL 的
+	// throwIfError 转为抛出) —— 底层 next 抛错经回调桥暂存于此,
+	// helper 迭代器借此把错误从 NextFn (无错误通道) 带出。
+	PendingErr Value
 }
 
 func (it *JSIterator) Type() ObjectType { return ITERATOR_OBJ }
@@ -43,11 +54,25 @@ func (it *JSIterator) GetProperty(name string) (Value, bool) {
 	switch name {
 	case "next":
 		return NewBuiltin("next", func(args ...Value) Value {
+			if it.PendingErr != nil {
+				err := it.PendingErr
+				it.PendingErr = nil
+				return err
+			}
 			v, done := it.Next()
+			if ev := TakeCallbackErrorValue(); ev != UndefinedSingleton {
+				return ev // 底层 next 抛错: 经 throwIfError 转为抛出
+			}
 			return NewIteratorResult(v, done)
 		}), true
 	case "return":
 		return NewBuiltin("return", func(args ...Value) Value {
+			if it.ReturnHook != nil && !it.exhausted {
+				it.ReturnHook()
+				if ev := TakeCallbackErrorValue(); ev != UndefinedSingleton {
+					return ev
+				}
+			}
 			it.closed = true
 			return NewIteratorResult(UndefinedSingleton, true)
 		}), true
@@ -56,16 +81,20 @@ func (it *JSIterator) GetProperty(name string) (Value, bool) {
 			return it
 		}), true
 	default:
-		// ES2025 Iterator helpers (map/filter/take/drop/flatMap/reduce/
-		// toArray/forEach/some/every/find)
-		if v, ok := it.esIteratorHelper(name); ok {
-			return v, true
+		// ES2025/ES2026 Iterator helpers (map/filter/take/drop/flatMap/
+		// reduce/toArray/forEach/some/every/find/includes/join/chunks/
+		// windows): 统一走规范语义工厂 (iteratorhelpers.go)。
+		if m := IteratorHelperMethod(name); m != nil {
+			return m, true
 		}
 	}
 	return nil, false
 }
 
 func (it *JSIterator) SetProperty(name string, val Value) {}
+
+// MarkExhausted 标记底层迭代器已走完 (此后 return() 不再转发)。
+func (it *JSIterator) MarkExhausted() { it.exhausted = true }
 
 // NewIteratorResult 构造迭代器协议的结果对象 {value, done}。
 func NewIteratorResult(v Value, done bool) *Object {

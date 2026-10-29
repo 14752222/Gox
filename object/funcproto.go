@@ -53,7 +53,15 @@ func funcProtoLookup(_ Value, name string) (Value, bool) {
 					copy(callArgs, arr.Elements)
 				} else if args[1] != nil && args[1] != UndefinedSingleton && args[1] != NullSingleton {
 					// 非数组且非 null/undefined: 类数组对象取 length + 数字键
-					callArgs = arrayLikeArgs(args[1])
+					ca, thrown := arrayLikeArgs(args[1])
+					if thrown != nil {
+						// CreateListFromArrayLike 中 Get(length)/Get(i) 抛出
+						// (get-length-abrupt): 必须原样重抛。若只返回空列表继续
+						// 执行, 回调桥值槽里的原始抛出值会滞留, 泄漏到后续任意
+						// 两槽消费者 (rFXXbq: 同分片跨用例污染根因)。
+						return thrown
+					}
+					callArgs = ca
 				}
 			}
 			return CallFunction(this, thisArg, callArgs...)
@@ -117,14 +125,18 @@ func args0OrUndefined(args []Value) Value {
 }
 
 // arrayLikeArgs 从类数组对象 (有 length 和数字键) 提取参数列表。
-func arrayLikeArgs(v Value) []Value {
+// 过程中任何 getter 抛出都经 rethrowFromBridge 以错误值返回 (第二返回值)。
+func arrayLikeArgs(v Value) ([]Value, Value) {
 	lv, ok := v.GetProperty("length")
+	if ev := rethrowFromBridge(); ev != nil {
+		return nil, ev
+	}
 	if !ok {
-		return []Value{}
+		return []Value{}, nil
 	}
 	n, ok := lv.(*Number)
 	if !ok || n.Value < 0 || n.Value != float64(int(n.Value)) {
-		return []Value{}
+		return []Value{}, nil
 	}
 	length := int(n.Value)
 	if length > 1<<20 {
@@ -137,8 +149,32 @@ func arrayLikeArgs(v Value) []Value {
 		} else {
 			args[i] = UndefinedSingleton
 		}
+		if ev := rethrowFromBridge(); ev != nil {
+			return nil, ev
+		}
 	}
-	return args
+	return args, nil
+}
+
+// rethrowFromBridge 把回调桥报告的异常恢复为可抛出的 JS 值 (与 stdlib 的
+// callbackThrown 同一语义): 错误槽为空返回 nil; 抛出的 Error 原样返回;
+// 非 Error 值包一层 Error 并经 Original 字段透传原始值。取错时两槽同取,
+// 避免值槽滞留陈旧错误 (rZNsX9 同款约定)。
+func rethrowFromBridge() Value {
+	err := TakeCallbackError()
+	if err == nil {
+		return nil
+	}
+	v := TakeCallbackErrorValue()
+	if v != nil && v != UndefinedSingleton {
+		if _, isErr := v.(*Error); isErr {
+			return v
+		}
+		w := NewErrorWithName("Error", err.Error())
+		w.Original = v
+		return w
+	}
+	return NewErrorWithName("Error", err.Error())
 }
 
 // ===== 函数对象 [[Prototype]] 注册表 =====

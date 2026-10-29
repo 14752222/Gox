@@ -402,6 +402,17 @@ func LeaveConstructCall() { constructCallDepth-- }
 // IsConstructCall 报告当前是否处在内建经 new 调用的窗口内。
 func IsConstructCall() bool { return constructCallDepth > 0 }
 
+// pendingConstructTarget 由 VM 在内建构造调用窗口内置位: 直接 new 时是
+// 内建自身, super() 转发时是派生类构造器 —— 抽象基类 (Iterator) 据此实现
+// "NewTarget 为 undefined 或活动函数对象则 TypeError"。
+var pendingConstructTarget Value
+
+// SetPendingConstructTarget 由 VM 在构造窗口开启时调用。
+func SetPendingConstructTarget(v Value) { pendingConstructTarget = v }
+
+// PendingConstructTarget 返回当前构造窗口的 new.target (未置位时 nil)。
+func PendingConstructTarget() Value { return pendingConstructTarget }
+
 func (b *BuiltinFunction) Type() ObjectType { return BUILTIN_OBJ }
 func (b *BuiltinFunction) Inspect() string {
 	return fmt.Sprintf("[Function: %s]", b.Name)
