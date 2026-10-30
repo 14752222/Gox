@@ -298,7 +298,7 @@ runner 新增 `-probe` 模式（`cmd/gox/cmd_test262.go`，随本节同批提交
 | C8 | Map/Set.prototype size 访问器 | `getOwnPropertyDescriptor(Map.prototype,'size') === undefined` | 1 | 1 |
 | C9 | %ThrowTypeError% 毒丸 | `Function.prototype` 的 `caller/arguments` 访问器缺失：strict 函数读 caller 返回 undefined 而非抛 TypeError（53 例全在 `built-ins/Function/15.3.5.4_2-*gs`，用例里 `gNonStrict.caller.throwTypeError` 靠 undefined 读属性抛 TypeError 过关） | 53 | 83 |
 | C10 | RegExp.prototype[Symbol.matchAll] | undefined（`[Symbol.replace]` 已实现） | 3 | 13 |
-| C11 | SharedArrayBuffer.prototype | `grow/byteLength` 缺失（SAB 构造器在，方法走 ArrayBuffer 的 receiver 校验） | 1 | 29 |
+| C11 | SharedArrayBuffer.prototype | ~~`grow/byteLength` 缺失~~ **订正（10-30 源码复核，`stdlib/typedarray.go`）**：SAB 构造器以 ArrayBuffer 同构实现，`SharedArrayBuffer.prototype` 即 `ArrayBuffer.prototype`（同一对象，`grow/byteLength` 存在）；真实缺口是独立 SharedArrayBuffer 语义（独立原型、growable、共享观测），归簇探针信号系同构实现的连带误报 | 1 | 29 |
 | C12 | Map/Set IteratorPrototype next | `map[Symbol.iterator]().next === undefined`（for-of/spread 走 VM 原生快路径未暴露，**用户层迭代协议已断**） | 2 | 2 |
 | C13 | Date.prototype set 族 | `setFullYear/setMonth/setDate/setHours/setSeconds` undefined（get 族与 setTime/toISOString 在） | 1 | 3 |
 | | **合计** | | **128** | **325** |
@@ -327,6 +327,13 @@ runner 新增 `-probe` 模式（`cmd/gox/cmd_test262.go`，随本节同批提交
 C1/C2/C4/C5/C7 与既有的簇单（Iterator helpers、Generator 原型化、TypedArray 收尾）
 同源，可并入各自的主修复单，不需要单开；C12 的用户层迭代协议断裂值得单独立单
 （它不是 test262 假阳性问题，是功能缺陷）。
+
+> **C11 订正记录（2026-10-30，T1-4 验收后复核）**：10-29 夜批复核实测
+> `SharedArrayBuffer.prototype` 为 object，与本表原记录"grow/byteLength 缺失"
+> 不符；经源码复核（`SharedArrayBuffer` 构造器把 `prototype` 指到
+> `ArrayBuffer.prototype`，见 `stdlib/typedarray.go`），C11 原探针信号为同构
+> 实现的连带误报，真实缺口是 SAB 独立语义而非原型方法缺失。上表 C11 行已订正，
+> TierA/敞口计数维持原值待下批探针重跑确认。
 
 ## 四、与任务书已知簇的口径对照
 
