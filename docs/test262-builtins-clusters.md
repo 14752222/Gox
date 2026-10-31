@@ -451,3 +451,40 @@ gox test262 -root <test262> -suite built-ins -jobs 16 -probe -json /tmp/probe.js
 String/prototype 400、RegExp/property-escapes 447（\p{...} 属性表）、
 Iterator 基类 410、Object/create 295、DataView/prototype 366（访问器形态 +
 ToNumber 抛错顺序）。
+
+## 九、批次战报（2026-10-31 夜批：C12 Map/Set 迭代器协议修复，×rqwbpo）
+
+### 9.1 修复内容
+
+- **Map/Set 迭代器方法从"简化为数组"改为真迭代器**（stdlib/map_set.go）：
+  Map.prototype keys/values/entries 与 Set.prototype keys/values/entries
+  此前返回普通数组（快路径 for-of/spread 掩盖了协议断裂），现按规范返回
+  `%MapIterator%` / `%SetIterator%` 迭代器对象，`next` 为 function，
+  `new Map()[Symbol.iterator]().next` 不再是 undefined（rqwbpo 验收项）。
+  object 新增 NewSetEntryIterator。
+- **迭代器 next/return 补内部槽品牌检查**（object/jsiterator.go）：
+  next/return 由无 this 的 BuiltinFunction 改为 BuiltinMethod，this 不是
+  同种迭代器对象（原始值/普通对象/另一种迭代器）时按规范抛 TypeError；
+  同种不同实例（`iterator.next.call(map[Symbol.iterator]())`）合法不抛。
+  修掉 Map/SetIteratorPrototype/next 的 does-not-have-* 与
+  this-not-object-throw-* 一族。首次实现用对象身份判定，被
+  this-not-object-throw-values 末行合法跨实例用例打回后改为按迭代器类型
+  （Name）判定。
+
+### 9.2 合规率前后（逐用例 A/B，only_a/only_b = 0）
+
+| 套件 | 前 | 后 | 增量 |
+|------|-----|-----|------|
+| built-ins | 16927/23822 = 71.0562% | **16954/23822 = 71.1695%** | **+27 例 / +0.11pp，退步 0** |
+| language | 20422/23726 = 86.0743% | 20422/23726 = 86.0743% | ±0 |
+
+27 例增量全部落在 Map/SetIteratorPrototype 的 next 协议族（含 A/B 中段
+两次自纠错：身份判定先引入 2 例 pass→fail，改槽判定后归零，最终口径
+退步 0）。
+
+### 9.3 备忘
+
+- vm 定时器测试（TestStrictSchedulerGoCallback / TestSetIntervalFires）与
+  tools/perf TestUIFrameGCStress 在 test262 全量并行跑时因机器满载抖动
+  失败，空载复跑全过 —— 非本批引入。
+- built-ins 剩余洼地见 §8.4。

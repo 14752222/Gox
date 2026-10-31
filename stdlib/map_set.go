@@ -268,43 +268,31 @@ func setupMapProto() *object.Object {
 		return object.UndefinedSingleton
 	}))
 
-	// keys(): 返回键的迭代器（简化为数组）
+	// keys(): 返回键的迭代器对象（规范要求真迭代器，for-of 快路径不走此方法）
 	p.SetBuiltinProperty("keys", object.NewBuiltinMethod("keys", func(this object.Value, args ...object.Value) object.Value {
 		m, ok := this.(*object.Map)
 		if !ok {
 			return thisTypeError("Map", "keys", this)
 		}
-		keys := make([]object.Value, len(m.Entries))
-		for i, entry := range m.Entries {
-			keys[i] = entry.Key
-		}
-		return object.NewArray(keys)
+		return object.NewMapKeyIterator(m)
 	}))
 
-	// values(): 返回值的迭代器（简化为数组）
+	// values(): 返回值的迭代器对象
 	p.SetBuiltinProperty("values", object.NewBuiltinMethod("values", func(this object.Value, args ...object.Value) object.Value {
 		m, ok := this.(*object.Map)
 		if !ok {
 			return thisTypeError("Map", "values", this)
 		}
-		vals := make([]object.Value, len(m.Entries))
-		for i, entry := range m.Entries {
-			vals[i] = entry.Value
-		}
-		return object.NewArray(vals)
+		return object.NewMapValueIterator(m)
 	}))
 
-	// entries(): 返回键值对数组
+	// entries(): 返回 [key, value] 对的迭代器对象（%Map.prototype.entries%）
 	p.SetBuiltinProperty("entries", object.NewBuiltinMethod("entries", func(this object.Value, args ...object.Value) object.Value {
 		m, ok := this.(*object.Map)
 		if !ok {
 			return thisTypeError("Map", "entries", this)
 		}
-		entries := make([]object.Value, len(m.Entries))
-		for i, entry := range m.Entries {
-			entries[i] = object.NewArray([]object.Value{entry.Key, entry.Value})
-		}
-		return object.NewArray(entries)
+		return object.NewMapEntryIterator(m)
 	}))
 
 	// size: 规范是访问器 getter (非数据属性)。
@@ -384,39 +372,31 @@ func setupSetProto() *object.Object {
 		return object.UndefinedSingleton
 	}))
 
-	// entries(): 返回 [value, value] 对数组
+	// entries(): 返回 [value, value] 对的迭代器对象（规范 %Set.prototype.entries%）
 	p.SetBuiltinProperty("entries", object.NewBuiltinMethod("entries", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.Set)
 		if !ok {
 			return thisTypeError("Set", "entries", this)
 		}
-		entries := make([]object.Value, len(s.Values))
-		for i, val := range s.Values {
-			entries[i] = object.NewArray([]object.Value{val, val})
-		}
-		return object.NewArray(entries)
+		return object.NewSetEntryIterator(s)
 	}))
 
-	// values(): 返回值的数组
+	// values(): 返回值的迭代器对象
 	p.SetBuiltinProperty("values", object.NewBuiltinMethod("values", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.Set)
 		if !ok {
 			return thisTypeError("Set", "values", this)
 		}
-		vals := make([]object.Value, len(s.Values))
-		copy(vals, s.Values)
-		return object.NewArray(vals)
+		return object.NewSetIterator(s)
 	}))
 
-	// keys(): Set 的 keys 与 values 相同
+	// keys(): Set 的 keys 与 values 同为值迭代器
 	p.SetBuiltinProperty("keys", object.NewBuiltinMethod("keys", func(this object.Value, args ...object.Value) object.Value {
 		s, ok := this.(*object.Set)
 		if !ok {
 			return thisTypeError("Set", "keys", this)
 		}
-		vals := make([]object.Value, len(s.Values))
-		copy(vals, s.Values)
-		return object.NewArray(vals)
+		return object.NewSetIterator(s)
 	}))
 
 	// size: 规范是访问器 getter (非数据属性)。

@@ -51,9 +51,24 @@ func (it *JSIterator) Next() (Value, bool) {
 }
 
 func (it *JSIterator) GetProperty(name string) (Value, bool) {
+	// 槽检查: this 必须是同种迭代器对象 (拥有对应内部槽)。不同实例但
+	// 同种 (如 map[Symbol.iterator]() 传给 map.values() 的 next) 不抛;
+	// 原始值 / 普通对象 / 另一种迭代器抛 TypeError。测试面:
+	// MapIteratorPrototype/next/does-not-have-mapiterator-internal-slots-map
+	// 与 this-not-object-throw-values (末行合法跨实例调用)。
+	sameSlots := func(this Value) bool {
+		o, ok := this.(*JSIterator)
+		return ok && o.Name == it.Name
+	}
 	switch name {
 	case "next":
-		return NewBuiltin("next", func(args ...Value) Value {
+		// 规范 %Iterator.prototype%.next 有 [[Call]] 品牌检查: this 不是
+		// 拥有对应内部槽的迭代器对象时抛 TypeError。测试面:
+		// MapIteratorPrototype/next/does-not-have-mapiterator-internal-slots-map。
+		return NewBuiltinMethod("next", func(this Value, args ...Value) Value {
+			if !sameSlots(this) {
+				return NewTypeError("Method Iterator.prototype.next called on incompatible receiver")
+			}
 			if it.PendingErr != nil {
 				err := it.PendingErr
 				it.PendingErr = nil
@@ -66,7 +81,10 @@ func (it *JSIterator) GetProperty(name string) (Value, bool) {
 			return NewIteratorResult(v, done)
 		}), true
 	case "return":
-		return NewBuiltin("return", func(args ...Value) Value {
+		return NewBuiltinMethod("return", func(this Value, args ...Value) Value {
+			if !sameSlots(this) {
+				return NewTypeError("Method Iterator.prototype.return called on incompatible receiver")
+			}
 			if it.ReturnHook != nil && !it.exhausted {
 				it.ReturnHook()
 				if ev := TakeCallbackErrorValue(); ev != UndefinedSingleton {
@@ -204,6 +222,21 @@ func NewSetIterator(s *Set) *JSIterator {
 		v := s.Values[i]
 		i++
 		return v, false
+	}}
+}
+
+// NewSetEntryIterator 迭代 Set 的 [value, value] 对 (Set.prototype.entries)。
+func NewSetEntryIterator(s *Set) *JSIterator {
+	i := 0
+	return &JSIterator{Name: "Set", NextFn: func() (Value, bool) {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		if i >= len(s.Values) {
+			return UndefinedSingleton, true
+		}
+		v := s.Values[i]
+		i++
+		return NewArray([]Value{v, v}), false
 	}}
 }
 
