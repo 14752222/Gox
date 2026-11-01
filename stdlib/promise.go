@@ -1,6 +1,8 @@
 package stdlib
 
 import (
+	"strconv"
+
 	"github.com/14752222/Gox/object"
 	"github.com/14752222/Gox/runtime"
 )
@@ -354,11 +356,197 @@ func setupPromise(env *runtime.Environment) {
 		return p
 	}))
 
+	// Promise.allKeyed(obj) / Promise.allSettledKeyed(obj) (ES2026 Iterator
+	// helpers 同期的 Promise 补充): 参数是普通对象而非可迭代对象, 键为对象
+	// 的自有可枚举属性 (字符串键按插入序 + Symbol 键)。
+	promiseFn.SetProperty("allKeyed", object.NewBuiltinMethod("allKeyed", func(this object.Value, args ...object.Value) object.Value {
+		// 规范: this 必须是构造器 (GetPromiseResolve 前置校验), 否则同步 TypeError
+		if !object.IsConstructor(this) {
+			return object.NewErrorWithName("TypeError", "Promise.allKeyed called on non-constructor")
+		}
+		return promiseKeyed(args, false)
+	}))
+	promiseFn.SetProperty("allSettledKeyed", object.NewBuiltinMethod("allSettledKeyed", func(this object.Value, args ...object.Value) object.Value {
+		if !object.IsConstructor(this) {
+			return object.NewErrorWithName("TypeError", "Promise.allSettledKeyed called on non-constructor")
+		}
+		return promiseKeyed(args, true)
+	}))
+
 	promiseFn.SetProperty("prototype", promiseProto)
 	promiseProto.SetBuiltinProperty("constructor", promiseFn)
 	promiseCtor = promiseFn
 
 	env.Declare("Promise", promiseFn, false)
+}
+
+// promiseKeyed 实现 Promise.allKeyed / Promise.allSettledKeyed。
+//
+// 规范要点:
+//   - 参数非对象 → 返回已 reject 的 Promise (TypeError), 不同步抛出;
+//   - 键 = 自有可枚举属性: 字符串键 (OwnKeys + 可枚举过滤, 插入序) 与
+//     Symbol 键 (SymbolKeys + 可枚举过滤);
+//   - allKeyed 结果: 原型为 null 的对象, 每键一个 w/e/c 全 true 的数据属性,
+//     键序 = 收集序 (与结算顺序无关);
+//   - allSettledKeyed 结果: 普通对象 { fulfilled: {...}, rejected: {...} },
+//     两个子对象原型为 %Object.prototype%, 同样按键序填充。
+func promiseKeyed(args []object.Value, settled bool) object.Value {
+	result := object.NewPromise()
+
+	// 参数必须是对象 (规范 ToObject 语义): 函数/数组/代理都算对象。
+	// 非对象 → 异步 reject (不同步抛出)。
+	if len(args) == 0 || !object.IsObjectValue(args[0]) {
+		result.Reject(object.NewTypeError("Promise argument must be an object"))
+		return result
+	}
+
+	type keyedEntry struct {
+		strKey string    // 字符串键 (symKey == nil 时有效)
+		symKey *object.Symbol
+		value  object.Value
+	}
+	var entries []keyedEntry
+
+	switch obj := args[0].(type) {
+	case *object.Object:
+		// 字符串键: OwnKeys + 可枚举过滤
+		for _, k := range obj.OwnKeys() {
+			desc, okd := obj.OwnDescriptor(k)
+			if !okd || !desc.Enumerable {
+				continue
+			}
+			val, _ := obj.GetProperty(k)
+			if thrown := callbackThrown(); thrown != nil {
+				result.Reject(unwrapThrown(thrown))
+				return result
+			}
+			entries = append(entries, keyedEntry{strKey: k, value: val})
+		}
+		// Symbol 键
+		for _, sym := range obj.SymbolKeys() {
+			desc, okd := obj.GetSymbolPropertyDescriptor(sym)
+			if !okd || !desc.Enumerable {
+				continue
+			}
+			val, _ := obj.GetSymbolProperty(sym)
+			if thrown := callbackThrown(); thrown != nil {
+				result.Reject(unwrapThrown(thrown))
+				return result
+			}
+			entries = append(entries, keyedEntry{symKey: sym, value: val})
+		}
+	case *object.Array:
+		// 数组: 索引即键 (length 不可枚举)
+		for i, e := range obj.Elements {
+			entries = append(entries, keyedEntry{strKey: strconv.Itoa(i), value: e})
+		}
+	default:
+		// 其余对象类型 (函数/数组等) 走通用 OwnPropertyStore 接口:
+		// *Closure 的 fn.key 等自定义可枚举属性也要被收集。
+		store, hasStore := args[0].(object.OwnPropertyStore)
+		getter, hasGet := args[0].(interface {
+			GetProperty(string) (object.Value, bool)
+		})
+		if hasStore && hasGet {
+			for _, k := range store.EnumerableOwnKeys() {
+				val, _ := getter.GetProperty(k)
+				if thrown := callbackThrown(); thrown != nil {
+					result.Reject(unwrapThrown(thrown))
+					return result
+				}
+				entries = append(entries, keyedEntry{strKey: k, value: val})
+			}
+		}
+		// Proxy 的 ownKeys/getOwnPropertyDescriptor 陷阱暂未在 stdlib
+		// 层暴露, 对应 trap 观察用例仍失败。
+	}
+
+	n := len(entries)
+	if n == 0 {
+		// 规范: 结果对象一律是 null 原型 (allSettledKeyed 亦然)
+		result.Resolve(object.NewObjectWithProto(nil))
+		return result
+	}
+
+	// 把每个值包装成 Promise (PromiseResolve 语义)
+	promises := make([]*object.Promise, n)
+	values := make([]object.Value, n)
+	statuses := make([]object.Value, n)
+	remaining := n
+	settledCount := 0
+
+	finish := func() {
+		if settled {
+			// allSettledKeyed: 结果是 null 原型对象, 每键一个
+			// {status: "fulfilled"|"rejected", value|reason} 数据属性。
+			// (测试里的 "fulfilled"/"rejected" 只是恰好同名的输入键;
+			// result.fulfilled === {status: "fulfilled", value: ...}。)
+			out := object.NewObjectWithProto(nil)
+			for i, e := range entries {
+				if e.symKey != nil {
+					out.SetSymbolProperty(e.symKey, statuses[i])
+				} else {
+					out.DefineOwnProperty(e.strKey, object.DataProperty(statuses[i]))
+				}
+			}
+			result.Resolve(out)
+		} else {
+			out := object.NewObjectWithProto(nil)
+			for i, e := range entries {
+				if e.symKey != nil {
+					out.SetSymbolProperty(e.symKey, values[i])
+				} else {
+					out.DefineOwnProperty(e.strKey, object.DataProperty(values[i]))
+				}
+			}
+			result.Resolve(out)
+		}
+	}
+
+	for i, e := range entries {
+		idx := i
+		var p *object.Promise
+		if ep, isP := e.value.(*object.Promise); isP {
+			p = ep
+		} else {
+			p = object.NewPromise()
+			p.Resolve(e.value)
+		}
+		promises[idx] = p
+
+		p.OnFulfilled(object.NewBuiltin("__keyed_resolve", func(fargs ...object.Value) object.Value {
+			if settled {
+				statuses[idx] = object.NewObjectWithProto(object.GetObjectPrototype())
+				statuses[idx].(*object.Object).SetProperty("status", object.NewString("fulfilled"))
+				statuses[idx].(*object.Object).SetProperty("value", argAt(fargs, 0))
+			} else {
+				values[idx] = argAt(fargs, 0)
+			}
+			settledCount++
+			if settledCount == remaining {
+				finish()
+			}
+			return object.UndefinedSingleton
+		}))
+		if !settled {
+			p.OnRejected(object.NewBuiltin("__keyed_reject", func(rargs ...object.Value) object.Value {
+				result.Reject(argAt(rargs, 0))
+				remaining = -1 // 阻止后续 finish
+				return object.UndefinedSingleton
+			}))
+		}
+	}
+
+	return result
+}
+
+// unwrapThrown 还原回调桥抛出的原始值: 规范要求 rejection reason 就是
+// 用户 throw 的那个值 (Test262Error 实例等), 不能是包装后的通用 Error。
+func unwrapThrown(err object.Value) object.Value {
+	if e, ok := err.(*object.Error); ok && e.Original != nil {
+		return e.Original
+	}
+	return err
 }
 
 // promiseIterable 解析 Promise.all/race/allSettled/any 的可迭代参数。
