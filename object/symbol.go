@@ -2,6 +2,7 @@ package object
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 )
 
@@ -101,6 +102,13 @@ func KeyForSymbol(sym *Symbol) (string, bool) {
 	defer symbolMutex.Unlock()
 	for key, s := range globalSymbols {
 		if s.ID == sym.ID {
+			// well-known symbol ("Symbol.iterator" 等) 不在规范的全局
+			// Symbol 注册表里 —— Symbol.keyFor(@@iterator) 必须返回
+			// undefined, CanBeHeldWeakly 亦视其为可弱持有。此处按键名
+			// 前缀排除 (rFXXbq: WeakMap/WeakSet symbol-key 族回归根因)。
+			if strings.HasPrefix(key, "Symbol.") {
+				return "", false
+			}
 			return key, true
 		}
 	}

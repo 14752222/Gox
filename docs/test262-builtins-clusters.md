@@ -544,3 +544,42 @@ Script_Extensions / 区间端点）。注：两套件并发跑批会出现假超
 （解构、Array.from、Iterator helpers 接字符串、String.raw 等）此前都在
 按字节迭代。本批 A/B 中 language 仅 +1，说明这些路径多数未被 test262
 覆盖或已被快路径掩盖；后续批次可复查 String/[Symbol.iterator] 协议族。
+
+## 十一、批次战报（2026-11-01 夜批第 2 批：Collections 品牌检查 + getOrInsert + 弱键 CanBeHeldWeakly）
+
+### 11.1 修复内容（4 文件）
+
+1. **Map/Set/WeakMap/WeakSet 品牌检查**（object/map_set.go + stdlib/map_set.go）：
+   WeakMap/WeakSet 复用 *Map/*Set 存储导致四组原型方法只靠 Go 类型判别，互相
+   串门不抛 TypeError。结构体新增 Weak 品牌位 + requireMapBrand/requireSetBrand/
+   requireWeakMapBrand/requireWeakSetBrand 四个守卫；Map/Set 侧此前 has/delete
+   还会把 receiver 错误吞成 false（returns false 假阳性）。
+2. **getOrInsert / getOrInsertComputed**（Map 与 WeakMap 原型，ES2026 upsert）：
+   此前整体缺失；callbackfn 可调用性校验按规范在查表**之前**（键已存在且
+   callback 不可调用仍须 TypeError）。
+3. **CanBeHeldWeakly**（stdlib/map_set.go weakKeyOK）：用 object.IsObjectLike
+   全集判对象（此前只认 *Object，new WeakMap([[[],0]]) 把数组键拒之门外）；
+   注册 Symbol（Symbol.for）按规范不可弱持有 → TypeError。
+4. **Symbol 注册表语义修复**（object/symbol.go KeyForSymbol）：well-known
+   symbol 不在规范的全局注册表里 —— Symbol.keyFor(@@iterator) 必须返回
+   undefined（连带修复 built-ins/Symbol/keyFor 与 dispose 族），WeakMap 弱键
+   判定也由此归正。
+5. **ProtoOf 补 Map/Set 分支**（object/proto.go）：`new WeakMap() instanceof
+   WeakMap` 此前失准（实例级原型字段未被原型链遍历读出，退化为名称匹配）。
+
+### 11.2 合规率前后（逐用例 A/B，only_a/only_b/pass_differs = 0）
+
+| 套件 | 前（本夜批累计前） | 后 | 增量 |
+|------|-----|-----|------|
+| built-ins | 16957/23852 = 71.0926% | **17216/23852 = 72.1784%** | **+259 例，退步 0** |
+| language | 20524/23828 = 86.1340% | 20525/23828 = 86.1382% | +1，退步 0 |
+
+分布：WeakMap +47 / Map +33 / WeakSet +23 / Set +5 / Symbol(keyFor/dispose) +3 /
+RegExp/property-escapes +146（上一批累计口径）。WeakMap 子套件 62%→96.6%、
+WeakSet 76%→93.9%（filter 口径）。
+
+### 11.5 备忘
+
+- 自测陷阱：WeakMap.set 返回 this 后 `r instanceof WeakMap` 此前为 false ——
+  与 §11.1.5 同根因，已修。
+- Map/Set 剩余失败集中在迭代器 helper 与构造器 iterable 形态（非本批范围）。

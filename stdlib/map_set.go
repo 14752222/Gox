@@ -68,6 +68,7 @@ func setupMapSet(env *runtime.Environment) {
 	setToStringTag(weakMapProto, "WeakMap")
 	weakMapFn := object.NewBuiltin("WeakMap", func(args ...object.Value) object.Value {
 		m := object.NewMap()
+		m.Weak = true
 		m.SetProto(weakMapProto)
 		if len(args) > 0 {
 			if arr, ok := args[0].(*object.Array); ok {
@@ -89,6 +90,7 @@ func setupMapSet(env *runtime.Environment) {
 	setToStringTag(weakSetProto, "WeakSet")
 	weakSetFn := object.NewBuiltin("WeakSet", func(args ...object.Value) object.Value {
 		s := object.NewSet()
+		s.Weak = true
 		s.SetProto(weakSetProto)
 		if len(args) > 0 {
 			if arr, ok := args[0].(*object.Array); ok {
@@ -103,15 +105,77 @@ func setupMapSet(env *runtime.Environment) {
 	env.Declare("WeakSet", weakSetFn, false)
 }
 
-// setupWeakMapProto 创建 WeakMap.prototype (不可枚举，仅四个方法)。
+// weakKeyOK 实现 CanBeHeldWeakly: 仅对象与 Symbol (非 undefined/null/
+// 原始数等) 可作 WeakMap 键 / WeakSet 成员, 其余必须 TypeError
+// (test262 WeakMap set / WeakSet add 的 key-not-object-throws 族)。
+func weakKeyOK(v object.Value) bool {
+	// 一切对象语义值 (数组/Map/正则/包装对象等, 不止 *Object) 均可弱持有;
+	// IsObjectLike 覆盖 *Object/*Array/*Map/*RegExp/... 全集。
+	if object.IsObjectLike(v) {
+		return true
+	}
+	if t, ok := v.(*object.Symbol); ok {
+		// 注册 Symbol (Symbol.for) 不满足 CanBeHeldWeakly —— 全局注册表
+		// 永久强持有, 弱容器语义要求抛 TypeError (throw-if-key-cannot-be-
+		// held-weakly 族)。
+		if _, registered := object.KeyForSymbol(t); registered {
+			return false
+		}
+		return true
+	}
+	return false
+}
+
+// requireMapBrand: Map 品牌检查 —— this 必须是 *Map 且**不是** WeakMap
+// (内部槽 [[MapData]] vs [[WeakMapData]] 互斥, rFXXbq brand 族)。
+func requireMapBrand(this object.Value, method string) (*object.Map, object.Value) {
+	m, ok := this.(*object.Map)
+	if !ok || m.Weak {
+		return nil, thisTypeError("Map", method, this)
+	}
+	return m, nil
+}
+
+// requireSetBrand: Set 品牌检查 (同 requireMapBrand)。
+func requireSetBrand(this object.Value, method string) (*object.Set, object.Value) {
+	s, ok := this.(*object.Set)
+	if !ok || s.Weak {
+		return nil, thisTypeError("Set", method, this)
+	}
+	return s, nil
+}
+
+// requireWeakMapBrand: WeakMap 品牌检查。
+func requireWeakMapBrand(this object.Value, method string) (*object.Map, object.Value) {
+	m, ok := this.(*object.Map)
+	if !ok || !m.Weak {
+		return nil, thisTypeError("WeakMap", method, this)
+	}
+	return m, nil
+}
+
+// requireWeakSetBrand: WeakSet 品牌检查。
+func requireWeakSetBrand(this object.Value, method string) (*object.Set, object.Value) {
+	s, ok := this.(*object.Set)
+	if !ok || !s.Weak {
+		return nil, thisTypeError("WeakSet", method, this)
+	}
+	return s, nil
+}
+
+// setupWeakMapProto 创建 WeakMap.prototype (不可枚举，仅 get/set/has/delete/
+// getOrInsert/getOrInsertComputed)。brand 参数用于 thisTypeError 文案。
 func setupWeakMapProto() *object.Object {
 	p := object.NewObject()
 	p.SetBuiltinProperty("get", object.NewBuiltinMethod("get", func(this object.Value, args ...object.Value) object.Value {
-		m, ok := this.(*object.Map)
-		if !ok {
-			return thisTypeError("WeakMap", "get", this)
+		m, err := requireWeakMapBrand(this, "get")
+		if err != nil {
+			return err
 		}
 		if len(args) == 0 {
+			return object.UndefinedSingleton
+		}
+		if !weakKeyOK(args[0]) {
 			return object.UndefinedSingleton
 		}
 		if val, found := m.Get(args[0]); found {
@@ -120,9 +184,9 @@ func setupWeakMapProto() *object.Object {
 		return object.UndefinedSingleton
 	}))
 	p.SetBuiltinProperty("set", object.NewBuiltinMethod("set", func(this object.Value, args ...object.Value) object.Value {
-		m, ok := this.(*object.Map)
-		if !ok {
-			return thisTypeError("Map", "set", this)
+		m, err := requireWeakMapBrand(this, "set")
+		if err != nil {
+			return err
 		}
 		key := object.Value(object.UndefinedSingleton)
 		val := object.Value(object.UndefinedSingleton)
@@ -132,49 +196,130 @@ func setupWeakMapProto() *object.Object {
 		if len(args) > 1 {
 			val = args[1]
 		}
+		if !weakKeyOK(key) {
+			return object.NewTypeError("Invalid value used as weak map key")
+		}
 		m.Set(key, val)
 		return this
 	}))
 	p.SetBuiltinProperty("has", object.NewBuiltinMethod("has", func(this object.Value, args ...object.Value) object.Value {
-		m, ok := this.(*object.Map)
-		if !ok || len(args) == 0 {
+		m, err := requireWeakMapBrand(this, "has")
+		if err != nil {
+			return err
+		}
+		if len(args) == 0 {
+			return object.NewBoolean(false)
+		}
+		if !weakKeyOK(args[0]) {
 			return object.NewBoolean(false)
 		}
 		return object.NewBoolean(m.Has(args[0]))
 	}))
 	p.SetBuiltinProperty("delete", object.NewBuiltinMethod("delete", func(this object.Value, args ...object.Value) object.Value {
-		m, ok := this.(*object.Map)
-		if !ok || len(args) == 0 {
+		m, err := requireWeakMapBrand(this, "delete")
+		if err != nil {
+			return err
+		}
+		if len(args) == 0 {
+			return object.NewBoolean(false)
+		}
+		if !weakKeyOK(args[0]) {
 			return object.NewBoolean(false)
 		}
 		return object.NewBoolean(m.Delete(args[0]))
 	}))
+	// getOrInsert / getOrInsertComputed (ES2026 upsert): 键已存在返回现值,
+	// 否则插入 (普通版插 value, Computed 版先调 callbackFn(key) 再插其返回值)。
+	p.SetBuiltinProperty("getOrInsert", object.NewBuiltinMethod("getOrInsert", func(this object.Value, args ...object.Value) object.Value {
+		m, err := requireWeakMapBrand(this, "getOrInsert")
+		if err != nil {
+			return err
+		}
+		key, val := weakUpsertArgs(args)
+		if !weakKeyOK(key) {
+			return object.NewTypeError("Invalid value used as weak map key")
+		}
+		if v, found := m.Get(key); found {
+			return v
+		}
+		m.Set(key, val)
+		return val
+	}))
+	p.SetBuiltinProperty("getOrInsertComputed", object.NewBuiltinMethod("getOrInsertComputed", func(this object.Value, args ...object.Value) object.Value {
+		m, err := requireWeakMapBrand(this, "getOrInsertComputed")
+		if err != nil {
+			return err
+		}
+		key, cb := weakUpsertArgs(args)
+		if !weakKeyOK(key) {
+			return object.NewTypeError("Invalid value used as weak map key")
+		}
+		// 规范 upsert: callbackfn 可调用性校验在查表之前 —— 键已存在且
+		// callbackfn 不可调用时仍必须 TypeError (not-a-function-callbackfn-
+		// throws 的 "key already present" 段)。
+		if !object.IsCallable(cb) {
+			return object.NewTypeError("%s is not a function", object.TypeOf(cb))
+		}
+		if v, found := m.Get(key); found {
+			return v
+		}
+		val := object.CallFunction(cb, object.UndefinedSingleton, key)
+		m.Set(key, val)
+		return val
+	}))
 	return p
 }
 
-// setupWeakSetProto 创建 WeakSet.prototype (不可枚举，仅三个方法)。
+// weakUpsertArgs: (key, valueOrCallback) 两参取值, 缺参补 undefined。
+func weakUpsertArgs(args []object.Value) (object.Value, object.Value) {
+	var key, val object.Value = object.UndefinedSingleton, object.UndefinedSingleton
+	if len(args) > 0 {
+		key = args[0]
+	}
+	if len(args) > 1 {
+		val = args[1]
+	}
+	return key, val
+}
+
+// setupWeakSetProto 创建 WeakSet.prototype (不可枚举，仅 add/has/delete)。
 func setupWeakSetProto() *object.Object {
 	p := object.NewObject()
 	p.SetBuiltinProperty("add", object.NewBuiltinMethod("add", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := this.(*object.Set)
-		if !ok {
-			return thisTypeError("Set", "add", this)
+		s, err := requireWeakSetBrand(this, "add")
+		if err != nil {
+			return err
 		}
 		if len(args) > 0 {
+			if !weakKeyOK(args[0]) {
+				return object.NewTypeError("Invalid value used in weak set")
+			}
 			s.Add(args[0])
 		}
 		return this
 	}))
 	p.SetBuiltinProperty("has", object.NewBuiltinMethod("has", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := this.(*object.Set)
-		if !ok || len(args) == 0 {
+		s, err := requireWeakSetBrand(this, "has")
+		if err != nil {
+			return err
+		}
+		if len(args) == 0 {
+			return object.NewBoolean(false)
+		}
+		if !weakKeyOK(args[0]) {
 			return object.NewBoolean(false)
 		}
 		return object.NewBoolean(s.Has(args[0]))
 	}))
 	p.SetBuiltinProperty("delete", object.NewBuiltinMethod("delete", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := this.(*object.Set)
-		if !ok || len(args) == 0 {
+		s, err := requireWeakSetBrand(this, "delete")
+		if err != nil {
+			return err
+		}
+		if len(args) == 0 {
+			return object.NewBoolean(false)
+		}
+		if !weakKeyOK(args[0]) {
 			return object.NewBoolean(false)
 		}
 		return object.NewBoolean(s.Delete(args[0]))
@@ -187,9 +332,9 @@ func setupMapProto() *object.Object {
 
 	// set(key, value): 设置键值对，返回 Map 本身
 	p.SetBuiltinProperty("set", object.NewBuiltinMethod("set", func(this object.Value, args ...object.Value) object.Value {
-		m, ok := this.(*object.Map)
-		if !ok {
-			return thisTypeError("Map", "set", this)
+		m, err := requireMapBrand(this, "set")
+		if err != nil {
+			return err
 		}
 		key := object.Value(object.UndefinedSingleton)
 		val := object.Value(object.UndefinedSingleton)
@@ -205,9 +350,9 @@ func setupMapProto() *object.Object {
 
 	// get(key): 获取键对应的值
 	p.SetBuiltinProperty("get", object.NewBuiltinMethod("get", func(this object.Value, args ...object.Value) object.Value {
-		m, ok := this.(*object.Map)
-		if !ok {
-			return thisTypeError("Map", "get", this)
+		m, err := requireMapBrand(this, "get")
+		if err != nil {
+			return err
 		}
 		if len(args) == 0 {
 			return object.UndefinedSingleton
@@ -220,9 +365,9 @@ func setupMapProto() *object.Object {
 
 	// has(key): 检查键是否存在
 	p.SetBuiltinProperty("has", object.NewBuiltinMethod("has", func(this object.Value, args ...object.Value) object.Value {
-		m, ok := this.(*object.Map)
-		if !ok {
-			return thisTypeError("Map", "has", this)
+		m, err := requireMapBrand(this, "has")
+		if err != nil {
+			return err
 		}
 		if len(args) == 0 {
 			return object.NewBoolean(false)
@@ -232,9 +377,9 @@ func setupMapProto() *object.Object {
 
 	// delete(key): 删除键值对
 	p.SetBuiltinProperty("delete", object.NewBuiltinMethod("delete", func(this object.Value, args ...object.Value) object.Value {
-		m, ok := this.(*object.Map)
-		if !ok {
-			return thisTypeError("Map", "delete", this)
+		m, err := requireMapBrand(this, "delete")
+		if err != nil {
+			return err
 		}
 		if len(args) == 0 {
 			return object.NewBoolean(false)
@@ -244,9 +389,9 @@ func setupMapProto() *object.Object {
 
 	// clear(): 清空 Map
 	p.SetBuiltinProperty("clear", object.NewBuiltinMethod("clear", func(this object.Value, args ...object.Value) object.Value {
-		m, ok := this.(*object.Map)
-		if !ok {
-			return thisTypeError("Map", "clear", this)
+		m, err := requireMapBrand(this, "clear")
+		if err != nil {
+			return err
 		}
 		m.Clear()
 		return object.UndefinedSingleton
@@ -254,9 +399,9 @@ func setupMapProto() *object.Object {
 
 	// forEach(callback): 遍历 Map
 	p.SetBuiltinProperty("forEach", object.NewBuiltinMethod("forEach", func(this object.Value, args ...object.Value) object.Value {
-		m, ok := this.(*object.Map)
-		if !ok {
-			return thisTypeError("Map", "forEach", this)
+		m, err := requireMapBrand(this, "forEach")
+		if err != nil {
+			return err
 		}
 		if len(args) < 1 {
 			return object.UndefinedSingleton
@@ -270,36 +415,67 @@ func setupMapProto() *object.Object {
 
 	// keys(): 返回键的迭代器对象（规范要求真迭代器，for-of 快路径不走此方法）
 	p.SetBuiltinProperty("keys", object.NewBuiltinMethod("keys", func(this object.Value, args ...object.Value) object.Value {
-		m, ok := this.(*object.Map)
-		if !ok {
-			return thisTypeError("Map", "keys", this)
+		m, err := requireMapBrand(this, "keys")
+		if err != nil {
+			return err
 		}
 		return object.NewMapKeyIterator(m)
 	}))
 
 	// values(): 返回值的迭代器对象
 	p.SetBuiltinProperty("values", object.NewBuiltinMethod("values", func(this object.Value, args ...object.Value) object.Value {
-		m, ok := this.(*object.Map)
-		if !ok {
-			return thisTypeError("Map", "values", this)
+		m, err := requireMapBrand(this, "values")
+		if err != nil {
+			return err
 		}
 		return object.NewMapValueIterator(m)
 	}))
 
 	// entries(): 返回 [key, value] 对的迭代器对象（%Map.prototype.entries%）
 	p.SetBuiltinProperty("entries", object.NewBuiltinMethod("entries", func(this object.Value, args ...object.Value) object.Value {
-		m, ok := this.(*object.Map)
-		if !ok {
-			return thisTypeError("Map", "entries", this)
+		m, err := requireMapBrand(this, "entries")
+		if err != nil {
+			return err
 		}
 		return object.NewMapEntryIterator(m)
 	}))
 
+	// getOrInsert / getOrInsertComputed (ES2026 upsert): 键已存在返回现值,
+	// 否则插入 value / callbackFn(key) 的返回值。
+	p.SetBuiltinProperty("getOrInsert", object.NewBuiltinMethod("getOrInsert", func(this object.Value, args ...object.Value) object.Value {
+		m, err := requireMapBrand(this, "getOrInsert")
+		if err != nil {
+			return err
+		}
+		key, val := weakUpsertArgs(args)
+		if v, found := m.Get(key); found {
+			return v
+		}
+		m.Set(key, val)
+		return val
+	}))
+	p.SetBuiltinProperty("getOrInsertComputed", object.NewBuiltinMethod("getOrInsertComputed", func(this object.Value, args ...object.Value) object.Value {
+		m, err := requireMapBrand(this, "getOrInsertComputed")
+		if err != nil {
+			return err
+		}
+		key, cb := weakUpsertArgs(args)
+		if !object.IsCallable(cb) {
+			return object.NewTypeError("%s is not a function", object.TypeOf(cb))
+		}
+		if v, found := m.Get(key); found {
+			return v
+		}
+		val := object.CallFunction(cb, object.UndefinedSingleton, key)
+		m.Set(key, val)
+		return val
+	}))
+
 	// size: 规范是访问器 getter (非数据属性)。
 	p.DefineNonEnumerableAccessor("size", object.NewBuiltinMethod("get size", func(this object.Value, args ...object.Value) object.Value {
-		m, ok := this.(*object.Map)
-		if !ok {
-			return object.NewErrorWithName("TypeError", "Method Map.prototype.size called on incompatible receiver")
+		m, err := requireMapBrand(this, "size")
+		if err != nil {
+			return err
 		}
 		return object.NewInt(int64(len(m.Entries)))
 	}), nil)
@@ -312,9 +488,9 @@ func setupSetProto() *object.Object {
 
 	// add(value): 添加值，返回 Set 本身
 	p.SetBuiltinProperty("add", object.NewBuiltinMethod("add", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := this.(*object.Set)
-		if !ok {
-			return thisTypeError("Set", "add", this)
+		s, err := requireSetBrand(this, "add")
+		if err != nil {
+			return err
 		}
 		if len(args) > 0 {
 			s.Add(args[0])
@@ -324,9 +500,9 @@ func setupSetProto() *object.Object {
 
 	// has(value): 检查值是否存在
 	p.SetBuiltinProperty("has", object.NewBuiltinMethod("has", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := this.(*object.Set)
-		if !ok {
-			return thisTypeError("Set", "has", this)
+		s, err := requireSetBrand(this, "has")
+		if err != nil {
+			return err
 		}
 		if len(args) == 0 {
 			return object.NewBoolean(false)
@@ -336,9 +512,9 @@ func setupSetProto() *object.Object {
 
 	// delete(value): 删除值
 	p.SetBuiltinProperty("delete", object.NewBuiltinMethod("delete", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := this.(*object.Set)
-		if !ok {
-			return thisTypeError("Set", "delete", this)
+		s, err := requireSetBrand(this, "delete")
+		if err != nil {
+			return err
 		}
 		if len(args) == 0 {
 			return object.NewBoolean(false)
@@ -348,9 +524,9 @@ func setupSetProto() *object.Object {
 
 	// clear(): 清空 Set
 	p.SetBuiltinProperty("clear", object.NewBuiltinMethod("clear", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := this.(*object.Set)
-		if !ok {
-			return thisTypeError("Set", "clear", this)
+		s, err := requireSetBrand(this, "clear")
+		if err != nil {
+			return err
 		}
 		s.Clear()
 		return object.UndefinedSingleton
@@ -358,9 +534,9 @@ func setupSetProto() *object.Object {
 
 	// forEach(callback): 遍历 Set
 	p.SetBuiltinProperty("forEach", object.NewBuiltinMethod("forEach", func(this object.Value, args ...object.Value) object.Value {
-		s, ok := this.(*object.Set)
-		if !ok {
-			return thisTypeError("Set", "forEach", this)
+		s, err := requireSetBrand(this, "forEach")
+		if err != nil {
+			return err
 		}
 		if len(args) < 1 {
 			return object.UndefinedSingleton

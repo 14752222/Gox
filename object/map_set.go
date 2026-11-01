@@ -21,6 +21,10 @@ type Map struct {
 	// proto 是实例级原型。nil 时回退到全局 MapProto。
 	// WeakMap 复用 *Map 结构但绑定独立原型 (不可枚举)，故需要实例级字段。
 	proto Value
+	// Weak 标记内部槽品牌: WeakMap 复用 *Map 存储, Map.prototype 方法必须
+	// 拒收 WeakMap 实例 (requireInternalSlot), 反之亦然 —— 仅靠 Go 类型
+	// 无法区分, 靠此品牌位 (rFXXbq: this-not-object-throw / brand 族)。
+	Weak bool
 }
 
 func (m *Map) Type() ObjectType { return MAP_OBJ }
@@ -230,6 +234,8 @@ type Set struct {
 	// proto 是实例级原型。nil 时回退到全局 SetProto。
 	// WeakSet 复用 *Set 结构但绑定独立原型，故需要实例级字段。
 	proto Value
+	// Weak 标记内部槽品牌 (同 Map.Weak)。
+	Weak bool
 }
 
 func (s *Set) Type() ObjectType { return SET_OBJ }

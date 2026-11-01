@@ -15,6 +15,13 @@ func ProtoOf(v Value) Value {
 		return t.Proto
 	case *Array:
 		return t.GetProto()
+	// Map/Set (含 WeakMap/WeakSet): 实例级原型字段优先 —— WeakMap 复用
+	// *Map 存储但绑定独立原型, 缺此分支时 instanceof 退化为名称匹配,
+	// `new WeakMap() instanceof WeakMap` 失准 (rFXXbq)。
+	case *Map:
+		return t.GetProto()
+	case *Set:
+		return t.GetProto()
 	// TypedArray 实例的原型在类型注册表里 (或派生类实例的 ProtoOverride),
 	// 见 object.SetTypedArrayProto / TypedArray.GetProto。缺此分支 instanceof
 	// 会退化成名称匹配, `x instanceof Uint8Array` 对派生类实例失准。
