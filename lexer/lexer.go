@@ -904,8 +904,47 @@ func (l *Lexer) readString(quote rune, line, col int) Token {
 				sb.WriteRune('$')
 			case '0':
 				sb.WriteRune(0)
+			case 'b':
+				sb.WriteRune('\b')
+			case 'f':
+				sb.WriteRune('\f')
+			case 'v':
+				sb.WriteRune('\v')
+			case 'x':
+				// 十六进制转义: \xHH（恰好两位）
+				var hex string
+				for j := 0; j < 2; j++ {
+					l.readChar()
+					hex += string(l.ch)
+				}
+				if r, err := hexToRune(hex); err == nil {
+					sb.WriteRune(r)
+				} else {
+					// 非法 \xHH（规范为 SyntaxError，这里保持宽容还原原文）
+					sb.WriteString("\\x")
+					sb.WriteString(hex)
+				}
 			case 'u':
-				// Unicode 转义: \uXXXX
+				// Unicode 转义: \uXXXX 或 \u{HexDigits...}
+				if l.peekChar() == '{' {
+					l.readChar() // 消费 '{'
+					var hex string
+					for {
+						l.readChar()
+						if l.ch == '}' || l.ch == 0 {
+							break
+						}
+						hex += string(l.ch)
+					}
+					if r, err := hexToRune(hex); err == nil && r <= 0x10FFFF {
+						sb.WriteRune(r)
+					} else {
+						sb.WriteString("\\u{")
+						sb.WriteString(hex)
+						sb.WriteString("}")
+					}
+					break
+				}
 				var hex string
 				for j := 0; j < 4; j++ {
 					l.readChar()

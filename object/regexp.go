@@ -1,6 +1,7 @@
 package object
 
 import (
+	"bytes"
 	"fmt"
 	"regexp"
 	"sort"
@@ -287,6 +288,14 @@ func NewRegExp(pattern, flags string) (*RegExp, error) {
 		}
 	}
 
+	// regexp-modifiers (ES2025) 组头早错误校验: (?mods-removed:...)。
+	// 规则: 修饰符只能是 dimgsvy（g/u 不可作内联修饰符），添加/移除集合
+	// 各自不得重复、二者不得重叠。(?s-s:a) 这类必须 SyntaxError。
+	// （test262 RegExp/syntax-err-arithmetic-modifiers-* 族）
+	if err := checkModifiersGroup(pattern); err != nil {
+		return nil, fmt.Errorf("SyntaxError: Invalid regular expression: %s: %s", pattern, err)
+	}
+
 	// 转换 JS 正则到 Go 正则
 	goPattern := jsToGoRegex(pattern, r.IgnoreCase, r.Multiline, r.DotAll, r.Unicode)
 	re, err := regexp.Compile(goPattern)
@@ -483,6 +492,22 @@ var propGCLongToShort = map[string]string{
 	"digit": "Nd", "combining_mark": "M", "space": "Zs", "punct": "P",
 }
 
+// propNounder: 查表键归一 —— 去除 '_'。属性名规范 (UnicodeMatchProperty)
+// 对 '_' 不敏感, 而本文件的表键多带 '_'。
+func propNounder(s string) string {
+	return strings.ReplaceAll(s, "_", "")
+}
+
+// propGCLongToShortNounder: init 时构建的 "剥 '_' 小写 GC 长值 → 短键" 表,
+// 供无值形态 (\p{Close_Punctuation}) 与有值形态共用语义。
+var propGCLongToShortNounder = func() map[string]string {
+	m := map[string]string{}
+	for k, v := range propGCLongToShort {
+		m[strings.ToLower(propNounder(k))] = v
+	}
+	return m
+}()
+
 // propGCShort: General_Category 短值 (规范化小写) → RE2 键。
 var propGCShort = map[string]string{
 	"lu": "Lu", "ll": "Ll", "lt": "Lt", "lm": "Lm", "lo": "Lo", "l": "L", "lc": "LC",
@@ -498,7 +523,7 @@ var propGCShort = map[string]string{
 // propScriptAliases: JS 4 字母脚本别名 → RE2 规范脚本名。
 var propScriptAliases = map[string]string{
 	"zyyy": "Common", "qaai": "Inherited", "zinh": "Inherited",
-	"hrkt": "Hiragana", // Katakana_Or_Hiragana 近似为 Hiragana
+	"hrkt": "Hiragana",                          // Katakana_Or_Hiragana 近似为 Hiragana
 	"jpan": "Han", "hans": "Han", "hant": "Han", // 日/简/繁汉字近似为 Han
 	"kore": "Hangul",
 	"latn": "Latin", "grek": "Greek", "cyrl": "Cyrillic", "arab": "Arabic", "hebr": "Hebrew",
@@ -627,8 +652,11 @@ func translatePropertyEscapes(pattern string) string {
 		if ok {
 			b.WriteString(replacement)
 		} else {
-			// 语法上不可识别: 原样保留 → RE2 报 SyntaxError (规范同)
-			b.WriteString(pattern[i : i+3+end+1])
+			// 语法上不可识别 → 规范一律 SyntaxError。不能原样保留交 RE2:
+			// RE2 对 \p 名是**大小写不敏感**匹配 (\p{ANY}/\p{Ascii}/\p{assigned}
+			// 都能编译过), case 变体会静默漏过。注入超出 Unicode 上限的
+			// \x{110000} 令 RE2 必然报错 (规格要求的 SyntaxError)。
+			b.WriteString(`\x{110000}`)
 		}
 		i += 3 + end + 1
 	}
@@ -675,19 +703,24 @@ func translateOnePropertyEscape(negated bool, content string) (string, bool) {
 				return "", false
 			}
 			return propScriptClass(script, negated), true
-	}
-	// 二元属性带值 (\p{ASCII=Yes} 等) 与未知属性名带值: 规范均 SyntaxError
-	// (binary-property-with-value-ASCII_-_Yes)。
-	return "", false
+		}
+		// 二元属性带值 (\p{ASCII=Yes} 等) 与未知属性名带值: 规范均 SyntaxError
+		// (binary-property-with-value-ASCII_-_Yes)。
+		return "", false
 	}
 	// 无值形态: 先按 General_Category 值匹配 (General_CategoryValue 经
 	// UnicodeMatchPropertyValue, 大小写不敏感) —— 覆盖 \p{Lu}/\p{Letter}/
-	// \p{space}/\p{Unassigned} 等。
+	// \p{space}/\p{Unassigned} 等。键用**剥 '_' 后小写**双表:
+	// 属性名经 propCanonicalName 已剥 '_', 而 GC 长值键带 '_'
+	// (\p{Close_Punctuation} / \p{Space_Separator} 族)。
 	lv := propCanonicalValue(name)
 	if short, ok := propGCLongToShort[lv]; ok {
 		return propGCClass(short, negated), true
 	}
 	if short, ok := propGCShort[lv]; ok {
+		return propGCClass(short, negated), true
+	}
+	if short, ok := propGCLongToShortNounder[lv]; ok {
 		return propGCClass(short, negated), true
 	}
 	// Any/ASCII/Assigned: 属性名精确大小写 (loose-matching-03..10:
@@ -703,15 +736,17 @@ func translateOnePropertyEscape(negated bool, content string) (string, bool) {
 	// 二元属性 (unicode.Properties 表, 物化为区间); 别名先行
 	// (UnicodeMatchProperty: Hex→Hex_Digit / AHex→ASCII_Hex_Digit / Alpha→
 	// Alphabetic 等, 属性名大小写敏感、仅 '_' 已剥除)。
+	// 查表键统一剥 '_' (propCanonicalName 已剥, 而表键带 '_', 如
+	// ASCIIHexDigit -> ASCII_Hex_Digit; 别名键同理)。
 	if cn, ok := propBinaryAlias[name]; ok {
 		name = cn
 	}
-	if rt, ok := propBinaryTable(name); ok {
+	if rt, ok := propBinaryTable(propNounder(name)); ok {
 		return propMaterialize([](*unicode.RangeTable){rt}, negated), true
 	}
 	// 派生二元属性: 取各组成键的 RangeTable 合并物化 (RE2 不认
 	// Other_Alphabetic 等键, 不能用 \p{...} 组合)
-	if parts, ok := propDerivedBinary[name]; ok {
+	if parts, ok := propDerivedBinary[propNounder(name)]; ok {
 		var tables []*unicode.RangeTable
 		for _, k := range parts {
 			if rt := propRangeTableByName(k); rt != nil {
@@ -780,7 +815,10 @@ var propScriptValueCanonical = func() map[string]string {
 }()
 
 // propScriptValueName 属性值形态的脚本名匹配 (大小写不敏感,
-// UnicodeMatchPropertyValue 语义): 别名 → 全表 → 大驼峰还原。
+// UnicodeMatchPropertyValue 语义): 别名 → 小写全表。没有命中即不认识
+// —— 不做 Title-case 还原兜底: 那会把任意垃圾值 (\p{Script=H_e_h}) 放行,
+// 而 RE2 又只对大小写不敏感、'_' 敏感的名字报错, 漏掉规范要求的
+// SyntaxError (non-existent-property-value-Script 族)。
 func propScriptValueName(v string) (string, bool) {
 	lv := strings.ToLower(v)
 	if a, ok := propScriptAliases[lv]; ok {
@@ -789,14 +827,7 @@ func propScriptValueName(v string) (string, bool) {
 	if a, ok := propScriptValueCanonical[lv]; ok {
 		return a, true
 	}
-	parts := strings.Split(v, "_")
-	for i, p := range parts {
-		if p == "" {
-			continue
-		}
-		parts[i] = strings.ToUpper(p[:1]) + p[1:]
-	}
-	return strings.Join(parts, "_"), true
+	return "", false
 }
 
 // propScriptName 无值形态的脚本名匹配: 属性名大小写敏感
@@ -948,90 +979,89 @@ func propMaterialize(tables []*unicode.RangeTable, negated bool) string {
 }
 
 // propDerivedBinary: 派生二元属性 → RE2 原生键并集 (UCD 派生规则近似)。
-var propDerivedBinary = map[string][]string{
+var propDerivedBinaryRaw = map[string][]string{
 	"ASCII_Hex_Digit": {"ASCII_Hex_Digit"},
-	"Alphabetic": {"L", "Nl", "Other_Alphabetic"},
-	"Case_Ignorable": {"Mn", "Me", "Cf", "Lm", "Sk"},
-	"Cased": {"Lu", "Ll", "Lt", "Other_Lowercase", "Other_Uppercase"},
-	"Dash": {"Pd"},
-	"Hex_Digit": {"Nd", "Hex_Digit"},
-	"ID_Continue": {"L", "Nl", "Mn", "Mc", "Nd", "Pc", "Other_ID_Continue"},
-	"ID_Start": {"L", "Nl", "Other_ID_Start"},
-	"Ideographic": {"Ideographic"},
-	"Lowercase": {"Ll", "Other_Lowercase"},
-	"Math": {"Sm", "Other_Math"},
-	"Quotation_Mark": {"Pi", "Pf", "Quotation_Mark"},
-	"Uppercase": {"Lu", "Other_Uppercase"},
-	"XID_Continue": {"L", "Nl", "Mn", "Mc", "Nd", "Pc", "Other_ID_Continue"},
-	"XID_Start": {"L", "Nl", "Other_ID_Start"},
+	"Alphabetic":      {"L", "Nl", "Other_Alphabetic"},
+	"Case_Ignorable":  {"Mn", "Me", "Cf", "Lm", "Sk"},
+	"Cased":           {"Lu", "Ll", "Lt", "Other_Lowercase", "Other_Uppercase"},
+	"Dash":            {"Pd"},
+	"Hex_Digit":       {"Nd", "Hex_Digit"},
+	"ID_Continue":     {"L", "Nl", "Mn", "Mc", "Nd", "Pc", "Other_ID_Continue"},
+	"ID_Start":        {"L", "Nl", "Other_ID_Start"},
+	"Ideographic":     {"Ideographic"},
+	"Lowercase":       {"Ll", "Other_Lowercase"},
+	"Math":            {"Sm", "Other_Math"},
+	"Quotation_Mark":  {"Pi", "Pf", "Quotation_Mark"},
+	"Uppercase":       {"Lu", "Other_Uppercase"},
+	"XID_Continue":    {"L", "Nl", "Mn", "Mc", "Nd", "Pc", "Other_ID_Continue"},
+	"XID_Start":       {"L", "Nl", "Other_ID_Start"},
 }
 
 // propSpecBinary 是规范 (sec-runtime-semantics-unicodematchproperty-p)
-// 支持的二元属性白名单 (规范化名)。表里没有的 (如 Other_* 系列) 一律
-// SyntaxError —— unsupported-binary-property-* 用例正考这个。
-var propSpecBinary = map[string]bool{
-	"ASCII_Hex_Digit": true,
-	"Alphabetic": true,
-	"Any": true,
-	"Assigned": true,
-	"Bidi_Control": true,
-	"Bidi_Mirrored": true,
-	"Case_Ignorable": true,
-	"Cased": true,
-	"Changes_When_Casefolded": true,
-	"Changes_When_Casemapped": true,
-	"Changes_When_Lowercased": true,
+// 支持的二元属性白名单 (字面键带 '_', 查询统一走 init 包装的剥 '_' 键)。
+var propSpecBinaryRaw = map[string]bool{
+	"ASCII_Hex_Digit":              true,
+	"Alphabetic":                   true,
+	"Any":                          true,
+	"Assigned":                     true,
+	"Bidi_Control":                 true,
+	"Bidi_Mirrored":                true,
+	"Case_Ignorable":               true,
+	"Cased":                        true,
+	"Changes_When_Casefolded":      true,
+	"Changes_When_Casemapped":      true,
+	"Changes_When_Lowercased":      true,
 	"Changes_When_NFKC_Casefolded": true,
-	"Changes_When_Titlecased": true,
-	"Changes_When_Uppercased": true,
-	"Dash": true,
+	"Changes_When_Titlecased":      true,
+	"Changes_When_Uppercased":      true,
+	"Dash":                         true,
 	"Default_Ignorable_Code_Point": true,
-	"Deprecated": true,
-	"Diacritic": true,
-	"Emoji": true,
-	"Emoji_Component": true,
-	"Emoji_Modifier": true,
-	"Emoji_Modifier_Base": true,
-	"Emoji_Presentation": true,
-	"Extended_Pictographic": true,
-	"Extender": true,
-	"Grapheme_Base": true,
-	"Grapheme_Extend": true,
-	"Hex_Digit": true,
-	"IDS": true,
-	"IDS_Binary_Operator": true,
-	"IDS_Trinary_Operator": true,
-	"ID_Continue": true,
-	"ID_Start": true,
-	"Ideographic": true,
-	"Join_Control": true,
-	"Logical_Order_Exception": true,
-	"Lowercase": true,
-	"Math": true,
-	"Noncharacter_Code_Point": true,
-	"Pattern_Syntax": true,
-	"Pattern_White_Space": true,
-	"Quotation_Mark": true,
-	"Radical": true,
-	"Regional_Indicator": true,
-	"Sentence_Terminal": true,
-	"Soft_Dotted": true,
-	"Terminal_Punctuation": true,
-	"Unified_Ideograph": true,
-	"Uppercase": true,
-	"Variation_Selector": true,
-	"White_Space": true,
-	"XID_Continue": true,
-	"XID_Start": true,
+	"Deprecated":                   true,
+	"Diacritic":                    true,
+	"Emoji":                        true,
+	"Emoji_Component":              true,
+	"Emoji_Modifier":               true,
+	"Emoji_Modifier_Base":          true,
+	"Emoji_Presentation":           true,
+	"Extended_Pictographic":        true,
+	"Extender":                     true,
+	"Grapheme_Base":                true,
+	"Grapheme_Extend":              true,
+	"Hex_Digit":                    true,
+	"IDS":                          true,
+	"IDS_Binary_Operator":          true,
+	"IDS_Trinary_Operator":         true,
+	"ID_Continue":                  true,
+	"ID_Start":                     true,
+	"Ideographic":                  true,
+	"Join_Control":                 true,
+	"Logical_Order_Exception":      true,
+	"Lowercase":                    true,
+	"Math":                         true,
+	"Noncharacter_Code_Point":      true,
+	"Pattern_Syntax":               true,
+	"Pattern_White_Space":          true,
+	"Quotation_Mark":               true,
+	"Radical":                      true,
+	"Regional_Indicator":           true,
+	"Sentence_Terminal":            true,
+	"Soft_Dotted":                  true,
+	"Terminal_Punctuation":         true,
+	"Unified_Ideograph":            true,
+	"Uppercase":                    true,
+	"Variation_Selector":           true,
+	"White_Space":                  true,
+	"XID_Continue":                 true,
+	"XID_Start":                    true,
 }
 
 // propBinaryTable 返回规范支持且 unicode 包有表的二元属性
 // (键为规范化名)。ok=false 表示没有对应表 (调用方原样保留 → SyntaxError)。
 func propBinaryTable(cname string) (*unicode.RangeTable, bool) {
-	if !propSpecBinary[cname] {
+	if !propSpecBinary[propNounder(cname)] {
 		return nil, false
 	}
-	goName, ok := propPropertiesAlias[cname]
+	goName, ok := propPropertiesAlias[propNounder(cname)]
 	if !ok {
 		return nil, false
 	}
@@ -1043,7 +1073,7 @@ func propBinaryTable(cname string) (*unicode.RangeTable, bool) {
 // 键为规范化名 —— 大小写敏感、'_' 已剥除) → 规范名。值仍须过
 // propSpecBinary 白名单与 unicode.Properties 表检查。
 // 来源 UCD PropertyAliases.txt 缩写 (大小写原样保留)。
-var propBinaryAlias = map[string]string{
+var propBinaryAliasRaw = map[string]string{
 	"AHex":    "ASCII_Hex_Digit",
 	"Alpha":   "Alphabetic",
 	"BidiC":   "Bidi_Control",
@@ -1085,44 +1115,80 @@ var propBinaryAlias = map[string]string{
 	"space":   "White_Space",
 }
 
+// propBinaryAlias: init 时把别名键剥 '_' (属性名在 translateOnePropertyEscape
+// 入口已被 propCanonicalName 剥 '_', 两侧必须同键形)。
+var propBinaryAlias = func() map[string]string {
+	m := make(map[string]string, len(propBinaryAliasRaw))
+	for k, v := range propBinaryAliasRaw {
+		m[propNounder(k)] = v
+	}
+	return m
+}()
+
+// propSpecBinary / propPropertiesAlias / propDerivedBinary: 查询键统一剥
+// '_' (canonicalName 已剥 '_', 表键带 '_', 如 ASCIIHexDigit→ASCII_Hex_Digit)。
+var propSpecBinary = func() map[string]bool {
+	m := make(map[string]bool, len(propSpecBinaryRaw))
+	for k, v := range propSpecBinaryRaw {
+		m[propNounder(k)] = v
+	}
+	return m
+}()
+
+var propPropertiesAlias = func() map[string]string {
+	m := make(map[string]string, len(propPropertiesAliasRaw))
+	for k, v := range propPropertiesAliasRaw {
+		m[propNounder(k)] = v
+	}
+	return m
+}()
+
+var propDerivedBinary = func() map[string][]string {
+	m := make(map[string][]string, len(propDerivedBinaryRaw))
+	for k, v := range propDerivedBinaryRaw {
+		m[propNounder(k)] = v
+	}
+	return m
+}()
+
 // propPropertiesAlias: 规范化 JS 二元属性名 → unicode.Properties 键。
 // propPropertiesAlias: JS 二元属性名 (规范大小写, 属性名匹配大小写敏感) →
-// unicode.Properties 键。
-var propPropertiesAlias = map[string]string{
-	"ASCII_Hex_Digit":                "ASCII_Hex_Digit",
-	"Bidi_Control":                   "Bidi_Control",
-	"Dash":                           "Dash",
-	"Deprecated":                     "Deprecated",
-	"Diacritic":                      "Diacritic",
-	"Extender":                       "Extender",
-	"Hex_Digit":                      "Hex_Digit",
-	"Hyphen":                         "Hyphen",
-	"IDS_Binary_Operator":            "IDS_Binary_Operator",
-	"IDS_Trinary_Operator":           "IDS_Trinary_Operator",
-	"Ideographic":                    "Ideographic",
-	"Join_Control":                   "Join_Control",
-	"Logical_Order_Exception":        "Logical_Order_Exception",
-	"Noncharacter_Code_Point":        "Noncharacter_Code_Point",
-	"Other_Alphabetic":               "Other_Alphabetic",
+// unicode.Properties 键。查询走 init 包装的剥 '_' 键版 propPropertiesAlias。
+var propPropertiesAliasRaw = map[string]string{
+	"ASCII_Hex_Digit":                    "ASCII_Hex_Digit",
+	"Bidi_Control":                       "Bidi_Control",
+	"Dash":                               "Dash",
+	"Deprecated":                         "Deprecated",
+	"Diacritic":                          "Diacritic",
+	"Extender":                           "Extender",
+	"Hex_Digit":                          "Hex_Digit",
+	"Hyphen":                             "Hyphen",
+	"IDS_Binary_Operator":                "IDS_Binary_Operator",
+	"IDS_Trinary_Operator":               "IDS_Trinary_Operator",
+	"Ideographic":                        "Ideographic",
+	"Join_Control":                       "Join_Control",
+	"Logical_Order_Exception":            "Logical_Order_Exception",
+	"Noncharacter_Code_Point":            "Noncharacter_Code_Point",
+	"Other_Alphabetic":                   "Other_Alphabetic",
 	"Other_Default_Ignorable_Code_Point": "Other_Default_Ignorable_Code_Point",
-	"Other_Grapheme_Extend":          "Other_Grapheme_Extend",
-	"Other_ID_Continue":              "Other_ID_Continue",
-	"Other_ID_Start":                 "Other_ID_Start",
-	"Other_Lowercase":                "Other_Lowercase",
-	"Other_Math":                     "Other_Math",
-	"Other_Uppercase":                "Other_Uppercase",
-	"Pattern_Syntax":                 "Pattern_Syntax",
-	"Pattern_White_Space":            "Pattern_White_Space",
-	"Prepended_Concatenation_Mark":   "Prepended_Concatenation_Mark",
-	"Quotation_Mark":                 "Quotation_Mark",
-	"Radical":                        "Radical",
-	"Regional_Indicator":             "Regional_Indicator",
-	"Sentence_Terminal":              "Sentence_Terminal",
-	"Soft_Dotted":                    "Soft_Dotted",
-	"Terminal_Punctuation":           "Terminal_Punctuation",
-	"Unified_Ideograph":              "Unified_Ideograph",
-	"Variation_Selector":             "Variation_Selector",
-	"White_Space":                    "White_Space",
+	"Other_Grapheme_Extend":              "Other_Grapheme_Extend",
+	"Other_ID_Continue":                  "Other_ID_Continue",
+	"Other_ID_Start":                     "Other_ID_Start",
+	"Other_Lowercase":                    "Other_Lowercase",
+	"Other_Math":                         "Other_Math",
+	"Other_Uppercase":                    "Other_Uppercase",
+	"Pattern_Syntax":                     "Pattern_Syntax",
+	"Pattern_White_Space":                "Pattern_White_Space",
+	"Prepended_Concatenation_Mark":       "Prepended_Concatenation_Mark",
+	"Quotation_Mark":                     "Quotation_Mark",
+	"Radical":                            "Radical",
+	"Regional_Indicator":                 "Regional_Indicator",
+	"Sentence_Terminal":                  "Sentence_Terminal",
+	"Soft_Dotted":                        "Soft_Dotted",
+	"Terminal_Punctuation":               "Terminal_Punctuation",
+	"Unified_Ideograph":                  "Unified_Ideograph",
+	"Variation_Selector":                 "Variation_Selector",
+	"White_Space":                        "White_Space",
 }
 
 // propRangeTableByName 按规范化键取 RE2 原生类别/脚本的 RangeTable
@@ -1135,4 +1201,80 @@ func propRangeTableByName(goKey string) *unicode.RangeTable {
 		return rt
 	}
 	return unicode.Properties[goKey]
+}
+
+// checkModifiersGroup 扫描 pattern 中的内联修饰符组 "(?...:...)" 头部，
+// 校验 regexp-modifiers 语法（ES2025）。非法组头返回错误描述，合法返回 nil。
+// 只认 "(?" 后直接跟字母/'-'/':' 的情形；lookaround、命名组、(?:...) 等放行。
+func checkModifiersGroup(pattern string) error {
+	inClass := false
+	for i := 0; i < len(pattern); i++ {
+		switch pattern[i] {
+		case '\\':
+			i++ // 跳过转义字符
+		case '[':
+			inClass = true
+		case ']':
+			inClass = false
+		case '(':
+			if !inClass && i+1 < len(pattern) && pattern[i+1] == '?' {
+				j := i + 2
+				if j >= len(pattern) {
+					return nil
+				}
+				switch pattern[j] {
+				case '=', '!', '<':
+					continue // lookaround / 命名组 (?<name>
+				}
+				// 读到 ':' 为止（或提前终止字符则不是组头）
+				var header []byte
+				for j < len(pattern) && pattern[j] != ':' && pattern[j] != ')' &&
+					pattern[j] != '(' && pattern[j] != '[' {
+					header = append(header, pattern[j])
+					j++
+				}
+				if j >= len(pattern) || pattern[j] != ':' {
+					continue // 非组头形态，交给既有语法处理
+				}
+				// header 形如 "ims" / "ims-s" / "s"
+				add, rm := string(header), ""
+				if k := bytes.IndexByte(header, '-'); k >= 0 {
+					add, rm = string(header[:k]), string(header[k+1:])
+				}
+				seen := map[byte]bool{}
+				for _, c := range []byte(add) {
+					if !isModifierFlag(c) {
+						return fmt.Errorf("invalid regular expression flags")
+					}
+					if seen[c] {
+						return fmt.Errorf("duplicate flag in modifier")
+					}
+					seen[c] = true
+				}
+				seenRm := map[byte]bool{}
+				for _, c := range []byte(rm) {
+					if !isModifierFlag(c) {
+						return fmt.Errorf("invalid regular expression flags")
+					}
+					if seenRm[c] {
+						return fmt.Errorf("duplicate flag in modifier")
+					}
+					seenRm[c] = true
+					if seen[c] {
+						return fmt.Errorf("flag appears in both add and remove modifiers")
+					}
+				}
+				i = j // 跳过组头（':' 由外层下次循环消费）
+			}
+		}
+	}
+	return nil
+}
+
+func isModifierFlag(c byte) bool {
+	switch c {
+	case 'd', 'i', 'm', 's', 'v', 'y':
+		return true
+	}
+	return false
 }

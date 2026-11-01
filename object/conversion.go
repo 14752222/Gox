@@ -63,11 +63,23 @@ func toString(v Value, depth int) string {
 		// 而非 Inspect 用的 UTC ISO 串 —— 后者是 console.log 的调试表现。
 		return t.ToString()
 	case *Object:
-		// 用户对象: 优先调用其 toString 方法
-		if tv, ok := t.GetProperty("toString"); ok && IsCallable(tv) {
-			r := CallFunction(tv, v)
-			if r != nil && r != UndefinedSingleton && r != v {
-				return toString(r, depth+1)
+		// 用户对象: 按 OrdinaryToPrimitive("string") 顺序 toString → valueOf。
+		// 此前只试 toString，valueOf 被完全跳过 —— {valueOf(){return "x"},
+		// toString:void 0} 会被错误地字符串化成 "[object Object]"
+		// (test262 String/prototype/toLocale* /A1_T9 一族盯着这条路径)。
+		for _, name := range []string{"toString", "valueOf"} {
+			if m, ok := t.GetProperty(name); ok && IsCallable(m) {
+				r := CallFunction(m, v)
+				if r == nil {
+					continue
+				}
+				p := UnwrapPrimitive(r)
+				switch p.(type) {
+				case *Object, *Array, *Date, *PrimitiveObject:
+					// 返回对象: 规范应抛 TypeError，这里保守地试下一个方法
+					continue
+				}
+				return toString(p, depth+1)
 			}
 		}
 		return "[object Object]"

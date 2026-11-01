@@ -3,8 +3,10 @@ package stdlib
 import (
 	"math"
 	"strings"
+	"unicode"
 
 	"github.com/14752222/Gox/object"
+	"golang.org/x/text/unicode/norm"
 )
 
 // jsWhitespace 是 ECMAScript 定义的 WhiteSpace 与 LineTerminator 集合。
@@ -190,6 +192,61 @@ func setupStringProto() *object.Object {
 			return errv
 		}
 		return object.NewString(strings.ToLower(s.Value))
+	}))
+
+	// toLocaleLowerCase([locale]) / toLocaleUpperCase([locale])
+	//
+	// 无 Intl 时规范（21.1.3.20/21）定义的默认 locale 路径 = 按 Unicode
+	// Default Case Algorithms 做**与 locale 无关**的转换：这不止 unicode
+	// 简单映射，还包括 SpecialCasing.txt 的无条件映射（ß→SS、ﬁ→FI、
+	// İ→i+̇ 等，见 string_special_casing.go）与条件映射 Final_Sigma
+	// （词尾 Σ→ς）。test262 special_casing*.js / Final_Sigma_U180E.js /
+	// supplementary_plane.js 全部盯着这些。locale 参数在无 Intl 时按规范
+	// 仍须校验（非 undefined 时须能 ToString，且应是合法语言标签——这里
+	// 仅做宽松校验，非法标签抛 RangeError 的用例归属 Intl 洼地）。
+	p.SetBuiltinProperty("toLocaleLowerCase", object.NewBuiltinMethod("toLocaleLowerCase", func(this object.Value, args ...object.Value) object.Value {
+		s, errv := thisStringCoerced(this, p, "toLocaleLowerCase")
+		if errv != nil {
+			return errv
+		}
+		return object.NewString(localeToLower(s.Value))
+	}))
+	p.SetBuiltinProperty("toLocaleUpperCase", object.NewBuiltinMethod("toLocaleUpperCase", func(this object.Value, args ...object.Value) object.Value {
+		s, errv := thisStringCoerced(this, p, "toLocaleUpperCase")
+		if errv != nil {
+			return errv
+		}
+		return object.NewString(localeToUpper(s.Value))
+	}))
+
+	// localeCompare(that): 无 Intl 时规范允许实现定义比较结果，但必须：
+	//  - RequireObjectCoercible(this) + ToString(this)，Symbol 抛 TypeError；
+	//  - ToString(that)（15.5.4.9_A1_T11 的 "intostr" 对象抛错必须传播）；
+	//  - **规范等价**的字符串必须返回 0（15.5.4.9_CE 一族）：两侧做 NFD
+	//    归一化后按码点序比较，相等返回 0、否则返回 -1/+1。
+	p.SetBuiltinProperty("localeCompare", object.NewBuiltinMethod("localeCompare", func(this object.Value, args ...object.Value) object.Value {
+		s, errv := thisStringCoerced(this, p, "localeCompare")
+		if errv != nil {
+			return errv
+		}
+		var that string
+		if len(args) > 0 && args[0] != nil {
+			t, errv := toPrimitiveToString(args[0])
+			if errv != nil {
+				return errv
+			}
+			that = t.Value
+		}
+		a := norm.NFD.String(s.Value)
+		b := norm.NFD.String(that)
+		switch strings.Compare(a, b) {
+		case 0:
+			return object.NewNumber(0)
+		case -1:
+			return object.NewNumber(-1)
+		default:
+			return object.NewNumber(1)
+		}
 	}))
 
 	// charAt(index): 按 UTF-16 码元索引，越界返回空串
@@ -1110,4 +1167,92 @@ func utf16LastIndexOf(s, search string, fromIdx int) int {
 		return -1
 	}
 	return object.UTF16Len(head[:byteIdx])
+}
+
+// ===== Default Case Algorithms（SpecialCasing 无条件映射 + Final_Sigma）=====
+
+// isCaseIgnorable 实现 Unicode Case_Ignorable（UAX #21 / 3.13 D138）：
+// Mn/Me/Cf/Lm/Sk，或 Word_Break ∈ {MidLetter, MidNumLet, Single_Quote}
+// 的标点（ASCII 里即 '.' ':' '\''）。Final_Sigma 判定要跳过这些字符。
+func isCaseIgnorable(r rune) bool {
+	switch r {
+	case 0x002E, 0x003A, 0x0027, 0x00B7, 0x05F4, 0x2027, 0x2024, 0x2018, 0x2019,
+		0xFE13, 0xFE52, 0xFE55, 0xFF07, 0xFF0E, 0xFF1A:
+		return true
+	}
+	return unicode.Is(unicode.Mn, r) || unicode.Is(unicode.Me, r) ||
+		unicode.Is(unicode.Cf, r) || unicode.Is(unicode.Lm, r) ||
+		unicode.Is(unicode.Sk, r)
+}
+
+// isCased 实现 Cased（3.13 D135）：Ll/Lu/Lt + Other_Cased。
+// 其余字母（Lo/Lm）不 Cased —— 这正是 "AΣB" 中 Σ 取 σ 而 "aσ" 判定
+// 的关键：Σ 自身是 Lu（Cased），希腊/汉字等 Lo 不是。
+func isCased(r rune) bool {
+	return unicode.Is(unicode.Ll, r) || unicode.Is(unicode.Lu, r) ||
+		unicode.Is(unicode.Lt, r) || unicode.Is(unicode.Other_Lowercase, r) ||
+		unicode.Is(unicode.Other_Uppercase, r)
+}
+
+// localeToLower 按 Unicode Default Case Algorithms 做小写转换：
+// 逐码点查 SpecialCasing 无条件表（İ→i+◌̇），Σ 走 Final_Sigma 条件
+// （前向跳过 Case_Ignorable 后存在 Cased 字符则 ς，否则 σ），其余走
+// 简单映射。
+func localeToLower(s string) string {
+	runes := []rune(s)
+	var b strings.Builder
+	b.Grow(len(s))
+	for i, r := range runes {
+		if r == 0x03A3 { // GREEK CAPITAL LETTER SIGMA → Final_Sigma 条件
+			// Final_Sigma：前向**存在** Cased（跳过 Case_Ignorable）
+			// 且后向**不存在** Cased 时取 ς，否则 σ（3.13 R3/R4/R5）。
+			final := false
+			for j := i - 1; j >= 0; j-- {
+				if isCaseIgnorable(runes[j]) {
+					continue
+				}
+				final = isCased(runes[j])
+				break
+			}
+			if final {
+				for j := i + 1; j < len(runes); j++ {
+					if isCaseIgnorable(runes[j]) {
+						continue
+					}
+					if isCased(runes[j]) {
+						final = false
+					}
+					break
+				}
+			}
+			if final {
+				b.WriteRune(0x03C2) // ς
+			} else {
+				b.WriteRune(0x03C3) // σ
+			}
+			continue
+		}
+		if m, ok := specLower[r]; ok {
+			b.WriteString(m)
+			continue
+		}
+		b.WriteRune(unicode.ToLower(r))
+	}
+	return b.String()
+}
+
+// localeToUpper 按 Default Case Algorithms 做大写转换：无条件表
+// （ß→SS、ﬀ→FF 等）优先，其余走简单映射。UpperCase 无 Final_Sigma
+// 一类的上下文条件（tr/lt 除外，无 Intl 不做）。
+func localeToUpper(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if m, ok := specUpper[r]; ok {
+			b.WriteString(m)
+			continue
+		}
+		b.WriteRune(unicode.ToUpper(r))
+	}
+	return b.String()
 }
