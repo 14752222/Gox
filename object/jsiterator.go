@@ -75,6 +75,14 @@ func (it *JSIterator) GetProperty(name string) (Value, bool) {
 				return err
 			}
 			v, done := it.Next()
+			// NextFn 执行期间可能设置 PendingErr (回调桥抛错经 helper
+			// 关闭底层后记入): 必须立即返回, 否则错误延后一步才抛,
+			// 本次调用错误地返回 done 结果。
+			if it.PendingErr != nil {
+				err := it.PendingErr
+				it.PendingErr = nil
+				return err
+			}
 			if ev := TakeCallbackErrorValue(); ev != UndefinedSingleton {
 				return ev // 底层 next 抛错: 经 throwIfError 转为抛出
 			}
@@ -273,6 +281,18 @@ func Iterate(v Value) (next func() (Value, bool), ok bool) {
 		return it.Next, true
 	case *JSIterator:
 		return t.Next, true
+	case *Generator:
+		// 生成器实例: @@iterator/next 由 Generator.GetProperty 显式兜底
+		// (不沿原型链)。已关闭的生成器 next() 返回 done —— 不得再调 return()。
+		if fn, found := t.GetProperty(NewSymbol("Symbol.iterator").Inspect()); found && IsCallable(fn) {
+			if next, ok2 := IteratorNextFrom(CallFunction(fn, v)); ok2 {
+				return next, true
+			}
+		}
+		if fn, found := t.GetProperty("next"); found && IsCallable(fn) {
+			return IteratorNextFrom(v)
+		}
+		return nil, false
 	case *TypedArray:
 		it := NewArrayIterator(t.ToArray())
 		return it.Next, true

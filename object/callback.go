@@ -133,6 +133,33 @@ func IsCallable(v Value) bool {
 // SetCallbackErrorValue 由回调桥在 JS 抛出异常时记录原始抛出值。
 func SetCallbackErrorValue(v Value) { defaultBridge.callbackErrorValue = v }
 
+// TakeThrownValue 取出本次回调桥抛出事件, 并转为 VM 可识别的"应抛出"错误值:
+//   - 无抛出 → undefined;
+//   - 抛出的是 *Error → 原样返回 (保留错误类型);
+//   - 抛出的是其他值 (用户类实例、throw 42 等) → 包装为通用 Error,
+//     原始值挂 Original, VM 抛出时还原 (保 instanceof 身份)。
+//
+// 传播位点 (builtin 把桥错误作为返回值上抛) 必须用本函数而非裸
+// TakeCallbackErrorValue —— 裸值若是普通 *Object, throwIfError 不识别,
+// 异常会被静默吞掉 (旧实现靠残留 error 槽在 OP_CALL 处"击落"补救,
+// 是跨用例污染的根源)。
+func TakeThrownValue() Value {
+	err := TakeCallbackError()
+	if err == nil {
+		return UndefinedSingleton
+	}
+	v := TakeCallbackErrorValue()
+	if e, isErr := v.(*Error); isErr {
+		return e
+	}
+	if v == nil || v == UndefinedSingleton {
+		return NewErrorWithName("Error", err.Error())
+	}
+	w := NewErrorWithName("Error", err.Error())
+	w.Original = v
+	return w
+}
+
 // TakeCallbackErrorValue 取出并清除原始抛出值。
 // 返回 undefined 表示没有记录。
 func TakeCallbackErrorValue() Value {

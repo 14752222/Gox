@@ -376,21 +376,21 @@ func IteratorHelperMethod(name string) *BuiltinMethod {
 						it.PendingErr = err
 						return UndefinedSingleton, true
 					}
-				if done {
-					it.exhausted = true
-					if name == "chunks" && len(buf) > 0 {
-						out := buf
-						buf = nil
-						return NewArray(out), false
+					if done {
+						it.exhausted = true
+						if name == "chunks" && len(buf) > 0 {
+							out := buf
+							buf = nil
+							return NewArray(out), false
+						}
+						// windows + allow-partial: 收尾产出欠尺寸窗口。
+						if name == "windows" && allowPartial && len(buf) > 0 {
+							out := buf
+							buf = nil
+							return NewArray(out), false
+						}
+						return UndefinedSingleton, true
 					}
-					// windows + allow-partial: 收尾产出欠尺寸窗口。
-					if name == "windows" && allowPartial && len(buf) > 0 {
-						out := buf
-						buf = nil
-						return NewArray(out), false
-					}
-					return UndefinedSingleton, true
-				}
 					if name == "chunks" {
 						buf = append(buf, v)
 						if len(buf) >= size {

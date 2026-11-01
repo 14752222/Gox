@@ -769,7 +769,9 @@ func getOwnProperty(v object.Value, key string) (object.Value, bool) {
 	// 访问器描述符调 getter。取不到按未找到处理 (不暴露 undefined 自有)。
 	if store, ok := v.(object.OwnPropertyStore); ok {
 		if _, has := store.OwnDescriptor(key); has {
-			got, found := v.(interface{ GetProperty(string) (object.Value, bool) }).GetProperty(key)
+			got, found := v.(interface {
+				GetProperty(string) (object.Value, bool)
+			}).GetProperty(key)
 			if !found || got == nil {
 				return object.UndefinedSingleton, true
 			}
@@ -1126,10 +1128,10 @@ func setupGlobalFunctions(env *runtime.Environment) {
 type dynamicFuncKind int
 
 const (
-	dynFuncNormal dynamicFuncKind = iota // Function
-	dynFuncGenerator                     // GeneratorFunction
-	dynFuncAsync                         // AsyncFunction
-	dynFuncAsyncGenerator                // AsyncGeneratorFunction
+	dynFuncNormal         dynamicFuncKind = iota // Function
+	dynFuncGenerator                             // GeneratorFunction
+	dynFuncAsync                                 // AsyncFunction
+	dynFuncAsyncGenerator                        // AsyncGeneratorFunction
 )
 
 // newDynamicFunction 实现 CreateDynamicFunction: Function / GeneratorFunction /

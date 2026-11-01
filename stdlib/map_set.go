@@ -703,9 +703,13 @@ func setupSetCombinators(p *object.Object) {
 	}
 
 	// iterClose 在早退/异常路径调用 iterator.return()（异常被吞，规范如此）。
+	// **必须消费回调错误槽**：return() 抛错（test262 专门有 return-throws
+	// 族）若留在槽里会污染同进程后续用例（JSON/parse/duplicate-proto 被
+	// 无辜带挂的根因）。
 	iterClose := func(iterObj object.Value) {
 		if ret, found := getProp(iterObj, "return"); found && object.IsCallable(ret) {
 			object.CallFunction(ret, iterObj)
+			object.TakeCallbackErrorValue()
 		}
 	}
 

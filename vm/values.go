@@ -430,6 +430,17 @@ func (vm *VM) getIndex(obj, index object.Value) object.Value {
 // 记录, 由调用点 (OP_GET_INDEX) 之后的 checkCallbackErr 消费。
 
 func (vm *VM) getSymbolIndexedValue(receiver object.Value, sym *object.Symbol) object.Value {
+	// Proxy 接收者: SymbolProperties 不在代理上, 必须经 get trap 转发
+	// (键以 Symbol.Inspect() 字符串视图传入, 与字符串键通道一致)。
+	if p, ok := receiver.(*object.Proxy); ok {
+		v, err := vm.proxyGet(p, sym.Inspect(), receiver)
+		if err != nil {
+			// 经由 getIndex 的调用点随后会 checkCallbackErr 重抛。
+			object.SetCallbackError(err)
+			return object.UndefinedSingleton
+		}
+		return v
+	}
 	desc, found := object.LookupSymbolPropertyDescriptorChain(receiver, sym)
 	if !found {
 		return object.UndefinedSingleton

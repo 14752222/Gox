@@ -125,47 +125,6 @@ func setupIteratorGlobal() *object.BuiltinFunction {
 	fromFn.NotConstructable = true // from/non-constructible: Iterator.from 无 [[Construct]]
 	fn.SetProperty("from", fromFn)
 
-	// ES2026 Iterator.zip(iterables, {mode}) — 默认成组; mode:"longest" 补齐
-	fn.SetProperty("zip", object.NewBuiltin("zip", func(args ...object.Value) object.Value {
-		if len(args) == 0 {
-			return object.NewTypeError("Iterator.zip requires an iterable of iterables")
-		}
-		nexts, ok := collectIterables(args[0])
-		if !ok {
-			return object.NewTypeError("Iterator.zip: argument is not iterable")
-		}
-		mode := "short"
-		if len(args) > 1 {
-			if o, isObj := args[1].(*object.Object); isObj {
-				if mv, found := o.GetProperty("mode"); found {
-					mode = toStr(mv)
-				}
-			}
-		}
-		return &object.JSIterator{NextFn: func() (object.Value, bool) {
-			group := make([]object.Value, len(nexts))
-			anyDone := false
-			allDone := true
-			for i, next := range nexts {
-				v, done := next()
-				if done {
-					anyDone = true
-					group[i] = object.UndefinedSingleton
-				} else {
-					allDone = false
-					group[i] = v
-				}
-			}
-			if anyDone && mode == "short" {
-				return object.UndefinedSingleton, true
-			}
-			if allDone {
-				return object.UndefinedSingleton, true
-			}
-			return object.NewArray(group), false
-		}}
-	}))
-
 	// ES2026 Iterator.concat(...iterables) — 顺序拼接
 	fn.SetProperty("concat", object.NewBuiltin("concat", func(args ...object.Value) object.Value {
 		nexts, ok := collectIterables(object.NewArray(args))
@@ -185,6 +144,8 @@ func setupIteratorGlobal() *object.BuiltinFunction {
 			}
 		}}
 	}))
+
+	setupZipMethods(fn)
 
 	proto := object.NewObject()
 	fn.SetProperty("prototype", proto)

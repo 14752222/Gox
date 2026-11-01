@@ -266,6 +266,8 @@ var builtinLengths = map[string]int{
 	"Number.prototype.toString": 1,
 	"Number.prototype.valueOf": 0,
 	"Object.assign": 2,
+	"Object.defineProperties": 2,
+	"Object.defineProperty": 3,
 	"Object.entries": 1,
 	"Object.fromEntries": 1,
 	"Object.getOwnPropertyDescriptor": 2,
