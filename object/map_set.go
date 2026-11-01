@@ -74,6 +74,11 @@ func mapKeyHash(v Value) (string, bool) {
 	case *String:
 		return "s:" + val.Value, true
 	case *Number:
+		// SameValueZero: +0 与 -0 是同一个键 —— fmt 会把 -0 打成 "-0"，
+		// 必须归一化，否则 Set/Map 会出现两个"0"。
+		if val.Value == 0 {
+			return "n:0", true
+		}
 		return fmt.Sprintf("n:%v", val.Value), true
 	case *Boolean:
 		if val.Value {
