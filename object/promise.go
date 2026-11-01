@@ -277,11 +277,89 @@ func (p *Promise) Resolve(val Value) {
 		innerPromise.mu.Unlock()
 	}
 
+	// 自引用: resolve(p) 自身 → TypeError (规范 PromiseResolve 步骤 1)
+	if val == Value(p) {
+		p.mu.Unlock()
+		p.Reject(NewErrorWithName("TypeError", "Chaining cycle detected for promise"))
+		return
+	}
+
+	// thenable 采纳 (规范 NewPromiseResolveThenableJob): val 是带可调用
+	// then 方法的对象时, 不能直接 fulfill, 必须异步调用 then(resolve, reject)。
+	// 此前直接把 thenable 当已 fulfill 的值, 导致 Promise.resolve(all/any/
+	// allSettled 族) 对自定义 thenable 的观察全部失真。
+	if isThenableValue(val) {
+		thenV, _ := val.(interface{ GetProperty(string) (Value, bool) }).GetProperty("then")
+		if cbErr := TakeCallbackError(); cbErr != nil {
+			p.mu.Unlock()
+			if v := TakeCallbackErrorValue(); v != nil {
+				p.Reject(v)
+			} else {
+				p.Reject(NewErrorWithName("Error", cbErr.Error()))
+			}
+			return
+		}
+		if IsCallable(thenV) {
+			p.mu.Unlock()
+			then := thenV
+			resolver := NewBuiltin("__thenable_resolve", func(args ...Value) Value {
+				p.Resolve(argAtPromise(args, 0))
+				return UndefinedSingleton
+			})
+			rejecter := NewBuiltin("__thenable_reject", func(args ...Value) Value {
+				p.Reject(argAtPromise(args, 0))
+				return UndefinedSingleton
+			})
+			EnqueuePromiseJob(func() {
+				ret := CallFunction(then, val, resolver, rejecter)
+				if cbErr := TakeCallbackError(); cbErr != nil {
+					if v := TakeCallbackErrorValue(); v != nil {
+						p.Reject(v)
+					} else {
+						p.Reject(NewErrorWithName("Error", cbErr.Error()))
+					}
+					return
+				}
+				if e, ok := ret.(*Error); ok && e != nil {
+					p.Reject(e)
+				}
+			})
+			return
+		}
+	}
+
 	p.State = PromiseFulfilled
 	p.Value = val
 	cbs := p.detachCallbacksLocked()
 	p.mu.Unlock()
 	invokePromiseCallbacks(p, cbs)
+}
+
+// isThenableValue 判断 val 是否为带可调用 then 方法的对象 (含函数)。
+// 原始值与不可调用 then 的对象都不是 thenable。
+func isThenableValue(val Value) bool {
+	switch val.(type) {
+	case *Promise:
+		return false // 已在上面单独处理
+	}
+	g, ok := val.(interface{ GetProperty(string) (Value, bool) })
+	if !ok {
+		return false
+	}
+	thenV, found := g.GetProperty("then")
+	if cbErr := TakeCallbackError(); cbErr != nil {
+		// getter 抛错也算 thenable (读取失败 → reject 路径), 由调用方处理
+		return true
+	}
+	_ = found
+	return IsCallable(thenV)
+}
+
+func argAtPromise(args []Value, i int) Value {
+	if i < len(args) && args[i] != nil {
+		return args[i]
+	}
+	return UndefinedSingleton
 }
 
 // Reject 将 Promise 状态变为 rejected。

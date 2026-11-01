@@ -117,33 +117,28 @@ func setupPromise(env *runtime.Environment) {
 
 		for i, elem := range arr.Elements {
 			idx := i
-			if promise, ok := elem.(*object.Promise); ok {
-				promise.OnFulfilled(object.NewBuiltin("__all_resolve", func(args ...object.Value) object.Value {
-					if rejected {
-						return object.UndefinedSingleton
-					}
-					results[idx] = argAt(args, 0)
-					remaining--
-					if remaining == 0 {
-						result.Resolve(object.NewArray(results))
-					}
+			// 规范: 每个元素都经 PromiseResolve 包装 (thenable 走采纳),
+			// 不能把非 Promise 值直接当已结算。
+			wrapped := object.NewPromise()
+			wrapped.Resolve(elem)
+			wrapped.OnFulfilled(object.NewBuiltin("__all_resolve", func(args ...object.Value) object.Value {
+				if rejected {
 					return object.UndefinedSingleton
-				}))
-				promise.OnRejected(object.NewBuiltin("__all_reject", func(args ...object.Value) object.Value {
-					if !rejected {
-						rejected = true
-						result.Reject(argAt(args, 0))
-					}
-					return object.UndefinedSingleton
-				}))
-			} else {
-				// 非 Promise 值直接当作已 resolved
-				results[idx] = elem
+				}
+				results[idx] = argAt(args, 0)
 				remaining--
 				if remaining == 0 {
 					result.Resolve(object.NewArray(results))
 				}
-			}
+				return object.UndefinedSingleton
+			}))
+			wrapped.OnRejected(object.NewBuiltin("__all_reject", func(args ...object.Value) object.Value {
+				if !rejected {
+					rejected = true
+					result.Reject(argAt(args, 0))
+				}
+				return object.UndefinedSingleton
+			}))
 		}
 
 		return result
@@ -161,29 +156,23 @@ func setupPromise(env *runtime.Environment) {
 		settled := false
 
 		for _, elem := range arr.Elements {
-			if promise, ok := elem.(*object.Promise); ok {
-				promise.OnFulfilled(object.NewBuiltin("__race_resolve", func(args ...object.Value) object.Value {
-					if !settled {
-						settled = true
-						result.Resolve(argAt(args, 0))
-					}
-					return object.UndefinedSingleton
-				}))
-				promise.OnRejected(object.NewBuiltin("__race_reject", func(args ...object.Value) object.Value {
-					if !settled {
-						settled = true
-						result.Reject(argAt(args, 0))
-					}
-					return object.UndefinedSingleton
-				}))
-			} else {
-				// 非 Promise 值直接 resolve
+			// 规范: 元素经 PromiseResolve 包装后挂两个反应
+			wrapped := object.NewPromise()
+			wrapped.Resolve(elem)
+			wrapped.OnFulfilled(object.NewBuiltin("__race_resolve", func(args ...object.Value) object.Value {
 				if !settled {
 					settled = true
-					result.Resolve(elem)
+					result.Resolve(argAt(args, 0))
 				}
-				break
-			}
+				return object.UndefinedSingleton
+			}))
+			wrapped.OnRejected(object.NewBuiltin("__race_reject", func(args ...object.Value) object.Value {
+				if !settled {
+					settled = true
+					result.Reject(argAt(args, 0))
+				}
+				return object.UndefinedSingleton
+			}))
 		}
 
 		return result
@@ -207,39 +196,31 @@ func setupPromise(env *runtime.Environment) {
 
 		for i, elem := range arr.Elements {
 			idx := i
-			if promise, ok := elem.(*object.Promise); ok {
-				promise.OnFulfilled(object.NewBuiltin("__settled_resolve", func(args ...object.Value) object.Value {
-					statusObj := object.NewObject()
-					statusObj.SetProperty("status", object.NewString("fulfilled"))
-					statusObj.SetProperty("value", argAt(args, 0))
-					results[idx] = statusObj
-					remaining--
-					if remaining == 0 {
-						result.Resolve(object.NewArray(results))
-					}
-					return object.UndefinedSingleton
-				}))
-				promise.OnRejected(object.NewBuiltin("__settled_reject", func(args ...object.Value) object.Value {
-					statusObj := object.NewObject()
-					statusObj.SetProperty("status", object.NewString("rejected"))
-					statusObj.SetProperty("reason", argAt(args, 0))
-					results[idx] = statusObj
-					remaining--
-					if remaining == 0 {
-						result.Resolve(object.NewArray(results))
-					}
-					return object.UndefinedSingleton
-				}))
-			} else {
+			// 规范: 每个元素都经 PromiseResolve 包装 (thenable 走采纳)
+			wrapped := object.NewPromise()
+			wrapped.Resolve(elem)
+			wrapped.OnFulfilled(object.NewBuiltin("__settled_resolve", func(args ...object.Value) object.Value {
 				statusObj := object.NewObject()
 				statusObj.SetProperty("status", object.NewString("fulfilled"))
-				statusObj.SetProperty("value", elem)
+				statusObj.SetProperty("value", argAt(args, 0))
 				results[idx] = statusObj
 				remaining--
 				if remaining == 0 {
 					result.Resolve(object.NewArray(results))
 				}
-			}
+				return object.UndefinedSingleton
+			}))
+			wrapped.OnRejected(object.NewBuiltin("__settled_reject", func(args ...object.Value) object.Value {
+				statusObj := object.NewObject()
+				statusObj.SetProperty("status", object.NewString("rejected"))
+				statusObj.SetProperty("reason", argAt(args, 0))
+				results[idx] = statusObj
+				remaining--
+				if remaining == 0 {
+					result.Resolve(object.NewArray(results))
+				}
+				return object.UndefinedSingleton
+			}))
 		}
 
 		return result
@@ -266,31 +247,28 @@ func setupPromise(env *runtime.Environment) {
 
 		for i, elem := range arr.Elements {
 			idx := i
-			if promise, ok := elem.(*object.Promise); ok {
-				promise.OnFulfilled(object.NewBuiltin("__any_resolve", func(args ...object.Value) object.Value {
-					if !settled {
-						settled = true
-						result.Resolve(argAt(args, 0))
-					}
+			// 规范: 每个元素都经 PromiseResolve 包装 (thenable 走采纳)
+			wrapped := object.NewPromise()
+			wrapped.Resolve(elem)
+			wrapped.OnFulfilled(object.NewBuiltin("__any_resolve", func(args ...object.Value) object.Value {
+				if !settled {
+					settled = true
+					result.Resolve(argAt(args, 0))
+				}
+				return object.UndefinedSingleton
+			}))
+			wrapped.OnRejected(object.NewBuiltin("__any_reject", func(args ...object.Value) object.Value {
+				if settled {
 					return object.UndefinedSingleton
-				}))
-				promise.OnRejected(object.NewBuiltin("__any_reject", func(args ...object.Value) object.Value {
-					if settled {
-						return object.UndefinedSingleton
-					}
-					errors[idx] = argAt(args, 0)
-					rejectedCount++
-					if rejectedCount == n {
-						settled = true
-						result.Reject(newAggregateError(errors, "All promises were rejected"))
-					}
-					return object.UndefinedSingleton
-				}))
-			} else if !settled {
-				// 非 Promise 值视为立即 fulfilled
-				settled = true
-				result.Resolve(elem)
-			}
+				}
+				errors[idx] = argAt(args, 0)
+				rejectedCount++
+				if rejectedCount == n {
+					settled = true
+					result.Reject(newAggregateError(errors, "All promises were rejected"))
+				}
+				return object.UndefinedSingleton
+			}))
 		}
 
 		return result
