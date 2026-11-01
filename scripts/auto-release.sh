@@ -49,6 +49,8 @@ API="https://api.github.com"
 H_AUTH="Authorization: Bearer $TOKEN"
 H_ACCEPT="Accept: application/vnd.github+json"
 api() { curl -sf -H "$H_AUTH" -H "$H_ACCEPT" "$@"; }
+# api_code：不抛错版本，只回 HTTP 状态码 —— 给 tag_exists 判 404 用
+api_code() { curl -s -o /dev/null -w '%{http_code}' -H "$H_AUTH" -H "$H_ACCEPT" "$@"; }
 
 NOTE=""
 while [ $# -gt 0 ]; do
@@ -61,14 +63,33 @@ done
 ORIGIN_URL="https://x-access-token:${TOKEN}@github.com/${REPO}.git"
 
 # ── ① 解析下一个版本号：最新 v*.*.* 标签的补丁位 +1 ──────────────────────────
+#   2026-11-01 起改为纯 GitHub API 实现（此前留言建议的遗留项落地）：
+#   git ls-remote 需直连 github.com:443，在部分沙箱/代理环境间歇超时，
+#   2026-10-29 曾两次因此把最新 tag 误判为空、从 v0.0.0 起算误发 v0.0.1。
+#   API 通道（api.github.com）实测稳定，且护栏一从"拿不到就中止"升级为
+#   "解析失败重试，仍失败才中止"。
 latest_tag() {
-  # 只认 x.y.z 三段纯数字 tag（排除 nightly-* 之类），按版本序取最大
-  git ls-remote --tags "$ORIGIN_URL" 'refs/tags/v*' \
-    | awk -F/ '{print $NF}' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1
+  # 只认 x.y.z 三段纯数字 tag（排除 nightly-* 之类），按版本序取最大。
+  # /repos/{}/tags 单页上限 100，须按 Link 分页拉全量再本地 sort -V
+  # （该接口按创建时间倒序，第一页未必是版本号最大的）。
+  local page=1 batch names
+  names=""
+  while [ "$page" -le 50 ]; do   # 50 页 = 5000 个 tag，保险丝
+    batch=$(api "$API/repos/${REPO}/tags?per_page=100&page=${page}" \
+      | jq -r '.[].name' 2>/dev/null || true)
+    [ -z "$batch" ] && break
+    names+="${batch}"$'\n'
+    page=$((page + 1))
+  done
+  printf '%s' "$names" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1
 }
 
 tag_exists() {
-  git ls-remote --exit-code --tags "$ORIGIN_URL" "refs/tags/$1" >/dev/null 2>&1
+  # git/ref/tags 单 ref 查询：200=存在，404=不存在，其余（403/5xx）按存在
+  # 处理 —— 让 next_tag 继续让位，宁可跳号也不把已占用的 tag 打出去。
+  local code
+  code=$(api_code "$API/repos/${REPO}/git/ref/tags/$1")
+  [ "$code" != "404" ]
 }
 
 next_tag() {
@@ -163,10 +184,10 @@ update_file() { # $1=repo $2=path $3=branch $4=ver $5=commit_msg
 main() {
   local latest new_tag new_ver msg payload commit_sha
   latest=$(latest_tag || true)
-  # 护栏一：拿不到最新 tag（网络超时 / ls-remote 失败）绝不能从 v0.0.0 起算，
+  # 护栏一：拿不到最新 tag（API 超时 / 解析失败）绝不能从 v0.0.0 起算，
   # 否则会误发 v0.0.1 —— 必须直接中止，重跑即可。
   if [ -z "${latest}" ]; then
-    echo "::error::无法从远端解析最新 v*.*.* 标签（git ls-remote 超时或失败）。拒绝发版，请排查网络后重跑。" >&2
+    echo "::error::无法经 GitHub API 解析最新 v*.*.* 标签（超时或返回异常）。拒绝发版，请排查网络后重跑。" >&2
     exit 1
   fi
   new_tag=$(next_tag "${latest}")
@@ -176,8 +197,7 @@ main() {
   # 护栏二：新版本号必须 ≥ main.go 里声明的当前版本，否则说明 tag 解析出了问题
   # （比如远端 tag 列表不全），把版本号往回写会造成回退事故 —— 中止。
   local cur_ver
-  cur_ver=$(git ls-remote "$ORIGIN_URL" "refs/heads/${RELEASE_BRANCH}" >/dev/null 2>&1 \
-    && fetch_raw "$REPO" "cmd/gox/main.go" "${RELEASE_BRANCH}" \
+  cur_ver=$(fetch_raw "$REPO" "cmd/gox/main.go" "${RELEASE_BRANCH}" \
     | grep -m1 -oP 'const version = "\K[0-9]+\.[0-9]+\.[0-9]+' || true)
   if [ -n "$cur_ver" ] && [ "$(printf '%s\n%s\n' "$new_ver" "$cur_ver" | sort -V | head -1)" != "$cur_ver" ]; then
     echo "::error::新版本 ${new_ver} 低于 main.go 当前版本 ${cur_ver} —— tag 解析异常，拒绝发版。" >&2
