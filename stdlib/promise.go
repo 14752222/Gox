@@ -401,7 +401,7 @@ func promiseKeyed(args []object.Value, settled bool) object.Value {
 	}
 
 	type keyedEntry struct {
-		strKey string    // 字符串键 (symKey == nil 时有效)
+		strKey string // 字符串键 (symKey == nil 时有效)
 		symKey *object.Symbol
 		value  object.Value
 	}
