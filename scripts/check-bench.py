@@ -15,12 +15,16 @@ vm / compiler 的热路径，这正是最容易"悄悄引入每帧/每次调用�
 1. **比值判据（主，跨平台）**：同一份结果里 `gox / node` 的比值。两个栈跑的是
    完全同源的脚本（scripts/bench/*.js），机器差异被约掉；gox 自己退化 ⇒ 比值
    上升。这一条对**时间指标**不挑机器，是闸门的主力。
-   **rss_kb 是例外（2026-10-29 实测教训）**：「机器差异被约掉」的前提在 RSS 上
-   不成立 —— JS 栈的 RSS 受 runner 内存规格 / node 构建 / 内核版本影响，跨机型
-   漂移可达 ±30%（当晚实测：goja RSS 10432→7304 KB，而 gox 自己的 RSS 反而降了
-   3.9%），远超 1.15 阈值带宽 —— 比值虚红纯属对照栈漂移，不是引擎退化。所以
-   rss 的比值只在 host 指纹与基线一致时判红，跨机型降级为「只记录」（与下面
-   绝对值判据的同机型保护对齐）。
+   **例外指标（跨机型只记录不判红）**：
+   - `rss_kb`（2026-10-29 实测教训）：「机器差异被约掉」的前提在 RSS 上
+     不成立 —— JS 栈的 RSS 受 runner 内存规格 / node 构建 / 内核版本影响，跨机型
+     漂移可达 ±30%（当晚实测：goja RSS 10432→7304 KB，而 gox 自己的 RSS 反而降了
+     3.9%），远超 1.15 阈值带宽 —— 比值虚红纯属对照栈漂移，不是引擎退化。
+   - `startup_ms`（2026-11-01 实测教训）：gox 与 node 的 startup 都只有几~十几
+     ms，两个小数相除对机型/内核差异极敏感 —— 当晚 runner 从 EPYC 9V74 换到
+     9V45，同树（无任何代码变更）gox/node 比值 0.185→0.286/0.310，连续两轮虚红。
+     「同源脚本约掉机器差异」的论证要求分子分母都远大于机器噪声，startup 两头
+     都不满足，所以跨机型时与 rss 同款降级（同机型时仍正常判红）。
 2. **绝对值判据（辅，仅限同机型）**：只有当 host 指纹（platform / machine /
    cpu / cores）与基线**完全一致**时才启用；不一致时该项降级为「只记录」，
    并在输出里写明原因 —— 不拿一个注定误报的判据去刷红。
@@ -72,6 +76,16 @@ MIN_ABS = {
     "fib28_ms": 20,
     "timers10k_ms": 20,
     "rss_kb": 2048,
+}
+
+# 跨机型降级为「只记录不判红」的比值指标（host 指纹与基线一致时仍正常判红）。
+#   rss_kb：对照栈 RSS 跨机型漂移可达 ±30%（2026-10-29 实测）。
+#   startup_ms：gox/node startup 都只有几~十几 ms，比值对机型/内核差异极敏感
+#   （2026-11-01 实测：同树无代码变更，runner 从 EPYC 9V74 换到 9V45，
+#   gox/node 比值 0.185→0.286/0.310 连续两轮虚红）。
+CROSS_HOST_RECORD_ONLY = {
+    "rss_kb": "对照栈 RSS 跨机型漂移大（实测可达 ±30%），",
+    "startup_ms": "分子分母都只有几 ms、对机型差异极敏感，",
 }
 
 # 参与比值判据的对照栈（[T2-3]）。node 是 CI 镜像里必有的，且与 gox 跑同源
@@ -194,11 +208,12 @@ def compare(base, doc, github=False):
             continue
 
         # ① 比值判据（跨平台，主力）——对**每个**基线里有、本次又有的对照栈判。
-        #    rss_kb 例外：跨机型时只记录不判红（见文件头「rss_kb 是例外」）。
+        #    例外指标跨机型时只记录不判红：rss_kb（内存跨机型漂移大）、
+        #    startup_ms（分子分母都只有几 ms，比值对机型差异极敏感，见文件头）。
         if metric in cur_ratio and metric in base_ratio:
             base_refs = base_ratio[metric]
             cur_refs = dict(cur_ratio[metric])
-            if metric == "rss_kb" and not same_host:
+            if metric in CROSS_HOST_RECORD_ONLY and not same_host:
                 for ref in REFERENCE_STACKS:
                     cr = cur_refs.get(ref)
                     br = base_refs.get(ref)
@@ -206,9 +221,9 @@ def compare(base, doc, github=False):
                         rows.append(("gox/%s %s" % (ref, metric), br, cr,
                                      cr / float(br)))
                 notes.append(
-                    "%s：host 与基线不一致（%s vs %s），对照栈 RSS 跨机型漂移大"
-                    "（实测可达 ±30%%），比值只记录不判红"
-                    % (metric, host_fingerprint(doc), host_fingerprint(base)))
+                    "%s：host 与基线不一致（%s vs %s），%s比值只记录不判红"
+                    % (metric, host_fingerprint(doc), host_fingerprint(base),
+                       CROSS_HOST_RECORD_ONLY[metric]))
                 continue
             judged = False
             for ref in REFERENCE_STACKS:
@@ -324,7 +339,11 @@ def self_test():
       5. 涨幅超比值但低于最小增量 ⇒ 必须绿（噪声过滤真的生效）；
       6. 跨 host 时 rss 比值虚涨 ⇒ 必须绿（对照栈内存跨机型漂移不判红，
          2026-10-29 实测：goja RSS 在另一台 runner 上缩水 30% 把闸门打红）；
-      7. 跨 host 时时间指标退化 ⇒ 仍必须红（rss 例外不能外溢到时间指标）。
+      7. 跨 host 时时间指标退化 ⇒ 仍必须红（rss 例外不能外溢到时间指标，
+         用 fib28 钉住）；
+      8. 跨 host 时 startup 比值虚涨 ⇒ 必须绿（startup 分子分母都只有几 ms，
+         比值对机型差异极敏感 —— 2026-11-01 实测：同树无代码变更，runner 换机型
+         后 gox/node 比值 0.185→0.286 连续两轮虚红）；同 host 时同幅虚涨仍红。
     """
     def doc(gox, node, bun=None, host="selftest"):
         results = [
@@ -374,6 +393,16 @@ def self_test():
          doc([30, 150, 200, 20000], [30, 50, 40, 30000], [30, 60, 50, 35000],
              host="otherrunner"),
          base, True, "fib28_ms"),
+        # 2026-11-01 实测案例的还原：同树无代码变更，runner 换机型后 node 的
+        # startup 在新机上更快，gox/node startup 比值虚顶到阈值之上 —— 跨机型
+        # 时必须只记录；同机型时同样的数字仍必须红（保护不能变成豁免）。
+        ("跨 host 时 startup 比值虚涨必须绿（几 ms 级比值对机型敏感）",
+         doc([30, 100, 200, 20000], [18, 50, 40, 30000], [30, 60, 50, 35000],
+             host="otherrunner"),
+         base, False, ""),
+        ("同 host 时 startup 比值同幅上涨仍必须红（跨机型保护不豁免同机型）",
+         doc([30, 100, 200, 20000], [18, 50, 40, 30000], [30, 60, 50, 35000]),
+         base, True, "startup_ms"),
     ]
     ok = True
     for name, d, b, want_red, want_kw in cases:
