@@ -313,6 +313,10 @@ var harnessLibs = map[string]bool{
 	"floatArrayExactValues.js": true, "proxy-getOwnPropertyDescriptor-trap.js": true,
 	"smi.js": true, "assertRelativeDateMs.js": true, "toNumber.js": true,
 	"values.js": true, "resizableArrayBufferUtils.js": true,
+	// iteratorZipUtils.js: Iterator.zip/zipKeyed 用例的共享工具 (rFXXbq)。
+	// 注意: harness 白名单扩容会让原本"未登记→快速跳过"的用例真正执行,
+	// 可能翻转同分片私有名污染用例的判定 —— 扩容需全量双 suite A/B 验证。
+	"iteratorZipUtils.js": true,
 }
 
 // 默认 harness: 官方约定 sta.js + assert.js 对所有用例生效（Test262Error /
