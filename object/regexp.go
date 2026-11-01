@@ -567,9 +567,15 @@ func propCanonicalValue(s string) string {
 func translatePropertyEscapes(pattern string) string {
 	var b strings.Builder
 	b.Grow(len(pattern))
+	inClass := false // 简化的字符类上下文追踪 (u 模式类内 \p 不得作区间端点)
 	for i := 0; i < len(pattern); {
 		c := pattern[i]
 		if c != '\\' || i+1 >= len(pattern) {
+			if c == '[' {
+				inClass = true
+			} else if c == ']' && inClass {
+				inClass = false
+			}
 			b.WriteByte(c)
 			i++
 			continue
@@ -581,6 +587,9 @@ func translatePropertyEscapes(pattern string) string {
 			continue
 		}
 		if next != 'p' && next != 'P' {
+			if inClass && next == '[' {
+				inClass = false // \[ 是字面 '[', 不开类
+			}
 			b.WriteByte(c)
 			i++
 			continue
@@ -597,6 +606,23 @@ func translatePropertyEscapes(pattern string) string {
 			continue
 		}
 		content := pattern[i+3 : i+3+end]
+		// 规范 sec-character-class: u 模式 ClassRange 的端点不能是 \p{...}
+		// (character-class-range-end/-start/-no-dash-start, 如 [\p{Hex}-z]/
+		// [a-\p{Lu}]/[\p{Hex}--]/[--\p{Hex}]) —— 一律 SyntaxError。此处
+		// 注入超出 Unicode 上限的码点 \x{110000}, 使 RE2 必然编译失败
+		// (RE2 对已知键如 \p{Lu} 原本会静默接受, 不能靠原样保留报错)。
+		if inClass {
+			after := byte(0)
+			if i+3+end+1 < len(pattern) {
+				after = pattern[i+3+end+1]
+			}
+			prevDash := i > 0 && pattern[i-1] == '-'
+			if (after == '-' && i+3+end+2 < len(pattern) && pattern[i+3+end+2] != ']') || prevDash {
+				b.WriteString(`\x{110000}`)
+				i += 3 + end + 1
+				continue
+			}
+		}
 		replacement, ok := translateOnePropertyEscape(next == 'P', content)
 		if ok {
 			b.WriteString(replacement)
@@ -634,7 +660,7 @@ func translateOnePropertyEscape(negated bool, content string) (string, bool) {
 			return "", false
 		}
 		switch name {
-		case "General_Category", "gc":
+		case "General_Category", "gc", "GeneralCategory":
 			short, ok2 := propGCLongToShort[value]
 			if !ok2 {
 				short, ok2 = propGCShort[value]
@@ -643,12 +669,12 @@ func translateOnePropertyEscape(negated bool, content string) (string, bool) {
 				return "", false
 			}
 			return propGCClass(short, negated), true
-		case "Script", "sc", "Script_Extensions", "scx":
+		case "Script", "sc", "Script_Extensions", "scx", "ScriptExtensions":
 			script, ok2 := propScriptValueName(value)
 			if !ok2 {
 				return "", false
 			}
-			return propSimpleClass(script, negated), true
+			return propScriptClass(script, negated), true
 	}
 	// 二元属性带值 (\p{ASCII=Yes} 等) 与未知属性名带值: 规范均 SyntaxError
 	// (binary-property-with-value-ASCII_-_Yes)。
@@ -674,7 +700,12 @@ func translateOnePropertyEscape(negated bool, content string) (string, bool) {
 	case "Assigned":
 		return propBinaryRanges("assigned", negated), true
 	}
-	// 二元属性 (unicode.Properties 表, 物化为区间)
+	// 二元属性 (unicode.Properties 表, 物化为区间); 别名先行
+	// (UnicodeMatchProperty: Hex→Hex_Digit / AHex→ASCII_Hex_Digit / Alpha→
+	// Alphabetic 等, 属性名大小写敏感、仅 '_' 已剥除)。
+	if cn, ok := propBinaryAlias[name]; ok {
+		name = cn
+	}
 	if rt, ok := propBinaryTable(name); ok {
 		return propMaterialize([](*unicode.RangeTable){rt}, negated), true
 	}
@@ -689,11 +720,26 @@ func translateOnePropertyEscape(negated bool, content string) (string, bool) {
 		}
 		return propMaterialize(tables, negated), true
 	}
-	// 脚本名: RE2 原生支持
+	// 脚本名: RE2 原生支持 (多词名走物化, 见 propScriptClass)
 	if sn, ok := propScriptName(name); ok {
-		return propSimpleClass(sn, negated), true
+		return propScriptClass(sn, negated), true
 	}
 	return "", false
+}
+
+// propScriptClass 生成脚本字符类。Go 1.26 的 RE2 对 \p{name} 只认
+// **单词**规范名 (Han/Latin/Greek 可用; Tai_Le/Canadian_Aboriginal/
+// Hanifi_Rohingya 等多词名报 invalid character class range —— 与旧版
+// toolchain 行为不同, rFXXbq 夜批实测)。含 '_' 的多词脚本名一律用
+// unicode.Scripts 的 RangeTable 物化成显式码点区间; 单词名仍走 RE2
+// 原生键 (模式短, 编译快)。
+func propScriptClass(script string, negated bool) string {
+	if strings.Contains(script, "_") {
+		if rt, ok := unicode.Scripts[script]; ok {
+			return propMaterialize([]*unicode.RangeTable{rt}, negated)
+		}
+	}
+	return propSimpleClass(script, negated)
 }
 
 // propGCClass 由 GC 短码生成字符类 (LC 与 Cn 需要特殊处理)。
@@ -991,6 +1037,52 @@ func propBinaryTable(cname string) (*unicode.RangeTable, bool) {
 	}
 	rt, ok := unicode.Properties[goName]
 	return rt, ok
+}
+
+// propBinaryAlias: JS 二元属性名**别名** (UnicodeMatchProperty 第二步,
+// 键为规范化名 —— 大小写敏感、'_' 已剥除) → 规范名。值仍须过
+// propSpecBinary 白名单与 unicode.Properties 表检查。
+// 来源 UCD PropertyAliases.txt 缩写 (大小写原样保留)。
+var propBinaryAlias = map[string]string{
+	"AHex":    "ASCII_Hex_Digit",
+	"Alpha":   "Alphabetic",
+	"BidiC":   "Bidi_Control",
+	"BidiM":   "Bidi_Mirrored",
+	"CI":      "Case_Ignorable",
+	"DI":      "Default_Ignorable_Code_Point",
+	"Dep":     "Deprecated",
+	"Dia":     "Diacritic",
+	"EBase":   "Emoji_Modifier_Base",
+	"EComp":   "Emoji_Component",
+	"EMod":    "Emoji_Modifier",
+	"EPres":   "Emoji_Presentation",
+	"Ext":     "Extender",
+	"ExtPict": "Extended_Pictographic",
+	"GrBase":  "Grapheme_Base",
+	"GrExt":   "Grapheme_Extend",
+	"Hex":     "Hex_Digit",
+	"IDC":     "ID_Continue",
+	"IDSB":    "IDS_Binary_Operator",
+	"IDST":    "IDS_Trinary_Operator",
+	"Ideo":    "Ideographic",
+	"JoinC":   "Join_Control",
+	"LOE":     "Logical_Order_Exception",
+	"Lower":   "Lowercase",
+	"NChar":   "Noncharacter_Code_Point",
+	"PatSyn":  "Pattern_Syntax",
+	"PatWS":   "Pattern_White_Space",
+	"QMark":   "Quotation_Mark",
+	"RI":      "Regional_Indicator",
+	"SD":      "Soft_Dotted",
+	"STerm":   "Sentence_Terminal",
+	"Term":    "Terminal_Punctuation",
+	"UIdeo":   "Unified_Ideograph",
+	"Upper":   "Uppercase",
+	"VS":      "Variation_Selector",
+	"WSpace":  "White_Space",
+	"XIDC":    "XID_Continue",
+	"XIDS":    "XID_Start",
+	"space":   "White_Space",
 }
 
 // propPropertiesAlias: 规范化 JS 二元属性名 → unicode.Properties 键。

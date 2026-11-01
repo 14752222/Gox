@@ -1,6 +1,10 @@
 package runtime
 
-import "github.com/14752222/Gox/object"
+import (
+	"unicode/utf8"
+
+	"github.com/14752222/Gox/object"
+)
 
 // Iterator 表示 JavaScript 的迭代器协议。
 // 任何具有 [Symbol.iterator] 方法的对象都可以产生迭代器。
@@ -90,10 +94,21 @@ func (it *Iterator) Next() (object.Value, bool) {
 		if it.index >= len(s.Value) {
 			return object.UndefinedSingleton, true
 		}
-		// 返回单个字符的字符串
-		ch := string(s.Value[it.index])
-		it.index++
-		return object.NewString(ch), false
+		// 按 Unicode 码点迭代 (spec sec-string.prototype-@@iterator):
+		// 此前 string(s.Value[it.index]) 按**字节**切片, 多字节 UTF-8
+		// 字符被拆成 mojibake 单元 (for...of "×ã" 产出 0xC3/0x97...),
+		// test262 property-escapes / String 迭代族因此整批失败。
+		// utf8.RuneError 且宽度 1 时的原始字节保留 (lone surrogate 等
+		// 非 UTF-8 序列在 JS 串里是合法码元序列, 逐字节产出近似)。
+		r, size := utf8.DecodeRuneInString(s.Value[it.index:])
+		if r == utf8.RuneError && size == 1 {
+			// 无法解码的原始字节: 作为单码元产出
+			ch := s.Value[it.index : it.index+1]
+			it.index++
+			return object.NewString(ch), false
+		}
+		it.index += size
+		return object.NewString(string(r)), false
 
 	case "object":
 		// for...in: 遍历对象自有键

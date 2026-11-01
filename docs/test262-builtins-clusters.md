@@ -488,3 +488,59 @@ ToNumber 抛错顺序）。
   tools/perf TestUIFrameGCStress 在 test262 全量并行跑时因机器满载抖动
   失败，空载复跑全过 —— 非本批引入。
 - built-ins 剩余洼地见 §8.4。
+
+## 十、批次战报（2026-11-01 夜批：String 迭代器按码点 + property-escapes 三修）
+
+### 10.1 修复内容（3 文件）
+
+1. **String 迭代器按码点迭代**（runtime/iterable.go）：for...of 对字符串此前
+   按**字节**切片（`string(s.Value[it.index])`），多字节 UTF-8 字符被拆成
+   mojibake 单元（`for of "×"` 产出 0xC3/0x97 两个码元）。改为
+   `utf8.DecodeRuneInString` 按码点推进（不可解码字节逐字节产出近似 lone
+   surrogate）。这是 property-escapes generated 用例 "should match" 族与
+   若干 String 迭代用例的共同根因。
+2. **\p{} 属性转义三修**（object/regexp.go）：
+   - **多词脚本名物化**：Go 1.26 toolchain 的 RE2 对 \p{name} 只认单词规范名
+     （Han/Latin 可用），Tai_Le / Canadian_Aboriginal / Hanifi_Rohingya 等多词名
+     报 invalid character class range（旧版 toolchain 可用，CI 升 toolchain 后
+     静默塌了 300+ 例）。含 '_' 的脚本名一律用 unicode.Scripts RangeTable
+     物化成显式码点区间（propScriptClass）。
+   - **二元属性别名表**（propBinaryAlias）：\p{Hex}→Hex_Digit、\p{AHex}→
+     ASCII_Hex_Digit、\p{Alpha}→Alphabetic 等 41 个 UCD 缩写别名。
+   - **属性名规范化破窗修复**：propCanonicalName 剥 '_' 后
+     "Script_Extensions"→"ScriptExtensions"，switch 再也匹配不中 → 
+     \p{Script_Extensions=X} 全体 SyntaxError。补 canonical 后的 case。
+3. **类区间端点 SyntaxError**（object/regexp.go）：u 模式下 \p{...} 不得作
+   ClassRange 端点（[\p{Hex}-z] / [a-\p{Lu}] / [\p{Hex}--] / [--\p{Hex}]）。
+   翻译器加类上下文追踪，命中时注入超上限码点 \x{110000} 令 RE2 必然报错
+   （RE2 对已知键如 \p{Lu} 会静默接受，不能靠原样保留报错）。
+
+### 10.2 合规率前后（逐用例 A/B，only_a/only_b/pass_differs = 0）
+
+| 套件 | 前 | 后 | 增量 |
+|------|-----|-----|------|
+| built-ins | 16957/23852 = 71.0926% | **17078/23852 = 71.5999%** | **+121 例，退步 0** |
+| language | 20524/23828 = 86.1340% | 20525/23828 = 86.1382% | +1，退步 0 |
+
+增量全部落在 RegExp/property-escapes/generated（Script 多词名 110+ / 别名 /
+Script_Extensions / 区间端点）。注：两套件并发跑批会出现假超时回归（Script 族
+单跑均 <1.5s），A/B 须单套件串行执行 —— 与 §9.3 备忘同源。
+
+### 10.3 property-escapes 剩余（当前 ~210 例）
+
+- **Unicode 版本差**：test262 用例按 Unicode v17 生成，Go 1.26 内置表为
+  Unicode 15/16 —— 新增码点（如 v16/v17 新脚本扩展）不在 Go 表内，"should
+  match" 断言取全码点集合，任一缺失即整例失败。需自携属性表数据才能根治。
+- **Changes_When_* / Emoji / Extended_Pictographic / Grapheme_* 等无 Go 表**
+  的派生属性：需自建派生表（Changes_When_* 可按码点扫描 case 映射近似，
+  但全折叠展开符 ligature 族会误判，generated 全集断言仍会挂）。
+- **早期错误**：非法 \p 形态（no-braces / unclosed 等）现于运行期报错，
+  规范要求 parse 阶段报 —— "期望 parse 报错, 实际 runtime 阶段错误" 族
+  ~20 例，需编译期正则字面量预校验。
+
+### 10.4 String 迭代器修复的连带收益（待后续批次验证）
+
+码点迭代修复波及面远不止 RegExp：所有依赖 for...of/spread 字符串的用例
+（解构、Array.from、Iterator helpers 接字符串、String.raw 等）此前都在
+按字节迭代。本批 A/B 中 language 仅 +1，说明这些路径多数未被 test262
+覆盖或已被快路径掩盖；后续批次可复查 String/[Symbol.iterator] 协议族。
