@@ -4,7 +4,7 @@
 #
 # 一条命令出对比表:
 #   ./scripts/bench-compare.sh                 # 全部可用栈
-#   ./scripts/bench-compare.sh --runs 5        # 每项跑 5 次取中位数 (默认 3)
+#   ./scripts/bench-compare.sh --runs 5        # 每项跑 5 次取中位数 (默认 3; startup 默认单独 9 次)
 #   ./scripts/bench-compare.sh --out mydir     # 结果目录 (默认 bench-results/)
 #
 # 口径 (全部外部计时, 脚本本体零依赖, Gox 与 Node 同源可比):
@@ -37,6 +37,11 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 RUNS=3
+# startup 单独加采样 (2026-11-01 教训): startup_idle 全程只有 5~30ms, run_wall
+# 又是整数毫秒, 3 次取中位数时 1~2ms 的抖动就能让 gox/node 比值在 0.24~0.31 之间
+# 跳动 —— 当天就因此出现过一次 1.68x 的误红 (复跑 1.30x, 同代码)。startup 单次
+# 成本极低, 多采样的代价可忽略, 默认提到 9 次; 其余指标保持 --runs 口径。
+STARTUP_RUNS=9
 OUT="$ROOT/bench-results"
 
 # 本机 PATH 里的 grep 可能是坏的 (静默返回空); 优先用系统绝对路径。
@@ -46,6 +51,7 @@ GREP=/usr/bin/grep
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --runs) RUNS="$2"; shift 2 ;;
+    --startup-runs) STARTUP_RUNS="$2"; shift 2 ;;
     --out)  OUT="$2"; shift 2 ;;
     -h|--help) "$GREP" '^#' "$0" | sed 's/^# \{0,1\}//' | head -60; exit 0 ;;
     *) echo "未知参数 $1 (见 --help)"; exit 1 ;;
@@ -104,7 +110,7 @@ measure() {
     "$@" "$BENCH_DIR/fib28.js" >/dev/null 2>&1 || true
     "$@" "$BENCH_DIR/timers_10k.js" >/dev/null 2>&1 || true
   done
-  for i in $(seq 1 "$RUNS"); do s+=("$(run_wall "$@" "$BENCH_DIR/startup_idle.js")"); done
+  for i in $(seq 1 "$STARTUP_RUNS"); do s+=("$(run_wall "$@" "$BENCH_DIR/startup_idle.js")"); done
   for i in $(seq 1 "$RUNS"); do f+=("$(run_wall "$@" "$BENCH_DIR/fib28.js")"); done
   for i in $(seq 1 "$RUNS"); do t+=("$(run_wall "$@" "$BENCH_DIR/timers_10k.js")"); done
   for i in $(seq 1 "$RUNS"); do r+=("$(run_rss_kb "$@" "$BENCH_DIR/startup_idle.js")"); done
@@ -214,7 +220,8 @@ host = {
 doc = {
     "generated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     "runs_per_metric": $RUNS,
-    "method": "每项外部 wall time 跑 $RUNS 次取中位数; RSS = 进程常驻峰值 (GNU time VmHWM / BSD time maxrss); 脚本本体零依赖",
+    "startup_runs_per_metric": $STARTUP_RUNS,
+    "method": "每项外部 wall time 跑 $RUNS 次取中位数 (startup 单独 $STARTUP_RUNS 次, 抑制毫秒级抖动); RSS = 进程常驻峰值 (GNU time VmHWM / BSD time maxrss); 脚本本体零依赖",
     "host": host,
     "stacks": [r["stack"] for r in rows],
     "note": "gox/node/bun/goja 各列同源脚本; goja 是纯解释器对照系 (与 gox 同类), node 是 V8(JIT)、bun 是 JavaScriptCore 对照; node 列是 Electron 主进程同构口径, 非完整 GUI 空壳; 未安装的栈不出现在 results 里 (stdout 会注明跳过)",
