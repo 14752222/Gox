@@ -60,6 +60,27 @@ func toFloat(v object.Value) float64 {
 	return math.NaN()
 }
 
+// toFloatE 是带错误通道的规范 ToNumber: 对象型值走 ToPrimitive(number
+// hint) → ToNumber (先 valueOf 后 toString), 用户钩子抛错原样传播。
+// 原始值与 toFloat 语义一致。
+func toFloatE(v object.Value) (float64, object.Value) {
+	uv := object.UnwrapPrimitive(v)
+	switch uv.(type) {
+	case *object.Number, *object.Boolean, *object.Null, *object.Undefined,
+		*object.Date, *object.String, *object.Array:
+		return toFloat(uv), nil
+	}
+	// 其余对象型: 规范 ToPrimitive → ToNumber
+	if isObjectValue(uv) {
+		n, errVal := toNumberViaPrimitive(uv)
+		if errVal != nil {
+			return 0, errVal
+		}
+		return n, nil
+	}
+	return toFloat(uv), nil
+}
+
 // stringToNumber 实现 ECMAScript 的 StringToNumber。
 //
 // 关键点: Go 的 strconv.ParseFloat 会截断式接受 "inf"/"infinity"/"nan" 等
