@@ -115,6 +115,15 @@ jobs:
           repository: 14752222/gox-npm
           path: npm
 
+      # 版本一致性检查（2026-11-02 修订）：
+      #   原先要求 npm ↔ config.mts ↔ index.md 三处严格相等，但引擎自 2026-10
+      #   起由夜间任务 auto-release 每晚递增补丁号（0.15.18→0.15.29…），官网仓
+      #   靠人工同步必然漂移，导致 pages 每晚必红（10-31、11-01 两次人工追平后
+      #   次日仍红）。修订为两档：
+      #   - SITE == INDEX：仍为硬闸门（官网自身两处展示必须自洽）；
+      #   - PKG != SITE：降级为 warning —— 官网本来就带「文档滞后」提示机制
+      #     （版本切换器 CURRENT_VERSION），展示号落后于 npm 属预期内，不再阻塞
+      #     部署；发版责任任务仍应在方便时同步官网版本字段。
       - name: 版本号一致（npm ↔ config.mts ↔ index.md）
         run: |
           set -euo pipefail
@@ -132,11 +141,14 @@ jobs:
             echo "::error::website/index.md 里找不到「当前版本 **vX.Y.Z**」"; fail=1
           fi
           if [ "$fail" != 0 ]; then exit 1; fi
-          if [ "$PKG" != "$SITE" ] || [ "$PKG" != "$INDEX" ]; then
-            echo "::error::版本号不一致：npm=$PKG config.mts=$SITE index.md=$INDEX —— 发版时三处要一起改"
+          if [ "$SITE" != "$INDEX" ]; then
+            echo "::error::官网两处版本号不一致：config.mts=$SITE index.md=$INDEX"
             exit 1
           fi
-          echo "三处版本号一致：$PKG"
+          if [ "$PKG" != "$SITE" ]; then
+            echo "::warning::npm=$PKG 与官网展示版本 $SITE 不一致（文档滞后提示兜底，不阻塞部署）"
+          fi
+          echo "版本检查通过：官网自洽（$SITE），npm=$PKG"
 
       - uses: actions/setup-node@v7
         with:
