@@ -172,14 +172,23 @@ jobs:
           echo "version=$VER" >> "$GITHUB_OUTPUT"
 
           # 判重：查到该版本 = 已发布；查不到但包本身在 = 版本确实没发过；
-          # 两者都查不到 = 网络抖了，重试（别把网络故障误判成"没发过"而重复发布）
+          # 两者都查不到 = 网络抖了，重试（别把网络故障误判成"没发过"而重复发布）。
+          # 已知坑（v0.15.19 误发布复盘）：单条 `npm view pkg@ver` 抖动失败、
+          # 而 `npm view pkg` 成功时，循环会立即以"没发过"收场 —— 所以版本级
+          # 判定不能只靠那一次查询，还要用包的全量版本列表做交叉核对：
+          # versions 列表里有该版本 → 判重兜底命中（跳过发布）；
+          # versions 查询本身失败 → 视同网络故障，走重试。
           exists=no
           for attempt in 1 2 3 4 5; do
             if npm view "$PKG_NAME@$VER" version >/dev/null 2>&1; then
               exists=yes; break
             fi
-            if npm view "$PKG_NAME" version >/dev/null 2>&1; then
-              exists=no; break
+            if VERSIONS=$(npm view "$PKG_NAME" versions --json 2>/dev/null); then
+              # 包可查：先用精确版本确认，再用全量列表交叉核对（防单条查询抖动误判）
+              if printf '%s' "$VERSIONS" | grep -q "\"$VER\""; then
+                exists=yes
+              fi
+              break
             fi
             echo "registry 查询失败（第 $attempt 次），3s 后重试"
             sleep 3
