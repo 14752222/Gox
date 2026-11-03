@@ -534,10 +534,11 @@ func (l *Lexer) scanRegexLiteral(line, col int) Token {
 // isRegexFlag 判断字符是否为有效的正则标志。
 func isRegexFlag(ch rune) bool {
 	switch ch {
-	// 注意: 暂不收录 'v' (unicodeSets)。引擎尚不支持 v 模式类集合语法,
-	// 若词法层放行 /…/v 字面量, 本应解析期报错的负测试会推迟到运行期报错,
-	// 导致 built-ins/RegExp/prototype/unicodeSets 批量回归。
-	case 'd', 'g', 'i', 'm', 's', 'u', 'y':
+	// v (unicodeSets, ES2024) 已收录: object/regexp_vmode.go 实现了 v 模式
+	// 类集合语法 (嵌套类/集合运算/\q 字符串/保留标点) → RE2 物化翻译器,
+	// 解析期非法形态会经 regexp.Compile 报 SyntaxError, 不再有"负测试推迟
+	// 到运行期"的问题。
+	case 'd', 'g', 'i', 'm', 's', 'u', 'v', 'y':
 		return true
 	}
 	return false
@@ -1065,7 +1066,7 @@ func (l *Lexer) readTemplateString(line, col int, isFirst bool) Token {
 // 规范 12.3: LineTerminator :: <LF> | <CR> | <LS> | <PS>, 即
 // U+000A, U+000D, U+2028, U+2029。多行注释里出现任一码点, 整个注释就
 // 被当作一个 LineTerminator (供 ASI 判定)。此前只认 \n, 于是
-// `''/*<LS>*/''` / `''/*<CR>*/''` 这类被误判为「同一行缺分号」。
+// `”/*<LS>*/”` / `”/*<CR>*/”` 这类被误判为「同一行缺分号」。
 func isLineTerminator(r rune) bool {
 	return r == '\n' || r == '\r' || r == '\u2028' || r == '\u2029'
 }

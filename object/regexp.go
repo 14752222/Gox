@@ -19,18 +19,19 @@ import (
 // TypeError。此前 lastIndex 只是裸结构体字段, 无从表达「不可写」, 于是
 // 这 8 个用例全是假阳性通过 (详见 stdlib/regexp.go 的注释与 rEXjyz)。
 type RegExp struct {
-	Pattern    string         // 原始正则表达式模式
-	Flags      string         // 标志位 (g, i, m, s, u, y)
-	Regexp     *regexp.Regexp // Go 编译后的正则
-	Global     bool           // g 标志
-	IgnoreCase bool           // i 标志
-	Multiline  bool           // m 标志
-	DotAll     bool           // s 标志
-	Sticky     bool           // y 标志 (粘性匹配)
-	Unicode    bool           // u 标志
-	HasIndices bool           // d 标志 (匹配位置索引)
-	mu         sync.Mutex
-	LastIndex  int // 上次匹配位置 (g/y 标志使用)
+	Pattern     string         // 原始正则表达式模式
+	Flags       string         // 标志位 (g, i, m, s, u, y)
+	Regexp      *regexp.Regexp // Go 编译后的正则
+	Global      bool           // g 标志
+	IgnoreCase  bool           // i 标志
+	Multiline   bool           // m 标志
+	DotAll      bool           // s 标志
+	Sticky      bool           // y 标志 (粘性匹配)
+	Unicode     bool           // u 标志
+	UnicodeSets bool           // v 标志 (unicodeSets, ES2024; 与 u 互斥)
+	HasIndices  bool           // d 标志 (匹配位置索引)
+	mu          sync.Mutex
+	LastIndex   int // 上次匹配位置 (g/y 标志使用)
 
 	// PropDescs 承载 defineProperty / 赋值落在实例上的自有属性描述符。
 	// lastIndex 的规范描述符是懒建 (见 ownLastIndexDescriptor)。
@@ -95,6 +96,8 @@ func (r *RegExp) GetProperty(name string) (Value, bool) {
 		return NewBoolean(r.Sticky), true
 	case "unicode":
 		return NewBoolean(r.Unicode), true
+	case "unicodeSets":
+		return NewBoolean(r.UnicodeSets), true
 	case "hasIndices":
 		return NewBoolean(r.HasIndices), true
 	case "lastIndex":
@@ -282,10 +285,18 @@ func NewRegExp(pattern, flags string) (*RegExp, error) {
 		case 'u':
 			// u (unicode): 按 Unicode 码点处理模式
 			r.Unicode = true
+		case 'v':
+			// v (unicodeSets, ES2024): 类集合语法, 与 u 互斥
+			r.UnicodeSets = true
 		case 'd':
 			// d (hasIndices): exec 结果附带 indices 匹配位置
 			r.HasIndices = true
 		}
+	}
+
+	// u 与 v 互斥 (ES2024 sec-regexp-pattern-flags): 同用 → SyntaxError
+	if r.Unicode && r.UnicodeSets {
+		return nil, fmt.Errorf("SyntaxError: Invalid regular expression: %s: invalid flags", pattern)
 	}
 
 	// regexp-modifiers (ES2025) 组头早错误校验: (?mods-removed:...)。
@@ -297,7 +308,7 @@ func NewRegExp(pattern, flags string) (*RegExp, error) {
 	}
 
 	// 转换 JS 正则到 Go 正则
-	goPattern := jsToGoRegex(pattern, r.IgnoreCase, r.Multiline, r.DotAll, r.Unicode)
+	goPattern := jsToGoRegex(pattern, r.IgnoreCase, r.Multiline, r.DotAll, r.Unicode, r.UnicodeSets)
 	re, err := regexp.Compile(goPattern)
 	if err != nil {
 		return nil, fmt.Errorf("SyntaxError: Invalid regular expression: %s", pattern)
@@ -307,12 +318,23 @@ func NewRegExp(pattern, flags string) (*RegExp, error) {
 }
 
 // jsToGoRegex 将 JS 正则模式转换为 Go 正则模式 (简化)。
-func jsToGoRegex(pattern string, ignoreCase, multiline, dotAll, unicode bool) string {
+func jsToGoRegex(pattern string, ignoreCase, multiline, dotAll, unicode, unicodeSets bool) string {
 	// Go 的 regexp 使用 RE2 语法，大部分与 JS 兼容
 	// 主要差异: JS 的 \d, \w, \s 等在 Go 中需要使用 (?i) 等标志
 	// \uXXXX / \u{...} 是 JS 有而 RE2 没有的 —— 先翻译成 \x{...}
 	result := pattern
-	if unicode {
+	if unicodeSets {
+		// v 标志 (unicodeSets, ES2024): 类集合语法 (嵌套类/集合运算/\q 字符串)
+		// 物化为 RE2 区间。属性转义 \p{...} 由类集合解析器一并处理, 不再走
+		// translatePropertyEscapes (两遍处理会互相干扰)。
+		var err error
+		result, err = translateVModeClasses(result)
+		if err != nil {
+			// 语法错误: 注入超出 Unicode 上限的码点令 RE2 必然编译失败
+			// (规格要求的 SyntaxError), 与既有 Translate 失败路径同款。
+			result = `\x{110000}`
+		}
+	} else if unicode {
 		// \p{...}/\P{...} 属性转义 (rFXXbq: RegExp/property-escapes 447 例):
 		// RE2 只认短类别 (Lu) / 规范脚本名 (Greek) / 35 个二元属性;
 		// JS 的 Name=Value 形态、长类别名、4 字母脚本别名、派生二元属性

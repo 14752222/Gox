@@ -565,6 +565,12 @@ func setupRegExpProto() *object.Object {
 		"multiline", "dotAll", "sticky", "unicode", "unicodeSets", "hasIndices"} {
 		prop := prop
 		p.DefineNonEnumerableAccessor(prop, object.NewBuiltinMethod("get "+prop, func(this object.Value, args ...object.Value) object.Value {
+			// 规范特例 (21.2.5.x RegExpPrototypeAccessor): receiver 恰为
+			// %RegExp.prototype% 自身时返回 undefined (它没有内部槽),
+			// 而非抛 TypeError —— this-val-regexp-prototype 族据此断言。
+			if this == object.Value(p) {
+				return object.UndefinedSingleton
+			}
 			re, errVal := regExpThis(this)
 			if errVal != nil {
 				return errVal
