@@ -120,7 +120,23 @@ func setupEvalAndMisc(env *runtime.Environment) {
 		return err
 	})
 	aggFn.ReturnIsValue = true
-	aggFn.SetProperty("prototype", object.NewObject())
+	// AggregateError.prototype: [[Prototype]] = Error.prototype, 带
+	// name/message/toString (规范 19.5.6; 此前是裸对象, verifyProperty 族失败)
+	aggProto := object.NewObject()
+	if stdlibErrorProto != nil {
+		aggProto.Proto = stdlibErrorProto
+	} else if op := object.GetObjectPrototype(); op != nil {
+		aggProto.Proto = op
+	}
+	aggProto.SetBuiltinProperty("name", object.NewString("AggregateError"))
+	aggProto.SetBuiltinProperty("message", object.NewString(""))
+	if stdlibErrorProto != nil {
+		if tv, ok := stdlibErrorProto.GetProperty("toString"); ok {
+			aggProto.SetBuiltinProperty("toString", tv)
+		}
+	}
+	aggFn.SetProperty("prototype", aggProto)
+	aggProto.SetBuiltinProperty("constructor", aggFn)
 	env.Declare("AggregateError", aggFn, false)
 
 	// 注: %Function.prototype% 的可调用性 (Function.prototype() 返回 undefined)

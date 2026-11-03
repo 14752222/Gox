@@ -47,6 +47,15 @@ func (e *Error) Inspect() string {
 func (e *Error) IsTruthy() bool { return true }
 
 func (e *Error) GetProperty(name string) (Value, bool) {
+	// 用户覆写优先 (err.name = "x" / err.message = "y"):
+	// 规范里 name/message 是实例自有的可写数据属性, 原型上的只是缺省值。
+	// 此前硬编码返回总是优先, 覆写被吞 —— toString() 等按属性读取的
+	// 内建随之拿到旧值 (test262 15.11.4.4-* 一族)。
+	if e.Properties != nil {
+		if v, ok := e.Properties[name]; ok {
+			return v, true
+		}
+	}
 	switch name {
 	case "message":
 		return NewString(e.Message), true
@@ -72,11 +81,35 @@ func (e *Error) GetProperty(name string) (Value, bool) {
 	case "stack":
 		return NewString(e.Inspect()), true
 	case "toString":
-		// 返回一个内建函数，调用时返回错误字符串
+		// 规范 Error.prototype.toString: name/message 按属性读取 (含实例
+		// 覆写), message 为 undefined 时省略 ": msg" 段。与 stdlib 装配的
+		// Error.prototype.toString 同语义 (object 包不能 import stdlib,
+		// 故在此内联一份)。
 		return &BuiltinFunction{
 			Name: "toString",
 			Fn: func(args ...Value) Value {
-				return NewString(e.Inspect())
+				name := "Error"
+				if n, ok := e.GetProperty("name"); ok && n != UndefinedSingleton && n != nil {
+					if _, isSym := n.(*Symbol); isSym {
+						return NewTypeError("Cannot convert a Symbol value to a string")
+					}
+					name = ToString(n)
+				}
+				msgV, msgOK := e.GetProperty("message")
+				if msgV == UndefinedSingleton || msgV == nil || !msgOK {
+					return NewString(name)
+				}
+				if _, isSym := msgV.(*Symbol); isSym {
+					return NewTypeError("Cannot convert a Symbol value to a string")
+				}
+				msg := ToString(msgV)
+				if name == "" {
+					return NewString(msg)
+				}
+				if msg == "" {
+					return NewString(name)
+				}
+				return NewString(name + ": " + msg)
 			},
 		}, true
 	}

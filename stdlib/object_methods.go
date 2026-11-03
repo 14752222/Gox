@@ -782,6 +782,42 @@ func getOwnProperty(v object.Value, key string) (object.Value, bool) {
 }
 
 // setupErrorTypes 设置 Error 构造器到全局环境。
+// toStringViaPrimitive 对对象做规范的 ToPrimitive(string hint) → ToString:
+// 先 toString 后 valueOf, 钩子抛错原样传播, 结果为 Symbol 抛 TypeError。
+func toStringViaPrimitive(v object.Value) (string, object.Value) {
+	for _, m := range []string{"toString", "valueOf"} {
+		fn, ok := v.GetProperty(m)
+		if !ok || !object.IsCallable(fn) {
+			continue
+		}
+		r := object.CallFunction(fn, v)
+		if t := callbackThrown(); t != nil {
+			return "", t
+		}
+		if r != nil && !isObjectLikeValue(r) {
+			if _, isSym := r.(*object.Symbol); isSym {
+				return "", object.NewTypeError("Cannot convert a Symbol value to a string")
+			}
+			return object.ToString(r), nil
+		}
+	}
+	return "", object.NewTypeError("Cannot convert object to primitive value")
+}
+
+// isObjectLikeValue 判定 toString 的 this 是否对象 (含包装对象/错误值)。
+func isObjectLikeValue(v object.Value) bool {
+	switch v.(type) {
+	case *object.Object, *object.Array, *object.Error, *object.PrimitiveObject,
+		*object.GlobalObject, *object.Proxy, *object.Date, *object.Closure:
+		return true
+	}
+	return false
+}
+
+// stdlibErrorProto 是 Error.prototype 对象, 供后置装配的错误子类型
+// (AggregateError) 挂原型链 (setupErrorTypes 先于 setupEvalAndMisc 执行)。
+var stdlibErrorProto *object.Object
+
 func setupErrorTypes(env *runtime.Environment) {
 	// Error 构造器
 	env.Declare("Error", func() *object.BuiltinFunction {
@@ -890,6 +926,76 @@ func setupErrorTypes(env *runtime.Environment) {
 		object.RegisterErrorConstructor("URIError", f)
 		return f
 	}(), false)
+
+	// ===== Error.prototype 原型链 (规范 19.5.3, rFXXbq batch26) =====
+	// 此前 Error.prototype 是 undefined, gOPD(Error.prototype, 'name') /
+	// verifyProperty(Error.prototype, ...) 一族 (~107 例) 全数失败。
+	// 每个错误构造器挂一个普通对象作 prototype: name (各型专名) /
+	// message ("") / constructor 回引 / toString; NativeError.prototype
+	// 的 [[Prototype]] 是 Error.prototype, Error.prototype 的是
+	// Object.prototype。
+	op := object.GetObjectPrototype()
+	errorProto := object.NewObject()
+	errorProto.Proto = op
+	errorProto.SetBuiltinProperty("name", object.NewString("Error"))
+	errorProto.SetBuiltinProperty("message", object.NewString(""))
+	errorProto.SetBuiltinProperty("toString", object.NewBuiltinMethod("toString", func(this object.Value, args ...object.Value) object.Value {
+		// 规范 Error.prototype.toString 第 1 步: O 不是对象抛 TypeError
+		// (invalid-receiver 族: undefined/null/number/string/Symbol)。
+		if !isObjectLikeValue(this) {
+			return object.NewTypeError("Function.prototype.toString: 'this' is not an Object")
+		}
+		name := "Error"
+		if n, ok := this.GetProperty("name"); ok && n != object.UndefinedSingleton && n != nil {
+			if thrown := object.TakeThrownValue(); thrown != object.UndefinedSingleton {
+				return thrown // getter 抛错原样传播 (tostring-message-throws-*)
+			}
+			name = toStr(n)
+		}
+		msg := ""
+		if mv, ok := this.GetProperty("message"); ok && mv != object.UndefinedSingleton && mv != nil {
+			if thrown := object.TakeThrownValue(); thrown != object.UndefinedSingleton {
+				return thrown // getter 抛错原样传播
+			}
+			if _, isSym := mv.(*object.Symbol); isSym {
+				// ToString(Symbol) 是 TypeError (tostring-message-throws-symbol)
+				return object.NewTypeError("Cannot convert a Symbol value to a string")
+			}
+			if obj, isObj := mv.(*object.Object); isObj {
+				// 对象 message: ToString 先走 ToPrimitive(string hint),
+				// 钩子抛错原样传播 (tostring-message-throws-toprimitive)
+				s, errV := toStringViaPrimitive(obj)
+				if errV != nil {
+					return errV
+				}
+				msg = s
+			} else {
+				msg = toStr(mv)
+			}
+		}
+		// 规范: name 为空串 → 直接返回 msg; msg 为空串 → 返回 name
+		if name == "" {
+			return object.NewString(msg)
+		}
+		if msg == "" {
+			return object.NewString(name)
+		}
+		return object.NewString(name + ": " + msg)
+	}))
+	attachPrototype(env, "Error", errorProto)
+	stdlibErrorProto = errorProto
+
+	nativeNames := []string{"TypeError", "RangeError", "ReferenceError", "SyntaxError", "URIError", "SuppressedError"}
+	for _, n := range nativeNames {
+		np := object.NewObject()
+		np.Proto = errorProto
+		np.SetBuiltinProperty("name", object.NewString(n))
+		np.SetBuiltinProperty("message", object.NewString(""))
+		if tv, ok := errorProto.GetProperty("toString"); ok {
+			np.SetBuiltinProperty("toString", tv)
+		}
+		attachPrototype(env, n, np)
+	}
 }
 
 // newParseIntBuiltin 构造 parseInt 内建函数。
