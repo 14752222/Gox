@@ -162,6 +162,37 @@ func toInt(v object.Value) int64 {
 	return int64(truncated)
 }
 
+// toIntE 是带错误通道的 ToIntegerOrInfinity: Symbol 与对象钩子抛错会
+// 传播 (规范 ToNumber(Symbol) 是 TypeError), 其余与 toInt 一致
+// (rFXXbq batch25: Number.prototype.to{Precision,Exponential,Fixed} 的
+// precision/digits 参数必须是可转换值)。
+func toIntE(v object.Value) (int64, object.Value) {
+	if _, ok := object.UnwrapPrimitive(v).(*object.Symbol); ok {
+		return 0, object.NewTypeError("Cannot convert a Symbol value to a number")
+	}
+	f, errVal := toFloatE(v)
+	if errVal != nil {
+		return 0, errVal
+	}
+	switch {
+	case math.IsNaN(f), f == 0:
+		return 0, nil
+	case math.IsInf(f, 1):
+		return math.MaxInt64, nil
+	case math.IsInf(f, -1):
+		return math.MinInt64, nil
+	}
+	truncated := math.Trunc(f)
+	const int64Limit = 9223372036854775808.0
+	if truncated >= int64Limit {
+		return math.MaxInt64, nil
+	}
+	if truncated <= -int64Limit {
+		return math.MinInt64, nil
+	}
+	return int64(truncated), nil
+}
+
 // toStr 将任意 object.Value 转换为 string。
 // 使用 ECMAScript ToString 语义 (数组 join、对象 [object Object]、
 // 自定义 toString 优先)，见 object.ToString。
