@@ -527,6 +527,9 @@ type FunctionDeclaration struct {
 	// Strict 报告该函数体是否严格: 继承外层 strict, 或自身函数体含
 	// "use strict" 指令。供 compiler 盖 FunctionMetadata.IsStrict。
 	Strict bool
+	// Source 是该函数的源码文本 (含 async/function* 前缀到体收尾 '}'),
+	// 供 Function.prototype.toString 的 [[SourceText]] (rFXXbq batch24)。
+	Source string
 }
 
 func (fd *FunctionDeclaration) TokenLiteral() string { return fd.Token.Literal }
@@ -563,6 +566,8 @@ type FunctionExpression struct {
 	IsAsync     bool // async function 异步函数
 	// Strict 见 FunctionDeclaration.Strict。
 	Strict bool
+	// Source 见 FunctionDeclaration.Source。
+	Source string
 }
 
 func (fe *FunctionExpression) TokenLiteral() string { return fe.Token.Literal }
@@ -598,6 +603,8 @@ func (fe *FunctionExpression) expressionNode() {}
 type ArrowFunctionExpression struct {
 	Token      lexer.Token // ARROW (=>)
 	IsAsync    bool        // async 箭头函数 (IsAsync 与普通箭头共用同一份编译路径)
+	// Source 见 FunctionDeclaration.Source。
+	Source string
 	Parameters []*Parameter
 	Body       Node // *BlockStatement 或 Expression (隐式返回)
 	// Strict 见 FunctionDeclaration.Strict。箭头函数体若为块体且含
@@ -791,6 +798,11 @@ type ClassMethod struct {
 	Parameters    []*Parameter
 	Body          *BlockStatement
 	FieldValue    Expression // 字段值 (方法解析时若为字段则非 nil)
+	// Source 是方法定义的源码文本 (从 get/set/*/async/属性名起, 不含
+	// static 前缀), 供 toString [[SourceText]]; SourceStart 是其起始字节
+	// 偏移 (0 = 用 Token.StartOffset), 由 parser 在跳过 static 后记。
+	Source      string
+	SourceStart int
 }
 
 // ClassField 表示 class 的实例字段。
@@ -811,6 +823,8 @@ type ClassDeclaration struct {
 	Methods    []*ClassMethod // 实例方法
 	Statics    []*ClassMethod // 静态方法
 	Fields     []*ClassField  // 实例字段
+	// Source 是整个 class 定义的源码文本 (类构造器 toString 的 [[SourceText]])。
+	Source string
 }
 
 func (cd *ClassDeclaration) TokenLiteral() string { return cd.Token.Literal }
@@ -827,6 +841,8 @@ type ClassExpression struct {
 	Methods    []*ClassMethod // 实例方法
 	Statics    []*ClassMethod // 静态方法
 	Fields     []*ClassField  // 实例字段
+	// Source 见 ClassDeclaration.Source。
+	Source string
 }
 
 func (ce *ClassExpression) expressionNode()      {}

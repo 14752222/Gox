@@ -190,6 +190,10 @@ type FunctionMetadata struct {
 	// 与普通 async 函数区分 —— 而二者的函数对象 [[Prototype]] 不同
 	// (AsyncGeneratorFunction.prototype vs AsyncFunction.prototype)，故显式记。
 	IsAsyncGenerator bool
+	// SourceText 是函数的 [[SourceText]] (Function.prototype.toString 用)。
+	// 仅用户定义的函数/方法/类构造器携带; 内建与合成函数留空, toString 回退
+	// NativeFunction 形态。
+	SourceText string
 	// LexicalThis 标识"该函数的 this 必须按词法捕获创建帧的 this"。
 	// 仅编译器合成的 async/async-generator 内层 generator 需要: wrapper 以
 	// 方法/函数形态被调用后, 在同一帧里 OP_FUNCTION 建出内层 generator 并立刻

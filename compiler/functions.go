@@ -133,6 +133,7 @@ func (c *Compiler) compileFunctionDeclaration(stmt *ast.FunctionDeclaration) err
 	if err != nil {
 		return err
 	}
+	fnMeta.SourceText = stmt.Source
 	idx := c.constants.AddConstant(fnMeta)
 	c.emitter.Emit(bytecode.OP_FUNCTION, idx)
 	if c.isGlobalScope() {
@@ -696,6 +697,7 @@ func (c *Compiler) compileFunctionExpressionNamed(node *ast.FunctionExpression, 
 	if err != nil {
 		return err
 	}
+	meta.SourceText = node.Source
 	idx := c.constants.AddConstant(meta)
 	c.emitter.Emit(bytecode.OP_FUNCTION, idx)
 	return nil
@@ -717,6 +719,7 @@ func (c *Compiler) compileArrowFunctionNamed(node *ast.ArrowFunctionExpression, 
 	if err != nil {
 		return err
 	}
+	meta.SourceText = node.Source
 	idx := c.constants.AddConstant(meta)
 	c.emitter.Emit(bytecode.OP_ARROW_FUNC, idx)
 	return nil

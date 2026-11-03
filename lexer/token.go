@@ -148,6 +148,12 @@ type Token struct {
 	Literal string // 原始词素文本
 	Line    int    // 源码行号 (从1开始)
 	Column  int    // 源码列号 (从1开始)
+	// StartOffset/EndOffset 是该 token 在源码中的字节区间 [start, end)。
+	// 由 NextToken 统一填写 (StartOffset 取 skipWhitespaceAndComments 后的
+	// 读取位置, EndOffset 取扫描完成后的 readPosition)。供
+	// Function.prototype.toString 的 [[SourceText]] 源码切片使用 (rFXXbq)。
+	StartOffset int
+	EndOffset   int
 	// HadEscape 仅对 STRING_LITERAL 有意义: 报告该字符串字面量里出现过
 	// 反斜杠转义 (\uXXXX 等)。Literal 存的是**解码后**文本, 单看它无法
 	// 区分 `"use strict"` 与 `"use\u0020strict"` —— 而后者按规范**不是**

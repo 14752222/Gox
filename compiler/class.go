@@ -9,7 +9,7 @@ import (
 )
 
 func (c *Compiler) compileClassDeclaration(node *ast.ClassDeclaration) error {
-	if err := c.compileClassBody(node.Name.Value, node.SuperClass, node.Methods, node.Statics, node.Fields); err != nil {
+	if err := c.compileClassBody(node.Name.Value, node.SuperClass, node.Methods, node.Statics, node.Fields, node.Source); err != nil {
 		return err
 	}
 	// 类值在栈顶 → 声明类名并绑定
@@ -65,7 +65,7 @@ func (c *Compiler) emitPrivateKey(name string) error {
 	return nil
 }
 
-func (c *Compiler) compileClassBody(className string, superClass ast.Expression, methods, statics []*ast.ClassMethod, fields []*ast.ClassField) error {
+func (c *Compiler) compileClassBody(className string, superClass ast.Expression, methods, statics []*ast.ClassMethod, fields []*ast.ClassField, classSrc string) error {
 	// 类体恒严格: 类方法 (含**隐式**构造器)、字段初始化器都按 strict 编译。
 	// 显式方法走 compileFunctionWithStrict(true,...); 这里整体置 true 是为了
 	// 让 compileClassConstructor 的 meta.IsStrict (c.strict) 也拿到 true ——
@@ -136,6 +136,10 @@ func (c *Compiler) compileClassBody(className string, superClass ast.Expression,
 	prevSuper := c.currentSuperClass
 	c.currentSuperClass = superName
 	ctorMeta, err := c.compileClassConstructor(fields, ctor, className, superName)
+	if err == nil {
+		// 类构造器的 [[SourceText]] 是整个 class 定义 (显式与隐式构造器一致)。
+		ctorMeta.SourceText = classSrc
+	}
 	if err != nil {
 		return err
 	}
@@ -166,6 +170,9 @@ func (c *Compiler) compileClassBody(className string, superClass ast.Expression,
 			c.methodFnDepth++
 			meta, err := c.compileFunctionWithStrict(true, m.Name, m.Parameters, m.Body, false, m.IsGenerator, m.IsAsync)
 			c.methodFnDepth--
+			if err == nil {
+				meta.SourceText = m.Source
+			}
 			c.currentSuperClass = prevSuperP
 			if err != nil {
 				return err
@@ -479,6 +486,9 @@ func (c *Compiler) compileStaticElements(superName string, statics []*ast.ClassM
 			c.methodFnDepth++
 			meta, err := c.compileFunctionWithStrict(true, m.Name, m.Parameters, m.Body, false, m.IsGenerator, m.IsAsync)
 			c.methodFnDepth--
+			if err == nil {
+				meta.SourceText = m.Source
+			}
 			if err != nil {
 				return err
 			}
@@ -503,6 +513,7 @@ func (c *Compiler) compileStaticElements(superName string, statics []*ast.ClassM
 		if err != nil {
 			return err
 		}
+		meta.SourceText = m.Source
 		midx := c.constants.AddConstant(meta)
 		if m.ComputedKey != nil && !m.IsGetter && !m.IsSetter {
 			// 动态键静态方法: SET_INDEX 弹 [obj, key, val] 三元组,
@@ -560,7 +571,7 @@ func (c *Compiler) compileClassExpressionNamed(node *ast.ClassExpression, nameHi
 	if className == "" {
 		className = "<anonymous>"
 	}
-	return c.compileClassBody(className, node.SuperClass, node.Methods, node.Statics, node.Fields)
+	return c.compileClassBody(className, node.SuperClass, node.Methods, node.Statics, node.Fields, node.Source)
 }
 
 // compileFieldInitValue 在「类字段初始化器」上下文中编译字段值表达式:
@@ -778,6 +789,7 @@ func (c *Compiler) compileClassMethodToObject(m *ast.ClassMethod, superName stri
 	if err != nil {
 		return err
 	}
+	meta.SourceText = m.Source
 	// 计算键方法 (含 getter/setter) 一律走 *_DYN 变体: 弹 fn 与 key、留 obj,
 	// 不需要为写入"消耗副本"而 DUP —— 那是旧 SET_INDEX 路径 (弹三元组) 的
 	// 包袱。类方法在此顺带拿到正确的不可枚举描述符。

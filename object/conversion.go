@@ -84,5 +84,22 @@ func toString(v Value, depth int) string {
 		}
 		return "[object Object]"
 	}
+	if IsCallable(v) {
+		// 可调用值 (函数/内建/可调用 Proxy): ToString 按 ToPrimitive("string")
+		// 走 toString 方法 —— Function.prototype.toString 的 [[SourceText]] /
+		// NativeFunction 形态只有经这里才生效; 裸 Inspect 会绕过它, 让
+		// ""+fn / String(fn) 退化成调试形态 "[Function: f]" (rFXXbq batch24)。
+		if m, ok := v.GetProperty("toString"); ok && m != nil && IsCallable(m) {
+			if r := CallFunction(m, v); r != nil {
+				p := UnwrapPrimitive(r)
+				switch p.(type) {
+				case *Object, *Array, *Date, *PrimitiveObject:
+					// toString 返回对象: 规范应抛 TypeError, 保守回退调试形态
+				default:
+					return toString(p, depth+1)
+				}
+			}
+		}
+	}
 	return v.Inspect()
 }

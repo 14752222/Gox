@@ -25,6 +25,11 @@ type Parser struct {
 	tokens []lexer.Token // 预分词的令牌切片
 	pos    int           // 当前令牌位置
 	errors *ErrorList
+	src    string        // 原始源码 ([[SourceText]] 切片的事实来源)
+	// lastBlockRbraceEnd 是最近一次完整解析的块级 '}' 的 EndOffset。
+	// 块解析 (parseBlockImpl/parseBlockWithDirectives) 出口处 curToken 恰为
+	// '}' 时记录 —— 类成员包装器用它回填方法体的源码终点 (rFXXbq)。
+	lastBlockRbraceEnd int
 
 	prefixParseFns map[lexer.TokenType]prefixParseFn
 	infixParseFns  map[lexer.TokenType]infixParseFn
@@ -350,6 +355,7 @@ func (p *Parser) peekStartsAwaitOperand() bool {
 func New(l *lexer.Lexer) *Parser {
 	p := &Parser{
 		errors: NewErrorList(),
+		src:    l.Source(),
 	}
 
 	// 预分词整个输入
@@ -462,6 +468,15 @@ func (p *Parser) registerInfix(t lexer.TokenType, fn infixParseFn) {
 }
 
 // curToken 返回当前位置的令牌。
+// srcSlice 按字节区间截取原始源码 ([[SourceText]])。
+// 区间不合法时返回空串, 调用方 (toString) 回退到 NativeFunction 形态。
+func (p *Parser) srcSlice(start, end int) string {
+	if start < 0 || end <= start || end > len(p.src) {
+		return ""
+	}
+	return p.src[start:end]
+}
+
 func (p *Parser) curToken() lexer.Token {
 	if p.pos < len(p.tokens) {
 		return p.tokens[p.pos]
@@ -2063,6 +2078,11 @@ func (p *Parser) parseBlockImpl(asFunctionBody bool) *ast.BlockStatement {
 		}
 		p.nextToken()
 	}
+	if p.curTokenIs(lexer.RBRACE) {
+		// [[SourceText]] 锚点: 最近闭合的块级 '}' 的终点。类成员包装器
+		// 在 parseClassMember 返回时读取 (此时最近闭合的恰是方法体 '}')。
+		p.lastBlockRbraceEnd = p.curToken().EndOffset
+	}
 	// 块级早错: LexicallyDeclaredNames ∩ VarDeclaredNames ≠ ∅ ⇒ SyntaxError
 	// (sec-block-static-semantics-early-errors)。见 block_early_errors.go。
 	// 函数体 (asFunctionBody=true) 豁免 —— 那里 var 与同名 function 声明合法;
@@ -2126,6 +2146,9 @@ func (p *Parser) parseBlockWithDirectives() (*ast.BlockStatement, bool) {
 			}
 		}
 		p.nextToken()
+	}
+	if p.curTokenIs(lexer.RBRACE) {
+		p.lastBlockRbraceEnd = p.curToken().EndOffset
 	}
 	// 函数体豁免本层「lexical ∩ var」重声明早错: 在**函数体**里 function
 	// 声明是 var 作用域 (不像块里那样算 lexical), 故 `function g(){ var f;
@@ -2232,6 +2255,11 @@ func (p *Parser) parseBody() *ast.BlockStatement {
 // 它同时决定函数体内是否允许 await。
 func (p *Parser) parseFunctionDeclaration(isAsync bool) *ast.FunctionDeclaration {
 	// 进入时 curToken 是 FUNCTION (async 分支已把 curToken 移到 FUNCTION)
+	// [[SourceText]] 起点: async 声明取前一个 async 关键字的起始偏移。
+	srcStart := p.curToken().StartOffset
+	if isAsync && p.pos > 0 && p.tokens[p.pos-1].Type == lexer.ASYNC {
+		srcStart = p.tokens[p.pos-1].StartOffset
+	}
 	fn := &ast.FunctionDeclaration{Token: p.curToken(), IsAsync: isAsync}
 	if p.peekTokenIs(lexer.ASTERISK) {
 		fn.IsGenerator = true
@@ -2255,6 +2283,10 @@ func (p *Parser) parseFunctionDeclaration(isAsync bool) *ast.FunctionDeclaration
 	ntRestore()
 	if fn.Strict {
 		p.checkStrictFunctionParams(fn.Parameters)
+	}
+	// 出口 curToken 是体收尾 '}'
+	if p.curTokenIs(lexer.RBRACE) {
+		fn.Source = p.srcSlice(srcStart, p.curToken().EndOffset)
 	}
 	return fn
 }
@@ -2451,7 +2483,7 @@ func (p *Parser) parseIdentifier() ast.Expression {
 		p.nextToken() // consume =>
 		return p.parseArrowFunctionBody([]*ast.Parameter{{
 			Token: ident.Token, Name: ident.Value,
-		}}, false)
+		}}, false, ident.Token.StartOffset)
 	}
 	p.rejectEscapedReservedIdentifier()
 	return &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
@@ -2793,7 +2825,7 @@ func (p *Parser) parseGroupedOrArrow() ast.Expression {
 			p.nextToken() // consume =>
 			return p.parseArrowFunctionBody([]*ast.Parameter{{
 				Token: ident.Token, Name: ident.Value,
-			}}, false)
+			}}, false, ident.Token.StartOffset)
 		}
 	}
 	return expr
@@ -2838,6 +2870,7 @@ func (p *Parser) parseArrowFunction(isAsync bool) ast.Expression {
 	// curToken = LPAREN, parseParameters will advance past it
 	// 箭头函数没有自己的 [Yield] 参数: 形参区继承外层 yield 语境 (生成器体内的
 	// 箭头形参仍 [+Yield], 形参名/默认值里 yield 是早错; sloppy 里 ~Yield)。
+	srcStart := p.curToken().StartOffset
 	params := p.parseParameters(lexer.RPAREN, isAsync, p.allowYield)
 	if !p.curTokenIs(lexer.RPAREN) {
 		return nil
@@ -2848,13 +2881,28 @@ func (p *Parser) parseArrowFunction(isAsync bool) ast.Expression {
 		return nil
 	}
 	p.nextToken() // consume =>
-	return p.parseArrowFunctionBody(params, isAsync)
+	return p.parseArrowFunctionBody(params, isAsync, srcStart)
 }
 
 // parseArrowFunctionBody 解析箭头函数体 (cur 已越过 =>)。
 // isAsync 决定体内的 async 上下文: async 箭头允许 await, 同步箭头体内
 // 裸 await 是早错。
-func (p *Parser) parseArrowFunctionBody(params []*ast.Parameter, isAsync bool) *ast.ArrowFunctionExpression {
+func (p *Parser) parseArrowFunctionBody(params []*ast.Parameter, isAsync bool, srcStart int) *ast.ArrowFunctionExpression {
+	// async 箭头的源码要含 async 关键字: 进入本函数时 cur 已越过 =>,
+	// async 在参数列表之前 —— 从当前位置向后扫几个 token, 找 EndOffset
+	// 不越过参数起点 (srcStart) 的 ASYNC token (rFXXbq batch24)。
+	if isAsync && srcStart > 0 {
+		for i := p.pos - 1; i >= 0 && i >= p.pos-6; i-- {
+			tk := p.tokens[i]
+			if tk.EndOffset > srcStart && tk.StartOffset >= srcStart {
+				continue // 参数/箭头 token, 尚未退到 async
+			}
+			if tk.Type == lexer.ASYNC {
+				srcStart = tk.StartOffset
+			}
+			break // 已退到参数之前的首个 token: 不是 async 就没有前缀
+		}
+	}
 	af := &ast.ArrowFunctionExpression{Token: p.curToken(), Parameters: params, IsAsync: isAsync}
 	// 箭头函数的形参形状是 UniqueFormalParameters: 重复绑定名恒为 SyntaxError
 	// (sloppy 简单列表也报), 与 checkStrictFunctionParams 的 strict 分支无关。
@@ -2879,6 +2927,14 @@ func (p *Parser) parseArrowFunctionBody(params []*ast.Parameter, isAsync bool) *
 		p.yieldReservedInParams = prevYieldReserved
 		restore()
 	}
+	// [[SourceText]] 终点: 块体出口 curToken 是 '}'; 表达式体 parseExpression
+	// 返回后表达式末 token 在 cur ("parseExpression 返回后表达式末 token 在
+	// cur" 是本解析器的既定约定)。
+	if p.curTokenIs(lexer.RBRACE) {
+		af.Source = p.srcSlice(srcStart, p.curToken().EndOffset)
+	} else if p.pos > 0 {
+		af.Source = p.srcSlice(srcStart, p.curToken().EndOffset)
+	}
 	if af.Strict {
 		p.checkStrictFunctionParams(af.Parameters)
 	}
@@ -2886,6 +2942,7 @@ func (p *Parser) parseArrowFunctionBody(params []*ast.Parameter, isAsync bool) *
 }
 
 func (p *Parser) parseFunctionExpression() ast.Expression {
+	srcStart := p.curToken().StartOffset
 	fn := &ast.FunctionExpression{Token: p.curToken()}
 	// function*: generator 函数
 	if p.peekTokenIs(lexer.ASTERISK) {
@@ -2910,6 +2967,9 @@ func (p *Parser) parseFunctionExpression() ast.Expression {
 	if fn.Strict {
 		p.checkStrictFunctionParams(fn.Parameters)
 	}
+	if p.curTokenIs(lexer.RBRACE) {
+		fn.Source = p.srcSlice(srcStart, p.curToken().EndOffset)
+	}
 	return fn
 }
 
@@ -2923,6 +2983,7 @@ func (p *Parser) parseFunctionExpression() ast.Expression {
 // 真的漏了 `=>`, 后者才是"根本没实现这种形状"。
 func (p *Parser) parseAsyncExpression() ast.Expression {
 	if p.peekTokenIs(lexer.FUNCTION) {
+		srcStart := p.curToken().StartOffset // async 关键字
 		p.nextToken() // 移到 function
 		fn := &ast.FunctionExpression{Token: p.curToken()}
 		fn.IsAsync = true
@@ -2946,6 +3007,9 @@ func (p *Parser) parseAsyncExpression() ast.Expression {
 			p.checkUseStrictWithNonSimpleParams(fn.Parameters)
 		if fn.Strict {
 			p.checkStrictFunctionParams(fn.Parameters)
+		}
+		if p.curTokenIs(lexer.RBRACE) {
+			fn.Source = p.srcSlice(srcStart, p.curToken().EndOffset)
 		}
 		return fn
 	}
@@ -2971,7 +3035,7 @@ func (p *Parser) parseAsyncExpression() ast.Expression {
 		p.nextToken() // cur = =>
 		return p.finishAsyncArrow(p.parseArrowFunctionBody([]*ast.Parameter{{
 			Token: ident.Token, Name: ident.Value,
-		}}, true))
+		}}, true, ident.Token.StartOffset))
 	}
 
 	// 其余形状: async 回退为普通标识符引用 (test262 head-lhs-async.js:
@@ -3028,7 +3092,7 @@ func (p *Parser) parseYieldExpression() ast.Expression {
 			p.nextToken() // consume =>
 			return p.parseArrowFunctionBody([]*ast.Parameter{{
 				Token: ident.Token, Name: ident.Value,
-			}}, false)
+			}}, false, ident.Token.StartOffset)
 		}
 		return &ast.Identifier{Token: p.curToken(), Value: p.curToken().Literal}
 	}
@@ -3264,6 +3328,9 @@ func (p *Parser) parseObjectLiteral() ast.Expression {
 }
 
 func (p *Parser) parseProperty() *ast.Property {
+	// [[SourceText]] 起点: 方法/访问器从 * / async / get / set / 属性名的
+	// 第一个 token 起 (不含任何更早的上下文)。
+	propSrcStart := p.curToken().StartOffset
 	prop := &ast.Property{Token: p.curToken(), Kind: ast.PROP_INIT}
 	isGenerator := false
 	isAsync := false
@@ -3348,6 +3415,9 @@ func (p *Parser) parseProperty() *ast.Property {
 		if fn.Strict {
 			p.checkStrictFunctionParams(fn.Parameters)
 		}
+		// 终点用块解析出口锚点 (方法体 '}'): 出口 curToken 可能已是逗号
+		// (中间成员) 或对象收尾 '}' (末位成员), 都不能直接用。
+		fn.Source = p.srcSlice(propSrcStart, p.lastBlockRbraceEnd)
 		prop.Value = fn
 		return prop
 	}
@@ -3442,6 +3512,9 @@ func (p *Parser) parseProperty() *ast.Property {
 		if fn.Strict {
 			p.checkStrictFunctionParams(fn.Parameters)
 		}
+		// 终点用块解析出口锚点 (方法体 '}'): 出口 curToken 可能已是逗号
+		// (中间成员) 或对象收尾 '}' (末位成员), 都不能直接用。
+		fn.Source = p.srcSlice(propSrcStart, p.lastBlockRbraceEnd)
 		prop.Value = fn
 		return prop
 	}
@@ -4670,6 +4743,8 @@ func (p *Parser) parseClassDeclaration() *ast.ClassDeclaration {
 		p.addError(fmt.Sprintf("expected '}' in class, got %s", p.curToken().Type))
 		return nil
 	}
+	// [[SourceText]]: 整个 class 定义 (类构造器 toString 返回它)。
+	cls.Source = p.srcSlice(cls.Token.StartOffset, p.curToken().EndOffset)
 	return cls
 }
 
@@ -4755,6 +4830,8 @@ func (p *Parser) parseClassExpression() ast.Expression {
 		p.addError(fmt.Sprintf("expected '}' in class, got %s", p.curToken().Type))
 		return nil
 	}
+	// [[SourceText]]: 整个 class 定义 (类构造器 toString 返回它)。
+	cls.Source = p.srcSlice(cls.Token.StartOffset, p.curToken().EndOffset)
 	return cls
 }
 
@@ -4762,6 +4839,26 @@ func (p *Parser) parseClassExpression() ast.Expression {
 // 返回的成员可能: 是方法 (Body != nil)、static 方法、或字段 (FieldValue != nil)。
 // 约定: 返回时 curToken 位于成员结束后的下一个 token (分隔符/下一成员/class 结束 })。
 func (p *Parser) parseClassMember() *ast.ClassMethod {
+	// [[SourceText]] 起点: 非静态成员从本 token 起; static 成员在 inner 里
+	// 跳过 static 后回填 SourceStart。
+	memberSrcStart := p.curToken().StartOffset
+	member := p.parseClassMemberInner()
+	if member == nil {
+		return nil
+	}
+	if member.Body != nil {
+		ss := member.SourceStart
+		if ss == 0 {
+			ss = memberSrcStart
+		}
+		// inner 返回时 cur 已越过体收尾 '}'; 最近一次闭合的块级 '}'
+		// 恰是方法体收尾 (lastBlockRbraceEnd), 用它作终点。
+		member.Source = p.srcSlice(ss, p.lastBlockRbraceEnd)
+	}
+	return member
+}
+
+func (p *Parser) parseClassMemberInner() *ast.ClassMethod {
 	member := &ast.ClassMethod{Token: p.curToken()}
 
 	// 私有成员: #name (字段/方法/访问器都支持)。# 是名字的一部分,
@@ -4776,6 +4873,9 @@ func (p *Parser) parseClassMember() *ast.ClassMethod {
 		!p.peekTokenIs(lexer.LPAREN) && !p.peekTokenIs(lexer.ASSIGN) {
 		member.IsStatic = true
 		p.nextToken()
+		// [[SourceText]]: 方法源码不含 static 前缀 (规范 ClassElement 与
+		// MethodDefinition 的分界), 跳过 static 后重记起点。
+		member.SourceStart = p.curToken().StartOffset
 		// static #name ...: static 之后是私有成员, 进入私有分支
 		// (IsStatic 已带上, parsePrivateMember 里会作为静态处理)
 		if p.curTokenIs(lexer.PRIVATE_NAME) {

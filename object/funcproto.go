@@ -2,6 +2,7 @@ package object
 
 import (
 	"strconv"
+	"strings"
 )
 
 // 本文件实现 Function.prototype 的共享方法 (call/apply/bind/toString)。
@@ -107,13 +108,80 @@ func funcProtoLookup(_ Value, name string) (Value, bool) {
 		}), true
 	case "toString":
 		return NewBuiltinMethod("toString", func(this Value, args ...Value) Value {
-			if this == nil {
-				return NewString("undefined")
+			// 规范 Function.prototype.toString (rFXXbq batch24):
+			//   1. ECMAScript 函数对象 (有 [[SourceText]]) → 原样返回源码切片;
+			//   2. 内建/绑定函数/可调用 Proxy → NativeFunction 形态
+			//      "function name() { [native code] }";
+			//   3. 不可调用 → TypeError。
+			switch fn := this.(type) {
+			case *Closure:
+				if fn.Fn != nil && fn.Fn.SourceText != "" {
+					return NewString(fn.Fn.SourceText)
+				}
+				name := ""
+				if fn.Fn != nil {
+					name = fn.Fn.Name
+				}
+				return NewString(nativeFunctionSource(name))
+			case *BuiltinFunction, *BuiltinMethod:
+				name := ""
+				switch b := this.(type) {
+				case *BuiltinFunction:
+					name = b.Name
+				case *BuiltinMethod:
+					name = b.Name
+				}
+				// 绑定函数 (bind 产物, name 以 "bound" 开头): V8 同款 ——
+				// 一律输出匿名 NativeFunction ("function () { [native code] }"),
+				// 因 NativeFunction 语法只容纳单个 IdentifierName 槽。
+				if strings.HasPrefix(name, "bound") {
+					return NewString("function () { [native code] }")
+				}
+				return NewString(nativeFunctionSource(name))
+			case *Proxy:
+				if fn.Target != nil && IsCallable(fn.Target) {
+					return NewString("function () { [native code] }")
+				}
+				return NewTypeError("Function.prototype.toString requires that 'this' be a Function")
 			}
-			return NewString(this.Inspect())
+			if this != nil && IsCallable(this) {
+				return NewString(this.Inspect())
+			}
+			return NewTypeError("Function.prototype.toString requires that 'this' be a Function")
 		}), true
 	}
 	return nil, false
+}
+
+// nativeFunctionSource 按 NativeFunction 语法构toString 文本:
+// "function <name>() { [native code] }"。name 必须能落到语法里的
+// PropertyName 槽 (IdentifierName / "get|set <Ident>" / "[Symbol.x]" 形态),
+// 不合规的名字 (含空格、私有名等) 一律省略。
+func nativeFunctionSource(name string) string {
+	if name != "" && !nativeNameFitsGrammar(name) {
+		name = ""
+	}
+	return "function " + name + "() { [native code] }"
+}
+
+// nativeNameFitsGrammar 报告 name 是否符合 NativeFunction 的 PropertyName 槽。
+func nativeNameFitsGrammar(name string) bool {
+	if name == "" {
+		return true // 匿名: function () { [native code] }
+	}
+	// [Symbol.x] / [计算名] 形态
+	if strings.HasPrefix(name, "[") && strings.HasSuffix(name, "]") {
+		return true
+	}
+	// get/set 访问器前缀
+	rest := name
+	if strings.HasPrefix(rest, "get ") || strings.HasPrefix(rest, "set ") {
+		rest = rest[4:]
+	}
+	if rest == "" || strings.ContainsAny(rest, " \t\n") {
+		return false
+	}
+	return true
 }
 
 // args0OrUndefined 返回 args[0]，args 为空时返回 undefined (thisArg 位置)。

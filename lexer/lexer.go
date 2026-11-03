@@ -28,6 +28,10 @@ type Lexer struct {
 	// 正则字面量上下文: 追踪前一个 token 类型以区分 / 是除法还是正则开始
 	prevTokenType TokenType
 
+	// lastTokStart 记录上一个 (正在扫描的) token 的起始字节偏移, 供
+	// NextToken 填 Token.StartOffset ([[SourceText]] 源码切片用)。
+	lastTokStart int
+
 	// 花括号/括号种类栈 (见 brace_context.go): 用于判定 `}` 之后的 `/`
 	// 是正则还是除法。
 	braceStack           []braceKind
@@ -102,6 +106,19 @@ func (l *Lexer) peekCharAt(offset int) rune {
 // 除法 / 与正则字面量 / 的上下文。
 func (l *Lexer) NextToken() Token {
 	tok := l.nextToken()
+	// 源码字节区间: StartOffset 是 nextToken 内 skipWhitespaceAndComments
+	// 之后记录的起始位置。EndOffset 不能用 readPosition —— 各 token 分支
+	// 返回前会预读下一字符, readPosition 已越过 token 终点; 而 position
+	// 恰指向 token 结束后的第一个字节 (= token 终点)。
+	tok.StartOffset = l.lastTokStart
+	end := l.position
+	if end > len(l.input) {
+		end = len(l.input)
+	}
+	tok.EndOffset = end
+	if tok.EndOffset < tok.StartOffset {
+		tok.EndOffset = tok.StartOffset
+	}
 	// 花括号/括号种类栈必须在**所有**返回路径上更新 (含提前返回的正则/模板
 	// 路径), 才能在后续 `}` 处正确判定 `/` 的语义。见 brace_context.go。
 	switch tok.Type {
@@ -121,6 +138,9 @@ func (l *Lexer) NextToken() Token {
 }
 
 func (l *Lexer) nextToken() Token {
+	// 令牌起始字节偏移的保守记录 (JSX 提前返回路径拿到的是近似值; 常规路径
+	// 在 skipWhitespaceAndComments 之后重设为精确值)。
+	l.lastTokStart = l.position
 	// JSX 标签/子文本上下文整体自管词法
 	if n := len(l.jsxStack); n > 0 {
 		switch l.jsxStack[n-1].kind {
@@ -132,6 +152,7 @@ func (l *Lexer) nextToken() Token {
 	}
 
 	l.skipWhitespaceAndComments()
+	l.lastTokStart = l.position
 
 	// 插值表达式与普通代码共用词法, 但其顶层 { } 要先于普通分派处理。
 	// 必须放在 skipWhitespaceAndComments 之后: 带空格的花括号
@@ -1234,3 +1255,6 @@ func Tokenize(input string) []Token {
 
 	return tokens
 }
+
+// Source 返回词法器的原始输入源码 ([[SourceText]] 切片的事实来源)。
+func (l *Lexer) Source() string { return l.input }

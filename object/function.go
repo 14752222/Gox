@@ -45,6 +45,10 @@ type CompiledFunction struct {
 	// IsGenerator=false，需要显式区分于普通 async 函数)。决定函数对象
 	// [[Prototype]] 与 .prototype 实例原型的种类。
 	IsAsyncGenerator bool
+	// SourceText 是函数的 [[SourceText]]: 用户定义的函数/方法/类构造器是
+	// 精确的源码切片, toString 原样返回; 内建/合成函数留空 (toString 回退
+	// NativeFunction 形态 "function name() { [native code] }")。
+	SourceText string
 	// IsStrict 报告函数体是否严格模式 (继承 + 指令 + 类/模块强制)。
 	// VM 据此决定 this 归一与未声明赋值语义。
 	IsStrict bool

@@ -1175,12 +1175,19 @@ func newDynamicFunction(env *runtime.Environment, args []object.Value, kind dyna
 	default:
 		head = "function anonymous"
 	}
-	src := "(" + head + "(" + strings.Join(params, ",") + ") {\n" + body + "\n})"
+	// 规范 CreateDynamicFunction 的合成源码: 参数表与 ')' 之间有换行 ——
+	// 末位形参里的行注释 (//) 不能吞掉 ')', 且 toString 的 [[SourceText]]
+	// 必须是**不带外层括号**的 "function anonymous(...) {\n<body>\n}"。
+	// (test262 Function/prototype/toString/Function.js 精确断言该串。)
+	paramText := strings.Join(params, ",")
+	src := "(" + head + "(" + paramText + "\n) {\n" + body + "\n})"
+	srcText := head + "(" + paramText + "\n) {\n" + body + "\n}"
 
 	fn, err := object.CompileSource(src)
 	if err != nil {
 		return object.NewErrorWithName("SyntaxError", err.Error())
 	}
+	fn.SourceText = srcText
 	return &object.Closure{
 		Fn:            fn,
 		Env:           env,

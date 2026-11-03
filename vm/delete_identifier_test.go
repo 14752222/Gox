@@ -54,7 +54,7 @@ out.push(delete console);
 })();
 out.join(",") + "|" + lex + "|" + fnD + "|" + (typeof localV)
 `)
-	assertString(t, got, "false,false,true,false|1|[Function: fnD]|undefined")
+	assertString(t, got, "false,false,true,false|1|function fnD() { return 1; }|undefined")
 }
 
 // TestDeleteGlobalVarFromInnerFunction 内层函数里引用顶层 var: 引用基

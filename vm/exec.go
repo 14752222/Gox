@@ -160,7 +160,16 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			if slot >= len(frame.Locals) {
 				return fmt.Errorf("VM: LOAD slot %d out of range (locals: %d)", slot, len(frame.Locals))
 			}
+			// 外层绑定 (slot < len(SharedCells)) 的权威值在活 binding cell 里:
+			// 兄弟闭包在嵌套调用期间对本帧外层变量的修改只回流到 SharedCells
+			// (== 各闭包 CapturedLocals 的共享底层), 不会回写本帧 call 时拷贝的
+			// Locals 快照 —— 若只读快照, test262 nativeFunctionMatcher 一类的
+			// 「A 闭包调用兄弟 B、B 改外层 let、A 继续读」模式会读到旧值。
+			// 本帧自有的槽位 (>= len(SharedCells)) 仍以 Locals 为准。
 			val := frame.Locals[slot]
+			if slot < len(frame.SharedCells) && frame.SharedCells[slot] != nil {
+				val = frame.SharedCells[slot]
+			}
 			if val == nil {
 				// TDZ: let/const 绑定在执行到声明语句前不可访问。
 				// 与 ECMAScript 一致抛 ReferenceError，而非返回 undefined。
