@@ -2,7 +2,7 @@
 
 这里是**真实可用的应用**，不是 API 示例。
 
-## 应用集（十应用：桌面 6 / 移动 3 / 跨端 1）
+## 应用集（十一应用：桌面 7 / 移动 3 / 跨端 1）
 
 | 应用 | 定位 | 压到的代表性能力 |
 |---|---|---|
@@ -16,6 +16,7 @@
 | `m-weather/` | 移动 · 天气 | `useNetwork()` 离线 banner、canvas 温度曲线 |
 | `m-calc/` | 移动 · 计算器 | `grid` 按钮盘、纯函数按键状态机、键盘等价 |
 | `multiscreen/` | 跨端 · 多屏协同 | `gx/screen` 窗口几何/跨屏事件、`router.handoff` 接续、断点布局 |
+| `devtools/` | 开发者工具 · 调试面板 | `gx/dev` 数据面、`<tree>` 组件、REPL（`devEval`）、console 留存过滤 |
 
 冒烟：`gfx/apps_smoke_test.go` 的用例表逐个挂载每个应用的 `src/main.js`
 （无头 fakeSurface：挂载不报错 + 窗口数达标 + 抽查元素 + 事件泵跑几轮 + 全部关窗）。

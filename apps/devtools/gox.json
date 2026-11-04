@@ -1,0 +1,10 @@
+{
+  "name": "devtools",
+  "title": "Gox DevTools",
+  "appId": "com.gox.apps.devtools",
+  "version": "0.1.0",
+  "permissions": [],
+  "desktop": {
+    "windowed": true
+  }
+}
