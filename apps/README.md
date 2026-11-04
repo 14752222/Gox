@@ -56,7 +56,7 @@ apps/<name>/
 go build -o F:/tmp/gox-current.exe ./cmd/gox
 F:/tmp/gox-current.exe apps/json-toolbox/src/main.js
 
-# 或走 npm（需 npm i -g @goxjs/goxjs）
+# 或走 npm（需 npm i -g @goxjs/goxjs@latest）
 cd apps/json-toolbox && npm run dev
 ```
 

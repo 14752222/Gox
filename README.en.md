@@ -134,8 +134,8 @@ back automatically (`docs/test262-*.json`):
 
 ```bash
 # 1) npm — easiest; prebuilt binaries for five platforms ship with the package
-npm i -g @goxjs/goxjs    # gives you the `goxjs` command
-npx goxjs app.js         # or run it without installing
+npm i -g @goxjs/goxjs@latest    # gives you the `goxjs` command (@latest = newest npm release)
+npx goxjs app.js                # or run it without installing
 
 # 2) Build from source — needs a Go toolchain
 git clone https://github.com/14752222/Gox.git

@@ -124,8 +124,8 @@ Gox 处于 **0.x 活跃开发期** —— 公共 API 可能在 minor 版本间�
 
 ```bash
 # 1) npm —— 最省事，五平台预编译二进制随包分发
-npm i -g @goxjs/goxjs    # 安装后可直接使用 goxjs 命令
-npx goxjs app.js         # 或不安装，直接运行
+npm i -g @goxjs/goxjs@latest    # 安装后可直接使用 goxjs 命令（@latest = 跟随 npm 最新发布）
+npx goxjs app.js                # 或不安装，直接运行
 
 # 2) 源码构建 —— 需要一个 Go 工具链
 git clone https://github.com/14752222/Gox.git
