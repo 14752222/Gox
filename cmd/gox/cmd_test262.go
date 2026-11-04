@@ -314,9 +314,18 @@ var harnessLibs = map[string]bool{
 	"smi.js": true, "assertRelativeDateMs.js": true, "toNumber.js": true,
 	"values.js": true, "resizableArrayBufferUtils.js": true,
 	// iteratorZipUtils.js: Iterator.zip/zipKeyed 用例的共享工具 (rFXXbq)。
+	"iteratorZipUtils.js": true,
+	// nativeErrors.js: NativeError（TypeError/RangeError/...）子类校验共享工具,
+	// 21 条 built-ins/Function/properties 等用例依赖 (rCqM7p)。
+	"nativeErrors.js": true,
+	// atomicsHelper.js / testAtomics.js: Atomics 用例的共享工具（112 + 52 条）。
+	// 注意：口径已拍板 Atomics 不做 —— 登记它们不改变这些用例的失败结局，
+	// 只是把「未登记而跳过」变成「真实执行并按语义失败」，失败形态可归因 (rCqM7p)。
+	"atomicsHelper.js": true, "testAtomics.js": true,
+	// tcoHelper.js: proper tail calls（尾递归）用例共享工具，language 套件 34 条 (rCqM7p)。
+	"tcoHelper.js": true,
 	// 注意: harness 白名单扩容会让原本"未登记→快速跳过"的用例真正执行,
 	// 可能翻转同分片私有名污染用例的判定 —— 扩容需全量双 suite A/B 验证。
-	"iteratorZipUtils.js": true,
 }
 
 // 默认 harness: 官方约定 sta.js + assert.js 对所有用例生效（Test262Error /
