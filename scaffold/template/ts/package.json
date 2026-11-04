@@ -9,6 +9,6 @@
     "types": "goxjs types src/gox.d.ts"
   },
   "devDependencies": {
-    "@goxjs/goxjs": "^0.5.0"
+    "@goxjs/goxjs": "latest"
   }
 }

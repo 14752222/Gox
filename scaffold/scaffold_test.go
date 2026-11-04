@@ -137,6 +137,12 @@ func TestCreateReplacesPlaceholders(t *testing.T) {
 	if !strings.Contains(txt, `title="my-app"`) {
 		t.Errorf("入口的窗口标题不是 my-app")
 	}
+	// devDependencies 里的引擎版本必须写 "latest"（跟随 npm dist-tag），
+	// 不能钉死某个旧版本号 —— 钉死后 `gox create` 出来的工程装的是模板编写
+	// 那一刻的老引擎，用户得手动改依赖才能用上新特性/新修复。
+	if plainPkg := readFile(t, filepath.Join(plain, "package.json")); !strings.Contains(plainPkg, `"@goxjs/goxjs": "latest"`) {
+		t.Errorf("package.json 的 @goxjs/goxjs 应写 latest:\n%s", plainPkg)
+	}
 	// gox.json / gradle / iOS plist 三处必须与占位符推导一致
 	gj := readFile(t, filepath.Join(plain, "gox.json"))
 	if !strings.Contains(gj, `"appId": "com.gox.my_app"`) || !strings.Contains(gj, `"version": "1.0.0"`) {
@@ -408,6 +414,10 @@ func TestCreateTSLayout(t *testing.T) {
 	pkg := readFile(t, filepath.Join(dir, "package.json"))
 	if !strings.Contains(pkg, "src/main.tsx") {
 		t.Errorf("TS 版 package.json 的脚本应指向 src/main.tsx:\n%s", pkg)
+	}
+	// TS 覆盖层也要跟随 dist-tag 装最新引擎（与 JS 版规则一致）
+	if !strings.Contains(pkg, `"@goxjs/goxjs": "latest"`) {
+		t.Errorf("TS 版 package.json 的 @goxjs/goxjs 应写 latest:\n%s", pkg)
 	}
 }
 
