@@ -101,6 +101,19 @@ func (b *ArrayBuffer) GetProperty(name string) (Value, bool) {
 			}
 			return buf.Resize(argOr(args, 0))
 		}), true
+	case "transfer", "transferToFixedLength":
+		fixed := name == "transferToFixedLength"
+		return NewBuiltinMethod(name, func(this Value, args ...Value) Value {
+			buf, ok := this.(*ArrayBuffer)
+			if !ok {
+				buf = b
+			}
+			nb, err := buf.Transfer(argOr(args, 0), fixed)
+			if err != nil {
+				return err
+			}
+			return nb
+		}), true
 	case "slice":
 		return NewBuiltin("slice", func(args ...Value) Value {
 			if b.Detach {
@@ -164,6 +177,44 @@ func (b *ArrayBuffer) DetachNow() {
 	b.Detach = true
 	b.Data = nil
 	b.MaxByteLength = -1
+}
+
+// Transfer 实现 ArrayBuffer.prototype.transfer / transferToFixedLength (ES2024) 的公共核心。
+// fixed=true 对应 transferToFixedLength（结果恒为 fixed-length）；
+// fixed=false 对应 transfer：newLength 省略且源为 resizable 时，结果保持 resizable 且 max 不变。
+// 成功返回新 buffer 并分离旧 buffer（DetachNow）。
+func (b *ArrayBuffer) Transfer(newLenArg Value, fixed bool) (*ArrayBuffer, *Error) {
+	if b.Detach {
+		return nil, NewTypeError("ArrayBuffer.prototype.transfer: buffer is detached")
+	}
+	newByteLen := len(b.Data)
+	resizable := !fixed && b.MaxByteLength >= 0 && isUndef(newLenArg)
+	if !isUndef(newLenArg) {
+		f := toF64Value(newLenArg)
+		if math.IsInf(f, 0) {
+			return nil, NewRangeError("ArrayBuffer.prototype.transfer: invalid length")
+		}
+		if math.IsNaN(f) {
+			f = 0
+		}
+		if f < 0 || f != float64(int64(f)) {
+			return nil, NewRangeError("ArrayBuffer.prototype.transfer: invalid length")
+		}
+		newByteLen = int(f)
+	}
+	var nb *ArrayBuffer
+	if resizable {
+		nb = &ArrayBuffer{Data: make([]byte, newByteLen), MaxByteLength: b.MaxByteLength}
+	} else {
+		nb = &ArrayBuffer{Data: make([]byte, newByteLen), MaxByteLength: -1}
+	}
+	n := len(b.Data)
+	if n > newByteLen {
+		n = newByteLen
+	}
+	copy(nb.Data[:n], b.Data[:n])
+	b.DetachNow()
+	return nb, nil
 }
 
 // elementEquals 判定 searchElement 与视图元素 e 是否 SameValueZero。

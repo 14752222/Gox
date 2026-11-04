@@ -60,6 +60,28 @@ func setupTypedArrays(env *runtime.Environment) {
 		}
 		return buf.Resize(argOrV(args, 0))
 	}))
+	abProto.SetBuiltinProperty("transfer", object.NewBuiltinMethod("transfer", func(this object.Value, args ...object.Value) object.Value {
+		buf, err := abThis(this)
+		if err != nil {
+			return err
+		}
+		nb, aerr := buf.Transfer(argOrV(args, 0), false)
+		if aerr != nil {
+			return aerr
+		}
+		return nb
+	}))
+	abProto.SetBuiltinProperty("transferToFixedLength", object.NewBuiltinMethod("transferToFixedLength", func(this object.Value, args ...object.Value) object.Value {
+		buf, err := abThis(this)
+		if err != nil {
+			return err
+		}
+		nb, aerr := buf.Transfer(argOrV(args, 0), true)
+		if aerr != nil {
+			return aerr
+		}
+		return nb
+	}))
 	abProto.SetBuiltinProperty("slice", object.NewBuiltinMethod("slice", func(this object.Value, args ...object.Value) object.Value {
 		buf, err := abThis(this)
 		if err != nil {
