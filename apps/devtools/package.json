@@ -1,0 +1,13 @@
+{
+  "name": "gox-devtools",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Gox DevTools —— GUI 开发期调试面板（元素树 / 节点 props / 控制台 / REPL / 性能快照）",
+  "scripts": {
+    "dev": "goxjs dev src/main.js",
+    "start": "goxjs src/main.js"
+  },
+  "devDependencies": {
+    "@goxjs/goxjs": "latest"
+  }
+}

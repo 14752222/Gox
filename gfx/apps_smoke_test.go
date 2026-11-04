@@ -45,6 +45,8 @@ var appSuite = []appSmokeCase{
 	{dir: "multiscreen", minWins: 2, mustTag: []string{"column"}},
 	// 折叠屏 1 (四场景: 单双栏 / 折痕避让 / Tabletop / 跨屏拖拽)
 	{dir: "foldable-demo", minWins: 1, mustTag: []string{"column", "row", "button"}},
+	// 开发者工具 1 (gx/dev 数据面的交互式面板: 元素树/控制台/REPL)
+	{dir: "devtools", minWins: 1, mustTag: []string{"tree", "scroll", "input", "select"}},
 }
 
 func TestAppsSuiteSmoke(t *testing.T) {
