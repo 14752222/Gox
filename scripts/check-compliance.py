@@ -21,15 +21,34 @@
 百分点通常意味着**一整簇用例**回归（language 全量约 2.3 万例，0.5pp ≈ 115 例），
 值得当次就查，而不是等有人看徽章。
 
+## 批次地板（C-5，2026-11-04 拍板口径）
+
+相对闸门只防「较上一次跑批倒退」，防不了「边涨边退」：一批攻坚涨 2pp、
+下一批退 1.5pp，相对闸门两次都绿，但承诺的目标永远到不了。所以另设一条
+**绝对下限（批次地板）**，存于 `docs/test262-gate-floors.json`：
+
+- 初始值 = 2026-11-04 拍板口径：language 85% / built-ins 50% / 全量 80%
+  （全量 = language + built-ins 两套件合并口径，分母为两套件 total 之和）；
+- 批末（两周一批）用 `--raise-floor` 把地板抬到本批实际水平（留小幅容差），
+  **只升不降** —— JSON 里带 history 台账，每次抬升有记录可查；
+- 地板判据与相对闸门同样防上游噪声：用例集没变（total 相对地板记录时的
+  变化 ≤ 1%）⇒ 直接比率；用例集变了 ⇒ 率不可比，降级为提示，改看 passed
+  绝对数（地板折算的通过数下限）。
+
 ## 用法
 
     python3 scripts/check-compliance.py --current test262-results.json \
                                         --baseline docs/test262-baseline.json
     python3 scripts/check-compliance.py --current <f> --update-baseline
+    python3 scripts/check-compliance.py --current <f> --floor-file docs/test262-gate-floors.json
+    python3 scripts/check-compliance.py --current <f> --floor-file docs/test262-gate-floors.json \
+                                        --raise-floor   # 批末抬地板（只升不降）
+    python3 scripts/check-compliance.py --combined <language.json>,<builtins.json> \
+                                        --floor-file docs/test262-gate-floors.json  # 全量 80%
     python3 scripts/check-compliance.py --github       # 失败时额外输出 ::error::
     python3 scripts/check-compliance.py --self-test    # 闸门自检
 
-退出码：0 = 通过（含"只提示"）；1 = 合规率回归；2 = 用法/数据错误。
+退出码：0 = 通过（含"只提示"）；1 = 合规率回归/跌破地板；2 = 用法/数据错误。
 """
 from __future__ import annotations
 
@@ -40,6 +59,7 @@ import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DEFAULT_BASELINE = os.path.join(ROOT, "docs", "test262-baseline.json")
+DEFAULT_FLOORS = os.path.join(ROOT, "docs", "test262-gate-floors.json")
 
 # 合规率容差（百分点）。见文件头：0.5pp ≈ language 全量的 115 例。
 TOL_RATE_PP = 0.5
@@ -47,6 +67,8 @@ TOL_RATE_PP = 0.5
 TOL_TOTAL_PCT = 1.0
 # 用例集变化时，passed 绝对数允许的下降幅度（%）。
 TOL_PASSED_PCT = 1.0
+# 批末抬地板时留的容差（百分点）：地板 = 本批实际水平 - 该容差，只升不降。
+FLOOR_MARGIN_PP = 0.3
 
 
 def die(msg):
@@ -133,6 +155,123 @@ def judge(cur, base):
     return regressions, notes, rows
 
 
+# ────────────────────────────── 批次地板（C-5） ──────────────────────────────
+
+def default_floors_doc():
+    """首次生成地板文件：初始值 = 2026-11-04 拍板口径（不写死在 judge 里，
+    而是落成 JSON —— 地板是随批次抬升的活数据，不是常量）。"""
+    now = (os.environ.get("GITHUB_RUN_STARTED_AT")
+           or datetime.datetime.now(datetime.timezone.utc)
+           .strftime("%Y-%m-%dT%H:%M:%SZ"))
+    commit = os.environ.get("GITHUB_SHA", "")
+    entry = lambda pct: {"floor_pct": pct, "set_at": now, "commit": commit,
+                         "basis": "2026-11-04 拍板口径初始值"}
+    return {
+        "说明": "test262 合规率批次地板（C-5）—— 绝对下限，只升不降。相对闸门"
+                "（docs/test262-baseline*.json）防的是「较上次跑批倒退」；本文件防的是"
+                "「边涨边退」。每批结束用 check-compliance.py --raise-floor 抬到本批实际"
+                "水平（留小幅容差），history 里每次抬升都有记录。徽章与基线的数字来自"
+                "同一次跑批（test262.yml 的同一份 results JSON），与本文件分属两套判据，"
+                "不混用。",
+        "拍板口径": "2026-11-04：暂缓冲 95%；目标 language 85% / built-ins 50% / 全量 80%",
+        "floors": {
+            "language": entry(85.0),
+            "built-ins": entry(50.0),
+            # 全量 = language + built-ins 合并口径（分母 = 两套件 total 之和）
+            "all": entry(80.0),
+        },
+        "history": [],
+    }
+
+
+def floor_judge(rate, passed, total, f_entry, label):
+    """单套件地板判定。返回 (violations, notes)。"""
+    v, notes = [], []
+    f_rate = float(f_entry["floor_pct"])
+    f_total = int(f_entry.get("total", 0))
+    if total <= 0:
+        notes.append("%s：总数为 0，跳过地板判定" % label)
+        return v, notes
+    if f_total > 0 and abs(total - f_total) / float(f_total) * 100.0 > TOL_TOTAL_PCT:
+        # 用例集变了：率不可比，改看 passed 绝对数（与相对闸门同一套防噪逻辑）
+        f_pass = int(round(f_rate / 100.0 * f_total))
+        notes.append("%s：用例集较地板记录时变了（%d → %d），地板降级为通过数判据"
+                     % (label, f_total, total))
+        if passed < f_pass * (1.0 - TOL_PASSED_PCT / 100.0):
+            v.append("%s：通过数 %d 低于地板折算下限 %d（地板 %.1f%% @ %d 例）"
+                     % (label, passed, f_pass, f_rate, f_total))
+        return v, notes
+    if rate < f_rate:
+        v.append("%s：合规率 %.4f%% 跌破批次地板 %.1f%%（%s）"
+                 % (label, rate, f_rate, f_entry.get("basis", "")))
+    return v, notes
+
+
+def load_floors(path):
+    doc = load(path)
+    if "floors" not in doc:
+        die("%s 里缺 floors 字段 —— 地板文件格式变了？" % path)
+    return doc
+
+
+def combined_check(path_a, path_b, floors_doc):
+    """全量口径：language + built-ins 合并率对 floors["all"] 判定。"""
+    a = load(path_a)
+    b = load(path_b)
+    f_all = floors_doc["floors"].get("all")
+    if not f_all:
+        die("地板文件里没有 all（全量合并口径）的地板")
+    passed = int(a["passed"]) + int(b["passed"])
+    total = int(a["total"]) + int(b["total"])
+    rate = passed / float(total) * 100.0 if total else 0.0
+    print("test262 全量合并口径：%s + %s"
+          % (os.path.basename(path_a), os.path.basename(path_b)))
+    print("  合并：%d / %d = %.4f%%，地板 %.1f%%"
+          % (passed, total, rate, float(f_all["floor_pct"])))
+    v, notes = floor_judge(rate, passed, total, f_all, "全量(all)")
+    for n in notes:
+        print("  · %s" % n)
+    if v:
+        print("FAIL 全量批次地板：")
+        for r in v:
+            print("  - %s" % r)
+        if "--github" in sys.argv:
+            print("::error::test262 全量合规率跌破批次地板 —— %s"
+                  % " ｜ ".join(v)[:2000])
+        return 1
+    print("ok  全量合规率不低于批次地板 %.1f%%" % float(f_all["floor_pct"]))
+    return 0
+
+
+def do_raise_floor(suite, cur, floors_path):
+    """批末抬地板：新地板 = max(旧地板, 本批实际水平 - 容差)，只升不降。
+    抬升写进 history 台账 —— 「闸门值随批次单调上升，且有记录可查」的凭证。"""
+    doc = load_floors(floors_path)
+    rate = float(cur["rate_pct"])
+    old = doc["floors"].get(suite, {"floor_pct": 0.0})
+    new_floor = round(max(float(old["floor_pct"]), rate - FLOOR_MARGIN_PP), 4)
+    entry = {
+        "floor_pct": new_floor, "set_at": (os.environ.get("GITHUB_RUN_STARTED_AT")
+                                           or datetime.datetime.now(datetime.timezone.utc)
+                                           .strftime("%Y-%m-%dT%H:%M:%SZ")),
+        "commit": os.environ.get("GITHUB_SHA", ""),
+        "basis": "批末抬升：本批实际 %.4f%% - 容差 %.1fpp" % (rate, FLOOR_MARGIN_PP),
+        "total": int(cur["total"]),
+    }
+    if new_floor > float(old["floor_pct"]):
+        doc["history"].append(dict(entry, suite=suite, prev_floor_pct=old["floor_pct"]))
+        doc["floors"][suite] = entry
+        print("地板抬升：%s %.4f%% → %.4f%%" % (suite, old["floor_pct"], new_floor))
+    else:
+        print("地板不动：%s 现值 %.4f%% ≤ 旧地板 %.4f%%（只升不降）"
+              % (suite, new_floor, old["floor_pct"]))
+    os.makedirs(os.path.dirname(floors_path) or ".", exist_ok=True)
+    with open(floors_path, "w", encoding="utf-8") as f:
+        json.dump(doc, f, ensure_ascii=False, indent=2)
+        f.write("\n")
+    return 0
+
+
 def main():
     argv = sys.argv[1:]
     if "--self-test" in argv:
@@ -150,8 +289,32 @@ def main():
         if i + 1 >= len(argv):
             die("--baseline 后面要跟基线文件路径")
         base_path = argv[i + 1]
+    floors_path = None
+    if "--floor-file" in argv:
+        i = argv.index("--floor-file")
+        if i + 1 >= len(argv):
+            die("--floor-file 后面要跟地板文件路径")
+        floors_path = argv[i + 1]
+    combined = None
+    if "--combined" in argv:
+        i = argv.index("--combined")
+        if i + 1 >= len(argv):
+            die("--combined 后面要跟 <language.json>,<builtins.json>")
+        combined = argv[i + 1]
     github = "--github" in argv
     update = "--update-baseline" in argv
+    raise_f = "--raise-floor" in argv
+
+    if combined is not None:
+        if not floors_path:
+            die("--combined 需要 --floor-file（全量地板存在 all 键下）")
+        parts = combined.split(",")
+        if len(parts) != 2:
+            die("--combined 需要恰好两个结果文件：<language.json>,<builtins.json>")
+        if not os.path.isfile(floors_path):
+            die("地板文件 %s 不存在" % floors_path)
+        return combined_check(parts[0], parts[1], load_floors(floors_path))
+
     if cur_path is None:
         die("需要 --current <test262-results.json>")
 
@@ -159,6 +322,20 @@ def main():
     for k in ("rate_pct", "passed", "total"):
         if k not in cur:
             die("%s 里缺字段 %s —— 跑批输出的格式变了？" % (cur_path, k))
+
+    suite = cur.get("suite", "language")
+
+    if raise_f:
+        if not floors_path:
+            die("--raise-floor 需要 --floor-file")
+        if not os.path.isfile(floors_path):
+            # 首次没有地板文件：按拍板口径生成，再抬到本批水平
+            doc = default_floors_doc()
+            os.makedirs(os.path.dirname(floors_path) or ".", exist_ok=True)
+            with open(floors_path, "w", encoding="utf-8") as f:
+                json.dump(doc, f, ensure_ascii=False, indent=2)
+                f.write("\n")
+        return do_raise_floor(suite, cur, floors_path)
 
     if update:
         base = {
@@ -207,16 +384,42 @@ def main():
         print("  · %s" % n)
     print()
 
-    if not regressions:
-        print("ok  合规率无回归（容差 %.1fpp）" % TOL_RATE_PP)
+    # 批次地板（C-5）：绝对下限，防「边涨边退」。与相对闸门独立判定，
+    # 任一条红都算失败。地板文件不存在时按拍板口径生成（初始值见
+    # default_floors_doc），首次只立规不溯往。
+    floor_violations = []
+    if floors_path is not None:
+        if not os.path.isfile(floors_path):
+            doc = default_floors_doc()
+            os.makedirs(os.path.dirname(floors_path) or ".", exist_ok=True)
+            with open(floors_path, "w", encoding="utf-8") as f:
+                json.dump(doc, f, ensure_ascii=False, indent=2)
+                f.write("\n")
+            print("已按 2026-11-04 拍板口径生成地板文件 %s"
+                  % os.path.relpath(floors_path, ROOT))
+        f_entry = load_floors(floors_path)["floors"].get(suite)
+        if not f_entry:
+            die("地板文件里没有套件 %r 的地板" % suite)
+        fv, fn = floor_judge(float(cur["rate_pct"]), int(cur["passed"]),
+                             int(cur["total"]), f_entry, suite)
+        floor_violations = fv
+        for n in fn:
+            print("  · %s" % n)
+        print("  批次地板（%s）：%.1f%%，现值 %.4f%% → %s"
+              % (suite, float(f_entry["floor_pct"]), float(cur["rate_pct"]),
+                 "PASS" if not fv else "FAIL"))
+        print()
+
+    if not regressions and not floor_violations:
+        print("ok  合规率无回归（容差 %.1fpp），未跌破批次地板" % TOL_RATE_PP)
         return 0
 
     print("FAIL 合规率回归：")
-    for r in regressions:
+    for r in regressions + floor_violations:
         print("  - %s" % r)
     if github:
         print("::error::test262 合规率回归 —— %s"
-              % " ｜ ".join(regressions)[:2000])
+              % " ｜ ".join(regressions + floor_violations)[:2000])
     return 1
 
 
@@ -255,6 +458,39 @@ def self_test():
                   % (name, kw, "\n    ".join(regressions)))
             continue
         print("ok  %s" % name)
+
+    # 地板判据（C-5）：地板 85.0 @ 23832 例
+    floor_entry = {"floor_pct": 85.0, "total": 23832, "basis": "自检"}
+    floor_cases = [
+        ("高于地板必须绿", 86.0, 20475, 23832, False, ""),
+        ("跌破地板必须红", 84.0, 20019, 23832, True, "跌破批次地板"),
+        # 用例集变了：率判据降级，改看 passed 折算下限（85% @ 23832 ≈ 20257）
+        ("用例集变动 + 通过数不足折算下限 ⇒ 红", 82.0, 19700, 25000, True,
+         "低于地板折算下限"),
+        ("用例集变动 + 通过数足够 ⇒ 绿", 82.0, 20300, 25000, False, ""),
+    ]
+    for name, rate, passed, total, want_red, kw in floor_cases:
+        v, _ = floor_judge(rate, passed, total, floor_entry, "language")
+        if bool(v) != want_red:
+            ok = False
+            print("FAIL [地板] %s：期望%s，实际%s\n    %s"
+                  % (name, "红" if want_red else "绿", "红" if v else "绿",
+                     "\n    ".join(v)))
+            continue
+        if want_red and kw and kw not in " ".join(v):
+            ok = False
+            print("FAIL [地板] %s：红是红了，但输出里缺少 %r\n    %s"
+                  % (name, kw, "\n    ".join(v)))
+            continue
+        print("ok  [地板] %s" % name)
+
+    # 只升不降：旧地板 86.0，本批只有 84.0 —— 抬升结果必须仍 = 86.0
+    new_floor = max(86.0, 84.0 - FLOOR_MARGIN_PP)
+    if new_floor != 86.0:
+        ok = False
+        print("FAIL [地板] 只升不降被破坏：低批次的水平把地板拉低到了 %.4f" % new_floor)
+    else:
+        print("ok  [地板] 只升不降：低批次的水平不会拉低已有地板")
     return 0 if ok else 1
 
 

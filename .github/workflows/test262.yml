@@ -57,6 +57,10 @@ on:
         description: '跳过合规率下限闸门，直接把本次结果刷新为基线（test262 上游加用例导致闸门卡住时用）'
         type: boolean
         default: false
+      raise_floor:
+        description: '批末抬升批次地板（C-5）：把地板抬到本批实际水平-0.3pp，只升不降。两周批次通过后勾选'
+        type: boolean
+        default: false
   push:
     branches: [main]
     paths:
@@ -77,6 +81,31 @@ concurrency:
   cancel-in-progress: false # 提交回 main 的作业被取消会留半截状态，排队更稳
 
 jobs:
+# 全量合并口径（C-5 拍板：全量 80%）：language + built-ins 两套件合并判定，
+# 分母 = 两套件 total 之和。单独一个 job 而不是塞进 matrix —— 合并必须等两个
+# 套件都跑完拿到各自的逐用例结果，matrix job 之间拿不到彼此的文件。
+  combined-floor:
+    name: 全量合并口径地板（≥ 80%）
+    needs: compliance
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: 取两套件逐用例结果
+        uses: actions/download-artifact@v4
+        with:
+          pattern: test262-results-*
+          path: results
+          merge-multiple: true
+      - name: 全量合并地板闸门
+        if: ${{ !inputs.refresh_baseline }}
+        run: |
+          set -euo pipefail
+          python3 scripts/check-compliance.py \
+            --combined results/test262-results-language.json,results/test262-results-builtins.json \
+            --floor-file docs/test262-gate-floors.json \
+            --github
+
   compliance:
     # 两个套件各跑一遍、各写一份徽章、各守一条下限闸门。用 matrix 而不是复制
     # 第二个 job：跑批→徽章→闸门→提交这条链有 8 步，复制一遍必然在某一次改动
@@ -185,6 +214,30 @@ jobs:
             --baseline "${{ matrix.baseline }}" \
             --github
 
+      # 批次地板（C-5，2026-11-04 拍板口径：language 85% / built-ins 50%）：
+      # 绝对下限，防「边涨边退」——相对闸门防不了"一批涨 2pp、下批退 1.5pp"
+      # 两次都绿的漂移。地板只升不降，批末手动勾 raise_floor 抬升，历史记录
+      # 在 docs/test262-gate-floors.json 的 history 里可查。
+      - name: 合规率批次地板闸门
+        if: ${{ !inputs.refresh_baseline }}
+        run: |
+          set -euo pipefail
+          python3 scripts/check-compliance.py \
+            --current "test262-results-${{ matrix.suite }}.json" \
+            --floor-file docs/test262-gate-floors.json \
+            --github
+
+      # 批末抬地板：两周批次通过后手动 dispatch 勾选。refresh_baseline 跳闸门
+      # 时不应顺手抬地板 —— 抬升的前提是"本批真实通过"，两个开关互斥使用。
+      - name: 批末抬升批次地板
+        if: ${{ inputs.raise_floor && success() }}
+        run: |
+          set -euo pipefail
+          python3 scripts/check-compliance.py \
+            --current "test262-results-${{ matrix.suite }}.json" \
+            --floor-file docs/test262-gate-floors.json \
+            --raise-floor
+
       - name: 上传逐用例结果
         if: always()
         uses: actions/upload-artifact@v4
@@ -210,7 +263,8 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add docs/test262-compliance.json docs/test262-baseline.json \
-                  docs/test262-compliance-builtins.json docs/test262-baseline-builtins.json
+                  docs/test262-compliance-builtins.json docs/test262-baseline-builtins.json \
+                  docs/test262-gate-floors.json
           if git diff --cached --quiet; then
             echo "合规率无变化，跳过提交"
           else

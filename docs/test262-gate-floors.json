@@ -1,0 +1,25 @@
+{
+  "说明": "test262 合规率批次地板（C-5）—— 绝对下限，只升不降。相对闸门（docs/test262-baseline*.json）防的是「较上次跑批倒退」；本文件防的是「边涨边退」。每批结束用 check-compliance.py --raise-floor 抬到本批实际水平（留小幅容差），history 里每次抬升都有记录。徽章与基线的数字来自同一次跑批（test262.yml 的同一份 results JSON），与本文件分属两套判据，不混用。",
+  "拍板口径": "2026-11-04：暂缓冲 95%；目标 language 85% / built-ins 50% / 全量 80%",
+  "floors": {
+    "language": {
+      "floor_pct": 85.0,
+      "set_at": "2026-11-04T13:01:32Z",
+      "commit": "7de292e9e71851a21ed2ce8e4504aa67416ad956",
+      "basis": "2026-11-04 拍板口径初始值"
+    },
+    "built-ins": {
+      "floor_pct": 50.0,
+      "set_at": "2026-11-04T13:01:32Z",
+      "commit": "7de292e9e71851a21ed2ce8e4504aa67416ad956",
+      "basis": "2026-11-04 拍板口径初始值"
+    },
+    "all": {
+      "floor_pct": 80.0,
+      "set_at": "2026-11-04T13:01:32Z",
+      "commit": "7de292e9e71851a21ed2ce8e4504aa67416ad956",
+      "basis": "2026-11-04 拍板口径初始值"
+    }
+  },
+  "history": []
+}
