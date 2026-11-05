@@ -809,6 +809,11 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 			} else {
 				gen.SavedStack = nil
 			}
+			// 帧状态已冻结进 gen (gen.Locals 与 curFrame.Locals 是同一底层数组)。
+			// 打上 PendingGen 标记, 让 popFrame 按生成器帧处理 —— 不把这份与
+			// gen 共享的 Locals 随帧入池复用 (T3-4 第二批), 否则恢复执行时会
+			// 读到被清零/串值的旧数组 (async yield*/await 求和用例实测翻车)。
+			curFrame.PendingGen = gen
 			vm.popFrame()
 			return &YieldSignal{gen: gen, value: val}
 		case bytecode.OP_CALL_SPREAD:

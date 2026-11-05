@@ -65,15 +65,35 @@ func (vm *VM) popFrame() *Frame {
 	}
 
 	// 帧回收 (T2-4 热点优化): Frame 结构体出栈后无任何长生命周期持有者,
-	// 清空引用字段后入池复用。Locals 置 nil 释放底层数组 (可能被逃逸闭包
-	// 持有为 binding cell, 绝不能随帧复用)。
-	// pinned 帧 (构造调用方在弹栈后还要读 This, 见 Frame.pinned) 不入池。
+	// 清空引用字段后入池复用。pinned 帧 (构造调用方在弹栈后还要读 This,
+	// 见 Frame.pinned) 不入池。
 	if f.pinned {
 		f.pinned = false
 		return f
 	}
+
+	// Locals 条件复用 (T3-4 第二批): frame.Locals 底层数组的逃逸路径:
+	//   ① createClosure 按帧数组捕获 (闭包 CapturedLocals 底层 == 帧数组);
+	//   ② OP_SEAL 把旧数组留给已定版闭包;
+	//   ③ 生成器冻结 gen.Locals = frame.Locals (前导帧, PendingGen != nil);
+	//   ④ rebuildGenFrame 复用路径 frame.Locals 与 gen.Locals 是同一数组
+	//     (此时 SharedCells 也指向它)。
+	// SharedCells 非空**不**等于帧数组逃逸: callClosure 装配帧时 Locals 是
+	// acquireFrame 的新拷贝, SharedCells 是闭包自带的 cell 数组 —— 两者底层
+	// 不同, 帧数组仍是私有的 (fib28 的 18M+ 次调用全走这条)。所以只有
+	// 底层数组真的同一 (首元素地址相等) 才拦。①② 由 CreatedClosures 空判定
+	// 拦下, ③ 由 PendingGen 判定拦下, ④ 由地址判等拦下。
+	// 判定必须在下方字段清零**之前**做 —— 读的就是这些字段。
+	localsAliased := len(f.SharedCells) > 0 && len(f.Locals) > 0 &&
+		&f.SharedCells[0] == &f.Locals[0]
+	if !(f.PendingGen == nil && len(f.CreatedClosures) == 0 && !localsAliased &&
+		cap(f.Locals) <= maxPooledLocalsCap) {
+		f.Locals = nil
+	}
+	// 可复用时保留 f.Locals, 由 acquireFrame 负责 clear 清零 (TDZ 语义依赖
+	// nil=未初始化, 逐槽清零不能省)。
+
 	f.Instructions = nil
-	f.Locals = nil
 	f.Closure = nil
 	f.This = nil
 	f.NewTarget = nil
@@ -91,10 +111,15 @@ func (vm *VM) popFrame() *Frame {
 	return f
 }
 
+// maxPooledLocalsCap 是允许随帧入池复用的 Locals 容量上限。超过它 (病态
+// 大局部区) 的帧退回"每次新分配", 避免池里长期滞留大数组。
+const maxPooledLocalsCap = 512
+
 // acquireFrame 从复用池取帧 (无则新建)。仅重置 VM 调用时必然覆写的三个
 // 字段; 其余字段已由 recycle (popFrame) 清空, 新建帧零值天然满足。
-// 注意: Locals 每次都新分配 —— 逃逸闭包会把 frame.Locals 当 binding cell
-// 持有, 复用会串值; 且零值 nil 承载 TDZ 语义。
+// 注意: Locals 的复用由 popFrame 决定 —— 无闭包/非生成器帧随帧入池, 这里
+// 只需 clear 清零 (TDZ 语义依赖 nil=未初始化, 必须逐槽清); 逃逸闭包持有
+// 过的帧在 popFrame 里已把 Locals 置 nil, 走新分配。
 func (vm *VM) acquireFrame(ins bytecode.Instructions, constants *bytecode.ConstantPool, numLocals int) *Frame {
 	var f *Frame
 	if n := len(vm.frameFree); n > 0 {
@@ -104,7 +129,12 @@ func (vm *VM) acquireFrame(ins bytecode.Instructions, constants *bytecode.Consta
 		f.Instructions = ins
 		f.PC = 0
 		f.Constants = constants
-		f.Locals = make([]object.Value, numLocals)
+		if locals := f.Locals; locals != nil && cap(locals) >= numLocals {
+			f.Locals = locals[:numLocals]
+			clear(f.Locals)
+		} else {
+			f.Locals = make([]object.Value, numLocals)
+		}
 		return f
 	}
 	return NewFrame(ins, constants, numLocals)
