@@ -72,7 +72,7 @@ def render_package_json(meta, version):
         "license": "MIT",
         "repository": {
             "type": "git",
-            "url": "git+https://github.com/14752222/Gox.git",
+            "url": "git+https://github.com/gox147/Gox.git",
         },
         # files = 该平台的产物 + manifest.json（白名单，决定包里进什么）
         "files": sorted(meta["artifacts"]) + ["manifest.json"],
