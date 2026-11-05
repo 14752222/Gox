@@ -101,7 +101,7 @@ curl -s "https://registry.npmjs.org/-/npm/v1/attestations/@goxjs%2Fgoxjs@0.3.0" 
 
 | 字段 | 值 |
 |---|---|
-| Organization or user | `14752222` |
+| Organization or user | `gox147` |
 | Repository | `Gox` ← **大写 G**（npm 做大小写敏感精确匹配） |
 | Workflow filename | `release.yml` |
 | Environment name | 留空（workflow 里没有 `environment:`） |
