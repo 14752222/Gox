@@ -17,7 +17,7 @@
 #
 # 认证：npm Trusted Publishing (OIDC)，不需要任何 secret / token。
 #   npmjs.com → 该包 Settings → Trusted Publisher 四个字段必须逐字符相等：
-#     Organization or user = 14752222
+#     Organization or user = gox147
 #     Repository           = Gox        ← 大写 G，npm 做大小写敏感的精确匹配
 #     Workflow filename    = release.yml
 #     Environment name     = （留空，本工作流没有 environment:）
@@ -578,7 +578,7 @@ jobs:
           done
 
           if [ -n "$SUBFAILED" ]; then
-            echo "::warning::以下平台子包本版未发布:$SUBFAILED —— 需先在 npmjs.com 为各子包单独配 Trusted Publishing（org=14752222 / repo=Gox / workflow=release.yml），下版自动补上。主包已发布成功。"
+            echo "::warning::以下平台子包本版未发布:$SUBFAILED —— 需先在 npmjs.com 为各子包单独配 Trusted Publishing（org=gox147 / repo=Gox / workflow=release.yml），下版自动补上。主包已发布成功。"
           else
             echo "::notice::全部平台子包发布成功"
           fi
