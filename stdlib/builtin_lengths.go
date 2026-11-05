@@ -4,6 +4,8 @@ package stdlib
 
 import (
 	"github.com/14752222/Gox/object"
+	"strings"
+
 	"github.com/14752222/Gox/runtime"
 )
 
@@ -614,19 +616,21 @@ func applyBuiltinLengths(env *runtime.Environment) {
 }
 
 // splitDots 按 '.' 切分限定名 (键已保证不含 Symbol/$262 等)。
+//
+// 冷启动热路径 (T3-5)：SetupGlobals 末尾会对 builtinLengths 的全部限定名
+// (~550 个) 各调一次本函数。之前的实现逐 rune 做 `cur += string(r)` 拼接，
+// 每个字符一次堆分配，CPU 剖面里占 EvalFileVM 首次调用的 ~40%。
+// 改为 strings.IndexByte 定位分隔符后直接切子串 —— Go 的子串共享底层内存，
+// 除结果 slice 外零分配。
 func splitDots(s string) []string {
-	out := []string{}
-	cur := ""
-	for _, r := range s {
-		if r == '.' {
-			out = append(out, cur)
-			cur = ""
-			continue
+	out := make([]string, 0, strings.Count(s, ".")+1)
+	for {
+		i := strings.IndexByte(s, '.')
+		if i < 0 {
+			out = append(out, s)
+			return out
 		}
-		cur += string(r)
+		out = append(out, s[:i])
+		s = s[i+1:]
 	}
-	if cur != "" {
-		out = append(out, cur)
-	}
-	return out
 }
