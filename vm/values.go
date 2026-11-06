@@ -253,13 +253,23 @@ func (vm *VM) getIndex(obj, index object.Value) object.Value {
 			return val
 		}
 		if n, ok := index.(*object.Number); ok {
-			idx := int(n.Value)
-			if idx >= 0 && idx < len(o.Elements) {
-				if o.Elements[idx] == nil {
-					return object.UndefinedSingleton
+			// 数字索引快速路径 (读): 仅规范整数索引且落在 Elements 密实区。
+			// 其余 (越界 / 非整数 1.5 / >= 2^32-1) 按规范字符串键查普通属性
+			// (x[4294967296] === x["4294967296"], property-cast-number 族)。
+			iv := n.Value
+			if iv >= 0 && iv < object.MaxDenseArrayElements && iv == math.Trunc(iv) {
+				idx := int(iv)
+				if idx < len(o.Elements) {
+					if o.Elements[idx] == nil {
+						return object.UndefinedSingleton
+					}
+					return o.Elements[idx]
 				}
-				return o.Elements[idx]
 			}
+			if v, found := o.GetProperty(object.NumberToString(iv)); found && v != nil {
+				return v
+			}
+			return object.UndefinedSingleton
 		}
 		// 字符串索引
 		if s, ok := index.(*object.String); ok {
@@ -642,7 +652,7 @@ func hasSymbolProps(val object.Value) bool {
 // 由 resolveSymbolIterator 在 @@iterator 非可调用 / 不可迭代时返回, 提示
 // OP_GET_ITERATOR 直接 continue 重新取指, 不再执行后续兜底逻辑。
 
-func (vm *VM) setIndex(obj, index, val object.Value, inStaticInit bool) {
+func (vm *VM) setIndex(obj, index, val object.Value, inStaticInit bool) error {
 	// 键归一 (ToPropertyKey): 见 getIndex 同款说明。简单赋值 base[prop] = v
 	// 的键转换在此发生 ⇒ 晚于右值求值 (assignment/
 	// target-member-computed-reference.js)。复合赋值等已在编译期转过一次,
@@ -655,34 +665,72 @@ func (vm *VM) setIndex(obj, index, val object.Value, inStaticInit bool) {
 		// 数据属性, 或按既有描述符写入)。
 		if sym, ok := index.(*object.Symbol); ok {
 			o.SetSymbolProperty(sym, val)
-			return
+			return nil
 		}
 		// 已通过 Object.defineProperty 定义过描述符的数组, 索引写走
 		// SetProperty 的描述符语义 (访问器调 setter / 不可写静默失败)。
 		// PropDescs 为空时走下方快速路径, 行为与此前完全一致。
 		if len(o.PropDescs) > 0 {
 			o.SetProperty(toJSString(index), val)
-			return
+			return vm.checkCallbackErr()
+		}
+		// "length" 写入: 规范 15.4.5.1 ArraySetLength —— ToUint32(newLen) ≠
+		// ToNumber(newLen) (负数/非整数/≥2^32/NaN/Infinity) → RangeError;
+		// 增长超过密实表示上限 (无稀疏数组) 同样如实报 RangeError 快失败。
+		// (OP_SET_PROP 的具名 q.length = ... 走 exec.go 同款校验。)
+		if s, isStr := index.(*object.String); isStr && s.Value == "length" {
+			if n, isNum := val.(*object.Number); isNum {
+				nv := n.Value
+				if math.IsNaN(nv) || nv < 0 || nv >= 4294967296 || nv != math.Trunc(nv) {
+					return vm.throwNamedOrHandled("RangeError", "Invalid array length")
+				}
+				if nv >= object.MaxDenseArrayElements {
+					return vm.throwNamedOrHandled("RangeError",
+						"array length exceeds implementation limit")
+				}
+			}
 		}
 		if n, ok := index.(*object.Number); ok {
-			idx := int(n.Value)
-			if idx >= 0 {
+			// 规范 S15.4.5.1: 数组索引 = 规范化整数字符串键 0..2^32-2。
+			// 非整数 (1.5/NaN)、负数、>= 2^32-1 (如 4294967295) 都不是数组
+			// 索引, 必须落普通属性 (S15.4.5.1_A2.1_* / property-cast-number /
+			// 15.4.5.1-5-* 族) —— 否则 x[4294967295]=1 会试图把 Elements
+			// 物化到 2^32 项吃爆内存。合法但超出密实表示上限的索引如实报
+			// RangeError 快失败。
+			iv := n.Value
+			if iv >= 0 && iv < 4294967295 && iv == math.Trunc(iv) {
+				if iv >= object.MaxDenseArrayElements {
+					// 合法数组索引但超出密实表示上限 (无稀疏数组): 如实报
+					// RangeError 快失败, 而不是物化亿级元素挂死。
+					return vm.throwNamedError("RangeError",
+						"array index exceeds implementation limit")
+				}
+				idx := int(iv)
 				// 跳位写 (arr[5]=1) 产生的空缺是洞 (nil), 不是 undefined 元素
 				for len(o.Elements) <= idx {
 					o.Elements = append(o.Elements, nil)
 				}
 				o.Elements[idx] = val
-				return
+				return nil
 			}
+			// 非数组索引数字键: 按规范字符串键 (NumberToString 规范化,
+			// o[1.5] === o["1.5"]) 走普通属性
+			o.SetProperty(object.NumberToString(iv), val)
+			return vm.checkCallbackErr()
 		}
 		// 非数字索引 (如 arr.foo = 1) 走通用属性设置
 		if s, ok := index.(*object.String); ok {
 			o.SetProperty(s.Value, val)
+			return vm.checkCallbackErr()
 		}
+		// 其余原始键 (Boolean 等, normalizeIndexKey 已保证是原语):
+		// ToPropertyKey 落普通属性 (x[true] === x["true"], S15.4.5.1_A2.1_T1)
+		o.SetProperty(toJSString(index), val)
+		return vm.checkCallbackErr()
 	case *object.TypedArray:
 		if sym, ok := index.(*object.Symbol); ok {
 			o.SetSymbolProperty(sym, val)
-			return
+			return nil
 		}
 		if n, ok := index.(*object.Number); ok {
 			idx := int(n.Value)
@@ -690,10 +738,11 @@ func (vm *VM) setIndex(obj, index, val object.Value, inStaticInit bool) {
 				// 越界写按规范静默忽略 (setElement 内部处理)
 				o.SetElement(idx, val)
 			}
-			return
+			return nil
 		}
 		if s, ok := index.(*object.String); ok {
 			o.SetProperty(s.Value, val)
+			return vm.checkCallbackErr()
 		}
 	case object.RxIndexed:
 		if n, ok := index.(*object.Number); ok {
@@ -702,7 +751,7 @@ func (vm *VM) setIndex(obj, index, val object.Value, inStaticInit bool) {
 	case *object.PrimitiveObject:
 		if sym, ok := index.(*object.Symbol); ok {
 			o.SetSymbolProperty(sym, val)
-			return
+			return nil
 		}
 		// String 包装的 length/索引只读 (PrimitiveObject.SetProperty 内部拦截)
 		o.SetProperty(toJSString(index), val)
@@ -724,7 +773,7 @@ func (vm *VM) setIndex(obj, index, val object.Value, inStaticInit bool) {
 			if sp, ok := o.(object.SymbolPropertyStore); ok {
 				sp.SetSymbolProperty(sym, val)
 			}
-			return
+			return nil
 		}
 		name := toJSString(index)
 		o.SetProperty(name, val)
@@ -746,6 +795,7 @@ func (vm *VM) setIndex(obj, index, val object.Value, inStaticInit bool) {
 			}
 		}
 	}
+	return nil
 }
 
 // normalizeIndexKey 把计算成员键的原始值按 ToPropertyKey 归一。

@@ -1,6 +1,16 @@
 package object
 
-import "strconv"
+import (
+	"math"
+	"strconv"
+)
+
+// MaxDenseArrayElements 是数组的密实表示实现上限。
+// Gox 的数组用 Elements 切片密实存储, 没有稀疏数组; 规范允许的数组索引
+// 最大到 2^32-2, 但全量物化 40 亿个元素指针 (~32GB) 会直接吃爆内存。
+// 超过该上限的合法数组索引 / length 增长按实现限制如实抛 RangeError
+// (快失败), 而不是挂死污染整个跑批分片 (test262 C-3 crash 清扫)。
+const MaxDenseArrayElements = 1 << 24 // 16,777,216 (~134MB 元素指针)
 
 // Array 表示 JavaScript 的数组类型。
 // 数组是特殊的对象，其属性名为数字索引，有 length 属性。
@@ -40,11 +50,11 @@ type Array struct {
 // 转成 nil (Elements 里 nil 即洞, GetProperty/Has 均按洞处理)。
 type holeValue struct{}
 
-func (h *holeValue) Type() ObjectType                     { return UNDEFINED_OBJ }
-func (h *holeValue) Inspect() string                      { return "undefined" }
-func (h *holeValue) IsTruthy() bool                       { return false }
+func (h *holeValue) Type() ObjectType                      { return UNDEFINED_OBJ }
+func (h *holeValue) Inspect() string                       { return "undefined" }
+func (h *holeValue) IsTruthy() bool                        { return false }
 func (h *holeValue) GetProperty(name string) (Value, bool) { return nil, false }
-func (h *holeValue) SetProperty(name string, val Value)   {}
+func (h *holeValue) SetProperty(name string, val Value)    {}
 
 // HoleSingleton 是洞标记单例。
 var HoleSingleton Value = &holeValue{}
@@ -180,22 +190,37 @@ func (a *Array) SetProperty(name string, val Value) {
 	if name == "length" {
 		// 可以通过设置 length 截断或扩展数组
 		if n, ok := val.(*Number); ok {
+			// 规范 15.4.5.1 (ArraySetLength 步骤 4): ToUint32(newLen) ≠
+			// ToNumber(newLen) → RangeError。覆盖负数 / 非整数 (1.5) /
+			// ≥ 2^32 / NaN / Infinity (S15.4.5.1_A1.1_* / 15.4.5.1-3.d-* 族)。
+			nv := n.Value
+			if math.IsNaN(nv) || nv < 0 || nv >= 4294967296 || nv != math.Trunc(nv) {
+				// 规范 15.4.5.1: 无效 length 应抛 RangeError —— 真实抛出在
+				// VM 层 (OP_SET_PROP / setIndex, 见 vm/exec.go 与 vm/values.go)
+				// 完成; 这里是内部路径的安全网: 无效值静默忽略, 不再物化。
+				return
+			}
 			// freeze 之后 length 不可写 (规范 ArraySetLength 的第 1 步)。
 			// 静默失败, 由调用方 (setLenOrThrow / 严格模式赋值) 判定。
 			if a.NonWritableLength {
 				return
 			}
-			newLen := int(n.Value)
-			if newLen >= 0 {
-				if newLen < len(a.Elements) {
-					a.Elements = a.Elements[:newLen]
-					// 截断同时删除越界索引上的显式描述符 (规范: 缩小
-					// length 会移除该位置的自有属性)。
-					a.dropDescsFrom(newLen)
-				} else {
-					for len(a.Elements) < newLen {
-						a.Elements = append(a.Elements, UndefinedSingleton)
-					}
+			newLen := int(nv)
+			if newLen < len(a.Elements) {
+				a.Elements = a.Elements[:newLen]
+				// 截断同时删除越界索引上的显式描述符 (规范: 缩小
+				// length 会移除该位置的自有属性)。
+				a.dropDescsFrom(newLen)
+			} else if newLen > len(a.Elements) {
+				// 增长: 密实表示无法物化超过实现上限的长度 (没有稀疏数组),
+				// 报 RangeError 快失败, 而不是 append 亿级元素吃爆内存。
+				if newLen > MaxDenseArrayElements {
+					// 超出密实表示上限 (无稀疏数组): 内部路径安全网, 静默忽略
+					// 防止 append 亿级元素吃爆内存; JS 可见路径由 VM 层抛 RangeError。
+					return
+				}
+				for len(a.Elements) < newLen {
+					a.Elements = append(a.Elements, UndefinedSingleton)
 				}
 			}
 		}
@@ -228,18 +253,25 @@ func (a *Array) SetProperty(name string, val Value) {
 	// 为 false 时必须失败 (规范 10.4.2.1 ArraySetLength / [[DefineOwnProperty]]
 	// 对越界索引的 "if the new length is > oldLen" 分支)。
 	// 已存在的索引 (idx < len(Elements)) 是改值, 不受可扩展性影响。
-	if idx, err := strconv.Atoi(name); err == nil {
-		if idx >= 0 {
-			if idx >= len(a.Elements) {
-				if a.NonExtensible {
-					return
-				}
-				for len(a.Elements) <= idx {
-					a.Elements = append(a.Elements, UndefinedSingleton)
-				}
+	// 键判据必须是规范的数组索引 (0..2^32-2 的规范整数字符串, IsArrayIndexKey):
+	// 裸 Atoi 会把 "4294967295"/"4294967296" (普通属性键, S15.4.5.1_A2.1_*
+	// 族) 当成索引去物化 40 亿元素, 也把 "-1" 静默丢成无属性。
+	if IsArrayIndexKey(name) {
+		idx, _ := strconv.Atoi(name)
+		if idx >= len(a.Elements) {
+			if a.NonExtensible {
+				return
 			}
-			a.Elements[idx] = val
+			if idx >= MaxDenseArrayElements {
+				// 超出密实表示上限 (无稀疏数组): 内部路径安全网, 静默忽略;
+				// JS 可见路径由 VM 层 (setIndex) 抛 RangeError。
+				return
+			}
+			for len(a.Elements) <= idx {
+				a.Elements = append(a.Elements, UndefinedSingleton)
+			}
 		}
+		a.Elements[idx] = val
 		return
 	}
 

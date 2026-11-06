@@ -137,6 +137,17 @@ func setupArrayProto() *object.Object {
 		cnt := int64(len(args))
 		// 真实数组也要逐位走 Set: 元素位可能被 freeze 成只读, 或对象不可
 		// 扩展 (set-length-array-is-frozen 族)。切片快速路径会绕过这些检查。
+		// cnt == 0 (无参 unshift) 时没有元素要挪位, 直接返回 length ——
+		// 此前对 {length: 2^53-1} 的类数组也要空转 2^53 次循环挂死
+		// (clamps-to-integer-limit 族)。
+		if cnt == 0 {
+			// length 写入语义必须保留 (frozen / 不可写 length 的静默失败
+			// 与严格模式抛错都在 setLenOrThrow 里), 只跳过空转的挪位循环。
+			if lerr := l.setLenOrThrow(n); lerr != nil {
+				return lerr
+			}
+			return object.NewNumber(float64(n))
+		}
 		for i := n - 1; i >= 0; i-- {
 			if l.has(i) {
 				if serr := l.setOrThrow(i+cnt, l.get(i)); serr != nil {
@@ -1348,6 +1359,13 @@ func setIndexValueOrErr(a object.Value, i int64, v object.Value) object.Value {
 //
 // 返回 (结果对象, 错误值); 错误非 nil 时调用方应直接返回它。
 func arraySpeciesCreate(l *arrayLike, length int64) (object.Value, object.Value) {
+	// 规范 ArrayCreate (9.4.2.2): length > 2^32-1 → RangeError
+	// (create-non-array-invalid-len 族)。另外 Gox 数组是 Elements 密实表示,
+	// 超过 MaxDenseArrayElements 的结果数组无法物化 (没有稀疏数组),
+	// 同样如实报 RangeError 快失败, 而不是 make 亿级切片吃爆内存挂死。
+	if length > 4294967295 || length > object.MaxDenseArrayElements {
+		return nil, object.NewRangeError("Invalid array length")
+	}
 	mk := func() object.Value {
 		return object.NewArray(make([]object.Value, length))
 	}
@@ -2195,6 +2213,13 @@ func setupArrayGlobal() *object.BuiltinFunction {
 			if next, ok := object.Iterate(args[0]); ok {
 				for i := 0; ; i++ {
 					v, done := next()
+					// next()/value getter 抛错 (iter-adv-err /
+					// iter-get-iter-val-err 族): IteratorClose 后如实上抛。
+					// 此前抛错被吞成 done=true, 用例按空数组通过或漏检。
+					if thrown := callbackThrown(); thrown != nil {
+						object.CloseIterator(args[0])
+						return thrown
+					}
 					if done {
 						break
 					}

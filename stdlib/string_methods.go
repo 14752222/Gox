@@ -721,7 +721,17 @@ func setupStringProto() *object.Object {
 				matchStr := remaining[idx : idx+len(search)]
 				replaced := object.CallFunction(fn, object.UndefinedSingleton, object.NewString(matchStr))
 				result.WriteString(toStr(replaced))
-				remaining = remaining[idx+len(search):]
+				// 空匹配按规范前进一个码元 ( advanceStringIndex ), 否则
+				// search="" 时 idx 恒 0、remaining 永不前进 —— 死循环挂死
+				// (replaceValue-call-matching-empty 族)。
+				step := len(search)
+				if step == 0 {
+					step = 1
+				}
+				if idx+step > len(remaining) {
+					break
+				}
+				remaining = remaining[idx+step:]
 			}
 			return object.NewString(result.String())
 		}

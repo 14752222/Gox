@@ -236,6 +236,17 @@ func (p *Promise) Resolve(val Value) {
 		return
 	}
 
+	// 自引用: resolve(p) 自身 → TypeError (规范 Promise Resolve Functions
+	// 步骤 6: SameValue(resolution, promise))。检查必须放在 pending 内层
+	// Promise 分支**之前** —— 此前排在后面, val==p 时先落入 "内层 promise
+	// 仍 pending" 分支给自己注册回调, 永远走不到自引用检查, promise 永久
+	// pending, 等待它的用例全部超时挂死 (resolve-self / resolve-*-self 族)。
+	if val == Value(p) {
+		p.mu.Unlock()
+		p.Reject(NewErrorWithName("TypeError", "Chaining cycle detected for promise"))
+		return
+	}
+
 	// 如果 val 是 Promise，则等待它
 	if innerPromise, ok := val.(*Promise); ok {
 		innerPromise.mu.Lock()
@@ -277,12 +288,8 @@ func (p *Promise) Resolve(val Value) {
 		innerPromise.mu.Unlock()
 	}
 
-	// 自引用: resolve(p) 自身 → TypeError (规范 PromiseResolve 步骤 1)
-	if val == Value(p) {
-		p.mu.Unlock()
-		p.Reject(NewErrorWithName("TypeError", "Chaining cycle detected for promise"))
-		return
-	}
+	// 自引用检查已前移到函数入口 (见上): val==p 在内层 Promise 分支之前
+	// 就以 TypeError 拒绝。
 
 	// thenable 采纳 (规范 NewPromiseResolveThenableJob): val 是带可调用
 	// then 方法的对象时, 不能直接 fulfill, 必须异步调用 then(resolve, reject)。

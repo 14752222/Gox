@@ -2,6 +2,7 @@ package vm
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -1344,6 +1345,30 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				}
 				continue
 			}
+			// Array length 写入的规范校验 (15.4.5.1 ArraySetLength):
+			// ToUint32(newLen) ≠ ToNumber(newLen) → RangeError; 增长超过
+			// 密实表示上限 (无稀疏数组) 同样 RangeError 快失败。object 层
+			// void 方法没有错误通道, 校验在这里 (VM 层) 完成, 走已被
+			// try/catch 大量验证的 throwNamedError 抛出路径。
+			if a, isArr := obj.(*object.Array); isArr && propName == "length" {
+				if n, isNum := val.(*object.Number); isNum {
+					nv := n.Value
+					if math.IsNaN(nv) || nv < 0 || nv >= 4294967296 || nv != math.Trunc(nv) {
+						if err := vm.throwNamedError("RangeError", "Invalid array length"); err != nil {
+							return err
+						}
+						continue
+					}
+					if nv >= object.MaxDenseArrayElements {
+						if err := vm.throwNamedError("RangeError",
+							"array length exceeds implementation limit"); err != nil {
+							return err
+						}
+						continue
+					}
+				}
+				_ = a
+			}
 			obj.SetProperty(propName, val)
 			// 函数对象: 普通赋值/class 静态字段转可枚举 (静态方法/访问器保持不可枚举)。
 			vm.markAssignmentEnumerable(obj, propName, val, vm.inStaticInitFrame(frame))
@@ -1673,7 +1698,15 @@ func (vm *VM) runFrom(startFrameIdx int) error {
 				}
 				continue
 			}
-			vm.setIndex(obj, index, val, vm.inStaticInitFrame(frame))
+			if err := vm.setIndex(obj, index, val, vm.inStaticInitFrame(frame)); err != nil {
+				// errHandledThrow: 异常已被 try/catch 接住 (PC 已跳 catchPC),
+				// 直接 continue 重新取指 —— 若继续执行本 case 剩余逻辑会把
+				// 赋值右值压栈, 盖住 handleThrowInner 推的异常值。
+				if err == errHandledThrow {
+					continue
+				}
+				return err
+			}
 			// SetProperty 触发 setter 时, setter 是 JS 闭包 ⇒ 经回调桥调用,
 			// 抛出的异常只记录在 object.callbackError 上 (SetProperty 无 error
 			// 返回), 必须在此刻取出重抛。否则错误会残留到之后某个不相干的内建

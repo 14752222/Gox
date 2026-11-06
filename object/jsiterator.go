@@ -329,6 +329,15 @@ func IteratorNextFrom(res Value) (func() (Value, bool), bool) {
 				return UndefinedSingleton, true
 			}
 			r := CallFunction(nv, res)
+			if ev := TakeCallbackErrorValue(); ev != UndefinedSingleton {
+				// next() 抛错: 迭代必须**异常完成** (done=true), 错误值留在
+				// 回调桥由消费方 (Array.from / groupBy 等) 取出传播。此前
+				// 抛错被吞掉后返回 (r=nil → value 分支) 恒 (值, not-done),
+				// 消费方无限循环 (iter-next-error / iter-adv-err /
+				// iterator-next-throws 族全部挂死)。
+				SetCallbackErrorValue(ev)
+				return UndefinedSingleton, true
+			}
 			if r == nil {
 				return UndefinedSingleton, true
 			}
@@ -336,6 +345,12 @@ func IteratorNextFrom(res Value) (func() (Value, bool), bool) {
 				return UndefinedSingleton, true
 			}
 			if vv, vok := r.GetProperty("value"); vok {
+				if ev := TakeCallbackErrorValue(); ev != UndefinedSingleton {
+					// value getter 抛错 (iter-get-iter-val-err 族): 同上,
+					// 异常完成 + 错误值留桥。
+					SetCallbackErrorValue(ev)
+					return UndefinedSingleton, true
+				}
 				return vv, false
 			}
 			return r, false

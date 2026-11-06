@@ -436,9 +436,12 @@ func IteratorHelperMethod(name string) *BuiltinMethod {
 			if !IsCallable(fn) {
 				return NewTypeError("Iterator.prototype.forEach: callback must be a function")
 			}
-			_, errVal := iteratorCollect(this, name, func(v Value, i int) Value {
+			_, errVal := iteratorLazy(this, func(v Value, i int) (bool, Value, Value) {
 				CallFunction(fn, UndefinedSingleton, v, NewInt(int64(i)))
-				return UndefinedSingleton
+				if ev := TakeThrownValue(); ev != UndefinedSingleton {
+					return false, nil, ev
+				}
+				return false, nil, nil
 			})
 			if errVal != nil {
 				return errVal
@@ -452,18 +455,24 @@ func IteratorHelperMethod(name string) *BuiltinMethod {
 			if !IsCallable(fn) {
 				return NewTypeError("Iterator.prototype.%s: callback must be a function", name)
 			}
-			_, errVal := iteratorCollect(this, name, func(v Value, i int) Value {
+			res, errVal := iteratorLazy(this, func(v Value, i int) (bool, Value, Value) {
 				r := CallFunction(fn, UndefinedSingleton, v, NewInt(int64(i)))
+				if ev := TakeThrownValue(); ev != UndefinedSingleton {
+					return false, nil, ev
+				}
 				if name == "some" && r != nil && r.IsTruthy() {
-					return TrueSingleton // 短路信号
+					return true, TrueSingleton, nil // 短路: 先 close 再返回 true
 				}
 				if name == "every" && (r == nil || !r.IsTruthy()) {
-					return FalseSingleton
+					return true, FalseSingleton, nil // 短路: 先 close 再返回 false
 				}
-				return nil
+				return false, nil, nil
 			})
 			if errVal != nil {
 				return errVal
+			}
+			if res != nil {
+				return res
 			}
 			if name == "some" {
 				return FalseSingleton
@@ -477,12 +486,15 @@ func IteratorHelperMethod(name string) *BuiltinMethod {
 			if !IsCallable(fn) {
 				return NewTypeError("Iterator.prototype.find: callback must be a function")
 			}
-			found, errVal := iteratorCollect(this, name, func(v Value, i int) Value {
+			found, errVal := iteratorLazy(this, func(v Value, i int) (bool, Value, Value) {
 				r := CallFunction(fn, UndefinedSingleton, v, NewInt(int64(i)))
-				if r != nil && r.IsTruthy() {
-					return v
+				if ev := TakeThrownValue(); ev != UndefinedSingleton {
+					return false, nil, ev
 				}
-				return nil
+				if r != nil && r.IsTruthy() {
+					return true, v, nil // 短路: 先 close 再返回该值
+				}
+				return false, nil, nil
 			})
 			if errVal != nil {
 				return errVal
@@ -496,11 +508,11 @@ func IteratorHelperMethod(name string) *BuiltinMethod {
 	case "includes":
 		m = NewBuiltinMethod(name, func(this Value, args ...Value) Value {
 			search := argOr(args, 0)
-			found, errVal := iteratorCollect(this, name, func(v Value, i int) Value {
+			found, errVal := iteratorLazy(this, func(v Value, i int) (bool, Value, Value) {
 				if sameValueZero(v, search) {
-					return TrueSingleton
+					return true, TrueSingleton, nil // 短路: 先 close 再返回 true
 				}
-				return nil
+				return false, nil, nil
 			})
 			if errVal != nil {
 				return errVal
@@ -581,6 +593,49 @@ func IteratorHelperMethod(name string) *BuiltinMethod {
 		m.SetFunctionLength(ln)
 	}
 	return m
+}
+
+// iteratorLazy 惰性驱动迭代: 每取一个值立即调用 visit (规范语义), visit
+// 返回 stop=true 时先 IteratorClose 再把 result 作为短路结果返回;
+// errVal 非 nil 表示 abrupt 完成, 先 IteratorClose 再传播错误 (return()
+// 抛出的错误优先)。visit 内部自己的异常经 errVal 上报。
+//
+// 此前 forEach/some/every/find/includes 走 iteratorCollect eager 收集:
+// 先把迭代器收干再跑回调 —— 无限迭代器 (next 永不 done) 直接挂死,
+// 回调抛错也永远轮不到执行 (predicate-throws / infinite-iterator /
+// closes-on-match / get-return-method-throws 族全超时)。
+func iteratorLazy(this Value, visit func(v Value, i int) (stop bool, result Value, errVal Value)) (Value, Value) {
+	d, errVal := newIteratorDriver(this)
+	if errVal != nil {
+		return nil, errVal
+	}
+	for i := 0; ; i++ {
+		v, done, err := d.step()
+		if err != nil {
+			if !isNextProtocolViolation(err) {
+				if ev := CloseIterator(this); ev != nil {
+					return nil, ev
+				}
+			}
+			return nil, err
+		}
+		if done {
+			return nil, nil
+		}
+		stop, result, errVal := visit(v, i)
+		if errVal != nil {
+			if ev := CloseIterator(this); ev != nil {
+				return nil, ev
+			}
+			return nil, errVal
+		}
+		if stop {
+			if ev := CloseIterator(this); ev != nil {
+				return nil, ev
+			}
+			return result, nil
+		}
+	}
 }
 
 // iteratorCollect eager 驱动整条迭代: fn 返回非 nil 即短路 (携带结果),

@@ -1534,6 +1534,12 @@ func defineOneProperty(store object.OwnPropertyStore, key string, descVal object
 			if !arr.IsExtensible() || arr.NonWritableLength {
 				return object.NewTypeError("Cannot define property %s: array length is non-writable or array is non-extensible", key)
 			}
+			// 定义索引 >= len 会按规范把 length 增长到 idx+1 —— 密实表示
+			// 无法物化超过实现上限的长度 (无稀疏数组), 如实报 RangeError
+			// 快失败 (15.2.3.6-4-183 / 15.2.3.7-6-a-179 族此前在此挂死)。
+			if idx >= object.MaxDenseArrayElements {
+				return object.NewRangeError("array index %s exceeds implementation limit", key)
+			}
 		}
 	}
 	if !object.IsObjectValue(descVal) {
@@ -1730,6 +1736,11 @@ func defineArrayLengthDesc(arr *object.Array, descVal object.Value) object.Value
 		if arr.NonWritableLength && newLen > oldLen {
 			return object.NewTypeError("Cannot redefine property: length")
 		}
+		// 密实表示无法物化超过实现上限的长度 (没有稀疏数组), 如实报
+		// RangeError 快失败 (15.2.3.6-4-154 族此前在此 append 亿级元素挂死)。
+		if newLen > object.MaxDenseArrayElements {
+			return object.NewRangeError("array length exceeds implementation limit")
+		}
 		for len(arr.Elements) < newLen {
 			arr.Elements = append(arr.Elements, object.UndefinedSingleton)
 		}
@@ -1772,10 +1783,20 @@ func groupByImpl(args []object.Value, useMap bool) object.Value {
 	i := 0
 	for {
 		item, done := next()
+		// next()/value getter 抛错 (iterator-next-throws 族): IteratorClose
+		// 后如实上抛, 此前抛错被吞成 done, 用例假通过; 无限循环时挂死。
+		if thrown := callbackThrown(); thrown != nil {
+			object.CloseIterator(args[0])
+			return thrown
+		}
 		if done {
 			break
 		}
 		key := object.CallFunction(callback, object.UndefinedSingleton, item, object.NewInt(int64(i)))
+		if thrown := callbackThrown(); thrown != nil {
+			object.CloseIterator(args[0])
+			return thrown
+		}
 		i++
 		// 追加到该键的组
 		entryMap := result

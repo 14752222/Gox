@@ -167,6 +167,16 @@ func (vm *VM) throwJSError(err error) error {
 // 返回 nil 表示已被 catch/finally 接住 (调用方应 continue)；
 // 非 nil 表示异常继续向外传播 (调用方应 return)。
 
+// throwNamedOrHandled 与 throwNamedError 同义, 区别在于"已被 catch 接住"
+// 时返回 errHandledThrow 哨兵而非 nil —— 供无法区分"无错/已接住"的调用点
+// (如 setIndex 的返回通道) 使用, 调用点见 errHandledThrow 哨兵处理。
+func (vm *VM) throwNamedOrHandled(name, format string, a ...any) error {
+	if err := vm.throwNamedError(name, format, a...); err != nil {
+		return err
+	}
+	return errHandledThrow
+}
+
 func (vm *VM) throwNamedError(name, format string, a ...any) error {
 	errObj := object.NewErrorWithName(name, fmt.Sprintf(format, a...))
 	if !vm.handleThrow(errObj) {

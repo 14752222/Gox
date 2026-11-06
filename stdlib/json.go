@@ -62,13 +62,18 @@ func setupJSON() *object.Object {
 			}
 		}
 
-		// 循环引用检测: 规范要求抛 TypeError。
-		// 缺少这一步会让 jsValueToJSONIndent 无限递归直至栈溢出。
-		if hasCycle(val) {
+		// 循环引用检测: 规范要求抛 TypeError。检测放在序列化递归内部
+		// (路径栈 seen) —— 静态 hasCycle 只能查初始值, toJSON/replacer
+		// 动态返回的环形结构 (value-tojson-*-circular /
+		// replacer-function-*-circular 族) 此前漏检, 无限递归直至挂死。
+		result, cyc, tv := jsValueToJSONIndent(val, "", indent, replacerArr, replacerFn, "",
+			map[object.Value]bool{})
+		if tv != nil {
+			return tv // replacer/toJSON 的用户异常如实上抛
+		}
+		if cyc {
 			return object.NewErrorWithName("TypeError", "Converting circular structure to JSON")
 		}
-
-		result := jsValueToJSONIndent(val, "", indent, replacerArr, replacerFn, "")
 		if result == "" {
 			return object.UndefinedSingleton
 		}
@@ -143,51 +148,6 @@ func applyReviver(reviver object.Value, holder *object.Object, key string) objec
 	return object.CallFunction(reviver, nil, object.NewString(key), val)
 }
 
-// hasCycle 检测 JS 值中是否存在循环引用。
-func hasCycle(v object.Value) bool {
-	return detectCycle(v, make(map[object.Value]bool))
-}
-
-// detectCycle 深度优先遍历容器类型，seen 记录当前递归路径。
-//
-// 关键点: 记录的是"路径"而非"全局已访问集合"。同一个对象在不同分支
-// 重复出现是合法的 (如 {a: x, b: x})，只有路径上再次遇到自身才是环。
-// 因此在递归返回时必须把节点从 seen 中移除。
-//
-// 只有 *object.Array 与 *object.Object 会被写入 seen，二者均为指针类型，
-// 作为 map 键可安全比较。
-func detectCycle(v object.Value, seen map[object.Value]bool) bool {
-	switch val := v.(type) {
-	case *object.Array:
-		if seen[val] {
-			return true
-		}
-		seen[val] = true
-		for _, e := range val.Elements {
-			if detectCycle(e, seen) {
-				delete(seen, val)
-				return true
-			}
-		}
-		delete(seen, val)
-	case *object.Object:
-		if seen[val] {
-			return true
-		}
-		seen[val] = true
-		for _, k := range val.Keys() {
-			if desc, ok := val.Properties[k]; ok {
-				if detectCycle(desc.Value, seen) {
-					delete(seen, val)
-					return true
-				}
-			}
-		}
-		delete(seen, val)
-	}
-	return false
-}
-
 // jsonValueWithToJSON 若值带有可调用的 toJSON 方法，先用它替换自身。
 //
 // 规范 SerializeJSONProperty: 序列化前先查 toJSON，由它的返回值决定输出。
@@ -210,40 +170,63 @@ func jsonValueWithToJSON(v object.Value) object.Value {
 }
 
 // jsValueToJSONIndent 将 JS 值转换为 JSON 字符串，支持缩进和 replacer。
-func jsValueToJSONIndent(v object.Value, currentIndent, indent string, replacerArr []string, replacerFn object.Value, key string) string {
+// 三个返回值: (序列化结果, 循环引用标记, abrupt 抛出值)。
+//   - cyc=true: 序列化途中发现环, 规范要求以 TypeError 失败。seen 是当前
+//     递归路径上的容器值栈 (进栈/出栈语义, 菱形共享同一对象不是环)。
+//   - thrown 非 nil: replacer/toJSON 途中用户代码抛出异常 —— 必须与环
+//     区分开如实上抛 (replacer-function-abrupt / value-tojson-abrupt 族),
+//     此前混入环标记被吞成 TypeError "circular structure"。
+func jsValueToJSONIndent(v object.Value, currentIndent, indent string, replacerArr []string, replacerFn object.Value, key string, seen map[object.Value]bool) (string, bool, object.Value) {
 	// 应用 replacer 函数
 	if replacerFn != nil {
 		v = object.CallFunction(replacerFn, nil, object.NewString(key), v)
+		if ev := object.TakeThrownValue(); ev != object.UndefinedSingleton {
+			return "", false, ev
+		}
 	}
 	v = jsonValueWithToJSON(v)
+	if ev := object.TakeThrownValue(); ev != object.UndefinedSingleton {
+		return "", false, ev
+	}
 
 	switch val := v.(type) {
 	case *object.Number:
 		if val.Value != val.Value { // NaN
-			return "null"
+			return "null", false, nil
 		}
 		if val.Value > 1e308 || val.Value < -1e308 { // Infinity
-			return "null"
+			return "null", false, nil
 		}
 		b, _ := json.Marshal(val.Value)
-		return string(b)
+		return string(b), false, nil
 	case *object.String:
 		b, _ := json.Marshal(val.Value)
-		return string(b)
+		return string(b), false, nil
 	case *object.Boolean:
 		if val.Value {
-			return "true"
+			return "true", false, nil
 		}
-		return "false"
+		return "false", false, nil
 	case *object.Null:
-		return "null"
+		return "null", false, nil
 	case *object.Undefined:
-		return ""
+		return "", false, nil
 	case *object.Array:
+		if seen[v] {
+			return "", true, nil
+		}
+		seen[v] = true
+		defer delete(seen, v)
 		childIndent := currentIndent + indent
 		var parts []string
 		for i, elem := range val.Elements {
-			s := jsValueToJSONIndent(elem, childIndent, indent, replacerArr, replacerFn, strconv.Itoa(i))
+			s, cyc, tv := jsValueToJSONIndent(elem, childIndent, indent, replacerArr, replacerFn, strconv.Itoa(i), seen)
+			if cyc {
+				return "", true, nil
+			}
+			if tv != nil {
+				return "", false, tv
+			}
 			if s == "" {
 				s = "null"
 			}
@@ -254,22 +237,27 @@ func jsValueToJSONIndent(v object.Value, currentIndent, indent string, replacerA
 			}
 		}
 		if len(parts) == 0 {
-			return "[]"
+			return "[]", false, nil
 		}
 		if indent != "" {
-			return "[\n" + strings.Join(parts, ",\n") + "\n" + currentIndent + "]"
+			return "[\n" + strings.Join(parts, ",\n") + "\n" + currentIndent + "]", false, nil
 		}
-		return "[" + strings.Join(parts, ",") + "]"
+		return "[" + strings.Join(parts, ",") + "]", false, nil
 	case *object.Object:
+		if seen[v] {
+			return "", true, nil
+		}
+		seen[v] = true
+		defer delete(seen, v)
 		childIndent := currentIndent + indent
 		var parts []string
 		// 如果有 replacer 数组，只包含指定的属性
 		var keys []string
 		if len(replacerArr) > 0 {
-			seen := map[string]bool{}
+			seenKeys := map[string]bool{}
 			for _, k := range replacerArr {
-				if !seen[k] {
-					seen[k] = true
+				if !seenKeys[k] {
+					seenKeys[k] = true
 					if _, exists := val.Properties[k]; exists {
 						keys = append(keys, k)
 					}
@@ -283,7 +271,13 @@ func jsValueToJSONIndent(v object.Value, currentIndent, indent string, replacerA
 			if !ok {
 				continue
 			}
-			s := jsValueToJSONIndent(propDesc.Value, childIndent, indent, replacerArr, replacerFn, k)
+			s, cyc, tv := jsValueToJSONIndent(propDesc.Value, childIndent, indent, replacerArr, replacerFn, k, seen)
+			if cyc {
+				return "", true, nil
+			}
+			if tv != nil {
+				return "", false, tv
+			}
 			if s == "" {
 				continue
 			}
@@ -295,16 +289,16 @@ func jsValueToJSONIndent(v object.Value, currentIndent, indent string, replacerA
 			}
 		}
 		if len(parts) == 0 {
-			return "{}"
+			return "{}", false, nil
 		}
 		if indent != "" {
-			return "{\n" + strings.Join(parts, ",\n") + "\n" + currentIndent + "}"
+			return "{\n" + strings.Join(parts, ",\n") + "\n" + currentIndent + "}", false, nil
 		}
-		return "{" + strings.Join(parts, ",") + "}"
+		return "{" + strings.Join(parts, ",") + "}", false, nil
 	case *object.Closure, *object.BuiltinFunction, *object.CompiledFunction:
-		return ""
+		return "", false, nil
 	}
-	return ""
+	return "", false, nil
 }
 
 // jsValueToJSON 将 JS 值转换为 JSON 字符串。
