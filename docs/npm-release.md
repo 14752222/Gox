@@ -158,6 +158,18 @@ gox-npm 工作副本的远端叫 `origin`，用 `git -C npm push` 即可 —— 
   且必须等于 `npm/package.json` 的 version）。发版时只推 main 就不会碰到这条。
 - **判重命中**：日志里是 `::notice::… 已在 registry 上，跳过发布`，不是失败 —— 重推、重跑历史
   run、补跑失败的发版都不会误发。
+- **`ENEEDAUTH` / 发布端点回 404（本仓 2026-11-05 与 2026-11-06 两连发现场）**：这是**同一个故障**
+  ——npm 侧 Trusted Publisher 没对上（多半是 GitHub 账号从 `14752222` 改名成 `gox147` 之后
+  没同步）。判据与边界：
+  - 症状：`release.yml` 前 22 步（构建 / 校验 / 冒烟 / 打包）全绿，只挂在「发布到 npm（OIDC）」；
+    `npm error code ENEEDAUTH`，并且 `PUT https://registry.npmjs.org/<包>` 直接回
+    `404 {"error":"Not found"}`（**不是** 403 —— 权限问题才是 403；404 一律先查信任配置）。
+  - 本机/沙箱**不可能绕过**：发布凭据只能由 GitHub OIDC 换出来，拿任何 GitHub token 去 `npm publish`
+    都只会得到同一个 404。见到这个错不要在本机反复重试，直接按 §4 逐包核对四字段。
+  - 修好后**不需要重新发版**：tag 已经推了、版本号三处已同步，在 Actions 里把失败的那次
+    「Re-run failed jobs」即可；流水线幂等（判重见到 registry 上没有该版本才真发）。
+  - 一个 30 秒的预检（可选）：在 npmjs.com 打开任一目标包的 Settings → Trusted Publisher，
+    看 Organization or user 是否**逐字符**等于 `gox147`（旧值 `14752222` 现在几乎必然是这个坑）。
 
 ## 7. 移动端产物（与桌面不同的一条路）
 
