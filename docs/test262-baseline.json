@@ -1,8 +1,8 @@
 {
   "说明": "test262 合规率基线 —— 由 test262.yml 在每次跑批通过后自动更新（scripts/check-compliance.py --update-baseline）。它是「上一次通过闸门时的合规率」，不是人工台账。",
   "生成方式": "python3 scripts/check-compliance.py --current <results> --update-baseline",
-  "generated_at": "2026-11-05T12:53:39Z",
-  "commit": "2b499cca4b1a874b03d80510e8ecc14b0a4483eb",
+  "generated_at": "2026-11-06T13:19:21Z",
+  "commit": "7b2788502f921df4f5273189842097e51b63b9ca",
   "suite": "language",
   "rate_pct": 86.31252098019469,
   "passed": 20570,

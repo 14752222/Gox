@@ -3,23 +3,53 @@
   "拍板口径": "2026-11-04：暂缓冲 95%；目标 language 85% / built-ins 50% / 全量 80%",
   "floors": {
     "language": {
-      "floor_pct": 85.0,
-      "set_at": "2026-11-04T13:01:32Z",
-      "commit": "7de292e9e71851a21ed2ce8e4504aa67416ad956",
-      "basis": "2026-11-04 拍板口径初始值"
+      "floor_pct": 86.0125,
+      "set_at": "2026-11-06T13:19:13Z",
+      "commit": "7b2788502f921df4f5273189842097e51b63b9ca",
+      "basis": "批末抬升：本批实际 86.3125% - 容差 0.3pp",
+      "total": 23832
     },
     "built-ins": {
-      "floor_pct": 50.0,
-      "set_at": "2026-11-04T13:01:32Z",
-      "commit": "7de292e9e71851a21ed2ce8e4504aa67416ad956",
-      "basis": "2026-11-04 拍板口径初始值"
+      "floor_pct": 75.1034,
+      "set_at": "2026-11-06T13:19:13Z",
+      "commit": "7b2788502f921df4f5273189842097e51b63b9ca",
+      "basis": "批末抬升：本批实际 75.4034% - 容差 0.3pp",
+      "total": 23861
     },
     "all": {
-      "floor_pct": 80.0,
-      "set_at": "2026-11-04T13:01:32Z",
-      "commit": "7de292e9e71851a21ed2ce8e4504aa67416ad956",
-      "basis": "2026-11-04 拍板口径初始值"
+      "floor_pct": 80.5546,
+      "set_at": "2026-11-06T13:30:00Z",
+      "commit": "7b2788502f921df4f5273189842097e51b63b9ca",
+      "basis": "批末抬升：本批实际 80.8546% - 容差 0.3pp"
     }
   },
-  "history": []
+  "history": [
+    {
+      "floor_pct": 86.0125,
+      "set_at": "2026-11-06T13:19:13Z",
+      "commit": "7b2788502f921df4f5273189842097e51b63b9ca",
+      "basis": "批末抬升：本批实际 86.3125% - 容差 0.3pp",
+      "total": 23832,
+      "suite": "language",
+      "prev_floor_pct": 85.0
+    },
+    {
+      "floor_pct": 75.1034,
+      "set_at": "2026-11-06T13:19:13Z",
+      "commit": "7b2788502f921df4f5273189842097e51b63b9ca",
+      "basis": "批末抬升：本批实际 75.4034% - 容差 0.3pp",
+      "total": 23861,
+      "suite": "built-ins",
+      "prev_floor_pct": 50.0
+    },
+    {
+      "floor_pct": 80.5546,
+      "set_at": "2026-11-06T13:30:00Z",
+      "commit": "7b2788502f921df4f5273189842097e51b63b9ca",
+      "basis": "批末抬升：本批实际 80.8546% - 容差 0.3pp",
+      "total": 47693,
+      "suite": "all",
+      "prev_floor_pct": 80.0
+    }
+  ]
 }
