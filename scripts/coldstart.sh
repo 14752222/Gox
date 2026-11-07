@@ -37,7 +37,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --runs) RUNS="$2"; shift 2 ;;
     --out)  OUT="$2"; shift 2 ;;
-    --xvfb) WANT_XVFB=1 ;;
+    --xvfb) WANT_XVFB=1; shift ;;
     -h|--help) "$GREP" '^#' "$0" | sed 's/^# \{0,1\}//' | head -40; exit 0 ;;
     *) echo "未知参数 $1 (见 --help)"; exit 1 ;;
   esac
