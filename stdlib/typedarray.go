@@ -16,7 +16,78 @@ import (
 //	new Uint8Array(typedArr)     — 复制另一视图
 //	new Uint8Array(buffer[, off[, len]]) — 在已有 buffer 上创建视图
 //	new Uint8Array(iterable)     — 从可迭代值构造
+// setupTypedArrays 注册 TypedArray 家族全局 (T3-5 冷启动惰性化)。
+//
+// 家族覆盖: ArrayBuffer / SharedArrayBuffer / 十种 TypedArray 构造器 /
+// %TypedArray% / DataView。CPU 剖面里 setupTypedArrays ≈ 11% 的
+// EvalFileVM 首次调用；脚本用到与否五五开，全部惰性化收益明确。
+//
+// 采用"多名字共享工厂": 家族内部互依赖紧 (具体构造器 prototype 链到
+// %TypedArray%.prototype、SAB 复用 AB 的 prototype)，拆开各自惰性会引入
+// 装配顺序耦合；物化任意一个名字即整组 Declare 就绪，成本只付一次。
+//
+// SetupGlobals 收尾对惰性根跳过的三件事由工厂物化时补做:
+//   1. builtinLengths 里家族条目的 length (applyBuiltinLengthsPrefixes)
+//   2. prototype 链回 %Object.prototype% (linkTypedArrayProtos)
+//   3. 构造器 @@species 访问器 (applyTASpeciesAccessors)
 func setupTypedArrays(env *runtime.Environment) {
+	materialized := false
+	// shared 闭包按 env 逐次创建: SetupGlobals 可被多次调用 (每脚本一次
+	// 全新环境)，状态随 env 走，不引入包级可变状态。
+	materialize := func() object.Value {
+		if materialized {
+			return nil
+		}
+		materialized = true
+		buildTypedArrayGlobals(env)
+		applyBuiltinLengthsPrefixes(env, taGlobalNames())
+		linkTypedArrayProtos(env)
+		applyTASpeciesAccessors(env)
+		return nil
+	}
+	for _, n := range taGlobalNames() {
+		env.DeclareLazy(n, materialize)
+	}
+}
+
+// taGlobalNames 返回 TypedArray 家族注册到全局的绑定名 (惰性声明与
+// 物化后 length 前缀补齐共用)。
+func taGlobalNames() []string {
+	names := make([]string, 0, 6+len(object.TAKindList()))
+	names = append(names, "ArrayBuffer", "SharedArrayBuffer", "TypedArray", "DataView")
+	for _, k := range object.TAKindList() {
+		names = append(names, k.Name)
+	}
+	return names
+}
+
+// linkTypedArrayProtos 把家族各构造器的 .prototype 链回 %Object.prototype%
+// (SetupGlobals 末尾 linkBuiltinPrototypes 对惰性根跳过部分的补做)。
+// 名单与 linkBuiltinPrototypes 保持一致: ArrayBuffer / DataView + 十种具体
+// 构造器 (%TypedArray% 与 SharedArrayBuffer 不在原名单，行为不变)。
+func linkTypedArrayProtos(env *runtime.Environment) {
+	objProto := object.GetObjectPrototype()
+	if objProto == nil {
+		return
+	}
+	names := []string{"ArrayBuffer", "DataView"}
+	for _, k := range object.TAKindList() {
+		names = append(names, k.Name)
+	}
+	for _, n := range names {
+		v, ok := env.Get(n)
+		if !ok || v == nil {
+			continue
+		}
+		if p, ok := v.GetProperty("prototype"); ok {
+			linkProtoTo(p, objProto)
+		}
+	}
+}
+
+// buildTypedArrayGlobals 构造 TypedArray 家族并 Declare 到全局
+// (惰性工厂主体，原 setupTypedArrays 装配体)。
+func buildTypedArrayGlobals(env *runtime.Environment) {
 	// ----- ArrayBuffer -----
 	abFn := object.NewBuiltin("ArrayBuffer", func(args ...object.Value) object.Value {
 		n := 0

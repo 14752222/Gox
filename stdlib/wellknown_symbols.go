@@ -116,7 +116,26 @@ func setupSymbolSpeciesMembers(env *runtime.Environment) {
 	// TypedArray 构造器同样带 @@species 访问器 (规范 23.2.2.4): 派生类
 	// (class MyU8 extends Uint8Array) 经 SpeciesConstructor 读
 	// Get(C, @@species) 时须得到 C 自身, 否则 super() 派生物种解析失准。
+	// T3-5: TypedArray 家族惰性化时此处跳过 —— 由工厂物化时调
+	// applyTASpeciesAccessors 补做, 避免 env.Get 变相全量物化。
+	applyTASpeciesAccessors(env)
+}
+
+// applyTASpeciesAccessors 给 TypedArray 家族构造器装 @@species 访问器。
+// SetupGlobals 直跑路径与惰性工厂物化路径共用 (行为口径一致)。
+func applyTASpeciesAccessors(env *runtime.Environment) {
+	sym := object.GetGlobalSymbol("Symbol.species")
+	getter := object.NewBuiltinMethod("get [Symbol.species]",
+		func(this object.Value, args ...object.Value) object.Value {
+			if this == nil {
+				return object.UndefinedSingleton
+			}
+			return this
+		})
 	for _, kind := range object.TAKindList() {
+		if env.IsLazyName(kind.Name) {
+			continue
+		}
 		v, ok := env.Get(kind.Name)
 		if !ok || v == nil {
 			continue

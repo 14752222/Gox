@@ -279,6 +279,11 @@ func linkBuiltinPrototypes(env *runtime.Environment) {
 		names = append(names, k.Name)
 	}
 	for _, n := range names {
+		// T3-5: TypedArray 家族惰性化时跳过 —— 链接由工厂物化时
+		// linkTypedArrayProtos 补做，避免 env.Get 变相全量物化。
+		if env.IsLazyName(n) {
+			continue
+		}
 		v, ok := env.Get(n)
 		if !ok || v == nil {
 			continue

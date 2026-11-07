@@ -575,43 +575,73 @@ func applyBuiltinLengths(env *runtime.Environment) {
 		if len(segs) == 0 {
 			continue
 		}
+		// T3-5 惰性全局: 根尚未物化时不在此处 env.Get —— 那会把惰性化
+		// 变相打回全量物化。对应子树的 length 由惰性工厂在物化时经
+		// applyBuiltinLengthsPrefixes 自行补做。
+		if env.IsLazyName(segs[0]) {
+			continue
+		}
 		v, ok := env.Get(segs[0])
 		if !ok || v == nil {
 			continue
 		}
-		resolved := true
-		for _, seg := range segs[1:] {
-			obj, isObj := v.(*object.Object)
-			if !isObj {
-				// BuiltinFunction.prototype 等也可继续走 GetProperty
-				if getter, hasGet := v.(interface{ GetProperty(string) (object.Value, bool) }); hasGet {
-					nv, got := getter.GetProperty(seg)
-					if !got || nv == nil {
-						resolved = false
-						break
-					}
-					v = nv
-					continue
-				}
-				resolved = false
-				break
-			}
-			nv, got := obj.GetProperty(seg)
-			if !got || nv == nil {
-				resolved = false
-				break
-			}
-			v = nv
-		}
-		if !resolved {
+		setLengthFromPath(v, segs[1:], n)
+	}
+}
+
+// applyBuiltinLengthsPrefixes 在惰性工厂物化后，按根名补该子树的
+// 内建 length (roots 为精确的根绑定名，如 "Temporal." 去点后的 "Temporal")。
+// 与 applyBuiltinLengths 共用解析与写入逻辑，保证口径一致。
+func applyBuiltinLengthsPrefixes(env *runtime.Environment, roots []string) {
+	rootSet := make(map[string]struct{}, len(roots))
+	for _, r := range roots {
+		rootSet[r] = struct{}{}
+	}
+	for path, n := range builtinLengths {
+		segs := splitDots(path)
+		if len(segs) == 0 {
 			continue
 		}
-		switch fn := v.(type) {
-		case *object.BuiltinFunction:
-			fn.SetFunctionLength(n)
-		case *object.BuiltinMethod:
-			fn.SetFunctionLength(n)
+		if _, match := rootSet[segs[0]]; !match {
+			continue
 		}
+		v, ok := env.Get(segs[0])
+		if !ok || v == nil {
+			continue
+		}
+		setLengthFromPath(v, segs[1:], n)
+	}
+}
+
+// setLengthFromPath 从根值出发按 segs 逐段解析限定名并设置 length。
+// 解析失败的键静默跳过 (如引擎未实现的命名空间)。
+func setLengthFromPath(root object.Value, segs []string, n int) {
+	v := root
+	for _, seg := range segs {
+		obj, isObj := v.(*object.Object)
+		if !isObj {
+			// BuiltinFunction.prototype 等也可继续走 GetProperty
+			if getter, hasGet := v.(interface{ GetProperty(string) (object.Value, bool) }); hasGet {
+				nv, got := getter.GetProperty(seg)
+				if !got || nv == nil {
+					return
+				}
+				v = nv
+				continue
+			}
+			return
+		}
+		nv, got := obj.GetProperty(seg)
+		if !got || nv == nil {
+			return
+		}
+		v = nv
+	}
+	switch fn := v.(type) {
+	case *object.BuiltinFunction:
+		fn.SetFunctionLength(n)
+	case *object.BuiltinMethod:
+		fn.SetFunctionLength(n)
 	}
 }
 

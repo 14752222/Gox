@@ -34,6 +34,12 @@ type Binding struct {
 
 	// Desc 非 nil 时覆盖绑定的默认描述符 (Object.defineProperty(globalThis,...))。
 	Desc *object.PropertyDescriptor
+
+	// lazy 非空表示这是一个尚未物化的惰性全局 (T3-5 冷启动):
+	// 名字立即可见 (BindingNames/作用域解析/typeof)，但构造整棵内建
+	// 对象树的开销推迟到首次读取。物化后置 nil (见 materialize)。
+	// 只可能出现在全局环境；块作用域环境不会持有此字段。
+	lazy func() object.Value
 }
 
 // Environment 实现词法作用域环境。
@@ -77,6 +83,14 @@ func NewEnclosedEnvironment(outer *Environment) *Environment {
 func (e *Environment) Get(name string) (object.Value, bool) {
 	obj, ok := e.store[name]
 	if ok {
+		if obj.lazy != nil {
+			// 惰性全局首次读取: 物化后重读 (共享工厂可能整组 Declare)。
+			e.materialize(name)
+			obj, ok = e.store[name]
+			if !ok {
+				return nil, false
+			}
+		}
 		return obj.Value, true
 	}
 	if e.outer != nil {
@@ -85,12 +99,68 @@ func (e *Environment) Get(name string) (object.Value, bool) {
 	return nil, false
 }
 
+// DeclareLazy 声明惰性全局绑定 (T3-5 冷启动惰性化)。
+//
+// name 立即出现在 BindingNames / hasOwnProperty / 作用域解析里 —— 可见性
+// 语义与立即 Declare 完全一致；但 factory 的构造开销 (整棵内建对象树)
+// 推迟到首次 Get。
+//
+// factory 的约定 (二选一):
+//   - 单名字惰性: 返回具体值，由 materialize 写入绑定 (如 Temporal)。
+//   - 多名字共享工厂: factory 自己把同组绑定全部 Declare 进环境并返回
+//     nil (如 TypedArray 家族 —— 物化任意一个名字即整组就绪)。
+//
+// 声明占位必须在 SetupGlobals 主流程完成前就绪，因为全局收尾
+// (applyBuiltinLengths / linkBuiltinPrototypes / @@species) 对惰性根
+// 的收尾动作由 factory 在物化时自行补做 (见各处 IsLazyName 跳过逻辑)。
+func (e *Environment) DeclareLazy(name string, factory func() object.Value) {
+	e.store[name] = Binding{lazy: factory}
+	e.bumpVersion()
+}
+
+// IsLazyName 报告 name 是否为尚未物化的惰性绑定。
+// 供 SetupGlobals 的收尾遍历跳过惰性根 —— 对应收尾由惰性工厂在物化时
+// 自行补做，避免惰性化被收尾遍历的 env.Get 变相打回全量物化。
+func (e *Environment) IsLazyName(name string) bool {
+	b, ok := e.store[name]
+	return ok && b.lazy != nil
+}
+
+// materialize 物化惰性绑定: 调用工厂、写入值。先清 lazy 标记再调工厂，
+// 防止工厂内部 Get 同名绑定自递归；工厂若整组 Declare (共享工厂)，
+// 返回 nil，物化值已由 Declare 写入。
+func (e *Environment) materialize(name string) {
+	b, ok := e.store[name]
+	if !ok || b.lazy == nil {
+		return
+	}
+	factory := b.lazy
+	b.lazy = nil
+	e.store[name] = b
+	if v := factory(); v != nil {
+		// 单名字惰性: 工厂返回值写入绑定 (工厂未自行 Declare 的情形)。
+		if cur, ok2 := e.store[name]; ok2 && cur.lazy == nil && cur.Value == nil {
+			cur.Value = v
+			e.store[name] = cur
+		}
+	}
+	e.bumpVersion()
+}
+
 // Set 修改变量值。
 // 在作用域链中查找变量并修改。如果变量是 const 绑定，返回错误。
 // 如果变量不存在，返回错误 (应该先 Declare)。
 func (e *Environment) Set(name string, val object.Value) error {
 	binding, ok := e.store[name]
 	if ok {
+		if binding.lazy != nil {
+			// 赋值前先物化 (globalThis.Temporal = x 语义 = 覆盖内建值)。
+			e.materialize(name)
+			binding, ok = e.store[name]
+			if !ok {
+				return fmt.Errorf("ReferenceError: Assignment to undeclared variable: %s", name)
+			}
+		}
 		if binding.IsConst {
 			return fmt.Errorf("TypeError: Assignment to constant variable: %s", name)
 		}
@@ -187,6 +257,7 @@ func (e *Environment) BindingNames() []string {
 
 // BindingInfoOf 返回全局环境里 name 绑定的元信息 (存在性 / 值 / 种类标记)。
 func (e *Environment) BindingInfoOf(name string) object.GlobalBindingInfo {
+	e.materialize(name) // 惰性绑定被反射 (getOwnPropertyDescriptor 等) 触及时给出真实值
 	b, ok := e.store[name]
 	if !ok {
 		return object.GlobalBindingInfo{Exists: false}
@@ -210,6 +281,7 @@ func (e *Environment) BindingInfoOf(name string) object.GlobalBindingInfo {
 // SetGlobalBindingValue 直接改写已有全局绑定的值 (Object.defineProperty 等
 // 精确控制路径使用)，同时记录描述符覆盖。
 func (e *Environment) SetGlobalBindingValue(name string, val object.Value, desc object.PropertyDescriptor) bool {
+	e.materialize(name) // 覆写前先物化，防止残留的惰性标记把已定义值顶掉
 	b, ok := e.store[name]
 	if !ok {
 		return false
@@ -225,6 +297,7 @@ func (e *Environment) SetGlobalBindingValue(name string, val object.Value, desc 
 // DefineGlobalBinding 以完整描述符在全局环境上定义/新建绑定
 // (Object.defineProperty(globalThis, ...) 用)。
 func (e *Environment) DefineGlobalBinding(name string, desc object.PropertyDescriptor) error {
+	e.materialize(name) // defineProperty 覆写惰性绑定: 物化后重定义，清掉 lazy 标记
 	b, ok := e.store[name]
 	if !ok {
 		b = Binding{}
@@ -240,6 +313,7 @@ func (e *Environment) DefineGlobalBinding(name string, desc object.PropertyDescr
 // DeleteGlobalBinding 删除全局绑定。仅当它对应 globalThis 的自有可配置属性
 // 时成功；不存在时也返回 true (规范 delete 对不存在属性返回 true)。
 func (e *Environment) DeleteGlobalBinding(name string) bool {
+	e.materialize(name) // delete 前先物化，描述符判定与普通内建一致
 	b, ok := e.store[name]
 	if !ok {
 		return true

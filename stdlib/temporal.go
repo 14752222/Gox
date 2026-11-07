@@ -15,6 +15,20 @@ import (
 // 调用后通过 Temporal.Instant.from(...) / Temporal.PlainDate.from(...)
 // 这类形式访问。
 func setupTemporal(env *runtime.Environment) {
+	// T3-5 冷启动惰性化: Temporal 是启动剖析里最大的单点 (CPU 剖面
+	// setupTemporal ≈ 12% 的 EvalFileVM 首次调用)，而绝大多数脚本从不
+	// 触碰它。名字立即声明占位 (枚举/typeof/hasOwnProperty 可见)，整棵
+	// 对象树推迟到首次 Get。物化时需自行补做 SetupGlobals 收尾对惰性根
+	// 跳过的部分: builtinLengths 里 Temporal.* 的 length 补齐。
+	env.DeclareLazy("Temporal", func() object.Value {
+		temporal := buildTemporalNamespace()
+		applyBuiltinLengthsPrefixes(env, []string{"Temporal"})
+		return temporal
+	})
+}
+
+// buildTemporalNamespace 构造 Temporal 命名空间对象树 (惰性工厂主体)。
+func buildTemporalNamespace() *object.Object {
 	temporal := object.NewObject()
 	setNamespaceProto(temporal)
 
@@ -34,7 +48,7 @@ func setupTemporal(env *runtime.Environment) {
 	tgApplyTemporalLengths(temporal)
 
 	setToStringTag(temporal, "Temporal")
-	env.Declare("Temporal", temporal, false)
+	return temporal
 }
 
 // setupTemporalNow 注册 Temporal.Now 命名空间。
